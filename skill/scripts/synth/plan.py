@@ -159,15 +159,34 @@ def out_of_scope_findings(findings_paths, plan):
         if not m or m.group(1) not in group_files:
             continue
         allowed = group_files[m.group(1)]
+        # DAT-1553408299: this is the SECOND read of files the canonical loader
+        # (findings.load_findings_detailed) has already read, and it used to
+        # agree with that loader about neither the PARSE nor the SHAPE: strict
+        # `json.load` reported a clean zero for a fence-wrapped file whose
+        # findings the report had ingested (fence wrapping is a property of the
+        # return channel -- see phases/runio._load_return_json), RecursionError
+        # from a deeply nested one escaped `except (OSError, ValueError)`, and a
+        # string/list `location` or a non-list `findings` raised out of
+        # PlanInputs.load. Both halves are now the ones that loader uses --
+        # `load_json_tolerant` to parse, `normalize_finding` (which pins
+        # `location` to a dict and drops it when it names no file) to repair --
+        # so these two readers of the same files cannot disagree about what the
+        # file IS or about what a row means. Sibling readers in this module
+        # still catch only (OSError, ValueError); that pattern is #2081 and is
+        # not touched here.
         try:
             with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
+                data = evidence_mod.load_json_tolerant(fh.read())
+        except Exception:  # noqa: BLE001 - tolerant by design, like load_findings_detailed
             continue
-        for f in (data.get("findings") or [] if isinstance(data, dict) else []):
-            if isinstance(f, dict):
-                f = findings_mod.agent_finding(f, path)
-            loc = (f.get("location") or {}) if isinstance(f, dict) else {}
+        raws = data.get("findings") if isinstance(data, dict) else None
+        if not isinstance(raws, list):
+            continue
+        for raw in raws:
+            if not isinstance(raw, dict):
+                continue
+            f = findings_mod.normalize_finding(findings_mod.agent_finding(raw, path))
+            loc = f.get("location") or {}
             fpath = evidence_mod.norm_path(loc.get("file"))
             if not fpath:
                 continue
