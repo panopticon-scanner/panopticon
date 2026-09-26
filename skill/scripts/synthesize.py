@@ -80,6 +80,18 @@ def build_parser():
                     help="this run started with the tool scan enabled and had "
                          "it switched off with --no-tools while in flight "
                          "(#1637 P08); disclosed as meta.tools.disabled_mid_run")
+    ap.add_argument("--plan-owed", action="store_true",
+                    help="this run's driver WROTE a dispatch plan, per the run "
+                         "manifest's own stamp (SEC-377944137, #1832); an absent "
+                         "plan file is then deleted evidence, not an unmeasured "
+                         "run. Disclosed as meta.integrity.dispatch_plan_missing. "
+                         "Omit it when re-synthesizing BY HAND over a run folder "
+                         "whose artifacts were deliberately cleared")
+    ap.add_argument("--plan-sha256", metavar="HEX", default=None,
+                    help="the canonical content hash the manifest stamped for "
+                         "that plan (SEC-377944137); a plan file present with "
+                         "different content is tamper, not an absence. "
+                         "Disclosed as meta.integrity.dispatch_plan_mismatched")
     ap.add_argument("--git-drivers-suppressed", metavar="JSON", default=None,
                     help="JSON list of {repo, key} pairs: the target's own Git "
                          "driver commands this scan ran with emptied (#2013); "
@@ -307,7 +319,9 @@ def main(argv=None):
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts,
                                     git_drivers_suppressed=getattr(
-                                        args, "git_drivers_suppressed", None))
+                                        args, "git_drivers_suppressed", None),
+                                    plan_owed=getattr(args, "plan_owed", False),
+                                    plan_sha256=getattr(args, "plan_sha256", None))
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,

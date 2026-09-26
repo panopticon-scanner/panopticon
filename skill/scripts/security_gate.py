@@ -382,6 +382,11 @@ def main(argv=None):
         findings, dispositions, failures, high, suppressed = evaluate(
             args.tools_dir, args.manifest, args.exclude, args.security_mode,
             excluded_out=excluded)
+        # #1839: the SCAN-side half of the same disclosure. Read back through
+        # the one validator rather than widening `evaluate`'s tuple, which every
+        # caller and test unpacks positionally.
+        manifest = load_manifest(args.manifest)
+        scan_skipped = ingest_tools.scan_skipped_venvs(manifest)
     except ValueError as exc:
         print("security-gate: %s" % exc, file=sys.stderr)
         return 2
@@ -432,7 +437,9 @@ def main(argv=None):
         else:
             verdict = (" -- NOT gated; re-run with --security redteam to gate "
                        "the CRITICAL and secret-class ones")
-        note = ("; %d suppressed by directory name -- %s%s"
+        # #1839: "or marker" -- the fourth class rests on a `pyvenv.cfg` the
+        # target wrote rather than on a name, and this count now includes it.
+        note = ("; %d suppressed by directory name or marker -- %s%s"
                 % (len(suppressed), _by_class(suppressed), verdict))
     if excluded:
         # Fix round 1 (ruling 3): the operator's own globs, counted where the
@@ -440,6 +447,35 @@ def main(argv=None):
         # what this gate exists to catch, and the line said nothing at all.
         note += ("; %d excluded by --exclude (%s)"
                  % (len(excluded), ", ".join(sorted(set(args.exclude)))))
+    if scan_skipped:
+        # #1839 (run-14 SEC-1486247143): a virtualenv the RUNNER was told to
+        # skip produced no finding, so nothing downstream could say it happened
+        # -- one committed `pyvenv.cfg` took a subtree out of semgrep, trivy and
+        # bandit and this line was byte-identical either way. `standard` keeps
+        # the skip for its walk saving; it does not get to keep the silence.
+        #
+        # Per CLASS (review round 1 I4), because the two rest on different
+        # evidence: a `pyvenv.cfg` the target committed, or a directory NAME
+        # alone -- and an operator deciding whether to re-run has to be able to
+        # tell a real environment from a `mkdir .venv`. Names are bounded and
+        # escaped by `display_scan_skips` (I3): they are target-authored, and one
+        # holding a newline forged a second line that read like a clean verdict.
+        total = sum(len(names) for names in scan_skipped.values())
+        if not manifest.get("produced"):
+            # N5: with docker absent the runner writes these rows anyway, so
+            # "removed from the scan" described a run in which nothing was
+            # scanned at all -- and a redteam re-run is not the remedy for that.
+            remedy = " -- no scanner ran"
+        elif args.security_mode == REDTEAM:
+            remedy = ""
+        else:
+            remedy = " -- re-run with --security redteam to scan them"
+        note += ("; %d %s removed from the scan as %s%s"
+                 % (total, "directory" if total == 1 else "directories",
+                    "; ".join("%s (%s)" % (segment,
+                                           ingest_tools.display_scan_skips(names))
+                              for segment, names in sorted(scan_skipped.items())),
+                    remedy))
     # The verdict line SPLITS only when a baseline was actually read. Strict is
     # the historical line, byte for byte, because a named-but-unreadable
     # baseline must look exactly like no baseline to everything downstream.
