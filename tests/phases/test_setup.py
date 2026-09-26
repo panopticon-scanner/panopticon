@@ -1938,3 +1938,147 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
             self.assertIn("setup-spine.json", status["message"])
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual("KEEP", fh.read())
+
+
+class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
+    """SEC-579863541 (#1841): a `.panopticon` setup artifact THIS run did not
+    write satisfies no setup done-predicate.
+
+    Both artifacts sit at fixed `runio._TOP_LEVEL` paths in the flat
+    `.panopticon/`, and both predicates used to be bare "does this file parse"
+    tests on them -- while the identical threat one file over
+    (`run-manifest.json`) has had a dedicated rule since #1093. A planted
+    `setup-proposal.json` makes the TARGET's own proposal the input to the
+    ingest; a planted `setup-complete.json` satisfies BOTH predicates, so
+    `driver setup` runs no phase at all and reports setup complete over a tree
+    nothing classified.
+
+    The rows below are the triage probe's, and the two resume cases are the
+    other half: the binding has to admit the driver's OWN artifacts, or the
+    guard would break every `--pr`-less resume it is supposed to protect.
+    """
+
+    def _repo(self, enforcement=hosts.PROVEN):
+        repo = make_git_repo(test_case=self,
+                             files={"src/checkout/pay.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+        if enforcement is not None:
+            write_host_evidence(repo, {hosts.TOOL_POLICY_ENFORCED: enforcement})
+        return repo
+
+    def _manifest(self, repo, run_id="THIS-SETUP-RUN"):
+        return {"schema_version": 1, "run_id": run_id, "host": "claude",
+                "review_root": os.path.abspath(repo)}
+
+    def _plant(self, repo, name, body, commit=False):
+        """Write `.panopticon/<name>`; `commit=True` is the `git add -f` vector
+        (the directory is gitignored, and `-f` is how a target gets past that)."""
+        os.makedirs(os.path.join(repo, ".panopticon"), exist_ok=True)
+        rel = os.path.join(".panopticon", name)
+        with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+        if commit:
+            for args in (["add", "-f", rel], ["commit", "-qm", "plant " + name]):
+                subprocess.run(["git", "-C", repo, *args], check=True,
+                               capture_output=True, timeout=30)
+        return os.path.join(repo, rel)
+
+    _PROPOSAL = {"groups": [{"capability": "Checkout",
+                             "match": ["src/checkout/**"], "tests": []}]}
+
+    def test_a_clean_tree_satisfies_neither_predicate(self):
+        d = self._repo()
+        m = self._manifest(d)
+        self.assertFalse(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+
+    def test_a_committed_proposal_satisfies_no_predicate(self):
+        # The proposal carries no run binding at all, so the signal is the one
+        # `_foreign_manifest` uses: a driver-written artifact is never committed.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        self.assertFalse(setup.scan_done(d, self._manifest(d)))
+
+    def test_a_committed_complete_marker_satisfies_no_predicate(self):
+        d = self._repo()
+        m = self._manifest(d)
+        # Right run_id AND committed: tracked-ness alone refuses it, so a
+        # target that learns a run id off the tree gains nothing.
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "run_id": m["run_id"]}, commit=True)
+        self.assertFalse(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+
+    def test_a_planted_complete_marker_satisfies_no_predicate(self):
+        # The probe's three surviving marker shapes: no `run_id` at all, a
+        # plausible `mode`, and another run's id. `mode: "fallback"` is the
+        # fourth and `_drop_stale_fallback_marker` already supersedes it --
+        # which is a coincidence of that helper's purpose, not a refusal.
+        for body in ({"schema_version": 1},
+                     {"schema_version": 1, "mode": "real"},
+                     {"schema_version": 1, "run_id": "SOMEONE-ELSES-RUN"}):
+            with self.subTest(marker=body):
+                d = self._repo()
+                m = self._manifest(d)
+                self._plant(d, "setup-complete.json", body)
+                self.assertFalse(setup.scan_done(d, m))
+                self.assertFalse(setup.ingest_done(d, m))
+
+    def test_this_runs_own_untracked_artifacts_still_read_done(self):
+        # The resume case, both halves: the marker the driver wrote for THIS
+        # run (`_scan_fallback` stamps the id) and the proposal the host wrote
+        # back are untracked, and both still satisfy their predicate.
+        d = self._repo()
+        m = self._manifest(d)
+        self._plant(d, "setup-proposal.json", self._PROPOSAL)
+        self.assertTrue(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "run_id": m["run_id"], "mode": "real"})
+        self.assertTrue(setup.scan_done(d, m))
+        self.assertTrue(setup.ingest_done(d, m))
+
+    def test_a_planted_marker_does_not_report_setup_complete(self):
+        # The sharper half end to end: `driver setup` over a planted marker
+        # used to run no phase at all and report "setup complete" over a tree
+        # nothing had classified. It runs the scan instead, and says why.
+        d = self._repo()
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "mode": "real",
+                     "run_id": "SOMEONE-ELSES-RUN"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = setup.run_setup_flow(
+                driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual("checkpoint", status["status"], status)
+        self.assertEqual("scan", status["checkpoint"])
+        self.assertIn("setup-complete.json", err.getvalue())
+        self.assertIn("SOMEONE-ELSES-RUN", err.getvalue())
+        self.assertIn("--reset", err.getvalue())
+
+    def test_the_refusal_is_said_once_per_invocation(self):
+        # The engine re-evaluates both predicates until the flow stops, so the
+        # report lives in `run_setup_flow` and the predicates stay silent --
+        # the same split `_foreign_manifest_reason` uses one file over.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(1, err.getvalue().count("setup-proposal.json:"),
+                         err.getvalue())
+
+    def test_the_committed_refusal_names_a_remedy_that_can_work(self):
+        # `--reset` deletes the file, and git puts a TRACKED one straight back
+        # -- so the committed case names removal from the repository instead.
+        # `_remedy_clause`'s rule, one module over: a remedy that cannot change
+        # the answer is the defect, not the wording.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        line = [ln for ln in err.getvalue().splitlines()
+                if "setup-proposal.json:" in ln][0]
+        self.assertIn("git-tracked", line)
+        self.assertNotIn("--reset", line)

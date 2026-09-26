@@ -148,9 +148,81 @@ def _setup_scan_entry(review_root, prompt, host):
         entry["delivery"] = mode
     return entry
 
+def _unbound_setup_artifact(review_root, name, manifest):
+    """Why `.panopticon/<name>` is not THIS setup run's evidence, or None when
+    it is (SEC-579863541, #1841).
+
+    `setup-proposal.json` and `setup-complete.json` are `runio._TOP_LEVEL`
+    names, so `_pano` resolves them FLAT: fixed paths in a directory the
+    reviewed tree owns and can `git add -f` past its own gitignore. The two
+    done-predicates below were bare "does this file parse" tests on them, while
+    the identical threat one file over (`run-manifest.json`) has had a rule
+    since #1093. A planted proposal skips the setup-scan dispatch and makes the
+    TARGET's own proposal the input to `setup_flow.ingest_proposal`; a planted
+    marker satisfies BOTH predicates, so `driver setup` runs no phase at all
+    and reports setup complete over a tree nothing classified.
+
+    A REASON, reported by the caller, the way `_foreign_manifest_reason` does
+    it: one helper decides, so the predicate and the stderr line can never
+    disagree about what was refused. Both signals already exist here:
+
+    * tracked-ness (`runio._manifest_committed`), the manifest guard's primary
+      and non-secret signal -- a driver-written artifact is gitignored and
+      untracked, so a tracked one was committed by the target. It applies to
+      both names, and to the marker even when its `run_id` matches: a run id
+      lives in a file the target can read, so it is not a secret either.
+    * the marker's own `run_id`. `_scan_fallback` stamps it
+      (`run_id=manifest["run_id"]`) and `run_setup_flow` pins the setup
+      manifest ONCE, so the id is stable across resumes and a marker carrying
+      another id -- or none at all -- was not written by this run. The proposal
+      carries no such field, which is why tracked-ness is all it has.
+
+    An absent or unparseable file is nobody's evidence and gets no reason: it
+    satisfies no predicate anyway, and a refusal named over it would be noise.
+    """
+    path = runio._pano(review_root, name)
+    doc = runio._load_json(path)
+    if doc is None:
+        return None
+    if runio._manifest_committed(review_root, path):
+        return ("it is git-tracked in the target, and a driver-written setup "
+                "artifact is never committed -- remove it from the repository "
+                "(while it is there this phase ignores it and runs again)")
+    if name != "setup-complete.json":
+        return None
+    want = (manifest or {}).get("run_id")
+    got = doc.get("run_id") if isinstance(doc, dict) else None
+    if want and got == want:
+        return None
+    # Fails CLOSED on a manifest with no id of its own: nothing can be bound to
+    # a run that does not say which run it is.
+    return ("it carries run_id %r, not this setup run's %r -- "
+            "`driver setup --reset` starts over" % (got, want))
+
+def _bound_setup_artifact(review_root, name, manifest):
+    """True when `.panopticon/<name>` parses AND this run wrote it. The parse
+    comes first so an absent artifact costs no `git ls-files`."""
+    return (runio._json_parses(runio._pano(review_root, name))
+            and _unbound_setup_artifact(review_root, name, manifest) is None)
+
+def _report_unbound_setup_artifacts(review_root, manifest):
+    """Name every setup artifact that satisfies no done-predicate, once per
+    invocation, off the same helper the predicates read.
+
+    Here rather than inside the predicates because `run_engine` re-evaluates
+    those up to twice each, and one refusal said four times reads as four
+    problems. Called from inside `run_setup_flow`'s status `try`:
+    `_manifest_committed` raises DriverError rather than trust an ambiguous git
+    failure, and that refusal is this verb's `error` status like every other."""
+    for name in ("setup-proposal.json", "setup-complete.json"):
+        reason = _unbound_setup_artifact(review_root, name, manifest)
+        if reason:
+            print("driver setup: ignoring %s: %s" % (name, reason),
+                  file=sys.stderr, flush=True)
+
 def scan_done(review_root, manifest):
-    return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
-            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
+    return (_bound_setup_artifact(review_root, "setup-proposal.json", manifest)
+            or _bound_setup_artifact(review_root, "setup-complete.json", manifest))
 
 def scan_execute(review_root, manifest):
     """Provision + render the scan brief -> setup-scan checkpoint (vocab present);
@@ -187,7 +259,7 @@ def scan_execute(review_root, manifest):
 
 def ingest_done(review_root, manifest):
     return (os.path.isfile(repo_config.draft_path(review_root))
-            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
+            or _bound_setup_artifact(review_root, "setup-complete.json", manifest))
 
 def ingest_execute(review_root, manifest):
     """Ingest the returned proposal -> draft + setup report, with THIS setup's
@@ -482,6 +554,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         if error:
             return runio._error_status(error)
     try:
+        _report_unbound_setup_artifacts(review_root, manifest)
         result = engine.run_engine(review_root, manifest, phases)
     except (runio.DriverError, engine.EngineStalled, ValueError) as exc:
         # `ValueError` is item 24 R1-1: since #1577 the five setup artifacts are
