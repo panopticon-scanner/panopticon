@@ -759,7 +759,11 @@ def test_excluded_paths_leave_the_security_upload_and_are_counted(tmp_path):
     summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
         encoding="utf-8")
     assert "3 result(s) excluded from the Security upload" in summary
-    assert "tests/**" in summary
+    # The globs are operator text on a Markdown page: `**` is emphasis there,
+    # so they go through the same escape every other cell uses, and the
+    # summary carries each one whole.
+    assert "tests/fixtures/&#42;&#42;, tests/&#42;&#42;" in summary
+    assert "tests/**" not in summary
 
 
 def test_a_negated_glob_wins_last_like_the_gate(tmp_path):
@@ -799,6 +803,65 @@ def test_the_cli_takes_repeatable_exclude_globs(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "1 result(s) excluded from the Security upload" in out
     assert "tests/**, docs/**" in out
+
+
+def test_markdown_escapes_each_character_once():
+    # `#` used to be escaped AFTER the entities that contain it were written,
+    # so `*` became `&&#35;42;` and a path with `_` rendered as `&#95;`
+    # literally on the step summary. One pass, one entity per character.
+    assert reports._markdown_text("a_b*c#d") == "a&#95;b&#42;c&#35;d"
+    assert reports._markdown_text("x & y") == "x &amp; y"
+
+
+def test_a_result_is_excluded_only_when_every_location_is(tmp_path):
+    # Fail-closed reading: a multi-location result with one location still in
+    # scope stays in the upload; a result with no location, or a location
+    # outside the scan-root mount, is never a glob's to drop.
+    rules = [_rule("R", level="warning", properties={})]
+    both_out = _result("R", path="/src/tests/a.py")
+    both_out["locations"].append({"physicalLocation": {
+        "artifactLocation": {"uri": "/src/tests/b.py"}, "region": {"startLine": 1}}})
+    one_in = _result("R", path="/src/tests/c.py")
+    one_in["locations"].append({"physicalLocation": {
+        "artifactLocation": {"uri": "/src/skill/scripts/x.py"}, "region": {"startLine": 1}}})
+    no_location = _result("R", path="unused")
+    del no_location["locations"]
+    outside = _result("R", path="/opt/elsewhere/tests/d.py")
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif",
+           _sarif(rules, [both_out, one_in, no_location, outside], driver="Bandit"))
+    payload = reports.prepare_reports(raw, tmp_path / "out", exclude_globs=["tests/**"])
+    security = json.loads((tmp_path / "out" / "security" / "scan.sarif")
+                          .read_text(encoding="utf-8"))
+    kept = security["runs"][0]["results"]
+    assert len(kept) == 3 and kept[0] is not None
+    assert [r.get("locations", [{}])[0].get("physicalLocation", {})
+             .get("artifactLocation", {}).get("uri") for r in kept] == [
+        "/src/tests/c.py", None, "/opt/elsewhere/tests/d.py"]
+    assert payload["excluded_from_security"]["count"] == 1
+
+
+def test_the_excluded_count_accumulates_over_captures(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    raw = tmp_path / "raw"
+    _write(raw, "a.sarif", _sarif(rules, [_result("R", path="/src/tests/a.py")],
+                                  driver="Bandit"))
+    _write(raw, "b.sarif", _sarif(rules, [_result("R", path="/src/tests/b.py"),
+                                          _result("R", path="/src/src/app.py")],
+                                  driver="Semgrep OSS"))
+    payload = reports.prepare_reports(raw, tmp_path / "out", exclude_globs=["tests/**"])
+    assert payload["excluded_from_security"]["count"] == 2
+
+
+def test_no_note_is_written_without_globs(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, [_result("R", path="/src/tests/a.py")],
+                                     driver="Bandit"))
+    reports.prepare_reports(raw, tmp_path / "out")
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "excluded from the Security upload" not in summary
 
 
 def test_the_scan_root_mount_is_the_one_run_tools_uses():

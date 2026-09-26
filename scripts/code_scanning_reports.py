@@ -23,7 +23,7 @@ import jsonschema
 # this script runs from the repo checkout, not from an installed package.
 _SKILL_DIR = str(Path(__file__).resolve().parents[1] / "skill")
 if _SKILL_DIR not in sys.path:
-    sys.path.insert(0, _SKILL_DIR)
+    sys.path.append(_SKILL_DIR)   # after the checkout's own entries, never over them
 from scripts import groups_schema  # noqa: E402
 
 # Where run_tools mounts the reviewed tree inside the tools image
@@ -421,12 +421,16 @@ def _split_document(document: dict[str, Any],
     return security, inventory
 
 
+_MARKDOWN_ENTITIES = {ord(c): f"&#{ord(c)};"
+                      for c in ("\\", "`", "|", "*", "_", "[", "]", "(", ")", "#", "!")}
+
+
 def _markdown_text(value: Any) -> str:
+    # One pass: a sequential replace re-escaped the `#` inside the entities it
+    # had already written (`*` -> `&#42;` -> `&&#35;42;`), so every escaped
+    # character rendered as its entity text on the step summary.
     text = " ".join(str(value or "").split())
-    escaped = html.escape(text, quote=False)
-    for character in ("\\", "`", "|", "*", "_", "[", "]", "(", ")", "#", "!"):
-        escaped = escaped.replace(character, f"&#{ord(character)};")
-    return escaped
+    return html.escape(text, quote=False).translate(_MARKDOWN_ENTITIES)
 
 
 def _location(result: dict[str, Any]) -> str:
@@ -467,34 +471,40 @@ def _repo_relative(uri: Any) -> str | None:
     if not isinstance(uri, str):
         return None
     path = uri[len("file://"):] if uri.startswith("file://") else uri
-    path = path.replace(os.sep, "/")
+    path = path.replace(os.sep, "/")   # mirrors ingest_tools: a no-op on POSIX
     if path == SCAN_ROOT_MOUNT or path.startswith(SCAN_ROOT_MOUNT + "/"):
         path = path[len(SCAN_ROOT_MOUNT) + 1:]
     return path
 
 
-def _result_uri(result: dict[str, Any]) -> Any:
-    for location in result.get("locations") or []:
+def _result_uris(result: dict[str, Any]) -> list[Any]:
+    uris = []
+    locations = result.get("locations")
+    for location in locations if isinstance(locations, list) else []:
         physical = (location or {}).get("physicalLocation") or {}
         artifact = physical.get("artifactLocation") or {}
-        if "uri" in artifact:
-            return artifact["uri"]
-    return None
+        if isinstance(artifact, dict) and "uri" in artifact:
+            uris.append(artifact["uri"])
+    return uris
 
 
 def _exclude_from_security(security: dict[str, Any],
                            exclude_globs: list[str]) -> int:
-    """Drop every result whose location an operator glob excludes; the count
-    is disclosed, never silent. A result with no location is kept."""
+    """Drop a result only when EVERY location it names is one an operator
+    glob excludes; the count is disclosed, never silent. A result with no
+    location, a non-string uri, or a location outside the scan-root mount is
+    kept -- the fail-closed reading of "the operator scoped this out"."""
     if not exclude_globs:
         return 0
     dropped = 0
     for run in security.get("runs", []):
         kept = []
         for result in run.get("results", []):
-            path = _repo_relative(_result_uri(result))
-            if path is not None and groups_schema.matched_glob(
-                    path, exclude_globs, "code-scanning") is not None:
+            paths = [_repo_relative(uri) for uri in _result_uris(result)]
+            if paths and all(
+                    path is not None and groups_schema.matched_glob(
+                        path, exclude_globs, "code-scanning") is not None
+                    for path in paths):
                 dropped += 1
                 continue
             kept.append(result)
@@ -548,8 +558,9 @@ def prepare_reports(input_dir: str | os.PathLike[str],
                    "excluded_from_security": {"count": excluded,
                                               "globs": globs}}
         excluded_note = ("\n%d result(s) excluded from the Security upload by "
-                         "`--exclude` (%s); the vulnerability gate above ran "
-                         "on its own scope.\n" % (excluded, ", ".join(globs))
+                         "`--exclude` (%s); the vulnerability gate ran on its "
+                         "own scope.\n"
+                         % (excluded, _markdown_text(", ".join(globs)))
                          if globs else "")
         (inventory_dir / "ai-inventory.json").write_text(
             json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n",

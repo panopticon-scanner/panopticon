@@ -12,8 +12,9 @@ evidence exposed.
   kept it out of `tests/`; the next security run filed 476 test-suite idioms as open alerts and
   tripped the post-merge audit. `code_scanning_reports.py --exclude` (repeatable, the same
   gitignore-style globs `security_gate.py` takes, matched by the same `groups_schema.matched_glob`)
-  drops those results from the Security SARIF only -- the gate still sees `tests/`, the AI
-  inventory is untouched -- and the excluded count is printed and written into the step summary.
+  drops those results from the Security SARIF only -- the gate still sees `tests/`, no AI
+  inventory result is dropped -- and the excluded count is printed and written into the step
+  summary.
   The scanner-owned bandit ini is bind-mounted as a FILE (0644) from a scratch directory that keeps
   `mkdtemp`'s 0700: the `chmod 0755` that made the directory traversable for the image's `scanner`
   user is gone, along with the two alerts it earned.
