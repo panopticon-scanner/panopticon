@@ -484,7 +484,8 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
     was not in `integrity_ok`.
 
     The anchor is the run manifest's recorded `review` dispatch, threaded in as
-    `plan_owed`: no dispatched agent may write that manifest, and
+    `plan_owed`: where the write guard mediates `Write` no dispatched agent may
+    write that manifest, and
     `runio._foreign_manifest` discards a git-tracked or foreign-stamped one. A
     direct `synthesize.py` call over hand-collected findings has no driver to
     ask, passes nothing, and keeps today's benign reading.

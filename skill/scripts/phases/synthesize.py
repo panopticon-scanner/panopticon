@@ -144,10 +144,17 @@ def _plan_owed(manifest):
 
     The manifest is the anchor rather than the plan, because a plan cannot
     attest to its own existence, and this is the better-defended of the two
-    files (#1727): no dispatched agent may write `run-manifest.json` -- the
-    write guard's allowlist is the entries' out_files -- and
-    `runio._foreign_manifest` discards one that is git-tracked in the reviewed
-    tree or stamped for another checkout.
+    files (#1727) -- better-defended, NOT out of reach. It lives in the
+    reviewed tree, and the "no dispatched agent may write `run-manifest.json`"
+    half is host-conditional: it holds where the write guard mediates `Write`
+    (its allowlist is the entries' out_files), so on `--host generic
+    --allow-unenforced` -- the unmediated host whose rogue advisor
+    `_snapshot_review_out_files` names as its own threat -- deleting the stamp
+    is one unmediated `Write` and restores the benign reading. What is
+    unconditional is that forging it is a SECOND, separate write, and that
+    `runio._foreign_manifest` discards a manifest that is git-tracked in the
+    reviewed tree or stamped for another checkout. The same is true of #1727's
+    own `dispatch_request` anchor.
 
     Fails OPEN by design in exactly one case, which is the same case every
     other key in `meta.integrity` treats as "not measured": no stamp at all.

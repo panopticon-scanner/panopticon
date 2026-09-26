@@ -486,10 +486,11 @@ def _write_driver_plan(review_root, manifest):
     require_unenforced_ack(review_root, manifest, entries)
     if os.path.isfile(path):
         return path
-    if not run_manifest.claim_artifact(review_root, manifest, run_manifest.DRIVER_PLAN,
-                                       path, sha256=integrity_mod._plan_hash(entries)):
-        return None               # deleted evidence -- reported, never repaired
-    return runio._write_json(path, entries)
+    # None when the plan is owed and gone: deleted evidence, reported and never
+    # repaired. The write runs INSIDE the claim so the stamp can only follow it.
+    return run_manifest.claim_artifact(review_root, manifest, run_manifest.DRIVER_PLAN,
+                                       path, lambda: runio._write_json(path, entries),
+                                       sha256=integrity_mod._plan_hash(entries))
 
 UNENFORCED_ACK = "unenforced-ack.json"
 # #1737: `--setup` has a gate of its own -- `phases/setup.
@@ -693,8 +694,7 @@ def _snapshot_review_out_files(review_root, manifest):
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
-    if not run_manifest.claim_artifact(review_root, manifest,
-                                       run_manifest.OUT_FILE_SNAPSHOT, path, cells=len(entries)):
-        return None               # deleted baseline -- reported, never re-taken
-    group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path))
-    return path if os.path.isfile(path) else None
+    return run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
+        review_root, manifest, run_manifest.OUT_FILE_SNAPSHOT, path,
+        lambda: path if group_runner.snapshot_out_files(
+            entries, out_path=os.path.abspath(path)) else None, cells=len(entries))

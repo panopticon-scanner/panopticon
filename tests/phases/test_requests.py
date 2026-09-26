@@ -341,6 +341,52 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
             requests._snapshot_review_out_files(self.root, self.manifest))
         self.assertTrue(os.path.isfile(self.snap_path))
 
+    def test_a_failed_plan_write_leaves_the_run_un_owed_not_wedged(self):
+        # Fix round 2, NEW-1. The stamp MUST follow the write. Stamped first, an
+        # `OSError` (disk full, read-only mount, EIO), a SIGKILL or the #1575
+        # process-group kill left the manifest saying "this run wrote it" with no
+        # file ever on disk -- and every later pass then REFUSED to write it, so
+        # an honest run reported `dispatch_plan_missing` for ever. Both remedies
+        # were bad: `--reset` re-pays the run, and a hand `synthesize.py` without
+        # `--plan-owed` drops the guard.
+        with mock.patch("scripts.phases.runio._write_json",
+                        side_effect=OSError("no space left on device")):
+            with self.assertRaises(OSError):
+                requests._write_driver_plan(self.root, self.manifest)
+        self.assertIsNone(self._stamp(run_manifest.DRIVER_PLAN))
+        self.assertFalse(os.path.exists(self.plan_path))
+        # ...and the next pass is an ordinary first write, not a refusal.
+        self.assertIsNotNone(requests._write_driver_plan(self.root, self.manifest))
+        self.assertTrue(os.path.isfile(self.plan_path))
+        self.assertIsNotNone(self._stamp(run_manifest.DRIVER_PLAN))
+
+    def test_a_failed_snapshot_leaves_the_run_un_owed_not_wedged(self):
+        # The same window, and the worse one: this writer runs at the
+        # review->verify boundary, so it opens only after every review cell has
+        # been dispatched and PAID FOR. `--reset` there throws a whole review away.
+        requests._write_driver_plan(self.root, self.manifest)
+        runio._write_json(runio._pano(self.root, "findings-Auth-SEC.json"),
+                          {"findings": []})
+        with mock.patch("scripts.group_runner.snapshot_out_files",
+                        side_effect=OSError("read-only file system")):
+            with self.assertRaises(OSError):
+                requests._snapshot_review_out_files(self.root, self.manifest)
+        self.assertIsNone(self._stamp(run_manifest.OUT_FILE_SNAPSHOT))
+        self.assertIsNotNone(
+            requests._snapshot_review_out_files(self.root, self.manifest))
+        self.assertTrue(os.path.isfile(self.snap_path))
+        self.assertIsNotNone(self._stamp(run_manifest.OUT_FILE_SNAPSHOT))
+
+    def test_a_snapshot_that_produced_no_file_owes_nothing_either(self):
+        # `_snapshot_review_out_files`' own last line concedes the write may not
+        # land (`return path if os.path.isfile(path) else None`), so "it returned"
+        # is not "it exists". The stamp follows the FILE, not the call.
+        requests._write_driver_plan(self.root, self.manifest)
+        with mock.patch("scripts.group_runner.snapshot_out_files", return_value={}):
+            self.assertIsNone(
+                requests._snapshot_review_out_files(self.root, self.manifest))
+        self.assertIsNone(self._stamp(run_manifest.OUT_FILE_SNAPSHOT))
+
     def test_an_existing_artifact_is_still_left_alone(self):
         # Idempotent and one-way, unchanged: a present snapshot is never
         # re-hashed, which is what makes a substitution detectable at all.

@@ -480,8 +480,8 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
     or stale value fails CLOSED: the readers refuse rather than trust.
 
     This file is inside the reviewed tree too -- the claim is NOT that it is
-    out of reach. It is the better-defended of the two: no dispatched agent
-    may write it (the write guard's allowlist is the entries' out_files) and
+    out of reach. It is the better-defended of the two: on a host whose write
+    guard mediates `Write`, no dispatched agent may write it (the write guard's allowlist is the entries' out_files) and
     `runio._foreign_manifest` discards a manifest that is git-tracked in the
     tree or stamped for another checkout, while the request is rewritten by
     the driver every iteration and read by every family. Forging the record
@@ -550,7 +550,11 @@ def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
     a laundering of the first.
 
     Not an anti-drift key: it records what this driver DID, not what the
-    operator asked for, and `conflicting_flags` never reads it.
+    operator asked for, and `conflicting_flags` never reads it -- so nothing
+    notices a stamp that VANISHES, which on a host whose write guard does not
+    mediate `Write` (`--host generic --allow-unenforced`) is one unmediated
+    write away. Better-defended than the artifact it anchors, not out of reach:
+    the same qualification #1727's `record_dispatch_request` makes above.
 
     A tree with no manifest on disk records NOTHING and does not raise. The
     pre-manifest window is real (unit callers, and `--setup`, which keeps its
@@ -588,13 +592,12 @@ def artifact_stamp(manifest, key):
     return stamp if isinstance(stamp, dict) and stamp else None
 
 
-def claim_artifact(review_root, manifest, key, path, **fields):
-    """May this run WRITE the owed-once artifact `path`? (SEC-377944137, #1832)
+def claim_artifact(review_root, manifest, key, path, write, **fields):
+    """Write the owed-once artifact `path` under its claim (SEC-377944137, #1832).
 
-    True when it may -- and the manifest is STAMPED as part of saying so, so the
-    very next absence of `path` is a DELETION and reads as one. False when this
-    run already wrote it and it is GONE: the caller must then REPORT the absence
-    rather than repair it.
+    Returns whatever `write` returned once the artifact is on disk, and None
+    without calling it at all when this run already wrote `path` and it is GONE
+    -- the caller must then REPORT that absence rather than repair it.
 
     Re-creating is how the guards built on these two artifacts were erased.
     `synthesize_execute` opens by calling both writers, so after a findings
@@ -602,6 +605,20 @@ def claim_artifact(review_root, manifest, key, path, **fields):
     -- the tampered file became its own baseline, `content_mismatched_files`
     went empty and #1208's owed-but-absent reading never fired -- and the plan
     was re-created, so its deletion left no trace either. Absence is evidence.
+
+    The WRITE happens here, rather than in the caller after a yes/no answer,
+    because the stamp must follow it and nothing may let a caller get that
+    order wrong (fix round 2, NEW-1). Stamped first, a write that never landed
+    -- `OSError` on a full disk or a read-only mount, a SIGKILL, the #1575
+    process-group kill, or a snapshot that simply produced no file -- left the
+    manifest saying "this run wrote it" with no file, and every later pass then
+    refused to write it: an honest run reported deleted evidence for ever, and
+    for the snapshot that window opens only after every review cell has been
+    paid for. The stamp therefore follows the FILE (`os.path.exists`), not the
+    call. A crash in the other direction -- written, not yet stamped -- leaves
+    the artifact present and un-owed, which is a re-creatable fail-OPEN rather
+    than a wedge, and is unreachable by a dispatched agent: both writes happen
+    inside a driver pass, with no reviewer live.
 
     The refusal is announced on the DRIVER's stderr, which an operator actually
     sees (the synthesize child's streams are captured by `child._run_child`),
@@ -618,9 +635,11 @@ def claim_artifact(review_root, manifest, key, path, **fields):
               "erase the evidence it exists to carry. This run will report "
               "uncertified integrity; use --reset to start a fresh one."
               % os.path.basename(path), file=sys.stderr, flush=True)
-        return False
-    record_artifact_stamp(review_root, manifest, key, **fields)
-    return True
+        return None
+    written = write()
+    if os.path.exists(path):
+        record_artifact_stamp(review_root, manifest, key, **fields)
+    return written
 
 
 def posture_disclosed_at(manifest, digest):

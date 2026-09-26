@@ -576,31 +576,70 @@ class TestArtifactStamps(unittest.TestCase):
                                                     rm.DRIVER_PLAN))
         self.assertIsNone(rm.artifact_stamp(None, rm.DRIVER_PLAN))
 
-    def test_a_claim_is_refused_only_for_a_stamped_and_absent_artifact(self):
-        path = os.path.join(self.root, "dispatch-plan-driver.json")
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            # Unstamped: the claim succeeds AND stamps, so the next absence is
-            # a deletion rather than a second first write.
-            self.assertTrue(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN,
-                                              path, sha256="a" * 64))
-            self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
-            self.assertFalse(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path))
+    def _write(self, path, calls=None):
+        def write():
+            if calls is not None:
+                calls.append(path)
             with open(path, "w") as fh:
                 fh.write("[]")
+            return path
+        return write
+
+    def test_a_claim_is_refused_only_for_a_stamped_and_absent_artifact(self):
+        path = os.path.join(self.root, "dispatch-plan-driver.json")
+        calls, err = [], io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # Unstamped: the write runs and the stamp follows it, so the next
+            # absence is a deletion rather than a second first write.
+            self.assertEqual(path, rm.claim_artifact(
+                self.root, None, rm.DRIVER_PLAN, path, self._write(path, calls),
+                sha256="a" * 64))
+            self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
+            os.remove(path)
+            self.assertIsNone(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN,
+                                                path, self._write(path, calls)))
+            self.assertFalse(os.path.exists(path), "the refused write ran anyway")
             # Present again: nothing to refuse (the callers return earlier on
-            # `isfile`, but the predicate must not depend on that).
-            self.assertTrue(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path))
+            # `isfile`, but the decision must not depend on that).
+            with open(path, "w") as fh:
+                fh.write("[]")
+            self.assertEqual(path, rm.claim_artifact(
+                self.root, None, rm.DRIVER_PLAN, path, self._write(path, calls)))
+        self.assertEqual(len(calls), 2)          # the refused one never ran
         # The operator hears about it on the DRIVER's stderr, which is not
         # captured the way the synthesize child's is.
         self.assertIn("dispatch-plan-driver.json", err.getvalue())
         self.assertIn("--reset", err.getvalue())
 
+    def test_the_stamp_follows_the_write_and_never_precedes_it(self):
+        # Fix round 2, NEW-1. Stamped first, a write that never landed left the
+        # manifest owing a file that never existed -- and every later pass then
+        # refused to write it, wedging an honest run into permanent
+        # "deleted evidence" with no tamper anywhere.
+        path = os.path.join(self.root, "dispatch-plan-driver.json")
+        def boom():
+            raise OSError("no space left on device")
+        with self.assertRaises(OSError):
+            rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path, boom,
+                              sha256="a" * 64)
+        self.assertIsNone(self._stamp(rm.DRIVER_PLAN))
+        # A write that returns without producing the file is the same case: the
+        # stamp follows the FILE, not the call.
+        self.assertIsNone(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path,
+                                            lambda: None, sha256="a" * 64))
+        self.assertIsNone(self._stamp(rm.DRIVER_PLAN))
+        # ...and the next pass is an ordinary first write.
+        self.assertEqual(path, rm.claim_artifact(self.root, None, rm.DRIVER_PLAN,
+                                                 path, self._write(path),
+                                                 sha256="a" * 64))
+        self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
+
     def test_a_claim_on_a_manifest_less_tree_neither_stamps_nor_raises(self):
         with tempfile.TemporaryDirectory() as empty:
             path = os.path.join(empty, "dispatch-plan-driver.json")
-            self.assertTrue(rm.claim_artifact(empty, {"run_id": "r"},
-                                              rm.DRIVER_PLAN, path, sha256="a" * 64))
+            self.assertEqual(path, rm.claim_artifact(
+                empty, {"run_id": "r"}, rm.DRIVER_PLAN, path, self._write(path),
+                sha256="a" * 64))
             self.assertFalse(os.path.exists(rm.manifest_path(empty)))
 
     def test_the_stamps_are_not_anti_drift_keys(self):

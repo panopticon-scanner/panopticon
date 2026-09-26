@@ -740,7 +740,8 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
 
     The manifest is the anchor rather than the plan because a plan cannot attest
     to its own existence, and it is the better-defended of the two files
-    (#1727): no dispatched agent may write `run-manifest.json`, and
+    (#1727) -- better-defended, not out of reach: where the write guard mediates
+    `Write` no dispatched agent may write `run-manifest.json`, and
     `runio._foreign_manifest` discards a git-tracked or foreign-stamped one. It
     is threaded on the argv like `--tools-disabled-mid-run`, because
     `run-manifest.json` is a _TOP_LEVEL artifact outside the `--run-dir` the

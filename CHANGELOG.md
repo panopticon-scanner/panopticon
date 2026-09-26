@@ -34,8 +34,11 @@ evidence exposed.
   verify dispatch from a review one. A run that never wrote a plan -- a direct `synthesize.py` call
   over hand-collected findings, a target with no declared cells, a run resumed across this upgrade
   -- stamps nothing, keeps the benign reading every other key here has, and still gets the #5.0-16
-  first-snapshot fallback when its verify phase was vacuously done. The obligation is never inferred
-  from the findings files present, which the same writer could arrange.
+  first-snapshot fallback when its verify phase was vacuously done. **A run already IN FLIGHT across
+  this change should be `--reset`, not resumed:** with nothing stamped, its first snapshot is taken
+  over whatever bytes are on disk at that moment, so a substitution made before it still reads clean
+  -- the one window the old laundering survives in. The obligation is never inferred from the
+  findings files present, which the same writer could arrange.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back
