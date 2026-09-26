@@ -780,50 +780,82 @@ def _adapter_security_mode(docker_argv):
 
 
 @contextlib.contextmanager
+def _staged_scanner_file(prefix, name, contents):
+    """Stage one public scanner-owned file in a private temporary directory."""
+    scratch = path = error = None
+    try:
+        scratch = tempfile.mkdtemp(prefix=prefix)
+        path = os.path.join(scratch, name)
+        if isinstance(contents, bytes):
+            with open(path, "wb") as fh:
+                fh.write(contents)
+        else:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(contents)
+        os.chmod(path, 0o644)
+    except OSError as exc:
+        error = exc
+        path = None
+    try:
+        yield path, error
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _ignore_path_identity(path):
+    """Device, inode, and file type of the mountpoint; None means absent."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+@contextlib.contextmanager
 def _gitleaks_ignore_overlay(target, security_mode):
     """Stage an empty source-root ignore file only for a safe redteam mountpoint.
 
     Docker cannot mount a file over an absent path in the read-only /src bind.
     A symlink is worse: Docker follows it and hides its referent in the scan.
-    Keep the scratch file alive until the capture finishes.
+    Keep the scratch file alive until the capture finishes. The caller checks
+    the mountpoint identity again after capture. This detects lasting changes,
+    but a transient swap and restore can still escape both observations.
     """
     mountpoint = os.path.join(target, ".gitleaksignore")
-    try:
-        shape = os.lstat(mountpoint).st_mode
-    except FileNotFoundError:
-        yield [], "absent"
+    if security_mode != REDTEAM:
+        try:
+            identity = _ignore_path_identity(mountpoint)
+        except OSError as exc:
+            print("tool gitleaks: cannot inspect .gitleaksignore (%s); "
+                  "left in place under standard" % exc, file=sys.stderr)
+            identity = "unreadable"
+        yield [], "absent" if identity is None else "honoured", None
         return
+    try:
+        identity = _ignore_path_identity(mountpoint)
     except OSError as exc:
         print("tool gitleaks skipped: cannot inspect .gitleaksignore (%s)" % exc,
               file=sys.stderr)
-        yield None, None
+        yield None, None, None
         return
-    if security_mode != REDTEAM:
-        yield [], "honoured"
+    if identity is None:
+        yield [], "absent", None
         return
-    if not stat.S_ISREG(shape):
+    if identity[2] != stat.S_IFREG:
         print("tool gitleaks skipped: unsafe .gitleaksignore mountpoint; "
               "recording as missing", file=sys.stderr)
-        yield None, None
+        yield None, None, None
         return
-    scratch = None
-    try:
-        scratch = tempfile.mkdtemp(prefix="pano-gitleaks-ignore-")
-        host_file = os.path.join(scratch, "gitleaksignore")
-        with open(host_file, "wb") as fh:
-            fh.write(b"")
-        os.chmod(host_file, 0o644)
-    except OSError as exc:
-        print("tool gitleaks skipped: empty ignore file could not be staged "
-              "(%s); recording as missing" % exc, file=sys.stderr)
-        if scratch is not None:
-            shutil.rmtree(scratch, ignore_errors=True)
-        yield None, None
-        return
-    try:
-        yield ["-v", "%s:/src/.gitleaksignore:ro" % host_file], "neutralised"
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+    with _staged_scanner_file("pano-gitleaks-ignore-", "gitleaksignore", b"") as (
+            host_file, error):
+        if error is not None:
+            print("tool gitleaks skipped: empty ignore file could not be staged "
+                  "(%s); recording as missing" % error, file=sys.stderr)
+            yield None, None, None
+        else:
+            yield ["-v", "%s:%s/.gitleaksignore:ro" % (host_file, TARGET_MOUNT)], \
+                "neutralised", identity
 
 
 @contextlib.contextmanager
@@ -832,7 +864,7 @@ def _adapter_ignore_overlay(tool, target, security_mode):
         with _gitleaks_ignore_overlay(target, security_mode) as observation:
             yield observation
     else:
-        yield [], None
+        yield [], None, None
 
 
 @contextlib.contextmanager
@@ -910,16 +942,8 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
                             ["--ini", TARGET_BANDIT_INI]), []
         return
     flag, name, text, attached = SCANNER_OWNED_CONFIG[tool]
-    scratch = staging_error = None
-    try:
-        scratch = tempfile.mkdtemp(prefix="pano-scanner-config-")
-        config_path = os.path.join(scratch, name)
-        with open(config_path, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.chmod(config_path, 0o644)
-    except OSError as exc:
-        staging_error = exc
-    try:
+    with _staged_scanner_file("pano-scanner-config-", name, text) as (
+            config_path, staging_error):
         if staging_error is not None:
             print("tool %s skipped: the scanner-owned config could not be "
                   "staged (%s); recording as missing (fail-closed, #1839)"
@@ -931,9 +955,6 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
                                  ["%s=%s" % (flag, inside)] if attached
                                  else [flag, inside]),
                    ["-v", "%s:%s:ro" % (config_path, inside)])
-    finally:
-        if scratch is not None:
-            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
@@ -1844,10 +1865,11 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # because the image carried the stale code).
             scripts_dir = os.path.dirname(os.path.abspath(__file__))
             with _adapter_ignore_overlay(tool, target, security_mode) as (
-                    ignore_mount, ignore_posture):
+                    ignore_mount, ignore_posture, ignore_identity):
                 if ignore_mount is None:
-                    progress.note("[%d/%d] gitleaks skipped: ignore-file "
-                                  "mount unavailable" % (index, total))
+                    _NETWORK_POSTURE.pop(tool, None)
+                    progress.note("[%d/%d] %s skipped: ignore-file "
+                                  "mount unavailable" % (index, total, tool))
                     continue
                 docker.extend([
                     "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
@@ -1866,13 +1888,29 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     and bool(getattr(adapter, "reads_security_mode", False)),
                     adapter_mode)
                 with progress.tool(tool, index, total) as step:
-                    done = step.finish(
-                        _capture_run("adapter", tool, docker, out_path, runner,
-                                     docker_context=docker_context))
+                    done = _capture_run("adapter", tool, docker, out_path, runner,
+                                        docker_context=docker_context)
+                    if tool == "gitleaks" and security_mode == REDTEAM:
+                        mountpoint = os.path.join(target, ".gitleaksignore")
+                        try:
+                            identity_unchanged = (
+                                _ignore_path_identity(mountpoint) == ignore_identity)
+                        except OSError:
+                            identity_unchanged = False
+                        if not identity_unchanged:
+                            if done:
+                                os.unlink(done)
+                                done = None
+                            _REDACTED_CAPTURES.discard(tool)
+                            _NETWORK_POSTURE.pop(tool, None)
+                            _SUPPRESSION_POSTURE.pop(tool, None)
+                            progress.note("[%d/%d] %s skipped: ignore-file "
+                                          "mountpoint changed during capture"
+                                          % (index, total, tool))
+                    done = step.finish(done)
                 if done and tool == "gitleaks":
-                    # The mounted file, not the requested mode, is the fact.
-                    # If the mount disappears from the actual Docker argv,
-                    # the target's existing ignore file remains honoured.
+                    # Check our assembled Docker argv for the overlay spec.
+                    # This does not establish what Docker eventually mounted.
                     mounted = (ignore_mount and len(ignore_mount) == 2
                                and ignore_mount[0] == "-v"
                                and ignore_mount[1] in docker)
@@ -2057,8 +2095,11 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    str(k): str(v) for k, v in
                    (_SUPPRESSION_POSTURE if suppression_comments is None
                     else suppression_comments).items()},
-               "ignore_files": {"gitleaks": str(observed_ignore_files["gitleaks"])}
-               if "gitleaks" in produced and "gitleaks" in observed_ignore_files else {},
+               "ignore_files": {"gitleaks": observed_ignore_files["gitleaks"]}
+               if ("gitleaks" in produced
+                   and isinstance(observed_ignore_files.get("gitleaks"), str)
+                   and observed_ignore_files["gitleaks"] in
+                   ("honoured", "neutralised", "absent")) else {},
                "scanner_config": {
                    str(k): str(v) for k, v in
                    (_SCANNER_CONFIG_POSTURE if scanner_config is None

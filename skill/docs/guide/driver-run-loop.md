@@ -572,9 +572,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `.panopticon/runs/<tag>/readiness.json`
   (`{schema_version, run_id, checked_at, ready, flags: {tools}, checks: [{name, ok, detail}]}`). It
   **fails closed**: a missing image with tools enabled is an `error` before a single dispatch entry
-  is written, carrying remedies such as pulling and tagging the image:
-  `docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, then
-  `docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools:latest`,
+  is written, carrying every failed row's remedy verbatim —
+  `docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest && docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools:latest`,
   or `docker build -t panopticon-tools <the panopticon repo root>`, or `--no-tools`. **`--no-tools`
   is the disclosed opt-out**: the two docker rows become `ok: null` ("not applicable"), the run
   proceeds without scanner evidence, and that choice is stated in `tools-ran.json`, in the report's
@@ -750,13 +749,23 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   tool's knob was verified against the pinned image in this round and a flag a scanner rejects is a
   tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). Two ignore
   FILES have separate rules. **Gitleaks** v8.18.4 always loads a source-root
-  `.gitleaksignore` (#1957). Under `standard`, the operator's file is honoured. Under `redteam`,
+  `.gitleaksignore` (#1957). At this pin the adapter gives Gitleaks an explicit
+  scanner config and no ignore-path override, while its scratch cwd still
+  permits the binary's source-root read. That makes the source-root overlay
+  sufficient for this launch; it does not prove every possible ignore path is
+  covered. Under `standard`, `honoured` means the operator's path is left in
+  place for Gitleaks. It does not promise the binary can consume a non-regular
+  file. An unreadable path is likewise left in place and does not stop the scan.
+  Under `redteam`,
   an existing regular file is covered by a scanner-owned empty file mounted read-only at
   `/src/.gitleaksignore`. The empty file is 0644; its private directory remains 0700; the target
   tree is untouched. An absent ignore file needs no mount. A symlink or other non-regular
   mountpoint is unsafe because Docker can follow it and hide source, so Gitleaks is recorded
   missing rather than launched in redteam. Staging failure has the same result, while other
-  scanners continue. Only a produced Gitleaks scan records `ignore_files.gitleaks` as
+  scanners continue. The mountpoint is checked again after capture; a changed
+  or unreadable identity discards that capture. A transient swap and restore
+  between checks remains possible. Only a produced Gitleaks scan records
+  `ignore_files.gitleaks` as
   `honoured`, `neutralised`, or `absent` in `tools-manifest.json`; the gate discloses that
   observed value beside its verdict. This field concerns an ignore FILE and stays separate
   from `suppression_comments`, which concerns inline source comments. A `.semgrepignore`

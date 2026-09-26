@@ -1941,6 +1941,18 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
         self.assertEqual(payload["ignore_files"], {"gitleaks": "neutralised"})
         self.assertEqual(missing["ignore_files"], {})
 
+    def test_unknown_ignore_file_observation_cannot_invalidate_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            capture = os.path.join(d, "gitleaks.sarif")
+            with open(capture, "wb") as fh:
+                fh.write(b'{"runs":[]}')
+            for value in (None, 3, [], {}, "unexpected"):
+                with self.subTest(value=value):
+                    payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                                ["gitleaks"], [capture],
+                                                ignore_files={"gitleaks": value})
+                    self.assertEqual(payload["ignore_files"], {})
+
 
 class TestEslintFileCoverageCapture(unittest.TestCase):
     def test_invalid_eslint_captures_discard_parser_text_and_still_fail_ingestion(self):

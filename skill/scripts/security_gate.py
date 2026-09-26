@@ -525,7 +525,7 @@ def main(argv=None):
                     remedy))
     # The manifest records the file treatment observed at the Gitleaks
     # launch. Use fixed vocabulary here: the artifact is input to this gate.
-    ignore_posture = manifest["ignore_files"].get("gitleaks")
+    ignore_posture = manifest.get("ignore_files", {}).get("gitleaks")
     if ignore_posture:
         note += "; gitleaks .gitleaksignore: %s" % ignore_posture
     # The verdict line SPLITS only when a baseline was actually read. Strict is

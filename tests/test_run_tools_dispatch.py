@@ -1,8 +1,10 @@
 """Adapter dispatch tests for scripts.run_tools."""
 import contextlib
+import errno
 import io
 import json
 import os
+import socket
 import stat
 import tempfile
 import unittest
@@ -210,7 +212,6 @@ class TestAdapterSelection(unittest.TestCase):
             self.assertEqual(payload["produced"], [])
             self.assertEqual(payload["missing"], ["gitleaks"])
             self.assertFalse(os.path.exists(os.path.join(out_dir, "gitleaks.sarif")))
-
 
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
@@ -437,7 +438,7 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                     self.assertEqual(seen[0]["mounts"], [])
 
     def test_unsafe_mountpoints_fail_only_gitleaks(self):
-        for shape in ("relative", "absolute", "dangling", "directory"):
+        for shape in ("relative", "absolute", "dangling", "directory", "fifo", "socket"):
             with self.subTest(shape=shape), tempfile.TemporaryDirectory() as d:
                 source = os.path.join(d, ".gitleaksignore")
                 referent = os.path.join(d, "config.yml")
@@ -445,6 +446,11 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                     fh.write(b"keep me")
                 if shape == "directory":
                     os.mkdir(source)
+                elif shape == "fifo":
+                    os.mkfifo(source)
+                elif shape == "socket":
+                    with socket.socket(socket.AF_UNIX) as sock:
+                        sock.bind(source)
                 else:
                     os.symlink("absent" if shape == "dangling" else
                                referent if shape == "absolute" else "config.yml", source)
@@ -453,7 +459,52 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                 self.assertEqual(manifest["missing"], ["gitleaks"])
                 self.assertEqual(manifest["produced"], ["semgrep"])
                 self.assertEqual(manifest["ignore_files"], {})
+                self.assertNotIn("gitleaks", manifest["network"])
+                self.assertNotIn("gitleaks", manifest["suppression_comments"])
+                self.assertIn("semgrep", manifest["network"])
+                self.assertIn("semgrep", manifest["suppression_comments"])
                 self.assertEqual(open(referent, "rb").read(), b"keep me")
+
+    def test_standard_inspection_errors_still_launch_gitleaks(self):
+        for code in (errno.EACCES, errno.ELOOP, errno.ENOTDIR):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as d:
+                source = os.path.join(d, ".gitleaksignore")
+                original = rt.os.lstat
+
+                def fail_source(path, **kwargs):
+                    if path == source:
+                        raise OSError(code, os.strerror(code), path)
+                    return original(path, **kwargs)
+
+                with mock.patch.object(rt.os, "lstat", side_effect=fail_source):
+                    seen, manifest = self._run(d, "standard")
+                self.assertEqual(len(seen), 1)
+                self.assertEqual(manifest["produced"], ["gitleaks"])
+                self.assertEqual(manifest["ignore_files"], {"gitleaks": "honoured"})
+
+    def test_redteam_rejects_path_replacement_during_capture(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as artifacts:
+            source = os.path.join(d, ".gitleaksignore")
+            with open(source, "wb") as fh:
+                fh.write(b"original")
+
+            def replace_source(_cmd, **_kwargs):
+                os.unlink(source)
+                os.symlink("target-config", source)
+                return _FakeResult(returncode=0, stdout=b'{"runs":[]}')
+
+            out = os.path.join(artifacts, "out")
+            written = rt.run_tools(d, ["gitleaks"], out, runner=replace_source,
+                                   venv_dirs=[], security_mode="redteam")
+            self.assertEqual(written, [])
+            self.assertFalse(os.path.exists(os.path.join(out, "gitleaks.sarif")))
+            manifest = rt.write_manifest(os.path.join(artifacts, "manifest.json"),
+                                         ["gitleaks"], written)
+            self.assertEqual(manifest["produced"], [])
+            self.assertEqual(manifest["missing"], ["gitleaks"])
+            self.assertEqual(manifest["ignore_files"], {})
+            self.assertNotIn("gitleaks", manifest["network"])
+            self.assertNotIn("gitleaks", manifest["suppression_comments"])
 
     def test_staging_failure_and_failed_capture_leave_no_claim(self):
         with tempfile.TemporaryDirectory() as d:
@@ -471,6 +522,8 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
             self.assertEqual(seen, [])
             self.assertEqual(manifest["missing"], ["gitleaks"])
             self.assertEqual(manifest["ignore_files"], {})
+            self.assertNotIn("gitleaks", manifest["network"])
+            self.assertNotIn("gitleaks", manifest["suppression_comments"])
             seen, manifest = self._run(
                 d, "redteam", runner=lambda cmd: _FakeResult(returncode=7, stdout=b""))
             self.assertEqual(len(seen), 1)
@@ -491,7 +544,8 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
     def test_claim_follows_the_docker_mount_not_the_mode_hint(self):
         @contextlib.contextmanager
         def missing_mount(tool, target, mode):
-            yield [], "neutralised"
+            yield [], "neutralised", rt._ignore_path_identity(
+                os.path.join(target, ".gitleaksignore"))
 
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
