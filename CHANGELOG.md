@@ -11,6 +11,8 @@ evidence exposed.
   (#1838, SEC-71240568).** Makefiles, setup.py, Terraform, second-tier CI
   systems, MSBuild project files, and lockfiles were live misses -- a target
   omitting SEC and a scout that never asks for it left those files unreviewed.
+  The rejected-exclude disclosure now says whether the domain actually ran,
+  instead of always claiming it "still runs".
 - **A heredoc handed to an interpreter is read as the script it is, or reported as unread (#1839,
   run-14 SEC-3915165799).** `scripts/workflow_guard.py` is CI's only enforcement of the #1529
   fetch-and-exec rule -- `tests/test_workflow_pins.py` runs it over every `run:` step in
