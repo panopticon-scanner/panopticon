@@ -372,3 +372,119 @@ class TestAdapterSelection(unittest.TestCase):
         self.assertNotIn("--pids-limit", flags)
         self.assertIn("--memory", flags)
         self.assertIn("--cpus", flags)
+
+
+class TestBanditConfigIsScannerOwned(unittest.TestCase):
+    """run-14 SEC-752508850 (#1839): the target chose bandit's tests.
+
+    `run_tools` PINNED the reviewed repo's own `.bandit` with `--ini`, and that
+    file carries `exclude`, `tests` and `skips` -- so a committed
+    `tests = [B101]` made bandit report one check and nothing else, on the path
+    CI's merge gate runs. brakeman and bundler-audit already answer #run7's
+    multiple-config ERROR with a SCANNER-OWNED config in scratch; bandit now
+    does the same, unconditionally, so the target's file never reaches the argv
+    whether or not it exists.
+    """
+
+    HOSTILE_INI = "[bandit]\nexclude = src\ntests = B999\nskips = B101\n"
+
+    def _dispatch(self, plant_ini=True, plant_venv=True):
+        """One faked bandit dispatch; returns (argv, the ini text it mounted)."""
+        seen = {"argv": None, "ini": None, "mount": None}
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+        suffix = ":%s:ro" % rt.BANDIT_INI_MOUNT
+
+        def runner(cmd, **_kw):
+            cmd = list(cmd)
+            seen["argv"] = cmd
+            hosts = [a[:-len(suffix)] for a in cmd if a.endswith(suffix)]
+            if hosts:
+                seen["mount"] = hosts[0]
+                # Read it WHILE the dispatch is in flight: the scratch is
+                # removed when the tool returns, so this also proves the file
+                # is there when the container starts.
+                with open(os.path.join(hosts[0], rt.BANDIT_INI_NAME),
+                          encoding="utf-8") as fh:
+                    seen["ini"] = fh.read()
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            if plant_ini:
+                with open(os.path.join(d, ".bandit"), "w", encoding="utf-8") as fh:
+                    fh.write(self.HOSTILE_INI)
+            if plant_venv:
+                os.makedirs(os.path.join(d, ".venv", "bin"))
+                for rel in (rt.VENV_MARKER, os.path.join("bin", "python")):
+                    with open(os.path.join(d, ".venv", rel), "w") as fh:
+                        fh.write("")
+            rt.run_tools(d, ["bandit"], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[{"path": ".venv", "reason": rt.VENV_MARKER}])
+        return seen
+
+    def _ini_excludes(self, text):
+        line = [ln for ln in text.splitlines() if ln.startswith("exclude")][0]
+        return [e.strip() for e in line.split("=", 1)[1].split(",") if e.strip()]
+
+    def test_the_targets_own_ini_never_reaches_the_argv(self):
+        seen = self._dispatch()
+        argv = seen["argv"]
+        self.assertNotIn("/src/.bandit", argv)
+        self.assertIn("--ini", argv)
+        self.assertEqual(argv[argv.index("--ini") + 1],
+                         "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
+        self.assertIsNotNone(seen["mount"], argv)
+
+    def test_the_pin_is_unconditional(self):
+        # #run7 is a nested checkout's `.bandit` making bandit ERROR and emit
+        # nothing. A target with no `.bandit` of its own got no --ini at all,
+        # so the discovery walk -- and that failure -- was still reachable.
+        seen = self._dispatch(plant_ini=False, plant_venv=False)
+        self.assertIn("--ini", seen["argv"])
+        self.assertIn("[bandit]", seen["ini"])
+
+    def test_the_generated_ini_chooses_no_tests_and_skips_nothing(self):
+        seen = self._dispatch()
+        self.assertNotIn("tests", seen["ini"])
+        self.assertNotIn("skips", seen["ini"])
+        self.assertNotIn("B999", seen["ini"])
+        self.assertNotIn("B101", seen["ini"])
+
+    def test_the_generated_ini_keeps_the_exclusions_the_scan_relies_on(self):
+        seen = self._dispatch()
+        entries = self._ini_excludes(seen["ini"])
+        for default in rt.BANDIT_DEFAULT_EXCLUDES:      # never WIDEN the scan
+            self.assertIn(default, entries)
+        for owned in rt.BANDIT_SCANNER_EXCLUDES:        # nested checkouts (#run7)
+            self.assertIn(owned, entries)
+        self.assertNotIn("src", entries)                # the target's choice: no
+        # Round 1 C1: this run's virtualenvs are NOT in the ini -- nothing
+        # target-derived is -- they are on the argv, which cannot grow a key.
+        self.assertNotIn("/src/.venv", entries)
+        argv_entries = [a for a in seen["argv"] if a.startswith("--exclude=")]
+        self.assertEqual(len(argv_entries), 1, seen["argv"])
+        self.assertIn("/src/.venv",
+                      argv_entries[0][len("--exclude="):].split(","))
+
+    def test_the_ini_is_a_constant_no_tree_can_change(self):
+        # Round 1 C1: a venv-shaped directory named `x\ntests = B101` used to add
+        # a second key to the `[bandit]` section, and bandit prefers an ini key
+        # over the CLI whenever the CLI left that option at its default -- so one
+        # `mkdir` chose bandit's `tests`, `skips` or `configfile`.
+        plain = self._dispatch(plant_ini=False, plant_venv=False)["ini"]
+        hostile = self._dispatch()["ini"]
+        self.assertEqual(plain, hostile)
+        self.assertEqual(plain, rt.BANDIT_INI_TEXT)
+        self.assertEqual(len([ln for ln in plain.splitlines() if "=" in ln]), 1)
+
+    def test_the_argv_value_extends_the_ini_and_never_contradicts_it(self):
+        # bandit PREFERS the CLI `--exclude` over the ini's, so the CLI value
+        # must carry everything the ini carries -- plus this run's virtualenvs,
+        # which the ini deliberately does not name (round 1 C1).
+        venvs = [{"path": ".venv", "reason": rt.VENV_MARKER}]
+        cmd = rt._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), venvs)
+        argv_value = [a for a in cmd
+                      if a.startswith("--exclude=")][0][len("--exclude="):]
+        ini_value = self._ini_excludes(rt.BANDIT_INI_TEXT)
+        for entry in ini_value:
+            self.assertIn(entry, argv_value.split(","))
+        self.assertIn("/src/.venv", argv_value.split(","))
+        self.assertNotIn("/src/.venv", ini_value)

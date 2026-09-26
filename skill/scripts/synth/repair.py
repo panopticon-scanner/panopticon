@@ -457,11 +457,17 @@ def repair_tools_suppressed(value, warn=None):
     not an integer (jsonschema rejects `True` where `integer` is pinned), and
     neither is a negative number -- nothing can be dropped fewer than zero
     times, and publishing one would be publishing a measurement nobody made.
-    A name over `NAME_MAX` is dropped rather than cut, like `network`'s: a
-    segment name is an identity, and cutting one could collide two rows.
+    A name over `NAME_MAX` is CUT, with the marker `_cut` uses and the count
+    kept (#1839 review round 1 N4). It used to be dropped, like `network`'s, on
+    the grounds that a segment name is an identity and a cut could collide two
+    rows -- true, and it stopped mattering when `pyvenv.cfg:<dir>` became the
+    first key shape here to embed an arbitrary target PATH: the bound is now
+    reachable by a virtualenv nested under ~190 characters, and a dropped row is
+    absent from the report an operator reads. Colliding rows are SUMMED, so the
+    total a reader adds up stays exact, and the marker says the name was cut.
     """
     changes = []
-    out = {}
+    out: dict[str, int] = {}
     if not isinstance(value, dict):
         if value not in (None, {}):
             changes.append(("tools_suppressed", "dropped: not an object"))
@@ -475,13 +481,15 @@ def repair_tools_suppressed(value, warn=None):
             continue
         if len(name) > NAME_MAX:
             changes.append(("tools_suppressed.%s..." % name[:40],
-                            "dropped: name is longer than %d characters in"
-                            % NAME_MAX))
-            continue
+                            "cut a name to %d of %d characters in"
+                            % (NAME_MAX, len(name))))
+            name = name[:NAME_MAX - 1] + "\u2026"
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             changes.append(("tools_suppressed.%s" % name,
                             "dropped: not a non-negative integer"))
             continue
-        out[name] = count
+        # `get`, because two cut names can be one row: their counts add up
+        # rather than the later one replacing the earlier (N4).
+        out[name] = out.get(name, 0) + count
     warn_repairs("tool ingest", changes, warn)
     return out

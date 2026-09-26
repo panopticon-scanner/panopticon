@@ -7,6 +7,111 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A file the reviewed repository commits no longer chooses what the scanners look at (#1839,
+  run-14 SEC-1486247143 + SEC-752508850).** Three levers, all on the path CI's merge gate runs
+  (`run_tools.py` -> `security_gate.py`, which has no agentic axis to compensate). A single
+  committed `src/pyvenv.cfg` was enough for the runner to hand `src/` to semgrep's `--exclude`,
+  trivy's `--skip-dirs` and bandit's `--exclude` in BOTH security modes, untallied: a directory is
+  now flagged on the marker only when it also has the SHAPE of an installed environment (an
+  interpreter under `bin/`/`Scripts/`, or `lib/python*/site-packages`), and a bare marker beside
+  real source is reported as `pyvenv.cfg-without-shape`, walked into, and never skipped. The INGEST
+  half of that same lever is closed with it, which is the half the driver's own report reads:
+  `ingest_tools` dropped every finding under a marker directory at ANY depth in both modes and said
+  nothing at all, so the planted `src/pyvenv.cfg` emptied the report of `src/` even where the scan
+  had looked. One predicate now answers for both stages (`run_tools.has_venv_shape`), so a bare
+  marker prunes nothing at ingest either; and where a real virtualenv is still pruned there, the
+  drop travels the disclosed channel under a `pyvenv.cfg:<dir>` key of the new
+  `virtualenv-by-marker` class -- named per directory, counted in `meta.coverage.tools_suppressed`,
+  and re-admitted to a `--security redteam` gate when the finding is CRITICAL or secret-class,
+  exactly as #1740 does for a directory NAME. An operator's own `--exclude` glob outranks it. A
+  directory literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB
+  PATTERNS, so one `mkdir` took the whole tree out of two scanners; a path with any component
+  outside `[A-Za-z0-9._-]` is never passed to an exclusion knob, and its manifest row says
+  `skipped: false` with a `note` saying why. Under `--security redteam` NO virtualenv now reaches an
+  exclusion knob (#1740 ruled
+  that for a directory NAME; a file the same target wrote is more attacker-controlled than a name),
+  and under `standard` the #1638 P09 walk saving stands but stops being silent: the skipped
+  directories are counted as DIRECTORIES under `virtualenv-by-marker` AND `virtualenv-by-name` in
+  `meta.coverage.tools_suppressed` -- the name-only skip a bare `mkdir .venv` buys is tallied too,
+  because it also produced no finding for anything downstream to disclose -- named on the gate's
+  verdict line (`3 directories removed from the scan as virtualenv-by-marker ('.venv', 'env');
+  virtualenv-by-name ('venv') -- re-run with --security redteam to scan them`, with every
+  target-authored name escaped and the list capped at ten), and on the manifest rows. Redteam trades
+  the #1638 P09 walk saving for that re-admission: all three scanners walk `site-packages` in full,
+  which is wall-clock and tool-timeout cost rather than report noise (the ingest still drops those
+  findings and hands back only the CRITICAL and secret-class ones), and the only knob for it is
+  `--exclude '**/.venv/**'` -- gate POLICY, which takes those paths out of scope in every mode and
+  is never re-admitted, not a shorter walk. Third, bandit no longer runs with `--ini /src/.bandit`:
+  the target's own config set bandit's `exclude`, `tests` and `skips`, so a committed `tests = B999`
+  reduced the merge gate's Python SAST to one check. It gets a SCANNER-OWNED ini instead --
+  generated per run into a scratch directory, bind-mounted read-only, pinned unconditionally (so
+  #run7's multiple-`.bandit` ERROR is bypassed whether or not the target ships one), and carrying a
+  CONSTANT text: bandit's own parser defaults plus `.worktrees`, no `tests`/`skips` key, and no
+  target-derived string of any kind, since its one job is to pre-empt bandit's `.bandit` discovery.
+  This run's virtualenvs ride on the CLI instead, as attached `--exclude=` values, each path
+  component checked against an allowlist (`[A-Za-z0-9._-]`, no leading `-`) so a name holding a
+  comma, a brace or a newline is scanned and NAMED rather than expressed. This is the first
+  increment of #1924's scan-root half. An operator sees: a `pyvenv.cfg` planted on source no longer
+  removes it from a scan, a gate verdict line that names every virtualenv the scan skipped, by
+  marker or by name, a report that carries a `virtualenv-by-marker` count where the tool axis used
+  to go quiet, and bandit reporting the checks panopticon selected rather than the ones the target
+  left it.
+- **Deleting a run's own integrity evidence is reported, not repaired -- so a substitution
+  survives the `rm` that used to launder it (#1832, SEC-377944137).** #1208 made an owed-but-absent
+  `out-file-hashes.json` fail closed, because deleting that baseline had been the cheapest way to
+  erase evidence of a findings substitution. It did not hold on a live `driver run`: the synthesize
+  phase opens by calling both artifact writers, and each re-armed the moment its file went away, so
+  the snapshot was simply re-taken OVER THE SUBSTITUTED BYTES -- the tampered findings file became
+  its own baseline, `content_mismatched_files` went empty, and the plan was re-created so its
+  deletion left no trace either. One file up, absence also still read as "not measured": every check
+  keyed on `dispatch-plan-driver.json` treats a missing plan as owing nothing (`_owes_a_snapshot`
+  returns False, so #1208's guard goes quiet; the planned-vs-ingested reconciliation returns
+  `([], [])` by design; `duplicate_out_files` sees nothing; and `empty_dispatch_plans` counts empty
+  LISTS, of which there are none when there are no plan FILES), while `plans_seen` -- the one key
+  that noticed -- was not in `integrity_ok`.
+  Both artifacts are now OWED ONCE: their writers stamp the run manifest as they write
+  (`driver_plan` carries the plan's canonical content hash, `out_file_snapshot` the cell count), the
+  stamps are MONOTONE, and a stamped artifact that is gone is never re-created -- the driver says so
+  on its own stderr, naming `--reset` for a run folder that was cleared on purpose. Synthesis then
+  reports `meta.integrity.dispatch_plan_missing` for a deleted plan and `dispatch_plan_mismatched`
+  for one that is present but is not the plan this run wrote (replacing it is the same erasure and
+  cheaper: a narrower plan declares fewer cells), both failing the gate closed beside their #1208
+  sibling. The manifest is the anchor because a plan cannot attest to its own existence and the
+  manifest is the better-defended file (#1727) -- and a durable stamp rather than the rolling
+  dispatch-request slot, which read `verify` on any run that verified anything, could be rolled
+  BACKWARD to `scout` by the same tamper it was meant to notice, and could not tell a tool-advisor
+  verify dispatch from a review one. A run that never wrote a plan -- a direct `synthesize.py` call
+  over hand-collected findings, a target with no declared cells, a run resumed across this upgrade
+  -- stamps nothing, keeps the benign reading every other key here has, and still gets the #5.0-16
+  first-snapshot fallback when its verify phase was vacuously done. **A run already IN FLIGHT across
+  this change should be `--reset`, not resumed:** with nothing stamped, its first snapshot is taken
+  over whatever bytes are on disk at that moment, so a substitution made before it still reads clean
+  -- the one window the old laundering survives in. The obligation is never inferred from the
+  findings files present, which the same writer could arrange.
+- **A target-committed write allowlist can no longer hand a reviewer a peer cell's findings file
+  (#1831, SEC-611772336).** `write_guard_hook.install` carries a still-live grant forward so that a
+  re-arm never revokes a concurrent fan-out (#11), but the filter deciding what MAY be carried
+  anchored on the `.panopticon` segment and checked a prefix only -- so every path under the whole
+  artifact tree qualified. Entry ids are `review-<group>-<domain>` and the target authors
+  `panopticon.yml`, so a `.panopticon/write-allowlist.json` committed in the scanned repo and keyed
+  with a REAL reviewer id added a PEER cell's `findings-<group>-<domain>.json`, the run's
+  `out-file-hashes.json` integrity snapshot and `dispatch-plan-driver.json` to that reviewer's own
+  grant: the per-entry confinement #1571 exists to establish, re-opened through the one path that
+  fix did not close, on every self-scan and every calibration run started inside the clone. A
+  carried path is now kept only when it is EXACTLY the artifact its own entry id declares, in one of
+  the RUN FOLDERS (`.panopticon/runs/<tag>/`) this install writes into. The path is DERIVED from the
+  id rather than matched against its name -- `review-<cell>` may hold `findings-<cell>.json` and
+  nothing else, `verify-<cell>-<stage>` its `verdicts/verdicts-<cell>.json`, `verify-tool-<queue>`
+  its `verdicts/<queue>.json`, and `scout-<group>` its `scout-<group>.json` -- so a real reviewer id
+  carries that reviewer's own out_file and no peer's, even where one group's name ends with
+  another's (`Core` and `X-Core`), and a previous round's tag is not in flight. Deriving per family
+  is also what keeps #11: a verify or scout arm carries a concurrent fan-out's grant as readily as a
+  review arm does. Everything else is dropped, and the operator is told on one stderr line, counts
+  first, with each entry id bounded and quoted (`write guard: dropped 5 carried allowlist path(s) in
+  1 entry(ies) -- not this run's folder, or not the artifact that entry itself declares:
+  'review-Core-SEC' (5)`) -- a grant narrowed in silence is the #calibration-4 shape, every later
+  write denied and nothing pointing at the allowlist, and an id out of a planted file is
+  target-authored text that may not forge a line of the guard's own output.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

@@ -431,8 +431,27 @@ class TestRepairToolsSuppressed(unittest.TestCase):
     def test_a_non_string_segment_is_dropped(self):
         self.assertEqual(self._repair({7: 1})[0], {})
 
-    def test_an_overlong_segment_is_dropped(self):
-        self.assertEqual(self._repair({"v" * (repair_mod.NAME_MAX + 1): 1})[0], {})
+    def test_an_overlong_segment_is_cut_not_dropped(self):
+        # #1839 review round 1 N4: `pyvenv.cfg:<dir>` is the first key shape here
+        # that embeds an arbitrary target PATH, so the bound became reachable --
+        # and a virtualenv nested under 190 characters of path used to lose its
+        # row from the report an operator reads. Cut with a visible marker.
+        key = "pyvenv.cfg:" + "v" * repair_mod.NAME_MAX
+        got, err = self._repair({key: 4})
+        self.assertEqual(list(got.values()), [4])
+        cut = next(iter(got))
+        self.assertEqual(len(cut), repair_mod.NAME_MAX)
+        self.assertTrue(cut.endswith("\u2026"), cut)
+        self.assertTrue(cut.startswith("pyvenv.cfg:"), cut)
+        self.assertIn("cut", err)
+
+    def test_two_keys_that_cut_to_one_row_are_summed(self):
+        # The reason the bound used to DROP: a cut can collide two identities.
+        # It still can -- what must not happen is a count that lies, so the
+        # colliding rows add up and the marker says the name is not complete.
+        long = "pyvenv.cfg:" + "v" * repair_mod.NAME_MAX
+        got, _err = self._repair({long + "a": 2, long + "b": 3})
+        self.assertEqual(list(got.values()), [5])
 
     def test_the_map_is_bounded_at_the_read(self):
         got, err = self._repair({"seg%04d" % n: 1
