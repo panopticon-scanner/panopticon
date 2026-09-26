@@ -566,9 +566,10 @@ def _scanner_owned_bandit_ini(tool, cmd):
     silently blocked coverage certification on a worktree-heavy checkout.
     `--ini` is the escape hatch bandit itself names, but pinning the TARGET's
     copy handed the reviewed repository the scan's scope (#1839). The file is
-    generated here instead, in a private scratch and bind-mounted read-only on
-    its own, and pinned UNCONDITIONALLY -- so the discovery walk never runs whether or not
-    the target ships a `.bandit`, and that file never reaches the argv at all.
+    generated here instead, in a private scratch directory, bind-mounted
+    read-only on its own, and pinned UNCONDITIONALLY -- so the discovery walk
+    never runs whether or not the target ships a `.bandit`, and that file
+    never reaches the argv at all.
     Same shape as `tools/brakeman.py` and `tools/bundler_audit.py`, which
     answer the same problem with a config they generate themselves.
 

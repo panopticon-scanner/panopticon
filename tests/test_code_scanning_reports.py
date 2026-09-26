@@ -811,6 +811,26 @@ def test_markdown_escapes_each_character_once():
     # literally on the step summary. One pass, one entity per character.
     assert reports._markdown_text("a_b*c#d") == "a&#95;b&#42;c&#35;d"
     assert reports._markdown_text("x & y") == "x &amp; y"
+    for character in "\\`|*_[]()#!":
+        assert reports._markdown_text("q%sq" % character) == "q&#%d;q" % ord(character)
+
+
+def test_code_cells_carry_a_rule_id_and_a_path_literally(tmp_path):
+    # Rule and Location are code spans: an entity does not decode inside one,
+    # so `run_tools.py` must not become `run&#95;tools.py`. Only the two
+    # characters that can end the span or the table cell are neutralised.
+    assert reports._code_cell("run_tools.py:7") == "`run_tools.py:7`"
+    assert reports._code_cell("a|b`c") == "`a\\|b'c`"
+    assert reports._code_cell("") == ""
+    rules = [_rule(ANTHROPIC, properties={"precision": "very-high",
+                                          "tags": ["LOW CONFIDENCE"]})]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, [_result(ANTHROPIC, path="src/run_tools.py")]))
+    reports.prepare_reports(raw, tmp_path / "out")
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "| `%s` | `src/run_tools.py:7` |" % ANTHROPIC in summary
+    assert "&#95;" not in summary
 
 
 def test_a_result_is_excluded_only_when_every_location_is(tmp_path):
@@ -834,7 +854,7 @@ def test_a_result_is_excluded_only_when_every_location_is(tmp_path):
     security = json.loads((tmp_path / "out" / "security" / "scan.sarif")
                           .read_text(encoding="utf-8"))
     kept = security["runs"][0]["results"]
-    assert len(kept) == 3 and kept[0] is not None
+    assert len(kept) == 3
     assert [r.get("locations", [{}])[0].get("physicalLocation", {})
              .get("artifactLocation", {}).get("uri") for r in kept] == [
         "/src/tests/c.py", None, "/opt/elsewhere/tests/d.py"]

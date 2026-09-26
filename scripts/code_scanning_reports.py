@@ -433,6 +433,18 @@ def _markdown_text(value: Any) -> str:
     return html.escape(text, quote=False).translate(_MARKDOWN_ENTITIES)
 
 
+def _code_cell(value: Any) -> str:
+    """`value` as a Markdown code span inside a table cell. Entities do not
+    decode inside a code span, so nothing is entity-escaped here; the only
+    two characters that can break out are neutralised -- a pipe ends the
+    cell (GFM unescapes `\\|` even inside a span) and a backtick ends the
+    span (rendered as an apostrophe rather than juggling fence lengths)."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    return "`%s`" % text.replace("|", "\\|").replace("`", "'")
+
+
 def _location(result: dict[str, Any]) -> str:
     locations = result.get("locations")
     if not isinstance(locations, list) or not locations or not isinstance(locations[0], dict):
@@ -457,9 +469,9 @@ def _render_markdown(rows: list[dict[str, Any]]) -> str:
     for row in rows:
         result = row["result"]
         text = row["display_message"]
-        lines.append("| %s | `%s` | `%s` | %s |" % (
-            _markdown_text(row["tool"]), _markdown_text(row["rule_id"]),
-            _markdown_text(_location(result)), _markdown_text(text)))
+        lines.append("| %s | %s | %s | %s |" % (
+            _markdown_text(row["tool"]), _code_cell(row["rule_id"]),
+            _code_cell(_location(result)), _markdown_text(text)))
     return "\n".join(lines) + "\n"
 
 
@@ -480,9 +492,16 @@ def _repo_relative(uri: Any) -> str | None:
 def _result_uris(result: dict[str, Any]) -> list[Any]:
     uris = []
     locations = result.get("locations")
+    # Shape is guaranteed by the SARIF schema validation that runs first;
+    # the isinstance checks keep this symmetric with `_location` rather
+    # than reachable.
     for location in locations if isinstance(locations, list) else []:
-        physical = (location or {}).get("physicalLocation") or {}
-        artifact = physical.get("artifactLocation") or {}
+        if not isinstance(location, dict):
+            continue
+        physical = location.get("physicalLocation")
+        if not isinstance(physical, dict):
+            continue
+        artifact = physical.get("artifactLocation")
         if isinstance(artifact, dict) and "uri" in artifact:
             uris.append(artifact["uri"])
     return uris
