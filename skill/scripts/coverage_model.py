@@ -70,6 +70,13 @@ _SEC_SUPPLY_CHAIN_HINTS = (
     "module.bazel", "justfile", "taskfile", "podfile", "pubspec.yaml",
     ".gemspec", ".devcontainer/", "/ansible/", "serverless.yml",
     "template.yaml",
+    # #1838 SEC-71240568 review finding 2: each of the above CI systems has
+    # two equally-valid YAML spellings, and the first pass pinned only one --
+    # so the other spelling was a live miss for its own tool. Both spellings,
+    # as explicit rows (`.pre-commit-config.yaml` is intentionally excluded:
+    # that tool recognizes only the `.yaml` spelling, not `.yml`).
+    ".travis.yaml", "azure-pipelines.yaml", "bitbucket-pipelines.yaml",
+    ".drone.yaml", "appveyor.yaml", "serverless.yaml", "template.yml",
 )
 _SEC_CODE_HINTS = (
     "auth", "login", "session", "token", "oauth", "jwt",

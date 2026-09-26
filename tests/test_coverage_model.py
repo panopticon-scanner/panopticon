@@ -370,6 +370,21 @@ def test_sec_floor_on_build_and_ci_execution_surfaces():
             raise AssertionError(f"{f} failed to floor SEC")
 
 
+def test_sec_floor_on_build_ci_yaml_alternate_spellings():
+    # review finding 2: seven of the new CI-system entries pinned only ONE of
+    # two equally-valid YAML spellings, so the other spelling stayed a live
+    # miss. Both spellings are now explicit table rows.
+    alternates = [
+        ".travis.yaml", "azure-pipelines.yaml", "bitbucket-pipelines.yaml",
+        ".drone.yaml", "appveyor.yaml", "serverless.yaml", "template.yml",
+    ]
+    if len(alternates) != 7:
+        raise AssertionError(len(alternates))
+    for f in alternates:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} failed to floor SEC")
+
+
 def test_sec_floor_existing_supply_chain_entries_unchanged():
     # the #1838 extension must not disturb the 19 markers that already floored
     # SEC (finding SEC-71240568: "_SEC_SUPPLY_CHAIN_HINTS names 19 markers").
