@@ -1412,15 +1412,19 @@ _REDACTED_CAPTURES: set[str] = set()
 _NETWORK_POSTURE: dict[str, str] = {}
 
 # `tools-manifest.json`'s `suppression_comments` vocabulary (#1839, run-14
-# SEC-284952751): what this run's argv does with an inline suppression comment
-# in the target's own source.
+# SEC-284952751): what this run did with an inline suppression comment in the
+# target's own source -- decided by the argv for a flag-lever tool (bandit,
+# gitleaks) and by the run's mode for an ingest-lever one
+# (`SUPPRESSION_INGEST_LEVER`: semgrep, whose flag is belt).
 SUPPRESSION_IGNORED = "ignored"      # a verified knob was passed (redteam)
 SUPPRESSION_HONOURED = "honoured"    # the comment stood, and is disclosed
 SUPPRESSION_NA = "n/a"               # assessed: this argv honours no comment
-# Filled where the argv is built and read back by `write_manifest`, exactly like
-# `_NETWORK_POSTURE` above and for the same reason: "the operator's own
-# suppression comments were honoured" is a coverage fact, and a claim written
-# from the MODE would survive the flag going away.
+# Filled where the argv is built and read back by `write_manifest`, like
+# `_NETWORK_POSTURE` above: "the operator's own suppression comments were
+# honoured" is a coverage fact. For a flag-lever tool the row is read off the
+# argv, so the claim cannot outlive the flag; for an ingest-lever tool
+# (`SUPPRESSION_INGEST_LEVER`) no flag decides and the row says what the mode
+# did at ingest.
 _SUPPRESSION_POSTURE: dict[str, str] = {}
 
 # `tools-manifest.json`'s `scanner_config` vocabulary (#1839): WHICH
@@ -1684,7 +1688,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     # the argv is built, read back by `write_manifest`. A claim written from
     # intent would survive the flags going away; this one does not.
     _NETWORK_POSTURE.clear()
-    _SUPPRESSION_POSTURE.clear()   # #1839: this run's argv, never the last one's
+    _SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
     _SCANNER_CONFIG_POSTURE.clear()
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
@@ -1920,7 +1924,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     `"target .bandit (its skips and tests)"` for the one case the owner ruling
     of 2026-09-25 leaves with the operator -- a `.bandit` committed to the repository being scanned,
     honoured under `standard` and never under `redteam`. Same construction as
-    the two ledgers above: read off the argv the runner built.
+    `network` above: read off the argv the runner built.
 
     `network` (#1645) is the egress each tool was given: `"none"` for the
     `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY

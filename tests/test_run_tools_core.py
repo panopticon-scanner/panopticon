@@ -1814,9 +1814,11 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
     reader of the artifacts is entitled to. So it is honoured DISCLOSED, not
     silently: `tools-manifest.json` carries one row per assessed tool.
 
-    Like `network` and `redacted`, the claim is an OBSERVATION read off the argv
-    the runner actually built, not a statement of intent that would survive the
-    flag going away.
+    Like `network` and `redacted`, the claim is an OBSERVATION of what decided
+    it: the argv the runner built for a flag-lever tool (bandit, gitleaks), so
+    it cannot outlive the flag; the run's mode for an ingest-lever tool
+    (semgrep, `SUPPRESSION_INGEST_LEVER`), where no flag decides and the mode
+    is the fact.
     """
 
     TOOLS = ["semgrep", "bandit", "trivy", "gitleaks", "gosec"]
