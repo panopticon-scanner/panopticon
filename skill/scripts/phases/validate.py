@@ -22,11 +22,37 @@ from . import runio
 # the redteam clean-tree guard by reading as a clean tree that was never verified.
 _TREE_BASELINE_PROBE_FAILED = "#panopticon:baseline-probe-failed\n"
 
-def _write_probe_failed_baseline(baseline):
+def _write_baseline(baseline, emit):
+    """Write the baseline through `<baseline>.tmp` + `os.replace`, so the file on
+    disk is either the last complete one or the new one -- never half of either.
+
+    #1809 (DAT-4027033499): this was a truncate-in-place write behind
+    `capture_tree_baseline`'s exists-means-done guard, and that guard must NOT
+    re-probe git on resume (it would baseline the reviewer's own writes as
+    clean). So a write torn mid-way was PERMANENT: every later resume accepted
+    the partial document, the run failed closed at validate forever, and the
+    only exit was `--reset`, which discards a paid run. tmp+replace is the shape
+    `runio._write_json` already uses, down to the staging path going through the
+    same `_open_w_nofollow` (a `.tmp` in the reviewed tree is as plantable as
+    the artifact, and `os.replace` onto a symlinked destination replaces the
+    LINK). `_write_json` itself is not reusable here: it writes `indent=2` JSON,
+    and the probe-failure sentinel below is not JSON at all."""
+    tmp = baseline + ".tmp"
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with runio._open_w_nofollow(baseline) as fh:
-        fh.write(_TREE_BASELINE_PROBE_FAILED)
+    try:
+        with runio._open_w_nofollow(tmp) as fh:
+            emit(fh)
+        os.replace(tmp, baseline)
+    except BaseException:
+        try:
+            os.unlink(tmp)                   # no staging litter in the reviewed tree
+        except OSError:
+            pass
+        raise
     return baseline
+
+def _write_probe_failed_baseline(baseline):
+    return _write_baseline(baseline, lambda fh: fh.write(_TREE_BASELINE_PROBE_FAILED))
 
 # #1514 (Codex BR-04): the baseline used to be raw porcelain status, and the
 # delta was set subtraction over those records. A file that was ALREADY dirty at
@@ -142,12 +168,10 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
               "already-dirty/untracked paths; content equality cannot be "
               "established and the integrity guard will fail closed at validate"
               % _MAX_BASELINE_FILES, file=sys.stderr, flush=True)
-    os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with runio._open_w_nofollow(baseline) as fh:
-        json.dump({"schema_version": _BASELINE_SCHEMA, "status": proc.stdout,
-                   "entries": entries, "truncated": truncated}, fh,
-                  sort_keys=True)
-    return baseline
+    return _write_baseline(baseline, lambda fh: json.dump(
+        {"schema_version": _BASELINE_SCHEMA, "status": proc.stdout,
+         "entries": entries, "truncated": truncated}, fh,
+        sort_keys=True))
 
 def _porcelain_z_records(output):
     """Parse `git status --porcelain -z` into a set of (XY, paths) records. Paths
@@ -202,6 +226,15 @@ def _tree_delta(review_root, runner):
         if not isinstance(snapshot, dict):
             raise ValueError("not an object")
     except ValueError:
+        if raw.lstrip().startswith("{"):
+            # #1809: a document that opens as JSON but does not parse is a TORN
+            # v2 write, not a pre-digest baseline -- naming it "schema v1" points
+            # at a resume across an upgrade that never happened and hides the
+            # remedy. A v1 baseline is raw porcelain text, which never starts `{`.
+            return ["clean-tree baseline is PRESENT but CORRUPT (torn write); "
+                    + "tree integrity cannot be certified -- deleting "
+                    + "tree-baseline.txt would re-baseline the reviewer's own "
+                    + "writes as clean, so `--reset` is the remedy"]
         return ["clean-tree baseline predates content digests (schema v1); "
                 + "content equality not established, so tree integrity cannot "
                 + "be certified"]

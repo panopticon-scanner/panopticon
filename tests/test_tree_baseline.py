@@ -9,9 +9,11 @@ this was the common path, not a corner.
 Mocked status output cannot validate any of this: the whole defect is that the
 status text is IDENTICAL before and after. These use real temporary git repos.
 """
+import json
 import os
 import subprocess
 import unittest
+from unittest import mock
 
 import scripts.phases.validate as validate_phase
 import scripts.phases.runio as runio
@@ -212,6 +214,119 @@ class TargetProvenanceTest(unittest.TestCase):
         # drive the drift refusal.
         self.assertNotIn("target_commit", run_manifest._FLAG_KEYS)
         self.assertNotIn("target_dirty", run_manifest._FLAG_KEYS)
+
+
+def _torn_dump(data, fh, **kwargs):
+    """`json.dump` that emits part of the document and then dies -- the torn
+    write, without needing a real signal."""
+    fh.write(json.dumps(data, **kwargs)[:20])
+    raise OSError("no space left on device")
+
+
+class _TornHandle:
+    """A handle whose write lands half its text and then dies."""
+
+    def __init__(self, fh):
+        self._fh = fh
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self._fh.close()
+        return False
+
+    def write(self, text):
+        self._fh.write(text[:len(text) // 2])
+        raise OSError("no space left on device")
+
+
+def _torn_open(path):
+    return _TornHandle(open(path, "w", encoding="utf-8"))
+
+
+class TornBaselineTest(unittest.TestCase):
+    """#1809 / DAT-4027033499: the baseline was written truncate-in-place behind
+    an exists-means-done guard, so a write torn mid-way was PERMANENT. Every
+    resume accepted the partial document (git is deliberately never re-probed),
+    the run failed closed at validate forever, and the operator was told the
+    baseline "predates content digests (schema v1)" -- a resume across an
+    upgrade that never happened, which hides the real remedy (`--reset`).
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
+
+    def _tear(self, repo):
+        """Capture a complete v2 baseline, then truncate it at half its bytes."""
+        path = validate_phase.capture_tree_baseline(repo)
+        with open(path, encoding="utf-8") as fh:
+            whole = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(whole[:len(whole) // 2])
+        return path
+
+    def test_a_torn_v2_baseline_is_diagnosed_as_corrupt_not_as_schema_v1(self):
+        repo = self._repo()
+        torn = self._tear(repo)
+        with open(torn, encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("{"))   # a v2 doc, not porcelain
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertTrue(delta)
+        self.assertIn("CORRUPT", delta[0])
+        self.assertIn("--reset", delta[0])
+        self.assertNotIn("schema v1", delta[0])
+
+    def test_a_torn_baseline_is_still_never_re_probed_on_resume(self):
+        # The early return is load-bearing: re-probing `git status` here would
+        # baseline the reviewer's OWN writes as clean. The write was the bug.
+        repo = self._repo()
+        path = self._tear(repo)
+
+        def runner(*_a, **_k):
+            raise AssertionError("git must not be re-probed on resume")
+
+        self.assertEqual(validate_phase.capture_tree_baseline(repo, runner=runner), path)
+
+    def test_a_genuine_v1_baseline_still_reads_as_schema_v1(self):
+        repo = self._repo()
+        path = runio._pano(repo, "tree-baseline.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(" M app.py\0")                      # raw porcelain: no leading '{'
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertTrue(delta)
+        self.assertIn("schema v1", delta[0])
+        self.assertNotIn("CORRUPT", delta[0])
+
+    def test_a_torn_capture_write_leaves_no_baseline_and_no_tmp(self):
+        repo = self._repo()
+        path = runio._pano(repo, "tree-baseline.txt")
+        with mock.patch.object(json, "dump", _torn_dump), self.assertRaises(OSError):
+            validate_phase.capture_tree_baseline(repo)
+        self.assertFalse(os.path.exists(path),
+                         "a partial baseline is what every later resume accepts")
+        self.assertFalse(os.path.exists(path + ".tmp"), "staging file left behind")
+        # ...and the run recovers rather than wedging: the next capture probes
+        # git and writes a complete baseline validate can certify against.
+        validate_phase.capture_tree_baseline(repo)
+        self.assertEqual(validate_phase._tree_delta(repo, subprocess.run), [])
+
+    def test_a_torn_sentinel_write_keeps_the_previous_baseline_byte_identical(self):
+        repo = self._repo()
+        path = validate_phase.capture_tree_baseline(repo)
+        with open(path, "rb") as fh:
+            before = fh.read()
+        with mock.patch.object(runio, "_open_w_nofollow", _torn_open), \
+                self.assertRaises(OSError):
+            validate_phase._write_probe_failed_baseline(path)
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "a failed write clobbered the baseline")
+        self.assertFalse(os.path.exists(path + ".tmp"), "staging file left behind")
+
+    def test_a_completed_capture_leaves_no_staging_file(self):
+        path = validate_phase.capture_tree_baseline(self._repo())
+        self.assertFalse(os.path.exists(path + ".tmp"))
 
 
 if __name__ == "__main__":
