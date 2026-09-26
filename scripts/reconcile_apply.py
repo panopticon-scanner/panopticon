@@ -395,18 +395,18 @@ def plan_actions(diff, ledger):
                else RECUR_EXACT_COMMENT)
         return tpl % _bare(entry["fingerprint"])
 
-    actions = []
-    actions += _cohort_actions(diff.get("recurring"), "recurring", False,
-                               _recur_comment, ledger)
-    actions += _cohort_actions(
-        diff.get("closed"), "closed", True,
-        lambda e: CLOSED_COMMENT % neutralize(e.get("reason", "no run3 match")), ledger)
     def _ambiguous_comment(entry):
         if entry.get("basis") == "scope":
             return UNCORROBORATED_COMMENT % neutralize(
                 entry.get("reason", "the new run's coverage cannot speak to it"))
         return AMBIGUOUS_COMMENT % neutralize(entry.get("reason", "area still active"))
 
+    actions = []
+    actions += _cohort_actions(diff.get("recurring"), "recurring", False,
+                               _recur_comment, ledger)
+    actions += _cohort_actions(
+        diff.get("closed"), "closed", True,
+        lambda e: CLOSED_COMMENT % neutralize(e.get("reason", "no run3 match")), ledger)
     actions += _cohort_actions(diff.get("ambiguous"), "ambiguous", False,
                                _ambiguous_comment, ledger)
     return actions

@@ -459,6 +459,19 @@ class TestPlanActions(unittest.TestCase):
         self.assertNotIn("re-categorized", body)
         self.assertIn("Left OPEN, not auto-closed.", body)
 
+    def test_whole_run_guard_entries_are_scope_refusals_too(self):
+        # N-new-1: a run3 with zero records, or one whose paths do not overlap
+        # run2's, is a SCOPE refusal -- telling the operator the area is still
+        # active and the finding was probably re-worded is false in both cases.
+        for reason in ("run3 has zero records -- refusing to corroborate any close",
+                       "run2/run3 file sets share zero paths -- path-shape drift "
+                       "suspected; refusing to corroborate closes"):
+            with self.subTest(reason=reason.split(" --")[0]):
+                body = self._ambiguous_body({"basis": "scope", "reason": reason})
+                self.assertIn("not corroborated", body)
+                self.assertNotIn("still active", body)
+                self.assertNotIn("re-worded", body)
+
     def test_active_basis_and_legacy_entries_keep_the_still_active_comment(self):
         for entry in ({"basis": "active", "reason": "security still active on c.py"},
                       {"reason": "security still active on c.py"}):

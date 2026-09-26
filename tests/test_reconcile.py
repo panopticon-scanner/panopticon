@@ -411,7 +411,9 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertTrue(diff["ambiguous"])   # #run7 review: parity guard before [0] (TST-B3A)
         self.assertIn("zero records", diff["ambiguous"][0]["reason"])
-        self.assertEqual(diff["ambiguous"][0]["basis"], "run")
+        # N-new-1: a run that produced nothing is a SCOPE refusal, not an
+        # "area still active, probably re-worded" one.
+        self.assertEqual(diff["ambiguous"][0]["basis"], "scope")
 
     def test_zero_file_overlap_refuses_to_close_anything(self):
         # F2 sibling: absolute-vs-relative (or otherwise disjoint) path shapes
@@ -424,7 +426,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertTrue(diff["ambiguous"])
         self.assertIn("share zero paths", diff["ambiguous"][0]["reason"])
-        self.assertEqual(diff["ambiguous"][0]["basis"], "drift")
+        self.assertEqual(diff["ambiguous"][0]["basis"], "scope")
 
     def test_degenerate_group_spanning_multiple_coarse_keys_is_ambiguous(self):
         # M5: airtight group-key guard. Unreachable via iter_records today
@@ -531,9 +533,9 @@ class TestRun3CoverageGuards(unittest.TestCase):
                               "panel_grades": {"security": "D"}}]
         return doc
 
-    def _diff(self, run3_doc, extra=None):
+    def _diff(self, run3_doc, extra=None, run2_doc=None):
         with tempfile.TemporaryDirectory() as d:
-            return stage1(d, self._run2(), run3_doc, extra)
+            return stage1(d, run2_doc or self._run2(), run3_doc, extra)
 
     def _reasons(self, diff):
         return {e["coarse_key"][0]: e["reason"] for e in diff["ambiguous"]}
@@ -690,6 +692,81 @@ class TestRun3CoverageGuards(unittest.TestCase):
                                                          category="other")]})
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
         self.assertEqual(diff["meta"]["close_guard"], "run3_files_unstated")
+        self.assertEqual(diff["closed"], [])
+
+    # ---- fix round 2 ----
+
+    def _diff_with_run3_record(self, run2_finding, run3_finding):
+        """run2 carries `run2_finding` on b.py beside the recurring a.py finding;
+        run3 carries `run3_finding` on b.py but lists only a.py as reviewed."""
+        run2 = self._run2()
+        run2["findings"] = [f for f in run2["findings"] if f["id"] != "B"] + [run2_finding]
+        run3 = self._run3(["a.py"])
+        run3["findings"].append(run3_finding)
+        return self._diff(run3, run2_doc=run2)
+
+    def test_a_record_under_another_key_does_not_license_a_close(self):
+        # F1: the close rests on (file, panel)-clear, and coarse_key[1] is NOT a
+        # panel for a code-bearing finding (evidence.reconcile_key returns
+        # (file, "code", code) whenever a finding carries an OCRDb code), while a
+        # tool finding is always panel "security" and never carries a code. So a
+        # run3 record on the file is NOT a record under the key whose silence is
+        # being read as a fix: it cannot license the close, only sharpen the
+        # refusal's wording.
+        code_bearing = dict(self._f("B", "b.py", "Duplicated block"),
+                            panel="code", code="COD-A1A")
+        tool_hit = dict(self._f("T3", "b.py", "Hardcoded token",
+                                category="hardcoded-secret"),
+                        source="tool:semgrep")
+        for label, run2_finding, run3_finding in (
+                ("run2 code-bearing, run3 tool hit", code_bearing, tool_hit),
+                ("run2 security, run3 code-bearing",
+                 self._f("B", "b.py", "Missing role check"),
+                 dict(self._f("C3", "b.py", "Long function"), panel="code",
+                      code="COD-B2C"))):
+            with self.subTest(case=label):
+                rc, diff = self._diff_with_run3_record(run2_finding, run3_finding)
+                self.assertEqual(rc, 0)
+                self.assertEqual(diff["closed"], [])
+                reasons = self._reasons(diff)
+                self.assertIn("run3 produced records on b.py but its report does not "
+                              "list it among the files it reviewed", reasons["b.py"])
+                self.assertEqual(self._bases(diff)["b.py"], "scope")
+
+    def test_unlisted_file_with_no_run3_record_keeps_the_plain_wording(self):
+        # The other half of the same arm: nothing in run3's report mentions c.py.
+        rc, diff = self._diff(self._run3(["a.py"]))
+        self.assertIn("c.py was not reviewed in run3 -- absence of findings is "
+                      "not a fix", self._reasons(diff)["c.py"])
+        self.assertNotIn("produced records", self._reasons(diff)["c.py"])
+
+    def test_a_guard_name_without_a_reason_raises(self):
+        # N6: the GUARD_REASONS lookup must stay a loud subscript -- a guard name
+        # added without a reason may not write `"reason": None` onto every
+        # ambiguous entry for stage 2 to render as an empty code span.
+        with self.assertRaises(KeyError):
+            reconcile._guard_reason("a_guard_nobody_worded", None)
+
+    def test_a_list_of_reviewed_files_is_accepted(self):
+        # N-new-4: build_diff's coverage argument is any iterable of paths.
+        r2 = reconcile.iter_records({"findings": [self._f("A", "a.py", "x"),
+                                                 self._f("B", "b.py", "y")]})
+        r3 = reconcile.iter_records({"findings": [self._f("A3", "a.py", "x")]})
+        diff = reconcile.build_diff(r2, r3, "r2", "r3",
+                                    run3_reviewed_files=["a.py", "b.py"],
+                                    run3_review_type="repo")
+        self.assertIsNone(diff["meta"]["close_guard"])
+        self.assertEqual({e["coarse_key"][0] for e in diff["closed"]}, {"b.py"})
+
+    def test_a_part_cannot_supply_a_review_type_the_report_omits(self):
+        # N-new-3: the MAIN document is the authority for meta.review_type; a
+        # part can only contradict it. A silent report is missing information.
+        run3 = self._run3(["a.py", "b.py", "c.py"], state_type=False)
+        run3["meta"]["parts"] = ["run3_part.json"]
+        rc, diff = self._diff(run3, {"run3_part.json": {"meta": {"review_type": "repo"},
+                                                        "findings": []}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(diff["meta"]["close_guard"], "run3_not_repo_wide")
         self.assertEqual(diff["closed"], [])
 
 

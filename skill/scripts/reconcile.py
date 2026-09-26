@@ -93,23 +93,25 @@ def _stated_review_type(doc):
     return (meta["review_type"],)
 
 
-def _resolve_review_type(declared):
-    """The run's declared review type, or the conflicting values when the report
-    and its parts disagree.
+def _resolve_review_type(main_declared, part_declared):
+    """The run's declared review type -- the MAIN report's, or the conflicting
+    values when a part contradicts it.
 
-    Parts are continuations of ONE run and meta.review_type is written once per
-    run, so a part declaring a different one is a malformed artifact. Returning
-    the tuple of distinct values keeps the evidence AND can never equal "repo",
-    which is the fail-closed direction (ignoring the part would be fail-open).
-    Comparison is by equality, not hashing: a report can carry any JSON value
-    here. None when no document declared one.
+    The main document is the authority: parts are continuations of ONE run and
+    meta.review_type is written once per run, so a part can only CONTRADICT the
+    report, never supply what the report itself omits (a silent report is missing
+    information and resolves to None, which guards). A contradiction resolves to
+    the tuple of distinct values, which keeps the evidence AND can never equal
+    "repo" -- the fail-closed direction, where ignoring the part would be
+    fail-open. Comparison is by equality, not hashing: a report can carry any
+    JSON value here.
     """
-    distinct = []
-    for value in declared:
+    if not main_declared:
+        return None
+    distinct = list(main_declared[:1])
+    for value in part_declared:
         if value not in distinct:
             distinct.append(value)
-    if not distinct:
-        return None
     if len(distinct) == 1:
         return distinct[0]
     return tuple(sorted(distinct, key=repr))
@@ -133,7 +135,8 @@ def load_report(path):
     findings = list(report.get("findings") or [])
     discarded = list(report.get("discarded_claims") or [])
     reviewed_files = _stated_files(report)
-    declared_types = list(_stated_review_type(report))
+    declared_main = _stated_review_type(report)
+    declared_parts = []
     # Anchor to an absolute path before resolving parts: os.path.dirname on a
     # bare filename (e.g. "run2.json", the common case from the CLI run in
     # its own directory) returns "", and joining/normpath'ing a relative
@@ -149,7 +152,7 @@ def load_report(path):
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
         reviewed_files = _merge_stated(reviewed_files, _stated_files(pdata))
-        declared_types += _stated_review_type(pdata)
+        declared_parts += _stated_review_type(pdata)
     # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
     # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
     # list + a meta.discarded_claims_file pointer. The meta.parts merge above never
@@ -161,7 +164,7 @@ def load_report(path):
             discarded.extend(json.load(fh).get("discarded_claims") or [])
     return {"findings": findings, "discarded_claims": discarded,
             "reviewed_files": reviewed_files,
-            "review_type": _resolve_review_type(declared_types)}
+            "review_type": _resolve_review_type(declared_main, declared_parts)}
 
 
 def iter_records(report):
@@ -221,14 +224,14 @@ GUARD_REASONS = {
                             "(no groups[].files) -- refusing to corroborate closes"),
 }
 
-# Why corroboration failed, for a consumer that must word its own message
-# (scripts/reconcile_apply.py keys its comment template on "scope" -- reading the
-# reason text would be substring archaeology). "scope": the new run's coverage
-# cannot speak to this file; "active": its (file, panel) still carries records;
-# "identity": this record's own identity can't be pinned; "run": run3 produced
-# nothing; "drift": the two runs' path shapes disagree.
-GUARD_BASIS = {"empty_run3": "run", "no_file_overlap": "drift",
-               "run3_files_unstated": "scope", "run3_not_repo_wide": "scope"}
+# Why corroboration failed, carried on every ambiguous entry as `basis`, for a
+# consumer that must word its own message (scripts/reconcile_apply.py keys its
+# comment template on it -- reading the reason text would be substring
+# archaeology). "scope": nothing in the new run's coverage can speak to this
+# file, which is EVERY whole-run guard (a zero-record run and path-shape drift
+# included -- neither is an "area still active" or a re-wording) plus the
+# per-record not-reviewed arm; "active": its (file, panel) still carries records
+# in run3; "identity": this record's own identity cannot be pinned.
 
 REVIEW_TYPE_UNDECLARED = ("run3 did not declare a repo-wide review type (%r) -- "
                           "refusing to corroborate closes")
@@ -266,21 +269,21 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     one coarse key (a degenerate multi-key group can't be trusted to mean one
     thing), it has a recorded file (an empty file can't be corroborated by any
     (file, panel) read), its (file, panel) is entirely clear in run3 (the
-    drift-proof corroboration -- category is free-text and drifts), and that
-    file is one run3 READ (#1807: run3 being silent about a file it never opened
-    is not evidence of a fix). Failing any of those routes it to AMBIGUOUS
-    instead (kept open, never auto-closed) -- when corroboration cannot be
-    performed, refuse to close. Every ambiguous entry also carries `basis`, the
-    machine-readable reason class (see GUARD_BASIS).
+    drift-proof corroboration -- category is free-text and drifts), and run3
+    CLAIMS to have reviewed that file (#1807: run3 being silent about a file it
+    never opened is not evidence of a fix). Failing any of those routes it to
+    AMBIGUOUS instead (kept open, never auto-closed) -- when corroboration cannot
+    be performed, refuse to close. Every ambiguous entry also carries `basis`,
+    the machine-readable reason class (see the comment above GUARD_REASONS).
 
-    `run3_reviewed_files` / `run3_review_type` are run3's own statement of what
-    it looked at (load_report: groups[].files and meta.review_type). A caller
-    that states no reviewed files gets the fail-CLOSED reading -- the whole-run
-    `run3_files_unstated` guard -- never a close on silence. "Read" is the union
-    of that statement with the files run3 actually produced records on: a record
-    on a file is proof it was read, and groups[].files under-states real coverage
-    (it is discovery's filtered, truncated reviewable set, and a tool finding
-    joins a group by path membership alone).
+    `run3_reviewed_files` (any iterable of normalized paths, or None) and
+    `run3_review_type` are run3's own statement of what it looked at (load_report:
+    groups[].files and meta.review_type). A caller that states no reviewed files
+    gets the fail-CLOSED reading -- the whole-run `run3_files_unstated` guard --
+    never a close on silence. Nothing else can stand in for that claim: run3
+    having a record on the file proves only that something read the path, not
+    that the (file, panel) being corroborated was reviewed, so it changes the
+    refusal's wording, not its outcome.
 
     close_guard fires when corroboration itself can't be trusted for the WHOLE
     run: run3 has zero records ("empty_run3": nothing ran / nothing loaded,
@@ -328,12 +331,17 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     # matching -- doesn't spuriously trip the drift guard.
     files2 = {r["coarse_key"][0] for r in run2_records if r["coarse_key"][0]}
     files3 = {r["coarse_key"][0] for r in run3_records if r["coarse_key"][0]}
-    # #1807: what run3 READ = what it CLAIMS it reviewed + what it demonstrably
-    # produced records on. A record is proof of reading, and groups[].files
-    # under-states coverage, so refusing on the claim alone would both state a
-    # falsehood about a file run3 reported on and make that cohort permanently
-    # un-closable.
-    reviewed3 = (run3_reviewed_files or set()) | files3
+    # #1807: the ONLY thing that can license a close is run3's own claim to have
+    # reviewed the file (groups[].files). A record on the file is weaker evidence
+    # than it looks: it proves some scanner or cell read that path, not that the
+    # panel whose silence is being read as a fix ever opened it -- coarse_key[1]
+    # is "code" for any finding carrying an OCRDb code (evidence.reconcile_key)
+    # and "security" for every tool finding, so "has a record" and "has a record
+    # under the key being corroborated" are different sets. files3 therefore only
+    # sharpens the WORDING of a refusal (a file with records but absent from
+    # groups[].files is a report-side bug worth naming), never grants one.
+    # set() so any iterable of paths works, including a list from a caller.
+    claimed3 = set(run3_reviewed_files or ())
 
     close_guard = None
     if run2_records and not run3_records:
@@ -380,10 +388,11 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
         # Decision order (safe direction first, #914 final-review ordering
         # note): (a) close_guard active; (b) degenerate multi-coarse-key
         # group; (c) no file recorded; (d) (file,panel) still active; (e) run3
-        # never read that file (#1807); only then (f) closed. (d) before (e) so
-        # a file run3 DID report on gets the reason a triager can act on.
+        # does not claim to have reviewed that file (#1807); only then (f)
+        # closed. (d) before (e) so a run3 record under the very key being
+        # corroborated is reported as such, not as unreviewed coverage.
         if close_guard:
-            reason, basis = guard_reason, GUARD_BASIS[close_guard]
+            reason, basis = guard_reason, "scope"
         elif len({r["coarse_key"] for r in recs}) > 1:
             reason, basis = "degenerate group spans multiple coarse keys", "identity"
         elif not file_:
@@ -399,11 +408,14 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
             reason = "%s still active on %s (%s in run3)" % (pdisp, fdisp,
                                                              ", ".join(parts))
             basis = "active"
-        elif file_ not in reviewed3:
-            # run3 both omitted this file from groups[].files AND produced no
-            # record on it, so nothing in its report speaks to the file.
-            reason = ("%s was not reviewed in run3 -- absence of findings is "
-                      "not a fix" % file_)
+        elif file_ not in claimed3:
+            if file_ in files3:
+                reason = ("run3 produced records on %s but its report does not list "
+                          "it among the files it reviewed (groups[].files) -- "
+                          "refusing to corroborate a close" % file_)
+            else:
+                reason = ("%s was not reviewed in run3 -- absence of findings is "
+                          "not a fix" % file_)
             basis = "scope"
         else:
             closed.append({"fingerprint": fp, "coarse_key": list(ck),
