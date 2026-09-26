@@ -406,7 +406,7 @@ class TestInertText(unittest.TestCase):
                 self.assertTrue(out.endswith(base.INERT_CUT), repr(out[-8:]))
                 body = out[:-len(base.INERT_CUT)]
                 self.assertIsNone(
-                    re.search(r"\\(x[0-9a-f]{0,1}|u[0-9a-f]{0,3})$", body),
+                    re.search(r"\\(x[0-9a-f]?|u[0-9a-f]{0,3})?$", body),
                     "the cut split an escape: %r" % out[-8:])
                 self.assertLessEqual(len(out), base.INERT_TEXT_MAX + len(base.INERT_CUT))
 

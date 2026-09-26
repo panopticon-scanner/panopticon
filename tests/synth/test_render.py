@@ -655,6 +655,15 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
             with self.subTest(line=expected):
                 self.assertIn(expected, out)
 
+    def test_the_target_path_is_kept_byte_for_byte(self):
+        # Re-review nit: `meta.target` is a PATH, so it renders in path mode --
+        # a real directory named with two spaces is escaped and bounded and
+        # otherwise untouched, never renamed to one space.
+        report = self._report()
+        report["meta"]["target"] = "/t  arget\x1b[2K"
+        out = render_mod.render_summary(report)
+        self.assertIn(r"# panopticon — /t  arget\x1b[2K", out)
+
     def test_a_cross_panel_entry_inherits_the_boundary_rather_than_a_second_fix(self):
         # The cross-panel block prints `location.file` and `categories` -- both
         # COPIED from normalized findings by `corroborate`, which is why the

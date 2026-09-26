@@ -238,7 +238,8 @@ def render_summary(report):
         # normalization boundary does not own -- the target path this run was
         # given, and a group name out of the reviewed repository's own group
         # table (`repo_config` names that file; this module does not).
-        "# panopticon — %s" % tool_base.inert_text(report["meta"]["target"]),
+        "# panopticon — %s" % tool_base.inert_text(report["meta"]["target"],
+                                                 mode="path"),
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),

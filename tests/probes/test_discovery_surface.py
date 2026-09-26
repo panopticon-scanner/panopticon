@@ -525,6 +525,10 @@ class TestTheScan(unittest.TestCase):
         controlled_name = "x\x1b[31mRED\x1b[0m.md"
         _plant(self.root, ".claude/agents/" + open_name)
         _plant(self.root, ".claude/commands/" + controlled_name)
+        # Re-review nit: the relpath an operator is told to open is a PATH,
+        # so a legitimate double space in a name survives byte-for-byte.
+        plain_name = "two  spaces.md"
+        _plant(self.root, ".claude/commands/" + plain_name)
         stream = io.StringIO()
         state, _by, detail = probes_common.probe_discovery_surface(
             "claude", self.root, disclose=stream)
@@ -541,6 +545,8 @@ class TestTheScan(unittest.TestCase):
                       stream.getvalue())
         self.assertIn("closed by claude:disable-slash-commands (CL-6/CL-7)",
                       stream.getvalue())
+        self.assertIn(".claude/commands/two  spaces.md", detail)
+        self.assertIn(".claude/commands/two  spaces.md", stream.getvalue())
 
     def test_a_hostile_directory_name_is_inert_in_the_unreadable_sentence(self):
         # The same sentence carries what the scan could not READ, and a
