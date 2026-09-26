@@ -7,6 +7,36 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
+  DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
+  panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or
+  shared no path at all with run2 -- so a NARROWER re-run (`--scope-file a.py`, one directory, one
+  group, a PR diff) overlaps on a single path, defeats both, and every still-unfixed finding on the
+  files it never opened landed in the `closed` cohort, which `scripts/reconcile_apply.py apply
+  --confirm-close` turns into a real GitHub close commented "**Reconciliation: fixed (area
+  clear).**". That `(file, panel)`-clear read is now gated on ONE further thing, and only that
+  thing: run3's own claim to have reviewed the file -- `groups[].files`, merged across the report
+  and every part. Nothing stands in for the claim, a record on the file included: a record proves
+  some scanner or cell read the path, not that the (file, panel) whose silence is read as a fix was
+  reviewed. So the diff refuses three ways: a finding on a file run3 does not list goes to
+  `ambiguous` (kept open), reading "<file> was not reviewed in run3 -- absence of findings is not a
+  fix", or, when run3 does carry a record on that path, "run3 produced records on <file> but its
+  report does not list it among the files it reviewed (groups[].files)" -- an under-stated
+  `groups[].files` is a report-side bug, named rather than trusted; a run3 whose report states no
+  files at all guards the whole run (`run3_files_unstated`); and a run3 whose report does not
+  declare `meta.review_type: "repo"` -- a scoped review, an absent, empty or unreadable value, or a
+  part contradicting it -- guards it too (`run3_not_repo_wide`). Missing information fails CLOSED,
+  with no flag to opt back into the old reading. Stage 2 words every one of those refusals as
+  "**Reconciliation: not corroborated.**", where it used to claim the area was still active and the
+  finding probably re-worded -- which for a zero-record or path-drifted run3 was simply false.
+  **Operator-visible:** a close now needs a repo-wide run3 that says what it looked at, and the
+  summary names an active guard once on its own `guard:` line instead of only repeating it per
+  finding; a run3 that is merely NARROWER by file list still closes the findings on the files it
+  does list. Still open as follow-ups: #2084 -- a run3 that declared itself repo-wide but LOST cells
+  (`meta.coverage.cells.missing_floor` non-empty, `summary.coverage_certified` false) still lists
+  every file in `groups`, so it can corroborate closes on files no review cell actually reached; and
+  #2087 -- the claim is per FILE and per RUN while the silence read as a fix is per `(file, panel)`,
+  so a panel or tool axis that never ran on a listed file still reads as clear.
 - **Three run-artifact readers in `synth/` no longer end a run on a file a target can pre-commit
   (#1811, #1812 — DAT-2808086775, DAT-3713947858, DAT-1553408299).** `coverage-*.json`,
   `dispatch-plan-driver.json` and the agent findings files are read back out of the run folder,
