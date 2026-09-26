@@ -8,6 +8,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import grading as grading_mod
@@ -249,8 +250,9 @@ def _cfg_value(value):
         return "true" if value else "false"
     if value is None:
         return "null"
-    text = str(value)
-    return text if len(text) <= _CFG_VALUE_MAX else text[:_CFG_VALUE_MAX] + "…"
+    # Inert as well as bounded (#1829 SEC-798292895): the key and the value are
+    # the target repository's own text, and this line is read in a terminal.
+    return tool_base.inert_text(value, limit=_CFG_VALUE_MAX)
 
 
 def render_summary(report):
@@ -259,7 +261,12 @@ def render_summary(report):
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
     lines = [
-        "# panopticon — %s" % report["meta"]["target"],
+        # #1829 SEC-798292895: belt and braces for the two fields the
+        # normalization boundary does not own -- the target path this run was
+        # given, and a group name out of the reviewed repository's own group
+        # table (`repo_config` names that file; this module does not).
+        "# panopticon — %s" % tool_base.inert_text(report["meta"]["target"],
+                                                 mode="path"),
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),
@@ -378,7 +385,13 @@ def render_summary(report):
             if isinstance(r, dict):
                 by.setdefault((r.get("cell_domain"), r.get("finding_domain")), 0)
                 by[(r.get("cell_domain"), r.get("finding_domain"))] += 1
-        pairs = ", ".join("%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items()))
+        # Fix round 1: the domain is AGENT-authored -- `synth/integrity` only
+        # type-checks it -- and this line is read in a terminal, so it is the
+        # third field normalization does not own (with meta.target and the
+        # group name above, and the target's own config values).
+        pairs = ", ".join("%s→%s ×%d" % (tool_base.inert_text(a),
+                                         tool_base.inert_text(b), n)
+                          for (a, b), n in sorted(by.items()))
         lines.insert(3, "**Note:** %d cross-domain finding(s) — %s. Reviewers filed "
                         "outside their cell's domain; often a catalog gap (X0X). "
                         "Does NOT affect certification." % (len(xdom), pairs))
@@ -406,7 +419,7 @@ def render_summary(report):
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in findings_mod.PANEL_ORDER)
-        lines.append("- **%s** — %s" % (g["name"], grades))
+        lines.append("- **%s** — %s" % (tool_base.inert_text(g["name"]), grades))
     lines.append("")
     lines.append("## Top findings")
     for f in sorted(report["findings"], key=findings_mod._issue_sort)[:10]:
