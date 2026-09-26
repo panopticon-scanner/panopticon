@@ -35,6 +35,11 @@
       "type": "string",
       "description": "ISO-8601 timestamp the report was produced (optional)."
     },
+    "candidates_dropped_locus_free": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Catalog-gap clusters this report could not carry because no finding in them had a location.file; omitted when zero."
+    },
     "candidates": {
       "type": "array",
       "description": "One record per proposed OCRDb code candidate — a catalog gap with its supporting evidence.",

@@ -82,13 +82,43 @@ class TestX0XReport(unittest.TestCase):
         # deliberately), so this drop lands on exactly the gaps this emitter
         # exists to carry. No occurrence can be invented -- the schema requires a
         # file on every one -- so the cluster is announced instead of vanishing.
-        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock", None)
+        # The title is agent-authored, so the line renders it through `%r`: the
+        # whitespace squeeze alone would leave an ESC raw and a hostile title
+        # could repaint the operator's terminal (#1807 review N3).
+        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock\x1b[31m", None)
         f["location"] = {}   # no file -> no valid occurrence -> candidate dropped
+        dropped = []
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f], dropped), [])
+        self.assertEqual(err.getvalue(),
+                         "x0x: COD: dropping a catalog-gap cluster with no file "
+                         "location: 'dup dead block\\x1b[31m' (1 finding(s))\n")
+        # the out-list `build_report` tallies from, pinned (review N4): the record
+        # carries the squeezed text itself -- escaping belongs at the render.
+        self.assertEqual(dropped, [{"domain": "COD",
+                                    "summary": "dup dead block\x1b[31m",
+                                    "finding_count": 1}])
+
+    def test_an_untitled_cluster_is_named_by_its_finding_id(self):
+        # Review N1: the cluster KEY already falls back to the id and `_domain`'s
+        # line names the id, so the diagnostic was the one place that named
+        # nothing identifiable. A whitespace-only title is empty once squeezed.
+        f = {"code": "SEC-X0X", "domain": "SEC", "severity": "LOW", "id": "gap-77",
+             "short_title": "   "}
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(x0x.build_candidates([f]), [])
         self.assertEqual(err.getvalue(),
-                         "x0x: COD: dropping a catalog-gap cluster with no file "
-                         "location: 'dup dead block' (1 finding(s))\n")
+                         "x0x: SEC: dropping a catalog-gap cluster with no file "
+                         "location: 'gap-77' (1 finding(s))\n")
+
+    def test_a_long_title_is_cut_with_the_cut_marked(self):
+        # Review N2: the house rule (`phases/review.py::_hit_text`) is that a cut
+        # is MARKED, so a truncated value cannot read as a complete one.
+        f = _f("SEC-X0X", "SEC", "LOW", "g" * 200, None)
+        f["location"] = {}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f]), [])
+        self.assertIn("'" + "g" * 119 + "\u2026'", err.getvalue())
 
     def test_the_envelope_counts_the_locus_free_clusters_it_dropped(self):
         # The count `synthesize` prints comes off `candidates`; without this the
@@ -100,8 +130,11 @@ class TestX0XReport(unittest.TestCase):
             report = x0x.build_report([gap], {}, run_id="run-1")
         self.assertEqual(report["candidates"], [])
         self.assertEqual(report["candidates_dropped_locus_free"], 1)
-        # the envelope is a published contract: the new key must still validate
+        # the envelope is a published contract: the new key must validate AND be
+        # declared, or a downstream ingester has no documented field to read
+        # (review I2).
         self.assertIsNone(jsonschema.validate(report, _schema()))
+        self.assertIn("candidates_dropped_locus_free", _schema()["properties"])
 
     def test_a_mixed_cluster_survives_and_reports_nothing_dropped(self):
         # One located finding is enough to carry the cluster, so nothing was

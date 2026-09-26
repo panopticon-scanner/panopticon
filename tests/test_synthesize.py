@@ -1103,6 +1103,25 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertIn("report-x0x.json", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_a_wrong_typed_drop_tally_cannot_crash_the_artifact_line(self):
+        # Review N5: in production the tally is an int built two lines up, but a
+        # `%d` on a mocked or refactored value raises AFTER `os.replace` has put
+        # the artifact in place -- and the driver discards a successful child's
+        # stderr, so the traceback would vanish and the phase still read as
+        # advanced. The clause renders whatever it was handed instead.
+        import scripts.x0x_report as x0x_report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(
+                    x0x_report, "build_report",
+                    return_value={"candidates": [],
+                                  "candidates_dropped_locus_free": "2"}):
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertIn(", 2 locus-free cluster(s) dropped", stdout)
+        self.assertEqual(rc, 4)                        # the mocked envelope is invalid
+        self.assertIn("artifact invalid:", stderr)
+
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union
         # unknowable. Fail closed: the run cannot claim its artifact is valid.

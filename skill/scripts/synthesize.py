@@ -372,9 +372,12 @@ def main(argv=None):
     # #1807 DAT-2501524861: a catalog-gap cluster with no file location cannot be
     # carried (every occurrence needs a file), so say so on the line that reports
     # the count -- otherwise the count is short and nothing says why.
+    # `%s`, not `%d`: this runs AFTER the artifact was written and replaced, and a
+    # successful child's output is discarded by the driver, so a wrong-typed value
+    # would raise a traceback nobody ever sees on a phase still judged advanced.
     x0x_dropped = x0x.get("candidates_dropped_locus_free") or 0
     if x0x_dropped:
-        x0x_line += ", %d locus-free cluster(s) dropped" % x0x_dropped
+        x0x_line += ", %s locus-free cluster(s) dropped" % x0x_dropped
     print(x0x_line)
     html_out = args.html_out
     if html_out is None and args.out:

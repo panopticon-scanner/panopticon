@@ -30,6 +30,7 @@ _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WS_RE = re.compile(r"\s+")
 _SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+_DIAG_MAX = 120          # bound on any agent-authored value in a diagnostic
 
 
 def is_fallback(code):
@@ -40,6 +41,17 @@ def is_fallback(code):
 def _slug(text):
     s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
     return s or None
+
+
+def _one_line(value, cap=_DIAG_MAX):
+    """One bounded, single-line rendering of an agent-authored value, for a
+    diagnostic. Whitespace is collapsed and the cut is MARKED (the rule
+    ``phases/review.py::_hit_text`` states: a truncated value must not be able to
+    read as a complete one). Returns "" for an absent or whitespace-only value, so
+    a caller can fall back. Callers render the result with ``%r``, which is what
+    makes a control character inert."""
+    text = " ".join(str(value or "").split())
+    return (text[:cap - 1] + "\u2026") if len(text) > cap else text
 
 
 def _cwes(finding):
@@ -130,13 +142,16 @@ def build_candidates(findings, dropped=None):
             # A file cannot be invented for it, so DISCLOSE: one line naming the
             # cluster (in `_domain`'s style), and a tally the envelope publishes,
             # because otherwise the candidate count is quietly short.
-            title = " ".join(str(lead.get("short_title") or lead.get("title")
-                                 or "").split())[:120]
+            # The cluster key already falls back to the id for an untitled
+            # finding, and `_domain`'s line names the id; so does this one, or it
+            # would be the one diagnostic naming nothing identifiable.
+            name = (_one_line(lead.get("short_title") or lead.get("title"))
+                    or _one_line(lead.get("id")) or "?")
             print("x0x: %s: dropping a catalog-gap cluster with no file "
-                  "location: %r (%d finding(s))" % (domain, title, len(fs)),
+                  "location: %r (%d finding(s))" % (domain, name, len(fs)),
                   file=sys.stderr)
             if dropped is not None:
-                dropped.append({"domain": domain, "summary": title,
+                dropped.append({"domain": domain, "summary": name,
                                 "finding_count": len(fs)})
             continue
         cwe = []
