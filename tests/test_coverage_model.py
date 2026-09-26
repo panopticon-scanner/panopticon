@@ -399,6 +399,20 @@ def test_sec_floor_setup_py_hint_is_anchored():
             raise AssertionError(f"{f} must not floor SEC (suffix false positive)")
 
 
+def test_sec_floor_workspace_and_configure_hints_are_anchored():
+    # review finding 4 (LOW): bare "configure" and "workspace" reach ordinary
+    # application paths (my_workspace.py, reconfigure.go) because a product
+    # whose domain noun is literally "workspace" turns the floor effectively
+    # unconditional. Anchored to a directory boundary; a pnpm monorepo's
+    # pnpm-workspace.yaml is added explicitly since it has no such boundary.
+    for f in ["WORKSPACE", "configure", "pnpm-workspace.yaml"]:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} must still floor SEC")
+    for f in ["my_workspace.py", "reconfigure.go"]:
+        if cov.applicable_sec_floor([f]) != frozenset():
+            raise AssertionError(f"{f} must not floor SEC (name-noun false positive)")
+
+
 def test_sec_floor_existing_supply_chain_entries_unchanged():
     # the #1838 extension must not disturb the 19 markers that already floored
     # SEC (finding SEC-71240568: "_SEC_SUPPLY_CHAIN_HINTS names 19 markers").

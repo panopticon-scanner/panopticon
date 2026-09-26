@@ -59,15 +59,22 @@ _SEC_SUPPLY_CHAIN_HINTS = (
     # (roslyn-secguard's own hostile-csproj fixture is why that class is
     # here), and a lockfile whose name is not already a superstring of a
     # manifest listed above. Table-driven, same style as the block above.
+    # `/configure`, `/workspace` and `.mk` are deliberately broad markers:
+    # the first two still catch a head-of-segment name (`workspace_list.go`,
+    # `ConfigureProfile.tsx` -- killing those needs a basename-exact table,
+    # outside this fix) even after anchoring to a directory boundary, and
+    # `.mk` also reaches `.mkv`/`.mkd` media and doc files since a substring
+    # extension check cannot end-anchor. A false positive costs one SEC cell
+    # per group, same calibration as the block below.
     "makefile", ".mk", "/setup.py", "setup.cfg", "tox.ini", "noxfile.py", ".tf",
     ".pre-commit-config.yaml", ".travis.yml", "azure-pipelines.yml",
     "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".buildkite/",
     ".github/actions/", ".csproj", ".sln", "directory.build.props",
     "nuget.config", "go.sum", "cargo.lock", "yarn.lock", "pnpm-lock",
     "composer.json", "composer.lock", "mix.exs", "build.sbt",
-    "cmakelists.txt", "configure", "rakefile", "gruntfile.js", "gulpfile.js",
-    "webpack.config", "vite.config", "build.bazel", "workspace",
-    "module.bazel", "justfile", "taskfile", "podfile", "pubspec.yaml",
+    "cmakelists.txt", "/configure", "rakefile", "gruntfile.js", "gulpfile.js",
+    "webpack.config", "vite.config", "build.bazel", "/workspace",
+    "pnpm-workspace", "module.bazel", "justfile", "taskfile", "podfile", "pubspec.yaml",
     ".gemspec", ".devcontainer/", "/ansible/", "serverless.yml",
     "template.yaml",
     # #1838 SEC-71240568 review finding 2: each of the above CI systems has
