@@ -1926,6 +1926,21 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
                                         suppression_comments={})
         self.assertEqual(payload["suppression_comments"], {})
 
+    def test_explicit_ignore_file_observation_is_filtered_to_produced_gitleaks(self):
+        with tempfile.TemporaryDirectory() as d:
+            capture = os.path.join(d, "gitleaks.sarif")
+            with open(capture, "wb") as fh:
+                fh.write(b'{"runs":[]}')
+            payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                        ["gitleaks", "semgrep"], [capture],
+                                        ignore_files={"gitleaks": "neutralised",
+                                                      "semgrep": "honoured"})
+            missing = rt.write_manifest(os.path.join(d, "n.json"),
+                                        ["gitleaks"], [],
+                                        ignore_files={"gitleaks": "neutralised"})
+        self.assertEqual(payload["ignore_files"], {"gitleaks": "neutralised"})
+        self.assertEqual(missing["ignore_files"], {})
+
 
 class TestEslintFileCoverageCapture(unittest.TestCase):
     def test_invalid_eslint_captures_discard_parser_text_and_still_fail_ingestion(self):

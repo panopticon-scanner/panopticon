@@ -199,9 +199,10 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
     is honoured on either check. Under `--security redteam` the reviewed tree is
     untrusted and the comment buys nothing.
 
-    The other kind, the source-root `.gitleaksignore`, is NOT this PR's and is
-    not this test's either: #1957 owns that measurement and #1924 owns the row.
-    What is pinned below is only what these launches carry.
+    The other kind, the source-root `.gitleaksignore`, is handled by the host
+    dispatcher's conditional redteam mount, separate from this adapter's argv.
+    #1957 measured why an ignore-path flag does not replace that mount.
+    These tests pin only the adapter's own launches.
     """
 
     def _launch(self, **kwargs):

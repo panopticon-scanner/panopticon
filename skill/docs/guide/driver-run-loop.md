@@ -572,8 +572,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `.panopticon/runs/<tag>/readiness.json`
   (`{schema_version, run_id, checked_at, ready, flags: {tools}, checks: [{name, ok, detail}]}`). It
   **fails closed**: a missing image with tools enabled is an `error` before a single dispatch entry
-  is written, carrying every failed row's remedy verbatim —
-  `docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest && docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools:latest`,
+  is written, carrying remedies such as pulling and tagging the image:
+  `docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, then
+  `docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools:latest`,
   or `docker build -t panopticon-tools <the panopticon repo root>`, or `--no-tools`. **`--no-tools`
   is the disclosed opt-out**: the two docker rows become `ok: null` ("not applicable"), the run
   proceeds without scanner evidence, and that choice is stated in `tools-ran.json`, in the report's
@@ -694,8 +695,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   target-controlled-configuration class tracked under #1924 (the scan-root half; #1877 closed the
   cwd half), and the rest of that class follows it — SPLIT IN TWO, because the two kinds of in-tree
   suppression are not the same claim (#1839, run-14 SEC-284952751 + SEC-1202454595). An ignore FILE
-  the reviewed repository commits is scanner CONFIGURATION, and it is replaced with a scanner-owned
-  one in BOTH modes: **trivy** runs with `--ignorefile=/panopticon-config/.trivyignore`, a constant
+  the reviewed repository commits is scanner CONFIGURATION. **Trivy** replaces its file with a
+  scanner-owned one in BOTH modes: `--ignorefile=/panopticon-config/.trivyignore`, a constant
   naming no advisory, staged the way bandit's ini is — one read-only FILE mount per launch, the
   scratch holding it left at its own 0700 because the container reads the bind target. That flag is
   **belt only**, in those words: the real-image round measured trivy 0.74.0 resolving the default
@@ -748,11 +749,19 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `// #nosec` and eslint-security's `/* eslint-disable */` stand in both modes, because neither
   tool's knob was verified against the pinned image in this round and a flag a scanner rejects is a
   tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). Two ignore
-  FILES are likewise still the target's, and both are #1924's open rows rather than this change's.
-  #1957's live test showed that an explicit empty ignore-path does not prevent the pinned gitleaks
-  binary's unconditional source-root `.gitleaksignore` load (v8.18.4, `cmd/root.go` L204-L224), so
-  no flag here pretends to move that read. And a `.semgrepignore` committed at the scan root
-  narrows the scan in both modes; no flag disables it at the pin; tracked on #2055.
+  FILES have separate rules. **Gitleaks** v8.18.4 always loads a source-root
+  `.gitleaksignore` (#1957). Under `standard`, the operator's file is honoured. Under `redteam`,
+  an existing regular file is covered by a scanner-owned empty file mounted read-only at
+  `/src/.gitleaksignore`. The empty file is 0644; its private directory remains 0700; the target
+  tree is untouched. An absent ignore file needs no mount. A symlink or other non-regular
+  mountpoint is unsafe because Docker can follow it and hide source, so Gitleaks is recorded
+  missing rather than launched in redteam. Staging failure has the same result, while other
+  scanners continue. Only a produced Gitleaks scan records `ignore_files.gitleaks` as
+  `honoured`, `neutralised`, or `absent` in `tools-manifest.json`; the gate discloses that
+  observed value beside its verdict. This field concerns an ignore FILE and stays separate
+  from `suppression_comments`, which concerns inline source comments. A `.semgrepignore`
+  committed at the scan root still narrows the scan in both modes; no flag disables it at
+  the pin; tracked on #2055.
   **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was

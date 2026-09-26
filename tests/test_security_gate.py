@@ -9,6 +9,66 @@ import scripts.ingest_tools as ingest_tools
 import scripts.security_gate as gate
 
 
+class TestGitleaksIgnoreDisclosure(unittest.TestCase):
+    def test_gate_discloses_observed_posture_and_preserves_missing_coverage(self):
+        for posture in ("honoured", "neutralised", "absent"):
+            with self.subTest(posture=posture), tempfile.TemporaryDirectory() as root:
+                tools = os.path.join(root, "tools")
+                os.mkdir(tools)
+                with open(os.path.join(tools, "gitleaks.sarif"), "w") as fh:
+                    json.dump({"version": "2.1.0", "runs": [{"tool": {
+                        "driver": {"name": "gitleaks"}}, "results": []}]}, fh)
+                manifest = os.path.join(root, "m.json")
+                with open(manifest, "w") as fh:
+                    json.dump({"selected": ["gitleaks"], "produced": ["gitleaks"],
+                               "missing": [], "ignore_files": {"gitleaks": posture}}, fh)
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+                self.assertEqual(rc, 0, err.getvalue())
+                self.assertIn("gitleaks", out.getvalue().lower())
+                self.assertIn(posture, out.getvalue())
+
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.mkdir(tools)
+            manifest = os.path.join(root, "m.json")
+            with open(manifest, "w") as fh:
+                json.dump({"selected": ["gitleaks"], "produced": [],
+                           "missing": [], "ignore_files": {}}, fh)
+            with self.assertRaisesRegex(ValueError, "missing set is inconsistent"):
+                gate.load_manifest(manifest)
+            with open(manifest, "w") as fh:
+                json.dump({"selected": ["gitleaks"], "produced": [],
+                           "missing": ["gitleaks"], "ignore_files": {}}, fh)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+            self.assertEqual(rc, 2)
+            self.assertIn("gitleaks", err.getvalue())
+            self.assertNotIn("neutralised", out.getvalue())
+
+    def test_old_manifest_without_ignore_files_still_loads(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = os.path.join(root, "m.json")
+            with open(manifest, "w") as fh:
+                json.dump({"selected": ["gitleaks"], "produced": [],
+                           "missing": ["gitleaks"]}, fh)
+            self.assertEqual(gate.load_manifest(manifest).get("ignore_files", {}), {})
+
+    def test_malformed_posture_cannot_reach_gate_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = os.path.join(root, "m.json")
+            for row in ({"gitleaks": "neutralised\nforged verdict"},
+                        {"semgrep": "absent"}):
+                with self.subTest(row=row):
+                    with open(manifest, "w") as fh:
+                        json.dump({"selected": ["gitleaks"], "produced": ["gitleaks"],
+                                   "missing": [], "ignore_files": row}, fh)
+                    with self.assertRaisesRegex(ValueError, "ignore_files is malformed"):
+                        gate.load_manifest(manifest)
+
+
 def _sarif(level=None):
     results = []
     if level:

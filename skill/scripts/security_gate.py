@@ -68,6 +68,14 @@ def load_manifest(path):
         raise ValueError("scanner manifest missing set is inconsistent")
     if set(excluded_scope) & set(selected):
         raise ValueError("scanner manifest excluded_scope overlaps selected")
+    ignore_files = data.get("ignore_files", {})
+    if (not isinstance(ignore_files, dict)
+            or any(k != "gitleaks" or v not in
+                   ("honoured", "neutralised", "absent")
+                   for k, v in ignore_files.items())
+            or (ignore_files and "gitleaks" not in produced)):
+        raise ValueError("scanner manifest ignore_files is malformed")
+    data["ignore_files"] = ignore_files
     return data
 
 
@@ -515,6 +523,11 @@ def main(argv=None):
                                            ingest_tools.display_scan_skips(names))
                               for segment, names in sorted(scan_skipped.items())),
                     remedy))
+    # The manifest records the file treatment observed at the Gitleaks
+    # launch. Use fixed vocabulary here: the artifact is input to this gate.
+    ignore_posture = manifest["ignore_files"].get("gitleaks")
+    if ignore_posture:
+        note += "; gitleaks .gitleaksignore: %s" % ignore_posture
     # The verdict line SPLITS only when a baseline was actually read. Strict is
     # the historical line, byte for byte, because a named-but-unreadable
     # baseline must look exactly like no baseline to everything downstream.

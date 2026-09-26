@@ -211,6 +211,7 @@ class TestAdapterSelection(unittest.TestCase):
             self.assertEqual(payload["missing"], ["gitleaks"])
             self.assertFalse(os.path.exists(os.path.join(out_dir, "gitleaks.sarif")))
 
+
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "requirements.txt"), "w").close()
@@ -376,6 +377,150 @@ class TestAdapterSelection(unittest.TestCase):
         self.assertNotIn("--pids-limit", flags)
         self.assertIn("--memory", flags)
         self.assertIn("--cpus", flags)
+
+
+class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
+    def _run(self, target, mode, tools=("gitleaks",), runner=None):
+        seen = []
+
+        def inspect(cmd, **kw):
+            cmd = list(cmd)
+            if cmd[-1] == "gitleaks":
+                mounts = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-v"]
+                overlay = [m for m in mounts if m.endswith(":/src/.gitleaksignore:ro")]
+                row = {"argv": cmd, "mounts": overlay}
+                if overlay:
+                    host = overlay[0].split(":", 1)[0]
+                    row.update(host=host, bytes=open(host, "rb").read(),
+                               file_mode=stat.S_IMODE(os.stat(host).st_mode),
+                               dir_mode=stat.S_IMODE(os.stat(os.path.dirname(host)).st_mode))
+                seen.append(row)
+            return (runner(cmd) if runner else
+                    _FakeResult(returncode=0, stdout=b'{"runs":[]}'))
+
+        with tempfile.TemporaryDirectory(prefix="pano-ignore-test-") as artifacts:
+            out = os.path.join(artifacts, "out")
+            written = rt.run_tools(target, list(tools), out, runner=inspect,
+                                   venv_dirs=[], security_mode=mode)
+            manifest = rt.write_manifest(os.path.join(artifacts, "manifest.json"),
+                                         list(tools), written)
+        return seen, manifest
+
+    def test_regular_file_matrix_observes_live_mount_and_cleanup(self):
+        for present, mode, posture in ((False, "standard", "absent"),
+                                       (False, "redteam", "absent"),
+                                       (True, "standard", "honoured"),
+                                       (True, "redteam", "neutralised")):
+            with self.subTest(present=present, mode=mode), tempfile.TemporaryDirectory() as d:
+                source = os.path.join(d, ".gitleaksignore")
+                if present:
+                    with open(source, "wb") as fh:
+                        fh.write(b"fingerprint:fixture\n")
+                entries_before = os.listdir(d)
+                before = open(source, "rb").read() if present else None
+                seen, manifest = self._run(d, mode)
+                self.assertEqual(len(seen), 1)
+                self.assertEqual(seen[0]["argv"][-4:],
+                                 ["/opt/panopticon/scripts/_run_adapter.py",
+                                  "--security", mode, "gitleaks"])
+                self.assertEqual(manifest["ignore_files"], {"gitleaks": posture})
+                self.assertEqual(open(source, "rb").read() if present else None, before)
+                self.assertEqual(os.listdir(d), entries_before)
+                if present and mode == "redteam":
+                    self.assertEqual(len(seen[0]["mounts"]), 1)
+                    self.assertEqual(seen[0]["bytes"], b"")
+                    self.assertEqual((seen[0]["file_mode"], seen[0]["dir_mode"]),
+                                     (0o644, 0o700))
+                    self.assertFalse(seen[0]["host"].startswith(d + os.sep))
+                    self.assertFalse(os.path.exists(seen[0]["host"]))
+                else:
+                    self.assertEqual(seen[0]["mounts"], [])
+
+    def test_unsafe_mountpoints_fail_only_gitleaks(self):
+        for shape in ("relative", "absolute", "dangling", "directory"):
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as d:
+                source = os.path.join(d, ".gitleaksignore")
+                referent = os.path.join(d, "config.yml")
+                with open(referent, "wb") as fh:
+                    fh.write(b"keep me")
+                if shape == "directory":
+                    os.mkdir(source)
+                else:
+                    os.symlink("absent" if shape == "dangling" else
+                               referent if shape == "absolute" else "config.yml", source)
+                seen, manifest = self._run(d, "redteam", tools=("gitleaks", "semgrep"))
+                self.assertEqual(seen, [])
+                self.assertEqual(manifest["missing"], ["gitleaks"])
+                self.assertEqual(manifest["produced"], ["semgrep"])
+                self.assertEqual(manifest["ignore_files"], {})
+                self.assertEqual(open(referent, "rb").read(), b"keep me")
+
+    def test_staging_failure_and_failed_capture_leave_no_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
+                fh.write(b"keep")
+            original = tempfile.mkdtemp
+
+            def fail_overlay(*args, **kwargs):
+                if kwargs.get("prefix") == "pano-gitleaks-ignore-":
+                    raise OSError("no scratch")
+                return original(*args, **kwargs)
+
+            with mock.patch.object(rt.tempfile, "mkdtemp", side_effect=fail_overlay):
+                seen, manifest = self._run(d, "redteam", tools=("gitleaks", "semgrep"))
+            self.assertEqual(seen, [])
+            self.assertEqual(manifest["missing"], ["gitleaks"])
+            self.assertEqual(manifest["ignore_files"], {})
+            seen, manifest = self._run(
+                d, "redteam", runner=lambda cmd: _FakeResult(returncode=7, stdout=b""))
+            self.assertEqual(len(seen), 1)
+            self.assertFalse(os.path.exists(seen[0]["host"]))
+            self.assertEqual(manifest["ignore_files"], {})
+
+    def test_ledger_resets_for_unselected_and_consecutive_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
+                fh.write(b"keep")
+            self.assertEqual(self._run(d, "redteam")[1]["ignore_files"],
+                             {"gitleaks": "neutralised"})
+            self.assertEqual(self._run(d, "standard")[1]["ignore_files"],
+                             {"gitleaks": "honoured"})
+            self.assertEqual(self._run(d, "redteam", tools=("semgrep",))[1]["ignore_files"],
+                             {})
+
+    def test_claim_follows_the_docker_mount_not_the_mode_hint(self):
+        @contextlib.contextmanager
+        def missing_mount(tool, target, mode):
+            yield [], "neutralised"
+
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
+                fh.write(b"keep")
+            with mock.patch.object(rt, "_adapter_ignore_overlay", missing_mount):
+                seen, manifest = self._run(d, "redteam")
+        self.assertEqual(seen[0]["mounts"], [])
+        self.assertEqual(manifest["ignore_files"], {"gitleaks": "honoured"})
+
+    def test_chmod_failure_cleans_partial_scratch_and_continues(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
+                fh.write(b"keep")
+            staged = []
+            original = rt.os.chmod
+
+            def fail_overlay_chmod(path, mode):
+                if os.path.basename(path) == "gitleaksignore":
+                    staged.append(path)
+                    raise OSError("chmod denied")
+                return original(path, mode)
+
+            with mock.patch.object(rt.os, "chmod", side_effect=fail_overlay_chmod):
+                seen, manifest = self._run(d, "redteam", tools=("gitleaks", "semgrep"))
+            self.assertEqual(seen, [])
+            self.assertEqual(manifest["missing"], ["gitleaks"])
+            self.assertEqual(manifest["ignore_files"], {})
+            self.assertEqual(len(staged), 1)
+            self.assertFalse(os.path.exists(staged[0]))
 
 
 class TestTheAdapterDispatchCarriesTheSecurityMode(unittest.TestCase):

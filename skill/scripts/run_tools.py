@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -779,6 +780,62 @@ def _adapter_security_mode(docker_argv):
 
 
 @contextlib.contextmanager
+def _gitleaks_ignore_overlay(target, security_mode):
+    """Stage an empty source-root ignore file only for a safe redteam mountpoint.
+
+    Docker cannot mount a file over an absent path in the read-only /src bind.
+    A symlink is worse: Docker follows it and hides its referent in the scan.
+    Keep the scratch file alive until the capture finishes.
+    """
+    mountpoint = os.path.join(target, ".gitleaksignore")
+    try:
+        shape = os.lstat(mountpoint).st_mode
+    except FileNotFoundError:
+        yield [], "absent"
+        return
+    except OSError as exc:
+        print("tool gitleaks skipped: cannot inspect .gitleaksignore (%s)" % exc,
+              file=sys.stderr)
+        yield None, None
+        return
+    if security_mode != REDTEAM:
+        yield [], "honoured"
+        return
+    if not stat.S_ISREG(shape):
+        print("tool gitleaks skipped: unsafe .gitleaksignore mountpoint; "
+              "recording as missing", file=sys.stderr)
+        yield None, None
+        return
+    scratch = None
+    try:
+        scratch = tempfile.mkdtemp(prefix="pano-gitleaks-ignore-")
+        host_file = os.path.join(scratch, "gitleaksignore")
+        with open(host_file, "wb") as fh:
+            fh.write(b"")
+        os.chmod(host_file, 0o644)
+    except OSError as exc:
+        print("tool gitleaks skipped: empty ignore file could not be staged "
+              "(%s); recording as missing" % exc, file=sys.stderr)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+        yield None, None
+        return
+    try:
+        yield ["-v", "%s:/src/.gitleaksignore:ro" % host_file], "neutralised"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def _adapter_ignore_overlay(tool, target, security_mode):
+    if tool == "gitleaks":
+        with _gitleaks_ignore_overlay(target, security_mode) as observation:
+            yield observation
+    else:
+        yield [], None
+
+
+@contextlib.contextmanager
 def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
     """`(cmd, docker mount flags)` with *tool* pinned to a configuration file WE
     wrote, or `(None, None)` when that file could not be staged.
@@ -1030,8 +1087,9 @@ def filter_online(chosen, online):
 # directory its OWN config resolution walks from -- pip deciding a requirement
 # is a local archive on a bare SUFFIX match and running a committed
 # `evil.tar.gz`'s build backend, npm reading `.npmrc`, semgrep
-# `.semgrepignore`, gitleaks `.gitleaksignore`. The rule is now uniform rather
-# than one adapter's exemption: every scanner container starts OUTSIDE the
+# `.semgrepignore`. Gitleaks' independent source-root `.gitleaksignore` read is
+# handled by the conditional overlay above. The cwd rule is uniform: every
+# scanner container starts OUTSIDE the
 # mount. Docker CREATES a `-w` directory that does not exist, so this one is
 # empty by construction and needs nothing in the image, and no argv changes --
 # every tool already names its scan root by absolute path.
@@ -1438,6 +1496,10 @@ CONFIG_TARGET_BANDIT = "target .bandit (its skips and tests)"
 CONFIG_SCANNER_OWNED = "scanner-owned"
 _SCANNER_CONFIG_POSTURE: dict[str, str] = {}
 
+# Only a produced Gitleaks capture may carry this observation. Filled from the
+# mount kept alive during its launch, then filtered to produced in write_manifest.
+_IGNORE_FILE_POSTURE: dict[str, str] = {}
+
 # Above this size a capture is re-serialized in json.dumps' default layout
 # instead of the producer's own: matching the layout costs one extra
 # serialization of the ORIGINAL document to verify the guess, which is free on a
@@ -1690,6 +1752,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     _NETWORK_POSTURE.clear()
     _SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
     _SCANNER_CONFIG_POSTURE.clear()
+    _IGNORE_FILE_POSTURE.clear()
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
@@ -1780,31 +1843,43 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # (calibration 2026-08-03: fixed adapters silently kept failing
             # because the image carried the stale code).
             scripts_dir = os.path.dirname(os.path.abspath(__file__))
-            docker.extend([
-                "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
-                "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
-                "python3", "/opt/panopticon/scripts/_run_adapter.py",
-                # #1839: this run's mode, BEFORE the adapter name so the name
-                # stays the argv's last token, and on the argv rather than in
-                # the environment (which the target's own hooks could set).
-                # `_run_adapter._split_security_mode` fails the tool closed on
-                # a token it does not recognise.
-                SECURITY_FLAG, security_mode, tool])
-            # #1839: gitleaks' suppression flag is appended by the adapter
-            # inside the container, so what the host can observe is the mode it
-            # put on this argv and the adapter's own declaration that it reads
-            # one -- both read back here rather than assumed.
-            adapter_mode = _adapter_security_mode(docker)
-            _record_suppression_posture(
-                tool,
-                adapter_mode == REDTEAM
-                and SUPPRESSION_COMMENTS.get(tool, (None, None))[1] is not None
-                and bool(getattr(adapter, "reads_security_mode", False)),
-                adapter_mode)
-            with progress.tool(tool, index, total) as step:
-                done = step.finish(
-                    _capture_run("adapter", tool, docker, out_path, runner,
-                                 docker_context=docker_context))
+            with _adapter_ignore_overlay(tool, target, security_mode) as (
+                    ignore_mount, ignore_posture):
+                if ignore_mount is None:
+                    progress.note("[%d/%d] gitleaks skipped: ignore-file "
+                                  "mount unavailable" % (index, total))
+                    continue
+                docker.extend([
+                    "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                    "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir])
+                docker.extend(ignore_mount)
+                docker.extend([image, "python3", "/opt/panopticon/scripts/_run_adapter.py",
+                               SECURITY_FLAG, security_mode, tool])
+                # The adapter appends gitleaks' inline-comment flag in the
+                # container; its declared mode and this dispatch argv are the
+                # available host-side observation.
+                adapter_mode = _adapter_security_mode(docker)
+                _record_suppression_posture(
+                    tool,
+                    adapter_mode == REDTEAM
+                    and SUPPRESSION_COMMENTS.get(tool, (None, None))[1] is not None
+                    and bool(getattr(adapter, "reads_security_mode", False)),
+                    adapter_mode)
+                with progress.tool(tool, index, total) as step:
+                    done = step.finish(
+                        _capture_run("adapter", tool, docker, out_path, runner,
+                                     docker_context=docker_context))
+                if done and tool == "gitleaks":
+                    # The mounted file, not the requested mode, is the fact.
+                    # If the mount disappears from the actual Docker argv,
+                    # the target's existing ignore file remains honoured.
+                    mounted = (ignore_mount and len(ignore_mount) == 2
+                               and ignore_mount[0] == "-v"
+                               and ignore_mount[1] in docker)
+                    _IGNORE_FILE_POSTURE[tool] = (
+                        "neutralised" if ignore_posture == "neutralised" and mounted
+                        else "honoured" if ignore_posture == "neutralised"
+                        else ignore_posture)
             if done:
                 written.append(done)
             continue
@@ -1839,7 +1914,7 @@ def _excluded_dir_row(d):
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
                    network=None, exclude_globs=(), suppression_comments=None,
-                   scanner_config=None):
+                   scanner_config=None, ignore_files=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1903,10 +1978,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     the claim change rather than leaving an intention behind; for an INGEST-lever
     tool (`SUPPRESSION_INGEST_LEVER`, semgrep today) the argv decides nothing and
     the row follows the run's mode, which is what does. This row is about
-    COMMENTS only: the ignore FILES of the same class are `scanner_config`
-    below (bandit), unconditional (`.trivyignore`, `osv-scanner.toml`), or
-    still open (`.gitleaksignore`, which gitleaks 8.18.4 reads from the source
-    root unconditionally -- #1957, tracked on #1924).
+    COMMENTS only. `ignore_files` separately records the source-root
+    `.gitleaksignore` observed at launch: `honoured` for a target file allowed
+    under standard, `neutralised` for the redteam empty-file mount, and
+    `absent` when no file exists. Only a produced Gitleaks scan gets a row.
+    An explicit map follows the same observation override pattern as
+    `suppression_comments`; it is still filtered to produced Gitleaks.
 
     One row is true for a reason that is NOT on the argv, and this is the
     schema of record, so it says so: semgrep's. At the pin the scanner reports
@@ -1949,6 +2026,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     excluded_scope = list(excluded_scope) + refused
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
+    observed_ignore_files = (_IGNORE_FILE_POSTURE if ignore_files is None
+                             else ignore_files)
     file_coverage = {}
     for capture_path in written:
         if os.path.basename(capture_path) == "eslint-security.json":
@@ -1978,6 +2057,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    str(k): str(v) for k, v in
                    (_SUPPRESSION_POSTURE if suppression_comments is None
                     else suppression_comments).items()},
+               "ignore_files": {"gitleaks": str(observed_ignore_files["gitleaks"])}
+               if "gitleaks" in produced and "gitleaks" in observed_ignore_files else {},
                "scanner_config": {
                    str(k): str(v) for k, v in
                    (_SCANNER_CONFIG_POSTURE if scanner_config is None
