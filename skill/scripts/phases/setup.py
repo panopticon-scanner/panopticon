@@ -149,8 +149,8 @@ def _setup_scan_entry(review_root, prompt, host):
     return entry
 
 def _unbound_setup_artifact(review_root, name, manifest):
-    """Why `.panopticon/<name>` is not THIS setup run's evidence, or None when
-    it is (SEC-579863541, #1841).
+    """`(doc, reason)`: what `.panopticon/<name>` parsed as, and why it is not
+    THIS setup run's evidence -- None when it is (SEC-579863541, #1841).
 
     `setup-proposal.json` and `setup-complete.json` are `runio._TOP_LEVEL`
     names, so `_pano` resolves them FLAT: fixed paths in a directory the
@@ -177,33 +177,43 @@ def _unbound_setup_artifact(review_root, name, manifest):
       another id -- or none at all -- was not written by this run. The proposal
       carries no such field, which is why tracked-ness is all it has.
 
+    So an UNTRACKED `setup-proposal.json` is accepted as the host's own return
+    of the setup-scan dispatch -- which is the residual, disclosed rather than
+    closed (review finding 2, fix round 2): on a NON-GIT target nothing is
+    tracked (`runio._manifest_committed` answers False there), so the proposal
+    has no binding at all and only `setup-complete.json` is bound, by run id. A
+    real binding for it is setup's own dispatch request, which carries this run's
+    id and the request sha since #1727 -- a follow-up, not this fix.
+
     An absent or unparseable file is nobody's evidence and gets no reason: it
-    satisfies no predicate anyway, and a refusal named over it would be noise.
+    satisfies no predicate anyway, and a refusal named over it would be noise --
+    and the caller's `doc is None` is what keeps a missing artifact from costing
+    a `git ls-files`.
     """
     path = runio._pano(review_root, name)
     doc = runio._load_json(path)
     if doc is None:
-        return None
+        return None, None
     if runio._manifest_committed(review_root, path):
-        return ("it is git-tracked in the target, and a driver-written setup "
-                "artifact is never committed -- remove it from the repository "
-                "(while it is there this phase ignores it and runs again)")
+        return doc, ("it is git-tracked in the target, and a driver-written setup "
+                     "artifact is never committed -- remove it from the repository "
+                     "(while it is there this phase ignores it and runs again)")
     if name != "setup-complete.json":
-        return None
+        return doc, None
     want = (manifest or {}).get("run_id")
     got = doc.get("run_id") if isinstance(doc, dict) else None
     if want and got == want:
-        return None
+        return doc, None
     # Fails CLOSED on a manifest with no id of its own: nothing can be bound to
     # a run that does not say which run it is.
-    return ("it carries run_id %r, not this setup run's %r -- "
-            "`driver setup --reset` starts over" % (got, want))
+    return doc, ("it carries run_id %r, not this setup run's %r -- "
+                 "`driver setup --reset` starts over" % (got, want))
 
 def _bound_setup_artifact(review_root, name, manifest):
-    """True when `.panopticon/<name>` parses AND this run wrote it. The parse
-    comes first so an absent artifact costs no `git ls-files`."""
-    return (runio._json_parses(runio._pano(review_root, name))
-            and _unbound_setup_artifact(review_root, name, manifest) is None)
+    """True when `.panopticon/<name>` parses AND this run wrote it. ONE read for
+    both halves, and an absent artifact still costs no `git ls-files`."""
+    doc, reason = _unbound_setup_artifact(review_root, name, manifest)
+    return doc is not None and reason is None
 
 def _report_unbound_setup_artifacts(review_root, manifest):
     """Name every setup artifact that satisfies no done-predicate, once per
@@ -215,7 +225,7 @@ def _report_unbound_setup_artifacts(review_root, manifest):
     `_manifest_committed` raises DriverError rather than trust an ambiguous git
     failure, and that refusal is this verb's `error` status like every other."""
     for name in ("setup-proposal.json", "setup-complete.json"):
-        reason = _unbound_setup_artifact(review_root, name, manifest)
+        _doc, reason = _unbound_setup_artifact(review_root, name, manifest)
         if reason:
             print("driver setup: ignoring %s: %s" % (name, reason),
                   file=sys.stderr, flush=True)

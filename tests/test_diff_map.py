@@ -784,7 +784,8 @@ class _PrRunner:
     """Only the commands acquire_pr/release_worktree issue, with visible state."""
 
     def __init__(self, repo, wt, *, pr=7, gh_stdout='{"baseRefName": "main"}',
-                 gh_returncode=0, gh_stderr="", timeout_on=None, fail_on=None):
+                 gh_returncode=0, gh_stderr="", timeout_on=None, fail_on=None,
+                 on_fetch=None):
         self.repo = repo
         self.wt = wt
         self.pr = pr
@@ -793,6 +794,10 @@ class _PrRunner:
         self.gh_stderr = gh_stderr
         self.timeout_on = timeout_on
         self.fail_on = fail_on
+        # #1841 fix round 2: the window between the fetch and the claim. Called
+        # once the fetch has "happened", so a test can plant at the leaf exactly
+        # where a local attacker would.
+        self.on_fetch = on_fetch
         self.calls = []
         self.fetches = 0
         self.adds = 0
@@ -871,9 +876,18 @@ class _PrRunner:
         elif phase == "fetch":
             self.fetches += 1
             self.temp_ref = ref
+            if self.on_fetch is not None:
+                self.on_fetch()
         elif phase == "worktree_add":
             self.adds += 1
             os.makedirs(self.wt, exist_ok=True)
+            # #1841 fix round 2: git leaves the PR's OWN files in the worktree,
+            # including its `panopticon.yml` -- which is what `_sync_config` has
+            # to overwrite, and therefore what makes the create branch's
+            # disclosure print reachable in a test at all.
+            with open(os.path.join(self.wt, "panopticon.yml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
             self.registered = True
         elif phase == "delete_ref":
             self.temp_ref = None
@@ -1297,6 +1311,64 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
         message = self._refused(wt, registered=True)
         self.assertIn("0775", message)
         self.assertIn("worktree remove", message)   # the remedy for a REGISTERED one
+
+    def test_a_leaf_planted_after_the_fetch_refuses_and_deletes_the_temp_ref(self):
+        # Fix round 2, review finding 1. The claim runs AFTER the fetch, so its
+        # refusal -- the race this PR exists to close -- must not strand
+        # `refs/panopticon/pr-<n>-<uuid>` in the operator's checkout pinning the
+        # fetched PR objects. Same assertion shape as
+        # `test_worktree_add_failure_deletes_temporary_ref`, one statement over.
+        wt = self._leaf()
+
+        def plant():
+            with open(wt, "w", encoding="utf-8") as fh:   # mkdir will hit EEXIST
+                fh.write("planted in the window\n")
+
+        runner = _PrRunner(".", wt, on_fetch=plant)
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with self.assertRaisesRegex(RuntimeError, "not a directory"):
+                diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(1, runner.fetches)        # the fetch DID happen
+        self.assertEqual(0, runner.adds)
+        self.assertIsNone(runner.temp_ref)         # ...and its ref was deleted
+        self.assertTrue(any(argv[-3:-1] == ["update-ref", "-d"]
+                            for argv, _ in runner.calls))
+
+    def test_the_create_branch_prints_sync_notes_with_the_pr_prefix(self):
+        # Fix round 2, review finding 4. `acquire_pr` prints `_sync_config`'s
+        # disclosures through two identical loops, one per branch; moving the
+        # older test to the reuse branch left this one unpinned. The PR's own
+        # `panopticon.yml` (which git checks out, and the fake now writes) is
+        # what there is to overwrite.
+        wt = self._leaf()
+        runner = _PrRunner(".", wt)
+        err = io.StringIO()
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with contextlib.redirect_stderr(err):
+                info = diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+        self.assertIn("panopticon --pr: ", err.getvalue())
+        self.assertIn("overwrote", err.getvalue())
+
+    def test_a_world_writable_parent_without_the_sticky_bit_is_refused(self):
+        # Fix round 2, review finding 5. Every post-vet guarantee rests on the
+        # temp dir's sticky bit: without `S_ISVTX` another local account can
+        # `rename(2)` our vetted -- or git-populated -- leaf away and put its own
+        # there, and nothing downstream looks again. `TMPDIR` is
+        # environment-supplied, so the property is not structural; check it.
+        parent = tempfile.mkdtemp(prefix="panopticon-test-tmp-")
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
+        previous = stat.S_IMODE(os.lstat(parent).st_mode)
+        wt = os.path.join(parent, "panopticon-pr-7-0123456789ab")
+        os.mkdir(wt)
+        try:
+            os.chmod(parent, 0o777)                  # world-writable, NOT sticky
+            message = self._refused(wt)
+        finally:
+            os.chmod(parent, previous)
+        self.assertIn(parent, message)
+        self.assertIn("TMPDIR", message)
 
     def test_the_reuse_branch_returns_a_registered_worktree_that_is_still_ours(self):
         wt = self._leaf()

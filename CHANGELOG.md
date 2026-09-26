@@ -24,9 +24,9 @@ evidence exposed.
   the statement before the add, and runs the same check on the reuse branch a resume takes. The
   guard is on ownership and group/other WRITE, not on every group/other bit: the tools image runs
   as `scanner` and mounts the review root — which under `--pr` IS that worktree — read-only, so
-  traversal by another uid is required. The path stays deterministic, because `--pr` resumability
-  depends on it.
-  `phases/setup.py` gave back the room under its 700-line ceiling first: the #1737 unenforced-scan
+  traversal by another uid is required, and the leaf's parent must be sticky or private. The path
+  stays deterministic, because `--pr` resumability depends on it — and `phases/setup.py` gave back
+  the room under its 700-line ceiling before any of it, so the #1737 unenforced-scan
   acknowledgement is now `phases/setup_ack.py`.
 
 - **The rest of the configuration a scanned repository used to choose for the scanners (#1839,

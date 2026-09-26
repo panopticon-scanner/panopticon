@@ -2,7 +2,7 @@
 changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 import hashlib
 import json as _json
 import os
@@ -606,11 +606,40 @@ _LEAF_UNREGISTER_REMEDY = ("Remove that worktree (`git worktree remove --force "
                            "prune`, and re-run")
 
 
-def _refuse_leaf(wt, clause, remedy):
+def _refuse_leaf(wt, clause, remedy) -> NoReturn:
     """One wording for every hostile-leaf refusal: the PATH, what is wrong with
-    it, and a remedy the operator can paste."""
+    it, and a remedy the operator can paste.
+
+    Typed `NoReturn` so its three callers below, which read as fall-throughs,
+    are visibly terminal to mypy and to the next reader."""
     raise RuntimeError("panopticon --pr: refusing the worktree path %s: %s. %s."
                        % (wt, clause, remedy))
+
+
+# The remedy for a shared temp dir that cannot hold the leaf safely. Not
+# "delete it": the directory is the operator's `TMPDIR`, and moving the whole
+# worktree root is the only thing that changes the answer.
+_LEAF_TMPDIR_REMEDY = ("Point TMPDIR at a directory only you can write "
+                       "(export TMPDIR=\"$HOME/tmp\") and re-run")
+
+
+def _require_private_parent(wt):
+    """The leaf's PARENT must be unwritable by others, or sticky, else refuse.
+
+    Every guarantee after the vet rests on this, and it was an assumption in a
+    docstring until review finding 5 (fix round 2): without `S_ISVTX` another
+    local account with write access to the parent can `rename(2)` our vetted --
+    or git-populated -- leaf away and put its own directory there, and nothing
+    downstream looks again. `tempfile.gettempdir()` honours `TMPDIR`, which is
+    environment-supplied, so the property is not structural and is checked here.
+    `/tmp` and macOS's per-user `/var/folders/...` both pass (sticky, and
+    `0o700`, respectively)."""
+    parent = os.path.dirname(wt)
+    st = os.lstat(parent)
+    if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+        _refuse_leaf(wt, "its parent directory %s is writable by group or other "
+                     "and is not sticky, so another account can replace the "
+                     "worktree after this check" % parent, _LEAF_TMPDIR_REMEDY)
 
 
 def _require_own_worktree_dir(wt, remedy):
@@ -642,6 +671,7 @@ def _require_own_worktree_dir(wt, remedy):
     `_claim_worktree_leaf` for the path it would break, and the residual: another
     local account can list the PR worktree, which is the exposure the operator's
     own checkout already carries under a default umask."""
+    _require_private_parent(wt)
     st = os.lstat(wt)
     if not stat.S_ISDIR(st.st_mode):
         _refuse_leaf(wt, "it exists and is not a directory", remedy)
@@ -676,8 +706,9 @@ def _claim_worktree_leaf(wt):
     Returns True when this call created it.
 
     Creating it ourselves is what closes the window: `os.mkdir` fails EEXIST
-    rather than adopting someone else's directory, the result is ours, and on a
-    sticky shared temp dir nobody else can replace it between this call and the
+    rather than adopting someone else's directory, the result is ours, and --
+    `_require_private_parent` having checked that the temp dir is sticky or
+    unwritable by others -- nobody else can replace it between this call and the
     add. The path stays deterministic -- the idempotence and `--pr` resumability
     `_worktree_dir` exists for depend on that, so refusing a hostile
     pre-existing leaf is the fix, not randomizing the name.
@@ -694,9 +725,14 @@ def _claim_worktree_leaf(wt):
     here either: a mode-less `mkdir` says the same thing without handing the
     security gate a group/other bit to flag.
 
+    The parent is checked before the `mkdir` rather than after: a leaf created
+    into a temp dir that cannot hold it safely would be litter left behind by
+    its own refusal.
+
     `FileExistsError` here is not the ordinary case (the vet above already
     refused a hostile leaf and accepted an empty one of ours): it is the
     interval, so the same refusal runs again on what is actually at the path."""
+    _require_private_parent(wt)
     try:
         os.mkdir(wt)                      # umask's mode: see the docstring
         return True
@@ -1109,11 +1145,14 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
           "fetch", "--no-recurse-submodules", "--no-write-fetch-head", _PR_REMOTE,
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
-    # #1841: ours, unwritable by anyone else, and one statement away from the
-    # add -- nothing else can take the path in between on a sticky temp dir.
-    created = _claim_worktree_leaf(wt)
-    added = False
+    # #1841: ours, unwritable by anyone else, in a temp dir checked to be sticky
+    # or private, and one statement away from the add -- so nothing else can take
+    # the path in between. Inside the `try` (fix round 2, review finding 1): its
+    # refusal is triggerable by the actor this guard exists for, and the `finally`
+    # below is what keeps the fetched ref from outliving it.
+    created = added = False
     try:
+        created = _claim_worktree_leaf(wt)
         _safe(repo, ["worktree", "add", "--detach", wt, head_sha], mutating=True)
         added = True
     finally:
@@ -1122,10 +1161,13 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         except RuntimeError:
             pass
         if created and not added:
-            # A failed acquisition leaves no worktree behind. `os.rmdir` can
-            # only take back an EMPTY directory, so a half-written tree stays
-            # for the operator (and the vet above names it next time) rather
-            # than being deleted out from under whatever git did write.
+            # A failed acquisition leaves no worktree behind -- and only ever
+            # the leaf THIS call made, which is why `created` starts False: a
+            # claim that refused someone else's leaf must not delete it.
+            # `os.rmdir` can only take back an EMPTY directory, so a
+            # half-written tree stays for the operator (and the vet above names
+            # it next time) rather than being deleted out from under whatever
+            # git did write.
             try:
                 os.rmdir(wt)
             except OSError:
