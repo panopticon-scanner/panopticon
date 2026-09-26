@@ -218,6 +218,7 @@ groups:
       - tests/test_host_posture_wiring.py
       - tests/test_host_evidence_wiring.py
       - tests/test_codex_host.py
+      - tests/test_codex_capture_protocol.py
       - tests/test_codex_read_tools.py
       - tests/test_kimi_guard_hook.py
       - tests/test_read_guard_hook.py
@@ -284,6 +285,7 @@ groups:
     - tests/test_setup_proposal.py
     - tests/test_tests_axis.py
     - tests/test_diff_map.py
+    - tests/test_pr_worktree_integration.py
     - tests/test_diff_map_fail_closed.py
     - tests/test_matrix_coverage.py
     - tests/test_catalog_data.py
