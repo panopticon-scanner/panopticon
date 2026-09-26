@@ -927,6 +927,63 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
         self.assertIn("fixture-corpus (fixture-corpus: 1)", line)
         self.assertIn("NOT gated", line)
 
+    def test_the_gate_line_names_the_virtualenvs_the_scan_skipped(self):
+        # #1839 (run-14 SEC-1486247143): under `standard` the RUNNER still skips
+        # a marker-confirmed virtualenv for the walk saving, and that skip
+        # produces no finding -- so before this, nothing anywhere in the run
+        # said it had happened. The manifest rows are read back and named here,
+        # beside the verdict, because this is the line an operator reads.
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(_sarif(), fh)
+            manifest = os.path.join(root, "manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "excluded_dirs": [
+                               {"path": ".venv", "reason": "pyvenv.cfg",
+                                "skipped": True},
+                               {"path": "env", "reason": "pyvenv.cfg",
+                                "skipped": True},
+                               {"path": "venv", "reason": "name",
+                                "skipped": True},
+                               {"path": "src", "reason": "pyvenv.cfg-without-shape",
+                                "skipped": False}]}, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        line = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("2 directories removed from the scan as "
+                      "virtualenv-by-marker (.venv, env)", line)
+        self.assertIn("--security redteam", line)
+        # Only the MARKER-confirmed skips: a name-only skip is already disclosed
+        # per finding, and a directory the scan did not skip is not a loss.
+        self.assertNotIn("src", line)
+
+    def test_the_scan_skip_clause_is_silent_when_nothing_was_skipped(self):
+        # "nobody counted" must not render as "nothing was dropped", and the
+        # reverse: a run with no venv to skip prints the line it always printed.
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(_sarif(), fh)
+            manifest = os.path.join(root, "manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "excluded_dirs": [
+                               {"path": "venv", "reason": "name",
+                                "skipped": True}]}, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("removed from the scan", buf.getvalue())
+
 
 def _delta_result(rule="dangerous-subprocess-use-audit", uri="/src/app.py",
                   line=1, message="found subprocess function with user input",

@@ -789,6 +789,19 @@ def _render_suppressed_git_drivers(meta):
             % (len(labels), ", ".join(_escape(label) for label in labels)))
 
 
+# #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` (this module keeps its
+# imports guarded so it can render standalone), and pinned to it by
+# tests/test_ingest_tools.py. The clause exists because the sentence below is
+# about findings dropped on a directory NAME, and this row is neither.
+MARKER_VENV_SEGMENT = "virtualenv-by-marker"
+_MARKER_VENV_CLAUSE = (
+    " <code>virtualenv-by-marker</code> is the exception and counts "
+    "DIRECTORIES, not findings: that many marker-confirmed virtualenvs were "
+    "left out of the SCAN itself under <code>--security standard</code>, so no "
+    "finding exists to re-admit and no directory name is behind the drop "
+    "(<code>tools-manifest.json</code>'s <code>excluded_dirs</code> names them)")
+
+
 def _render_suppressed_tools(meta):
     """#1578: what the tool axis dropped for the DIRECTORY NAME it sits under.
 
@@ -823,10 +836,12 @@ def _render_suppressed_tools(meta):
             "&mdash; dropped from the tool axis on that name alone; "
             "the agentic panel still reviewed those files, and "
             "<code>--security redteam</code> gates the CRITICAL and "
-            "secret-class ones%s</div>"
+            "secret-class ones%s%s</div>"
             % (" &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows),
                (" (%d withheld from this run's gate by that rule, #1578 "
-                "policy C)" % withheld) if withheld else ""))
+                "policy C)" % withheld) if withheld else "",
+               _MARKER_VENV_CLAUSE if any(seg == MARKER_VENV_SEGMENT
+                                          for seg, _n in rows) else ""))
 
 
 def _suppressed_rows(value):

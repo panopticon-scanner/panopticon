@@ -382,6 +382,10 @@ def main(argv=None):
         findings, dispositions, failures, high, suppressed = evaluate(
             args.tools_dir, args.manifest, args.exclude, args.security_mode,
             excluded_out=excluded)
+        # #1839: the SCAN-side half of the same disclosure. Read back through
+        # the one validator rather than widening `evaluate`'s tuple, which every
+        # caller and test unpacks positionally.
+        scan_skipped = ingest_tools.scan_skipped_venvs(load_manifest(args.manifest))
     except ValueError as exc:
         print("security-gate: %s" % exc, file=sys.stderr)
         return 2
@@ -440,6 +444,18 @@ def main(argv=None):
         # what this gate exists to catch, and the line said nothing at all.
         note += ("; %d excluded by --exclude (%s)"
                  % (len(excluded), ", ".join(sorted(set(args.exclude)))))
+    if scan_skipped:
+        # #1839 (run-14 SEC-1486247143): a virtualenv the RUNNER was told to
+        # skip produced no finding, so nothing downstream could say it happened
+        # -- one committed `pyvenv.cfg` took a subtree out of semgrep, trivy and
+        # bandit and this line was byte-identical either way. `standard` keeps
+        # the skip for its walk saving; it does not get to keep the silence.
+        note += ("; %d %s removed from the scan as %s (%s)%s"
+                 % (len(scan_skipped),
+                    "directory" if len(scan_skipped) == 1 else "directories",
+                    ingest_tools.MARKER_VENV_SEGMENT, ", ".join(scan_skipped),
+                    "" if args.security_mode == REDTEAM
+                    else " -- re-run with --security redteam to scan them"))
     # The verdict line SPLITS only when a baseline was actually read. Strict is
     # the historical line, byte for byte, because a named-but-unreadable
     # baseline must look exactly like no baseline to everything downstream.

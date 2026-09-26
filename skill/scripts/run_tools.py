@@ -6,7 +6,7 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
-import configparser
+import contextlib
 import json
 import os
 import re
@@ -229,14 +229,82 @@ VENV_DIR_NAMES = ("venv", ".venv")
 VENV_MAX_DEPTH = 3
 _VENV_WALK_PRUNE = {".git", "node_modules", "__pycache__"}
 
+# #1839 (run-14 SEC-1486247143): the marker alone is a CLAIM the reviewed
+# repository can make in one committed file, and on the strength of it the
+# runner told semgrep, trivy and bandit to skip the directory holding it -- so
+# `src/pyvenv.cfg` removed `src/` from the scan CI's merge gate reads, silently.
+# A directory flagged on the marker must also have the SHAPE of an installed
+# environment; a bare marker beside real source gets this reason instead and is
+# never handed to a scanner's exclusion knob.
+VENV_MARKER_NO_SHAPE = "pyvenv.cfg-without-shape"
+# Where every creator puts an interpreter (venv, virtualenv, uv, pipenv,
+# in-project poetry all write `bin/python`; Windows layouts use `Scripts`).
+_VENV_INTERPRETERS = (("bin", "python"), ("bin", "python3"),
+                      ("Scripts", "python.exe"), ("Scripts", "pythonw.exe"))
+_VENV_SITE_PACKAGES = "site-packages"
+
+
+def has_venv_shape(directory):
+    """True when *directory* is STRUCTURED like an installed Python environment.
+
+    An interpreter where a creator puts one, or a `lib/python*/site-packages`
+    (POSIX) / `Lib/site-packages` (Windows) tree. At most one `listdir` per
+    candidate directory, so the walk above stays a handful of stats deeper.
+
+    Not a proof of authenticity, and not offered as one: a target can write
+    three files as easily as one. It is the cheap half of #1839. The dear half
+    is `partition_venv_dirs`, which stops handing ANY virtualenv to a scanner's
+    exclusion knob under `--security redteam` and discloses every one it still
+    skips under `standard`.
+    """
+    for parts in _VENV_INTERPRETERS:
+        if os.path.isfile(os.path.join(directory, *parts)):
+            return True
+    for lib in ("lib", "Lib"):
+        libdir = os.path.join(directory, lib)
+        if os.path.isdir(os.path.join(libdir, _VENV_SITE_PACKAGES)):
+            return True
+        try:
+            names = os.listdir(libdir)
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith("python") and os.path.isdir(
+                    os.path.join(libdir, name, _VENV_SITE_PACKAGES)):
+                return True
+    return False
+
+
+# Glob METACHARACTERS. semgrep's `--exclude` and trivy's `--skip-dirs` take
+# PATTERNS, not literal paths, so a directory named `*` does not mean "skip this
+# directory", it means "skip everything" -- and bandit's comma-joined value
+# cannot quote one either. `_with_venv_excludes`'s attached `--flag=value` form
+# stops a directory named `-rf` from reading as an OPTION; nothing stopped a
+# name from reading as a PATTERN (#1839, run-14 SEC-1486247143).
+_GLOB_METACHARACTERS = ("*", "?", "[", "]")
+
+
+def expressible_as_exclusion(path):
+    """True when *path* can be handed to a scanner's exclusion knob AS ITSELF.
+
+    A directory whose name no exclusion pattern can spell is scanned, and the
+    manifest row says why -- turning it into a wildcard would hand the target
+    the whole tree, and dropping it silently would be the same loss without the
+    disclosure.
+    """
+    return not any(char in str(path) for char in _GLOB_METACHARACTERS)
+
 
 def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
     """Virtualenv directories under *target*, repo-relative, with their reason.
 
-    Returns ``[{"path": ".venv", "reason": "pyvenv.cfg" | "name"}, ...]`` sorted
-    by path. A flagged directory is never descended into (a venv inside a venv
-    is the same exclusion), and `reason` is what the tools manifest discloses so
-    a report can say what was pruned and on what evidence.
+    Returns ``[{"path": ".venv", "reason": <one of VENV_MARKER, "name",
+    VENV_MARKER_NO_SHAPE>}, ...]`` sorted by path. A directory flagged as a venv
+    is never descended into (a venv inside a venv is the same exclusion), and
+    `reason` is what the tools manifest discloses so a report can say what was
+    pruned and on what evidence. #1839: the third reason is the one that is NOT
+    a virtualenv -- a `pyvenv.cfg` with no environment under it -- which is
+    reported, walked into, and never skipped.
 
     CONFINED to the target, like the ingest half: `os.walk` will not descend a
     symlink, but `os.path.isfile` follows one, so a link pointing at a venv
@@ -265,10 +333,18 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
             real = os.path.realpath(child)
             if not (real == root or real.startswith(root + os.sep)):
                 continue      # resolves outside the target: not ours to flag
-            if os.path.isfile(os.path.join(child, VENV_MARKER)):
-                reason = "pyvenv.cfg"
+            marker = os.path.isfile(os.path.join(child, VENV_MARKER))
+            if marker and has_venv_shape(child):
+                reason = VENV_MARKER
             elif name in VENV_DIR_NAMES:
                 reason = "name"
+            elif marker:
+                # #1839: a marker with no environment under it. Reported, so an
+                # operator sees the plant, and KEPT in the walk -- as far as the
+                # scan is concerned this is ordinary source, so a real
+                # virtualenv nested inside it must still be found.
+                reason = VENV_MARKER_NO_SHAPE
+                keep.append(name)
             else:
                 keep.append(name)
                 continue
@@ -283,37 +359,48 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
 REDTEAM = "redteam"
 SECURITY_MODES = ("standard", REDTEAM)
 
+# #1839: why a DETECTED directory was scanned anyway. Published on the manifest
+# row, because "not in the skip list" and "nobody looked" are indistinguishable
+# from an absence.
+_NOT_A_VENV_NOTE = ("scanned: a %s with no interpreter or site-packages under "
+                    "it is not an installed environment" % VENV_MARKER)
+_UNEXPRESSIBLE_NOTE = ("scanned: the directory name holds a glob "
+                       "metacharacter, so no exclusion pattern can name this "
+                       "directory without taking the rest of the tree too")
+
 
 def partition_venv_dirs(venv_dirs, security_mode="standard"):
     """Split detected virtualenvs into (told-to-skip, manifest rows) (#1740).
 
-    `find_virtualenvs` flags a directory two ways, and they are not the same
-    claim. `pyvenv.cfg` is EVIDENCE the tree is an installed environment;
-    `"name"` is a convention -- a directory called `venv` with nothing in it
-    saying so. Under `--security redteam` the target is untrusted and a finding
-    may not be lost to a directory NAME, which is what `security_gate` enforces
-    at ingest. Telling semgrep, trivy and bandit to skip `app/venv/` made that
-    enforcement moot for three scanners: there was no finding left to re-admit.
-    So under redteam this function stops handing the name-only directories to
-    any scanner's exclusion knob, and only the marker-confirmed ones are
-    skipped.
+    `find_virtualenvs` flags a directory three ways, and they are not the same
+    claim. `pyvenv.cfg` plus the shape of an environment is EVIDENCE the tree is
+    installed; `"name"` is a convention -- a directory called `venv` with
+    nothing in it saying so; `VENV_MARKER_NO_SHAPE` is a marker file with no
+    environment under it, which is not a virtualenv at all.
 
-    That gets semgrep and trivy into `app/venv/`, and it gets bandit there too
-    -- UNLESS the target ships a `.bandit`. With no marker venv to skip,
-    `_with_venv_excludes` adds no flag at all (so `_bandit_exclude_value` is
-    never reached and its merge is moot) and the argv is just
-    `bandit --ini /src/.bandit ...`. bandit then reads that target-authored
-    file's own `exclude` entries itself, and this repo's list `venv` and
-    `.venv` -- so on a target carrying such a `.bandit`, bandit still does not
-    enter the directory under redteam, while a target with no `.bandit` is
-    scanned (bandit's own parser defaults name no virtualenv). Narrowing a
-    target-authored config by security mode is the same question #1924 tracks
-    for the rest of the target's discoverable configuration, and it is decided
-    there, not here.
+    Under `--security redteam` the target is untrusted and a finding may not be
+    lost to a directory NAME, which is what `security_gate` enforces at ingest.
+    Telling semgrep, trivy and bandit to skip `app/venv/` made that enforcement
+    moot for three scanners: there was no finding left to re-admit. #1740
+    stopped handing the name-only directories to any exclusion knob under
+    redteam; #1839 extends that to the marker-confirmed ones, because a file the
+    same target WROTE is more attacker-controlled than a name it chose, not
+    less. So under redteam this function hands the scanners NOTHING.
 
-    Under `standard` nothing changes: both kinds are skipped, which is #1638
-    P09's whole point (58 bandit findings from run-13's `.venv/` bought 46 of
-    128 advisor dispatches).
+    Under `standard` the skip stands, which is #1638 P09's whole point (58
+    bandit findings from run-13's `.venv/` bought 46 of 128 advisor dispatches)
+    -- but it is no longer invisible: `ingest_tools.scan_skipped_venvs` reads
+    the rows back out of the manifest and the drop is tallied and named under
+    `ingest_tools.MARKER_VENV_SEGMENT`, on `security_gate`'s verdict line and in
+    `meta.coverage.tools_suppressed`.
+
+    TWO kinds are never skipped, in either mode (#1839):
+      - a marker with no environment under it, which is ordinary source;
+      - a directory whose name holds a glob metacharacter, which no exclusion
+        PATTERN can name without taking the rest of the tree with it.
+    Both are disclosed: the row says `skipped: False` and carries a `note`
+    saying why, because a directory nobody can express as an exclusion must be
+    scanned AND visible, not dropped from the list.
 
     The second return value is what `write_manifest` publishes, one row per
     DETECTED directory either way -- `skipped` says whether the scanners were
@@ -323,11 +410,20 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
     redteam = security_mode == REDTEAM
     skip, rows = [], []
     for entry in venv_dirs or ():
-        skipped = (not redteam) or entry.get("reason") == VENV_MARKER
+        path, reason = entry["path"], entry["reason"]
+        if reason == VENV_MARKER_NO_SHAPE:
+            note = _NOT_A_VENV_NOTE
+        elif not expressible_as_exclusion(path):
+            note = _UNEXPRESSIBLE_NOTE
+        else:
+            note = None
+        skipped = note is None and not redteam
         if skipped:
             skip.append(entry)
-        rows.append({"path": entry["path"], "reason": entry["reason"],
-                     "skipped": skipped})
+        row = {"path": path, "reason": reason, "skipped": skipped}
+        if note:
+            row["note"] = note
+        rows.append(row)
     return skip, rows
 
 
@@ -350,30 +446,89 @@ BANDIT_DEFAULT_EXCLUDES = (".svn", "CVS", ".bzr", ".hg", ".git", "__pycache__",
                            ".tox", ".eggs", "*.egg")
 
 
-def _bandit_ini_excludes(target):
-    """The `exclude` entries in the target's own `.bandit`, or [].
+# #1839 (run-14 SEC-752508850): the exclusions the SCANNER owns, beside bandit's
+# own parser defaults above. `.git` is already there; a NESTED CHECKOUT is not,
+# and #run7's real failure was a worktree-heavy tree. bandit substring-matches
+# each entry against the path, so one spelling covers `/src/.worktrees/...` at
+# any depth. This list replaces what used to be read out of the target's own
+# `.bandit`: the scan's exclusions are the scanner's to choose.
+BANDIT_SCANNER_EXCLUDES = (".worktrees",)
+# Where the generated ini is bind-mounted in bandit's container, and its
+# basename. A DIRECTORY mount, so the scratch can be created, filled and removed
+# as a unit and the container never sees a half-written file.
+BANDIT_INI_MOUNT = "/panopticon-bandit"
+BANDIT_INI_NAME = "bandit.ini"
 
-    Tolerant by design: a missing, unreadable or malformed config yields nothing
-    rather than failing a scan. `run_tools` already pins that same file with
-    `--ini`, so reading it here adds no trust.
+
+def _bandit_exclude_value(venv_dirs):
+    """bandit's single `--exclude=` value: its own parser defaults, the
+    exclusions the scanner owns, then this run's virtualenvs as CONTAINER paths
+    (`/src/...`, which is where bandit sees them; it substring-matches, so the
+    anchored form cannot catch an unrelated `prevent.py`). Deduplicated, order
+    preserved.
+
+    Nothing in it is read out of the target (#1839). It used to merge the
+    `exclude` entries of the target's own `.bandit` -- a file `run_tools` also
+    PINNED with `--ini`, so the reviewed repository chose bandit's `exclude`,
+    and through the same file its `tests` and `skips`: a committed
+    `tests = B999` would have reduced the merge gate's Python SAST to one check,
+    which no exclusion merge mitigates.
     """
-    try:
-        parser = configparser.ConfigParser()
-        parser.read(os.path.join(target, ".bandit"))
-        raw = parser.get("bandit", "exclude")
-    except (configparser.Error, OSError, UnicodeDecodeError):
-        return []
-    return [entry.strip() for entry in raw.split(",") if entry.strip()]
-
-
-def _bandit_exclude_value(target, venv_dirs):
-    """bandit's single `--exclude=` value: its defaults, the target's `.bandit`
-    entries, then this run's virtualenvs as CONTAINER paths (`/src/...`, which
-    is where bandit sees them; it substring-matches, so the anchored form cannot
-    catch an unrelated `prevent.py`). Deduplicated, order preserved."""
-    entries = list(BANDIT_DEFAULT_EXCLUDES) + _bandit_ini_excludes(target)
-    entries += ["/src/%s" % d["path"] for d in venv_dirs]
+    entries = list(BANDIT_DEFAULT_EXCLUDES) + list(BANDIT_SCANNER_EXCLUDES)
+    entries += ["/src/%s" % d["path"] for d in venv_dirs
+                if expressible_as_exclusion(d["path"])]
     return ",".join(dict.fromkeys(entries))
+
+
+def bandit_ini_text(venv_dirs):
+    """The contents of the SCANNER-OWNED `--ini` file.
+
+    `[bandit]` and an `exclude` line, and deliberately nothing else: `tests` and
+    `skips` are the half of a target-authored config that no exclusion merge
+    could mitigate, and this run's own `-s` is already on the argv
+    (`legacy_sarif.TOOL_CMD`). The section header is required -- bandit exits 2
+    on an `--ini` file it cannot find `[bandit]` in, which is the fail-closed
+    direction for a config that failed to arrive.
+    """
+    return "[bandit]\nexclude = %s\n" % _bandit_exclude_value(venv_dirs)
+
+
+@contextlib.contextmanager
+def _scanner_owned_bandit_ini(tool, cmd, venv_dirs):
+    """`(cmd, docker mount flags)` with bandit pointed at an ini WE wrote.
+
+    #run7 is real: bandit AUTO-DISCOVERS `.bandit` files by walking the scanned
+    tree, and a nested checkout (a git worktree, a vendored repo) carrying a
+    second one makes it ERROR ("Multiple .bandit files found -- ... choose one
+    with --ini") and emit EMPTY output -- a selected-but-unproduced tool that
+    silently blocked coverage certification on a worktree-heavy checkout.
+    `--ini` is the escape hatch bandit itself names, but pinning the TARGET's
+    copy handed the reviewed repository the scan's scope (#1839). The file is
+    generated here instead, in a scratch directory bind-mounted read-only, and
+    pinned UNCONDITIONALLY -- so the discovery walk never runs whether or not
+    the target ships a `.bandit`, and that file never reaches the argv at all.
+    Same shape as `tools/brakeman.py` and `tools/bundler_audit.py`, which
+    answer the same problem with a config they generate themselves.
+
+    World-readable on purpose: the tools image runs as `USER scanner`, so a
+    0700 scratch would be an unreadable `--ini` and bandit would exit 2. The
+    contents are a generated exclusion list with nothing private in them.
+    """
+    if tool != "bandit":
+        yield cmd, []
+        return
+    scratch = tempfile.mkdtemp(prefix="pano-bandit-ini-")
+    try:
+        os.chmod(scratch, 0o755)
+        ini_path = os.path.join(scratch, BANDIT_INI_NAME)
+        with open(ini_path, "w", encoding="utf-8") as fh:
+            fh.write(bandit_ini_text(venv_dirs))
+        os.chmod(ini_path, 0o644)
+        pinned = (cmd[:1] + ["--ini", "%s/%s" % (BANDIT_INI_MOUNT, BANDIT_INI_NAME)]
+                  + cmd[1:])
+        yield pinned, ["-v", "%s:%s:ro" % (scratch, BANDIT_INI_MOUNT)]
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
@@ -386,6 +541,13 @@ def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
     compares it to the path relative to the scan root, so a container-absolute
     `/src/.venv` would silently match nothing).
 
+    #1839: a path holding a glob METACHARACTER is never passed, in either
+    form. Both repeatable flags take patterns, so a directory literally named
+    `*` was `--exclude=*` -- the whole tree out of semgrep's and trivy's scope
+    on one `mkdir`. Such a directory is scanned and named on its manifest row by
+    `partition_venv_dirs` instead. *target* is accepted and NO LONGER READ: the
+    bandit value is composed from scanner-owned entries only.
+
     Accepted trade-off (#1638 P09 F4): trivy's python-pkg analyzer reads
     `.dist-info`/`.egg-info` METADATA under `site-packages`, so skipping the
     venv also drops that installed-package surface. Ruling 3 protects the five
@@ -397,13 +559,14 @@ def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
     if not venv_dirs:
         return cmd
     if tool == "bandit":
-        value = _bandit_exclude_value(target, venv_dirs)
+        value = _bandit_exclude_value(venv_dirs)
         extra = ["--exclude=%s" % value] if value else []
     else:
         flag = _VENV_EXCLUDE_FLAG.get(tool)
         if not flag:
             return cmd
-        extra = ["%s=%s" % (flag, d["path"]) for d in venv_dirs]
+        extra = ["%s=%s" % (flag, d["path"]) for d in venv_dirs
+                 if expressible_as_exclusion(d["path"])]
     at = cmd.index("/src") if "/src" in cmd else len(cmd)
     return cmd[:at] + extra + cmd[at:]
 
@@ -1162,30 +1325,23 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         cmd = TOOL_CMD.get(tool)
         if cmd and tool != "gitleaks":
             cmd = list(cmd)   # never mutate the shared TOOL_CMD entry
-            # #run7: bandit AUTO-DISCOVERS .bandit config files by walking the
-            # scanned tree. A nested checkout (a git worktree, a vendored repo)
-            # with its own .bandit makes bandit ERROR ("Multiple .bandit files
-            # found - ... choose one with --ini") and emit EMPTY output -- a
-            # selected-but-unproduced tool that silently blocked coverage
-            # certification on a worktree-heavy checkout (run-7). Pin the target's
-            # own .bandit with --ini to bypass discovery; it still honors that
-            # config's own excludes (incl. .worktrees/.git), so a clean single-
-            # config repo is byte-unchanged. Only when the target actually has a
-            # .bandit -- otherwise bandit runs with its built-in defaults.
-            if tool == "bandit" and os.path.isfile(os.path.join(target, ".bandit")):
-                cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
-            cmd = _with_venv_excludes(tool, cmd, venv_dirs, target)   # #1638 P09
+            cmd = _with_venv_excludes(tool, cmd, venv_dirs)   # #1638 P09
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
-            docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
-                      + _privilege_drop_flags() + _working_dir_flags(tool)
-                      + ["--network", "none",
-                         "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
-                         image] + cmd)
-            _NETWORK_POSTURE[tool] = egress.NO_NETWORK
-            with progress.tool(tool, index, total) as step:
-                done = step.finish(
-                    _capture_run("tool", tool, docker, out_path, runner,
-                                 docker_context=docker_context))
+            # #1839 / #run7: bandit's config is the SCANNER's, generated in a
+            # scratch this target never controls and mounted read-only beside
+            # the target mount. No-op for every other tool on this path.
+            with _scanner_owned_bandit_ini(tool, cmd, venv_dirs) as (cmd, ini_mount):
+                docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
+                          + _privilege_drop_flags() + _working_dir_flags(tool)
+                          + ini_mount
+                          + ["--network", "none",
+                             "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                             image] + cmd)
+                _NETWORK_POSTURE[tool] = egress.NO_NETWORK
+                with progress.tool(tool, index, total) as step:
+                    done = step.finish(
+                        _capture_run("tool", tool, docker, out_path, runner,
+                                     docker_context=docker_context))
             if done:
                 written.append(done)
             continue
@@ -1230,6 +1386,24 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
     return written
 
 
+def _excluded_dir_row(d):
+    """One `excluded_dirs` row for the manifest.
+
+    #1740: `skipped` is the whole point of the row under redteam -- a name-only
+    venv is DETECTED and scanned anyway. True for a caller that passed
+    `find_virtualenvs` output directly, which is the pre-#1740 meaning of this
+    list. #1839: `note` is present only when the runner had a reason of its own
+    for scanning a directory it detected -- a marker with no environment under
+    it, or a name no exclusion pattern can express -- so an operator reading
+    `skipped: false` under `standard` is not left to guess which.
+    """
+    row = {"path": str(d["path"]), "reason": str(d["reason"]),
+           "skipped": bool(d.get("skipped", True))}
+    if d.get("note"):
+        row["note"] = str(d["note"])
+    return row
+
+
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
                    network=None, exclude_globs=()):
@@ -1241,7 +1415,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     holds.
 
     `excluded_dirs` (#1638 P09) are the virtualenv directories this scan
-    DETECTED, as ``{"path", "reason", "skipped"}`` rows -- so a report can say
+    DETECTED, as ``{"path", "reason", "skipped"[, "note"]}`` rows -- so a report can say
     what was pruned and on what evidence (`pyvenv.cfg` or the conventional
     name) rather than leaving a silent hole in the scanned surface. #1740:
     `skipped` is what separates the two, because under `--security redteam` a
@@ -1330,15 +1504,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "network": network,
                "sanitized": dict(sanitized or {}),
                "exclude_globs": [str(g) for g in exclude_globs or ()],
-               "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"]),
-                                  # #1740: `skipped` is the whole point of the
-                                  # row under redteam -- a name-only venv is
-                                  # DETECTED and scanned anyway. True for a
-                                  # caller that passed `find_virtualenvs`
-                                  # output directly, which is the pre-#1740
-                                  # meaning of this list.
-                                  "skipped": bool(d.get("skipped", True))}
-                                 for d in excluded_dirs or ()],
+               "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
     # inside the reviewed tree. Confine before the makedirs (a symlinked

@@ -7,6 +7,32 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A file the reviewed repository commits no longer chooses what the scanners look at (#1839,
+  run-14 SEC-1486247143 + SEC-752508850).** Three levers, all on the path CI's merge gate runs
+  (`run_tools.py` -> `security_gate.py`, which has no agentic axis to compensate). A single
+  committed `src/pyvenv.cfg` was enough for the runner to hand `src/` to semgrep's `--exclude`,
+  trivy's `--skip-dirs` and bandit's `--exclude` in BOTH security modes, untallied: a directory is
+  now flagged on the marker only when it also has the SHAPE of an installed environment (an
+  interpreter under `bin/`/`Scripts/`, or `lib/python*/site-packages`), and a bare marker beside
+  real source is reported as `pyvenv.cfg-without-shape`, walked into, and never skipped. A directory
+  literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB PATTERNS, so
+  one `mkdir` took the whole tree out of two scanners; a path holding `*`, `?`, `[` or `]` is never
+  passed to an exclusion knob, and its manifest row says `skipped: false` with a `note` saying why.
+  Under `--security redteam` NO virtualenv now reaches an exclusion knob (#1740 ruled that for a
+  directory NAME; a file the same target wrote is more attacker-controlled than a name), and under
+  `standard` the #1638 P09 walk saving stands but stops being silent: the skipped directories are
+  counted under `virtualenv-by-marker` in `meta.coverage.tools_suppressed`, named on the gate's
+  verdict line (`2 directories removed from the scan as virtualenv-by-marker (.venv, env) -- re-run
+  with --security redteam to scan them`), and on the manifest rows. Third, bandit no longer runs
+  with `--ini /src/.bandit`: the target's own config set bandit's `exclude`, `tests` and `skips`, so
+  a committed `tests = B999` reduced the merge gate's Python SAST to one check. It gets a
+  SCANNER-OWNED ini instead -- generated per run into a scratch directory, bind-mounted read-only,
+  pinned unconditionally (so #run7's multiple-`.bandit` ERROR is bypassed whether or not the target
+  ships one), carrying bandit's own defaults plus `.worktrees` plus this run's virtualenvs and no
+  `tests`/`skips` key at all. This is the first increment of #1924's scan-root half. An operator
+  sees: a `pyvenv.cfg` planted on source no longer removes it from a scan, a gate verdict line that
+  names every virtualenv the scan skipped, and bandit reporting the checks panopticon selected
+  rather than the ones the target left it.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

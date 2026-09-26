@@ -508,6 +508,21 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn("`\"tests/fixtures/**\"`", out)
         self.assertIn("**Tool findings suppressed:** vendor: 2", out)
 
+    def test_the_scan_side_virtualenv_row_says_what_unit_it_is_in(self):
+        # #1839: this line is about findings dropped on a directory NAME, and
+        # `virtualenv-by-marker` is neither -- it counts virtualenv DIRECTORIES
+        # the scan itself never entered. Surfacing the drop here without saying
+        # so would trade a silence for a misstatement.
+        report = self._report()
+        report["meta"]["coverage"]["tools_suppressed"] = {
+            "vendor": 2, render_mod.MARKER_VENV_SEGMENT: 1}
+        out = render_mod.render_summary(report)
+        self.assertIn("virtualenv-by-marker: 1", out)
+        self.assertIn("counts DIRECTORIES, not findings", out)
+        # And not a word of it on a run with no such row.
+        self.assertNotIn("counts DIRECTORIES",
+                         render_mod.render_summary(self._report()))
+
     def test_measured_zero_with_or_without_policy_is_explicit(self):
         for globs in (["vendor/**"], []):
             with self.subTest(globs=globs):

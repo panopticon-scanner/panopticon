@@ -1331,6 +1331,60 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         self.assertEqual(suppressed, [])
         self.assertIn("not project source", err)
 
+    def test_the_scan_side_virtualenv_skip_is_tallied_from_the_manifest(self):
+        # #1839 (run-14 SEC-1486247143): a virtualenv the RUNNER was told to
+        # skip yields no finding for `suppressed_counts` to count, so the tally
+        # reads the manifest rows -- the same channel the other three classes
+        # use, so the gate line and `meta.coverage.tools_suppressed` show it
+        # without a second number beside them. `report-schema.json` used to say
+        # this drop "is dropped silently and is not in this tally".
+        manifest = {"excluded_dirs": [
+            {"path": ".venv", "reason": "pyvenv.cfg", "skipped": True},
+            {"path": "env", "reason": "pyvenv.cfg", "skipped": True},
+            {"path": "scanned", "reason": "pyvenv.cfg", "skipped": False},
+            {"path": "venv", "reason": "name", "skipped": True},
+            {"path": "src", "reason": "pyvenv.cfg-without-shape", "skipped": False}]}
+        skipped = it.scan_skipped_venvs(manifest)
+        self.assertEqual(skipped, [".venv", "env"])
+        counts = it.suppressed_counts([], skipped)
+        self.assertEqual(counts[it.MARKER_VENV_SEGMENT], 2)
+        self.assertEqual(it.suppression_class(it.MARKER_VENV_SEGMENT),
+                         "virtualenv-by-marker")
+        self.assertIn("virtualenv-by-marker", it.SUPPRESSION_CLASSES)
+
+    def test_the_scan_side_tally_joins_the_finding_tally(self):
+        # One dict, so the stderr note, the gate line and the report cannot
+        # disagree about which classes fired on this run.
+        suppressed = [{"suppressed": "vendor"}, {"suppressed": "venv"}]
+        counts = it.suppressed_counts(suppressed, [".venv"])
+        self.assertEqual(counts, {"vendor": 1, "venv": 1,
+                                  it.MARKER_VENV_SEGMENT: 1})
+        self.assertEqual(it.suppressed_counts(suppressed), {"vendor": 1, "venv": 1})
+
+    def test_a_malformed_manifest_row_tallies_nothing(self):
+        # The manifest is written into the reviewed tree, so every row is a
+        # target-carried input: a bad one costs the row, never the gate.
+        for rows in (None, "lots", [None], [{"reason": "pyvenv.cfg"}],
+                     [{"path": "", "reason": "pyvenv.cfg", "skipped": True}],
+                     [{"path": [".venv"], "reason": "pyvenv.cfg", "skipped": True}]):
+            with self.subTest(rows=rows):
+                self.assertEqual(it.scan_skipped_venvs({"excluded_dirs": rows}), [])
+        self.assertEqual(it.scan_skipped_venvs(None), [])
+        self.assertEqual(it.scan_skipped_venvs("lots"), [])
+
+    def test_the_renderers_name_the_scan_side_class_by_the_same_token(self):
+        # #1839: both renderers mirror `MARKER_VENV_SEGMENT` rather than import
+        # this module (one is a package renderer, the other renders standalone
+        # with guarded imports), and each carries a clause that would be wrong
+        # for any other segment -- so the token must not drift from the tally's.
+        import scripts.html_report as html_report
+        import scripts.synth.render as render
+        for module in (render, html_report):
+            self.assertEqual(module.MARKER_VENV_SEGMENT, it.MARKER_VENV_SEGMENT,
+                             module.__name__)
+            self.assertIn(it.MARKER_VENV_SEGMENT, module._MARKER_VENV_CLAUSE,
+                          module.__name__)
+
     def test_the_fixture_prune_routes_through_the_same_channel(self):
         suppressed = []
         out, err = self._ingest("tests/fixtures/vulnerable-node/app.js",

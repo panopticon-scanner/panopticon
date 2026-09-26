@@ -52,6 +52,8 @@ __all__ = [
     "ingest_dir_detailed",
     "suppressed_counts",
     "suppression_class",
+    "scan_skipped_venvs",
+    "MARKER_VENV_SEGMENT",
     "gates_when_suppressed",
     "SECRET_ADAPTERS",
     "SECRET_CWES",
@@ -162,10 +164,20 @@ _VENV_NAME_SEGMENTS = _VENV_DIR_NAMES | {"site-packages"}
 # or `_VENV_NAME_SEGMENTS`, and a directory in the tree literally named
 # `fixture-corpus` matches neither list and is never suppressed at all.
 FIXTURE_SEGMENT = "fixture-corpus"
+# #1839 (run-14 SEC-1486247143): the pseudo-segment the SCAN-side virtualenv
+# skip is disclosed under. Same device as `FIXTURE_SEGMENT` and it cannot
+# collide for the same reason -- the three finding-level rules draw their keys
+# from `_VENDORED_DIRS`, `_VENV_NAME_SEGMENTS` or that one reserved token, so no
+# ingest can emit this one. It names the RULE rather than a directory because
+# there is no finding to attribute: the runner told semgrep, trivy and bandit to
+# skip the tree, so the count is of DIRECTORIES the scan never entered, and the
+# names are on the manifest rows and on `security_gate`'s verdict line.
+MARKER_VENV_SEGMENT = "virtualenv-by-marker"
 # #1740: every suppression segment belongs to exactly one class, and the gate
 # line names the class beside the segment. One definition, because the stderr
 # note and `security_gate`'s own line both group by it.
-SUPPRESSION_CLASSES = ("vendored", "virtualenv-by-name", "fixture-corpus")
+SUPPRESSION_CLASSES = ("vendored", "virtualenv-by-name", MARKER_VENV_SEGMENT,
+                       "fixture-corpus")
 # Where a tools directory sits inside the scanned repo, used to derive the
 # target root when no caller passes one.
 _ARTIFACT_DIR = ".panopticon"
@@ -354,10 +366,14 @@ def suppression_class(segment):
     class, and an operator reading "3 suppressed" has to be able to tell a
     bundled library from a directory someone named `venv` from the project's
     own fixture corpus. Unknown segments read as vendored, the oldest class, so
-    a future name added to `_VENDORED_DIRS` needs no change here.
+    a future name added to `_VENDORED_DIRS` needs no change here. #1839 adds a
+    fourth, `virtualenv-by-marker`, which is the SCAN's own skip rather than an
+    ingest drop -- see `MARKER_VENV_SEGMENT`.
     """
     if segment == FIXTURE_SEGMENT:
         return "fixture-corpus"
+    if segment == MARKER_VENV_SEGMENT:                          # #1839
+        return MARKER_VENV_SEGMENT
     if segment in _VENV_NAME_SEGMENTS:
         return "virtualenv-by-name"
     return "vendored"
@@ -853,6 +869,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
 _SUPPRESSION_REASON = {
     "vendored": "vendored dependencies (%s)",
     "virtualenv-by-name": "virtualenvs matched by name alone (%s)",
+    MARKER_VENV_SEGMENT: "virtualenvs the scan skipped on a pyvenv.cfg "
+                         "marker (%s directories)",
     "fixture-corpus": "test-fixture corpus (%s)",
 }
 
@@ -868,18 +886,56 @@ def _suppression_reasons(counts):
             for cls in SUPPRESSION_CLASSES if cls in by_class]
 
 
-def suppressed_counts(suppressed):
+def scan_skipped_venvs(manifest):
+    """The virtualenv directories THIS RUN'S SCAN was told to skip on marker
+    evidence, from a `run_tools` manifest (#1839, run-14 SEC-1486247143).
+
+    `run_tools.partition_venv_dirs` hands semgrep, trivy and bandit an exclusion
+    for a `pyvenv.cfg`-confirmed directory under `--security standard` -- the
+    #1638 P09 walk saving -- and the scanners then report nothing from it, so
+    there is no finding for `suppressed_counts` to count and no other artifact
+    that says the tree left the scan. These rows are that disclosure's only
+    source. Only `reason == pyvenv.cfg` AND `skipped`: a name-only skip is
+    already disclosed per finding (#1740), a row the scan did not skip is not a
+    loss, and `pyvenv.cfg-without-shape` is not a virtualenv at all.
+
+    The manifest is written into the reviewed tree, so every row is a
+    target-carried input: a malformed one costs the row, never the gate.
+    """
+    rows = manifest.get("excluded_dirs") if isinstance(manifest, dict) else None
+    out = []
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or not row.get("skipped"):
+            continue
+        path = row.get("path")
+        if row.get("reason") == _VENV_MARKER and isinstance(path, str) and path:
+            out.append(path)
+    return sorted(dict.fromkeys(out))
+
+
+def suppressed_counts(suppressed, scan_skipped=()):
     """`{segment: count}` from a `suppressed_out` list (#1578).
 
     One definition, because two consumers publish this number and they must not
     disagree about it: the report's `meta.coverage.tools_suppressed` and the CI
     gate's own line beside its verdict. #1740: the segments now span three
     classes -- `suppression_class` is what groups them for a reader.
+
+    #1839: `scan_skipped` is the fourth, and the one that is not a finding at
+    all -- the virtualenv directories `scan_skipped_venvs` read off the
+    manifest, counted as DIRECTORIES under the reserved `MARKER_VENV_SEGMENT`.
+    It joins this dict rather than travelling beside it so that every consumer
+    of the tally shows the class without a second number to reconcile; the key
+    says which unit it is in.
     """
     counts: dict[str | None, int] = {}
     for finding in suppressed or []:
         seg = (finding or {}).get("suppressed")
         counts[seg] = counts.get(seg, 0) + 1
+    skipped = list(scan_skipped or ())
+    if skipped:
+        counts[MARKER_VENV_SEGMENT] = (counts.get(MARKER_VENV_SEGMENT, 0)
+                                       + len(skipped))
     return counts
 
 

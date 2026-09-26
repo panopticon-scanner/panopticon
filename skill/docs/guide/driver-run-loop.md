@@ -616,18 +616,20 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   — both standard and redteam (#1055: redteam no longer auto-includes them in the report BODY;
   fixture CONTENT injection-hunting stays a review-panel job via `panopticon.yml`) — for tool-path
   parity with the review-side prune (#434); `--include-fixtures` opts in. Python **virtualenvs are
-  excluded from the tool axis** in every mode — any directory carrying a `pyvenv.cfg`, plus the
-  conventional `.venv`/`venv` names (#1638 P09) — both at ingest, at any depth, and — for the
-  scanners that expose the knob (semgrep `--exclude`, trivy `--skip-dirs`, bandit's `--exclude` plus
-  the target's `.bandit`) — in the scan itself, where the virtualenvs are the ones found near the
-  target root: `tools-manifest.json` lists each directory the scan DETECTED with its reason under
-  `excluded_dirs` and a `skipped` flag saying whether the scanners were told to leave it alone, and
-  the `depth_bound` beside it says how deep that walk looked, so the manifest list is a bounded
-  subset of what ingest prunes. **Three of those prunes rest on a directory NAME and nothing else**
-  — a vendored directory (#1578), a `venv`/`.venv`/`site-packages` segment with no `pyvenv.cfg`
-  behind it, and the fixture corpus — so each one is disclosed per segment in
-  `meta.coverage.tools_suppressed`, on the ingest's stderr line and on the gate's own verdict line,
-  grouped by class (`vendored` / `virtualenv-by-name` / `fixture-corpus`), and under
+  excluded from the tool axis** in every mode — any directory carrying a `pyvenv.cfg` **and the
+  shape of an installed environment** (an interpreter under `bin/`/`Scripts/`, or
+  `lib/python*/site-packages` — #1839: a bare marker beside real source is one committed file, not
+  an environment), plus the conventional `.venv`/`venv` names (#1638 P09) — both at ingest, at any
+  depth, and — for the scanners that expose the knob (semgrep `--exclude`, trivy `--skip-dirs`,
+  bandit's `--exclude` plus a **scanner-owned** `--ini`) — in the scan itself, where the virtualenvs
+  are the ones found near the target root: `tools-manifest.json` lists each directory the scan
+  DETECTED with its reason under `excluded_dirs` and a `skipped` flag saying whether the scanners
+  were told to leave it alone, and the `depth_bound` beside it says how deep that walk looked, so
+  the manifest list is a bounded subset of what ingest prunes. **Three of those prunes rest on a
+  directory NAME and nothing else** — a vendored directory (#1578), a `venv`/`.venv`/`site-packages`
+  segment with no `pyvenv.cfg` behind it, and the fixture corpus — so each one is disclosed per
+  segment in `meta.coverage.tools_suppressed`, on the ingest's stderr line and on the gate's own
+  verdict line, grouped by class (`vendored` / `virtualenv-by-name` / `fixture-corpus`), and under
   `--security redteam` all three are **gated anyway when the finding is CRITICAL or secret-class**
   (#1740 widens #1578's one class to all of them; the #1578 owner ruling of 2026-09-22 -- policy C
   -- narrows WHICH findings, to a CRITICAL or a secret adapter's hit or a credential CWE, so
@@ -639,21 +641,35 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `ingest_tools.gates_when_suppressed`, answers for both gates, `security_gate` counts them and
   prints how many it counted against how many it disclosed only,
   `meta.coverage.tools_suppressed_gated` publishes the counted half and `tools_suppressed_not_gated`
-  the declined half (a subset of `tools_suppressed`), and the runner stops handing a name-only
-  virtualenv to the scanners' exclusion knobs, so there is a finding left to re-admit — semgrep and
-  trivy scan it, and so does bandit **unless the target ships its own `.bandit`**: with no marker
-  virtualenv to skip no exclusion flag is added at all, so the argv is just
-  `bandit --ini <target>/.bandit …` and bandit reads that target-authored file's `exclude` entries
-  itself (this repo's list names `venv` and `.venv`, so panopticon's own redteam self-scan keeps
-  that one bandit blind spot; a target with no `.bandit` is scanned, since bandit's parser defaults
-  name no virtualenv). Narrowing a target-authored config by security mode is the
-  target-controlled-configuration question tracked under #1924 (the scan-root half of the class;
-  #1877 closed the cwd half). A prune that rests on EVIDENCE instead — a `pyvenv.cfg` marker, a
-  nested `.worktrees` checkout, `.git`, panopticon's own `.panopticon/` artifacts, generated
-  bytecode — stays silent in both modes, and `--tools-exclude`/`--exclude` globs stay operator
-  policy: excluded, counted, and never re-admitted by any mode. dependency AUDITING is untouched,
-  since pip-audit/osv-scanner/trivy read `requirements*.txt`, `pyproject.toml` and the lockfiles at
-  the target root rather than the venv tree. **pip-audit audits a GENERATED, sanitized requirements
+  the declined half (a subset of `tools_suppressed`), and under `--security redteam` the runner
+  hands the scanners' exclusion knobs **no virtualenv at all** — #1740 stopped at the name-only
+  kind, and #1839 extended it to the marker-confirmed kind, because a `pyvenv.cfg` the same target
+  WROTE is more attacker-controlled than a directory name it chose — so there is a finding left to
+  re-admit: semgrep and trivy scan it, and so does bandit, whose config is now the **scanner's
+  own**. bandit runs with `--ini /panopticon-bandit/bandit.ini`, a file generated per run into a
+  scratch directory and bind-mounted read-only, carrying bandit's parser defaults plus `.worktrees`
+  plus this run's virtualenvs and **no `tests`/`skips` key at all**; the pin is unconditional, so
+  #run7's multiple-`.bandit` ERROR is bypassed whether or not the target ships one, and the target's
+  own `.bandit` never reaches the argv. It used to be pinned with `--ini <target>/.bandit` whenever
+  the target had one, which let the reviewed repository choose bandit's `exclude` — and through the
+  same file its `tests`, which no exclusion merge mitigates (#1839, run-14 SEC-752508850: a
+  committed `tests = B999` reduced the merge gate's Python SAST to one check). That is the first
+  increment of the target-controlled-configuration class tracked under #1924 (the scan-root half;
+  #1877 closed the cwd half). **A directory whose name holds a glob metacharacter is never passed to
+  an exclusion knob** in either mode: `--exclude`/`--skip-dirs` take PATTERNS, so a directory named
+  `*` was `--exclude=*` and one `mkdir` emptied semgrep's and trivy's scope. It is scanned instead,
+  and its manifest row carries `skipped: false` and a `note` saying why — as does a `pyvenv.cfg`
+  with no environment under it. In `standard` mode the virtualenv skip that DOES stand is no longer
+  silent either: the directories are counted under a fourth class, `virtualenv-by-marker`, in
+  `meta.coverage.tools_suppressed` and named on the gate's verdict line (`2 directories removed from
+  the scan as virtualenv-by-marker (.venv, env) — re-run with --security redteam to scan them`),
+  counted in DIRECTORIES rather than findings because the scanners never entered the tree. A prune
+  that rests on EVIDENCE instead — a `pyvenv.cfg` marker, a nested `.worktrees` checkout, `.git`,
+  panopticon's own `.panopticon/` artifacts, generated bytecode — stays silent in both modes, and
+  `--tools-exclude`/`--exclude` globs stay operator policy: excluded, counted, and never re-admitted
+  by any mode. dependency AUDITING is untouched, since pip-audit/osv-scanner/trivy read
+  `requirements*.txt`, `pyproject.toml` and the lockfiles at the target root rather than the venv
+  tree. **pip-audit audits a GENERATED, sanitized requirements
   list** (#1646), never the repository's own file: `pip-audit --requirement <path>` RESOLVES what
   that file names, and requirements syntax admits `-e .`, `./local/path`, `git+https://…`,
   `https://…/x.tar.gz`, `--index-url`, `--find-links`, `-r` and `-c` — resolving any of the first

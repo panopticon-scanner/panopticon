@@ -357,6 +357,17 @@ def reconcile(plan, tools, resolved, run=None):
     not_gated_counts = repair_mod.repair_tools_suppressed(
         ingest_tools.suppressed_counts(resolved.suppressed_not_gated or []))
     suppressed_total = repair_mod.repair_tools_suppressed(tools.suppressed)
+    # #1839 (run-14 SEC-1486247143): the SCAN-side half of the same tally. A
+    # virtualenv the runner was told to skip on `pyvenv.cfg` evidence produced no
+    # finding to count, so `suppressed_counts` reads the directories off the
+    # manifest and counts them under its own reserved segment -- the report said
+    # nothing at all about that drop before, which is what made one committed
+    # marker file worth planting. Repaired like its siblings (the manifest is
+    # written into the reviewed tree) and merged rather than published beside
+    # them, so `security_gate`'s line and this key still name the same classes.
+    for segment, count in ingest_tools.suppressed_counts(
+            [], ingest_tools.scan_skipped_venvs(tools.manifest)).items():
+        suppressed_total[segment] = suppressed_total.get(segment, 0) + count
     integrity = plan.integrity if isinstance(plan.integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
                               "missing_planned_files": [],

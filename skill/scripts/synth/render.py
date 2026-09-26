@@ -122,10 +122,27 @@ def _suppressed_line(suppressed, not_gated=None):
             "for the DIRECTORY NAME they sit under (a conventional vendored, "
             "virtualenv or fixture-corpus name, with no marker or provenance "
             "behind it); the agentic panel still reviewed those files, and "
-            "`--security redteam` gates the CRITICAL and secret-class ones%s"
+            "`--security redteam` gates the CRITICAL and secret-class ones%s%s"
             % (", ".join("%s: %d" % (seg, n) for seg, n in rows),
                (" (%d withheld from this run's gate by that rule, #1578 "
-                "policy C)" % withheld) if withheld else ""))
+                "policy C)" % withheld) if withheld else "",
+               _MARKER_VENV_CLAUSE if any(seg == MARKER_VENV_SEGMENT
+                                          for seg, _n in rows) else ""))
+
+
+# #1839: the one row in this tally that is not a finding count, spelled out
+# because the sentence above would otherwise speak for it and say three untrue
+# things. The token is `ingest_tools.MARKER_VENV_SEGMENT`, mirrored here rather
+# than imported: a renderer must not pull the ingest's adapter registry in, and
+# tests/test_ingest_tools.py pins the two together.
+MARKER_VENV_SEGMENT = "virtualenv-by-marker"
+_MARKER_VENV_CLAUSE = (
+    " `%s` is the exception and counts DIRECTORIES, not findings: that many "
+    "marker-confirmed virtualenvs were left out of the SCAN itself under "
+    "`--security standard` (the #1638 P09 walk saving), so no finding exists to "
+    "re-admit and no directory NAME is behind the drop -- "
+    "`tools-manifest.json`'s `excluded_dirs` names them, and under "
+    "`--security redteam` the runner skips none of them." % MARKER_VENV_SEGMENT)
 
 
 def _suppressed_rows(value):
