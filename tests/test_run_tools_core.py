@@ -306,41 +306,51 @@ class TestRunTools(unittest.TestCase):
                                      os.path.join(d, "out.sarif"), timeout=60)
         self.assertEqual(called, [])
 
-    def test_bandit_pins_a_scanner_owned_ini_whatever_the_target_ships(self):
+    def test_bandit_always_gets_an_explicit_ini_and_the_mode_says_whose(self):
         # #run7: bandit auto-discovers nested .bandit files (e.g. git worktrees)
         # and ERRORS ("Multiple .bandit files found") -> empty output, silently
-        # unproduced -> certification blocked. #1839 (SEC-752508850): the pin is
-        # a config the SCANNER generates, and it is unconditional -- pinning the
-        # TARGET's copy let the reviewed repo choose bandit's exclude/tests, and
-        # pinning nothing when it shipped none left the discovery walk reachable.
-        for plant in (True, False):
-            calls = []
-            fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+        # unproduced -> certification blocked. So the `--ini` is EXPLICIT on
+        # every run, whichever file it names. #1839 (SEC-752508850): pinning the
+        # TARGET's copy let the reviewed repo choose bandit's exclude/tests --
+        # and the owner ruling of 2026-09-25 on #1924 scopes that to the mode,
+        # the same split the gate uses: under redteam bandit honours no
+        # target-authored config, under `standard` an operator's own `.bandit`
+        # is theirs to keep. A target with none gets ours either way.
+        owned = "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME)
+        for mode in rt.SECURITY_MODES:
+            for plant in (True, False):
+                expected = ("/src/.bandit" if plant and mode != "redteam"
+                            else owned)
+                calls = []
+                fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
 
-            def runner(cmd, _calls=calls, **kw):
-                _calls.append(cmd)
-                return fake
-            with self.subTest(target_has_bandit=plant), \
-                    tempfile.TemporaryDirectory() as d:
-                if plant:
-                    open(os.path.join(d, ".bandit"), "w").close()
-                rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
-                             image="panopticon-tools", runner=runner)
-                self.assertEqual(len(calls), 1)      # run-9 TST-B3A: guard calls[0]
-                self.assertIn("--ini", calls[0])
-                i = calls[0].index("--ini")
-                self.assertEqual(calls[0][i + 1],
-                                 "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
-                self.assertNotIn("/src/.bandit", calls[0])
-                self.assertIn("-v", calls[0])
-                # The FILE is mounted, read-only, at the path the argv names;
-                # the scratch directory around it is never mounted at all.
-                mounts = [a for a in calls[0]
-                          if a.endswith(":%s/%s:ro" % (rt.BANDIT_INI_MOUNT,
-                                                       rt.BANDIT_INI_NAME))]
-                self.assertEqual(1, len(mounts), calls[0])
-                self.assertNotIn(":%s:ro" % rt.BANDIT_INI_MOUNT,
-                                 " ".join(calls[0]))
+                def runner(cmd, _calls=calls, **kw):
+                    _calls.append(cmd)
+                    return fake
+                with self.subTest(mode=mode, target_has_bandit=plant), \
+                        tempfile.TemporaryDirectory() as d:
+                    if plant:
+                        open(os.path.join(d, ".bandit"), "w").close()
+                    rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
+                                 image="panopticon-tools", runner=runner,
+                                 security_mode=mode)
+                    self.assertEqual(len(calls), 1)  # run-9 TST-B3A: guard calls[0]
+                    self.assertIn("--ini", calls[0])
+                    i = calls[0].index("--ini")
+                    self.assertEqual(calls[0][i + 1], expected)
+                    # One read-only FILE mount, named for the ini inside the
+                    # container (review Q4-bis) -- never a directory of ours.
+                    mount = "%s:ro" % owned
+                    if expected == owned:
+                        self.assertNotIn("/src/.bandit", calls[0])
+                        self.assertIn("-v", calls[0])
+                        self.assertTrue(
+                            [a for a in calls[0] if a.endswith(mount)],
+                            calls[0])
+                    else:
+                        # Nothing of ours is staged, so there is no mount.
+                        self.assertNotIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
+                                         " ".join(calls[0]))
 
     def test_run_tools_continues_after_one_tool_fails(self):
         def runner(cmd, **kw):
@@ -615,8 +625,9 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(trivy[-1], "/src")
             # Gitleaks has no path-exclusion flag; the adapter owns its rule
             # config and the ingest filter handles virtualenv paths.
-            self.assertEqual(gitleaks[-3:], ["python3",
-                             "/opt/panopticon/scripts/_run_adapter.py", "gitleaks"])
+            self.assertEqual(gitleaks[-5:],
+                             ["python3", "/opt/panopticon/scripts/_run_adapter.py",
+                              "--security", "standard", "gitleaks"])
 
     def test_no_venv_means_no_added_flags(self):
         calls = []
@@ -636,7 +647,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             expected = {
                 "semgrep": list(rt.TOOL_CMD["semgrep"]),
                 "bandit": (list(rt.TOOL_CMD["bandit"][:1])
-                           + ["--ini", "%s/%s" % (rt.BANDIT_INI_MOUNT,
+                           + ["--ini", "%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
                                                   rt.BANDIT_INI_NAME)]
                            + list(rt.TOOL_CMD["bandit"][1:at])
                            + ["--exclude=%s" % rt._bandit_exclude_value([])]
@@ -1274,34 +1285,117 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
         self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
                          ["--exclude=.venv"])
 
-    def test_a_config_that_cannot_be_staged_costs_bandit_and_nothing_else(self):
+    def test_a_config_that_cannot_be_staged_costs_that_tool_and_nothing_else(self):
         # Review N3: the ini write raised straight out of the dispatch loop, so a
         # full or read-only $TMPDIR took semgrep and every adapter after bandit
-        # down with it. One tool's problem stays one tool's problem -- and bandit
-        # lands in `missing`, which is the fail-closed direction.
+        # down with it. One tool's problem stays one tool's problem -- and the
+        # tool lands in `missing`, which is the fail-closed direction.
+        # #1839: trivy is staged the same way now, so it fails closed the same
+        # way (the ignore list being the scanner's is not optional).
+        for staged in sorted(rt.SCANNER_OWNED_CONFIG):
+            calls = []
+            fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+            def runner(cmd, _calls=calls, **kw):
+                _calls.append(cmd)
+                return fake
+            err = io.StringIO()
+            real_mkdtemp = rt.tempfile.mkdtemp
+
+            def only_the_config_fails(*a, **kw):
+                if str(kw.get("prefix", "")).startswith("pano-scanner-config-"):
+                    raise OSError("No space left on device")
+                return real_mkdtemp(*a, **kw)
+            with self.subTest(tool=staged), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(rt.tempfile, "mkdtemp",
+                                      side_effect=only_the_config_fails), \
+                    contextlib.redirect_stderr(err):
+                written = rt.run_tools(d, [staged, "semgrep"],
+                                       os.path.join(d, "out"), runner=runner)
+                self.assertEqual(len(calls), 1)         # semgrep still ran
+                self.assertIn("semgrep", calls[0])
+                self.assertEqual(len(written), 1)       # the other produced none
+                self.assertIn("No space left on device", err.getvalue())
+                self.assertIn("tool %s skipped" % staged, err.getvalue())
+
+
+class TestInlineSuppressionIsNeutralisedUnderRedteamOnly(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): an inline suppression COMMENT in the
+    target's own source -- `# nosemgrep`, `# nosec`, `gitleaks:allow` -- is the
+    other half of the scan-root class, and it is NOT the same thing as an
+    ignore file.
+
+    A comment sits in the diff a reviewer reads, and under `standard` -- an
+    operator scanning their own repository -- it stands, and the manifest says
+    it stood. This repository's own CI (`security.yml` and the fork-PR
+    `security-fork.yml`) scans in `redteam` (#2125), so nothing target-authored
+    is honoured on either check. Under `--security redteam` the tree is
+    untrusted and every scanner whose pinned version exposes the knob is told
+    to stop honouring it. Only knobs that EXIST are passed: a flag a pinned
+    scanner rejects is a tool that exits non-zero and produces no SARIF, which
+    is the #1452 selected-but-unproduced class, not a control.
+    """
+
+    def _argv(self, tool, security_mode):
         calls = []
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
 
-        def runner(cmd, **kw):
-            calls.append(cmd)
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
             return fake
-        err = io.StringIO()
-        real_mkdtemp = rt.tempfile.mkdtemp
+        with tempfile.TemporaryDirectory() as d:
+            rt.run_tools(d, [tool], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[], security_mode=security_mode)
+        self.assertEqual(len(calls), 1)
+        return calls[0]
 
-        def only_the_ini_fails(*a, **kw):
-            if str(kw.get("prefix", "")).startswith("pano-bandit-ini-"):
-                raise OSError("No space left on device")
-            return real_mkdtemp(*a, **kw)
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(rt.tempfile, "mkdtemp",
-                                  side_effect=only_the_ini_fails), \
-                contextlib.redirect_stderr(err):
-            written = rt.run_tools(d, ["bandit", "semgrep"],
-                                   os.path.join(d, "out"), runner=runner)
-        self.assertEqual(len(calls), 1)                 # semgrep still ran
-        self.assertIn("semgrep", calls[0])
-        self.assertEqual(len(written), 1)               # bandit produced nothing
-        self.assertIn("No space left on device", err.getvalue())
+    def test_semgrep_stops_honouring_nosemgrep_under_redteam(self):
+        self.assertIn("--disable-nosem", self._argv("semgrep", "redteam"))
+
+    def test_bandit_stops_honouring_nosec_under_redteam(self):
+        self.assertIn("--ignore-nosec", self._argv("bandit", "redteam"))
+
+    def test_standard_honours_both(self):
+        self.assertNotIn("--disable-nosem", self._argv("semgrep", "standard"))
+        self.assertNotIn("--ignore-nosec", self._argv("bandit", "standard"))
+
+    def test_the_default_mode_honours_them_too(self):
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            rt.run_tools(d, ["semgrep"], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[])
+        self.assertNotIn("--disable-nosem", calls[0])
+
+    def test_the_flag_goes_before_the_scan_root(self):
+        # semgrep takes its scan root positionally and last; a flag after it
+        # would be read as a second target.
+        argv = self._argv("semgrep", "redteam")
+        self.assertEqual(argv[-1], "/src")
+        self.assertLess(argv.index("--disable-nosem"), argv.index("/src"))
+
+    def test_a_tool_with_no_verified_knob_gets_no_invented_one(self):
+        # gosec honours `// #nosec` and its own knob was NOT verified against
+        # the pinned image in this round, so the residual is DISCLOSED on the
+        # manifest instead of guessed at on the argv.
+        self.assertIsNone(rt.SUPPRESSION_COMMENTS["gosec"][1])
+        argv = self._argv("gosec", "redteam")
+        self.assertEqual(argv[-len(rt.TOOL_CMD["gosec"]):],
+                         list(rt.TOOL_CMD["gosec"]))
+
+    def test_every_named_knob_is_a_flag_and_every_tool_is_one_we_run(self):
+        for tool, (comment, flag) in rt.SUPPRESSION_COMMENTS.items():
+            with self.subTest(tool=tool):
+                self.assertIn(tool, rt.recommendable_tools(),
+                              "%s is not a tool this runner can select" % tool)
+                if flag is not None:
+                    self.assertTrue(flag.startswith("--"), flag)
+                    self.assertIsNotNone(
+                        comment, "a knob for a tool that honours no comment")
 
 
 class TestRawCaptureRedaction(unittest.TestCase):
@@ -1711,6 +1805,126 @@ class TestTheManifestReportsTheRedactionPass(unittest.TestCase):
             payload = rt.write_manifest(os.path.join(d, "m.json"),
                                         ["gitleaks"], [])
         self.assertIs(payload["redacted"], False)
+
+
+class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): under `standard` an inline suppression
+    comment in the target's own source is HONOURED -- an operator's reviewed,
+    in-diff decision about their own repository -- and that is a coverage fact a
+    reader of the artifacts is entitled to. So it is honoured DISCLOSED, not
+    silently: `tools-manifest.json` carries one row per assessed tool.
+
+    Like `network` and `redacted`, the claim is an OBSERVATION of what decided
+    it: the argv the runner built for a flag-lever tool (bandit, gitleaks), so
+    it cannot outlive the flag; the run's mode for an ingest-lever tool
+    (semgrep, `SUPPRESSION_INGEST_LEVER`), where no flag decides and the mode
+    is the fact.
+    """
+
+    TOOLS = ["semgrep", "bandit", "trivy", "gitleaks", "gosec"]
+
+    def _manifest(self, d, tools=None, **kwargs):
+        def runner(cmd, **kw):
+            return _FakeResult(returncode=0, stdout=b'{"runs":[]}')
+        tools = list(self.TOOLS if tools is None else tools)
+        with contextlib.redirect_stderr(io.StringIO()):
+            written = rt.run_tools(d, tools, os.path.join(d, "tools"),
+                                   runner=runner, venv_dirs=[], **kwargs)
+        return rt.write_manifest(os.path.join(d, "tools-manifest.json"),
+                                 tools, written)
+
+    def test_standard_says_the_comments_stood(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, security_mode="standard")
+        self.assertEqual(payload["suppression_comments"],
+                         {"semgrep": "honoured", "bandit": "honoured",
+                          "gitleaks": "honoured", "gosec": "honoured",
+                          "trivy": "n/a"})
+
+    def test_redteam_says_they_were_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, security_mode="redteam")
+        self.assertEqual(payload["suppression_comments"],
+                         {"semgrep": "ignored", "bandit": "ignored",
+                          "gitleaks": "ignored",
+                          # No knob verified at the pin: the residual is
+                          # disclosed in BOTH modes rather than invented.
+                          "gosec": "honoured",
+                          "trivy": "n/a"})
+
+    def test_an_unassessed_tool_gets_no_row(self):
+        # Absent is not `n/a`: "nobody looked" and "there is nothing to look
+        # at" are different claims, and the tool axis has been burned by
+        # reading one as the other (#1839's own `excluded_dirs` note).
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, tools=["brakeman"])
+        self.assertNotIn("brakeman", payload["suppression_comments"])
+        self.assertNotIn("brakeman", rt.SUPPRESSION_COMMENTS)
+
+    def test_the_claim_follows_the_argv_and_not_the_intent(self):
+        # The coupling, the same way the redaction claim is coupled -- for a
+        # tool whose ARGV is the lever. With bandit's knob taken out of the
+        # table the redteam argv carries no `--ignore-nosec`, bandit really does
+        # honour a `# nosec`, and the manifest says `honoured` instead of
+        # repeating the mode back.
+        table = dict(rt.SUPPRESSION_COMMENTS)
+        table["bandit"] = ("# nosec", None)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+            payload = self._manifest(d, tools=["bandit"],
+                                     security_mode="redteam")
+        self.assertEqual(payload["suppression_comments"],
+                         {"bandit": "honoured"})
+
+    def test_an_ingest_lever_tools_row_follows_the_mode_not_the_flag(self):
+        # Re-review finding 3. semgrep's `--disable-nosem` is BELT at the pin:
+        # the scanner marks and reports a `# nosemgrep`'d result either way, and
+        # `sarif_utils.sarif_to_findings` is what honours the comment (under
+        # `standard`) or ignores it (under `redteam`). So reading semgrep's row
+        # off the argv publishes a FALSE COVERAGE CLAIM the moment the belt comes
+        # off: `honoured` on a redteam run whose ingest ignores every such
+        # comment. The row follows what actually governs -- the mode.
+        table = dict(rt.SUPPRESSION_COMMENTS)
+        table["semgrep"] = ("# nosemgrep", None)   # the belt taken off
+        for mode, expected in (("redteam", "ignored"), ("standard", "honoured")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+                payload = self._manifest(d, tools=["semgrep"],
+                                         security_mode=mode)
+            self.assertEqual(payload["suppression_comments"],
+                             {"semgrep": expected})
+
+    def test_the_belt_is_still_on_the_real_redteam_argv(self):
+        # The test above patches the flag away, so this one pins that the
+        # unpatched redteam launch still carries it -- the belt is documented,
+        # and a later semgrep may act on it.
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(list(cmd))
+            return _FakeResult(returncode=0, stdout=b'{"runs":[]}')
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(io.StringIO()):
+            rt.run_tools(d, ["semgrep"], os.path.join(d, "tools"),
+                         runner=runner, venv_dirs=[], security_mode="redteam")
+        self.assertIn("--disable-nosem", calls[0])
+
+    def test_the_ledger_is_this_runs_and_not_the_last_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._manifest(d, tools=["semgrep"], security_mode="redteam")
+            payload = self._manifest(d, tools=["bandit"],
+                                     security_mode="standard")
+        self.assertEqual(payload["suppression_comments"],
+                         {"bandit": "honoured"})
+
+    def test_a_scan_that_never_ran_claims_nothing(self):
+        # The docker-absent manifest: no tool was launched, so there is no
+        # observation to publish.
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                        ["semgrep"], [],
+                                        suppression_comments={})
+        self.assertEqual(payload["suppression_comments"], {})
 
 
 class TestEslintFileCoverageCapture(unittest.TestCase):

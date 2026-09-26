@@ -236,12 +236,61 @@ class TestOsvScannerAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
         launch = only(calls, "osv-scanner launch")
+        argv = launch["argv"]
+        # #1839: `scan` + `--config <scratch>/osv-scanner.toml`, and otherwise
+        # byte-unchanged -- the flags and the trailing scan root are the same
+        # tokens in the same order as before.
         self.assertEqual(
-            launch["argv"],
-            ["osv-scanner", "--format", "json", "--experimental-offline",
+            argv[:6] + argv[-1:],
+            ["osv-scanner", "scan", "--format", "json", "--experimental-offline",
              "--recursive", "/tmp/fake"])
-        # #1877: the scan root is named on argv, so the cwd is a scratch.
-        assert_scratch_cwd(self, launch, "/tmp/fake")
+        self.assertEqual(argv[6], "--config")
+        # #1877: the scan root is named on argv, so the cwd is a scratch -- and
+        # the only thing in it is the config the adapter generated there.
+        assert_scratch_cwd(self, launch, "/tmp/fake",
+                           permitted=[osv.OWNED_CONFIG_NAME])
+
+    def test_invoke_pins_a_config_the_target_cannot_write(self):
+        # #1839 (run-14 SEC-1202454595): `osv-scanner.toml` is resolved from the
+        # SCANNED tree, one per directory, so #1877's scratch cwd never reached
+        # it: a committed `[[IgnoredVulns]]` list dropped the target's own
+        # advisories from the scan. cargo-audit, bundler-audit and brakeman
+        # already answer this with a config they generate themselves; this is
+        # the fourth (`bundler_audit.py`'s shape).
+        adapter = osv.OsvScannerAdapter()
+        calls = []
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        side_effect=scratch_cwd_recorder(calls)):
+            adapter.invoke("/tmp/fake")
+        launch = only(calls, "osv-scanner launch")
+        argv = launch["argv"]
+        self.assertEqual(argv.count("--config"), 1)
+        config = argv[argv.index("--config") + 1]
+        self.assertTrue(os.path.isabs(config), config)
+        self.assertEqual(os.path.dirname(config), launch["cwd"])
+        self.assertEqual(os.path.basename(config), osv.OWNED_CONFIG_NAME)
+        # Inside the scratch, NOT the target: an absolute path under the
+        # scanned tree would be the target's file by another name.
+        self.assertFalse(os.path.realpath(config).startswith(
+            os.path.realpath("/tmp/fake") + os.sep))
+        # It was really there when the scanner started, and it names no
+        # ignored vulnerability (a constant: nothing target-derived).
+        self.assertEqual(launch["entries"], [osv.OWNED_CONFIG_NAME])
+        self.assertNotIn("IgnoredVulns", osv.OWNED_CONFIG_TEXT)
+        self.assertEqual(
+            [ln for ln in osv.OWNED_CONFIG_TEXT.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")], [])
+
+    def test_the_config_lives_only_while_the_scan_does(self):
+        seen = {}
+
+        def run(cmd, *, timeout, cwd):
+            seen["config"] = cmd[cmd.index("--config") + 1]
+            self.assertTrue(os.path.isfile(seen["config"]))
+            return b"{}", 0
+        with mock.patch("scripts.tools.osv_scanner.run_tool", side_effect=run):
+            osv.OsvScannerAdapter().invoke("/tmp/fake")
+        self.assertFalse(os.path.exists(seen["config"]))
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io

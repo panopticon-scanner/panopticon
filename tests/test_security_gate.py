@@ -1667,3 +1667,88 @@ class TestTheDeltaAwareGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _suppressed_sarif():
+    """Two semgrep results: one the SOURCE suppressed, one plain control.
+
+    The shape semgrep 1.177.0 actually emits for a `# nosemgrep`'d finding
+    (#1839 fix round 1 §B, measured in the pinned image): the result is
+    REPORTED and marked, with or without `--disable-nosem`.
+    """
+    def result(rule, suppressions=None):
+        res = {"ruleId": rule, "level": "error", "message": {"text": rule},
+               "locations": [{"physicalLocation": {
+                   "artifactLocation": {"uri": "/src/%s.py" % rule},
+                   "region": {"startLine": 4}}}]}
+        if suppressions is not None:
+            res["suppressions"] = suppressions
+        return res
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "semgrep", "rules": []}},
+        "results": [result("nosemd", [{"kind": "inSource"}]),
+                    result("plain")]}]}
+
+
+class TestTheGatesModeReachesTheParse(unittest.TestCase):
+    """An inline suppression comment is honoured where the SARIF is read, so
+    this gate's own `--security` has to arrive there -- on the head side and on
+    the baseline side, which must be "the same finding" in both (#1839)."""
+
+    def _tree(self, root, name="tools"):
+        tools = os.path.join(root, name)
+        os.makedirs(tools)
+        with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
+            json.dump(_suppressed_sarif(), fh)
+        manifest_path = os.path.join(root, "%s-manifest.json" % name)
+        with open(manifest_path, "w") as fh:
+            json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def _evaluate(self, mode):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._tree(root)
+            with contextlib.redirect_stderr(io.StringIO()):
+                findings, dispositions, _f, _h, _s = gate.evaluate(
+                    tools, manifest, security_mode=mode)
+        return [f["category"] for f in findings], dispositions["semgrep"]
+
+    def test_standard_honours_the_comment_and_the_row_counts_it(self):
+        categories, row = self._evaluate("standard")
+        self.assertEqual(["plain"], categories)
+        self.assertEqual(1, row["suppressed_in_source"])
+
+    def test_redteam_ingests_it_as_an_ordinary_finding(self):
+        categories, row = self._evaluate("redteam")
+        self.assertEqual(["nosemd", "plain"], sorted(categories))
+        self.assertNotIn("suppressed_in_source", row)
+
+    def test_the_baseline_is_ingested_under_the_heads_mode(self):
+        for mode, expected in (("standard", ["plain"]),
+                               ("redteam", ["nosemd", "plain"])):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                base, manifest = self._tree(root, "baseline")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    findings, why_not = gate.load_baseline(
+                        base, manifest, None, mode)
+                self.assertIsNone(why_not)
+                self.assertEqual(expected,
+                                 sorted(f["category"] for f in findings))
+
+    def test_the_verdict_line_says_what_standard_honoured(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._tree(root)
+            out = {}
+            for mode in ("standard", "redteam"):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    gate.main(["--tools-dir", tools, "--manifest", manifest,
+                               "--security", mode])
+                out[mode] = stdout.getvalue()
+        self.assertIn("1 suppressed by an in-source comment (semgrep 1)",
+                      out["standard"])
+        self.assertIn("--security redteam", out["standard"])
+        # Nothing is dropped under redteam, so there is nothing to disclose.
+        self.assertNotIn("in-source comment", out["redteam"])

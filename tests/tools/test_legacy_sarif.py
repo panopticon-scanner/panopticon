@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from _test_helpers import FakePopen, first, only
+import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy
 import scripts.tools.sarif_utils as su
 from scripts.tools import ADAPTERS
@@ -187,6 +188,72 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
 
+class TestGitleaksSuppressionPosture(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): two kinds of in-tree suppression, two rules.
+
+    An inline suppression COMMENT (`gitleaks:allow`) is in the target's SOURCE,
+    and under `standard` -- an operator scanning their own repository -- it is
+    their reviewed, in-diff decision, so it is HONOURED and the manifest says
+    so. This repository's own CI (`security.yml` and the fork-PR
+    `security-fork.yml`) scans in `redteam` (#2125), so nothing target-authored
+    is honoured on either check. Under `--security redteam` the reviewed tree is
+    untrusted and the comment buys nothing.
+
+    The other kind, the source-root `.gitleaksignore`, is NOT this PR's and is
+    not this test's either: #1957 owns that measurement and #1924 owns the row.
+    What is pinned below is only what these launches carry.
+    """
+
+    def _launch(self, **kwargs):
+        calls = []
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        side_effect=scratch_cwd_recorder(calls)):
+            legacy.LegacySarifAdapter("gitleaks").invoke("/some/target", **kwargs)
+        return only(calls, "gitleaks launch")
+
+    def test_no_ignore_path_flag_is_passed_in_either_mode(self):
+        # What this pins: our argv carries no `--gitleaks-ignore-path`, in
+        # either mode. WHY it carries none is #1957's measurement, and the row
+        # is #1924's (see `legacy_sarif.invoke`).
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                argv = self._launch(security_mode=mode)["argv"]
+                self.assertNotIn("--gitleaks-ignore-path", argv)
+                self.assertNotIn("-i", argv)
+
+    def test_an_inline_allow_is_ignored_under_redteam(self):
+        self.assertIn("--ignore-gitleaks-allow",
+                      self._launch(security_mode="redteam")["argv"])
+
+    def test_an_inline_allow_is_honoured_under_standard(self):
+        self.assertNotIn("--ignore-gitleaks-allow",
+                         self._launch(security_mode="standard")["argv"])
+
+    def test_the_default_mode_is_standard(self):
+        # A caller that names no mode gets the conservative one, the same
+        # default `run_tools --security` and `partition_venv_dirs` take.
+        self.assertNotIn("--ignore-gitleaks-allow", self._launch()["argv"])
+
+    def test_the_adapter_declares_that_it_reads_the_mode(self):
+        # `_run_adapter` hands the keyword only to adapters that declare it.
+        self.assertTrue(legacy.LegacySarifAdapter("gitleaks").reads_security_mode)
+
+    def test_the_mode_grows_no_flag_on_any_other_tool_here(self):
+        # semgrep's and bandit's suppression flags are appended by the
+        # DISPATCHER (`run_tools._with_suppression_flags`), which builds their
+        # argv; nothing here may add a second copy, and trivy/gosec take none.
+        for tool in ("semgrep", "bandit", "trivy"):
+            with self.subTest(tool=tool):
+                calls = []
+                with mock.patch("scripts.tools.base.subprocess.Popen",
+                                side_effect=scratch_cwd_recorder(calls)):
+                    legacy.LegacySarifAdapter(tool).invoke(
+                        "/some/target", security_mode="redteam")
+                argv = only(calls, "%s launch" % tool)["argv"]
+                self.assertEqual(argv, [("/some/target" if a == "/src" else a)
+                                        for a in legacy.TOOL_CMD[tool]])
+
+
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "goldens", "tool-raw")
 
@@ -345,3 +412,115 @@ class TestScannerRuleTagsOutrankTheSarifLevel(unittest.TestCase):
         self.assertIn("HIGH", graded.values(), "the untouched rules still grade HIGH")
         for res in run["results"]:
             self.assertEqual("error", res.get("level"), "the envelope really says error")
+
+
+def _suppressed_sarif(*suppressions):
+    """Semgrep-shaped SARIF: one suppressed result, one plain control.
+
+    The shape is semgrep 1.177.0's own, measured on the #1839 real-image round:
+    a `# nosemgrep`'d finding is REPORTED, carrying
+    `"suppressions": [{"kind": "inSource"}]`, and `--disable-nosem` does not
+    change that output at the pin. So the argv is not the lever -- the ingest
+    is, and this fixture is what the ingest sees in either mode.
+    """
+    def result(rule, line, suppressions=None):
+        res = {"ruleId": rule, "level": "error",
+               "message": {"text": rule.replace("-", " ")},
+               "locations": [{"physicalLocation": {
+                   "artifactLocation": {"uri": "app/%s.py" % rule},
+                   "region": {"startLine": line}}}]}
+        if suppressions is not None:
+            res["suppressions"] = list(suppressions)
+        return res
+    return {"runs": [{
+        "tool": {"driver": {"name": "semgrep", "rules": [
+            {"id": "sql-injection"}, {"id": "weak-hash"}]}},
+        "results": [result("sql-injection", 42, suppressions),
+                    result("weak-hash", 7)]}]}
+
+
+class TestAnInSourceSuppressionIsAnIngestDecision(unittest.TestCase):
+    """`# nosemgrep` is honoured (or not) where the SARIF is READ (#1839).
+
+    Fix round 1 §B: the pinned scanner marks a nosem-suppressed result and
+    reports it anyway, so `--disable-nosem` decides nothing and this converter
+    decides everything. Under `standard` an in-source suppression is the
+    operator's reviewed decision about their own repository and the result is
+    dropped -- counted, never silent. Under `redteam` the tree is untrusted and
+    the same result is an ordinary finding.
+    """
+
+    def _rules(self, findings):
+        return [f["category"] for f in findings]
+
+    def test_standard_drops_the_suppressed_result_and_counts_it(self):
+        dropped = []
+        findings = su.sarif_to_findings(
+            _suppressed_sarif({"kind": "inSource"}), "semgrep", "g1", "SG",
+            security_mode="standard", suppressed_in_source=dropped)
+        self.assertEqual(["weak-hash"], self._rules(findings))
+        self.assertEqual(["sql-injection"], dropped)
+
+    def test_redteam_keeps_it_as_an_ordinary_finding(self):
+        dropped = []
+        findings = su.sarif_to_findings(
+            _suppressed_sarif({"kind": "inSource"}), "semgrep", "g1", "SG",
+            security_mode="redteam", suppressed_in_source=dropped)
+        self.assertEqual(["sql-injection", "weak-hash"], self._rules(findings))
+        self.assertEqual([], dropped)
+
+    def test_a_suppression_the_tool_rejected_never_took_effect(self):
+        findings = su.sarif_to_findings(
+            _suppressed_sarif({"kind": "inSource", "status": "rejected"}),
+            "semgrep", "g1", "SG", security_mode="standard")
+        self.assertEqual(["sql-injection", "weak-hash"], self._rules(findings))
+
+    def test_only_the_in_source_kind_is_the_target_s_to_write(self):
+        # An `external` suppression comes from a suppression file the SCANNER
+        # was given, not from the reviewed repository's source.
+        findings = su.sarif_to_findings(
+            _suppressed_sarif({"kind": "external"}), "semgrep", "g1", "SG",
+            security_mode="standard")
+        self.assertEqual(["sql-injection", "weak-hash"], self._rules(findings))
+
+    def test_a_caller_that_names_no_mode_drops_nothing(self):
+        # The converter is shared by every SARIF adapter and by callers outside
+        # the gate. Naming no mode keeps the pre-#1839 behaviour -- every
+        # result ingested -- so a forgotten argument can never silently lose a
+        # finding; `ingest_dir_detailed` is the one that defaults to standard.
+        findings = su.sarif_to_findings(
+            _suppressed_sarif({"kind": "inSource"}), "semgrep", "g1", "SG")
+        self.assertEqual(["sql-injection", "weak-hash"], self._rules(findings))
+
+
+class TestTheAdapterReadsTheIngestPolicy(unittest.TestCase):
+    """`parse` takes (raw, group) and nothing else, so the mode travels the way
+    the scanned root does (#1649): a ContextVar the ingest sets around the
+    parse it performs. The count travels back through the same dict."""
+
+    def _parse(self, mode):
+        policy = {"security_mode": mode, "suppressed_in_source": []}
+        token = base.ingest_policy_cv.set(policy)
+        try:
+            raw = json.dumps(_suppressed_sarif({"kind": "inSource"})).encode()
+            findings = legacy.LegacySarifAdapter("semgrep").parse(raw, "g1")
+        finally:
+            base.ingest_policy_cv.reset(token)
+        return findings, policy
+
+    def test_standard_drops_and_reports_the_count_back(self):
+        findings, policy = self._parse("standard")
+        self.assertEqual(["weak-hash"], [f["category"] for f in findings])
+        self.assertEqual(["sql-injection"], policy["suppressed_in_source"])
+
+    def test_redteam_keeps_the_result(self):
+        findings, policy = self._parse("redteam")
+        self.assertEqual(["sql-injection", "weak-hash"],
+                         [f["category"] for f in findings])
+        self.assertEqual([], policy["suppressed_in_source"])
+
+    def test_no_policy_set_keeps_the_result(self):
+        raw = json.dumps(_suppressed_sarif({"kind": "inSource"})).encode()
+        findings = legacy.LegacySarifAdapter("semgrep").parse(raw, "g1")
+        self.assertEqual(["sql-injection", "weak-hash"],
+                         [f["category"] for f in findings])

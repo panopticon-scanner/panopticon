@@ -1,6 +1,7 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
 import math
+import os
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
                    omit_none, parse_json_bytes, run_tool, scratch_cwd,
                    _cvss_v3_score)
@@ -9,6 +10,23 @@ from .sarif_utils import _norm_uri
 
 _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
                         "MEDIUM": "MEDIUM", "MODERATE": "MEDIUM", "LOW": "LOW"}
+
+# The config osv-scanner is pinned to, generated per scan into the adapter's own
+# scratch directory (#1839, run-14 SEC-1202454595). A CONSTANT with no ignore
+# entry in it, and nothing target-derived: the scan's ignore list is the
+# scanner's to choose.
+#
+# osv-scanner resolves `osv-scanner.toml` from the SCANNED tree -- one per
+# directory, beside each lockfile it finds -- so #1877's scratch cwd never
+# reached it, and a committed `[[IgnoredVulns]]` list dropped the target's own
+# advisories from the scan with nothing on stderr to say so. `scan --config`
+# (v1.8.2: "set/override config file") replaces that per-directory lookup for
+# every package in the scan. Same shape as `bundler_audit.py`, `brakeman.py`
+# and `cargo_audit.py`, which answer the same problem the same way.
+OWNED_CONFIG_NAME = "osv-scanner.toml"
+OWNED_CONFIG_TEXT = ("# panopticon: the scan's ignore list is the scanner's,\n"
+                     "# not the reviewed repository's (#1839). Deliberately an\n"
+                     "# empty document -- it declares nothing at all.\n")
 
 
 def _group_score(raw: object) -> float | None:
@@ -47,11 +65,19 @@ class OsvScannerAdapter:
         return has_any_file(target, *markers)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        # v1.8.2 spells it --experimental-offline; re-check when OSV_SCANNER_VERSION bumps
-        cmd = ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", target]
+        # v1.8.2 spells it --experimental-offline, and exposes `--config` on the
+        # `scan` SUBCOMMAND rather than on the bare root command this used to
+        # call; re-check both spellings when OSV_SCANNER_VERSION bumps (the
+        # Dockerfile's offline-DB warm-up is the other reader of them).
         # #1877: never the target as cwd. The scan root is named on argv, so
-        # argv is byte-unchanged.
+        # apart from `scan` and the `--config` pair the argv is unchanged.
         with scratch_cwd("osv-scanner-cwd-") as cwd:
+            config_path = os.path.join(cwd, OWNED_CONFIG_NAME)
+            with open(config_path, "w", encoding="utf-8") as fh:
+                fh.write(OWNED_CONFIG_TEXT)
+            cmd = ["osv-scanner", "scan", "--format", "json",
+                   "--experimental-offline", "--recursive",
+                   "--config", config_path, target]
             return run_tool(cmd, timeout=300, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:

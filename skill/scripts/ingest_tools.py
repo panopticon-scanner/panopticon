@@ -13,7 +13,7 @@ import sys
 from scripts import evidence as evidence_mod
 from scripts import groups_schema
 from scripts.tools import ADAPTERS
-from scripts.tools.base import strip_ansi, target_root_cv
+from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
     CVE_TAG,
@@ -748,7 +748,8 @@ def _cap_findings(parsed, tool):
 
 
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False,
-                        target_root=None, suppressed_out=None, excluded_out=None):
+                        target_root=None, suppressed_out=None, excluded_out=None,
+                        security_mode="standard"):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -810,6 +811,20 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     defaults to the root the tools directory itself implies, so every ingest
     site answers identically for the same directory whether or not it passed
     one; a caller that holds the root (the driver's phases do) passes it.
+
+    security_mode (#1839, run-14 SEC-284952751): whether an INLINE suppression
+    comment the scanned tree's own source carries is honoured HERE -- which is
+    the only place it can be, because the pinned scanners report a suppressed
+    result either way (semgrep marks it `suppressions: [{"kind": "inSource"}]`
+    with and without `--disable-nosem`). Under `"standard"` -- the default, an
+    operator scanning their own repository; this repository's own CI scans in
+    `redteam` -- such a result is dropped as that operator's own reviewed
+    in-diff decision, and `dispositions[tool]`
+    carries `suppressed_in_source: N` so the drop is disclosed per tool rather
+    than read as a cleaner scan; under `"redteam"` the tree is untrusted and
+    those results are ordinary findings. The policy reaches each adapter's
+    `parse` through `tools.base.ingest_policy_cv`, for the same reason
+    `target_root_cv` exists: `parse(raw, group)` has nowhere else to take it.
     """
     out = []
     dispositions = {}
@@ -871,6 +886,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # depends on WHICH manifest it audited resolves that here instead --
         # against the root this function already holds.
         token = target_root_cv.set(root)
+        # #1839: name this run's suppression policy for the same parse. The
+        # list travels back out filled with the rule ids the mode dropped.
+        policy: dict = {"security_mode": security_mode,
+                        "suppressed_in_source": []}
+        policy_token = ingest_policy_cv.set(policy)
         try:
             file_coverage = None
             file_hook = getattr(adapter, "parse_with_file_coverage", None)
@@ -889,6 +909,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             continue
         finally:
             target_root_cv.reset(token)
+            ingest_policy_cv.reset(policy_token)
         raw_count = len(parsed)
         scanned = _scanned_files(raw)
         # #1741: filter BEFORE capping. `_cap_findings` used to run first, so a
@@ -918,6 +939,12 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if coverage_reason:
             status, reason = "failed", coverage_reason
         dispositions[tool] = {"status": status, "findings": raw_count}
+        if policy["suppressed_in_source"]:
+            # #1839: what this mode honoured, per tool. Absent means nothing
+            # was suppressed in the tree's own source -- deliberately not the
+            # same claim as `0`, which no row ever carries.
+            dispositions[tool]["suppressed_in_source"] = len(
+                policy["suppressed_in_source"])
         if file_coverage is not None:
             dispositions[tool]["file_coverage"] = file_coverage
         if truncated:
@@ -1070,7 +1097,7 @@ def suppressed_counts(suppressed, scan_skipped=()):
 
 
 def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False,
-               target_root=None, suppressed_out=None):
+               target_root=None, suppressed_out=None, security_mode="standard"):
     """Ingest raw tool-output files from a directory and route them to the
     registered adapter for parsing. Files without a registered adapter or that
     fail to parse are skipped with a stderr diagnostic.
@@ -1079,5 +1106,5 @@ def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False,
     """
     findings, _dispositions = ingest_dir_detailed(
         tools_dir, group, exclude_globs, include_fixtures, target_root,
-        suppressed_out)
+        suppressed_out, security_mode=security_mode)
     return findings

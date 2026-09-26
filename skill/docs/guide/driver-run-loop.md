@@ -651,22 +651,99 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `site-packages` in full, which is wall-clock and tool-timeout cost rather than report noise (the
   ingest still drops those findings and hands back only the CRITICAL and secret-class ones), and the
   only knob for it is `--exclude '**/.venv/**'` — gate POLICY, out of scope in every mode and never
-  re-admitted, not a shorter walk. bandit runs with `--ini /panopticon-bandit/bandit.ini`, a file
-  staged per run into a scratch directory and bind-mounted read-only, whose text is a CONSTANT —
-  bandit's parser defaults plus `.worktrees`, **no `tests`/`skips` key at all**, and no
-  target-derived string of any kind, because its one job is to pre-empt bandit's own `.bandit`
-  discovery (an ini that fails to arrive or fails to parse is fail-OPEN in bandit, so nothing
-  load-bearing may live only there); this run's virtualenvs ride on the CLI instead, as attached
+  re-admitted, not a shorter walk. **bandit always runs with an EXPLICIT `--ini`, and the mode says
+  whose.** Under `--security redteam` it is `/panopticon-config/bandit.ini`, a file staged per run
+  into a scratch directory and bind-mounted read-only, whose text is a CONSTANT — bandit's parser
+  defaults plus `.worktrees`, **no `tests`/`skips` key at all**, and no target-derived string of any
+  kind (an ini that fails to arrive or fails to parse is fail-OPEN in bandit, so nothing
+  load-bearing may live only there). Under `standard`, a `.bandit` the scanned repository committed
+  is pinned instead (`--ini /src/.bandit`) and nothing of ours is staged: that is an operator
+  scanning their own repository, and the owner ruling of 2026-09-25 on #1924 leaves their file to
+  them, the same standard/redteam split the gate already uses — and this repository's own CI
+  (`security.yml` and the fork-PR `security-fork.yml`) scans in `redteam`, so a `.bandit` is
+  honoured only on an operator's own `standard` run and never on either check. Honouring it takes
+  the runner's own
+  `-s B101,B404,B110,B112` OFF that launch's argv: measured at the pin, bandit 1.9.4 exits 2
+  ("Non-exclusive include/exclude test sets") and writes no SARIF at all whenever a pinned ini's
+  `tests` key overlaps the CLI list, and a selected-but-unproduced scanner (#1452) is not what
+  honouring the operator's file means -- their file chooses the checks, ours chooses them in every
+  other case. The `--exclude=` values stay either way; a CLI exclusion merges with an ini cleanly
+  at the pin. A target with no `.bandit` of its own gets ours in either mode, and because the
+  `--ini` is explicit in every case, #run7's multiple-`.bandit` discovery ERROR stays bypassed
+  whether or not the target ships one. `tools-manifest.json` says which of the two the scan ran
+  under, per tool, in `scanner_config` (`"target .bandit (its skips and tests)"` or
+  `"scanner-owned"`), so "bandit reported little" can be read against it.
+  This run's virtualenvs ride on the CLI either way, as attached
   `--exclude=` values, each path component checked against an allowlist (`[A-Za-z0-9._-]`, no
   leading `-`, never `.` or `..`) so a directory named `a,b` or `{src,q}` is scanned and NAMED
-  rather than expressed; the pin is unconditional, so #run7's multiple-`.bandit` ERROR is bypassed
-  whether or not the target ships one, and the target's own `.bandit` never reaches the argv. It
-  used to be pinned with `--ini <target>/.bandit` whenever the target had one, which let the
-  reviewed repository choose bandit's `exclude` — and through the same file its `tests`, which no
-  exclusion merge mitigates (#1839, run-14 SEC-752508850: a committed `tests = B999` reduced the
-  merge gate's Python SAST to one check). That is the first increment of the
+  rather than expressed. The redteam half is what #1839 changed: the target's copy used to be
+  pinned whenever it existed, in every mode, which let the reviewed repository choose bandit's
+  `exclude` — and through the same file its `tests`, which no exclusion merge mitigates (#1839,
+  run-14 SEC-752508850: a committed `tests = B999` reduced the merge gate's Python SAST to one
+  check). That was the first increment of the
   target-controlled-configuration class tracked under #1924 (the scan-root half; #1877 closed the
-  cwd half). **A directory whose name cannot be expressed as an exclusion (a path component outside
+  cwd half), and the rest of that class follows it — SPLIT IN TWO, because the two kinds of in-tree
+  suppression are not the same claim (#1839, run-14 SEC-284952751 + SEC-1202454595). An ignore FILE
+  the reviewed repository commits is scanner CONFIGURATION, and it is replaced with a scanner-owned
+  one in BOTH modes: **trivy** runs with `--ignorefile=/panopticon-config/.trivyignore`, a constant
+  naming no advisory, staged the way bandit's ini is — one read-only FILE mount per launch, the
+  scratch holding it left at its own 0700 because the container reads the bind target. That flag is
+  **belt only**, in those words: the real-image round measured trivy 0.74.0 resolving the default
+  `.trivyignore` against the WORKING DIRECTORY, a per-launch scratch since #1877, so a
+  `.trivyignore` committed at the scan root was already not read on main either. The flag closes
+  nothing that was open; it pins the posture explicitly against a version that reads the scan root.
+  **osv-scanner** runs with
+  `scan --config <its own scratch>/osv-scanner.toml`, an empty document that overrides the
+  per-DIRECTORY `osv-scanner.toml` lookup osv-scanner does inside the scanned tree (the one adapter
+  of the four SEC-1202454595 named that #1742 left standing — cargo-audit, bundler-audit and
+  brakeman already generate their own). Each file is staged per launch and fail-CLOSED: one
+  that cannot be written skips that tool, which then lands in the manifest's `missing`, and never
+  the scanners queued behind it. An inline suppression COMMENT is the other kind, and it lives in
+  the target's SOURCE rather than its config — in the diff a reviewer reads. Under `--security
+  redteam` the tree is untrusted and every scanner whose knob was verified against the pinned image
+  is told to stop honouring one: semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
+  `--ignore-gitleaks-allow`. **For semgrep that flag is belt and the INGEST is the lever**, and the
+  real-image round is why the distinction is stated rather than implied: at the 1.177.0 pin semgrep
+  REPORTS a `# nosemgrep`'d result either way, marking it
+  `"suppressions": [{"kind": "inSource"}]` in its SARIF, with and without `--disable-nosem` —
+  identical output. So the decision is made where the SARIF is read: under `standard`
+  `tools/sarif_utils.sarif_to_findings` DROPS a result carrying an accepted `inSource` suppression
+  (a `status: "rejected"` entry never took effect, and an `external` kind is not the tree's to
+  write) and COUNTS it; under `redteam` it is an ordinary finding. The count is published per tool —
+  `meta.coverage.adapters.<tool>.suppressed_in_source` in the report, and on `security_gate`'s own
+  verdict line beside the excluded and directory-name counts — because a honoured suppression that
+  nobody can count is just a smaller scan. Every ingest carries this run's mode for that reason: the
+  gate's head AND baseline reads, the report's `--tools-dir` ingest, the driver's independent
+  tool-verify queue and the review-time "don't re-derive" map, so no two of them disagree about
+  which findings exist. That last one is appended by the ADAPTER, which builds gitleaks' argv
+  inside the container, so every adapter dispatch now carries this run's mode as an explicit
+  `--security <mode>` argv pair — an argv pair rather than an environment variable, which a target's
+  own hooks could set, and a token the entry point does not recognise fails that tool closed. Under
+  `standard` the comment STANDS: `standard` is an operator scanning their own repository, who made a
+  reviewed, in-diff decision, and the scan is not the place to overrule it. **This repository's own
+  CI (`.github/workflows/security.yml` and the fork-PR `.github/workflows/security-fork.yml`) scans
+  in `redteam`**, so nothing target-authored is honoured on either check — neither an inline comment
+  nor a root `.bandit` — and a `standard` run is an operator's own, deliberately. It stands
+  DISCLOSED rather than silently: `tools-manifest.json` carries `suppression_comments`,
+  `{"<tool>": "ignored" | "honoured" | "n/a"}`, one row per assessed tool, read off whatever
+  DECIDES it — the argv the runner actually built for bandit and gitleaks, so taking a flag away
+  changes the claim instead of leaving an intention behind, and the run's MODE for semgrep, whose
+  lever is the ingest and whose flag is belt (reading that row off the belt would say `honoured` on
+  a redteam run the moment the belt came off). Same construction as `network` and `redacted` **in
+  `tools-manifest.json`** (`network` also reaches the report's `meta.tools`; these two rows live in
+  the manifest only). `n/a` is a tool
+  whose argv honours no such comment at all; a tool with NO row was not assessed, which is
+  deliberately not the same claim. Two residuals are disclosed on that line rather than guessed at
+  on an argv: gosec's
+  `// #nosec` and eslint-security's `/* eslint-disable */` stand in both modes, because neither
+  tool's knob was verified against the pinned image in this round and a flag a scanner rejects is a
+  tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). Two ignore
+  FILES are likewise still the target's, and both are #1924's open rows rather than this change's.
+  #1957's live test showed that an explicit empty ignore-path does not prevent the pinned gitleaks
+  binary's unconditional source-root `.gitleaksignore` load (v8.18.4, `cmd/root.go` L204-L224), so
+  no flag here pretends to move that read. And a `.semgrepignore` committed at the scan root
+  narrows the scan in both modes; no flag disables it at the pin; tracked on #2055.
+  **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was
   `--exclude=*` and one `mkdir` emptied semgrep's and trivy's scope. It is scanned instead, and its

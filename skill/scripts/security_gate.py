@@ -75,6 +75,17 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
              excluded_out=None):
     """Return (findings, dispositions, failures, high_findings, suppressed).
 
+    #1839, run-14 SEC-284952751: `security_mode` reaches the PARSE, not just
+    this function's gating decision. An inline suppression COMMENT in the
+    scanned tree's own source (semgrep's `# nosemgrep`) is honoured or ignored
+    where the SARIF is read -- the pinned scanner reports the result either way
+    -- so `standard` drops those results here and `redteam` keeps them, and
+    `dispositions[tool]["suppressed_in_source"]` says how many, which `main`
+    prints beside the verdict. That count is a HONOURED suppression, the
+    opposite disclosure from the one below: it never reaches `findings` and
+    never reaches the gate, in either mode, because under `redteam` there is
+    nothing to re-admit -- the finding is simply there.
+
     #1578: `suppressed` is what a NAME-BASED exclusion dropped, each entry
     naming the segment that dropped it. It is never part of `findings` -- the
     report-side suppression is what makes tool output usable at all -- but under
@@ -114,7 +125,8 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     suppressed: list[dict[str, Any]] = []
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [],
-        suppressed_out=suppressed, excluded_out=excluded_out)
+        suppressed_out=suppressed, excluded_out=excluded_out,
+        security_mode=security_mode)
     # #1512: one definition of lost required coverage, shared with the report's
     # tool axis. Extracted, not duplicated -- the two views disagreeing is what
     # let a scanner that wrote unparseable bytes certify in the report while
@@ -160,6 +172,19 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     # tests/synth/test_plan.py.
     high = kept + (gate_counted(suppressed) if security_mode == REDTEAM else [])
     return findings, dispositions, failures, high, suppressed
+
+
+def honoured_in_source(dispositions):
+    """`[(tool, N)]` -- what an in-source suppression comment cost, per tool.
+
+    #1839 fix round 1 §B. Read off the dispositions rather than re-derived,
+    for the reason every other number on the verdict line is: the count and
+    the population it describes come from the same parse. Empty under
+    `--security redteam`, where nothing is dropped for a comment at all.
+    """
+    return sorted((tool, row["suppressed_in_source"])
+                  for tool, row in (dispositions or {}).items()
+                  if isinstance(row, dict) and row.get("suppressed_in_source"))
 
 
 def gate_counted(suppressed):
@@ -284,7 +309,7 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
     try:
         findings, dispositions = ingest_tools.ingest_dir_detailed(
             baseline_dir, "ci", exclude_globs=exclude_globs or [],
-            suppressed_out=suppressed)
+            suppressed_out=suppressed, security_mode=security_mode)
     except Exception as exc:  # noqa: BLE001 - a broken baseline is not a verdict
         return [], "cannot ingest %s: %r" % (baseline_dir, exc)
     disclose_file_coverage(dispositions, "baseline")
@@ -441,6 +466,20 @@ def main(argv=None):
         # target wrote rather than on a name, and this count now includes it.
         note = ("; %d suppressed by directory name or marker -- %s%s"
                 % (len(suppressed), _by_class(suppressed), verdict))
+    in_source = honoured_in_source(dispositions)
+    if in_source:
+        # #1839 (run-14 SEC-284952751): the findings this run HONOURED a
+        # `# nosemgrep`-class comment over. They are not suppressed by us and
+        # not gated by anything -- the scanner reported them and the ingest let
+        # the operator's own in-diff decision stand -- so the only honest place
+        # for them is beside the verdict, where a reader can see what the mode
+        # bought. Under redteam the clause never appears, because nothing is
+        # dropped there.
+        note += ("; %d suppressed by an in-source comment (%s) -- honoured "
+                 "under --security standard; re-run with --security redteam "
+                 "to see them"
+                 % (sum(n for _tool, n in in_source),
+                    ", ".join("%s %d" % (tool, n) for tool, n in in_source)))
     if excluded:
         # Fix round 1 (ruling 3): the operator's own globs, counted where the
         # verdict is. `--exclude '**/venv/**'` under redteam un-gates exactly

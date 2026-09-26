@@ -7,6 +7,67 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The rest of the configuration a scanned repository used to choose for the scanners (#1839,
+  run-14 SEC-284952751 + SEC-1202454595).** #1924's scan-root class, split in two, because the two
+  kinds of in-tree suppression are not the same claim. An ignore FILE the reviewed repository
+  commits is scanner CONFIGURATION, and two more of them are now replaced with a scanner-owned one
+  in BOTH security modes: trivy runs with `--ignorefile=/panopticon-config/.trivyignore` (a
+  constant naming no advisory, staged the way bandit's ini is, in a read-only FILE mount of its
+  own). That flag is BELT ONLY: the real-image round measured trivy 0.74.0 resolving the default
+  `.trivyignore` against the WORKING DIRECTORY -- a per-launch scratch since #1877 -- so a
+  scan-root `.trivyignore` was already not read on main either, and this closes nothing that was
+  open. It pins the posture against a version that reads the scan root. And osv-scanner runs with
+  `scan --config <its own scratch>/osv-scanner.toml`
+  (an empty document; osv-scanner resolves `osv-scanner.toml` per DIRECTORY inside the scanned
+  tree, so a committed `[[IgnoredVulns]]` list dropped the target's own advisories -- the one
+  adapter of the four SEC-1202454595 named that #1742 left standing). Each file is staged per
+  launch and fail-CLOSED: one that cannot be written skips that tool into the manifest's `missing`
+  rather than taking the scanners queued behind it down with it. An inline suppression COMMENT is
+  the other kind: it lives in the target's SOURCE, in the diff a reviewer reads. Under `--security
+  redteam` the tree is untrusted and every scanner whose knob was verified against the pinned
+  image stops honouring one (semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
+  `--ignore-gitleaks-allow`); under `standard` it STANDS, because `standard` is an operator
+  scanning their own repository, who made a reviewed, in-diff decision. This repository's own CI
+  (`security.yml` and the fork-PR `security-fork.yml`) scans in `redteam`, so nothing
+  target-authored is honoured on either check. For semgrep the flag is BELT and the INGEST is the
+  lever: at the 1.177.0 pin semgrep reports a `# nosemgrep`'d result either way, marked
+  `"suppressions": [{"kind": "inSource"}]`, with and without `--disable-nosem`, so
+  `sarif_to_findings` is what decides: it DROPS such a result under `standard` and counts it, and
+  keeps it under `redteam`. The count is published per tool
+  (`meta.coverage.adapters.<tool>.suppressed_in_source`, and on the gate's verdict line beside the
+  excluded counts), and every ingest on both paths now carries the run's mode so no two of them
+  disagree about which findings exist. It stands DISCLOSED: `tools-manifest.json` carries
+  `suppression_comments` (`{"<tool>": "ignored" | "honoured" | "n/a"}`), one row per assessed tool,
+  read off whatever decides it -- the argv the runner built for bandit and gitleaks, so taking a
+  flag away changes the claim rather than leaving an intention behind, and the run's mode for
+  semgrep, whose lever is the ingest and whose flag is belt; a tool with NO row was not assessed,
+  which is not the same claim as
+  `n/a`. Two residuals are disclosed there rather than guessed at on an argv -- gosec's `#nosec`
+  and eslint-security's inline config, whose knobs were not verified at the pin, since a flag a
+  scanner rejects is a tool that exits non-zero and writes no SARIF. Two ignore FILES stay the
+  target's and stay #1924's rows rather than this one's: `.gitleaksignore` is unchanged here
+  (#1924, Codex's row; see #1957), and a `.semgrepignore` committed at the scan root narrows the
+  scan in both modes with no flag to disable it at the pin (tracked on #2055). Gitleaks'
+  allow-comment flag is appended by the adapter that builds its argv inside the container, so
+  every adapter dispatch now names this run's mode as an explicit `--security <mode>` argv pair
+  (not an environment variable, which a target's own hooks could set; an unrecognised token fails
+  that tool closed).
+  Bandit moves the other way in the same breath, by the owner ruling of 2026-09-25 on #1924: the
+  bullet below pinned a scanner-owned ini in BOTH modes, which exceeded the ruling, so under
+  `standard` a `.bandit` the scanned repository committed is pinned again (`--ini /src/.bandit`,
+  explicit, so #run7's multiple-config ERROR stays bypassed) and honoured -- which takes the
+  runner's own `-s B101,B404,B110,B112` off that argv, since bandit 1.9.4 exits 2 on a pinned ini
+  whose `tests` key overlaps the CLI list and writes no SARIF at all (#1452's
+  selected-but-unproduced class): their file chooses the checks. `redteam` keeps the scanner-owned
+  ini and the `-s` list, and adds `--ignore-nosec`. `tools-manifest.json` says which of the two
+  each run used, in `scanner_config` (`"target .bandit (its skips and tests)"` |
+  `"scanner-owned"`). An operator sees: a
+  `.trivyignore` or `osv-scanner.toml` committed to the scanned repository no longer decides what
+  its own scan reports in either mode, their own `.bandit` is theirs again under `standard`, and
+  `tools-manifest.json` says per scanner which config it ran under and whether the repository's own
+  suppression comments were honoured. And CI scans in redteam, so the suite's two `shell=True`
+  calls name the shell instead of carrying a `# nosec` (`tests/_test_helpers.py`,
+  `tests/test_hook_command_quoting.py`: `/bin/sh -c` is what `shell=True` already ran).
 - **This repository's own CI scans in `redteam` on both routes** (owner ruling 2026-09-26,
   #1839). Today the mode changes the virtualenv skip (off under `redteam`) and the
   gate's policy-C re-admission of name-suppressed findings; #1839's PR 5 adds the split that

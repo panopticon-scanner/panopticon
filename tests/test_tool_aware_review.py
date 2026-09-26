@@ -203,3 +203,56 @@ class TestCellEntryInjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_SUPPRESSED_SARIF = {"runs": [{
+    "tool": {"driver": {"name": "semgrep", "rules": []}},
+    "results": [
+        {"ruleId": "nosemd", "level": "error", "message": {"text": "nosemd"},
+         "suppressions": [{"kind": "inSource"}],
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "app/db.py"},
+             "region": {"startLine": 3}}}]},
+        {"ruleId": "plain", "level": "error", "message": {"text": "plain"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "app/db.py"},
+             "region": {"startLine": 9}}}]}]}]}
+
+
+class TestTheDontReDeriveMapHonoursTheRunsMode(unittest.TestCase):
+    """The map claims "already reported, verified independently" (#1131), so it
+    must hold exactly the findings this run's mode ingests (#1839 §B): a
+    `# nosemgrep`'d hit is honoured under standard, and under redteam it is a
+    finding a reviewer is told not to re-derive."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root, "tools"))
+        self.addCleanup(self._t.cleanup)
+        review._ingested_tool_findings.cache_clear()
+        self.addCleanup(review._ingested_tool_findings.cache_clear)
+        with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
+            json.dump(_SUPPRESSED_SARIF, fh)
+
+    def _rules(self, security_mode):
+        review._ingested_tool_findings.cache_clear()
+        out = review._tool_hits_for_cell(
+            self.root, {"run_id": "R", "security_mode": security_mode},
+            "SEC", ["app/db.py"])
+        return {rule for rule in ("nosemd", "plain") if rule in out}
+
+    def test_standard_leaves_the_suppressed_hit_out_of_the_map(self):
+        self.assertEqual({"plain"}, self._rules("standard"))
+
+    def test_redteam_puts_it_in_the_map(self):
+        self.assertEqual({"nosemd", "plain"}, self._rules("redteam"))
+
+    def test_the_memo_is_keyed_on_the_mode(self):
+        # `_ingested_tool_findings` is lru_cached per (root, include_fixtures);
+        # a run that asked in one mode must not answer a second mode from that
+        # cache -- both phases call it for the same root.
+        standard = review._ingested_tool_findings(self.root, False, "standard")
+        redteam = review._ingested_tool_findings(self.root, False, "redteam")
+        self.assertEqual(1, len(standard))
+        self.assertEqual(2, len(redteam))

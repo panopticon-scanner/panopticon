@@ -89,9 +89,13 @@ class TestReadGuardHookCommand(HookCommandCase):
             with mock.patch.object(rg, "_trusted_hook_argv",
                                    return_value=(stub, "-I", os.path.abspath(rg.__file__))):
                 command = rg._hook_entry(scope)["hooks"][0]["command"]
-            proc = subprocess.run(command, shell=True, cwd=d,  # nosec B602
+            # `/bin/sh -c` is what `shell=True` runs on POSIX, named
+            # explicitly: this test is ABOUT surviving a real shell, and the
+            # explicit form carries no `# nosec` for a redteam scan of our own
+            # tree to trip over (#1839 fix round 1).
+            proc = subprocess.run(["/bin/sh", "-c", command], cwd=d,
                                   capture_output=True,
-                                  text=True, timeout=5)  # noqa: S602
+                                  text=True, timeout=5)
             self.assertEqual(0, proc.returncode, proc.stderr)
             argv = json.loads(proc.stdout)
             self.assertEqual(["-I", os.path.abspath(rg.__file__),
