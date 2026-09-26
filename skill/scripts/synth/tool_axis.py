@@ -404,6 +404,20 @@ def reconcile(plan, tools, resolved, run=None):
                                      or integrity.get("content_snapshot_missing")
                                      or integrity.get("malformed_findings_files")
                                      or integrity.get("empty_dispatch_plans")
+                                     # SEC-377944137 (#1832): the driver
+                                     # recorded a review dispatch and no plan
+                                     # file is on disk. `plans_seen` was the
+                                     # only key that noticed a deleted plan,
+                                     # and it was not in this list -- so the
+                                     # `rm` that erased #1208's snapshot
+                                     # obligation certified a substitution the
+                                     # run had already detected.
+                                     or integrity.get("dispatch_plan_missing")
+                                     # ...and a plan that is PRESENT but is not
+                                     # the one this run wrote: a narrower plan
+                                     # declares fewer cells, so replacing it is
+                                     # a cheaper `rm`.
+                                     or integrity.get("dispatch_plan_mismatched")
                                      or integrity.get("invalid_dispatch_plans")
                                      or integrity.get("invalid_verify_queue")
                                      # Fix round 1 F1: an unreadable manifest
