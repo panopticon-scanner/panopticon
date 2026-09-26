@@ -218,6 +218,20 @@ def _load_json(path):
     except (OSError, ValueError):
         return None
 
+def _load_state_json(path, what):
+    """A run-scoped state document: {} when ABSENT, DriverError when present
+    and unreadable. #run9 COD-B1A's rule, for the retry budgets: treating a
+    torn budget as empty refunds every spent attempt, which is the one thing
+    the file exists to prevent. --reset is the deliberate way to start over.
+    """
+    if not os.path.exists(path):
+        return {}
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        raise DriverError("%s at %s is present but unreadable; delete it or "
+                          "re-run with --reset" % (what, path))
+    return data
+
 # The no-follow artifact open lives in `scripts.safe_write` (#1735), not here:
 # `run_manifest` needs it for the manifest's own `<name>.tmp` staging write and
 # may not import this package (layout rule 3 -- `phases/*` imports

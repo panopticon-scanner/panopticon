@@ -532,8 +532,10 @@ on Claude hooks, and always uses the return-persist path.
   on a cell that cannot be recovered, so the run reaches `complete` having lost it. That is not a
   clean run and the terminal status says so — `cells_exhausted: <n>`, with the same count and each
   cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
-  clean run's status is unchanged for everything that already parses it. **A dispatch entry does not
-  get to describe itself** (#1720): the request travels through `.panopticon/dispatch-request.json`,
+  clean run's status is unchanged for everything that already parses it. A budget file that is
+  PRESENT but unreadable — a torn write — refuses instead, naming the file and `--reset`: read as
+  empty it would refund every attempt the run really spent (#1809). **A dispatch entry does not get
+  to describe itself** (#1720): the request travels through `.panopticon/dispatch-request.json`,
   a file inside the reviewed tree, so an entry's `agent` must be one of the registered panopticon
   shell names (`panopticon-scout`, `panopticon-domain-panel`, `panopticon-domain-advisor`,
   `panopticon-advisor`, `panopticon-setup-scan` — and on kimi, where the name becomes a

@@ -69,7 +69,11 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "panel-test-inventory.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
-                "cell-attempts.json")
+                # #1809: its two siblings are run-scoped for the same reason,
+                # and an unreadable one now names --reset as the remedy, so the
+                # legacy flat sweep has to actually clear them (`scout-*.json`
+                # already covers the scout counter).
+                "cell-attempts.json", "verify-attempts.json")
 
 
 # How many exhausted cells the terminal `complete` message names before it

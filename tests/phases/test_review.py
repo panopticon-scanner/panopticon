@@ -12,6 +12,9 @@ import scripts.phases.runio as runio
 import scripts.grouping_engine as grouping_engine
 import scripts.phases.review as review
 import scripts.phases.requests as requests
+import scripts.phases.verify as verify
+import scripts.phases.coverage as coverage
+import scripts.phases.persist as persist
 
 import scripts.ocrdb as ocrdb
 import scripts.model_resolver as model_resolver
@@ -663,3 +666,90 @@ class TestInventoryLineInjectionSafety(unittest.TestCase):
         self.assertIn("tests/test_café.py", line)
         self.assertIn("group Other", line)
         self.assertNotIn("\\x", line)
+
+
+class TestTornRetryLedgerIsNotAnEmptyOne(unittest.TestCase):
+    """#1809 / DAT-3555180994: a retry-budget ledger that is PRESENT but
+    unreadable is not an absent one. Read as `{}` it refunds every attempt the
+    run really spent -- an exhausted cell becomes dispatchable again and the
+    count restarts at 1, each refund paid for in launches -- so the read
+    refuses instead, naming the file and `--reset`. #run9 COD-B1A's rule,
+    which `file_issues.load_ledger` already applies one directory away.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+
+    def _tear(self, path):
+        """A COMPLETE ledger truncated at half its bytes: what an interrupted
+        write (or a host killed mid-replace on a pre-atomic build) leaves."""
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body[:len(body) // 2])
+        return body
+
+    def _spend_cell_budget(self):
+        key = review._cell_key("Auth", "SEC")
+        for _ in range(review.MAX_CELL_ATTEMPTS):
+            review._record_attempts(self.root, [key])
+        return runio._pano(self.root, review._ATTEMPTS_FILE)
+
+    def test_torn_cell_ledger_refuses_rather_than_refunding_the_budget(self):
+        path = self._spend_cell_budget()
+        self.assertTrue(review._cell_exhausted(self.root, "Auth", "SEC"))
+        self.assertTrue(self._tear(path).startswith("{"))    # was complete JSON
+        with self.assertRaises(runio.DriverError) as caught:
+            review._cell_attempts(self.root)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("--reset", str(caught.exception))
+        # The point of the refusal: the exhausted cell does not quietly become
+        # dispatchable again, and nothing rewrites the ledger at 1.
+        with self.assertRaises(runio.DriverError):
+            review._cell_exhausted(self.root, "Auth", "SEC")
+
+    def test_absent_cell_ledger_is_a_legitimate_first_run(self):
+        path = runio._pano(self.root, review._ATTEMPTS_FILE)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(review._cell_attempts(self.root), {})
+        self.assertFalse(review._cell_exhausted(self.root, "Auth", "SEC"))
+        review._record_attempts(self.root, [review._cell_key("Auth", "SEC")])
+        self.assertEqual(review._cell_attempts(self.root), {"Auth/SEC": 1})
+
+    def _ledgers(self):
+        """Every retry-budget reader, so the four sites cannot drift apart
+        again: (name, path, read, what an ABSENT ledger yields)."""
+        cell = runio._pano(self.root, review._ATTEMPTS_FILE)
+        return (
+            ("review._cell_attempts", cell,
+             lambda: review._cell_attempts(self.root), {}),
+            ("persist._give_back_attempts", cell,
+             lambda: persist._give_back_attempts(cell, ["Auth/SEC"]), []),
+            ("verify._verify_attempts", runio._pano(self.root, "verify-attempts.json"),
+             lambda: verify._verify_attempts(self.root, "Auth", "SEC", "primary"), 0),
+            ("verify._bump_verify_attempts", runio._pano(self.root, "verify-attempts.json"),
+             lambda: verify._bump_verify_attempts(self.root, "Auth", "SEC", "primary"), 1),
+            ("coverage._bump_scout_attempts", runio._pano(self.root, "scout-attempts.json"),
+             lambda: coverage._bump_scout_attempts(self.root, "Auth"), 1),
+        )
+
+    def test_every_ledger_refuses_a_torn_file(self):
+        for name, path, read, _absent in self._ledgers():
+            with self.subTest(ledger=name):
+                runio._write_json(path, {"Auth/SEC": 3, "Auth/SEC/primary": 3, "Auth": 3})
+                self._tear(path)
+                with self.assertRaises(runio.DriverError) as caught:
+                    read()
+                self.assertIn(path, str(caught.exception))
+                self.assertIn("--reset", str(caught.exception))
+                os.remove(path)
+
+    def test_every_ledger_reads_an_absent_file_as_before(self):
+        for name, path, read, absent in self._ledgers():
+            with self.subTest(ledger=name):
+                if os.path.exists(path):
+                    os.remove(path)
+                self.assertEqual(read(), absent)

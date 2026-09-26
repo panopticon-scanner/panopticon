@@ -604,10 +604,9 @@ def rollback_markers(review_root, checkpoint, entries):
 
 def _give_back_attempts(path, keys):
     """Decrement each of `keys` by one in the attempts document at `path`,
-    skipping what is absent or already zero; returns the keys changed."""
-    data = runio._load_json(path)
-    if not isinstance(data, dict):
-        return []
+    skipping what is absent or already zero; returns the keys changed. A
+    PRESENT but unreadable document refuses instead (#1809)."""
+    data = runio._load_state_json(path, "the cell retry budget")
     cleared = []
     for key in keys:
         if key in cleared:

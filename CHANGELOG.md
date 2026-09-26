@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
+  DAT-3555180994).** The four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
+  `scout-attempts.json` and persist's give-back path -- resolved "absent" and "present but
+  unreadable" to the same empty dict, so a file torn by an interrupted write read as a fresh run: a
+  cell that had spent `MAX_CELL_ATTEMPTS` became dispatchable again and the count restarted at 1,
+  each refund paid for in launches, and the bound the file exists to enforce stopped holding,
+  quietly. One reader now draws #run9 COD-B1A's line for all four (`runio._load_state_json`, the
+  rule `file_issues.load_ledger` already applies one directory away): `{}` only when the file is
+  ABSENT -- a legitimate first run -- and a `DriverError` naming the path and `--reset` when it is
+  PRESENT and unreadable, which `driver run` turns into an `error` status naming the file. The
+  remedy the message names is real: `verify-attempts.json` joins `cell-attempts.json` in the legacy
+  flat sweep's `_RESET_GLOBS`, the other two were already covered, and a live run's whole folder
+  goes. Fail closed rather than fail-quiet -- a false refusal costs one `--reset`, a silent refund
+  costs launches and invalidates the run's own bound.
 - **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
   DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
   panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or
