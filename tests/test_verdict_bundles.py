@@ -53,9 +53,11 @@ class TestVerdictBundles(unittest.TestCase):
                              "line 1 column 2 (char 1)")
             self.assertEqual(reasons["unreadable.json"], "read denied")
             self.assertEqual(set(by_fid), {"SEC-PLAIN", "SEC-WRAPPED"})
+            self.assertEqual(by_fid["SEC-PLAIN"][0]["verdict"], "CONFIRMED")
             self.assertEqual(by_fid["SEC-PLAIN"][0]["run_id"], "RUN")
             self.assertEqual(by_fid["SEC-PLAIN"][0]["stage"], "primary")
             self.assertEqual(by_fid["SEC-WRAPPED"][0]["run_id"], "RUN")
+            self.assertEqual(by_fid["SEC-WRAPPED"][0]["verdict"], "REJECTED")
             self.assertEqual(by_fid["SEC-WRAPPED"][0]["stage"], "backup")
 
     def test_bundle_flattens_by_finding_id(self):
