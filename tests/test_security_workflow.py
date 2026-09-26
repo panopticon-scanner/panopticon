@@ -3,6 +3,7 @@ import re
 import unittest
 
 import yaml
+import shell_reader
 
 from test_workflow_pins import _without_comments
 
@@ -10,6 +11,35 @@ from test_workflow_pins import _without_comments
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
 FORK_WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security-fork.yml")
+
+
+def _unsafe_run_expressions(script):
+    """Bounded allowlist, not an Actions evaluator: only reviewed constant env
+    bindings may be substituted into shell source. New expressions need review.
+    Comments are included: Actions expands them before the shell sees them.
+    Env values themselves and shell expansion are outside this guard's scope.
+    """
+    allowed = {"env.IMAGE", "env.TOOLS_OUT", "env.FIXTURE_GLOB", "env.GOLDEN_GLOB"}
+    return [expression for expression in re.findall(r"\$\{\{(.*?)\}\}", script, re.S)
+            if re.sub(r"\s+", "", expression) not in allowed]
+
+
+def _docker_build_contexts(script):
+    contexts = []
+    for statement in shell_reader.statements(script):
+        for stage in statement.stages:
+            argv = shell_reader.command(stage.argv)
+            if argv[:2] != ["docker", "build"]:
+                continue
+            operands = []
+            args = iter(argv[2:])
+            for arg in args:
+                if arg in ("-t", "--tag", "-f", "--file", "--build-arg", "--target"):
+                    next(args, None)
+                elif not arg.startswith("-"):
+                    operands.append(arg)
+            contexts.append(operands)
+    return contexts
 
 
 class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
@@ -172,9 +202,19 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertNotIn("pip install --upgrade pip", runs)
 
     def test_pr_dockerfile_is_never_built(self):
-        runs = self._run_text(self._workflow())
-        self.assertIn("docker build -t panopticon-tools controller", runs)
-        self.assertNotIn("docker build -t panopticon-tools .", runs)
+        contexts = _docker_build_contexts(self._every_run_text())
+        self.assertTrue(contexts)
+        self.assertTrue(all(context == ["controller"] for context in contexts), contexts)
+
+    def test_build_context_guard_ignores_prose_and_reads_reordered_options(self):
+        self.assertEqual(_docker_build_contexts('# docker build .\necho "docker build ."'), [])
+        for script in ("docker build . -t panopticon-tools",
+                       "docker build --tag panopticon-tools target",
+                       "docker build --tag=panopticon-tools ."):
+            with self.subTest(script=script):
+                self.assertNotEqual(_docker_build_contexts(script), [["controller"]])
+        self.assertEqual(_docker_build_contexts("docker build controller --tag panopticon-tools"),
+                         [["controller"]])
 
     def test_scanner_manifest_is_required(self):
         runs = self._run_text(self._workflow())
@@ -277,46 +317,30 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertNotIn("code_scanning_audit.py", fork_text)
 
     def test_no_untrusted_github_context_in_run_scripts(self):
-        runs = self._every_run_text()
-        untrusted_contexts = [
-            "${{ github.event.pull_request.title }}",
-            "${{ github.event.pull_request.body }}",
-            "${{ github.event.issue.title }}",
-            "${{ github.event.issue.body }}",
-            "${{ github.event.comment.body }}",
-            "${{ github.event.head_commit.message }}",
-            "${{ github.head_ref }}",
-            "${{ github.event.pull_request.head.label }}",
-            "${{ github.event.review.body }}",
-            "${{ github.event.pull_request.head.repo.description }}",
-            "${{ github.event.discussion.body }}",
-            "${{ github.event.pull_request.user.login }}",
-            "${{ github.event.commits[0].message }}",
-        ]
-        for ctx in untrusted_contexts:
-            self.assertNotIn(ctx, runs)
+        for path in (WORKFLOW, FORK_WORKFLOW):
+            with open(path, encoding="utf-8") as fh:
+                workflow = yaml.safe_load(fh)
+            for job in workflow["jobs"].values():
+                for step in job.get("steps", []):
+                    with self.subTest(workflow=path, step=step.get("name")):
+                        self.assertEqual(_unsafe_run_expressions(step.get("run", "")), [])
 
-    def test_expanded_untrusted_contexts_are_caught(self):
-        # Positive regression: each newly-added context would be flagged if it
-        # appeared anywhere in a run script.
-        runs = self._every_run_text()
-        newly_untrusted = [
-            "${{ github.head_ref }}",
-            "${{ github.event.pull_request.head.label }}",
-            "${{ github.event.review.body }}",
-            "${{ github.event.pull_request.head.repo.description }}",
-            "${{ github.event.discussion.body }}",
-            "${{ github.event.pull_request.user.login }}",
-            "${{ github.event.commits[0].message }}",
-        ]
-        for ctx in newly_untrusted:
-            self.assertNotIn(ctx, runs)
+    def test_event_fields_whitespace_brackets_compounds_and_comments_are_rejected(self):
+        for expression in ("github.head_ref", " github.event.pull_request.head.ref ",
+                           "github.event.pull_request.head.label",
+                           "github.event.pull_request.head.repo.full_name",
+                           "github.event.workflow_run.head_branch",
+                           "github.event.head_commit.author.name", "toJSON(github.event)",
+                           "github['event']['pull_request']['title']",
+                           "github . event . issue . body",
+                           "env.IMAGE || github.head_ref", "env.UNREVIEWED"):
+            for template in ('echo "${{%s}}"', '# comment ${{%s}}'):
+                with self.subTest(expression=expression, template=template):
+                    self.assertEqual(len(_unsafe_run_expressions(template % expression)), 1)
 
-    def test_env_context_is_allowed(self):
-        # Negative regression: a benign, non-injectable env context is permitted
-        # and present in run scripts.
-        runs = self._run_text(self._workflow())
-        self.assertIn("${{ env.TOOLS_OUT }}", runs)
+    def test_reviewed_env_bindings_and_shell_environment_are_allowed(self):
+        self.assertEqual(_unsafe_run_expressions(
+            'echo "${{ env.IMAGE }} ${{env.TOOLS_OUT}} $GH_REPO"'), [])
 
 
 class TestTheImagePullIsBounded(unittest.TestCase):

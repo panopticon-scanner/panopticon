@@ -305,6 +305,30 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
                             else "driver: tool scan produced no output — ")
                 self.assertEqual(captured.getvalue(), expected + head + "\n")
 
+    def test_failure_reason_short_empty_redacted_and_success_controls(self):
+        from scripts.phases import child, runio, tools as tools_phase
+        token = "ghp_" + "a" * 36
+        for stderr, produced, expected in (
+                ("short unique failure", False, "short unique failure"),
+                ("", False, "tool scan crashed"),
+                ("auth " + token + " failed", False, "auth [REDACTED_TOKEN] failed"),
+                ("b" * 290 + " " + token + " late", False, "b" * 290 + " [REDACTED"),
+                ("ignored on successful output", True, "")):
+            with self.subTest(stderr=stderr, produced=produced), tempfile.TemporaryDirectory() as root:
+                if produced:
+                    os.makedirs(runio._pano(root, "tools"))
+                    with open(runio._pano(root, "tools", "scan.sarif"), "w") as fh:
+                        fh.write('{"runs": []}')
+                with mock.patch.object(child, "_run_child", return_value=_FakeResult(
+                        0 if produced else 2, "unrelated stdout", stderr)), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    result = tools_phase.tools_execute(root, {"run_id": "r1"})
+                marker = runio._load_json(runio._pano(root, "tools-ran.json"))
+                self.assertEqual(marker["note"], expected)
+                self.assertEqual(marker["ran"], produced)
+                self.assertEqual(marker["crashed"], not produced)
+                self.assertEqual(result.kind, "advanced")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
