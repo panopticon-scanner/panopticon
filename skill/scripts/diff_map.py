@@ -633,7 +633,10 @@ def _require_private_parent(wt):
     downstream looks again. `tempfile.gettempdir()` honours `TMPDIR`, which is
     environment-supplied, so the property is not structural and is checked here.
     `/tmp` and macOS's per-user `/var/folders/...` both pass (sticky, and
-    `0o700`, respectively)."""
+    `0o700`, respectively). The PARENT only: a world-writable non-sticky
+    ANCESTOR of a sticky parent can still be renamed; whole-path confinement is
+    `runio._confine_link_parent`'s job, and the parent is where this rename
+    happens."""
     parent = os.path.dirname(wt)
     st = os.lstat(parent)
     if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
@@ -731,7 +734,13 @@ def _claim_worktree_leaf(wt):
 
     `FileExistsError` here is not the ordinary case (the vet above already
     refused a hostile leaf and accepted an empty one of ours): it is the
-    interval, so the same refusal runs again on what is actually at the path."""
+    interval, so the same refusal runs again on what is actually at the path.
+
+    The leaf this call creates is NOT mode-vetted: under a permissive umask
+    (`000`, or `002` with a shared primary group) it is itself group/other-
+    writable and deliberately not refused, because vetting it would reject our
+    own fresh directory; the exposure is then the operator's umask, the same
+    one their checkout carries."""
     _require_private_parent(wt)
     try:
         os.mkdir(wt)                      # umask's mode: see the docstring

@@ -26,7 +26,7 @@ evidence exposed.
   as `scanner` and mounts the review root — which under `--pr` IS that worktree — read-only, so
   traversal by another uid is required, and the leaf's parent must be sticky or private. The path
   stays deterministic, because `--pr` resumability depends on it — and `phases/setup.py` gave back
-  the room under its 700-line ceiling before any of it, so the #1737 unenforced-scan
+  the room under its 700-line ceiling before any of it: the #1737 unenforced-scan
   acknowledgement is now `phases/setup_ack.py`.
 
 - **The rest of the configuration a scanned repository used to choose for the scanners (#1839,
