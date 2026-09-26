@@ -467,7 +467,7 @@ def repair_tools_suppressed(value, warn=None):
     total a reader adds up stays exact, and the marker says the name was cut.
     """
     changes = []
-    out = {}
+    out: dict[str, int] = {}
     if not isinstance(value, dict):
         if value not in (None, {}):
             changes.append(("tools_suppressed", "dropped: not an object"))

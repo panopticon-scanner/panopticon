@@ -998,11 +998,12 @@ def scan_skipped_venvs(manifest):
     visible marker -- in that order, so the count of directories stays exact.
     """
     rows = manifest.get("excluded_dirs") if isinstance(manifest, dict) else None
-    out = {}
+    out: dict[str, list[str]] = {}
     for row in rows if isinstance(rows, list) else ():
         if not isinstance(row, dict) or not row.get("skipped"):
             continue
-        segment = _SCAN_SKIP_REASONS.get(row.get("reason"))
+        reason = row.get("reason")
+        segment = _SCAN_SKIP_REASONS.get(reason) if isinstance(reason, str) else None
         path = row.get("path")
         if segment and isinstance(path, str) and path:
             out.setdefault(segment, []).append(path)
