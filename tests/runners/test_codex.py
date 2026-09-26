@@ -128,6 +128,8 @@ def test_invalid_usage_is_not_fabricated(usage):
     result = codex.Runner.parse_envelope("e", envelope(REPLY, {"type": "turn.completed", "usage": usage}), 0)
     assert not result.ok
     assert "JSONL" in result.error
+    assert result.usage == {}
+    assert result.cost_usd is None
 
 
 def test_failed_launch_keeps_preceding_usage_and_denials():
@@ -305,6 +307,38 @@ def test_launch_exceptions_never_escape(tmp_path, error):
         result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
     assert not result.ok
     assert ("timed out" if isinstance(error, subprocess.TimeoutExpired) else str(error)) in result.error
+
+
+def test_command_construction_failure_never_executes(tmp_path):
+    execute = mock.Mock(side_effect=AssertionError("must not execute"))
+    runner = codex.Runner(runner=execute)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    with mock.patch.object(codex.codex_host, "command",
+                           side_effect=ValueError("construction failed")):
+        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+    assert not result.ok
+    assert "construction failed" in result.error
+    execute.assert_not_called()
+
+
+def test_validation_failure_cleans_registered_command_before_teardown(tmp_path):
+    execute = mock.Mock(side_effect=AssertionError("must not execute"))
+    runner = codex.Runner(runner=execute)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    argv = scratch_argv(tmp_path)
+    scratch = argv[argv.index("--cd") + 1]
+    runtime, _run_path = codex_host._COMMAND_DIRS[scratch]
+    assert os.path.isdir(scratch) and os.path.isdir(runtime)
+    with mock.patch.object(codex.codex_host, "command", return_value=argv), \
+         mock.patch.object(codex.codex_host, "validate_command",
+                           side_effect=ValueError("validation failed")):
+        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+    assert not result.ok
+    assert "validation failed" in result.error
+    execute.assert_not_called()
+    assert scratch not in codex_host._COMMAND_DIRS
+    assert not os.path.exists(scratch)
+    assert not os.path.exists(runtime)
 
 
 def test_missing_preparation_binding_or_return_delivery_never_launches(tmp_path):
