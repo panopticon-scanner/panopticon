@@ -582,6 +582,34 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         # target's source is not honoured under redteam either.
         self.assertIn("--ignore-nosec", argv)
 
+    def test_the_targets_own_ini_governs_the_skip_list(self):
+        # Measured in the tools image (fix round 1 §A): with the target's ini
+        # pinned AND the scanner's own `-s B101,...` on the argv, bandit 1.9.4
+        # exits 2 -- "[main] ERROR Non-exclusive include/exclude test sets:
+        # {'B101'}" -- and writes nothing, because the planted ini says
+        # `tests = B101`. A selected-but-unproduced tool (#1452) is not what
+        # "honoured" means: the operator's file governs skips and tests, so the
+        # `-s` list comes off. It stays everywhere else.
+        seen = self._dispatch(security_mode="standard")
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--ini") + 1], "/src/.bandit")
+        self.assertNotIn("-s", argv)
+        self.assertNotIn("B101,B404,B110,B112", argv)
+        # The venv/scanner exclusions stay: a CLI `--exclude=` merges with the
+        # ini cleanly (probe (c) of the same round).
+        self.assertTrue([a for a in argv if a.startswith("--exclude=")], argv)
+        self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
+                         "target .bandit (its skips and tests)")
+
+    def test_every_other_cell_keeps_the_scanners_skip_list(self):
+        for mode, plant in (("redteam", True), ("redteam", False),
+                            ("standard", False)):
+            with self.subTest(mode=mode, target_has_bandit=plant):
+                argv = self._dispatch(plant_ini=plant,
+                                      security_mode=mode)["argv"]
+                self.assertIn("-s", argv)
+                self.assertIn("B101,B404,B110,B112", argv)
+
     def test_the_targets_own_ini_is_pinned_under_standard(self):
         # Owner ruling 2026-09-25: `standard` is an operator scanning their own
         # repository, and the `.bandit` they committed is theirs to choose. The
@@ -593,7 +621,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertIsNone(seen["mount"], argv)      # nothing staged
         self.assertIsNone(seen["ini"])
         self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
-                         "target .bandit")
+                         rt.CONFIG_TARGET_BANDIT)
         self.assertNotIn("--ignore-nosec", argv)
 
     def test_the_default_mode_pins_the_targets_ini_too(self):

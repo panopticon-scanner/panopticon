@@ -638,6 +638,25 @@ def _insert_flags(tool, cmd, flags):
     return cmd[:at] + list(flags) + cmd[at:]
 
 
+def _without_skip_list(cmd):
+    """*cmd* with bandit's `-s <tests>` pair removed (#1839 fix round 1 §A).
+
+    Measured in the pinned image: with the TARGET's ini pinned (`--ini
+    /src/.bandit`) and the scanner's own `-s B101,B404,B110,B112` still on the
+    argv, bandit 1.9.4 exits 2 -- "[main] ERROR Non-exclusive include/exclude
+    test sets: {'B101'}" -- and writes no SARIF at all whenever that ini names
+    an overlapping `tests`. A selected-but-unproduced scanner (#1452) is not
+    what honouring the operator's file means, and the file governs skips and
+    tests by definition once it is honoured, so the CLI list comes off with it.
+    The `--exclude=` value stays: the same round measured a CLI `--exclude`
+    merging cleanly with an ini (probe (c)).
+    """
+    if "-s" not in cmd:
+        return cmd
+    at = cmd.index("-s")
+    return cmd[:at] + cmd[at + 2:]
+
+
 def _with_suppression_flags(tool, cmd, security_mode):
     """`cmd` with the flag that stops *tool* honouring an inline suppression
     COMMENT in the target's own source -- under `--security redteam` only
@@ -778,7 +797,8 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
         return
     if (tool == "bandit" and security_mode != REDTEAM and target is not None
             and os.path.isfile(os.path.join(target, ".bandit"))):
-        yield _insert_flags(tool, cmd, ["--ini", TARGET_BANDIT_INI]), []
+        yield _insert_flags(tool, _without_skip_list(cmd),
+                            ["--ini", TARGET_BANDIT_INI]), []
         return
     flag, name, text = SCANNER_OWNED_CONFIG[tool]
     scratch = staging_error = None
@@ -1354,8 +1374,11 @@ _SUPPRESSION_POSTURE: dict[str, str] = {}
 # `tools-manifest.json`'s `scanner_config` vocabulary (#1839): WHICH
 # configuration file the scan a staged scanner ran under was pinned to. Only
 # bandit has two answers, and only because the owner ruling of 2026-09-25 gives
-# `standard` back to the operator scanning their own repository.
-CONFIG_TARGET_BANDIT = "target .bandit"
+# `standard` back to the operator scanning their own repository. That answer
+# names the skips too, because honouring their ini means the scan's `tests` and
+# `skips` are theirs -- the runner's own `-s` list comes off the argv with it
+# (`_without_skip_list`), so a reader can tell which file chose the checks.
+CONFIG_TARGET_BANDIT = "target .bandit (its skips and tests)"
 CONFIG_SCANNER_OWNED = "scanner-owned"
 _SCANNER_CONFIG_POSTURE: dict[str, str] = {}
 

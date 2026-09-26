@@ -659,11 +659,17 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   load-bearing may live only there). Under `standard`, a `.bandit` the scanned repository committed
   is pinned instead (`--ini /src/.bandit`) and nothing of ours is staged: that is an operator
   scanning their own repository, and the owner ruling of 2026-09-25 on #1924 leaves their file to
-  them, the same standard/redteam split the gate already uses. A target with no `.bandit` of its own
-  gets ours in either mode, and because the `--ini` is explicit in every case, #run7's
-  multiple-`.bandit` discovery ERROR stays bypassed whether or not the target ships one.
-  `tools-manifest.json` says which of the two the scan ran under, per tool, in `scanner_config`
-  (`"target .bandit"` or `"scanner-owned"`), so "bandit reported little" can be read against it.
+  them, the same standard/redteam split the gate already uses. Honouring it takes the runner's own
+  `-s B101,B404,B110,B112` OFF that launch's argv: measured at the pin, bandit 1.9.4 exits 2
+  ("Non-exclusive include/exclude test sets") and writes no SARIF at all whenever a pinned ini's
+  `tests` key overlaps the CLI list, and a selected-but-unproduced scanner (#1452) is not what
+  honouring the operator's file means -- their file chooses the checks, ours chooses them in every
+  other case. The `--exclude=` values stay either way; a CLI exclusion merges with an ini cleanly
+  at the pin. A target with no `.bandit` of its own gets ours in either mode, and because the
+  `--ini` is explicit in every case, #run7's multiple-`.bandit` discovery ERROR stays bypassed
+  whether or not the target ships one. `tools-manifest.json` says which of the two the scan ran
+  under, per tool, in `scanner_config` (`"target .bandit (its skips and tests)"` or
+  `"scanner-owned"`), so "bandit reported little" can be read against it.
   This run's virtualenvs ride on the CLI either way, as attached
   `--exclude=` values, each path component checked against an allowlist (`[A-Za-z0-9._-]`, no
   leading `-`, never `.` or `..`) so a directory named `a,b` or `{src,q}` is scanned and NAMED

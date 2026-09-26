@@ -41,9 +41,13 @@ evidence exposed.
   Bandit moves the other way in the same breath, by the owner ruling of 2026-09-25 on #1924: the
   bullet below pinned a scanner-owned ini in BOTH modes, which exceeded the ruling, so under
   `standard` a `.bandit` the scanned repository committed is pinned again (`--ini /src/.bandit`,
-  explicit, so #run7's multiple-config ERROR stays bypassed) and honoured, while `redteam` keeps
-  the scanner-owned ini and adds `--ignore-nosec`. `tools-manifest.json` says which of the two
-  each run used, in `scanner_config` (`"target .bandit"` | `"scanner-owned"`). An operator sees: a
+  explicit, so #run7's multiple-config ERROR stays bypassed) and honoured -- which takes the
+  runner's own `-s B101,B404,B110,B112` off that argv, since bandit 1.9.4 exits 2 on a pinned ini
+  whose `tests` key overlaps the CLI list and writes no SARIF at all (#1452's
+  selected-but-unproduced class): their file chooses the checks. `redteam` keeps the scanner-owned
+  ini and the `-s` list, and adds `--ignore-nosec`. `tools-manifest.json` says which of the two
+  each run used, in `scanner_config` (`"target .bandit (its skips and tests)"` |
+  `"scanner-owned"`). An operator sees: a
   `.trivyignore` or `osv-scanner.toml` committed to the scanned repository no longer decides what
   its own scan reports in either mode, their own `.bandit` is theirs again under `standard`, and
   the tool axis says per scanner which config it ran under and whether the repository's own
