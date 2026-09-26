@@ -436,7 +436,9 @@ def main(argv=None):
         else:
             verdict = (" -- NOT gated; re-run with --security redteam to gate "
                        "the CRITICAL and secret-class ones")
-        note = ("; %d suppressed by directory name -- %s%s"
+        # #1839: "or marker" -- the fourth class rests on a `pyvenv.cfg` the
+        # target wrote rather than on a name, and this count now includes it.
+        note = ("; %d suppressed by directory name or marker -- %s%s"
                 % (len(suppressed), _by_class(suppressed), verdict))
     if excluded:
         # Fix round 1 (ruling 3): the operator's own globs, counted where the

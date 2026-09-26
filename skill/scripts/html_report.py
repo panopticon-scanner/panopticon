@@ -789,17 +789,26 @@ def _render_suppressed_git_drivers(meta):
             % (len(labels), ", ".join(_escape(label) for label in labels)))
 
 
-# #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` (this module keeps its
-# imports guarded so it can render standalone), and pinned to it by
-# tests/test_ingest_tools.py. The clause exists because the sentence below is
-# about findings dropped on a directory NAME, and this row is neither.
+# #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` / `MARKER_VENV_PREFIX`
+# (this module keeps its imports guarded so it can render standalone), and pinned
+# to them by tests/test_ingest_tools.py. The clause exists because the sentence
+# below is about findings dropped on a directory NAME, and these rows are not.
 MARKER_VENV_SEGMENT = "virtualenv-by-marker"
+MARKER_VENV_PREFIX = "pyvenv.cfg:"
 _MARKER_VENV_CLAUSE = (
-    " <code>virtualenv-by-marker</code> is the exception and counts "
-    "DIRECTORIES, not findings: that many marker-confirmed virtualenvs were "
-    "left out of the SCAN itself under <code>--security standard</code>, so no "
-    "finding exists to re-admit and no directory name is behind the drop "
-    "(<code>tools-manifest.json</code>'s <code>excluded_dirs</code> names them)")
+    " The <code>virtualenv-by-marker</code> class rests on a "
+    "<code>pyvenv.cfg</code> marker the target wrote rather than on a directory "
+    "name: a <code>pyvenv.cfg:&lt;dir&gt;</code> row counts findings the ingest "
+    "dropped from that virtualenv at any depth, and the bare "
+    "<code>virtualenv-by-marker</code> row counts whole virtualenv DIRECTORIES "
+    "the scan was told to skip under <code>--security standard</code>, which "
+    "produced no findings to count")
+
+
+def _is_marker_venv_row(segment: str) -> bool:
+    """True for either key shape of the `virtualenv-by-marker` class (#1839)."""
+    return (segment == MARKER_VENV_SEGMENT
+            or str(segment).startswith(MARKER_VENV_PREFIX))
 
 
 def _render_suppressed_tools(meta):
@@ -840,7 +849,7 @@ def _render_suppressed_tools(meta):
             % (" &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows),
                (" (%d withheld from this run's gate by that rule, #1578 "
                 "policy C)" % withheld) if withheld else "",
-               _MARKER_VENV_CLAUSE if any(seg == MARKER_VENV_SEGMENT
+               _MARKER_VENV_CLAUSE if any(_is_marker_venv_row(seg)
                                           for seg, _n in rows) else ""))
 
 

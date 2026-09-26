@@ -1009,11 +1009,20 @@ class TestVirtualenvExclusion(unittest.TestCase):
     conventional names second.
     """
 
-    def _venv(self, root, rel):
-        """Plant a real venv marker at <root>/<rel>/pyvenv.cfg."""
+    def _venv(self, root, rel, shape=True):
+        """Plant a real venv at <root>/<rel>: the marker AND an interpreter.
+
+        #1839: the marker alone is one file the reviewed repository can commit,
+        so it no longer marks anything by itself; `shape=False` plants that bare
+        form, which must prune nothing.
+        """
         os.makedirs(os.path.join(root, rel), exist_ok=True)
         with open(os.path.join(root, rel, "pyvenv.cfg"), "w", encoding="utf-8") as fh:
             fh.write("home = /usr/bin\nversion = 3.12.0\n")
+        if shape:
+            os.makedirs(os.path.join(root, rel, "bin"), exist_ok=True)
+            with open(os.path.join(root, rel, "bin", "python"), "w") as fh:
+                fh.write("")
 
     def test_conventional_venv_paths_drop_without_any_tree_to_stat(self):
         # The name fallback: ingest reads SARIF paths and may have no target
@@ -1030,11 +1039,18 @@ class TestVirtualenvExclusion(unittest.TestCase):
 
     def test_metadata_marks_a_venv_with_an_unconventional_name(self):
         # `python -m venv env` is as common as `.venv`; only pyvenv.cfg knows.
+        # #1839: the marker rule moved out of `_is_run_artifact_path` into the
+        # DISCLOSED channel, so the question is now which directory it names.
         with tempfile.TemporaryDirectory() as root:
             self._venv(root, "env")
             p = "env/lib/python3.12/parser.py"
-            self.assertFalse(it._is_run_artifact_path(p))          # no root: no claim
-            self.assertTrue(it._is_run_artifact_path(p, root))     # marker: venv
+            self.assertFalse(it._is_run_artifact_path(p))          # never silent now
+            self.assertIsNone(it._marker_venv_segment(p))          # no root: no claim
+            self.assertEqual(it._marker_venv_segment(p, root),
+                             it.MARKER_VENV_PREFIX + "env")        # marker + shape
+            # ...and the bare marker on its own is not an environment (#1839).
+            self._venv(root, "claim", shape=False)
+            self.assertIsNone(it._marker_venv_segment("claim/app.py", root))
 
     def test_name_fallback_applies_even_when_the_tree_says_nothing(self):
         # D8's accepted trade-off: a `venv/` with no marker is excluded anyway.
@@ -1042,7 +1058,8 @@ class TestVirtualenvExclusion(unittest.TestCase):
         # said nothing, so only the name justifies the drop.
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, "venv"))
-            self.assertFalse(it._is_run_artifact_path("venv/app.py", root))
+            self.assertFalse(it._is_run_artifact_path("venv/app.py"))
+            self.assertIsNone(it._marker_venv_segment("venv/app.py", root))
             self.assertEqual(it._venv_name_segment("venv/app.py"), "venv")
 
     def test_the_name_matches_a_segment_never_a_substring(self):
@@ -1050,7 +1067,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             for p in ("src/venvutils.py", "app/environments/prod.py",
                       "convenience/helpers.py", "venv_tools/build.py",
                       "docs/venv.md", "scripts/make-venv.sh"):
-                self.assertFalse(it._is_run_artifact_path(p, root), p)
+                self.assertIsNone(it._marker_venv_segment(p, root), p)
                 self.assertFalse(it._is_run_artifact_path(p), p)
 
     def test_a_planted_marker_does_not_poison_the_whole_tree(self):
@@ -1059,12 +1076,13 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             self._venv(root, os.path.join("tests", "fixtures"))
             for p in ("src/app.py", "tests/test_app.py", "skill/scripts/x.py"):
-                self.assertFalse(it._is_run_artifact_path(p, root), p)
+                self.assertIsNone(it._marker_venv_segment(p, root), p)
+                self.assertFalse(it._is_run_artifact_path(p), p)
 
     def test_the_marker_lookup_never_resolves_outside_the_root(self):
         with tempfile.TemporaryDirectory() as root:
             cache = {}
-            self.assertFalse(it._is_run_artifact_path("../outside/x.py", root, cache))
+            self.assertIsNone(it._marker_venv_segment("../outside/x.py", root, cache))
             # Refused before any stat: no directory was ever looked up (the
             # cache's only entry is the resolved root itself).
             self.assertEqual([k for k in cache if isinstance(k, str)], [])
@@ -1098,16 +1116,20 @@ class TestVirtualenvExclusion(unittest.TestCase):
         self.assertEqual(dispositions["semgrep"], {"status": "ok", "findings": 2})
         self.assertEqual([f["location"]["file"] for f in findings],
                          ["app/linked/auth.py"])
-        self.assertEqual(suppressed, [])
-        self.assertIn("marker-confirmed virtualenvs", err.getvalue())
+        # #1839: the in-root marker still prunes, and now says which directory.
+        self.assertEqual([f["suppressed"] for f in suppressed],
+                         [it.MARKER_VENV_PREFIX + "app/installed"])
+        self.assertIn("app/installed", err.getvalue())
 
     def test_marker_lookups_are_cached_per_directory(self):
         with tempfile.TemporaryDirectory() as root:
             cache = {"lib": True}          # seeded; nothing on disk
-            self.assertTrue(it._is_run_artifact_path("lib/x.py", root, cache))
+            self.assertEqual(it._marker_venv_segment("lib/x.py", root, cache),
+                             it.MARKER_VENV_PREFIX + "lib")
             fresh = {}
             self._venv(root, "env")
-            self.assertTrue(it._is_run_artifact_path("env/a/b.py", root, fresh))
+            self.assertEqual(it._marker_venv_segment("env/a/b.py", root, fresh),
+                             it.MARKER_VENV_PREFIX + "env")
             self.assertTrue(fresh["env"])
             self.assertNotIn("env/a", fresh)         # short-circuits at the hit
 
@@ -1121,7 +1143,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with patch.object(it.os.path, "realpath",
                               side_effect=os.path.realpath) as rp:
                 for i in range(5):
-                    it._is_run_artifact_path("env/lib/m%d.py" % i, root, cache)
+                    it._marker_venv_segment("env/lib/m%d.py" % i, root, cache)
             root_calls = [c for c in rp.call_args_list
                           if c.args and c.args[0] == root]
             self.assertEqual(len(root_calls), 1,
@@ -1133,10 +1155,12 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             self._venv(root, "venv")
             self._venv(root, ".venv")
-            self.assertTrue(it._is_run_artifact_path(
-                "venv/lib/python3.12/site-packages/urllib3/util/ssl_.py", root))
-            self.assertTrue(it._is_run_artifact_path(
-                ".venv/lib/python3.12/site-packages/urllib3/util/ssl_.py", root))
+            for spelling in ("venv", ".venv"):
+                self.assertEqual(
+                    it._marker_venv_segment(
+                        "%s/lib/python3.12/site-packages/urllib3/util/ssl_.py"
+                        % spelling, root),
+                    it.MARKER_VENV_PREFIX + spelling)
 
     def test_venv_findings_are_dropped_at_ingest_in_every_mode(self):
         # End-to-end: the target root is the parent of the `.panopticon` tree
@@ -1291,12 +1315,35 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
     `security_gate --security redteam` re-admitted a payload under
     `app/vendor/` and lost the identical payload under `app/venv/`.
 
-    The split this pins: a drop justified by a NAME travels the disclosed
-    channel (per-segment count + `suppressed_out`), and a drop justified by
-    EVIDENCE -- a `pyvenv.cfg` marker, the scanner's own artifacts, generated
-    bytecode -- stays silent. Operator policy (`exclude_globs`) is neither: it
-    is excluded and counted, never handed back.
+    The split this pinned, and the half #1839 ruling 2 reverses: this class
+    used to read "a drop justified by EVIDENCE -- a `pyvenv.cfg` marker, the
+    scanner's own artifacts, generated bytecode -- stays silent". The MARKER now
+    travels the disclosed channel with the names, because it is a file the TARGET
+    WROTE: #1740's reason for disclosing a directory NAME applies to it more
+    strongly, not less, and a planted `src/pyvenv.cfg` took every finding under
+    `src/` out of the report at any depth, in both modes, with nothing said
+    (run-14 SEC-1486247143). A drop justified by a NAME travels the same channel
+    as before; what stays silent is the rest of that sentence -- the scanner's
+    own `.panopticon/` artifacts and generated bytecode, where re-gating a
+    previous run's own discarded report is the compounding noise run-10 D1
+    removed. Operator policy (`exclude_globs`) is neither: it is excluded and
+    counted, never handed back, and it now outranks the marker rule too.
     """
+
+    def _venv(self, root, rel, shape=True):
+        """A virtualenv as a creator leaves one: the marker AND an interpreter.
+
+        #1839: `shape=False` plants the bare marker a target can commit in one
+        file, which is not an environment and must not prune anything.
+        """
+        os.makedirs(os.path.join(root, rel), exist_ok=True)
+        with open(os.path.join(root, rel, "pyvenv.cfg"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("home = /usr/bin\nversion = 3.12.0\n")
+        if shape:
+            os.makedirs(os.path.join(root, rel, "bin"), exist_ok=True)
+            with open(os.path.join(root, rel, "bin", "python"), "w") as fh:
+                fh.write("")
 
     def _ingest(self, path, **kw):
         with tempfile.TemporaryDirectory() as d:
@@ -1317,19 +1364,71 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
             self.assertEqual([f["suppressed"] for f in suppressed], [segment], path)
             self.assertIn(segment, err, path)
 
-    def test_a_marker_confirmed_virtualenv_stays_silent(self):
-        # Evidence, not a name: `pyvenv.cfg` says the tree really is installed
-        # code, so the drop needs no disclosure and the gate never sees it.
+    def test_a_marker_confirmed_virtualenv_is_suppressed_not_silent(self):
+        # #1839 ruling 2: the drop travels the DISCLOSED channel in both modes,
+        # keyed by the directory the marker is in, so `--security redteam` can
+        # re-admit a CRITICAL or secret-class finding from it and `standard`
+        # keeps the saving while the tally says what it cost. Was
+        # `test_a_marker_confirmed_virtualenv_stays_silent`.
         with tempfile.TemporaryDirectory() as root:
-            os.makedirs(os.path.join(root, "app", "venv"))
-            with open(os.path.join(root, "app", "venv", "pyvenv.cfg"), "w") as fh:
-                fh.write("home = /usr/bin\n")
+            self._venv(root, os.path.join("app", "venv"))
             suppressed = []
             out, err = self._ingest("app/venv/patched_auth.py",
                                     target_root=root, suppressed_out=suppressed)
         self.assertEqual(out, [])
+        self.assertEqual([f["suppressed"] for f in suppressed],
+                         [it.MARKER_VENV_PREFIX + "app/venv"])
+        self.assertEqual([it.suppression_class(f["suppressed"]) for f in suppressed],
+                         [it.MARKER_VENV_SEGMENT])
+        self.assertIn("app/venv", err)                   # named, per directory
+        self.assertNotIn("not project source", err)      # no longer that class
+
+    def test_a_bare_marker_beside_real_source_prunes_nothing_at_ingest(self):
+        # #1839 rulings 1 and 3: the planted `src/pyvenv.cfg` that removed `src/`
+        # from the SCAN also removed every finding under it from the REPORT, at
+        # any depth and in both modes -- the ingest half of the same defect, and
+        # the driver's report is the operator-facing surface. A marker with no
+        # environment under it is not a virtualenv here either, so the finding is
+        # KEPT rather than dropped-and-tallied.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, "src", shape=False)
+            with open(os.path.join(root, "src", "app.py"), "w") as fh:
+                fh.write("import os\n")
+            suppressed = []
+            out, _err = self._ingest("src/app.py", target_root=root,
+                                     suppressed_out=suppressed)
+        self.assertEqual([(f.get("location") or {}).get("file") for f in out],
+                         ["src/app.py"])
         self.assertEqual(suppressed, [])
-        self.assertIn("not project source", err)
+
+    def test_a_deep_marker_still_prunes_and_still_says_which_directory(self):
+        # The ingest rule is depth-UNBOUNDED, unlike the scan's depth-3 walk, so
+        # this is the half no manifest row can disclose: the directory is named
+        # by the segment itself.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, os.path.join("a", "b", "c", "env"))
+            suppressed = []
+            out, err = self._ingest("a/b/c/env/lib/python3.12/site.py",
+                                    target_root=root, suppressed_out=suppressed)
+        self.assertEqual(out, [])
+        self.assertEqual([f["suppressed"] for f in suppressed],
+                         [it.MARKER_VENV_PREFIX + "a/b/c/env"])
+        self.assertIn("a/b/c/env", err)
+
+    def test_the_marker_rule_yields_to_the_operators_own_globs(self):
+        # #1740 fix round 1 ruling 3, now that this drop is re-admittable: a path
+        # the OPERATOR scoped out must be counted as their exclusion, or redteam
+        # would hand the gate back the very finding they scoped out of it.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, "env")
+            suppressed, excluded = [], []
+            out, _err = self._ingest("env/lib/x.py", target_root=root,
+                                     exclude_globs=["env/**"],
+                                     suppressed_out=suppressed,
+                                     excluded_out=excluded)
+        self.assertEqual(out, [])
+        self.assertEqual(suppressed, [])
+        self.assertEqual([f["excluded"] for f in excluded], ["env/**"])
 
     def test_the_scan_side_virtualenv_skip_is_tallied_from_the_manifest(self):
         # #1839 (run-14 SEC-1486247143): a virtualenv the RUNNER was told to
@@ -1382,8 +1481,18 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         for module in (render, html_report):
             self.assertEqual(module.MARKER_VENV_SEGMENT, it.MARKER_VENV_SEGMENT,
                              module.__name__)
+            self.assertEqual(module.MARKER_VENV_PREFIX, it.MARKER_VENV_PREFIX,
+                             module.__name__)
             self.assertIn(it.MARKER_VENV_SEGMENT, module._MARKER_VENV_CLAUSE,
                           module.__name__)
+            # Both key shapes reach the clause, or the report explains one row
+            # of the class and misstates the other.
+            for segment in (it.MARKER_VENV_SEGMENT,
+                            it.MARKER_VENV_PREFIX + "app/venv"):
+                self.assertTrue(module._is_marker_venv_row(segment),
+                                "%s: %s" % (module.__name__, segment))
+            self.assertFalse(module._is_marker_venv_row("vendor"),
+                             module.__name__)
 
     def test_the_fixture_prune_routes_through_the_same_channel(self):
         suppressed = []

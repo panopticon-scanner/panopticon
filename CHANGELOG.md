@@ -14,25 +14,35 @@ evidence exposed.
   trivy's `--skip-dirs` and bandit's `--exclude` in BOTH security modes, untallied: a directory is
   now flagged on the marker only when it also has the SHAPE of an installed environment (an
   interpreter under `bin/`/`Scripts/`, or `lib/python*/site-packages`), and a bare marker beside
-  real source is reported as `pyvenv.cfg-without-shape`, walked into, and never skipped. A directory
-  literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB PATTERNS, so
-  one `mkdir` took the whole tree out of two scanners; a path holding `*`, `?`, `[` or `]` is never
-  passed to an exclusion knob, and its manifest row says `skipped: false` with a `note` saying why.
-  Under `--security redteam` NO virtualenv now reaches an exclusion knob (#1740 ruled that for a
-  directory NAME; a file the same target wrote is more attacker-controlled than a name), and under
-  `standard` the #1638 P09 walk saving stands but stops being silent: the skipped directories are
-  counted under `virtualenv-by-marker` in `meta.coverage.tools_suppressed`, named on the gate's
-  verdict line (`2 directories removed from the scan as virtualenv-by-marker (.venv, env) -- re-run
-  with --security redteam to scan them`), and on the manifest rows. Third, bandit no longer runs
-  with `--ini /src/.bandit`: the target's own config set bandit's `exclude`, `tests` and `skips`, so
-  a committed `tests = B999` reduced the merge gate's Python SAST to one check. It gets a
-  SCANNER-OWNED ini instead -- generated per run into a scratch directory, bind-mounted read-only,
+  real source is reported as `pyvenv.cfg-without-shape`, walked into, and never skipped. The INGEST
+  half of that same lever is closed with it, which is the half the driver's own report reads:
+  `ingest_tools` dropped every finding under a marker directory at ANY depth in both modes and said
+  nothing at all, so the planted `src/pyvenv.cfg` emptied the report of `src/` even where the scan
+  had looked. One predicate now answers for both stages (`run_tools.has_venv_shape`), so a bare
+  marker prunes nothing at ingest either; and where a real virtualenv is still pruned there, the
+  drop travels the disclosed channel under a `pyvenv.cfg:<dir>` key of the new
+  `virtualenv-by-marker` class -- named per directory, counted in `meta.coverage.tools_suppressed`,
+  and re-admitted to a `--security redteam` gate when the finding is CRITICAL or secret-class,
+  exactly as #1740 does for a directory NAME. An operator's own `--exclude` glob outranks it. A
+  directory literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB
+  PATTERNS, so one `mkdir` took the whole tree out of two scanners; a path holding `*`, `?`, `[` or
+  `]` is never passed to an exclusion knob, and its manifest row says `skipped: false` with a `note`
+  saying why. Under `--security redteam` NO virtualenv now reaches an exclusion knob (#1740 ruled
+  that for a directory NAME; a file the same target wrote is more attacker-controlled than a name),
+  and under `standard` the #1638 P09 walk saving stands but stops being silent: the skipped
+  directories are counted under `virtualenv-by-marker` in `meta.coverage.tools_suppressed`, named on
+  the gate's verdict line (`2 directories removed from the scan as virtualenv-by-marker (.venv, env)
+  -- re-run with --security redteam to scan them`), and on the manifest rows. Third, bandit no
+  longer runs with `--ini /src/.bandit`: the target's own config set bandit's `exclude`, `tests` and
+  `skips`, so a committed `tests = B999` reduced the merge gate's Python SAST to one check. It gets
+  a SCANNER-OWNED ini instead -- generated per run into a scratch directory, bind-mounted read-only,
   pinned unconditionally (so #run7's multiple-`.bandit` ERROR is bypassed whether or not the target
   ships one), carrying bandit's own defaults plus `.worktrees` plus this run's virtualenvs and no
   `tests`/`skips` key at all. This is the first increment of #1924's scan-root half. An operator
   sees: a `pyvenv.cfg` planted on source no longer removes it from a scan, a gate verdict line that
-  names every virtualenv the scan skipped, and bandit reporting the checks panopticon selected
-  rather than the ones the target left it.
+  names every virtualenv the scan skipped, a report that carries a `virtualenv-by-marker` count
+  where the tool axis used to go quiet, and bandit reporting the checks panopticon selected rather
+  than the ones the target left it.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

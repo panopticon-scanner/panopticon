@@ -31,7 +31,11 @@ from scripts.tools.sarif_utils import (
     _rules_index,
     sarif_to_findings,
 )
-from scripts.run_tools import MAX_TOOL_OUTPUT_BYTES  # #run7 OPS-D1A: shared cap
+from scripts.run_tools import (      # #run7 OPS-D1A: shared cap
+    MAX_TOOL_OUTPUT_BYTES,
+    VENV_MARKER,
+    has_venv_shape,                  # #1839: one venv-shape predicate
+)
 
 # Re-export shared SARIF helpers so existing callers/tests keep working.
 __all__ = [
@@ -54,6 +58,7 @@ __all__ = [
     "suppression_class",
     "scan_skipped_venvs",
     "MARKER_VENV_SEGMENT",
+    "MARKER_VENV_PREFIX",
     "gates_when_suppressed",
     "SECRET_ADAPTERS",
     "SECRET_CWES",
@@ -147,8 +152,10 @@ _VENDORED_DIRS = {"vendor", "node_modules", "bower_components", "third_party",
 # (35.9%), returning 2 confirmations against 32 rejections and 12 not-material.
 # METADATA FIRST: `pyvenv.cfg` is the marker every creator writes (venv,
 # virtualenv, uv, pipenv, poetry-in-project), so it catches the ones named
-# `env/` or `.direnv/` that no name list would.
-_VENV_MARKER = "pyvenv.cfg"
+# `env/` or `.direnv/` that no name list would. #1839: the token comes from
+# `run_tools`, which writes it into the manifest rows `scan_skipped_venvs` reads
+# back -- two spellings of it could not be told apart when they drifted.
+_VENV_MARKER = VENV_MARKER
 _VENV_DIR_NAMES = {".venv", "venv"}
 # NAMES SECOND, and unconditionally: ingest reads SARIF paths and often has no
 # tree to stat (the CI gate points at a temp directory of artifacts). D8's
@@ -173,6 +180,11 @@ FIXTURE_SEGMENT = "fixture-corpus"
 # skip the tree, so the count is of DIRECTORIES the scan never entered, and the
 # names are on the manifest rows and on `security_gate`'s verdict line.
 MARKER_VENV_SEGMENT = "virtualenv-by-marker"
+# #1839: the INGEST half of the same class, one key per marker-confirmed
+# virtualenv DIRECTORY, counting the findings dropped from it. Prefixed so
+# `suppression_class` can place it without a name list -- no other rule can emit
+# a key starting with this, for the same reason `FIXTURE_SEGMENT` cannot collide.
+MARKER_VENV_PREFIX = "pyvenv.cfg:"
 # #1740: every suppression segment belongs to exactly one class, and the gate
 # line names the class beside the segment. One definition, because the stderr
 # note and `security_gate`'s own line both group by it.
@@ -187,20 +199,31 @@ _REAL_ROOT_KEY = ("__realpath__",)
 
 
 def _has_venv_marker(root, rel):
-    """True when `<root>/<rel>` holds a `pyvenv.cfg` AND really is inside root.
+    """True when `<root>/<rel>` is a virtualenv: a `pyvenv.cfg`, the SHAPE of an
+    installed environment, and a directory that really is inside root.
 
     The realpath check is the confinement: a symlinked directory in the target
     that resolves outside it is not a tree we let mark anything.
+
+    #1839 (run-14 SEC-1486247143): the shape test is the same predicate the
+    scan side uses (`run_tools.has_venv_shape`), deliberately imported rather
+    than restated. A bare `pyvenv.cfg` is ONE file the reviewed repository can
+    commit, and on the strength of it this rule dropped every finding under the
+    directory holding it -- `src/pyvenv.cfg` took `src/` out of the report at any
+    depth, in both modes, silently. Tested last of the three: it is the only one
+    that touches more than one path.
     """
     directory = os.path.join(root, *rel.split("/"))
     if not os.path.isfile(os.path.join(directory, _VENV_MARKER)):
         return False
     real = os.path.realpath(directory)
-    return real == root or real.startswith(root + os.sep)
+    if not (real == root or real.startswith(root + os.sep)):
+        return False
+    return has_venv_shape(directory)
 
 
-def _under_a_virtualenv(dirs, target_root, cache=None):
-    """True when some ancestor DIRECTORY of a finding carries a `pyvenv.cfg`.
+def _virtualenv_ancestor(dirs, target_root, cache=None):
+    """The nearest ancestor DIRECTORY of a finding that IS a virtualenv, or None.
 
     `dirs` is the finding's ancestor segments (no basename), so the marker is
     always `<ancestor>/pyvenv.cfg` -- a `pyvenv.cfg` planted anywhere else (a
@@ -210,6 +233,11 @@ def _under_a_virtualenv(dirs, target_root, cache=None):
     of files that would otherwise re-stat the same handful of directories. The
     ROOT's own resolution is memoized in the same cache (#1638 P09 F6) -- it was
     recomputed for every finding, and `realpath` is a syscall per path segment.
+
+    #1839: returns the repo-relative PATH rather than a bool, because the drop is
+    no longer silent and the disclosure has to say which directory did it -- the
+    same reason `_vendored_segment` and `_venv_name_segment` return their
+    segment. None, not False, when no ancestor qualifies.
     """
     cache = {} if cache is None else cache
     root = cache.get(_REAL_ROOT_KEY)
@@ -218,14 +246,40 @@ def _under_a_virtualenv(dirs, target_root, cache=None):
     rel = ""
     for seg in dirs:
         if seg in ("", ".", ".."):
-            return False
+            return None
         rel = "%s/%s" % (rel, seg) if rel else seg
         hit = cache.get(rel)
         if hit is None:
             hit = cache[rel] = _has_venv_marker(root, rel)
         if hit:
-            return True
-    return False
+            return rel
+    return None
+
+
+def _marker_venv_segment(fpath, target_root=None, cache=None):
+    """The `pyvenv.cfg:<dir>` segment for the marker-confirmed virtualenv this
+    finding sits under, or None -- the EVIDENCE half of the virtualenv rule
+    (#1839, run-14 SEC-1486247143).
+
+    #1638 P09 ruling D8 keeps the drop: a virtualenv is installed code, and
+    run-13's 58 bandit findings from `.venv/` bought 46 of 128 advisor
+    dispatches. What #1839 removes is its SILENCE. The marker is a file the
+    reviewed repository can write, so #1740's ruling for a directory NAME --
+    disclose the drop per segment and hand it back to a caller that must not
+    lose it -- applies to it more strongly, not less: one committed
+    `src/pyvenv.cfg` used to take every finding under `src/` out of the report
+    and out of `security_gate --security redteam`'s reach, at any depth, with no
+    number anywhere saying so.
+
+    Needs *target_root*: without a tree to stat there is no marker to confirm,
+    and the NAME rule (`_venv_name_segment`) is all there is -- which is the CI
+    gate's case, where the tools directory is a bare temp dir of artifacts.
+    """
+    if not target_root:
+        return None
+    norm = str(fpath).replace(os.sep, "/").lstrip("/")
+    rel = _virtualenv_ancestor(norm.split("/")[:-1], target_root, cache)
+    return None if rel is None else MARKER_VENV_PREFIX + rel
 
 
 def _target_root_for(tools_dir):
@@ -251,7 +305,7 @@ def _target_root_for(tools_dir):
     return os.sep.join(parts[:cut]) or os.sep
 
 
-def _is_run_artifact_path(fpath, target_root=None, venv_cache=None):
+def _is_run_artifact_path(fpath):
     """True for a tool finding located in something that is not project source.
 
     run_tools mounts the whole target read-only and the scanners walk ALL of it,
@@ -269,26 +323,26 @@ def _is_run_artifact_path(fpath, target_root=None, venv_cache=None):
       run over run instead of staying flat.
     - GENERATED bytecode (`__pycache__/`, `*.pyc`) at any depth -- a finding
       "in" compiled bytecode is unactionable and duplicates its own source file.
-    - a MARKER-CONFIRMED PYTHON VIRTUALENV (#1638 P09, ruling D8) -- the same
-      class, installed rather than committed. Metadata ONLY: an ancestor
-      directory carrying a `pyvenv.cfg` (needs *target_root*; without one there
-      is no tree to stat). That marker is EVIDENCE the tree is generated, which
-      is why this one stays silent. Dependency AUDITING is untouched:
-      pip-audit/osv-scanner/trivy read `requirements*.txt` / `pyproject.toml` /
-      lockfiles, not the venv tree.
+
+    #1839 took the fourth class OUT of this predicate: a marker-confirmed Python
+    virtualenv (#1638 P09, ruling D8) is still dropped, but through the DISCLOSED
+    channel (`_marker_venv_segment`), because the marker is a file the reviewed
+    repository writes and a silent drop on it was a lever
+    (run-14 SEC-1486247143). That is also why this function no longer takes a
+    target root or a venv cache: nothing left in it stats the tree.
 
     Together these were 16 of run-10's 54 rejected tool findings (30%), each
     one costing a tool-advisor dispatch to reject.
 
-    What this predicate does NOT decide, because the evidence is a NAME and
-    nothing else: VENDORED dependencies (#1578, `_vendored_segment`), a
-    virtualenv recognised only by its `venv`/`.venv`/`site-packages` segment
-    (#1740, `_venv_name_segment`) and the fixture corpus (`_is_fixture_path`).
-    Those three are disclosed per segment and handed back to a caller that must
-    not lose them. This predicate keeps the classes whose drop rests on
-    evidence -- re-gating a previous run's own discarded report is the
-    compounding noise run-10 D1 removed, and re-gating bytecode is a duplicate
-    of its own source file.
+    What this predicate does NOT decide: VENDORED dependencies (#1578,
+    `_vendored_segment`), a virtualenv recognised only by its
+    `venv`/`.venv`/`site-packages` segment (#1740, `_venv_name_segment`), a
+    marker-confirmed virtualenv (#1839, `_marker_venv_segment`) and the fixture
+    corpus (`_is_fixture_path`). Those four are disclosed per segment and handed
+    back to a caller that must not lose them. This predicate keeps the two whose
+    drop nobody can dispute: re-gating a previous run's own discarded report is
+    the compounding noise run-10 D1 removed, and re-gating bytecode is a
+    duplicate of its own source file.
     """
     norm = str(fpath).replace(os.sep, "/").lstrip("/")
     parts = norm.split("/")
@@ -296,8 +350,6 @@ def _is_run_artifact_path(fpath, target_root=None, venv_cache=None):
     if parts[0] in _RUN_ARTIFACT_DIRS:
         return True
     if any(p in _GENERATED_DIRS for p in dirs):
-        return True
-    if target_root and _under_a_virtualenv(dirs, target_root, venv_cache):
         return True
     return norm.endswith(_GENERATED_SUFFIXES)
 
@@ -335,9 +387,10 @@ def _venv_name_segment(fpath):
     """The `venv`/`.venv`/`site-packages` segment this finding sits under, or
     None (#1740) -- the NAME-ONLY half of the virtualenv rule.
 
-    #1638 P09 ruling D8 keeps both halves, but they rest on different evidence
-    and so cannot share a channel. A `pyvenv.cfg` beside the tree is a fact
-    about the tree (`_under_a_virtualenv`, still silent). A directory merely
+    #1638 P09 ruling D8 keeps both halves, and they rest on different evidence.
+    A `pyvenv.cfg` beside the tree is a fact about the tree
+    (`_marker_venv_segment` -- disclosed too since #1839, under its own class,
+    because the target writes that file). A directory merely
     NAMED `venv` is a convention -- exactly the evidence `_vendored_segment`
     matches on -- and #1578's ruling for that evidence is that the drop is
     disclosed per segment and handed back to any caller that must not lose it.
@@ -372,7 +425,8 @@ def suppression_class(segment):
     """
     if segment == FIXTURE_SEGMENT:
         return "fixture-corpus"
-    if segment == MARKER_VENV_SEGMENT:                          # #1839
+    if (segment == MARKER_VENV_SEGMENT                          # #1839
+            or str(segment).startswith(MARKER_VENV_PREFIX)):
         return MARKER_VENV_SEGMENT
     if segment in _VENV_NAME_SEGMENTS:
         return "virtualenv-by-name"
@@ -522,7 +576,7 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
         # the ingest and the scan path (a no-op on POSIX; correct on Windows).
         fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
-        if _is_run_artifact_path(fpath, target_root, venv_cache):   # not project source
+        if _is_run_artifact_path(fpath):                            # not project source
             ra_count += 1
             continue
         # #1740 fix round 2: gitignore semantics, through the translator
@@ -541,6 +595,17 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
                 excluded_out.append(item)
             continue
         if (segment := _vendored_segment(fpath)) is None:           # #1578
+            # #1839: the EVIDENCE half first -- a `.venv/` with a marker behind
+            # it is marker-confirmed, and reporting it under the weaker NAME
+            # rule would understate what is known about the tree. Both rules are
+            # the same disclosed channel and the same re-admission predicate, so
+            # only the class an operator reads changes. AFTER the glob above:
+            # a path the operator scoped out must be counted as their exclusion,
+            # or redteam would hand the gate back the finding they scoped out of
+            # it (#1740 fix round 1, ruling 3 -- which now covers this rule too,
+            # because this drop became re-admittable).
+            segment = _marker_venv_segment(fpath, target_root, venv_cache)
+        if segment is None:
             segment = _venv_name_segment(fpath)                     # #1740
         if segment is None and not include_fixtures and _is_fixture_path(fpath):
             segment = FIXTURE_SEGMENT                               # #1740
@@ -847,8 +912,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         reasons = []
         if ra_excluded:
             reasons.append("not project source (nested checkout / git dir / "
-                           ".panopticon artifacts / generated bytecode / "
-                           "marker-confirmed virtualenvs)")
+                           ".panopticon artifacts / generated bytecode)")
         # #1578: named per segment with its count, not folded into the
         # aggregate above. This line is the stderr half of the SUM of
         # `meta.coverage.tools_suppressed` and `tools_suppressed_gated`
@@ -869,8 +933,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
 _SUPPRESSION_REASON = {
     "vendored": "vendored dependencies (%s)",
     "virtualenv-by-name": "virtualenvs matched by name alone (%s)",
-    MARKER_VENV_SEGMENT: "virtualenvs the scan skipped on a pyvenv.cfg "
-                         "marker (%s directories)",
+    MARKER_VENV_SEGMENT: "virtualenvs confirmed by a pyvenv.cfg marker (%s)",
     "fixture-corpus": "test-fixture corpus (%s)",
 }
 

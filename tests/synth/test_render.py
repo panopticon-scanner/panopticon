@@ -508,19 +508,24 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn("`\"tests/fixtures/**\"`", out)
         self.assertIn("**Tool findings suppressed:** vendor: 2", out)
 
-    def test_the_scan_side_virtualenv_row_says_what_unit_it_is_in(self):
+    def test_the_marker_venv_rows_say_what_they_rest_on(self):
         # #1839: this line is about findings dropped on a directory NAME, and
-        # `virtualenv-by-marker` is neither -- it counts virtualenv DIRECTORIES
-        # the scan itself never entered. Surfacing the drop here without saying
-        # so would trade a silence for a misstatement.
-        report = self._report()
-        report["meta"]["coverage"]["tools_suppressed"] = {
-            "vendor": 2, render_mod.MARKER_VENV_SEGMENT: 1}
-        out = render_mod.render_summary(report)
-        self.assertIn("virtualenv-by-marker: 1", out)
-        self.assertIn("counts DIRECTORIES, not findings", out)
+        # neither row of the `virtualenv-by-marker` class is that -- one counts
+        # findings the ingest dropped on a `pyvenv.cfg` the target WROTE, the
+        # other counts virtualenv DIRECTORIES the scan never entered. Surfacing
+        # them here without saying so would trade a silence for a misstatement.
+        for key in (render_mod.MARKER_VENV_SEGMENT,
+                    render_mod.MARKER_VENV_PREFIX + "app/venv"):
+            with self.subTest(key=key):
+                report = self._report()
+                report["meta"]["coverage"]["tools_suppressed"] = {
+                    "vendor": 2, key: 1}
+                out = render_mod.render_summary(report)
+                self.assertIn("%s: 1" % key, out)
+                self.assertIn("rests on a `pyvenv.cfg` MARKER", out)
+                self.assertIn("virtualenv DIRECTORIES", out)
         # And not a word of it on a run with no such row.
-        self.assertNotIn("counts DIRECTORIES",
+        self.assertNotIn("rests on a `pyvenv.cfg` MARKER",
                          render_mod.render_summary(self._report()))
 
     def test_measured_zero_with_or_without_policy_is_explicit(self):
