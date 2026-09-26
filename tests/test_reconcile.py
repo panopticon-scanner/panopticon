@@ -10,11 +10,15 @@ import scripts.reconcile as reconcile
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "reconcile")
 
 
-def stage1(tmpdir, run2_doc, run3_doc):
+def stage1(tmpdir, run2_doc, run3_doc, extra=None):
     """Run stage 1 end to end the way `reconcile.py diff` does -- two report
     DOCUMENTS in, (rc, diff) out. What a run3 says it reviewed lives in the
     report, so the coverage guards (#1807) can only be exercised from here, not
-    from hand-built record lists."""
+    from hand-built record lists. `extra` writes further documents beside them
+    (a meta.parts continuation)."""
+    for name, doc in (extra or {}).items():
+        with open(os.path.join(tmpdir, name), "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
     paths = []
     for name, doc in (("run2.json", run2_doc), ("run3.json", run3_doc)):
         path = os.path.join(tmpdir, name)
@@ -301,7 +305,8 @@ class TestBuildDiffCohorts(unittest.TestCase):
         r2 = self._recs([self._f("A", "auth.py", "security", "weak-crypto", "MD5")])
         r3 = self._recs([self._f("A3", "auth.py", "security", "crypto-misuse", "MD5 hashing")])
         diff = reconcile.build_diff(r2, r3, "r2", "r3",
-                                    run3_reviewed_files={"auth.py"})
+                                    run3_reviewed_files={"auth.py"},
+                                    run3_review_type="repo")
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
 
@@ -317,7 +322,8 @@ class TestBuildDiffCohorts(unittest.TestCase):
         # run3 reviewed auth.py and found nothing there -- a stated coverage set
         # is what makes this a genuine close rather than silence (#1807).
         diff = reconcile.build_diff(r2, r3, "r2", "r3",
-                                    run3_reviewed_files={"auth.py", "keep.py", "other.py"})
+                                    run3_reviewed_files={"auth.py", "keep.py", "other.py"},
+                                    run3_review_type="repo")
         self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), {"A"})
         entry = next(e for e in diff["closed"] if "A" in {r["id"] for r in e["run2"]})
@@ -368,13 +374,15 @@ class TestBuildDiffCohorts(unittest.TestCase):
         r3 = self._recs([self._f("K3", "keep.py", "code", "structure", "kept"),
                          self._f("B", "other.py", "code", "structure", "Long function")])
         diff = reconcile.build_diff(r2, r3, "r2", "r3",
-                                    run3_reviewed_files={"keep.py", "other.py"})
+                                    run3_reviewed_files={"keep.py", "other.py"},
+                                    run3_review_type="repo")
         self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
         self.assertTrue(diff["ambiguous"])
         entry = next(e for e in diff["ambiguous"] if "A" in {r["id"] for r in e["run2"]})
         self.assertIn("no file recorded", entry["reason"])
+        self.assertEqual(entry["basis"], "identity")
 
     def test_ambiguous_reason_counts_rejected_claims_separately_from_findings(self):
         # F5: a run2 finding whose (file,panel) is active in run3 ONLY via a
@@ -385,12 +393,14 @@ class TestBuildDiffCohorts(unittest.TestCase):
         r3 = reconcile.iter_records({"findings": [], "discarded_claims": [
             self._f("R3", "auth.py", "security", "not-a-real-issue", "false positive")]})
         diff = reconcile.build_diff(r2, r3, "r2", "r3",
-                                    run3_reviewed_files={"auth.py"})
+                                    run3_reviewed_files={"auth.py"},
+                                    run3_review_type="repo")
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertTrue(diff["ambiguous"])
         reason = diff["ambiguous"][0]["reason"]
         self.assertIn("1 rejected claim(s)", reason)
         self.assertNotIn("finding(s)", reason)
+        self.assertEqual(diff["ambiguous"][0]["basis"], "active")
 
     def test_empty_run3_refuses_to_close_anything(self):
         # F2: an empty run3 must never read as "area clear" for everything.
@@ -401,6 +411,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertTrue(diff["ambiguous"])   # #run7 review: parity guard before [0] (TST-B3A)
         self.assertIn("zero records", diff["ambiguous"][0]["reason"])
+        self.assertEqual(diff["ambiguous"][0]["basis"], "run")
 
     def test_zero_file_overlap_refuses_to_close_anything(self):
         # F2 sibling: absolute-vs-relative (or otherwise disjoint) path shapes
@@ -413,6 +424,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertTrue(diff["ambiguous"])
         self.assertIn("share zero paths", diff["ambiguous"][0]["reason"])
+        self.assertEqual(diff["ambiguous"][0]["basis"], "drift")
 
     def test_degenerate_group_spanning_multiple_coarse_keys_is_ambiguous(self):
         # M5: airtight group-key guard. Unreachable via iter_records today
@@ -428,11 +440,13 @@ class TestBuildDiffCohorts(unittest.TestCase):
         # coarse key matches fp1's group.
         r3 = self._recs([self._f("C", "a.py", "code", "structure", "Long function")])
         diff = reconcile.build_diff(r2, r3, "r2", "r3",
-                                    run3_reviewed_files={"a.py", "b.py"})
+                                    run3_reviewed_files={"a.py", "b.py"},
+                                    run3_review_type="repo")
         self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A", "B"})
         self.assertTrue(diff["ambiguous"])
         self.assertIn("multiple coarse keys", diff["ambiguous"][0]["reason"])
+        self.assertEqual(diff["ambiguous"][0]["basis"], "identity")
 
     def test_new_finding_with_unseen_coarse_key(self):
         r2 = self._recs([self._f("A", "auth.py", "security", "authz", "x")])
@@ -495,9 +509,9 @@ class TestRun3CoverageGuards(unittest.TestCase):
     existing whole-run guard fires, and every unfixed finding on the files run3
     never looked at was closed as "(file,panel) clear"."""
 
-    def _f(self, fid, path, title):
+    def _f(self, fid, path, title, category="authz"):
         return {"id": fid, "severity": "HIGH", "panel": "security",
-                "category": "authz", "location": {"file": path}, "title": title}
+                "category": category, "location": {"file": path}, "title": title}
 
     def _run2(self):
         """A repo-wide run2: one unfixed HIGH each on a.py, b.py and c.py."""
@@ -508,18 +522,24 @@ class TestRun3CoverageGuards(unittest.TestCase):
                              self._f("B", "b.py", "Missing role check"),
                              self._f("C", "c.py", "Missing role check")]}
 
-    def _run3(self, files, review_type="repo", state_groups=True):
+    def _run3(self, files, review_type="repo", state_groups=True, state_type=True):
         """A run3 that still finds A on a.py and states `files` as its coverage."""
-        doc = {"meta": {"review_type": review_type},
+        doc = {"meta": {"review_type": review_type} if state_type else {},
                "findings": [self._f("A3", "a.py", "Missing role check")]}
         if state_groups:
             doc["groups"] = [{"name": "app", "files": list(files),
                               "panel_grades": {"security": "D"}}]
         return doc
 
-    def _diff(self, run3_doc):
+    def _diff(self, run3_doc, extra=None):
         with tempfile.TemporaryDirectory() as d:
-            return stage1(d, self._run2(), run3_doc)
+            return stage1(d, self._run2(), run3_doc, extra)
+
+    def _reasons(self, diff):
+        return {e["coarse_key"][0]: e["reason"] for e in diff["ambiguous"]}
+
+    def _bases(self, diff):
+        return {e["coarse_key"][0]: e.get("basis") for e in diff["ambiguous"]}
 
     def _files(self, diff, cohort):
         return {e["coarse_key"][0] for e in diff[cohort]}
@@ -537,6 +557,7 @@ class TestRun3CoverageGuards(unittest.TestCase):
         for path, reason in reasons.items():
             self.assertIn("%s was not reviewed in run3" % path, reason)
             self.assertIn("absence of findings is not a fix", reason)
+        self.assertEqual(self._bases(diff), {"b.py": "scope", "c.py": "scope"})
 
     def test_run3_that_states_every_file_still_closes_the_fixed_ones(self):
         # The other direction: a genuinely repo-wide run3 must still corroborate
@@ -570,6 +591,107 @@ class TestRun3CoverageGuards(unittest.TestCase):
         self.assertTrue(diff["ambiguous"])
         self.assertIn("file-scoped review", diff["ambiguous"][0]["reason"])
 
+    # ---- fix round 1 ----
+
+    def test_a_file_run3_reported_on_reads_as_active_not_unreviewed(self):
+        # I1: groups[].files is not the set of files a report's findings cover
+        # (tool findings join a group by path, discovery truncates and filters
+        # the reviewable set). A run3 RECORD on a file is proof run3 read it, so
+        # b.py must get the strictly more informative "still active" reason --
+        # never a claim that contradicts a record in the same diff.
+        run3 = self._run3(["a.py"])
+        run3["findings"].append(
+            self._f("B3", "b.py", "Unvalidated redirect", category="open-redirect"))
+        rc, diff = self._diff(run3)
+        self.assertEqual(rc, 0)
+        self.assertEqual(diff["closed"], [])
+        reasons = self._reasons(diff)
+        self.assertEqual(set(reasons), {"b.py", "c.py"})
+        self.assertIn("still active on b.py", reasons["b.py"])
+        self.assertNotIn("was not reviewed", reasons["b.py"])
+        self.assertIn("c.py was not reviewed in run3", reasons["c.py"])
+        # and the two reasons are told apart by machine, not by substring
+        self.assertEqual(self._bases(diff), {"b.py": "active", "c.py": "scope"})
+
+    def test_only_a_declared_repo_wide_review_type_can_corroborate(self):
+        # I2: the guard is an ALLOWLIST. meta.review_type is required by
+        # report-schema.json, so absent / empty / non-string / mis-cased / any
+        # future value is missing information -> fail closed.
+        for review_type in ("file", "pr", "PR", "commit", "", None, 5, ["file"]):
+            with self.subTest(review_type=review_type):
+                rc, diff = self._diff(self._run3(["a.py", "b.py", "c.py"],
+                                                 review_type=review_type))
+                self.assertEqual(rc, 0)
+                self.assertEqual(diff["meta"]["close_guard"], "run3_not_repo_wide")
+                self.assertEqual(diff["closed"], [])
+        with self.subTest(review_type="absent"):
+            rc, diff = self._diff(self._run3(["a.py", "b.py", "c.py"], state_type=False))
+            self.assertEqual(diff["meta"]["close_guard"], "run3_not_repo_wide")
+            self.assertEqual(diff["closed"], [])
+        with self.subTest(review_type="repo"):
+            rc, diff = self._diff(self._run3(["a.py", "b.py", "c.py"]))
+            self.assertIsNone(diff["meta"]["close_guard"])
+            self.assertTrue(diff["closed"])
+
+    def test_unknown_review_type_is_reported_generically_not_as_a_scope(self):
+        rc, diff = self._diff(self._run3(["a.py", "b.py", "c.py"], review_type="commit"))
+        self.assertTrue(diff["ambiguous"])
+        reason = diff["ambiguous"][0]["reason"]
+        self.assertIn("did not declare a repo-wide review type", reason)
+        self.assertIn("'commit'", reason)
+        self.assertNotIn("-scoped review", reason)
+
+    def test_a_part_that_contradicts_the_declared_review_type_guards(self):
+        # I2 hardening: parts are continuations of ONE run, so a part stating a
+        # different review_type is a malformed artifact -- ignoring it would be
+        # the fail-OPEN direction.
+        run3 = self._run3(["a.py", "b.py", "c.py"])
+        run3["meta"]["parts"] = ["run3_part.json"]
+        rc, diff = self._diff(run3, {"run3_part.json": {"meta": {"review_type": "pr"},
+                                                        "findings": []}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(diff["meta"]["close_guard"], "run3_not_repo_wide")
+        self.assertEqual(diff["closed"], [])
+        reason = diff["ambiguous"][0]["reason"]
+        self.assertIn("did not declare a repo-wide review type", reason)
+        self.assertIn("'pr'", reason)
+        self.assertIn("'repo'", reason)
+
+    def test_groups_that_state_no_usable_file_guard_the_whole_run(self):
+        # N1 + N3: a mapping is not a file list, non-strings are not paths, and
+        # "groups present but nothing usable stated" (an explicit empty list
+        # included) is one honest whole-run line, not N per-record ones.
+        cases = {
+            "no groups at all": None,
+            "empty groups list": [],
+            "empty files list": [{"name": "app", "files": [], "panel_grades": {}}],
+            "files is a mapping": [{"name": "app", "files": {"b.py": 1, "c.py": 1},
+                                    "panel_grades": {}}],
+            "files are not strings": [{"name": "app", "files": [None, 5, ["b.py"]],
+                                       "panel_grades": {}}],
+            "groups are not objects": ["b.py"],
+        }
+        for label, groups in cases.items():
+            with self.subTest(case=label):
+                run3 = self._run3([], state_groups=False)
+                if groups is not None:
+                    run3["groups"] = groups
+                rc, diff = self._diff(run3)
+                self.assertEqual(rc, 0)
+                self.assertEqual(diff["meta"]["close_guard"], "run3_files_unstated")
+                self.assertEqual(diff["closed"], [])
+                self.assertEqual(self._bases(diff), {"b.py": "scope", "c.py": "scope"})
+
+    def test_build_diff_without_the_coverage_arguments_fails_closed(self):
+        # N2: pin the fail-closed DEFAULT, so a refactor that stops threading
+        # run3's coverage cannot quietly restore the auto-close.
+        r2 = reconcile.iter_records({"findings": [self._f("A", "a.py", "x")]})
+        r3 = reconcile.iter_records({"findings": [self._f("K", "a.py", "y",
+                                                         category="other")]})
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(diff["meta"]["close_guard"], "run3_files_unstated")
+        self.assertEqual(diff["closed"], [])
+
 
 class TestRenderSummary(unittest.TestCase):
     def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
@@ -592,6 +714,22 @@ class TestRenderSummary(unittest.TestCase):
         self.assertTrue(diff["ambiguous"])
         self.assertIn(diff["ambiguous"][0]["fingerprint"], text)
         self.assertIn("no file recorded", text)
+
+
+class TestSummaryGuardLine(unittest.TestCase):
+    """N4: with guards now the common path, the operator must see the guard once
+    in the header, not only as a reason repeated per ambiguous entry."""
+
+    def test_summary_names_the_active_close_guard(self):
+        r2 = reconcile.iter_records({"findings": [
+            {"id": "A", "panel": "security", "category": "authz",
+             "location": {"file": "a.py"}, "title": "x"}]})
+        text = reconcile.render_summary(reconcile.build_diff(r2, [], "r2", "r3"))
+        self.assertIn("guard: empty_run3", text)
+        self.assertIn("zero records", text)
+
+    def test_summary_has_no_guard_line_when_no_guard_fired(self):
+        self.assertNotIn("guard:", reconcile.render_summary(fixture_diff()))
 
 
 class TestDeterminism(unittest.TestCase):
