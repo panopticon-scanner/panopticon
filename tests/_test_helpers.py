@@ -372,7 +372,7 @@ def argv_through_shell(command, cwd, interpreter="python3"):
         os.chmod(stub, 0o755)
         env = dict(os.environ)
         env["PATH"] = stub_dir + os.pathsep + env.get("PATH", "")
-        proc = subprocess.run(command, shell=True, cwd=cwd, env=env,   # noqa: S602
+        proc = subprocess.run(command, shell=True, cwd=cwd, env=env,  # noqa: S602  # nosec B602
                               capture_output=True, text=True, timeout=60)
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     assert lines, ("the stubbed %s printed no argv (rc %s, stderr %r) -- the "
