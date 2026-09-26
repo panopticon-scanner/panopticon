@@ -385,6 +385,20 @@ def test_sec_floor_on_build_ci_yaml_alternate_spellings():
             raise AssertionError(f"{f} failed to floor SEC")
 
 
+def test_sec_floor_setup_py_hint_is_anchored():
+    # review finding 3 (MEDIUM): the bare "setup.py" hint matched any
+    # *setup.py, including this very repo's own
+    # skill/scripts/phases/setup.py (a driver PHASE, not a packaging script)
+    # and tests/phases/test_setup.py. A root-level setup.py must still floor
+    # SEC; the suffix-pattern false positives must not.
+    if cov.applicable_sec_floor(["setup.py"]) != frozenset({"SEC"}):
+        raise AssertionError("root setup.py must floor SEC")
+    for f in ["tests/phases/test_setup.py", "src/db_setup.py",
+              "app/bootstrap_setup.py", "tools/env_setup.py"]:
+        if cov.applicable_sec_floor([f]) != frozenset():
+            raise AssertionError(f"{f} must not floor SEC (suffix false positive)")
+
+
 def test_sec_floor_existing_supply_chain_entries_unchanged():
     # the #1838 extension must not disturb the 19 markers that already floored
     # SEC (finding SEC-71240568: "_SEC_SUPPLY_CHAIN_HINTS names 19 markers").

@@ -59,7 +59,7 @@ _SEC_SUPPLY_CHAIN_HINTS = (
     # (roslyn-secguard's own hostile-csproj fixture is why that class is
     # here), and a lockfile whose name is not already a superstring of a
     # manifest listed above. Table-driven, same style as the block above.
-    "makefile", ".mk", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", ".tf",
+    "makefile", ".mk", "/setup.py", "setup.cfg", "tox.ini", "noxfile.py", ".tf",
     ".pre-commit-config.yaml", ".travis.yml", "azure-pipelines.yml",
     "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".buildkite/",
     ".github/actions/", ".csproj", ".sln", "directory.build.props",
