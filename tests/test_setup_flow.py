@@ -919,7 +919,8 @@ class TestSetupFlow(unittest.TestCase):
     def test_nvd_readiness_uses_target_env_and_ambient_fallback_without_secret(self):
         d = _repo(self)
         env_path = os.path.join(d, ".env")
-        secret = "sensitive-nvd-key-value"
+        # Fixed synthetic value for presence/disclosure checks.
+        fixture_value = "fixture-only-value"
 
         def row(env):
             return setup_flow._check_nvd_key(d, env)
@@ -931,13 +932,13 @@ class TestSetupFlow(unittest.TestCase):
             fh.write("NVD_API_KEY=   \n")
         self.assertEqual(row({}), absent)
         with open(env_path, "w", encoding="utf-8") as fh:
-            fh.write("OTHER=value\nNVD_API_KEY=" + secret + "\n")
+            fh.write("OTHER=value\nNVD_API_KEY=" + fixture_value + "\n")
         self.assertEqual(row({}), ("nvd-api-key", None, "present"))
         os.unlink(env_path)
-        self.assertEqual(row({"NVD_API_KEY": secret}), ("nvd-api-key", None, "present"))
+        self.assertEqual(row({"NVD_API_KEY": fixture_value}), ("nvd-api-key", None, "present"))
 
         with open(env_path, "w", encoding="utf-8") as fh:
-            fh.write("NVD_API_KEY=" + secret + "\n")
+            fh.write("NVD_API_KEY=" + fixture_value + "\n")
         original_open = open
 
         def unreadable(path, *args, **kwargs):
@@ -947,10 +948,10 @@ class TestSetupFlow(unittest.TestCase):
 
         with mock.patch("builtins.open", side_effect=unreadable):
             self.assertEqual(row({}), absent)
-            self.assertEqual(row({"NVD_API_KEY": secret}),
+            self.assertEqual(row({"NVD_API_KEY": fixture_value}),
                              ("nvd-api-key", None, "present"))
-        for value in (absent, row({"NVD_API_KEY": secret})):
-            self.assertNotIn(secret, repr(value))
+        for value in (absent, row({"NVD_API_KEY": fixture_value})):
+            self.assertNotIn(fixture_value, repr(value))
 
     def test_readiness_checks_driver_roles_not_legacy(self):
         # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/
