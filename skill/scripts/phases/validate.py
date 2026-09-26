@@ -38,8 +38,11 @@ _BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a
                    + _BASELINE_REMEDY)
 
 def _write_baseline(baseline, emit):
-    """Write the baseline through `<baseline>.tmp` + `os.replace`, so the file on
-    disk is either the last complete one or the new one -- never half of either.
+    """Write the baseline through `<baseline>.tmp` + `os.replace`, so an
+    interrupted PROCESS leaves the last complete baseline or the new one on
+    disk -- never half of either. (Nothing here fsyncs, exactly as
+    `runio._write_json` does not, so a power loss is still a torn file; the
+    classifier in `_tree_delta` is what makes that one diagnosable.)
 
     #1809 (DAT-4027033499): this was a truncate-in-place write behind
     `capture_tree_baseline`'s exists-means-done guard, and that guard must NOT
@@ -54,15 +57,29 @@ def _write_baseline(baseline, emit):
     and the probe-failure sentinel below is not JSON at all."""
     tmp = baseline + ".tmp"
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
+    opened = False
     try:
         with runio._open_w_nofollow(tmp) as fh:
+            opened = True
             emit(fh)
         os.replace(tmp, baseline)
-    except BaseException:
-        try:
-            os.unlink(tmp)                   # no staging litter in the reviewed tree
-        except OSError:
-            pass
+    except BaseException:                # noqa: BLE001 -- cleanup, then re-raise
+        # A KeyboardInterrupt mid-write is exactly the case that must not leave
+        # staging litter in the reviewed tree, which is why this catches
+        # everything rather than `Exception` -- and re-raises unchanged.
+        # Remove only what THIS call is answerable for: the file it opened, or a
+        # SYMLINK the target planted at our staging name (unlinking a link is
+        # never a delete of what it points at, and the x0x round-1 ruling wants
+        # a planted link gone). A regular file we never opened is not ours --
+        # with `.panopticon/runs` force-committed as a symlink,
+        # `<elsewhere>/<tag>/tree-baseline.txt.tmp` wears our name and unlinking
+        # it would be the delete-outside-the-tree primitive `runio._relink`'s
+        # docstring names (#1574).
+        if opened or os.path.islink(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
     return baseline
 

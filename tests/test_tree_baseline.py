@@ -379,6 +379,35 @@ class TornBaselineTest(unittest.TestCase):
         validate_phase.capture_tree_baseline(repo)
         self.assertEqual(validate_phase._tree_delta(repo, subprocess.run), [])
 
+    def test_a_refused_write_never_deletes_a_file_outside_the_tree(self):
+        # #1574's `_relink` shape: `.panopticon/runs` force-committed as a
+        # symlink makes `<elsewhere>/<tag>/tree-baseline.txt.tmp` our staging
+        # NAME -- but it was never our file, and a refusal must not delete it.
+        # Cleanup belongs to what this call opened, not to whatever sits there.
+        import tempfile
+        repo = self._repo()
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        manifest = {"schema_version": 1, "run_id": "0123456789abcdef",
+                    "host": "claude", "security_mode": "standard",
+                    "created": "2026-09-20T00:00:00Z", "review_root": repo,
+                    "target": repo}
+        run_manifest.write_manifest(repo, manifest)
+        tag = run_manifest.run_tag(manifest)
+        os.symlink(outside.name, os.path.join(repo, ".panopticon", "runs"))
+        os.makedirs(os.path.join(outside.name, tag))
+        keep = os.path.join(outside.name, tag, "tree-baseline.txt.tmp")
+        with open(keep, "w", encoding="utf-8") as fh:
+            fh.write("NOT OURS")
+        self.assertEqual(runio._pano(repo, "tree-baseline.txt"),
+                         os.path.join(repo, ".panopticon", "runs", tag,
+                                      "tree-baseline.txt"))   # the plant redirects us
+        with self.assertRaises(ValueError):
+            validate_phase.capture_tree_baseline(repo)
+        self.assertTrue(os.path.exists(keep), "a refusal deleted a file outside the tree")
+        with open(keep, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "NOT OURS")
+
     def test_a_completed_capture_leaves_no_staging_file(self):
         path = validate_phase.capture_tree_baseline(self._repo())
         self.assertFalse(os.path.exists(path + ".tmp"))
