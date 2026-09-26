@@ -51,7 +51,12 @@ import scripts.phases.validate as validate
 
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
                 "validate.json",
-                "report.json", "dispatch-request.json", "tree-baseline.txt",
+                "report.json", "dispatch-request.json",
+                # #1809: the trailing `*` sweeps a `tree-baseline.txt.tmp`
+                # orphaned by a SIGKILL between the staging open and the
+                # replace. --reset is the remedy the corrupt-baseline
+                # diagnostics name, so it must clear the litter too.
+                "tree-baseline.txt*",
                 "verify-queue.json", "findings-*.json",
                 # #5.0-07: stale delta artifacts must not survive a --reset and
                 # silently delta-scope (or content-check) the next run.

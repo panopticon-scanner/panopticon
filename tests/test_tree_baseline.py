@@ -15,6 +15,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+import scripts.driver as driver
 import scripts.phases.validate as validate_phase
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
@@ -407,6 +408,22 @@ class TornBaselineTest(unittest.TestCase):
         self.assertTrue(os.path.exists(keep), "a refusal deleted a file outside the tree")
         with open(keep, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "NOT OURS")
+
+    def test_reset_sweeps_a_staging_leftover(self):
+        # `--reset` is the remedy every one of these messages names, so the
+        # sweep has to include the one leftover the staging write can produce:
+        # a `<baseline>.tmp` orphaned by a SIGKILL between the open and the
+        # replace. `"tree-baseline.txt"` was a literal, not a glob, so the
+        # litter outlived the operation meant to clear it.
+        repo = self._repo()
+        path = validate_phase.capture_tree_baseline(repo)
+        leftover = path + ".tmp"
+        with open(leftover, "w", encoding="utf-8") as fh:
+            fh.write('{"entries"')
+        driver._clear_run_artifacts(repo)
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(leftover),
+                         "--reset left the staging file behind")
 
     def test_a_completed_capture_leaves_no_staging_file(self):
         path = validate_phase.capture_tree_baseline(self._repo())
