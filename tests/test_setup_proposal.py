@@ -360,12 +360,20 @@ class TestAssemble(unittest.TestCase):
         self.assertTrue(disc["collisions"])
 
     def test_malformed_proposal_returns_none_and_errors(self):
-        for bad in ({"groups": "nope"}, {"groups": []},
-                    {"groups": [{"capability": "Auth", "match": []}]},
-                    {"groups": [{"capability": "Auth"}]}):
-            groups, disc = sp.assemble(bad, self.vocab, self.affinity)
-            self.assertIsNone(groups)
-            self.assertTrue(disc["errors"])
+        cases = (
+            ({"groups": "nope"}, "proposal: 'groups' must be a non-empty list"),
+            ({"groups": []}, "proposal: 'groups' must be a non-empty list"),
+            ({"groups": [{"capability": "Auth", "match": []}]},
+             "proposal group Auth: match must be a non-empty list of strings"),
+            ({"groups": [{"capability": "Auth"}]},
+             "proposal group Auth: match must be a non-empty list of strings"),
+        )
+        for bad, expected in cases:
+            with self.subTest(proposal=bad):
+                groups, disc = sp.assemble(bad, self.vocab, self.affinity)
+                self.assertIsNone(groups)
+                self.assertEqual(disc["errors"], [expected])
+                self.assertNotEqual(disc["errors"], ["unrelated data error"])
 
     def test_assembled_groups_pass_groups_schema(self):
         proposal = self._p([{"capability": "Auth", "match": ["src/auth/**"]}])

@@ -18,9 +18,12 @@ from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
 # (fixture, the manifest that makes it applicable) -- named so a failure says
 # WHICH ecosystem lost coverage, not just "osv-scanner found nothing".
 ECOSYSTEMS = (
-    ("vulnerable-python", "requirements.txt"),
-    ("vulnerable-node", "package-lock.json"),
-    ("vulnerable-rust", "Cargo.lock"),
+    ("vulnerable-python", "requirements.txt", "requests", "2.25.1",
+     "CVE-2023-32681", {"GHSA-j8r2-6x86-q33q"}),
+    ("vulnerable-node", "package-lock.json", "lodash", "4.17.20",
+     "CVE-2020-28500", {"GHSA-29mw-wpgm-hmr9"}),
+    ("vulnerable-rust", "Cargo.lock", "time", "0.1.45",
+     "CVE-2020-26235", {"GHSA-wcg3-cvx6-7396", "RUSTSEC-2020-0071"}),
 )
 
 
@@ -33,10 +36,16 @@ class TestOsvScannerIntegration(unittest.TestCase):
             skip_or_fail(self, "osv-scanner not installed on this host")
 
     def test_finds_advisories_in_every_vendored_ecosystem(self):
-        for fixture, manifest in ECOSYSTEMS:
+        for fixture, manifest, package, version, cve, advisories in ECOSYSTEMS:
             with self.subTest(ecosystem=fixture, manifest=manifest):
                 findings = assert_adapter_finds(
-                    self, "osv-scanner", fixture, ok_codes=OK_SCAN_EXIT_CODES)
+                    self, "osv-scanner", fixture, ok_codes=OK_SCAN_EXIT_CODES,
+                    matches=lambda f: (
+                        f["location"]["file"].endswith("/" + fixture + "/" + manifest)
+                        and f["tool_evidence"]["package_name"] == package
+                        and f["tool_evidence"]["vulnerable_versions"] == version
+                        and (cve in (f.get("citations") or {}).get("cve", [])
+                             or f["tool_evidence"]["rule_id"] in advisories)))
                 self.assertTrue(
                     any((f.get("citations") or {}) or
                         (f.get("tool_evidence") or {}).get("rule_id")
