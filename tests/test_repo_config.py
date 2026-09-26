@@ -111,7 +111,13 @@ class TestReadDocument(unittest.TestCase):
     def test_unreadable_yaml_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:
             _write(d, "panopticon.yml", "version: 1\ngroups: [\n")
-            self.assertTrue(rc.read_document(d).errors)
+            doc = rc.read_document(d)
+            self.assertIsNone(doc.doc)
+            self.assertEqual(len(doc.errors), 1)
+            self.assertIn("panopticon.yml unreadable: while parsing a flow node",
+                          doc.errors[0])
+            self.assertIn("expected the node content", doc.errors[0])
+            self.assertNotIn("must declare", doc.errors[0])
 
     def test_an_integer_past_pythons_digit_limit_is_refused_not_fatal(self):
         # Final review F2: PyYAML resolves an int scalar with `int(text)`, and

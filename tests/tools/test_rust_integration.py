@@ -49,7 +49,12 @@ class TestRustIntegration(unittest.TestCase):
         if not os.path.isdir(os.path.join(FIXTURE_ROOT, "vulnerable-rust")):
             self._skip_or_fail("vulnerable-rust fixture not vendored")
         findings = assert_adapter_finds(
-            self, "cargo-audit", "vulnerable-rust", ok_codes=OK_SCAN_EXIT_CODES
+            self, "cargo-audit", "vulnerable-rust", ok_codes=OK_SCAN_EXIT_CODES,
+            matches=lambda f: (
+                f["tool_evidence"]["rule_id"] == "RUSTSEC-2020-0071"
+                and f["tool_evidence"]["package_name"] == "time"
+                and f["tool_evidence"]["vulnerable_versions"] == "0.1.45"
+                and f["location"]["file"] == "Cargo.lock")
         )
         self.assertTrue(
             any(

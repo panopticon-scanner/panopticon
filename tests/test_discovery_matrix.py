@@ -485,11 +485,15 @@ def test_load_catalog_fails_loud_on_broken_yaml(tmp_path):
         discovery.load_catalog(str(tmp_path))
 
 
-def test_repo_scan_fails_loud_on_broken_config(tmp_path):
+def test_repo_scan_fails_loud_on_broken_config(tmp_path, capsys):
     (tmp_path / "panopticon.yml").write_text(
         "version: 1\ngroups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
     rc = discovery.main(["--repo", str(tmp_path), "--repo-scan"])
-    assert rc != 0
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "panopticon.yml unreadable: while parsing a flow sequence" in err
+    assert "expected ',' or ']'" in err
+    assert "--max-per-group" not in err
 
 
 def test_matrix_catalog_refuses_a_legacy_tree_loud(tmp_path):
