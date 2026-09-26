@@ -6,8 +6,9 @@ import tempfile
 import unittest
 
 try:
-    from jsonschema import ValidationError, validate
+    from jsonschema import Draft7Validator, ValidationError, validate
 except ImportError:
+    Draft7Validator = None
     validate = None
     ValidationError = None
 
@@ -110,11 +111,7 @@ class TestSchemas(unittest.TestCase):
                     "schema_version": 1}
         validate(instance=envelope, schema=schema)  # must not raise
 
-    def test_findings_envelope_accepts_domain_panel(self):
-        _require_jsonschema(self)
-        # #5.0-05 / #1099: a conformant matrix cell (domain_panel source_role +
-        # the REQUIRED _panopticon block) must validate against the shipped envelope.
-        schema = _load("findings-envelope-schema.json")
+    def _domain_panel_envelope(self):
         finding = {
             "domain": "SEC", "code": "SEC-INJ-001", "severity": "HIGH",
             "category": "injection",
@@ -123,41 +120,51 @@ class TestSchemas(unittest.TestCase):
             "source_role": "domain_panel",
             "citations": {},
         }
-        envelope = {
+        return {
             "findings": [finding],
             "_panopticon": {"run_id": "R", "role": "domain_panel",
                             "domain": "SEC", "group": "g1"},
             "schema_version": 1,
         }
-        validate(instance=envelope, schema=schema)  # must not raise
+
+    def test_findings_envelope_accepts_domain_panel(self):
+        _require_jsonschema(self)
+        # #5.0-05 / #1099: a conformant matrix cell (domain_panel source_role +
+        # the REQUIRED _panopticon block) must validate against the shipped envelope.
+        schema = _load("findings-envelope-schema.json")
+        validate(instance=self._domain_panel_envelope(), schema=schema)
 
     def test_findings_envelope_rejects_domain_panel_without_required(self):
         _require_jsonschema(self)
         # #1099: domain_panel findings must carry domain/code/source_role.
         schema = _load("findings-envelope-schema.json")
-        bad = {
-            "findings": [{"severity": "HIGH", "title": "t",
-                          "description": "d",
-                          "location": {"file": "src/app.py", "line_start": 10}}],
-            "_panopticon": {"run_id": "R", "role": "domain_panel",
-                            "domain": "SEC", "group": "g1"},
-            "schema_version": 1,
-        }
-        with self.assertRaises(ValidationError):
-            validate(instance=bad, schema=schema)
+        valid = self._domain_panel_envelope()
+        validate(instance=valid, schema=schema)
+        for field in ("domain", "code", "source_role"):
+            with self.subTest(field=field):
+                bad = json.loads(json.dumps(valid))
+                del bad["findings"][0][field]
+                error = next(Draft7Validator(schema).iter_errors(bad))
+                self.assertEqual(list(error.path), ["findings", 0])
+                self.assertEqual(error.validator, "oneOf")
+                self.assertTrue(any(child.validator == "required"
+                                    and child.message == f"'{field}' is a required property"
+                                    for child in error.context))
 
     def test_findings_envelope_rejects_missing_panopticon_block(self):
         _require_jsonschema(self)
         # #1099: the _panopticon block is REQUIRED by the envelope schema.
         schema = _load("findings-envelope-schema.json")
-        bad = {
-            "findings": [{"severity": "HIGH", "title": "t",
-                          "description": "d",
-                          "location": {"file": "src/app.py", "line_start": 10}}],
-            "schema_version": 1,
-        }
-        with self.assertRaises(ValidationError):
+        valid = self._domain_panel_envelope()
+        validate(instance=valid, schema=schema)
+        bad = json.loads(json.dumps(valid))
+        del bad["_panopticon"]
+        with self.assertRaises(ValidationError) as caught:
             validate(instance=bad, schema=schema)
+        self.assertEqual(caught.exception.validator, "required")
+        self.assertEqual(list(caught.exception.path), [])
+        self.assertEqual(caught.exception.message,
+                         "'_panopticon' is a required property")
 
     def test_findings_envelope_accepts_domain_advisor(self):
         _require_jsonschema(self)
