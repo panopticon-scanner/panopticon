@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import contextlib, io, json, os, re, shlex, unittest, subprocess, tempfile, shutil
+import contextlib, io, json, os, re, shlex, stat, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
@@ -1133,17 +1133,143 @@ class TestPrWorktree(unittest.TestCase):
             repo = os.path.join(d, "repo"); os.makedirs(repo)
             with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\n")
-            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            # #1841: a worktree that already has a `panopticon.yml` to overwrite
+            # is one a previous acquisition built, so this drives the REUSE
+            # branch -- which prints through the same two lines -- rather than
+            # asking `_claim_worktree_leaf` to accept a populated leaf no
+            # `git worktree list` knows about. Private and ours, like the one
+            # acquisition creates.
+            wt = os.path.join(d, "wt"); os.makedirs(wt); os.chmod(wt, 0o700)
             with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
 
             runner = _PrRunner(repo, wt)
+            runner.registered = True
             buf = io.StringIO()
             with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
                 with contextlib.redirect_stderr(buf):
                     diff_map.acquire_pr(7, repo=repo, runner=runner)
             self.assertIn("panopticon --pr: ", buf.getvalue())
             self.assertIn("overwrote", buf.getvalue())
+
+
+class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
+    """SEC-3360368617 (#1841): the `--pr` worktree path is derivable by anyone
+    with write access to the shared temp dir -- the `#run8 COD-X0X` docstring on
+    `_worktree_dir` says so and closed the SYMLINK half of the move. The
+    DIRECTORY half was still open: a pre-created real, empty directory passed
+    `islink`, was not in `git worktree list`, and `git worktree add --detach`
+    populates an existing empty directory rather than refusing it (measured on
+    git 2.50.1). The attacker kept create/rename rights inside the tree the
+    reviewer then reviews -- and `probes/common.probe_discovery_surface`'s
+    docstring says the review root under `--pr` IS that worktree.
+
+    The path stays DETERMINISTIC, because the idempotence and `--pr`
+    resumability the docstring exists for depend on it. Refusing a leaf this
+    process did not create is the whole fix, and it applies on the REUSE branch
+    too: a registered worktree's directory can be `chmod`-ed after the fact.
+    """
+
+    def _leaf(self):
+        d = tempfile.mkdtemp(prefix="panopticon-test-tmp-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return os.path.join(d, "panopticon-pr-7-0123456789ab")
+
+    def _acquire(self, wt, *, registered=False):
+        runner = _PrRunner(".", wt)
+        runner.registered = registered
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            return runner, diff_map.acquire_pr(7, repo=".", runner=runner)
+
+    def _refused(self, wt, *, registered=False):
+        runner = _PrRunner(".", wt)
+        runner.registered = registered
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertIn(wt, str(caught.exception))          # the path is named
+        self.assertEqual(0, runner.fetches, "refused AFTER fetching the PR head")
+        self.assertEqual(0, runner.adds)
+        return str(caught.exception)
+
+    def test_a_regular_file_at_the_leaf_is_refused(self):
+        wt = self._leaf()
+        with open(wt, "w", encoding="utf-8") as fh:
+            fh.write("not a directory\n")
+        self.assertIn("not a directory", self._refused(wt))
+
+    def test_a_world_writable_directory_at_the_leaf_is_refused(self):
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        os.chmod(wt, 0o777)                   # after mkdir: umask cannot mask it
+        self.assertIn("0777", self._refused(wt))
+
+    def test_a_group_readable_directory_at_the_leaf_is_refused(self):
+        # Ours, and still refused: any group/other bit means someone else can
+        # read the PR head under review, and `0o750` is what a plant made with
+        # the default umask looks like.
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        os.chmod(wt, 0o750)
+        self.assertIn("0750", self._refused(wt))
+
+    def test_a_non_empty_directory_at_the_leaf_is_refused(self):
+        # `git worktree add` refuses this too ("already exists"), but only after
+        # the fetch, and it names no remedy.
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        with open(os.path.join(wt, "planted.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        self.assertIn("not empty", self._refused(wt))
+
+    def test_the_refusal_names_deleting_it_as_the_remedy(self):
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        os.chmod(wt, 0o777)
+        self.assertIn("delete it", self._refused(wt).lower())
+
+    def test_the_leaf_this_process_creates_is_private_and_accepted(self):
+        # The happy path: nothing at the leaf, so acquisition creates it itself
+        # and owns it before the fetch -- which is what closes the window
+        # between the check and `git worktree add`.
+        wt = self._leaf()
+        runner, info = self._acquire(wt)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+        self.assertEqual(0o700, stat.S_IMODE(os.lstat(wt).st_mode))
+
+    def test_our_own_empty_leaf_is_reused_not_refused(self):
+        # A leaf a previous refused/crashed acquisition left behind is ours and
+        # private, so it is not a plant and acquisition proceeds.
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        runner, info = self._acquire(wt)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+
+    def test_the_reuse_branch_refuses_a_worktree_directory_that_was_chmodded(self):
+        # The registered worktree git already populated, `chmod`-ed afterwards:
+        # the reuse branch returns it without ever creating anything, so the
+        # same check has to run there or the fix has a hole the size of a
+        # resume.
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("PR head\n")
+        os.chmod(wt, 0o777)
+        message = self._refused(wt, registered=True)
+        self.assertIn("0777", message)
+        self.assertIn("worktree remove", message)   # the remedy for a REGISTERED one
+
+    def test_the_reuse_branch_returns_a_registered_worktree_that_is_still_ours(self):
+        wt = self._leaf()
+        os.mkdir(wt, 0o700)
+        with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("PR head\n")
+        runner, info = self._acquire(wt, registered=True)
+        self.assertEqual({"worktree": wt, "base": "main", "head_sha": "deadbeef"}, info)
+        self.assertEqual(0, runner.fetches)      # no re-fetch on reuse
+        self.assertEqual(0, runner.adds)
 
 
 class TestPrAcquisitionIsConfined(unittest.TestCase):
