@@ -122,13 +122,15 @@ def load_report(path):
 
     Also carries what the run says it LOOKED AT, which the cross-run diff needs
     to tell "fixed" from "never reviewed" (#1807): `reviewed_files` (the union of
-    groups[].files across the main document and every merged part, normalized;
-    None when no document states any) and `review_type` (meta.review_type,
-    resolved across the same documents by _resolve_review_type). Both keys are
+    groups[].files of the main document, widened by any part's, normalized;
+    None when the main document states none -- a part cannot supply the claim
+    the report omits) and `review_type` (meta.review_type, the main document's,
+    which a part can only contradict; see _resolve_review_type). Both keys are
     additive -- every other reader indexes `findings` / `discarded_claims` by
-    name and is unaffected. Both are the report's own CLAIM about its coverage;
-    what it actually completed (meta.coverage.cells) is a further cross-check
-    this loader does not yet read (follow-up #2084).
+    name and is unaffected. Both are the report's own CLAIM about its coverage,
+    per FILE and per RUN: what it actually completed (meta.coverage.cells) and
+    whether the finding's own panel or tool axis ran on that file are further
+    cross-checks this loader does not yet read (follow-ups #2084, #2087).
     """
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
@@ -151,7 +153,11 @@ def load_report(path):
             pdata = json.load(fh)
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
-        reviewed_files = _merge_stated(reviewed_files, _stated_files(pdata))
+        # A part may WIDEN a claim the report already made, never supply one
+        # the report omits -- the main document is the authority for both
+        # coverage fields (see _resolve_review_type for the same rule).
+        if reviewed_files is not None:
+            reviewed_files = _merge_stated(reviewed_files, _stated_files(pdata))
         declared_parts += _stated_review_type(pdata)
     # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
     # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
@@ -276,7 +282,8 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     be performed, refuse to close. Every ambiguous entry also carries `basis`,
     the machine-readable reason class (see the comment above GUARD_REASONS).
 
-    `run3_reviewed_files` (any iterable of normalized paths, or None) and
+    `run3_reviewed_files` (any iterable of normalized paths -- not a bare str --
+    or None) and
     `run3_review_type` are run3's own statement of what it looked at (load_report:
     groups[].files and meta.review_type). A caller that states no reviewed files
     gets the fail-CLOSED reading -- the whole-run `run3_files_unstated` guard --
@@ -340,7 +347,10 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     # under the key being corroborated" are different sets. files3 therefore only
     # sharpens the WORDING of a refusal (a file with records but absent from
     # groups[].files is a report-side bug worth naming), never grants one.
-    # set() so any iterable of paths works, including a list from a caller.
+    # set() so any iterable of paths works, including a list from a caller; a
+    # bare str would silently become a bag of characters, so it is refused.
+    if isinstance(run3_reviewed_files, str):
+        raise TypeError("run3_reviewed_files must be an iterable of paths, not a str")
     claimed3 = set(run3_reviewed_files or ())
 
     close_guard = None

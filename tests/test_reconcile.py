@@ -117,6 +117,24 @@ class TestLoadReport(unittest.TestCase):
             self.assertIsNone(report["reviewed_files"])
             self.assertIsNone(report["review_type"])
 
+    def test_a_part_cannot_supply_the_coverage_claim_the_report_omits(self):
+        # #1807 (re-review 2): the main document is the authority for both
+        # coverage fields. A part may WIDEN a claim the report already made
+        # (the fixture case above) but never stand in for a report that made
+        # none -- the same rule review_type follows, so the two fields cannot
+        # resolve differently on the same artifact.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "part.json"), "w", encoding="utf-8") as fh:
+                json.dump({"findings": [],
+                           "groups": [{"name": "Core", "files": ["b.py", "c.py"],
+                                       "panel_grades": {}}]}, fh)
+            report_path = os.path.join(d, "report.json")
+            with open(report_path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"id": "F1"}],
+                           "meta": {"parts": ["part.json"]}}, fh)
+            report = reconcile.load_report(report_path)
+            self.assertIsNone(report["reviewed_files"])
+
     def test_rejects_parts_entry_escaping_report_directory(self):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "../../etc/passwd")
@@ -596,11 +614,11 @@ class TestRun3CoverageGuards(unittest.TestCase):
     # ---- fix round 1 ----
 
     def test_a_file_run3_reported_on_reads_as_active_not_unreviewed(self):
-        # I1: groups[].files is not the set of files a report's findings cover
-        # (tool findings join a group by path, discovery truncates and filters
-        # the reviewable set). A run3 RECORD on a file is proof run3 read it, so
-        # b.py must get the strictly more informative "still active" reason --
-        # never a claim that contradicts a record in the same diff.
+        # I1 (as settled in fix round 2): a run3 RECORD on a file never licenses
+        # a close (only groups[].files does), but it does make the wording more
+        # informative -- when run3 reports a finding under the SAME key, b.py
+        # must read "still active", never a "not reviewed" claim that the same
+        # diff.json contradicts one cohort over.
         run3 = self._run3(["a.py"])
         run3["findings"].append(
             self._f("B3", "b.py", "Unvalidated redirect", category="open-redirect"))
