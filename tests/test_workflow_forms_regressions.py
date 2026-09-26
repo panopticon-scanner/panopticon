@@ -196,9 +196,9 @@ class TestCombinedPipeline(unittest.TestCase):
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
-        self.assertEqual(11, len(shell_reader.Stage._fields))
+        self.assertEqual(12, len(shell_reader.Stage._fields))
         legacy = shell_reader.Stage([], [], [], None, [], [])
-        self.assertEqual((0, 0, True, True, ("0",)), tuple(legacy)[6:])
+        self.assertEqual((0, 0, True, True, ("0",), None), tuple(legacy)[6:])
         self.assertEqual(("tool", "url", "dest", "piped_to"), forms.Fetch._fields)
         for name in ("Fetch", "FETCHERS", "STDOUT", "parse_fetch", "streamed_fetch"):
             self.assertIs(getattr(forms, name), getattr(fetches, name))
