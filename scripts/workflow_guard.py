@@ -136,7 +136,15 @@ that starts catching one fails there, and this list is edited with it.
   is on stdin in a spelling the operand walk does not resolve -- behind an
   option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
   only `-o`/`-O` as options taking a separate value, or named as a FILE by a
-  builtin outside its table (`. /dev/stdin <<'EOF'`).
+  builtin outside its table (`. /dev/stdin <<'EOF'`); an interpreter behind a
+  TRANSPORT (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`,
+  `docker exec -i c sh <<'EOF'`), whose argv this walk reads as the transport's;
+  and, as everywhere in this module, an interpreter under a name its tables do
+  not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
+  program's basename. A SECOND heredoc on the same command line
+  (`bash -s <<'A' 3<<'B'`) is a reader limitation, not a ruling: the lifter
+  takes one body per line, so the stdin body is dropped rather than read --
+  tracked as a follow-up from #1839.
   A heredoc the step WRITES to a file and then runs
   (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business at all: the
   script is text in the repo under review, which is the `sed -i` entry's
@@ -273,7 +281,10 @@ def _unread_stdin(stage):
                 "its `$(...)` were lifted into the enclosing parse before this "
                 "text was read, so the guard cannot say what the script runs -- "
                 "quote the delimiter (`<<'EOF'`) and the body is read as "
-                "written" % name)
+                "written; pass job values as arguments instead "
+                "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
+                "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
+                % (name, name))
     return None
 
 
