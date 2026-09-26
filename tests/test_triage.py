@@ -727,7 +727,8 @@ def durable_apply(tmp_path, rows, runner, **kwargs):
 
 
 def test_two_row_failure_persists_first_and_reconciles_second(tmp_path):
-    first = fix_row(issue=443, rank=1, status='approved')
+    first = fix_row(issue=443, verdict='duplicate', rank=None,
+                    duplicate_of=436, status='approved')
     second = fix_row(issue=444, rank=2, status='approved')
     ledger = tmp_path / 'ledger.jsonl'
     triage.save_rows([first, second], ledger)
@@ -753,14 +754,21 @@ def test_two_row_failure_persists_first_and_reconciles_second(tmp_path):
     assert progress['443']['pending'] is None
     assert progress['444']['pending'] == 1
     assert len(issues[443].comments) == len(issues[444].comments) == 1
-    public_first = [call for call in calls if call[1:3] in
-                    (['issue', 'comment'], ['issue', 'edit']) and call[3] == '443']
+    public_first = [call for call in calls if call[1] == 'issue'
+                    and call[2] in ('comment', 'edit', 'close') and call[3] == '443']
+    assert [call[2] for call in public_first] == ['comment', 'edit', 'close']
+    second_edits = [call for call in calls if call[1:3] == ['issue', 'edit']
+                    and call[3] == '444']
+    assert len(second_edits) == 1
     issues[444].fail = None
     assert durable_apply(tmp_path, saved, runner, ledger_path=ledger) == (1, 0)
     assert [row['status'] for row in triage.load_rows(ledger)] == ['applied', 'applied']
     assert len(issues[443].comments) == 1
-    assert [call for call in calls if call[1:3] in
-            (['issue', 'comment'], ['issue', 'edit']) and call[3] == '443'] == public_first
+    assert [call for call in calls if call[1] == 'issue'
+            and call[2] in ('comment', 'edit', 'close') and call[3] == '443'] == public_first
+    assert [call for call in calls if call[1:3] == ['issue', 'edit']
+            and call[3] == '444'] == second_edits
+    assert issues[444].labels == ['triage:fix']
 
 
 @pytest.mark.parametrize('permission', [{}, [], {'permissions': {'admin': False}},

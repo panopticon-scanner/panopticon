@@ -353,6 +353,27 @@ def test_diff_masks_only_declared_json_timestamps(tmp_path):
     assert any("-x0x.json.other" in line for line in lines)
 
 
+@pytest.mark.parametrize(("suffix", "left", "right", "path"), [
+    (".json", {"meta": {"timestamp": "first"}, "audit": {"timestamp": "first"}},
+     {"meta": {"timestamp": "second"}, "audit": {"timestamp": "second"}},
+     ".json.audit.timestamp"),
+    ("_part2.json", {"timestamp": "first"}, {"timestamp": "second"},
+     "_part2.json.timestamp"),
+    ("-x0x.json", {"generated_at": "first", "timestamp": "first"},
+     {"generated_at": "second", "timestamp": "second"},
+     "-x0x.json.timestamp"),
+])
+def test_diff_reports_timestamp_outside_declared_mask(tmp_path, suffix, left, right, path):
+    a = _out_dir(tmp_path, "a", "")
+    b = _out_dir(tmp_path, "b", "")
+    _write_report(a, suffix, left)
+    _write_report(b, suffix, right)
+    rc, lines = _diff(a, b)
+    assert rc == 1
+    assert any(path in line for line in lines)
+    assert not any("meta.timestamp" in line or "generated_at" in line for line in lines)
+
+
 def test_diff_html_timestamp_content_and_presence(tmp_path):
     a = _out_dir(tmp_path, "a", "")
     b = _out_dir(tmp_path, "b", "")
