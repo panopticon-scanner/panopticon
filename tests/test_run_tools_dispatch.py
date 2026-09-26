@@ -390,9 +390,10 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
 
     def _dispatch(self, plant_ini=True, plant_venv=True):
         """One faked bandit dispatch; returns (argv, the ini text it mounted)."""
-        seen = {"argv": None, "ini": None, "mount": None}
+        seen = {"argv": None, "ini": None, "mount": None, "dir_mode": None,
+                "file_mode": None}
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
-        suffix = ":%s:ro" % rt.BANDIT_INI_MOUNT
+        suffix = ":%s/%s:ro" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME)
 
         def runner(cmd, **_kw):
             cmd = list(cmd)
@@ -402,10 +403,12 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                 seen["mount"] = hosts[0]
                 # Read it WHILE the dispatch is in flight: the scratch is
                 # removed when the tool returns, so this also proves the file
-                # is there when the container starts.
-                with open(os.path.join(hosts[0], rt.BANDIT_INI_NAME),
-                          encoding="utf-8") as fh:
+                # is there when the container starts. The mount source is the
+                # FILE; the directory around it is the scanner's alone.
+                with open(hosts[0], encoding="utf-8") as fh:
                     seen["ini"] = fh.read()
+                seen["file_mode"] = os.stat(hosts[0]).st_mode & 0o777
+                seen["dir_mode"] = os.stat(os.path.dirname(hosts[0])).st_mode & 0o777
             return fake
         with tempfile.TemporaryDirectory() as d:
             if plant_ini:
@@ -432,6 +435,19 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertEqual(argv[argv.index("--ini") + 1],
                          "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
         self.assertIsNotNone(seen["mount"], argv)
+
+    def test_the_scratch_directory_is_private_and_only_the_file_is_shared(self):
+        # The tools image runs as `USER scanner` (uid 1000), so the ini has to
+        # be readable across the bind mount -- but that is a property of the
+        # FILE (0644). Mounting the file alone lets the scratch directory keep
+        # `mkdtemp`'s 0700: no `chmod 0755` on a directory, which is the
+        # permissive-mask pattern both bandit (B103) and semgrep flag, and
+        # nothing else in that directory is ever exposed to the container.
+        seen = self._dispatch()
+        self.assertEqual(0o700, seen["dir_mode"])
+        self.assertEqual(0o644, seen["file_mode"])
+        self.assertTrue(seen["mount"].endswith(os.sep + rt.BANDIT_INI_NAME),
+                        seen["mount"])
 
     def test_the_pin_is_unconditional(self):
         # #run7 is a nested checkout's `.bandit` making bandit ERROR and emit

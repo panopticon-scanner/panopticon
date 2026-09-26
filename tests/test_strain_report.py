@@ -215,5 +215,17 @@ class TestBuildReport(unittest.TestCase):
         self.assertEqual(rep["signals"], [])
 
 
+def test_write_report_replaces_destination(tmp_path):
+    output = tmp_path / "report.json"
+    expected = tmp_path / "report-strain.json"
+    expected.write_text("old contents", encoding="utf-8")
+    document = {"schema_version": 1, "findings": []}
+    actual = sr.write_report(document, str(output))
+    assert actual == str(expected)
+    assert json.loads(expected.read_text(encoding="utf-8")) == document
+    assert expected.read_text(encoding="utf-8").endswith("\n")
+    assert not (tmp_path / "report-strain.json.tmp").exists()
+
+
 if __name__ == "__main__":
     unittest.main()
