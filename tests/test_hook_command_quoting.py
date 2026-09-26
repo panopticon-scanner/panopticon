@@ -89,7 +89,8 @@ class TestReadGuardHookCommand(HookCommandCase):
             with mock.patch.object(rg, "_trusted_hook_argv",
                                    return_value=(stub, "-I", os.path.abspath(rg.__file__))):
                 command = rg._hook_entry(scope)["hooks"][0]["command"]
-            proc = subprocess.run(command, shell=True, cwd=d, capture_output=True,
+            proc = subprocess.run(command, shell=True, cwd=d,  # nosec B602
+                                  capture_output=True,
                                   text=True, timeout=5)  # noqa: S602
             self.assertEqual(0, proc.returncode, proc.stderr)
             argv = json.loads(proc.stdout)

@@ -508,6 +508,47 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn("`\"tests/fixtures/**\"`", out)
         self.assertIn("**Tool findings suppressed:** vendor: 2", out)
 
+    def test_the_venv_tally_rows_say_what_they_rest_on(self):
+        # #1839: this line is about findings dropped on a directory NAME, and
+        # three of the rows it now carries are not that -- `pyvenv.cfg:<dir>`
+        # counts findings dropped on a `pyvenv.cfg` the target WROTE, and the two
+        # CLASS keys count virtualenv DIRECTORIES the scan never entered (review
+        # round 1 I4 added the name-only half of that). Surfacing them here
+        # without saying so would trade a silence for a misstatement.
+        for key, shown in ((render_mod.MARKER_VENV_SEGMENT,
+                            "virtualenv-by-marker: 1"),
+                           (render_mod.NAME_VENV_SEGMENT,
+                            "virtualenv-by-name: 1"),
+                           (render_mod.MARKER_VENV_PREFIX + "app/venv",
+                            "pyvenv.cfg:'app/venv': 1")):
+            with self.subTest(key=key):
+                report = self._report()
+                report["meta"]["coverage"]["tools_suppressed"] = {
+                    "vendor": 2, key: 1}
+                out = render_mod.render_summary(report)
+                self.assertIn(shown, out)
+                self.assertIn("NAME A CLASS", out)
+                self.assertIn("DIRECTORIES the SCAN was told to skip", out)
+        # And not a word of it on a run with no such row.
+        self.assertNotIn("NAME A CLASS", render_mod.render_summary(self._report()))
+
+    def test_a_target_authored_tally_key_is_escaped_and_capped(self):
+        # Review round 1 I3: the `<dir>` half of a `pyvenv.cfg:<dir>` key is a
+        # path out of the reviewed tree. A newline in it forged a second line
+        # that read like this one, and there is a row per virtualenv, so a
+        # monorepo mints dozens -- the JSON keeps them all, this line does not.
+        rows = {"pyvenv.cfg:v%02d" % i: 1 for i in range(15)}
+        rows["pyvenv.cfg:hostile\x1b[2J\n**Tool findings suppressed:** none"] = 3
+        report = self._report()
+        report["meta"]["coverage"]["tools_suppressed"] = rows
+        out = render_mod.render_summary(report)
+        lines = [ln for ln in out.splitlines()
+                 if "**Tool findings suppressed:**" in ln]
+        self.assertEqual(len(lines), 1, out)
+        self.assertNotIn("\x1b", out)
+        self.assertIn("pyvenv.cfg:'hostile\\x1b[2J\\n", lines[0])
+        self.assertIn("and 6 more (see meta.coverage.tools_suppressed)", lines[0])
+
     def test_measured_zero_with_or_without_policy_is_explicit(self):
         for globs in (["vendor/**"], []):
             with self.subTest(globs=globs):

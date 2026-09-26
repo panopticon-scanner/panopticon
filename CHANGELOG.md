@@ -7,6 +7,55 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A file the reviewed repository commits no longer chooses what the scanners look at (#1839,
+  run-14 SEC-1486247143 + SEC-752508850).** Three levers, all on the path CI's merge gate runs
+  (`run_tools.py` -> `security_gate.py`, which has no agentic axis to compensate). A single
+  committed `src/pyvenv.cfg` was enough for the runner to hand `src/` to semgrep's `--exclude`,
+  trivy's `--skip-dirs` and bandit's `--exclude` in BOTH security modes, untallied: a directory is
+  now flagged on the marker only when it also has the SHAPE of an installed environment (an
+  interpreter under `bin/`/`Scripts/`, or `lib/python*/site-packages`), and a bare marker beside
+  real source is reported as `pyvenv.cfg-without-shape`, walked into, and never skipped. The INGEST
+  half of that same lever is closed with it, which is the half the driver's own report reads:
+  `ingest_tools` dropped every finding under a marker directory at ANY depth in both modes and said
+  nothing at all, so the planted `src/pyvenv.cfg` emptied the report of `src/` even where the scan
+  had looked. One predicate now answers for both stages (`run_tools.has_venv_shape`), so a bare
+  marker prunes nothing at ingest either; and where a real virtualenv is still pruned there, the
+  drop travels the disclosed channel under a `pyvenv.cfg:<dir>` key of the new
+  `virtualenv-by-marker` class -- named per directory, counted in `meta.coverage.tools_suppressed`,
+  and re-admitted to a `--security redteam` gate when the finding is CRITICAL or secret-class,
+  exactly as #1740 does for a directory NAME. An operator's own `--exclude` glob outranks it. A
+  directory literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB
+  PATTERNS, so one `mkdir` took the whole tree out of two scanners; a path with any component
+  outside `[A-Za-z0-9._-]` is never passed to an exclusion knob, and its manifest row says
+  `skipped: false` with a `note` saying why. Under `--security redteam` NO virtualenv now reaches an
+  exclusion knob (#1740 ruled
+  that for a directory NAME; a file the same target wrote is more attacker-controlled than a name),
+  and under `standard` the #1638 P09 walk saving stands but stops being silent: the skipped
+  directories are counted as DIRECTORIES under `virtualenv-by-marker` AND `virtualenv-by-name` in
+  `meta.coverage.tools_suppressed` -- the name-only skip a bare `mkdir .venv` buys is tallied too,
+  because it also produced no finding for anything downstream to disclose -- named on the gate's
+  verdict line (`3 directories removed from the scan as virtualenv-by-marker ('.venv', 'env');
+  virtualenv-by-name ('venv') -- re-run with --security redteam to scan them`, with every
+  target-authored name escaped and the list capped at ten), and on the manifest rows. Redteam trades
+  the #1638 P09 walk saving for that re-admission: all three scanners walk `site-packages` in full,
+  which is wall-clock and tool-timeout cost rather than report noise (the ingest still drops those
+  findings and hands back only the CRITICAL and secret-class ones), and the only knob for it is
+  `--exclude '**/.venv/**'` -- gate POLICY, which takes those paths out of scope in every mode and
+  is never re-admitted, not a shorter walk. Third, bandit no longer runs with `--ini /src/.bandit`:
+  the target's own config set bandit's `exclude`, `tests` and `skips`, so a committed `tests = B999`
+  reduced the merge gate's Python SAST to one check. It gets a SCANNER-OWNED ini instead --
+  generated per run into a scratch directory, bind-mounted read-only, pinned unconditionally (so
+  #run7's multiple-`.bandit` ERROR is bypassed whether or not the target ships one), and carrying a
+  CONSTANT text: bandit's own parser defaults plus `.worktrees`, no `tests`/`skips` key, and no
+  target-derived string of any kind, since its one job is to pre-empt bandit's `.bandit` discovery.
+  This run's virtualenvs ride on the CLI instead, as attached `--exclude=` values, each path
+  component checked against an allowlist (`[A-Za-z0-9._-]`, no leading `-`) so a name holding a
+  comma, a brace or a newline is scanned and NAMED rather than expressed. This is the first
+  increment of #1924's scan-root half. An operator sees: a `pyvenv.cfg` planted on source no longer
+  removes it from a scan, a gate verdict line that names every virtualenv the scan skipped, by
+  marker or by name, a report that carries a `virtualenv-by-marker` count where the tool axis used
+  to go quiet, and bandit reporting the checks panopticon selected rather than the ones the target
+  left it.
 - **Deleting a run's own integrity evidence is reported, not repaired -- so a substitution
   survives the `rm` that used to launder it (#1832, SEC-377944137).** #1208 made an owed-but-absent
   `out-file-hashes.json` fail closed, because deleting that baseline had been the cheapest way to
