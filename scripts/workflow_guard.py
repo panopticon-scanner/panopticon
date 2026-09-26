@@ -95,8 +95,16 @@ that starts catching one fails there, and this list is edited with it.
   the image's ENTRYPOINT supplies, and whatever the image itself runs.
   KEPT: those need another executor's mounts and entrypoint modelled, which is
   reading a second program's configuration rather than this job's shell. The
-  image the container came from is pinned by digest elsewhere
-  (`tests/test_dockerfile.py`, the `uses:` pin rule).
+  image the container came from is NOT pinned either, and that is a decided
+  residual rather than an oversight: this fleet pulls the tools image by its
+  mutable `:latest` tag (`security.yml:36` and `:301-302`, `security-fork.yml:82`,
+  `adapter-integration.yml:36` and `:110`), which is what lets the nightly
+  rebuild reach every consumer without editing one of them, and DEVELOPMENT.md
+  states the consequence in its own voice at lines 204-208 and 513. The `uses:`
+  rule pins ACTIONS by SHA and `tests/test_dockerfile.py` pins what the
+  Dockerfile FETCHES (`test_all_fetched_binaries_are_checksum_verified`,
+  `test_nvd_data_ref_default_is_digest`); neither governs a `docker pull` of a
+  tag.
 * an executor that reads the file by convention rather than by argument
   (`make`, `npm install`): the download is never an operand, so no use names
   it.
