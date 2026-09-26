@@ -8,7 +8,6 @@ from scripts import dispatch
 from scripts import hosts
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
-import scripts.synth.integrity as integrity_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
@@ -19,6 +18,7 @@ from . import engine
 from . import hard_links
 from . import runio
 from . import requests
+from . import setup_ack
 from . import setup_readiness
 
 
@@ -89,7 +89,7 @@ def _setup_scan_entry(review_root, prompt, host):
     When the posture does not prove enforcement -- no shells emitted yet, a
     host that cannot enforce -- the entry falls back to the shell-less shape
     it always had, and `scan_execute` makes the operator acknowledge that
-    before it dispatches (`requests.require_unenforced_scan_ack`).
+    before it dispatches (`setup_ack.require_unenforced_scan_ack`).
 
     The MODEL stays None either way: R-F4-2, deliberately unbound, so the
     session's model runs this one-off classification. The registered shell
@@ -148,171 +148,91 @@ def _setup_scan_entry(review_root, prompt, host):
         entry["delivery"] = mode
     return entry
 
-SETUP_UNENFORCED_ACK = "setup-unenforced-ack.json"
+def _unbound_setup_artifact(review_root, name, manifest):
+    """`(doc, reason)`: what `.panopticon/<name>` parsed as, and why it is not
+    THIS setup run's evidence -- None when it is (SEC-579863541, #1841).
 
-# The operator's fix, not just an escape hatch: the refusal below names the
-# command that makes the refusal go away for good -- when there is one.
-_EMIT_REMEDY = "python3 skill/scripts/dispatch.py --emit-host-agents %s"
-# ...and when what is missing is a MEASUREMENT rather than a registration, the
-# invocation that takes it. `driver loop` resolves `--mode` to headless for any
-# host with a runner and writes it back onto `args` before the posture step, so
-# this is the one entry point that hands the probes a settings path (fix round
-# 2; verified against `orchestrate._resolve_mode` and
-# `driver._establish_host_posture`). `--mode headless` is spelled out even
-# though it is the default for these hosts: a remedy an operator pastes should
-# not depend on a resolution rule to be correct.
-_MEASURE_REMEDY = "driver loop --setup --host %s --mode headless"
+    `setup-proposal.json` and `setup-complete.json` are `runio._TOP_LEVEL`
+    names, so `_pano` resolves them FLAT: fixed paths in a directory the
+    reviewed tree owns and can `git add -f` past its own gitignore. The two
+    done-predicates below were bare "does this file parse" tests on them, while
+    the identical threat one file over (`run-manifest.json`) has had a rule
+    since #1093. A planted proposal skips the setup-scan dispatch and makes the
+    TARGET's own proposal the input to `setup_flow.ingest_proposal`; a planted
+    marker satisfies BOTH predicates, so `driver setup` runs no phase at all
+    and reports setup complete over a tree nothing classified.
 
+    A REASON, reported by the caller, the way `_foreign_manifest_reason` does
+    it: one helper decides, so the predicate and the stderr line can never
+    disagree about what was refused. Both signals already exist here:
 
-def require_unenforced_scan_ack(review_root, manifest, entries):
-    """Refuse to dispatch `setup-scan` SHELL-LESS unless the operator accepted
-    it explicitly (#1737, AGT-B1D) -- the setup analogue of
-    `requests.require_unenforced_ack`, sharing its never-overwrite writer.
+    * tracked-ness (`runio._manifest_committed`), the manifest guard's primary
+      and non-secret signal -- a driver-written artifact is gitignored and
+      untracked, so a tracked one was committed by the target. It applies to
+      both names, and to the marker even when its `run_id` matches: a run id
+      lives in a file the target can read, so it is not a secret either.
+    * the marker's own `run_id`. `_scan_fallback` stamps it
+      (`run_id=manifest["run_id"]`) and `run_setup_flow` pins the setup
+      manifest ONCE, so the id is stable across resumes and a marker carrying
+      another id -- or none at all -- was not written by this run. The proposal
+      carries no such field, which is why tracked-ness is all it has.
 
-    The capability is TOOL_POLICY_ENFORCED, not ARTIFACT_WRITE_GUARD: this
-    dispatch writes nothing (it is return-persist by construction) and the risk
-    is the other one. It reads the WHOLE reviewed tree as untrusted content,
-    and without a registered shell nothing bounds the tool set the host hands
-    it -- the template's Read/Grep/Glob travels as the advisory line
-    `dispatch._tool_policy_line` appends to the brief, and that is all. This is
-    the acknowledgement every OTHER unenforced dispatch has required since
-    #1519 and this one never passed through.
+    So an UNTRACKED `setup-proposal.json` is accepted as the host's own return
+    of the setup-scan dispatch -- which is the residual, disclosed rather than
+    closed (review finding 2, fix round 2): on a NON-GIT target nothing is
+    tracked (`runio._manifest_committed` answers False there), so the proposal
+    has no binding at all and only `setup-complete.json` is bound, by run id. A
+    real binding for it is setup's own dispatch request, which carries this run's
+    id and the request sha since #1727 -- a follow-up, not this fix.
 
-    A refusal is the normal outcome on a machine that has not emitted its
-    shells, and the remedy it names FIRST is to emit them -- `--allow-unenforced`
-    accepts the residual risk instead, and is recorded in
-    `setup-unenforced-ack.json`.
-
-    That record describes THIS invocation and nothing else. Every field is
-    refreshed on every write, and once the posture proves enforcement the file
-    is DISCARDED: an acceptance that outlives the posture it was about is a
-    tree saying `acknowledged: true` over a dispatch that runs in a registered
-    shell, which is worse than no record at all. The bootstrap sequence makes
-    exactly that transition -- accept once, emit the shells, re-run.
-
-    Its OWN file, beside setup's other artifacts, never the review run's
-    `unenforced-ack.json`: that one's `plan_sha256` binds a review plan (#493
-    R2) and is never-overwrite, so stamping setup's hash into it would make the
-    next review run's ack read as stale -- and `runio._pano` would resolve the
-    shared name into an unrelated run's folder besides (#1507).
-
-    Returns the ack path when one was written, else None.
+    An absent or unparseable file is nobody's evidence and gets no reason: it
+    satisfies no predicate anyway, and a refusal named over it would be noise --
+    and the caller's `doc is None` is what keeps a missing artifact from costing
+    a `git ls-files`.
     """
-    host = manifest.get("host", "claude")
-    path = runio._pano(review_root, SETUP_UNENFORCED_ACK)
-    if loop_batch.expected_enforced(review_root, host,
-                                    namespace=loop_batch.SETUP_NAMESPACE):
-        _discard_scan_ack(path)        # the shell is registered and proven
-        return None
-    evidence = loop_batch.evidence_for(review_root, loop_batch.SETUP_NAMESPACE)
-    posture = hosts.posture(host, evidence)
-    row = evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}
-    if not (manifest.get("flags") or {}).get("allow_unenforced"):
-        # declares(), NOT posture(), for the hint -- the same reason
-        # `requests.require_unenforced_ack` gives: we have no evidence for a
-        # host we are not running, so posture() would answer unknown for all
-        # of them and the hint would go empty.
-        enforcing = [n for n in hosts.driver_hosts()
-                     if hosts.declares(n, hosts.TOOL_POLICY_ENFORCED)]
-        emit = _remedy_clause(host, posture[hosts.TOOL_POLICY_ENFORCED])
-        raise runio.DriverError(
-            "%s is %s on host %r -- probe %s: %s. The setup-scan agent reads "
-            "the whole reviewed tree as untrusted content, and with no "
-            "registered shell nothing confines its tools to Read, Grep, Glob "
-            "-- the brief's tool policy is advisory prose. %s-run with "
-            "--allow-unenforced to accept that explicitly (it is recorded in "
-            "%s), or use one of: %s."
-            % (hosts.TOOL_POLICY_ENFORCED, posture[hosts.TOOL_POLICY_ENFORCED],
-               host, row.get("by") or "none ran", row.get("detail") or "no evidence",
-               emit, SETUP_UNENFORCED_ACK,
-               ", ".join("--host " + n for n in enforcing)))
-    body = {
-        "acknowledged": True, "host": host,
-        # The launch SHAPE the operator accepted (id, shell, posture,
-        # destination), not the brief: that text carries the repository spine
-        # and moves with the tree, so hashing it would bind the acceptance to
-        # a file listing rather than to the thing being acknowledged.
-        "plan_sha256": integrity_mod._plan_hash(
-            [{key: entry.get(key) for key in ("id", "agent", "enforced", "out_file")}
-             for entry in entries if isinstance(entry, dict)]),
-        "roles": ["setup_scan"],
-        "note": ("The setup classifier reads the whole reviewed tree with no "
-                 "registered shell: its tool grant is whatever this host gives "
-                 "a general-purpose agent. The operator accepted this with "
-                 "--allow-unenforced."),
-        hosts.TOOL_POLICY_ENFORCED: posture[hosts.TOOL_POLICY_ENFORCED],
-        "tool_policy_detail": row.get("detail") or "no evidence"}
-    # Every key refreshed: see the docstring. Nothing downstream binds to this
-    # file, so there is no earlier write to preserve -- only an older set of
-    # facts to correct.
-    return requests._merge_ack(path, body, refresh=tuple(body))
+    path = runio._pano(review_root, name)
+    doc = runio._load_json(path)
+    if doc is None:
+        return None, None
+    if runio._manifest_committed(review_root, path):
+        return doc, ("it is git-tracked in the target, and a driver-written setup "
+                     "artifact is never committed -- remove it from the repository "
+                     "(while it is there this phase ignores it and runs again)")
+    if name != "setup-complete.json":
+        return doc, None
+    want = (manifest or {}).get("run_id")
+    got = doc.get("run_id") if isinstance(doc, dict) else None
+    if want and got == want:
+        return doc, None
+    # Fails CLOSED on a manifest with no id of its own: nothing can be bound to
+    # a run that does not say which run it is.
+    return doc, ("it carries run_id %r, not this setup run's %r -- "
+                 "`driver setup --reset` starts over" % (got, want))
 
+def _bound_setup_artifact(review_root, name, manifest):
+    """True when `.panopticon/<name>` parses AND this run wrote it. ONE read for
+    both halves, and an absent artifact still costs no `git ls-files`."""
+    doc, reason = _unbound_setup_artifact(review_root, name, manifest)
+    return doc is not None and reason is None
 
-def _remedy_clause(host, state):
-    """The fixing remedy this refusal may honestly name, as a sentence opener
-    ending in "re" for the `--allow-unenforced` clause that follows.
+def _report_unbound_setup_artifacts(review_root, manifest):
+    """Name every setup artifact that satisfies no done-predicate, once per
+    invocation, off the same helper the predicates read.
 
-    Three answers, and the rule is the capability's STATE, which is what says
-    whether a fix EXISTS and which one (fix round 2):
-
-    * REFUTED -- the host measured and said no. Every capability that gates
-      here maps to a registration probe, so re-emitting is the fix for its
-      ordinary cause, and the refusal quotes the probe's own detail for the
-      rest. Name the emit command.
-    * UNKNOWN -- NOTHING measured it. No amount of registering changes what
-      was never read, and naming the emit command there is the round-1
-      Critical one host over: `driver setup --host codex` cannot reach PROVEN
-      on any machine, because codex maps `tool_policy_enforced` to
-      `codex-effective-tools` and that probe answers UNKNOWN unless it is
-      handed a headless settings path, which only `driver loop` produces.
-      Name the invocation that can measure.
-    * A host that registers no shells at all (`--host generic`, owner ruling
-      D1, the permanent unenforced fallback) gets NEITHER: emitting refuses
-      and measuring finds nothing to measure, so the acceptance and the host
-      switch are the whole truthful list.
-
-    `headless_available` is the one owner of "does this family ship a runner",
-    and it is asked rather than assumed -- a host that registers shells and
-    ships no runner would otherwise be handed a `--mode headless` that
-    `runner_for` refuses, which is the same defect in a third place. Reached
-    through the module-level import, which #1603 fix round 2 needed anyway for
-    `LaunchRefused`: `phases` may import `runners` (only the reverse is
-    banned), and there is no cycle to route around -- `runners.base` reaches
-    `dispatch`, which imports only `model_resolver`, `codex_read_tools` and
-    `hosts`, none of which comes back here.
-    """
-    row = hosts.spec(host)
-    if row is None or not row.shell_format:
-        return "Re"
-    if state == hosts.REFUTED:
-        return "Run %s and re-run `driver setup`, or re" % (_EMIT_REMEDY % host)
-    if runners_base.headless_available(host):
-        return ("Nothing measured it here -- re-run as `%s`, the invocation "
-                "that can, or re" % (_MEASURE_REMEDY % host))
-    return "Re"
-
-
-def _discard_scan_ack(path):
-    """Drop a standing acceptance the posture has superseded, and say so.
-
-    Announced rather than silent: the operator passed `--allow-unenforced` at
-    some point, and the file going away is the run telling them they no longer
-    need to. Never fatal -- the ack lives under `.panopticon`, which the target
-    owns, so a read-only directory or a directory planted at the name must not
-    take down the ENFORCED path, which needs no acknowledgement anyway.
-    """
-    try:
-        os.remove(path)
-    except OSError:
-        return None
-    print("driver setup: %s discarded -- this host now enforces the setup-scan "
-          "shell, so there is nothing left to acknowledge" % SETUP_UNENFORCED_ACK,
-          file=sys.stderr)
-    return path
+    Here rather than inside the predicates because `run_engine` re-evaluates
+    those up to twice each, and one refusal said four times reads as four
+    problems. Called from inside `run_setup_flow`'s status `try`:
+    `_manifest_committed` raises DriverError rather than trust an ambiguous git
+    failure, and that refusal is this verb's `error` status like every other."""
+    for name in ("setup-proposal.json", "setup-complete.json"):
+        _doc, reason = _unbound_setup_artifact(review_root, name, manifest)
+        if reason:
+            print("driver setup: ignoring %s: %s" % (name, reason),
+                  file=sys.stderr, flush=True)
 
 def scan_done(review_root, manifest):
-    return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
-            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
+    return (_bound_setup_artifact(review_root, "setup-proposal.json", manifest)
+            or _bound_setup_artifact(review_root, "setup-complete.json", manifest))
 
 def scan_execute(review_root, manifest):
     """Provision + render the scan brief -> setup-scan checkpoint (vocab present);
@@ -338,7 +258,7 @@ def scan_execute(review_root, manifest):
     # Before the entry is written, let alone dispatched: an unenforced
     # setup-scan needs the operator's acknowledgement, and a refusal must
     # leave no dispatch request behind for a resume to pick up (#1737).
-    require_unenforced_scan_ack(review_root, manifest, [entry])
+    setup_ack.require_unenforced_scan_ack(review_root, manifest, [entry])
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
     req, sha = requests.write_dispatch_request_bound(
@@ -349,7 +269,7 @@ def scan_execute(review_root, manifest):
 
 def ingest_done(review_root, manifest):
     return (os.path.isfile(repo_config.draft_path(review_root))
-            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
+            or _bound_setup_artifact(review_root, "setup-complete.json", manifest))
 
 def ingest_execute(review_root, manifest):
     """Ingest the returned proposal -> draft + setup report, with THIS setup's
@@ -444,11 +364,7 @@ SETUP_PHASES = (
 
 _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
                     "setup-report.md", "setup-report.json",
-                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES,
-                    # #1737: an acceptance is this invocation's, not a
-                    # standing one. `--reset` starts over, and starting over
-                    # includes being asked again.
-                    SETUP_UNENFORCED_ACK)
+                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES)
 
 def _stale_batch_records(run_dir):
     """The `batch-<n>.json` records in `run_dir` that `--reset` may delete.
@@ -509,7 +425,13 @@ def _clear_setup_artifacts(review_root):
     skips recovery, the remedy the refusal names raised FileExistsError."""
     draft = repo_config.draft_path(review_root)
     setup_dir = os.path.dirname(_setup_manifest_path(review_root))
-    for path in ([os.path.join(setup_dir, name) for name in _SETUP_ARTIFACTS]
+    # #1737: an acceptance is this invocation's, not a standing one. `--reset`
+    # starts over, and starting over includes being asked again. Read at CALL
+    # time, not into `_SETUP_ARTIFACTS`: `loop_batch` imports this module, so
+    # `setup_ack` -- which reaches `loop_batch` through `requests` -- is only
+    # partially initialized while this module's body runs (test_layout rule 1).
+    names = _SETUP_ARTIFACTS + (setup_ack.SETUP_UNENFORCED_ACK,)
+    for path in ([os.path.join(setup_dir, name) for name in names]
                  + _stale_batch_records(setup_dir)
                  + ([draft] if os.path.isfile(draft) else [])):
         try:
@@ -642,6 +564,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         if error:
             return runio._error_status(error)
     try:
+        _report_unbound_setup_artifacts(review_root, manifest)
         result = engine.run_engine(review_root, manifest, phases)
     except (runio.DriverError, engine.EngineStalled, ValueError) as exc:
         # `ValueError` is item 24 R1-1: since #1577 the five setup artifacts are

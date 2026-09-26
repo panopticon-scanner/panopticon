@@ -493,11 +493,11 @@ def _write_driver_plan(review_root, manifest):
                                        sha256=integrity_mod._plan_hash(entries))
 
 UNENFORCED_ACK = "unenforced-ack.json"
-# #1737: `--setup` has a gate of its own -- `phases/setup.
+# #1737: `--setup` has a gate of its own -- `phases/setup_ack.
 # require_unenforced_scan_ack`. Same primitive (`_merge_ack` below),
 # different capability (TOOL_POLICY_ENFORCED, not the write guard) and a
-# separate ack file, for the reasons its docstring gives. It lives beside
-# the flow that calls it because this module is at its size ceiling.
+# separate ack file, for the reasons its docstring gives. It lives in its own
+# module beside the flow that calls it, not here: this one is at its ceiling.
 
 
 def write_capable_roles():
