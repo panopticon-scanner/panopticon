@@ -726,3 +726,83 @@ def test_multiple_runs_and_no_inventory_are_supported(tmp_path):
     assert inventory["count"] == 0
     assert "No authorized AI inventory results" in (
         output / "inventory" / "ai-inventory.md").read_text()
+
+
+def _security_paths(tmp_path):
+    security = json.loads((tmp_path / "out" / "security" / "scan.sarif")
+                          .read_text(encoding="utf-8"))
+    return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            for r in security["runs"][0]["results"]]
+
+
+def test_excluded_paths_leave_the_security_upload_and_are_counted(tmp_path):
+    # The gate scopes itself with `--exclude` globs; the Security upload used
+    # to take the raw capture whole, so a scope the operator had already taken
+    # off the gate still filled the code-scanning inbox (476 test-suite rows on
+    # 2026-09-26). The same gitignore-style matcher the gate uses decides here,
+    # on the path made repo-relative from the container's `/src` mount, in
+    # either spelling a scanner writes it.
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="file:///src/tests/tools/test_a.py"),
+               _result("R", path="/src/tests/test_b.py"),
+               _result("R", path="tests/fixtures/leak.py"),
+               _result("R", path="/src/skill/scripts/run_tools.py"),
+               _result("R", path="src/app.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    payload = reports.prepare_reports(
+        raw, tmp_path / "out", exclude_globs=["tests/fixtures/**", "tests/**"])
+    assert _security_paths(tmp_path) == ["/src/skill/scripts/run_tools.py",
+                                         "src/app.py"]
+    assert payload["excluded_from_security"] == {
+        "count": 3, "globs": ["tests/fixtures/**", "tests/**"]}
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "3 result(s) excluded from the Security upload" in summary
+    assert "tests/**" in summary
+
+
+def test_a_negated_glob_wins_last_like_the_gate(tmp_path):
+    # gitignore semantics, last match wins: the operator can carve one file
+    # back in. This is `groups_schema.matched_glob`, not a second matcher.
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_keep.py"),
+               _result("R", path="/src/tests/test_drop.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    reports.prepare_reports(raw, tmp_path / "out",
+                            exclude_globs=["tests/**", "!tests/test_keep.py"])
+    assert _security_paths(tmp_path) == ["/src/tests/test_keep.py"]
+
+
+def test_no_exclude_means_the_upload_is_the_whole_capture(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_b.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    payload = reports.prepare_reports(raw, tmp_path / "out")
+    assert _security_paths(tmp_path) == ["/src/tests/test_b.py"]
+    assert payload["excluded_from_security"] == {"count": 0, "globs": []}
+
+
+def test_the_cli_takes_repeatable_exclude_globs(tmp_path, capsys):
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_b.py"),
+               _result("R", path="/src/src/app.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    rc = reports.main(["--input-dir", str(raw), "--output-dir",
+                       str(tmp_path / "out"), "--exclude", "tests/**",
+                       "--exclude", "docs/**"])
+    assert rc == 0
+    assert _security_paths(tmp_path) == ["/src/src/app.py"]
+    out = capsys.readouterr().out
+    assert "1 result(s) excluded from the Security upload" in out
+    assert "tests/**, docs/**" in out
+
+
+def test_the_scan_root_mount_is_the_one_run_tools_uses():
+    # The prefix stripped before matching is the container path run_tools
+    # mounts the target at; a drift here would silently match nothing.
+    import scripts.run_tools as rt
+    assert reports.SCAN_ROOT_MOUNT == rt.TARGET_MOUNT

@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The code-scanning upload now carries the gate's scope, and the bandit ini is a file mount.**
+  #2117 stopped bandit honouring the reviewed repository's `.bandit`, which on this repository had
+  kept it out of `tests/`; the next security run filed 476 test-suite idioms as open alerts and
+  tripped the post-merge audit. `code_scanning_reports.py --exclude` (repeatable, the same
+  gitignore-style globs `security_gate.py` takes, matched by the same `groups_schema.matched_glob`)
+  drops those results from the Security SARIF only -- the gate still sees `tests/`, the AI
+  inventory is untouched -- and the excluded count is printed and written into the step summary.
+  The scanner-owned bandit ini is bind-mounted as a FILE (0644) from a scratch directory that keeps
+  `mkdtemp`'s 0700: the `chmod 0755` that made the directory traversable for the image's `scanner`
+  user is gone, along with the two alerts it earned.
 - **Tool and target text is inert wherever it is rendered -- so a scanned repository cannot steer
   the operator's terminal (#1829: SEC-4277410777, SEC-798292895, SEC-2200312865; closes #2069, the
   residual of #1752).** Three surfaces printed strings a target or its scanner wrote, with the
