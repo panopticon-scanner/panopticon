@@ -330,10 +330,10 @@ class TestRunTools(unittest.TestCase):
                 self.assertIn("--ini", calls[0])
                 i = calls[0].index("--ini")
                 self.assertEqual(calls[0][i + 1],
-                                 "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
+                                 "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
                 self.assertNotIn("/src/.bandit", calls[0])
                 self.assertIn("-v", calls[0])
-                self.assertIn("%s:ro" % rt.BANDIT_INI_MOUNT,
+                self.assertIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
                               " ".join(calls[0]))    # mounted read-only
 
     def test_run_tools_continues_after_one_tool_fails(self):
@@ -631,7 +631,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             expected = {
                 "semgrep": list(rt.TOOL_CMD["semgrep"]),
                 "bandit": (list(rt.TOOL_CMD["bandit"][:1])
-                           + ["--ini", "%s/%s" % (rt.BANDIT_INI_MOUNT,
+                           + ["--ini", "%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
                                                   rt.BANDIT_INI_NAME)]
                            + list(rt.TOOL_CMD["bandit"][1:at])
                            + ["--exclude=%s" % rt._bandit_exclude_value([])]
@@ -1269,34 +1269,116 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
         self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
                          ["--exclude=.venv"])
 
-    def test_a_config_that_cannot_be_staged_costs_bandit_and_nothing_else(self):
+    def test_a_config_that_cannot_be_staged_costs_that_tool_and_nothing_else(self):
         # Review N3: the ini write raised straight out of the dispatch loop, so a
         # full or read-only $TMPDIR took semgrep and every adapter after bandit
-        # down with it. One tool's problem stays one tool's problem -- and bandit
-        # lands in `missing`, which is the fail-closed direction.
+        # down with it. One tool's problem stays one tool's problem -- and the
+        # tool lands in `missing`, which is the fail-closed direction.
+        # #1839: trivy is staged the same way now, so it fails closed the same
+        # way (the ignore list being the scanner's is not optional).
+        for staged in sorted(rt.SCANNER_OWNED_CONFIG):
+            calls = []
+            fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+            def runner(cmd, _calls=calls, **kw):
+                _calls.append(cmd)
+                return fake
+            err = io.StringIO()
+            real_mkdtemp = rt.tempfile.mkdtemp
+
+            def only_the_config_fails(*a, **kw):
+                if str(kw.get("prefix", "")).startswith("pano-scanner-config-"):
+                    raise OSError("No space left on device")
+                return real_mkdtemp(*a, **kw)
+            with self.subTest(tool=staged), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(rt.tempfile, "mkdtemp",
+                                      side_effect=only_the_config_fails), \
+                    contextlib.redirect_stderr(err):
+                written = rt.run_tools(d, [staged, "semgrep"],
+                                       os.path.join(d, "out"), runner=runner)
+                self.assertEqual(len(calls), 1)         # semgrep still ran
+                self.assertIn("semgrep", calls[0])
+                self.assertEqual(len(written), 1)       # the other produced none
+                self.assertIn("No space left on device", err.getvalue())
+                self.assertIn("tool %s skipped" % staged, err.getvalue())
+
+
+class TestInlineSuppressionIsNeutralisedUnderRedteamOnly(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): an inline suppression COMMENT in the
+    target's own source -- `# nosemgrep`, `# nosec`, `gitleaks:allow` -- is the
+    other half of the scan-root class, and it is NOT the same thing as an
+    ignore file.
+
+    A comment sits in the diff a reviewer reads, and under `standard` -- the
+    mode CI's merge gate runs, since `.github/workflows/security.yml` passes no
+    `--security` -- the operator is scanning their own repository, so it stands
+    and the manifest says it stood. Under `--security redteam` the tree is
+    untrusted and every scanner whose pinned version exposes the knob is told
+    to stop honouring it. Only knobs that EXIST are passed: a flag a pinned
+    scanner rejects is a tool that exits non-zero and produces no SARIF, which
+    is the #1452 selected-but-unproduced class, not a control.
+    """
+
+    def _argv(self, tool, security_mode):
         calls = []
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
 
-        def runner(cmd, **kw):
-            calls.append(cmd)
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
             return fake
-        err = io.StringIO()
-        real_mkdtemp = rt.tempfile.mkdtemp
+        with tempfile.TemporaryDirectory() as d:
+            rt.run_tools(d, [tool], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[], security_mode=security_mode)
+        self.assertEqual(len(calls), 1)
+        return calls[0]
 
-        def only_the_ini_fails(*a, **kw):
-            if str(kw.get("prefix", "")).startswith("pano-bandit-ini-"):
-                raise OSError("No space left on device")
-            return real_mkdtemp(*a, **kw)
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(rt.tempfile, "mkdtemp",
-                                  side_effect=only_the_ini_fails), \
-                contextlib.redirect_stderr(err):
-            written = rt.run_tools(d, ["bandit", "semgrep"],
-                                   os.path.join(d, "out"), runner=runner)
-        self.assertEqual(len(calls), 1)                 # semgrep still ran
-        self.assertIn("semgrep", calls[0])
-        self.assertEqual(len(written), 1)               # bandit produced nothing
-        self.assertIn("No space left on device", err.getvalue())
+    def test_semgrep_stops_honouring_nosemgrep_under_redteam(self):
+        self.assertIn("--disable-nosem", self._argv("semgrep", "redteam"))
+
+    def test_bandit_stops_honouring_nosec_under_redteam(self):
+        self.assertIn("--ignore-nosec", self._argv("bandit", "redteam"))
+
+    def test_standard_honours_both(self):
+        self.assertNotIn("--disable-nosem", self._argv("semgrep", "standard"))
+        self.assertNotIn("--ignore-nosec", self._argv("bandit", "standard"))
+
+    def test_the_default_mode_honours_them_too(self):
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            rt.run_tools(d, ["semgrep"], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[])
+        self.assertNotIn("--disable-nosem", calls[0])
+
+    def test_the_flag_goes_before_the_scan_root(self):
+        # semgrep takes its scan root positionally and last; a flag after it
+        # would be read as a second target.
+        argv = self._argv("semgrep", "redteam")
+        self.assertEqual(argv[-1], "/src")
+        self.assertLess(argv.index("--disable-nosem"), argv.index("/src"))
+
+    def test_a_tool_with_no_verified_knob_gets_no_invented_one(self):
+        # gosec honours `// #nosec` and its own knob was NOT verified against
+        # the pinned image in this round, so the residual is DISCLOSED on the
+        # manifest instead of guessed at on the argv.
+        self.assertIsNone(rt.SUPPRESSION_COMMENTS["gosec"][1])
+        argv = self._argv("gosec", "redteam")
+        self.assertEqual(argv[-len(rt.TOOL_CMD["gosec"]):],
+                         list(rt.TOOL_CMD["gosec"]))
+
+    def test_every_named_knob_is_a_flag_and_every_tool_is_one_we_run(self):
+        for tool, (comment, flag) in rt.SUPPRESSION_COMMENTS.items():
+            with self.subTest(tool=tool):
+                self.assertIn(tool, rt.recommendable_tools(),
+                              "%s is not a tool this runner can select" % tool)
+                if flag is not None:
+                    self.assertTrue(flag.startswith("--"), flag)
+                    self.assertIsNotNone(
+                        comment, "a knob for a tool that honours no comment")
 
 
 class TestRawCaptureRedaction(unittest.TestCase):

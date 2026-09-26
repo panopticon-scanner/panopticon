@@ -427,6 +427,85 @@ class TestTheAdapterDispatchCarriesTheSecurityMode(unittest.TestCase):
                       inspect.signature(rt._run_selected).parameters)
 
 
+class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): trivy reads `.trivyignore` from the scan
+    ROOT, so the reviewed repository chose which advisories trivy reported --
+    the same class as the `.bandit` this issue already took off bandit's argv,
+    and it survives #1877's scratch cwd because the lookup is rooted at the
+    scan target rather than at the working directory.
+
+    An ignore FILE is neutralised in BOTH security modes: it is
+    CONFIGURATION, not a reviewed in-diff decision the way an inline
+    suppression comment is. The scanner gets a constant empty file of its own,
+    staged in a scratch directory the target cannot reach and bind-mounted
+    read-only beside the target mount.
+    """
+
+    def _dispatch(self, tool, plant=None, **kwargs):
+        """One faked dispatch; returns `(argv, {basename: text})` for the files
+        staged in the scanner-owned config mount."""
+        seen = {"argv": None, "staged": {}}
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+        suffix = ":%s:ro" % rt.SCANNER_CONFIG_MOUNT
+
+        def runner(cmd, **_kw):
+            cmd = list(cmd)
+            seen["argv"] = cmd
+            for host in [a[:-len(suffix)] for a in cmd if a.endswith(suffix)]:
+                # Read them WHILE the dispatch is in flight: the scratch is
+                # removed when the tool returns, so this also proves each file
+                # is there when the container starts.
+                for name in sorted(os.listdir(host)):
+                    with open(os.path.join(host, name), encoding="utf-8") as fh:
+                        seen["staged"][name] = fh.read()
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in (plant or {}).items():
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            rt.run_tools(d, [tool], os.path.join(d, "out"), runner=runner,
+                         venv_dirs=[], **kwargs)
+        return seen
+
+    def test_trivy_is_pinned_to_an_ignorefile_the_scanner_wrote(self):
+        for mode in rt.SECURITY_MODES:
+            with self.subTest(mode=mode):
+                seen = self._dispatch("trivy", security_mode=mode,
+                                      plant={".trivyignore": "CVE-2024-0001\n"})
+                argv = seen["argv"]
+                self.assertEqual(argv.count("--ignorefile"), 1)
+                self.assertEqual(argv[argv.index("--ignorefile") + 1],
+                                 "%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
+                                            rt.TRIVY_IGNOREFILE_NAME))
+                # The target's own file is never named on the argv, and the
+                # one that IS named carries none of its entries.
+                self.assertNotIn("/src/.trivyignore", argv)
+                staged = seen["staged"][rt.TRIVY_IGNOREFILE_NAME]
+                self.assertEqual(staged, rt.TRIVY_IGNOREFILE_TEXT)
+                self.assertNotIn("CVE-2024-0001", staged)
+
+    def test_the_ignorefile_declares_nothing(self):
+        # Every non-comment line would be a vulnerability id trivy stops
+        # reporting, so there are none -- and no target-derived text either.
+        active = [ln for ln in rt.TRIVY_IGNOREFILE_TEXT.splitlines()
+                  if ln.strip() and not ln.lstrip().startswith("#")]
+        self.assertEqual(active, [])
+
+    def test_the_scan_target_stays_the_last_argv_token(self):
+        # trivy takes the scan root positionally, so the flags go BEFORE it.
+        argv = self._dispatch("trivy")["argv"]
+        self.assertEqual(argv[-1], "/src")
+
+    def test_the_two_scanners_stage_only_their_own_file(self):
+        # One mount per launch, holding exactly what that tool is pinned to:
+        # the config directory is not a shared bundle every scanner can read.
+        self.assertEqual(sorted(self._dispatch("trivy")["staged"]),
+                         [rt.TRIVY_IGNOREFILE_NAME])
+        self.assertEqual(sorted(self._dispatch("bandit")["staged"]),
+                         [rt.BANDIT_INI_NAME])
+        self.assertEqual(self._dispatch("semgrep")["staged"], {})
+
+
 class TestBanditConfigIsScannerOwned(unittest.TestCase):
     """run-14 SEC-752508850 (#1839): the target chose bandit's tests.
 
@@ -445,7 +524,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         """One faked bandit dispatch; returns (argv, the ini text it mounted)."""
         seen = {"argv": None, "ini": None, "mount": None}
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
-        suffix = ":%s:ro" % rt.BANDIT_INI_MOUNT
+        suffix = ":%s:ro" % rt.SCANNER_CONFIG_MOUNT
 
         def runner(cmd, **_kw):
             cmd = list(cmd)
@@ -483,7 +562,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertNotIn("/src/.bandit", argv)
         self.assertIn("--ini", argv)
         self.assertEqual(argv[argv.index("--ini") + 1],
-                         "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
+                         "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
         self.assertIsNotNone(seen["mount"], argv)
 
     def test_the_pin_is_unconditional(self):
