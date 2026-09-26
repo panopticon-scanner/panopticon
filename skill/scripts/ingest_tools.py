@@ -57,8 +57,11 @@ __all__ = [
     "suppressed_counts",
     "suppression_class",
     "scan_skipped_venvs",
+    "display_scan_skips",
     "MARKER_VENV_SEGMENT",
     "MARKER_VENV_PREFIX",
+    "NAME_VENV_SEGMENT",
+    "SCAN_SKIP_SEGMENTS",
     "gates_when_suppressed",
     "SECRET_ADAPTERS",
     "SECRET_CWES",
@@ -185,6 +188,24 @@ MARKER_VENV_SEGMENT = "virtualenv-by-marker"
 # `suppression_class` can place it without a name list -- no other rule can emit
 # a key starting with this, for the same reason `FIXTURE_SEGMENT` cannot collide.
 MARKER_VENV_PREFIX = "pyvenv.cfg:"
+# #1839 (review round 1 I4): the SCAN skips a `venv`/`.venv` directory on its
+# NAME alone under `--security standard` too, and that skip produced nothing at
+# all -- no finding for the name rule below to disclose (the scanners never
+# entered the tree) and no row in the marker tally. One `mkdir` was the cheapest
+# lever in the whole class and the only one still silent. Reserved pseudo-segment
+# again, equal to its own class name, for the same reason `FIXTURE_SEGMENT` is.
+NAME_VENV_SEGMENT = "virtualenv-by-name"
+# The two keys whose count is DIRECTORIES the scan was told to skip rather than
+# findings the ingest dropped. Every other key in the tally counts findings; the
+# rule a reader needs is "a key that names a CLASS counts directories".
+SCAN_SKIP_SEGMENTS = (MARKER_VENV_SEGMENT, NAME_VENV_SEGMENT)
+# Bounds on the directory names read back out of `tools-manifest.json`, which is
+# written into the reviewed tree: the name is a target-carried input and it is
+# printed on `security_gate`'s verdict line (review round 1 I3). The cut is
+# MARKED, and it happens after deduplication so two long distinct names cannot
+# collapse into one row and lose a directory from the count.
+SCAN_SKIP_NAME_MAX = 120
+SCAN_SKIP_NAMES_SHOWN = 10
 # #1740: every suppression segment belongs to exactly one class, and the gate
 # line names the class beside the segment. One definition, because the stderr
 # note and `security_gate`'s own line both group by it.
@@ -428,6 +449,8 @@ def suppression_class(segment):
     if (segment == MARKER_VENV_SEGMENT                          # #1839
             or str(segment).startswith(MARKER_VENV_PREFIX)):
         return MARKER_VENV_SEGMENT
+    if segment == NAME_VENV_SEGMENT:                            # #1839 round 1
+        return NAME_VENV_SEGMENT
     if segment in _VENV_NAME_SEGMENTS:
         return "virtualenv-by-name"
     return "vendored"
@@ -949,31 +972,67 @@ def _suppression_reasons(counts):
             for cls in SUPPRESSION_CLASSES if cls in by_class]
 
 
+# Which reserved scan-skip segment a manifest row's `reason` belongs to. A
+# `pyvenv.cfg-without-shape` row is in neither: it is not a virtualenv, and
+# `partition_venv_dirs` never skips it (#1839).
+_SCAN_SKIP_REASONS = {_VENV_MARKER: MARKER_VENV_SEGMENT, "name": NAME_VENV_SEGMENT}
+
+
 def scan_skipped_venvs(manifest):
-    """The virtualenv directories THIS RUN'S SCAN was told to skip on marker
-    evidence, from a `run_tools` manifest (#1839, run-14 SEC-1486247143).
+    """The virtualenv directories THIS RUN'S SCAN was told to skip, as
+    `{reserved segment: [directory, ...]}` (#1839, run-14 SEC-1486247143).
 
     `run_tools.partition_venv_dirs` hands semgrep, trivy and bandit an exclusion
-    for a `pyvenv.cfg`-confirmed directory under `--security standard` -- the
-    #1638 P09 walk saving -- and the scanners then report nothing from it, so
-    there is no finding for `suppressed_counts` to count and no other artifact
-    that says the tree left the scan. These rows are that disclosure's only
-    source. Only `reason == pyvenv.cfg` AND `skipped`: a name-only skip is
-    already disclosed per finding (#1740), a row the scan did not skip is not a
-    loss, and `pyvenv.cfg-without-shape` is not a virtualenv at all.
+    for a `pyvenv.cfg`-confirmed directory AND for a `venv`/`.venv` name under
+    `--security standard` -- the #1638 P09 walk saving -- and the scanners then
+    report nothing from either, so there is no finding for `suppressed_counts` to
+    count and no other artifact that says the tree left the scan. These rows are
+    that disclosure's only source, which is why both kinds are read back here
+    (review round 1 I4: the name-only half was the cheapest lever and the last
+    silent one). A row the scan did NOT skip is not a loss, and a
+    `pyvenv.cfg-without-shape` row is not a virtualenv at all.
 
     The manifest is written into the reviewed tree, so every row is a
-    target-carried input: a malformed one costs the row, never the gate.
+    target-carried input: a malformed one costs the row, never the gate, and a
+    name is deduplicated, then sorted, then CUT to `SCAN_SKIP_NAME_MAX` with a
+    visible marker -- in that order, so the count of directories stays exact.
     """
     rows = manifest.get("excluded_dirs") if isinstance(manifest, dict) else None
-    out = []
+    out = {}
     for row in rows if isinstance(rows, list) else ():
         if not isinstance(row, dict) or not row.get("skipped"):
             continue
+        segment = _SCAN_SKIP_REASONS.get(row.get("reason"))
         path = row.get("path")
-        if row.get("reason") == _VENV_MARKER and isinstance(path, str) and path:
-            out.append(path)
-    return sorted(dict.fromkeys(out))
+        if segment and isinstance(path, str) and path:
+            out.setdefault(segment, []).append(path)
+    return {segment: [_cut_scan_skip_name(p) for p in sorted(dict.fromkeys(paths))]
+            for segment, paths in sorted(out.items())}
+
+
+def _cut_scan_skip_name(path):
+    """One manifest directory name, bounded with a marked cut (#1839 round 1)."""
+    if len(path) <= SCAN_SKIP_NAME_MAX:
+        return path
+    return path[:SCAN_SKIP_NAME_MAX - 1] + "\u2026"
+
+
+def display_scan_skips(names):
+    """A one-line rendering of scan-skipped directory names for an operator.
+
+    `ascii()`, not the bare name (review round 1 I3): these come from a file in
+    the reviewed tree, and a name holding `\n` forged a second line that read
+    exactly like a clean gate verdict while an ANSI escape recoloured the
+    terminal. Non-ASCII is escaped too, so a bidi override cannot reorder the
+    line. Capped at `SCAN_SKIP_NAMES_SHOWN` with the true remainder named, so a
+    monorepo with forty virtualenvs cannot turn one verdict line into a page.
+    """
+    names = list(names)
+    shown = [ascii(name) for name in names[:SCAN_SKIP_NAMES_SHOWN]]
+    if len(names) > SCAN_SKIP_NAMES_SHOWN:
+        shown.append("and %d more (see excluded_dirs)"
+                     % (len(names) - SCAN_SKIP_NAMES_SHOWN))
+    return ", ".join(shown)
 
 
 def suppressed_counts(suppressed, scan_skipped=()):
@@ -984,21 +1043,20 @@ def suppressed_counts(suppressed, scan_skipped=()):
     gate's own line beside its verdict. #1740: the segments now span three
     classes -- `suppression_class` is what groups them for a reader.
 
-    #1839: `scan_skipped` is the fourth, and the one that is not a finding at
-    all -- the virtualenv directories `scan_skipped_venvs` read off the
-    manifest, counted as DIRECTORIES under the reserved `MARKER_VENV_SEGMENT`.
-    It joins this dict rather than travelling beside it so that every consumer
-    of the tally shows the class without a second number to reconcile; the key
-    says which unit it is in.
+    #1839: `scan_skipped` is the part that is not a finding at all -- the
+    `{reserved segment: [directory, ...]}` mapping `scan_skipped_venvs` reads off
+    the manifest, counted as DIRECTORIES under the two keys in
+    `SCAN_SKIP_SEGMENTS`. It joins this dict rather than travelling beside it so
+    that every consumer of the tally shows those classes without a second number
+    to reconcile; a key that names a CLASS counts directories, and every other
+    key counts findings.
     """
     counts: dict[str | None, int] = {}
     for finding in suppressed or []:
         seg = (finding or {}).get("suppressed")
         counts[seg] = counts.get(seg, 0) + 1
-    skipped = list(scan_skipped or ())
-    if skipped:
-        counts[MARKER_VENV_SEGMENT] = (counts.get(MARKER_VENV_SEGMENT, 0)
-                                       + len(skipped))
+    for segment, names in (scan_skipped or {}).items():
+        counts[segment] = counts.get(segment, 0) + len(names)
     return counts
 
 

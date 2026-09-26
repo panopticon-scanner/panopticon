@@ -16,6 +16,7 @@ import scripts.synth.codes as codes_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
+import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.cost as cost_mod
@@ -4414,13 +4415,41 @@ class TestSuppressedToolFindingsCoverage(unittest.TestCase):
     say so, so a real vendored library and an evasion were indistinguishable.
     """
 
-    def _coverage(self, suppressed):
+    # #1839: one manifest row per reserved scan-skip class -- a virtualenv the
+    # RUNNER was told to skip, which produced no finding for the tally above to
+    # count and no other artifact that says the tree left the scan.
+    _SKIPPED = {"excluded_dirs": [
+        {"path": ".venv", "reason": "pyvenv.cfg", "skipped": True},
+        {"path": "venv", "reason": "name", "skipped": True},
+        {"path": "src", "reason": "pyvenv.cfg-without-shape", "skipped": False}]}
+
+    def _coverage(self, suppressed, manifest=None):
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on="high",
                                      timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[]),
-            tools=tool_axis_mod.ToolAxis(suppressed=suppressed)))
+            tools=tool_axis_mod.ToolAxis(suppressed=suppressed,
+                                         manifest=manifest)))
         return report["meta"]["coverage"]
+
+    def test_the_directories_the_scan_skipped_join_the_tally(self):
+        # #1839: both reserved classes, counted as DIRECTORIES beside the
+        # finding counts, because a scan that never entered the tree produced no
+        # finding to count -- and a key that names a CLASS is the signal that
+        # its number is directories.
+        self.assertEqual(
+            {"vendor": 1, "virtualenv-by-marker": 1, "virtualenv-by-name": 1},
+            self._coverage({"vendor": 1}, self._SKIPPED)["tools_suppressed"])
+
+    def test_the_scan_side_rows_cross_the_same_bound_as_their_siblings(self):
+        # Review round 1 N2: this tally's comment said the scan-side counts were
+        # "repaired like their siblings" while the merge happened AFTER the
+        # repair -- so they crossed no boundary at all, and a tally already at
+        # `ROWS_MAX` published one row more than the bound this key documents.
+        rows = {"pyvenv.cfg:v%03d" % n: 1 for n in range(repair_mod.ROWS_MAX)}
+        with contextlib.redirect_stderr(io.StringIO()):
+            cov = self._coverage(rows, self._SKIPPED)
+        self.assertEqual(len(cov["tools_suppressed"]), repair_mod.ROWS_MAX)
 
     def test_the_counts_reach_the_report_per_segment(self):
         self.assertEqual({"vendor": 592, "node_modules": 3},

@@ -227,6 +227,28 @@ def tools_produced_from_dispositions(dispositions):
             if d.get("status") in ("ok", "empty", "noscan")}
 
 
+def _merged_tallies(tallied, extra):
+    """Two `{segment: count}` tallies in one dict, BEFORE the boundary repair
+    (#1839 review round 1 N2): the scan-side keys have to cross the same bound
+    and the same type check as the finding-side ones.
+
+    A non-dict `tallied` is handed on untouched, so the repair still announces
+    and drops it rather than this function swallowing the fact. A malformed COUNT
+    under a key the scan side also uses is replaced rather than added to: the
+    scan-side row is a disclosure, and losing it to a row that was going to be
+    dropped anyway is the silence this change exists to remove.
+    """
+    if not isinstance(tallied, dict):
+        return tallied
+    out = dict(tallied)
+    for segment, count in (extra or {}).items():
+        base = out.get(segment)
+        if isinstance(base, int) and not isinstance(base, bool) and base >= 0:
+            count += base
+        out[segment] = count
+    return out
+
+
 def reconcile(plan, tools, resolved, run=None):
     """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
     meta.integrity from the dispatch plan, the tool layer and the resolved
@@ -356,18 +378,24 @@ def reconcile(plan, tools, resolved, run=None):
     # reason -- the tally is keyed by a segment of a scanner-reported path.
     not_gated_counts = repair_mod.repair_tools_suppressed(
         ingest_tools.suppressed_counts(resolved.suppressed_not_gated or []))
-    suppressed_total = repair_mod.repair_tools_suppressed(tools.suppressed)
     # #1839 (run-14 SEC-1486247143): the SCAN-side half of the same tally. A
-    # virtualenv the runner was told to skip on `pyvenv.cfg` evidence produced no
-    # finding to count, so `suppressed_counts` reads the directories off the
-    # manifest and counts them under its own reserved segment -- the report said
-    # nothing at all about that drop before, which is what made one committed
-    # marker file worth planting. Repaired like its siblings (the manifest is
-    # written into the reviewed tree) and merged rather than published beside
-    # them, so `security_gate`'s line and this key still name the same classes.
-    for segment, count in ingest_tools.suppressed_counts(
-            [], ingest_tools.scan_skipped_venvs(tools.manifest)).items():
-        suppressed_total[segment] = suppressed_total.get(segment, 0) + count
+    # virtualenv the runner was told to skip -- on `pyvenv.cfg` evidence or on the
+    # NAME alone (review round 1 I4) -- produced no finding to count, so
+    # `suppressed_counts` reads those DIRECTORIES off the manifest and counts them
+    # under their own reserved segments; the report said nothing at all about that
+    # drop before, which is what made one committed marker file worth planting.
+    # Merged rather than published beside the finding counts, so `security_gate`'s
+    # line and this key name the same classes -- and merged BEFORE the repair
+    # (review round 1 N2), because the manifest is written into the reviewed tree
+    # and this comment used to claim a boundary these rows never crossed: a tally
+    # already at `ROWS_MAX` published 202 rows, two past the bound this key
+    # documents. The bound now applies to the merged whole, which it announces;
+    # `security_gate`'s own disclosure reads the manifest directly, so it does not
+    # rest on this tally surviving a hostile tree's 200 virtualenvs.
+    suppressed_total = repair_mod.repair_tools_suppressed(
+        _merged_tallies(tools.suppressed,
+                        ingest_tools.suppressed_counts(
+                            [], ingest_tools.scan_skipped_venvs(tools.manifest))))
     integrity = plan.integrity if isinstance(plan.integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
                               "missing_planned_files": [],

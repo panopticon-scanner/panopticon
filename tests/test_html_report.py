@@ -1723,6 +1723,35 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         out = hr.render(self._report({"<script>alert(1)</script>": 1}))
         self.assertNotIn("<script>alert(1)</script>", out)
 
+    def test_the_venv_tally_rows_say_what_they_rest_on(self):
+        # #1839: two of these keys NAME A CLASS and count virtualenv DIRECTORIES
+        # the scan never entered (review round 1 I4 added the name-only half);
+        # the `pyvenv.cfg:<dir>` shape counts findings dropped on a marker the
+        # target wrote. Neither is the directory-NAME drop this block is about.
+        for key in (hr.MARKER_VENV_SEGMENT, hr.NAME_VENV_SEGMENT,
+                    hr.MARKER_VENV_PREFIX + "app/venv"):
+            with self.subTest(key=key):
+                out = hr.render(self._report({"vendor": 2, key: 1}))
+                self.assertIn("name a CLASS", out)
+                self.assertIn("DIRECTORIES the scan was told to skip", out)
+        self.assertNotIn("name a CLASS", hr.render(self._report({"vendor": 2})))
+
+    def test_a_target_authored_tally_key_is_escaped_and_capped(self):
+        # Review round 1 I3: the `<dir>` half of the key is a path out of the
+        # reviewed tree, and `html.escape` leaves control characters alone -- so
+        # the same `ascii()` idiom as the policy globs above, and a cap, because
+        # there is one row per virtualenv.
+        rows = {"pyvenv.cfg:v%02d" % i: 1 for i in range(15)}
+        rows["pyvenv.cfg:hostile\x1b[2J\n<script>alert(1)</script>"] = 3
+        out = hr.render(self._report(rows))
+        block = out.split("Tool findings suppressed by directory name:", 1)[1]
+        block = block.split("</div>", 1)[0]
+        self.assertNotIn("\x1b", block)
+        self.assertNotIn("\n", block)
+        self.assertNotIn("<script>", block)
+        self.assertIn(r"pyvenv.cfg:&#x27;hostile\x1b[2J\n", block)
+        self.assertIn("and 6 more", block)
+
 
 class TestExcludedToolFindingsInHtml(unittest.TestCase):
     def _report(self, excluded=_NO_KEY):

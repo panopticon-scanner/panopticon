@@ -789,26 +789,57 @@ def _render_suppressed_git_drivers(meta):
             % (len(labels), ", ".join(_escape(label) for label in labels)))
 
 
-# #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` / `MARKER_VENV_PREFIX`
-# (this module keeps its imports guarded so it can render standalone), and pinned
-# to them by tests/test_ingest_tools.py. The clause exists because the sentence
-# below is about findings dropped on a directory NAME, and these rows are not.
+# #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` / `MARKER_VENV_PREFIX` /
+# `NAME_VENV_SEGMENT` (this module keeps its imports guarded so it can render
+# standalone), and pinned to them by tests/test_ingest_tools.py. The clause exists
+# because the sentence below is about findings dropped on a directory NAME, and
+# these rows are not.
 MARKER_VENV_SEGMENT = "virtualenv-by-marker"
 MARKER_VENV_PREFIX = "pyvenv.cfg:"
-_MARKER_VENV_CLAUSE = (
-    " The <code>virtualenv-by-marker</code> class rests on a "
-    "<code>pyvenv.cfg</code> marker the target wrote rather than on a directory "
-    "name: a <code>pyvenv.cfg:&lt;dir&gt;</code> row counts findings the ingest "
-    "dropped from that virtualenv at any depth, and the bare "
-    "<code>virtualenv-by-marker</code> row counts whole virtualenv DIRECTORIES "
-    "the scan was told to skip under <code>--security standard</code>, which "
-    "produced no findings to count")
+NAME_VENV_SEGMENT = "virtualenv-by-name"
+# Review round 1 I3: how many per-directory rows this block shows before it names
+# the remainder. `synth/coverage_io.venv_tally` is the same cap for the markdown
+# summary; this module renders standalone, so it carries its own.
+_VENV_ROWS_SHOWN = 10
+_VENV_TALLY_CLAUSE = (
+    " Two keys here name a CLASS instead of a directory and count virtualenv "
+    "DIRECTORIES the scan was told to skip rather than findings: <code>%s</code> "
+    "(a <code>pyvenv.cfg</code> marker the target wrote) and <code>%s</code> (a "
+    "<code>venv</code>/<code>.venv</code> name alone), skipped under "
+    "<code>--security standard</code> for the #1638 walk saving, which produced "
+    "no findings to count. Every other key counts findings, a "
+    "<code>%s&lt;dir&gt;</code> row one virtualenv's worth at any depth"
+    % (MARKER_VENV_SEGMENT, NAME_VENV_SEGMENT, MARKER_VENV_PREFIX))
 
 
-def _is_marker_venv_row(segment: str) -> bool:
-    """True for either key shape of the `virtualenv-by-marker` class (#1839)."""
-    return (segment == MARKER_VENV_SEGMENT
+def _is_venv_tally_row(segment: str) -> bool:
+    """True for any key shape the clause above speaks for (#1839, round 1 I4)."""
+    return (segment in (MARKER_VENV_SEGMENT, NAME_VENV_SEGMENT)
             or str(segment).startswith(MARKER_VENV_PREFIX))
+
+
+def _venv_tally(rows) -> str:
+    """The tally's rows for this block, with the key shape that embeds a
+    TARGET-AUTHORED path escaped and capped (#1839, review round 1 I3).
+
+    `html.escape` leaves control characters alone, so the `<dir>` half of a
+    `pyvenv.cfg:<dir>` key is put through `ascii()` first -- the same idiom the
+    policy globs beside it use -- and there is one such row per virtualenv, so a
+    monorepo's dozens are capped with the remainder named. The class rows are
+    never capped, and `meta.coverage.tools_suppressed` keeps every row.
+    """
+    out, seen, cut = [], 0, 0
+    for segment, count in rows:
+        if str(segment).startswith(MARKER_VENV_PREFIX):
+            seen += 1
+            if seen > _VENV_ROWS_SHOWN:
+                cut += 1
+                continue
+            segment = MARKER_VENV_PREFIX + ascii(str(segment)[len(MARKER_VENV_PREFIX):])
+        out.append("%s: %d" % (_escape(segment), count))
+    if cut:
+        out.append("and %d more (see meta.coverage.tools_suppressed)" % cut)
+    return " &middot; ".join(out)
 
 
 def _render_suppressed_tools(meta):
@@ -846,11 +877,11 @@ def _render_suppressed_tools(meta):
             "the agentic panel still reviewed those files, and "
             "<code>--security redteam</code> gates the CRITICAL and "
             "secret-class ones%s%s</div>"
-            % (" &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows),
+            % (_venv_tally(rows),
                (" (%d withheld from this run's gate by that rule, #1578 "
                 "policy C)" % withheld) if withheld else "",
-               _MARKER_VENV_CLAUSE if any(_is_marker_venv_row(seg)
-                                          for seg, _n in rows) else ""))
+               _VENV_TALLY_CLAUSE if any(_is_venv_tally_row(seg)
+                                         for seg, _n in rows) else ""))
 
 
 def _suppressed_rows(value):
@@ -886,7 +917,7 @@ def _render_suppressed_gated_tools(meta):
             "(<code>--security redteam</code>, and CRITICAL or secret-class "
             "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list</div>"
-            % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
+            % _venv_tally(rows))
 
 
 def _render_excluded_tools(meta):

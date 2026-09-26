@@ -30,19 +30,31 @@ evidence exposed.
   saying why. Under `--security redteam` NO virtualenv now reaches an exclusion knob (#1740 ruled
   that for a directory NAME; a file the same target wrote is more attacker-controlled than a name),
   and under `standard` the #1638 P09 walk saving stands but stops being silent: the skipped
-  directories are counted under `virtualenv-by-marker` in `meta.coverage.tools_suppressed`, named on
-  the gate's verdict line (`2 directories removed from the scan as virtualenv-by-marker (.venv, env)
-  -- re-run with --security redteam to scan them`), and on the manifest rows. Third, bandit no
-  longer runs with `--ini /src/.bandit`: the target's own config set bandit's `exclude`, `tests` and
-  `skips`, so a committed `tests = B999` reduced the merge gate's Python SAST to one check. It gets
-  a SCANNER-OWNED ini instead -- generated per run into a scratch directory, bind-mounted read-only,
-  pinned unconditionally (so #run7's multiple-`.bandit` ERROR is bypassed whether or not the target
-  ships one), carrying bandit's own defaults plus `.worktrees` plus this run's virtualenvs and no
-  `tests`/`skips` key at all. This is the first increment of #1924's scan-root half. An operator
-  sees: a `pyvenv.cfg` planted on source no longer removes it from a scan, a gate verdict line that
-  names every virtualenv the scan skipped, a report that carries a `virtualenv-by-marker` count
-  where the tool axis used to go quiet, and bandit reporting the checks panopticon selected rather
-  than the ones the target left it.
+  directories are counted as DIRECTORIES under `virtualenv-by-marker` AND `virtualenv-by-name` in
+  `meta.coverage.tools_suppressed` -- the name-only skip a bare `mkdir .venv` buys is tallied too,
+  because it also produced no finding for anything downstream to disclose -- named on the gate's
+  verdict line (`3 directories removed from the scan as virtualenv-by-marker ('.venv', 'env');
+  virtualenv-by-name ('venv') -- re-run with --security redteam to scan them`, with every
+  target-authored name escaped and the list capped at ten), and on the manifest rows. Redteam trades
+  the #1638 P09 walk saving for that re-admission: all three scanners walk `site-packages` in full,
+  which is wall-clock and tool-timeout cost rather than report noise (the ingest still drops those
+  findings and hands back only the CRITICAL and secret-class ones), and the only knob for it is
+  `--exclude '**/.venv/**'` -- gate POLICY, which takes those paths out of scope in every mode and
+  is never re-admitted, not a shorter walk. Third, bandit no longer runs with `--ini /src/.bandit`:
+  the target's own config set bandit's `exclude`, `tests` and `skips`, so a committed `tests = B999`
+  reduced the merge gate's Python SAST to one check. It gets a SCANNER-OWNED ini instead --
+  generated per run into a scratch directory, bind-mounted read-only, pinned unconditionally (so
+  #run7's multiple-`.bandit` ERROR is bypassed whether or not the target ships one), and carrying a
+  CONSTANT text: bandit's own parser defaults plus `.worktrees`, no `tests`/`skips` key, and no
+  target-derived string of any kind, since its one job is to pre-empt bandit's `.bandit` discovery.
+  This run's virtualenvs ride on the CLI instead, as attached `--exclude=` values, each path
+  component checked against an allowlist (`[A-Za-z0-9._-]`, no leading `-`) so a name holding a
+  comma, a brace or a newline is scanned and NAMED rather than expressed. This is the first
+  increment of #1924's scan-root half. An operator sees: a `pyvenv.cfg` planted on source no longer
+  removes it from a scan, a gate verdict line that names every virtualenv the scan skipped, by
+  marker or by name, a report that carries a `virtualenv-by-marker` count where the tool axis used
+  to go quiet, and bandit reporting the checks panopticon selected rather than the ones the target
+  left it.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

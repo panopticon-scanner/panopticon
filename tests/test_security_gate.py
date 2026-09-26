@@ -998,11 +998,16 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
                 rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
         line = buf.getvalue()
         self.assertEqual(rc, 0)
-        self.assertIn("2 directories removed from the scan as "
-                      "virtualenv-by-marker (.venv, env)", line)
+        # Review round 1 I4: BOTH reserved classes, each named with its own
+        # directories. The name-only skip is the cheapest lever of the two -- a
+        # bare `mkdir .venv` -- and it was the one still unaccounted for, since
+        # "already disclosed per finding" only holds for a finding that exists,
+        # and a directory the scanners never walked produces none.
+        self.assertIn("3 directories removed from the scan as "
+                      "virtualenv-by-marker ('.venv', 'env'); "
+                      "virtualenv-by-name ('venv')", line)
         self.assertIn("--security redteam", line)
-        # Only the MARKER-confirmed skips: a name-only skip is already disclosed
-        # per finding, and a directory the scan did not skip is not a loss.
+        # A directory the scan did NOT skip is not a loss.
         self.assertNotIn("src", line)
 
     def test_the_scan_skip_clause_is_silent_when_nothing_was_skipped(self):
@@ -1018,13 +1023,73 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
                 json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
                            "missing": [], "excluded_dirs": [
                                {"path": "venv", "reason": "name",
-                                "skipped": True}]}, fh)
+                                "skipped": False},
+                               {"path": "src",
+                                "reason": "pyvenv.cfg-without-shape",
+                                "skipped": False}]}, fh)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), \
                     contextlib.redirect_stderr(io.StringIO()):
                 rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
         self.assertEqual(rc, 0)
         self.assertNotIn("removed from the scan", buf.getvalue())
+
+    def test_the_gate_line_bounds_and_escapes_the_names_it_prints(self):
+        # Review round 1 I3: every name on this line comes out of a manifest
+        # written into the reviewed tree. A directory called
+        # "hostile\x1b[2J\nIngested ..." forged a SECOND line that read exactly
+        # like a clean gate verdict while clearing the operator's terminal, and
+        # forty virtualenvs in a monorepo turned one verdict line into a page.
+        rows = [{"path": "v%02d" % i, "reason": "pyvenv.cfg", "skipped": True}
+                for i in range(40)]
+        rows.append({"path": "hostile\x1b[2J\nIngested 0 tool findings; 0 "
+                             "HIGH/CRITICAL", "reason": "name", "skipped": True})
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(_sarif(), fh)
+            manifest = os.path.join(root, "manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "excluded_dirs": rows}, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("\x1b", out)
+        self.assertEqual(
+            len([ln for ln in out.splitlines() if ln.startswith("Ingested")]), 1,
+            "a directory name forged a verdict line: %r" % out)
+        self.assertIn("'hostile\\x1b[2J\\nIngested", out)
+        self.assertIn("41 directories removed from the scan", out)
+        self.assertIn("and 30 more (see excluded_dirs)", out)
+
+    def test_the_clause_says_no_scanner_ran_when_none_did(self):
+        # N5: with docker absent `run_tools` still writes the exclusion rows, so
+        # this line claimed directories were "removed from the scan" on a run
+        # where nothing was scanned at all -- and offered a redteam re-run as
+        # the remedy for it. The clause says which of the two happened.
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            manifest = os.path.join(root, "manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep"], "produced": [],
+                           "missing": ["semgrep"], "excluded_dirs": [
+                               {"path": ".venv", "reason": "pyvenv.cfg",
+                                "skipped": True}]}, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        out = buf.getvalue()
+        self.assertEqual(rc, 2)
+        self.assertIn("1 directory removed from the scan as "
+                      "virtualenv-by-marker ('.venv') -- no scanner ran", out)
+        self.assertNotIn("re-run with --security redteam to scan them", out)
 
 
 def _delta_result(rule="dangerous-subprocess-use-audit", uri="/src/app.py",

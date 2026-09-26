@@ -8,6 +8,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import grading as grading_mod
 
@@ -123,33 +124,34 @@ def _suppressed_line(suppressed, not_gated=None):
             "virtualenv or fixture-corpus name, with no marker or provenance "
             "behind it); the agentic panel still reviewed those files, and "
             "`--security redteam` gates the CRITICAL and secret-class ones%s%s"
-            % (", ".join("%s: %d" % (seg, n) for seg, n in rows),
+            % (coverage_io.venv_tally(rows, MARKER_VENV_PREFIX),
                (" (%d withheld from this run's gate by that rule, #1578 "
                 "policy C)" % withheld) if withheld else "",
-               _MARKER_VENV_CLAUSE if any(_is_marker_venv_row(seg)
-                                          for seg, _n in rows) else ""))
+               _VENV_TALLY_CLAUSE if any(_is_venv_tally_row(seg)
+                                         for seg, _n in rows) else ""))
 
 
 # #1839: the rows in this tally that do NOT rest on a directory name, spelled
 # out because the sentence above would otherwise speak for them and say untrue
-# things. The tokens are `ingest_tools.MARKER_VENV_SEGMENT` and
-# `MARKER_VENV_PREFIX`, mirrored here rather than imported (a renderer must not
-# pull the ingest's adapter registry in); tests/test_ingest_tools.py pins them.
+# things. The tokens mirror `ingest_tools` rather than import it (a renderer must
+# not pull the ingest's adapter registry in); tests/test_ingest_tools.py pins them.
 MARKER_VENV_SEGMENT = "virtualenv-by-marker"
 MARKER_VENV_PREFIX = "pyvenv.cfg:"
-_MARKER_VENV_CLAUSE = (
-    " The `%s` class rests on a `pyvenv.cfg` MARKER the target wrote rather than "
-    "on a directory name: a `%s<dir>` row counts findings the ingest dropped "
-    "from that virtualenv, at any depth, and the bare `%s` row counts whole "
-    "virtualenv DIRECTORIES the SCAN was told to skip under `--security "
-    "standard` (the #1638 P09 walk saving), which produced no findings to count "
-    "-- `tools-manifest.json`'s `excluded_dirs` names those."
-    % (MARKER_VENV_SEGMENT, MARKER_VENV_PREFIX, MARKER_VENV_SEGMENT))
+NAME_VENV_SEGMENT = "virtualenv-by-name"
+_VENV_TALLY_CLAUSE = (
+    " Two keys here NAME A CLASS instead of a directory, and count virtualenv "
+    "DIRECTORIES the SCAN was told to skip rather than findings: `%s` (a "
+    "`pyvenv.cfg` MARKER the target wrote) and `%s` (a `venv`/`.venv` name "
+    "alone), skipped under `--security standard` for the #1638 P09 walk saving, "
+    "which produced no findings to count -- `tools-manifest.json`'s "
+    "`excluded_dirs` names them. Every other key counts findings, a `%s<dir>` "
+    "row one marker-confirmed virtualenv's worth at any depth."
+    % (MARKER_VENV_SEGMENT, NAME_VENV_SEGMENT, MARKER_VENV_PREFIX))
 
 
-def _is_marker_venv_row(segment):
-    """True for either key shape of the `virtualenv-by-marker` class (#1839)."""
-    return (segment == MARKER_VENV_SEGMENT
+def _is_venv_tally_row(segment):
+    """True for any key shape the clause above speaks for (#1839, round 1 I4)."""
+    return (segment in (MARKER_VENV_SEGMENT, NAME_VENV_SEGMENT)
             or str(segment).startswith(MARKER_VENV_PREFIX))
 
 
@@ -188,7 +190,7 @@ def _suppressed_gated_line(gated):
             "grade anyway (`--security redteam`, and CRITICAL or secret-class "
             "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list"
-            % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
+            % coverage_io.venv_tally(rows, MARKER_VENV_PREFIX))
 
 
 def _excluded_tools_line(value):

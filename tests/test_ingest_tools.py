@@ -1444,7 +1444,8 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
             {"path": "venv", "reason": "name", "skipped": True},
             {"path": "src", "reason": "pyvenv.cfg-without-shape", "skipped": False}]}
         skipped = it.scan_skipped_venvs(manifest)
-        self.assertEqual(skipped, [".venv", "env"])
+        self.assertEqual(skipped, {it.MARKER_VENV_SEGMENT: [".venv", "env"],
+                                   it.NAME_VENV_SEGMENT: ["venv"]})
         counts = it.suppressed_counts([], skipped)
         self.assertEqual(counts[it.MARKER_VENV_SEGMENT], 2)
         self.assertEqual(it.suppression_class(it.MARKER_VENV_SEGMENT),
@@ -1455,7 +1456,8 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         # One dict, so the stderr note, the gate line and the report cannot
         # disagree about which classes fired on this run.
         suppressed = [{"suppressed": "vendor"}, {"suppressed": "venv"}]
-        counts = it.suppressed_counts(suppressed, [".venv"])
+        counts = it.suppressed_counts(
+            suppressed, {it.MARKER_VENV_SEGMENT: [".venv"]})
         self.assertEqual(counts, {"vendor": 1, "venv": 1,
                                   it.MARKER_VENV_SEGMENT: 1})
         self.assertEqual(it.suppressed_counts(suppressed), {"vendor": 1, "venv": 1})
@@ -1467,15 +1469,72 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
                      [{"path": "", "reason": "pyvenv.cfg", "skipped": True}],
                      [{"path": [".venv"], "reason": "pyvenv.cfg", "skipped": True}]):
             with self.subTest(rows=rows):
-                self.assertEqual(it.scan_skipped_venvs({"excluded_dirs": rows}), [])
-        self.assertEqual(it.scan_skipped_venvs(None), [])
-        self.assertEqual(it.scan_skipped_venvs("lots"), [])
+                self.assertEqual(it.scan_skipped_venvs({"excluded_dirs": rows}), {})
+        self.assertEqual(it.scan_skipped_venvs(None), {})
+        self.assertEqual(it.scan_skipped_venvs("lots"), {})
 
-    def test_the_renderers_name_the_scan_side_class_by_the_same_token(self):
-        # #1839: both renderers mirror `MARKER_VENV_SEGMENT` rather than import
-        # this module (one is a package renderer, the other renders standalone
-        # with guarded imports), and each carries a clause that would be wrong
-        # for any other segment -- so the token must not drift from the tally's.
+    def test_the_scan_skip_tally_covers_the_name_only_skips_too(self):
+        # Review round 1 I4: a bare `mkdir .venv` -- no marker, no shape -- is
+        # still skipped by all three scanners under `standard`, and because the
+        # scanners never entered it there is no finding for the
+        # `virtualenv-by-name` FINDING tally either. So the cheapest lever in the
+        # class stayed completely silent while the dearest one was named.
+        manifest = {"excluded_dirs": [
+            {"path": ".venv", "reason": "pyvenv.cfg", "skipped": True},
+            {"path": "venv", "reason": "name", "skipped": True},
+            {"path": "tools/.venv", "reason": "name", "skipped": True},
+            {"path": "scanned", "reason": "name", "skipped": False},
+            {"path": "src", "reason": "pyvenv.cfg-without-shape", "skipped": False}]}
+        self.assertEqual(it.scan_skipped_venvs(manifest),
+                         {it.MARKER_VENV_SEGMENT: [".venv"],
+                          it.NAME_VENV_SEGMENT: ["tools/.venv", "venv"]})
+        counts = it.suppressed_counts([], it.scan_skipped_venvs(manifest))
+        self.assertEqual(counts, {it.MARKER_VENV_SEGMENT: 1,
+                                  it.NAME_VENV_SEGMENT: 2})
+        for segment in it.SCAN_SKIP_SEGMENTS:
+            self.assertEqual(it.suppression_class(segment), segment)
+
+    def test_a_scan_skip_name_is_bounded_at_the_boundary(self):
+        # Review round 1 I3: `tools-manifest.json` is written into the reviewed
+        # tree, so every row is a target-carried input -- and this one is printed
+        # on the gate's verdict line. Deduplicated BEFORE the cut, so two long
+        # distinct names cannot become one row and lose a directory from the count.
+        long_a = "a" * 300
+        long_b = "a" * 299 + "b"
+        manifest = {"excluded_dirs": [
+            {"path": long_a, "reason": "name", "skipped": True},
+            {"path": long_b, "reason": "name", "skipped": True},
+            {"path": long_a, "reason": "name", "skipped": True}]}
+        names = it.scan_skipped_venvs(manifest)[it.NAME_VENV_SEGMENT]
+        self.assertEqual(len(names), 2)                      # deduped, not merged
+        for name in names:
+            self.assertLessEqual(len(name), it.SCAN_SKIP_NAME_MAX)
+            self.assertTrue(name.endswith("\u2026"), name)    # a MARKED cut
+
+    def test_a_control_character_cannot_leave_the_quotes(self):
+        # A name holding `\n` forged a second line that read exactly like a clean
+        # gate verdict; an ANSI escape recoloured the operator's terminal.
+        names = ["ok", "a\nIngested 0 non-excluded tool findings; 0 HIGH/CRITICAL",
+                 "\x1b[2Jcleared", "caf\u00e9"]
+        shown = it.display_scan_skips(names)
+        self.assertNotIn("\n", shown)
+        self.assertNotIn("\x1b", shown)
+        self.assertNotIn("caf\u00e9", shown)                  # non-ASCII escaped too
+        self.assertIn("'ok'", shown)
+
+    def test_the_name_list_is_capped_with_the_count_kept_honest(self):
+        names = ["pkg%02d/.venv" % i for i in range(40)]
+        shown = it.display_scan_skips(names)
+        self.assertEqual(shown.count("'"), it.SCAN_SKIP_NAMES_SHOWN * 2)
+        self.assertIn("and %d more" % (40 - it.SCAN_SKIP_NAMES_SHOWN), shown)
+        self.assertLess(len(shown), 400)
+
+    def test_the_renderers_name_the_scan_side_classes_by_the_same_tokens(self):
+        # #1839: both renderers mirror these tokens rather than import this
+        # module (one is a package renderer, the other renders standalone with
+        # guarded imports), and each carries a clause that would be wrong for any
+        # other segment -- so they must not drift from the tally's. Review round 1
+        # I4 added the second reserved key, and it must reach the clause too.
         import scripts.html_report as html_report
         import scripts.synth.render as render
         for module in (render, html_report):
@@ -1483,15 +1542,17 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
                              module.__name__)
             self.assertEqual(module.MARKER_VENV_PREFIX, it.MARKER_VENV_PREFIX,
                              module.__name__)
-            self.assertIn(it.MARKER_VENV_SEGMENT, module._MARKER_VENV_CLAUSE,
-                          module.__name__)
-            # Both key shapes reach the clause, or the report explains one row
+            self.assertEqual(module.NAME_VENV_SEGMENT, it.NAME_VENV_SEGMENT,
+                             module.__name__)
+            for token in it.SCAN_SKIP_SEGMENTS:
+                self.assertIn(token, module._VENV_TALLY_CLAUSE, module.__name__)
+            # Every key shape reaches the clause, or the report explains one row
             # of the class and misstates the other.
-            for segment in (it.MARKER_VENV_SEGMENT,
+            for segment in (it.MARKER_VENV_SEGMENT, it.NAME_VENV_SEGMENT,
                             it.MARKER_VENV_PREFIX + "app/venv"):
-                self.assertTrue(module._is_marker_venv_row(segment),
+                self.assertTrue(module._is_venv_tally_row(segment),
                                 "%s: %s" % (module.__name__, segment))
-            self.assertFalse(module._is_marker_venv_row("vendor"),
+            self.assertFalse(module._is_venv_tally_row("vendor"),
                              module.__name__)
 
     def test_the_fixture_prune_routes_through_the_same_channel(self):
