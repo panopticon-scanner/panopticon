@@ -40,10 +40,29 @@ vocabulary already had the other three.
 """
 from typing import Any
 import os
+import sys
 
 SCHEMA_VERSION = 1
 
 _X0X_SUFFIX = "-X0X"
+
+_DIAG_MAX = 120          # bound on an agent-authored title or id in a diagnostic
+_DIAG_CODE_MAX = 40      # ... and on a code, which is `DOM-A1A`-shaped
+
+
+def _one_line(value, cap=_DIAG_MAX):
+    """One bounded, single-line rendering of an agent-authored value, for a
+    diagnostic. Whitespace is collapsed and the cut is MARKED, so a truncated
+    value cannot read as a complete one. Callers render the result with ``%r``,
+    which is what makes a control character inert.
+
+    A deliberate local copy of `x0x_report._one_line`: both are top-level script
+    modules, `x0x_report` is flat-importable (`tests/test_layout.py`
+    `FlatImportModeTest`), and neither should import the other for four lines of
+    text handling.
+    """
+    text = " ".join(str(value or "").split())
+    return (text[:cap - 1] + "\u2026") if len(text) > cap else text
 
 
 def _is_gap(code):
@@ -111,6 +130,21 @@ def advisor_recode_signals(findings, run_id=None):
             continue
         occ = _occurrence(f, run_id)
         if occ is None:
+            # #1807 DAT-2501524861: the recode is real evidence; only its
+            # occurrence record is impossible, because the schema requires a file
+            # on every one and inventing one would be a lie. Announce the drop --
+            # the same disclosure `x0x_report` makes at its own locus-free drop.
+            # `id`, `code` and `advisor_code` are agent-authored too, and this is
+            # this module's only terminal output, so every field is bounded and
+            # rendered inert -- one hostile finding must not be able to clear the
+            # screen or forge a line that reads as this tool's own output.
+            print("strain: %r: dropping an advisor recode with no file "
+                  "location: %r -> %r %r"
+                  % (_one_line(f.get("id")) or "?",
+                     _one_line(filed, _DIAG_CODE_MAX),
+                     _one_line(preferred, _DIAG_CODE_MAX),
+                     _one_line(f.get("short_title") or f.get("title"))),
+                  file=sys.stderr)
             continue
         clusters.setdefault((str(filed), str(preferred)), []).append((f, occ))
 
