@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A path or artifact this run did not create is not this run's evidence (#1841, run-14
+  SEC-579863541 + SEC-3360368617).** `driver setup`'s two done-predicates were bare "does this file
+  parse" tests on fixed `.panopticon/` paths a reviewed tree can plant or `git add -f`: a planted
+  `setup-proposal.json` made the TARGET's own proposal the ingest's input, and a planted
+  `setup-complete.json` satisfied BOTH, so the verb ran no phase and reported "setup complete" over
+  a tree nothing classified. They now bind to THIS run with bindings that already existed -- the
+  marker's own `run_id` (stamped by the writer, stable across resumes because `run_setup_flow` pins
+  the setup manifest once) and git tracked-ness (`runio._manifest_committed`, the #1093 manifest
+  guard's non-forgeable signal) -- and the refusal is reported once per invocation, naming the file
+  and a remedy that can work. On the other side, `--pr` acquisition checked exactly one thing about
+  its deterministic worktree leaf, `os.path.islink`: a pre-created real, EMPTY directory passed, and
+  `git worktree add` populates one rather than refusing it, leaving the planter create and rename
+  rights inside the tree under review. `acquire_pr` now refuses a leaf it did not make (a directory,
+  `os.geteuid`-owned, writable by no one else, empty) before the fetch, creates the leaf itself in
+  the statement before the add, and runs the same check on the reuse branch a resume takes. The
+  guard is on ownership and group/other WRITE, not on every group/other bit: the tools image runs
+  as `scanner` and mounts the review root — which under `--pr` IS that worktree — read-only, so
+  traversal by another uid is required, and the leaf's parent must be sticky or private. The path
+  stays deterministic, because `--pr` resumability depends on it — and `phases/setup.py` gave back
+  the room under its 700-line ceiling before any of it: the #1737 unenforced-scan
+  acknowledgement is now `phases/setup_ack.py`.
 - **A heredoc handed to an interpreter is read as the script it is, or reported as unread (#1839,
   run-14 SEC-3915165799).** `scripts/workflow_guard.py` is CI's only enforcement of the #1529
   fetch-and-exec rule -- `tests/test_workflow_pins.py` runs it over every `run:` step in

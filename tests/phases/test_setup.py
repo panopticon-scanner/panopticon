@@ -14,6 +14,7 @@ from unittest import mock
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
+import scripts.phases.setup_ack as setup_ack
 import scripts.phases.setup_readiness as setup_readiness
 import scripts.phases.requests as requests
 
@@ -130,7 +131,7 @@ class TestDriverSetup(unittest.TestCase):
         entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
         self.assertFalse(entry["enforced"])
         self.assertIsNone(entry["agent"])
-        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        ack = runio._load_json(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK))
         self.assertTrue(ack["acknowledged"])
         self.assertEqual(["setup_scan"], ack["roles"])
         self.assertEqual("claude", ack["host"])
@@ -139,7 +140,7 @@ class TestDriverSetup(unittest.TestCase):
         # ...and it lands FLAT, beside setup's other artifacts, never in a
         # review run's folder and never as the review ack's name (#1507/#493).
         self.assertTrue(os.path.isfile(os.path.join(
-            d, ".panopticon", setup.SETUP_UNENFORCED_ACK)))
+            d, ".panopticon", setup_ack.SETUP_UNENFORCED_ACK)))
         self.assertFalse(os.path.exists(os.path.join(
             d, ".panopticon", requests.UNENFORCED_ACK)))
 
@@ -166,7 +167,7 @@ class TestDriverSetup(unittest.TestCase):
         entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
         self.assertTrue(entry["enforced"])
         self.assertEqual("panopticon-setup-scan", entry["agent"])
-        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)))
 
         self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
 
@@ -186,20 +187,20 @@ class TestDriverSetup(unittest.TestCase):
         status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertEqual("error", status["status"], status)
         self.assertIn("--allow-unenforced", status["message"])
-        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)))
 
     def test_the_flag_the_operator_typed_reaches_the_phases(self):
         # `scan_execute` sees only the manifest, so the argv answer has to be
         # recorded on the in-memory one the engine is handed.
         d = self._repo()
         seen = {}
-        real = setup.require_unenforced_scan_ack
+        real = setup_ack.require_unenforced_scan_ack
 
         def spy(review_root, manifest, entries):
             seen.update(manifest.get("flags") or {})
             return real(review_root, manifest, entries)
 
-        with mock.patch.object(setup, "require_unenforced_scan_ack", spy):
+        with mock.patch.object(setup_ack, "require_unenforced_scan_ack", spy):
             setup.run_setup_flow(driver.build_parser().parse_args(
                 ["setup", d, "--allow-unenforced"]))
         self.assertEqual({"allow_unenforced": True}, seen)
@@ -208,9 +209,9 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         setup.run_setup_flow(driver.build_parser().parse_args(
             ["setup", d, "--allow-unenforced"]))
-        self.assertTrue(os.path.isfile(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertTrue(os.path.isfile(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)))
         setup._clear_setup_artifacts(d)
-        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)))
 
     def test_setup_host_generic_prints_the_fallback_notice_once(self):
         # D1: run_setup_flow resolves `host` itself (a manifest field it pins
@@ -936,36 +937,36 @@ class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
 
     def test_host_and_plan_hash_are_refreshed_on_every_write(self):
         d = self._root()
-        setup.require_unenforced_scan_ack(d, self._manifest("claude"), [self._entry()])
-        first = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
-        setup.require_unenforced_scan_ack(
+        setup_ack.require_unenforced_scan_ack(d, self._manifest("claude"), [self._entry()])
+        first = runio._load_json(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK))
+        setup_ack.require_unenforced_scan_ack(
             d, self._manifest("generic"), [self._entry("/abs/other.json")])
-        second = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        second = runio._load_json(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK))
         self.assertEqual("claude", first["host"])
         self.assertEqual("generic", second["host"])
         self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
 
     def test_writing_the_same_acceptance_twice_changes_nothing(self):
         d = self._root()
-        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        path = setup_ack.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
         before = open(path, "rb").read()
-        again = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        again = setup_ack.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
         self.assertEqual(path, again)
         self.assertEqual(before, open(path, "rb").read())
 
     def test_an_enforced_dispatch_supersedes_and_removes_a_standing_ack(self):
         d = self._root()
-        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        path = setup_ack.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
         self.assertTrue(os.path.isfile(path))
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.assertIsNone(setup.require_unenforced_scan_ack(
+            self.assertIsNone(setup_ack.require_unenforced_scan_ack(
                 d, {"host": "claude"}, [self._entry()]))
         self.assertFalse(os.path.exists(path),
                          "a superseded acceptance stayed on the tree saying "
                          "acknowledged: true about an enforced dispatch")
-        self.assertIn(setup.SETUP_UNENFORCED_ACK, err.getvalue())   # announced
+        self.assertIn(setup_ack.SETUP_UNENFORCED_ACK, err.getvalue())   # announced
 
     def test_removing_it_is_never_fatal(self):
         # The ack sits under `.panopticon`, which the target owns: a read-only
@@ -973,9 +974,9 @@ class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
         # the enforced path -- the acknowledgement is not needed there.
         d = self._root()
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
-        os.makedirs(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        os.makedirs(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK))
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertIsNone(setup.require_unenforced_scan_ack(
+            self.assertIsNone(setup_ack.require_unenforced_scan_ack(
                 d, {"host": "claude"}, [self._entry()]))
 
 
@@ -1024,7 +1025,7 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
         self.assertTrue(entry["enforced"])
         self.assertEqual("panopticon-setup-scan", entry["agent"])
-        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)))
 
     def test_the_ingest_invocation_probes_once_and_readiness_agrees_with_it(self):
         # #1603 fix round 1, I1. Readiness used to take its OWN posture --
@@ -1067,7 +1068,7 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         # about, saying `acknowledged: true` over an enforced dispatch.
         d = self._repo()
         self._setup(d, "--allow-unenforced", probes=_refuted_artifact)
-        ack = runio._pano(d, setup.SETUP_UNENFORCED_ACK)
+        ack = runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK)
         self.assertTrue(os.path.isfile(ack))
         os.remove(requests.request_path(d, namespace="setup"))
         code, status = self._setup(d, probes=_all_proven_artifact)
@@ -1097,7 +1098,7 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
         self.assertFalse(entry["enforced"])
         self.assertIsNone(entry["agent"])
-        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        ack = runio._load_json(runio._pano(d, setup_ack.SETUP_UNENFORCED_ACK))
         self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
 
     def test_a_planted_evidence_artifact_is_overwritten_before_the_gate_reads_it(self):
@@ -1937,3 +1938,147 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
             self.assertIn("setup-spine.json", status["message"])
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual("KEEP", fh.read())
+
+
+class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
+    """SEC-579863541 (#1841): a `.panopticon` setup artifact THIS run did not
+    write satisfies no setup done-predicate.
+
+    Both artifacts sit at fixed `runio._TOP_LEVEL` paths in the flat
+    `.panopticon/`, and both predicates used to be bare "does this file parse"
+    tests on them -- while the identical threat one file over
+    (`run-manifest.json`) has had a dedicated rule since #1093. A planted
+    `setup-proposal.json` makes the TARGET's own proposal the input to the
+    ingest; a planted `setup-complete.json` satisfies BOTH predicates, so
+    `driver setup` runs no phase at all and reports setup complete over a tree
+    nothing classified.
+
+    The rows below are the triage probe's, and the two resume cases are the
+    other half: the binding has to admit the driver's OWN artifacts, or the
+    guard would break every `--pr`-less resume it is supposed to protect.
+    """
+
+    def _repo(self, enforcement=hosts.PROVEN):
+        repo = make_git_repo(test_case=self,
+                             files={"src/checkout/pay.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+        if enforcement is not None:
+            write_host_evidence(repo, {hosts.TOOL_POLICY_ENFORCED: enforcement})
+        return repo
+
+    def _manifest(self, repo, run_id="THIS-SETUP-RUN"):
+        return {"schema_version": 1, "run_id": run_id, "host": "claude",
+                "review_root": os.path.abspath(repo)}
+
+    def _plant(self, repo, name, body, commit=False):
+        """Write `.panopticon/<name>`; `commit=True` is the `git add -f` vector
+        (the directory is gitignored, and `-f` is how a target gets past that)."""
+        os.makedirs(os.path.join(repo, ".panopticon"), exist_ok=True)
+        rel = os.path.join(".panopticon", name)
+        with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+        if commit:
+            for args in (["add", "-f", rel], ["commit", "-qm", "plant " + name]):
+                subprocess.run(["git", "-C", repo, *args], check=True,
+                               capture_output=True, timeout=30)
+        return os.path.join(repo, rel)
+
+    _PROPOSAL = {"groups": [{"capability": "Checkout",
+                             "match": ["src/checkout/**"], "tests": []}]}
+
+    def test_a_clean_tree_satisfies_neither_predicate(self):
+        d = self._repo()
+        m = self._manifest(d)
+        self.assertFalse(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+
+    def test_a_committed_proposal_satisfies_no_predicate(self):
+        # The proposal carries no run binding at all, so the signal is the one
+        # `_foreign_manifest` uses: a driver-written artifact is never committed.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        self.assertFalse(setup.scan_done(d, self._manifest(d)))
+
+    def test_a_committed_complete_marker_satisfies_no_predicate(self):
+        d = self._repo()
+        m = self._manifest(d)
+        # Right run_id AND committed: tracked-ness alone refuses it, so a
+        # target that learns a run id off the tree gains nothing.
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "run_id": m["run_id"]}, commit=True)
+        self.assertFalse(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+
+    def test_a_planted_complete_marker_satisfies_no_predicate(self):
+        # The probe's three surviving marker shapes: no `run_id` at all, a
+        # plausible `mode`, and another run's id. `mode: "fallback"` is the
+        # fourth and `_drop_stale_fallback_marker` already supersedes it --
+        # which is a coincidence of that helper's purpose, not a refusal.
+        for body in ({"schema_version": 1},
+                     {"schema_version": 1, "mode": "real"},
+                     {"schema_version": 1, "run_id": "SOMEONE-ELSES-RUN"}):
+            with self.subTest(marker=body):
+                d = self._repo()
+                m = self._manifest(d)
+                self._plant(d, "setup-complete.json", body)
+                self.assertFalse(setup.scan_done(d, m))
+                self.assertFalse(setup.ingest_done(d, m))
+
+    def test_this_runs_own_untracked_artifacts_still_read_done(self):
+        # The resume case, both halves: the marker the driver wrote for THIS
+        # run (`_scan_fallback` stamps the id) and the proposal the host wrote
+        # back are untracked, and both still satisfy their predicate.
+        d = self._repo()
+        m = self._manifest(d)
+        self._plant(d, "setup-proposal.json", self._PROPOSAL)
+        self.assertTrue(setup.scan_done(d, m))
+        self.assertFalse(setup.ingest_done(d, m))
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "run_id": m["run_id"], "mode": "real"})
+        self.assertTrue(setup.scan_done(d, m))
+        self.assertTrue(setup.ingest_done(d, m))
+
+    def test_a_planted_marker_does_not_report_setup_complete(self):
+        # The sharper half end to end: `driver setup` over a planted marker
+        # used to run no phase at all and report "setup complete" over a tree
+        # nothing had classified. It runs the scan instead, and says why.
+        d = self._repo()
+        self._plant(d, "setup-complete.json",
+                    {"schema_version": 1, "mode": "real",
+                     "run_id": "SOMEONE-ELSES-RUN"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = setup.run_setup_flow(
+                driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual("checkpoint", status["status"], status)
+        self.assertEqual("scan", status["checkpoint"])
+        self.assertIn("setup-complete.json", err.getvalue())
+        self.assertIn("SOMEONE-ELSES-RUN", err.getvalue())
+        self.assertIn("--reset", err.getvalue())
+
+    def test_the_refusal_is_said_once_per_invocation(self):
+        # The engine re-evaluates both predicates until the flow stops, so the
+        # report lives in `run_setup_flow` and the predicates stay silent --
+        # the same split `_foreign_manifest_reason` uses one file over.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(1, err.getvalue().count("setup-proposal.json:"),
+                         err.getvalue())
+
+    def test_the_committed_refusal_names_a_remedy_that_can_work(self):
+        # `--reset` deletes the file, and git puts a TRACKED one straight back
+        # -- so the committed case names removal from the repository instead.
+        # `_remedy_clause`'s rule, one module over: a remedy that cannot change
+        # the answer is the defect, not the wording.
+        d = self._repo()
+        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        line = [ln for ln in err.getvalue().splitlines()
+                if "setup-proposal.json:" in ln][0]
+        self.assertIn("git-tracked", line)
+        self.assertNotIn("--reset", line)

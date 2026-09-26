@@ -1,9 +1,18 @@
 # tests/test_diff_map.py
-import contextlib, io, json, os, re, shlex, unittest, subprocess, tempfile, shutil
+import contextlib, io, json, os, re, shlex, stat, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
 from tools.git_repo import make_git_repo
+
+
+# The hostile shapes these tests plant are the ones the code refuses -- a
+# world-writable leaf or parent. Spelled from `stat` bits rather than an
+# octal-777 literal because the CI security gate scans `tests/` too, reads
+# bandit B103 on a permissive-mode literal as HIGH, and under `--security
+# redteam` honours no `nosec`; the planted mode is the test's subject, not
+# a defect in it.
+_WORLD_WRITABLE = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
 
 
 def _git(d, *a):
@@ -784,7 +793,8 @@ class _PrRunner:
     """Only the commands acquire_pr/release_worktree issue, with visible state."""
 
     def __init__(self, repo, wt, *, pr=7, gh_stdout='{"baseRefName": "main"}',
-                 gh_returncode=0, gh_stderr="", timeout_on=None, fail_on=None):
+                 gh_returncode=0, gh_stderr="", timeout_on=None, fail_on=None,
+                 on_fetch=None):
         self.repo = repo
         self.wt = wt
         self.pr = pr
@@ -793,6 +803,10 @@ class _PrRunner:
         self.gh_stderr = gh_stderr
         self.timeout_on = timeout_on
         self.fail_on = fail_on
+        # #1841 fix round 2: the window between the fetch and the claim. Called
+        # once the fetch has "happened", so a test can plant at the leaf exactly
+        # where a local attacker would.
+        self.on_fetch = on_fetch
         self.calls = []
         self.fetches = 0
         self.adds = 0
@@ -871,9 +885,18 @@ class _PrRunner:
         elif phase == "fetch":
             self.fetches += 1
             self.temp_ref = ref
+            if self.on_fetch is not None:
+                self.on_fetch()
         elif phase == "worktree_add":
             self.adds += 1
             os.makedirs(self.wt, exist_ok=True)
+            # #1841 fix round 2: git leaves the PR's OWN files in the worktree,
+            # including its `panopticon.yml` -- which is what `_sync_config` has
+            # to overwrite, and therefore what makes the create branch's
+            # disclosure print reachable in a test at all.
+            with open(os.path.join(self.wt, "panopticon.yml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
             self.registered = True
         elif phase == "delete_ref":
             self.temp_ref = None
@@ -1133,17 +1156,239 @@ class TestPrWorktree(unittest.TestCase):
             repo = os.path.join(d, "repo"); os.makedirs(repo)
             with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\n")
-            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            # #1841: a worktree that already has a `panopticon.yml` to overwrite
+            # is one a previous acquisition built, so this drives the REUSE
+            # branch -- which prints through the same two lines -- rather than
+            # asking `_claim_worktree_leaf` to accept a populated leaf no
+            # `git worktree list` knows about. Ours and writable by no one
+            # else, like the one acquisition creates.
+            wt = os.path.join(d, "wt"); os.makedirs(wt); os.chmod(wt, 0o755)
             with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
 
             runner = _PrRunner(repo, wt)
+            runner.registered = True
             buf = io.StringIO()
             with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
                 with contextlib.redirect_stderr(buf):
                     diff_map.acquire_pr(7, repo=repo, runner=runner)
             self.assertIn("panopticon --pr: ", buf.getvalue())
             self.assertIn("overwrote", buf.getvalue())
+
+
+class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
+    """SEC-3360368617 (#1841): the `--pr` worktree path is derivable by anyone
+    with write access to the shared temp dir -- the `#run8 COD-X0X` docstring on
+    `_worktree_dir` says so and closed the SYMLINK half of the move. The
+    DIRECTORY half was still open: a pre-created real, empty directory passed
+    `islink`, was not in `git worktree list`, and `git worktree add --detach`
+    populates an existing empty directory rather than refusing it (measured on
+    git 2.50.1). The attacker kept create/rename rights inside the tree the
+    reviewer then reviews -- and `probes/common.probe_discovery_surface`'s
+    docstring says the review root under `--pr` IS that worktree.
+
+    The path stays DETERMINISTIC, because the idempotence and `--pr`
+    resumability the docstring exists for depend on it. Refusing a leaf this
+    process did not create is the whole fix, and it applies on the REUSE branch
+    too: a registered worktree's directory can be `chmod`-ed after the fact.
+
+    The property is OURS AND WRITABLE BY NO ONE ELSE, not private (controller
+    ruling, fix round 1). The threat is create/rename inside the leaf, which
+    needs a WRITE bit; read and traverse by another uid is REQUIRED, because the
+    tools image runs as `scanner` (uid 1000, `Dockerfile`'s closing `USER`) and
+    `run_tools` mounts the review root -- which under `--pr` IS this worktree --
+    as `-v <root>:/src:ro`. A `0o700` leaf would hand every scanner an
+    unreadable tree.
+    """
+
+    def _leaf(self):
+        d = tempfile.mkdtemp(prefix="panopticon-test-tmp-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return os.path.join(d, "panopticon-pr-7-0123456789ab")
+
+    def _acquire(self, wt, *, registered=False):
+        runner = _PrRunner(".", wt)
+        runner.registered = registered
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            return runner, diff_map.acquire_pr(7, repo=".", runner=runner)
+
+    def _refused(self, wt, *, registered=False):
+        runner = _PrRunner(".", wt)
+        runner.registered = registered
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertIn(wt, str(caught.exception))          # the path is named
+        self.assertEqual(0, runner.fetches, "refused AFTER fetching the PR head")
+        self.assertEqual(0, runner.adds)
+        return str(caught.exception)
+
+    def test_a_regular_file_at_the_leaf_is_refused(self):
+        wt = self._leaf()
+        with open(wt, "w", encoding="utf-8") as fh:
+            fh.write("not a directory\n")
+        self.assertIn("not a directory", self._refused(wt))
+
+    def test_a_world_writable_directory_at_the_leaf_is_refused(self):
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, _WORLD_WRITABLE)         # after mkdir: umask cannot mask it
+        self.assertIn("0777", self._refused(wt))
+
+    def test_a_group_writable_directory_at_the_leaf_is_refused(self):
+        # Ours, and still refused: a group-writable directory lets another local
+        # account create and rename inside the tree under review, which is the
+        # whole finding. `0o750` -- group READ -- is NOT refused: see
+        # `test_a_group_readable_directory_at_the_leaf_is_accepted`.
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, 0o770)
+        self.assertIn("0770", self._refused(wt))
+
+    def test_a_group_readable_directory_at_the_leaf_is_accepted(self):
+        # The ruling's other half, pinned so nobody tightens the mode check back
+        # to `& 0o077` without a failing test: read and traverse by another uid
+        # is what the tools image needs (it runs as `scanner`, uid 1000, and the
+        # review root is mounted `-v <root>:/src:ro`).
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
+        runner, info = self._acquire(wt)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+
+    def test_a_non_empty_directory_at_the_leaf_is_refused(self):
+        # `git worktree add` refuses this too ("already exists"), but only after
+        # the fetch, and it names no remedy.
+        wt = self._leaf()
+        os.mkdir(wt)
+        with open(os.path.join(wt, "planted.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        self.assertIn("not empty", self._refused(wt))
+
+    def test_the_refusal_names_deleting_it_as_the_remedy(self):
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, _WORLD_WRITABLE)
+        self.assertIn("delete it", self._refused(wt).lower())
+
+    def test_the_leaf_this_process_creates_is_ours_and_not_writable_by_others(self):
+        # The happy path: nothing at the leaf, so acquisition creates it itself
+        # and owns it before the add -- which is what closes the window between
+        # the check and `git worktree add`.
+        #
+        # The mode is the UMASK's, never a literal: ours, no group or other
+        # WRITE bit, and still traversable by another uid, because the tools
+        # image's `scanner` user has to read the review root through
+        # `-v <root>:/src:ro`. The `0o005` assertion is the one that goes red if
+        # anyone reintroduces `os.mkdir(wt, 0o700)`.
+        previous = os.umask(0o022)
+        try:
+            wt = self._leaf()
+            runner, info = self._acquire(wt)
+        finally:
+            os.umask(previous)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+        st = os.lstat(wt)
+        self.assertEqual(os.geteuid(), st.st_uid)
+        self.assertEqual(0, stat.S_IMODE(st.st_mode) & 0o022)
+        self.assertEqual(0o005, stat.S_IMODE(st.st_mode) & 0o005)
+
+    def test_our_own_empty_leaf_is_reused_not_refused(self):
+        # A leaf a previous refused/crashed acquisition left behind is ours and
+        # writable by no one else, so it is not a plant and acquisition
+        # proceeds. `0o755` -- what `os.mkdir` under the default umask and git
+        # itself produce -- is that shape.
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
+        runner, info = self._acquire(wt)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+
+    def test_the_reuse_branch_refuses_a_worktree_directory_that_was_chmodded(self):
+        # The registered worktree git already populated, `chmod`-ed afterwards:
+        # the reuse branch returns it without ever creating anything, so the
+        # same check has to run there or the fix has a hole the size of a
+        # resume.
+        wt = self._leaf()
+        os.mkdir(wt)
+        with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("PR head\n")
+        os.chmod(wt, 0o775)
+        message = self._refused(wt, registered=True)
+        self.assertIn("0775", message)
+        self.assertIn("worktree remove", message)   # the remedy for a REGISTERED one
+
+    def test_a_leaf_planted_after_the_fetch_refuses_and_deletes_the_temp_ref(self):
+        # Fix round 2, review finding 1. The claim runs AFTER the fetch, so its
+        # refusal -- the race this PR exists to close -- must not strand
+        # `refs/panopticon/pr-<n>-<uuid>` in the operator's checkout pinning the
+        # fetched PR objects. Same assertion shape as
+        # `test_worktree_add_failure_deletes_temporary_ref`, one statement over.
+        wt = self._leaf()
+
+        def plant():
+            with open(wt, "w", encoding="utf-8") as fh:   # mkdir will hit EEXIST
+                fh.write("planted in the window\n")
+
+        runner = _PrRunner(".", wt, on_fetch=plant)
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with self.assertRaisesRegex(RuntimeError, "not a directory"):
+                diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(1, runner.fetches)        # the fetch DID happen
+        self.assertEqual(0, runner.adds)
+        self.assertIsNone(runner.temp_ref)         # ...and its ref was deleted
+        self.assertTrue(any(argv[-3:-1] == ["update-ref", "-d"]
+                            for argv, _ in runner.calls))
+
+    def test_the_create_branch_prints_sync_notes_with_the_pr_prefix(self):
+        # Fix round 2, review finding 4. `acquire_pr` prints `_sync_config`'s
+        # disclosures through two identical loops, one per branch; moving the
+        # older test to the reuse branch left this one unpinned. The PR's own
+        # `panopticon.yml` (which git checks out, and the fake now writes) is
+        # what there is to overwrite.
+        wt = self._leaf()
+        runner = _PrRunner(".", wt)
+        err = io.StringIO()
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            with contextlib.redirect_stderr(err):
+                info = diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
+        self.assertIn("panopticon --pr: ", err.getvalue())
+        self.assertIn("overwrote", err.getvalue())
+
+    def test_a_world_writable_parent_without_the_sticky_bit_is_refused(self):
+        # Fix round 2, review finding 5. Every post-vet guarantee rests on the
+        # temp dir's sticky bit: without `S_ISVTX` another local account can
+        # `rename(2)` our vetted -- or git-populated -- leaf away and put its own
+        # there, and nothing downstream looks again. `TMPDIR` is
+        # environment-supplied, so the property is not structural; check it.
+        parent = tempfile.mkdtemp(prefix="panopticon-test-tmp-")
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
+        previous = stat.S_IMODE(os.lstat(parent).st_mode)
+        wt = os.path.join(parent, "panopticon-pr-7-0123456789ab")
+        os.mkdir(wt)
+        try:
+            os.chmod(parent, _WORLD_WRITABLE)        # world-writable, NOT sticky
+            message = self._refused(wt)
+        finally:
+            os.chmod(parent, previous)
+        self.assertIn(parent, message)
+        self.assertIn("TMPDIR", message)
+
+    def test_the_reuse_branch_returns_a_registered_worktree_that_is_still_ours(self):
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
+        with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("PR head\n")
+        runner, info = self._acquire(wt, registered=True)
+        self.assertEqual({"worktree": wt, "base": "main", "head_sha": "deadbeef"}, info)
+        self.assertEqual(0, runner.fetches)      # no re-fetch on reuse
+        self.assertEqual(0, runner.adds)
 
 
 class TestPrAcquisitionIsConfined(unittest.TestCase):

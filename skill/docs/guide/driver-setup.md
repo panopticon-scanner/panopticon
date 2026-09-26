@@ -26,7 +26,13 @@ reused by every later run.
    genuinely human step — reviewing `panopticon.yml.draft` — printing the report path and the
    promotion command. The proposal names a catalog capability (or alias, or `custom:<Name>`) per
    group with `match`, scoped `tests`, optional `layers` for a vertical over the cap, and a
-   `profile` (purpose, surfaces, entry points, trust boundaries).
+   `profile` (purpose, surfaces, entry points, trust boundaries). Neither setup artifact satisfies a
+   phase unless THIS run wrote it (#1841, `phases/setup._unbound_setup_artifact`): a
+   `.panopticon/setup-complete.json` carrying another run's `run_id` — or none — and any setup
+   artifact that is **git-tracked** in the target (a driver-written one never is) are ignored, named
+   on stderr with the remedy that can work, and the phase runs again. Before this, a planted
+   `setup-complete.json` satisfied both predicates and `driver setup` reported "setup complete" over
+   a tree nothing had classified.
 2. **ingest** — on re-invoke, the driver validates and assembles the proposal (aliases normalized to
    catalog names; deterministic affinity floors, or the profile's surfaces mapped to domains for
    `custom:` groups), then applies the **size policy** over the whole repo: layers under 6 files
