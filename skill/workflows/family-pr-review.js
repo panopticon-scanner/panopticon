@@ -20,6 +20,19 @@
 // (pipeline, no barrier), each finding then adversarially verified by three
 // independent refuters; a finding survives with two "real" votes. The result
 // is the confirmed list plus everything dropped, so nothing is silently lost.
+//
+// The finders and the refuters run UNCONFINED, by decision: both roles have to
+// run `git diff` and `git log` and read any file in the checkout (see COMMON
+// and `verifyPrompt` below), and no registered shell grants that -- the shells
+// exist for the dispatch path, where `dispatch.js` binds one (`agentType`) for
+// every enforced review entry, because those read a target's own text. This
+// script is not that role: it is maintainer-invoked, by hand, on a first-party
+// branch of this repository, so nothing target-authored reaches it on any scan
+// path, and the finder has already read the diff its refuters re-read. Every
+// finding STRING interpolated into a verifier prompt goes through
+// `JSON.stringify` regardless (`title`, `file` and `rule`, as `evidence`
+// already did), so a finding's own text cannot restructure the prompt it lands
+// in.
 export const meta = {
   name: 'family-pr-review',
   description: 'Review a family first-class-host branch against docs/FAMILY-PR-GUARDRAILS.md, then adversarially verify every finding',
@@ -90,7 +103,7 @@ const VERDICT = {
 
 function verifyPrompt(f) {
   return 'You are an adversarial verifier on a `' + host + '` family PR for Panopticon. Read ' + GUARDRAILS + ' first. ' +
-    'A reviewer claims: "' + f.title + '" at ' + f.file + (f.line ? ':' + f.line : '') + ', breaking "' + f.rule + '", with evidence: ' +
+    'A reviewer claims: ' + JSON.stringify(f.title) + ' at ' + JSON.stringify(f.file) + (f.line ? ':' + f.line : '') + ', breaking ' + JSON.stringify(f.rule) + ', with evidence: ' +
     JSON.stringify(f.evidence) + '. Try to REFUTE it by reading the actual code on this branch (`' + DIFF + '` and the files). ' +
     'It is real only if the code as written actually has the defect and it matters; default to real=false when uncertain or when the evidence is a misreading.'
 }
