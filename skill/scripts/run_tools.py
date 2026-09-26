@@ -496,6 +496,11 @@ BANDIT_SCANNER_EXCLUDES = (".worktrees",)
 SCANNER_CONFIG_MOUNT = "/panopticon-config"
 BANDIT_INI_NAME = "bandit.ini"
 TRIVY_IGNOREFILE_NAME = ".trivyignore"
+# The target's OWN bandit ini as bandit sees it, honoured under `standard` only
+# (owner ruling of 2026-09-25 on #1924; see `_scanner_owned_config`). Spelled
+# literally, like `_with_venv_excludes`' `/src` prefixes, because `TARGET_MOUNT`
+# is defined with the dispatch below rather than here.
+TARGET_BANDIT_INI = "/src/.bandit"
 
 
 def _bandit_exclude_value(venv_dirs):
@@ -571,8 +576,10 @@ TRIVY_IGNOREFILE_TEXT = (
 
 # Per tool, the scanner-owned configuration file staged into that launch's
 # config mount and the flag that pins it: `{tool: (flag, basename, text)}`.
-# Both files are pinned UNCONDITIONALLY, so neither scanner's own discovery walk
-# runs whether or not the target ships the file it looks for.
+# The FLAG is passed on every launch of either tool, so neither scanner's own
+# discovery walk runs whether or not the target ships the file it looks for --
+# what the flag NAMES is this file, except for bandit under `standard`, where
+# the owner ruling of 2026-09-25 leaves the operator's own `.bandit` in place.
 SCANNER_OWNED_CONFIG = {
     "bandit": ("--ini", BANDIT_INI_NAME, BANDIT_INI_TEXT),
     "trivy": ("--ignorefile", TRIVY_IGNOREFILE_NAME, TRIVY_IGNOREFILE_TEXT),
@@ -637,9 +644,9 @@ def _with_suppression_flags(tool, cmd, security_mode):
     (#1839, run-14 SEC-284952751).
 
     The two kinds of in-tree suppression are not the same claim. An ignore FILE
-    (`.bandit`, `.trivyignore`, `.gitleaksignore`, `osv-scanner.toml`) is
-    target-authored scanner CONFIGURATION and is replaced with a scanner-owned
-    one in both modes. A COMMENT is in the target's source, in the diff a
+    (`.trivyignore`, `osv-scanner.toml`, and bandit's `.bandit` under redteam)
+    is target-authored scanner CONFIGURATION and is replaced with a
+    scanner-owned one. A COMMENT is in the target's source, in the diff a
     reviewer reads, and under `standard` -- the mode CI's merge gate runs, since
     `.github/workflows/security.yml` passes no `--security` -- the operator is
     scanning their own repository, so it stands. It stands DISCLOSED, not
@@ -680,6 +687,17 @@ def _suppression_flag_on(tool, cmd):
     return bool(flag) and flag in cmd
 
 
+def _record_scanner_config(tool, cmd):
+    """Publish which configuration file this launch actually pinned (#1839),
+    read off the argv rather than from the branch that built it. Silent for a
+    tool that is pinned to no configuration of ours."""
+    if tool not in SCANNER_OWNED_CONFIG:
+        return
+    _SCANNER_CONFIG_POSTURE[tool] = (CONFIG_TARGET_BANDIT
+                                     if TARGET_BANDIT_INI in cmd
+                                     else CONFIG_SCANNER_OWNED)
+
+
 def _adapter_security_mode(docker_argv):
     """The security mode actually named on an adapter dispatch argv (#1839).
 
@@ -693,7 +711,7 @@ def _adapter_security_mode(docker_argv):
 
 
 @contextlib.contextmanager
-def _scanner_owned_config(tool, cmd):
+def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
     """`(cmd, docker mount flags)` with *tool* pinned to a configuration file WE
     wrote, or `(None, None)` when that file could not be staged.
 
@@ -702,18 +720,33 @@ def _scanner_owned_config(tool, cmd):
     #1839 added when run-14 found the reviewed repository's `.trivyignore`
     choosing which advisories trivy reported.
 
+    ONE exception, by the owner ruling of 2026-09-25 on #1924, and it is the
+    same standard/redteam split the gate already uses: under `standard` a
+    `.bandit` the target committed is the OPERATOR's file -- they are scanning
+    their own repository, and the exclusions, `tests` and `skips` in it are
+    their reviewed choice -- so it is pinned with `--ini /src/.bandit` and
+    nothing of ours is staged. Under `--security redteam` the tree is untrusted
+    and bandit never honours a target-authored suppression: the scanner-owned
+    ini always, plus `--ignore-nosec` from `_with_suppression_flags`. Either way
+    the `--ini` is EXPLICIT, which is what pre-empts #run7's discovery walk (a
+    nested checkout's second `.bandit` made bandit ERROR and emit nothing), so
+    a target with no `.bandit` of its own still gets ours in both modes.
+    `write_manifest` publishes which of the two the scan ran under
+    (`scanner_config`), so "bandit reported little" can be read against it.
+
     #run7 is real: bandit AUTO-DISCOVERS `.bandit` files by walking the scanned
     tree, and a nested checkout (a git worktree, a vendored repo) carrying a
     second one makes it ERROR ("Multiple .bandit files found -- ... choose one
     with --ini") and emit EMPTY output -- a selected-but-unproduced tool that
     silently blocked coverage certification on a worktree-heavy checkout.
-    `--ini` is the escape hatch bandit itself names, but pinning the TARGET's
-    copy handed the reviewed repository the scan's scope (#1839). The file is
-    generated here instead, in a scratch directory bind-mounted read-only, and
-    pinned UNCONDITIONALLY -- so the discovery walk never runs whether or not
-    the target ships a `.bandit`, and that file never reaches the argv at all.
-    Same shape as `tools/brakeman.py` and `tools/bundler_audit.py`, which
-    answer the same problem with a config they generate themselves.
+    `--ini` is the escape hatch bandit itself names, and it is passed on every
+    run -- ours here, or the operator's own under `standard` per the ruling
+    above -- so the discovery walk never runs whether or not the target ships a
+    `.bandit`. Pinning the TARGET's copy in EVERY mode is what handed the
+    reviewed repository the scan's scope (#1839), and that is what redteam no
+    longer does. The generated file has the same shape as `tools/brakeman.py`
+    and `tools/bundler_audit.py`, which answer the same problem with a config
+    they generate themselves.
 
     The file exists to pre-empt bandit's `.bandit` discovery by the `--ini`
     FLAG (bandit 1.9.4 reads `pyproject.toml`/`setup.cfg` only via `-c`, which
@@ -736,11 +769,16 @@ def _scanner_owned_config(tool, cmd):
 
     A staging failure -- a full or read-only `$TMPDIR`, an `EACCES` on `chmod` --
     yields `(None, None)` instead of raising through the dispatch loop, so it
-    costs bandit (which lands in the manifest's `missing`, fail-closed for that
-    tool) and not the eight scanners queued behind it (review round 1 N3).
+    costs the ONE tool whose config it was (which lands in the manifest's
+    `missing`, fail-closed for that tool) and not the eight scanners queued
+    behind it (review round 1 N3).
     """
     if tool not in SCANNER_OWNED_CONFIG:
         yield cmd, []
+        return
+    if (tool == "bandit" and security_mode != REDTEAM and target is not None
+            and os.path.isfile(os.path.join(target, ".bandit"))):
+        yield _insert_flags(tool, cmd, ["--ini", TARGET_BANDIT_INI]), []
         return
     flag, name, text = SCANNER_OWNED_CONFIG[tool]
     scratch = staging_error = None
@@ -1313,6 +1351,14 @@ SUPPRESSION_NA = "n/a"               # assessed: this argv honours no comment
 # from the MODE would survive the flag going away.
 _SUPPRESSION_POSTURE: dict[str, str] = {}
 
+# `tools-manifest.json`'s `scanner_config` vocabulary (#1839): WHICH
+# configuration file the scan a staged scanner ran under was pinned to. Only
+# bandit has two answers, and only because the owner ruling of 2026-09-25 gives
+# `standard` back to the operator scanning their own repository.
+CONFIG_TARGET_BANDIT = "target .bandit"
+CONFIG_SCANNER_OWNED = "scanner-owned"
+_SCANNER_CONFIG_POSTURE: dict[str, str] = {}
+
 # Above this size a capture is re-serialized in json.dumps' default layout
 # instead of the producer's own: matching the layout costs one extra
 # serialization of the ORIGINAL document to verify the guess, which is free on a
@@ -1561,6 +1607,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     # intent would survive the flags going away; this one does not.
     _NETWORK_POSTURE.clear()
     _SUPPRESSION_POSTURE.clear()   # #1839: this run's argv, never the last one's
+    _SCANNER_CONFIG_POSTURE.clear()
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
@@ -1608,7 +1655,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # SCANNER's, constants staged in a scratch this target never
             # controls and mounted read-only beside the target mount. No-op for
             # every other tool.
-            with _scanner_owned_config(tool, cmd) as (cmd, config_mount):
+            with _scanner_owned_config(tool, cmd, security_mode,
+                                       target) as (cmd, config_mount):
                 if cmd is None:   # staging failed: that one tool only (N3)
                     progress.note("[%d/%d] %s skipped: scanner-owned config "
                                   "could not be staged" % (index, total, tool))
@@ -1622,6 +1670,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                 _NETWORK_POSTURE[tool] = egress.NO_NETWORK
                 _record_suppression_posture(tool,
                                             _suppression_flag_on(tool, cmd))
+                _record_scanner_config(tool, cmd)
                 with progress.tool(tool, index, total) as step:
                     done = step.finish(
                         _capture_run("tool", tool, docker, out_path, runner,
@@ -1705,7 +1754,8 @@ def _excluded_dir_row(d):
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None, exclude_globs=(), suppression_comments=None):
+                   network=None, exclude_globs=(), suppression_comments=None,
+                   scanner_config=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1763,9 +1813,18 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     row was not ASSESSED, which is deliberately not the same claim as `n/a`.
     Defaults to the ledger `run_tools()` filled while building each argv -- an
     observation, like `redacted` and `network` -- so taking a flag away makes the
-    claim change rather than leaving an intention behind. The ignore FILES of the
-    same class (`.bandit`, `.trivyignore`, `.gitleaksignore`, `osv-scanner.toml`)
-    are neutralised in BOTH modes and so carry no per-mode row.
+    claim change rather than leaving an intention behind. This row is about
+    COMMENTS only: the ignore FILES of the same class are `scanner_config`
+    below (bandit), unconditional (`.trivyignore`, `osv-scanner.toml`), or
+    still open (`.gitleaksignore`, which gitleaks 8.18.4 reads from the source
+    root unconditionally -- #1957, tracked on #1924).
+
+    `scanner_config` (#1839) is which configuration file each pinned scanner ran
+    under: `"scanner-owned"` for a constant of ours staged in a scratch, and
+    `"target .bandit"` for the one case the owner ruling of 2026-09-25 leaves
+    with the operator -- a `.bandit` committed to the repository being scanned,
+    honoured under `standard` and never under `redteam`. Same construction as
+    the two ledgers above: read off the argv the runner built.
 
     `network` (#1645) is the egress each tool was given: `"none"` for the
     `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY
@@ -1819,6 +1878,10 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    str(k): str(v) for k, v in
                    (_SUPPRESSION_POSTURE if suppression_comments is None
                     else suppression_comments).items()},
+               "scanner_config": {
+                   str(k): str(v) for k, v in
+                   (_SCANNER_CONFIG_POSTURE if scanner_config is None
+                    else scanner_config).items()},
                "sanitized": dict(sanitized or {}),
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],

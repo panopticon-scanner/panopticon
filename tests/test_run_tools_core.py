@@ -306,35 +306,47 @@ class TestRunTools(unittest.TestCase):
                                      os.path.join(d, "out.sarif"), timeout=60)
         self.assertEqual(called, [])
 
-    def test_bandit_pins_a_scanner_owned_ini_whatever_the_target_ships(self):
+    def test_bandit_always_gets_an_explicit_ini_and_the_mode_says_whose(self):
         # #run7: bandit auto-discovers nested .bandit files (e.g. git worktrees)
         # and ERRORS ("Multiple .bandit files found") -> empty output, silently
-        # unproduced -> certification blocked. #1839 (SEC-752508850): the pin is
-        # a config the SCANNER generates, and it is unconditional -- pinning the
-        # TARGET's copy let the reviewed repo choose bandit's exclude/tests, and
-        # pinning nothing when it shipped none left the discovery walk reachable.
-        for plant in (True, False):
-            calls = []
-            fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+        # unproduced -> certification blocked. So the `--ini` is EXPLICIT on
+        # every run, whichever file it names. #1839 (SEC-752508850): pinning the
+        # TARGET's copy let the reviewed repo choose bandit's exclude/tests --
+        # and the owner ruling of 2026-09-25 on #1924 scopes that to the mode,
+        # the same split the gate uses: under redteam bandit honours no
+        # target-authored config, under `standard` an operator's own `.bandit`
+        # is theirs to keep. A target with none gets ours either way.
+        owned = "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME)
+        for mode in rt.SECURITY_MODES:
+            for plant in (True, False):
+                expected = ("/src/.bandit" if plant and mode != "redteam"
+                            else owned)
+                calls = []
+                fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
 
-            def runner(cmd, _calls=calls, **kw):
-                _calls.append(cmd)
-                return fake
-            with self.subTest(target_has_bandit=plant), \
-                    tempfile.TemporaryDirectory() as d:
-                if plant:
-                    open(os.path.join(d, ".bandit"), "w").close()
-                rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
-                             image="panopticon-tools", runner=runner)
-                self.assertEqual(len(calls), 1)      # run-9 TST-B3A: guard calls[0]
-                self.assertIn("--ini", calls[0])
-                i = calls[0].index("--ini")
-                self.assertEqual(calls[0][i + 1],
-                                 "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
-                self.assertNotIn("/src/.bandit", calls[0])
-                self.assertIn("-v", calls[0])
-                self.assertIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
-                              " ".join(calls[0]))    # mounted read-only
+                def runner(cmd, _calls=calls, **kw):
+                    _calls.append(cmd)
+                    return fake
+                with self.subTest(mode=mode, target_has_bandit=plant), \
+                        tempfile.TemporaryDirectory() as d:
+                    if plant:
+                        open(os.path.join(d, ".bandit"), "w").close()
+                    rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
+                                 image="panopticon-tools", runner=runner,
+                                 security_mode=mode)
+                    self.assertEqual(len(calls), 1)  # run-9 TST-B3A: guard calls[0]
+                    self.assertIn("--ini", calls[0])
+                    i = calls[0].index("--ini")
+                    self.assertEqual(calls[0][i + 1], expected)
+                    if expected == owned:
+                        self.assertNotIn("/src/.bandit", calls[0])
+                        self.assertIn("-v", calls[0])
+                        self.assertIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
+                                      " ".join(calls[0]))   # mounted read-only
+                    else:
+                        # Nothing of ours is staged, so there is no mount.
+                        self.assertNotIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
+                                         " ".join(calls[0]))
 
     def test_run_tools_continues_after_one_tool_fails(self):
         def runner(cmd, **kw):

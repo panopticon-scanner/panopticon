@@ -651,20 +651,27 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `site-packages` in full, which is wall-clock and tool-timeout cost rather than report noise (the
   ingest still drops those findings and hands back only the CRITICAL and secret-class ones), and the
   only knob for it is `--exclude '**/.venv/**'` — gate POLICY, out of scope in every mode and never
-  re-admitted, not a shorter walk. bandit runs with `--ini /panopticon-config/bandit.ini`, a file
-  staged per run into a scratch directory and bind-mounted read-only, whose text is a CONSTANT —
-  bandit's parser defaults plus `.worktrees`, **no `tests`/`skips` key at all**, and no
-  target-derived string of any kind, because its one job is to pre-empt bandit's own `.bandit`
-  discovery (an ini that fails to arrive or fails to parse is fail-OPEN in bandit, so nothing
-  load-bearing may live only there); this run's virtualenvs ride on the CLI instead, as attached
+  re-admitted, not a shorter walk. **bandit always runs with an EXPLICIT `--ini`, and the mode says
+  whose.** Under `--security redteam` it is `/panopticon-config/bandit.ini`, a file staged per run
+  into a scratch directory and bind-mounted read-only, whose text is a CONSTANT — bandit's parser
+  defaults plus `.worktrees`, **no `tests`/`skips` key at all**, and no target-derived string of any
+  kind (an ini that fails to arrive or fails to parse is fail-OPEN in bandit, so nothing
+  load-bearing may live only there). Under `standard`, a `.bandit` the scanned repository committed
+  is pinned instead (`--ini /src/.bandit`) and nothing of ours is staged: that is an operator
+  scanning their own repository, and the owner ruling of 2026-09-25 on #1924 leaves their file to
+  them, the same standard/redteam split the gate already uses. A target with no `.bandit` of its own
+  gets ours in either mode, and because the `--ini` is explicit in every case, #run7's
+  multiple-`.bandit` discovery ERROR stays bypassed whether or not the target ships one.
+  `tools-manifest.json` says which of the two the scan ran under, per tool, in `scanner_config`
+  (`"target .bandit"` or `"scanner-owned"`), so "bandit reported little" can be read against it.
+  This run's virtualenvs ride on the CLI either way, as attached
   `--exclude=` values, each path component checked against an allowlist (`[A-Za-z0-9._-]`, no
   leading `-`, never `.` or `..`) so a directory named `a,b` or `{src,q}` is scanned and NAMED
-  rather than expressed; the pin is unconditional, so #run7's multiple-`.bandit` ERROR is bypassed
-  whether or not the target ships one, and the target's own `.bandit` never reaches the argv. It
-  used to be pinned with `--ini <target>/.bandit` whenever the target had one, which let the
-  reviewed repository choose bandit's `exclude` — and through the same file its `tests`, which no
-  exclusion merge mitigates (#1839, run-14 SEC-752508850: a committed `tests = B999` reduced the
-  merge gate's Python SAST to one check). That was the first increment of the
+  rather than expressed. The redteam half is what #1839 changed: the target's copy used to be
+  pinned whenever it existed, in every mode, which let the reviewed repository choose bandit's
+  `exclude` — and through the same file its `tests`, which no exclusion merge mitigates (#1839,
+  run-14 SEC-752508850: a committed `tests = B999` reduced the merge gate's Python SAST to one
+  check). That was the first increment of the
   target-controlled-configuration class tracked under #1924 (the scan-root half; #1877 closed the
   cwd half), and the rest of that class follows it — SPLIT IN TWO, because the two kinds of in-tree
   suppression are not the same claim (#1839, run-14 SEC-284952751 + SEC-1202454595). An ignore FILE
@@ -672,9 +679,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   one in BOTH modes: **trivy** runs with `--ignorefile /panopticon-config/.trivyignore`, a constant
   naming no advisory, staged the way bandit's ini is — one read-only mount per launch, holding only
   that tool's file — because a committed `.trivyignore` used to choose which advisories trivy
-  reported; **gitleaks** with `--gitleaks-ignore-path <its own scratch>`, because the
-  `.gitleaksignore` lookup is rooted at that flag (default `.`) rather than at the cwd, which is the
-  source-root read `legacy_sarif.py` used to record as "outside this fix"; and **osv-scanner** with
+  reported; and **osv-scanner** with
   `scan --config <its own scratch>/osv-scanner.toml`, an empty document that overrides the
   per-DIRECTORY `osv-scanner.toml` lookup osv-scanner does inside the scanned tree (the one adapter
   of the four SEC-1202454595 named that #1742 left standing — cargo-audit, bundler-audit and
@@ -699,9 +704,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   claim. Two residuals are disclosed on that line rather than guessed at on an argv: gosec's
   `// #nosec` and eslint-security's `/* eslint-disable */` stand in both modes, because neither
   tool's knob was verified against the pinned image in this round and a flag a scanner rejects is a
-  tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). semgrep
-  exposes no knob for a scan-root `.semgrepignore`, so none is passed; what a scratch cwd leaves of
-  that file's reach is measured by this change's real-image round rather than asserted here.
+  tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). Two ignore
+  FILES are likewise still the target's, and both are #1924's open rows rather than this change's:
+  gitleaks reads the source-root `.gitleaksignore` **unconditionally** at the 8.18.4 pin (#1957,
+  `cmd/root.go` L204-L224), so neither a scratch cwd nor `--gitleaks-ignore-path` moves that read
+  and no flag here pretends to; and semgrep exposes no knob at all for a scan-root
+  `.semgrepignore`, so none is passed and what a scratch cwd leaves of that file's reach is
+  measured by this change's real-image round rather than asserted here.
   **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was

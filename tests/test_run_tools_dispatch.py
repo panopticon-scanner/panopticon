@@ -513,15 +513,23 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
     file carries `exclude`, `tests` and `skips` -- so a committed
     `tests = [B101]` made bandit report one check and nothing else, on the path
     CI's merge gate runs. brakeman and bundler-audit already answer #run7's
-    multiple-config ERROR with a SCANNER-OWNED config in scratch; bandit now
-    does the same, unconditionally, so the target's file never reaches the argv
-    whether or not it exists.
+    multiple-config ERROR with a SCANNER-OWNED config in scratch.
+
+    The owner ruling of 2026-09-25 on #1924 splits it by MODE, the same split
+    the gate already uses: under `--security redteam` bandit never honours a
+    target-authored suppression -- the scanner-owned ini always, plus
+    `--ignore-nosec` -- while under `standard` the operator is scanning their
+    own repository, so a `.bandit` they committed is pinned with
+    `--ini /src/.bandit` and honoured. Either way bandit gets an EXPLICIT
+    `--ini`, so #run7's multiple-`.bandit` discovery ERROR stays bypassed, and
+    the manifest says which of the two configs the scan ran under.
     """
 
     HOSTILE_INI = "[bandit]\nexclude = src\ntests = B999\nskips = B101\n"
 
-    def _dispatch(self, plant_ini=True, plant_venv=True):
-        """One faked bandit dispatch; returns (argv, the ini text it mounted)."""
+    def _dispatch(self, plant_ini=True, plant_venv=True, **kwargs):
+        """One faked bandit dispatch; returns the argv, the ini text it mounted
+        (None when it staged none) and the manifest posture."""
         seen = {"argv": None, "ini": None, "mount": None}
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         suffix = ":%s:ro" % rt.SCANNER_CONFIG_MOUNT
@@ -548,40 +556,84 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                 for rel in (rt.VENV_MARKER, os.path.join("bin", "python")):
                     with open(os.path.join(d, ".venv", rel), "w") as fh:
                         fh.write("")
-            rt.run_tools(d, ["bandit"], os.path.join(d, "out"), runner=runner,
-                         venv_dirs=[{"path": ".venv", "reason": rt.VENV_MARKER}])
+            written = rt.run_tools(
+                d, ["bandit"], os.path.join(d, "out"), runner=runner,
+                venv_dirs=[{"path": ".venv", "reason": rt.VENV_MARKER}],
+                **kwargs)
+            seen["manifest"] = rt.write_manifest(
+                os.path.join(d, "m.json"), ["bandit"], written)
         return seen
 
     def _ini_excludes(self, text):
         line = [ln for ln in text.splitlines() if ln.startswith("exclude")][0]
         return [e.strip() for e in line.split("=", 1)[1].split(",") if e.strip()]
 
-    def test_the_targets_own_ini_never_reaches_the_argv(self):
-        seen = self._dispatch()
+    def test_the_targets_own_ini_never_reaches_a_redteam_argv(self):
+        seen = self._dispatch(security_mode="redteam")
         argv = seen["argv"]
         self.assertNotIn("/src/.bandit", argv)
         self.assertIn("--ini", argv)
         self.assertEqual(argv[argv.index("--ini") + 1],
                          "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
         self.assertIsNotNone(seen["mount"], argv)
+        self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
+                         "scanner-owned")
+        # The other half of the same ruling: a `# nosec` comment in the
+        # target's source is not honoured under redteam either.
+        self.assertIn("--ignore-nosec", argv)
+
+    def test_the_targets_own_ini_is_pinned_under_standard(self):
+        # Owner ruling 2026-09-25: `standard` is an operator scanning their own
+        # repository, and the `.bandit` they committed is theirs to choose. The
+        # pin is still EXPLICIT, so #run7's discovery walk never runs.
+        seen = self._dispatch(security_mode="standard")
+        argv = seen["argv"]
+        self.assertIn("--ini", argv)
+        self.assertEqual(argv[argv.index("--ini") + 1], "/src/.bandit")
+        self.assertIsNone(seen["mount"], argv)      # nothing staged
+        self.assertIsNone(seen["ini"])
+        self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
+                         "target .bandit")
+        self.assertNotIn("--ignore-nosec", argv)
+
+    def test_the_default_mode_pins_the_targets_ini_too(self):
+        seen = self._dispatch()
+        self.assertEqual(seen["argv"][seen["argv"].index("--ini") + 1],
+                         "/src/.bandit")
+
+    def test_a_standard_run_with_no_target_ini_still_gets_ours(self):
+        # There is nothing of the operator's to honour, and #run7's failure is
+        # a nested checkout's `.bandit` that the discovery walk would find.
+        seen = self._dispatch(plant_ini=False, plant_venv=False,
+                              security_mode="standard")
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--ini") + 1],
+                         "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
+        self.assertIn("[bandit]", seen["ini"])
+        self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
+                         "scanner-owned")
 
     def test_the_pin_is_unconditional(self):
         # #run7 is a nested checkout's `.bandit` making bandit ERROR and emit
         # nothing. A target with no `.bandit` of its own got no --ini at all,
         # so the discovery walk -- and that failure -- was still reachable.
-        seen = self._dispatch(plant_ini=False, plant_venv=False)
-        self.assertIn("--ini", seen["argv"])
-        self.assertIn("[bandit]", seen["ini"])
+        # True in BOTH modes, whether the ini pinned is ours or the operator's.
+        for mode in rt.SECURITY_MODES:
+            for plant in (True, False):
+                with self.subTest(mode=mode, target_has_bandit=plant):
+                    seen = self._dispatch(plant_ini=plant, plant_venv=False,
+                                          security_mode=mode)
+                    self.assertIn("--ini", seen["argv"])
 
     def test_the_generated_ini_chooses_no_tests_and_skips_nothing(self):
-        seen = self._dispatch()
+        seen = self._dispatch(security_mode="redteam")
         self.assertNotIn("tests", seen["ini"])
         self.assertNotIn("skips", seen["ini"])
         self.assertNotIn("B999", seen["ini"])
         self.assertNotIn("B101", seen["ini"])
 
     def test_the_generated_ini_keeps_the_exclusions_the_scan_relies_on(self):
-        seen = self._dispatch()
+        seen = self._dispatch(security_mode="redteam")
         entries = self._ini_excludes(seen["ini"])
         for default in rt.BANDIT_DEFAULT_EXCLUDES:      # never WIDEN the scan
             self.assertIn(default, entries)
@@ -601,8 +653,9 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         # a second key to the `[bandit]` section, and bandit prefers an ini key
         # over the CLI whenever the CLI left that option at its default -- so one
         # `mkdir` chose bandit's `tests`, `skips` or `configfile`.
-        plain = self._dispatch(plant_ini=False, plant_venv=False)["ini"]
-        hostile = self._dispatch()["ini"]
+        plain = self._dispatch(plant_ini=False, plant_venv=False,
+                               security_mode="redteam")["ini"]
+        hostile = self._dispatch(security_mode="redteam")["ini"]
         self.assertEqual(plain, hostile)
         self.assertEqual(plain, rt.BANDIT_INI_TEXT)
         self.assertEqual(len([ln for ln in plain.splitlines() if "=" in ln]), 1)

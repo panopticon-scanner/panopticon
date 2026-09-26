@@ -77,8 +77,7 @@ class LegacySarifAdapter:
         """Run the legacy SARIF tool against target and return its raw output.
 
         `security_mode` (#1839) decides one thing here: whether gitleaks still
-        honours a `gitleaks:allow` comment in the target's own source. The
-        `.gitleaksignore` LOOKUP is redirected in both modes -- see below.
+        honours a `gitleaks:allow` comment in the target's own source.
         """
         if self.name not in TOOL_CMD:
             raise NotImplementedError(f"no command defined for tool {self.name}")
@@ -102,19 +101,11 @@ class LegacySarifAdapter:
                 config = Path(cwd) / "gitleaks.toml"
                 config.write_bytes(b"[extend]\nuseDefault = true\n")
                 cmd.extend(("--config", str(config)))
-                # #1839 (run-14 SEC-284952751): the scratch cwd does NOT move
-                # the `.gitleaksignore` lookup -- gitleaks resolves that file
-                # from `--gitleaks-ignore-path`, whose default is `.` in the
-                # v8.18.4 pin, and `detect --source <target>` leaves the
-                # default pointing at the scan root through the container's
-                # `WORKDIR /src` (the dispatcher's `-w` moves it, but an
-                # `invoke` run anywhere else has no dispatcher in front of it).
-                # Naming the scratch EXPLICITLY makes the lookup the scanner's
-                # in both modes: an ignore file is target-authored scanner
-                # CONFIGURATION, the same class as the `.bandit` #1839 took off
-                # the argv, and the scratch holds no `.gitleaksignore` for it
-                # to find.
-                cmd.extend(("--gitleaks-ignore-path", cwd))
+                # The source-root `.gitleaksignore` is NOT answered here and
+                # no flag pretends otherwise: at the 8.18.4 pin gitleaks loads
+                # it unconditionally (#1957, `cmd/root.go` L204-L224), so
+                # `--gitleaks-ignore-path` pointed at this scratch would move
+                # nothing while reading like a control. It is #1924's open row.
                 if security_mode == REDTEAM:
                     # An inline `gitleaks:allow` comment is in the target's
                     # SOURCE, not its config. Under `standard` -- the mode CI's

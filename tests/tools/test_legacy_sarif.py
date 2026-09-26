@@ -190,15 +190,17 @@ class TestLegacySarifAdapter(unittest.TestCase):
 class TestGitleaksSuppressionPosture(unittest.TestCase):
     """#1839 (run-14 SEC-284952751): two kinds of in-tree suppression, two rules.
 
-    An ignore FILE read from the scan root is target-authored scanner
-    CONFIGURATION -- the #1924 class -- and is neutralised in both modes: the
-    `.gitleaksignore` lookup is pointed at the adapter's own scratch, which the
-    target cannot write. An inline suppression COMMENT (`gitleaks:allow`) is in
-    the target's SOURCE, and under `standard` -- the mode CI's merge gate runs
+    An inline suppression COMMENT (`gitleaks:allow`) is in the target's SOURCE,
+    and under `standard` -- the mode CI's merge gate runs
     (`.github/workflows/security.yml` passes no `--security`) -- it is an
     operator's reviewed, in-diff decision about their own repository, so it is
     HONOURED and the manifest says so. Under `--security redteam` the reviewed
     tree is untrusted and the comment buys nothing.
+
+    The other kind, the source-root `.gitleaksignore`, is NOT this PR's: #1957
+    established that gitleaks 8.18.4 loads it unconditionally
+    (`cmd/root.go` L204-L224), so `--gitleaks-ignore-path` does not move it and
+    passing one would be a control in name only. It stays #1924's open row.
     """
 
     def _launch(self, **kwargs):
@@ -208,18 +210,17 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
             legacy.LegacySarifAdapter("gitleaks").invoke("/some/target", **kwargs)
         return only(calls, "gitleaks launch")
 
-    def test_the_ignore_file_lookup_is_the_scratch_in_both_modes(self):
-        # `legacy_sarif` used to record the source-root `.gitleaksignore` as
-        # "outside this fix": a scratch cwd does not move it, because gitleaks
-        # resolves it from `--gitleaks-ignore-path`, whose DEFAULT is `.`.
+    def test_no_ignore_path_flag_is_passed_in_either_mode(self):
+        # Not an oversight and not a residual to fix here: at the 8.18.4 pin
+        # gitleaks loads the SOURCE-root `.gitleaksignore` unconditionally
+        # (#1957, `cmd/root.go` L204-L224), so `--gitleaks-ignore-path` pointed
+        # at the scratch would not move that read -- a flag on the argv that
+        # reads like a control and is not one. #1924 owns that row.
         for mode in ("standard", "redteam"):
             with self.subTest(mode=mode):
-                launch = self._launch(security_mode=mode)
-                argv = launch["argv"]
-                self.assertIn("--gitleaks-ignore-path", argv)
-                self.assertEqual(argv[argv.index("--gitleaks-ignore-path") + 1],
-                                 launch["cwd"])
-                self.assertEqual(argv.count("--gitleaks-ignore-path"), 1)
+                argv = self._launch(security_mode=mode)["argv"]
+                self.assertNotIn("--gitleaks-ignore-path", argv)
+                self.assertNotIn("-i", argv)
 
     def test_an_inline_allow_is_ignored_under_redteam(self):
         self.assertIn("--ignore-gitleaks-allow",
