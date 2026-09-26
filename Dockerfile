@@ -55,10 +55,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #        tools-image/node/package-lock.json: 152 packages, every one by
 #        integrity digest, and no package's install scripts execute.
 #
-# Two installs are deliberately NOT covered, and this is therefore not a claim
+# Three installs are deliberately NOT covered, and this is therefore not a claim
 # that every registry input to this image is hash-verified: `cargo install
 # cargo-audit --locked` uses the crate's packaged lockfile, not a repository-owned
-# hash closure, and `dotnet tool install` also lacks a repository-owned lock.
+# hash closure; `dotnet tool install` also lacks a repository-owned lock; and the
+# .NET SDK arrives through `dotnet-install.sh --channel 8.0` (below), a FLOATING
+# patch version -- the installer SCRIPT is pinned by commit SHA and `sha256sum
+# -c`'d, but no repository-owned digest governs which SDK bytes that script then
+# fetches, and that is the accepted cost of not having to bump a `--version` pin
+# (and give `scripts/bump_pins.py` another family) at every .NET patch and EOL.
 # Distro apt packages stay unpinned for the reason given above. Direct binary
 # downloads keep their own checksum gates, above and below.
 
