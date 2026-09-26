@@ -1358,6 +1358,28 @@ class TestResetGlobs(unittest.TestCase):
         # --reset run re-declares its cells from fresh coverage.
         self.assertIn("dispatch-plan-driver.json", driver._RESET_GLOBS)
 
+    def test_reset_removes_stale_run_files_and_preserves_durable_artifact(self):
+        # Use a newly created review root outside every checkout: this calls
+        # the real deletion boundary.
+        temp_parent = "/private/tmp/panopticon-wave13-20260926"
+        os.makedirs(temp_parent, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_parent) as root:
+            artifacts = os.path.join(root, ".panopticon")
+            os.mkdir(artifacts)
+            stale = ("diff-hunks.json", "out-file-hashes.json",
+                     "dispatch-plan-driver.json")
+            for name in stale:
+                with open(os.path.join(artifacts, name), "w", encoding="utf-8") as fh:
+                    fh.write("stale")
+            durable = os.path.join(artifacts, "report-run-1.json")
+            with open(durable, "w", encoding="utf-8") as fh:
+                fh.write("keep")
+            driver._clear_run_artifacts(root)
+            for name in stale:
+                self.assertFalse(os.path.exists(os.path.join(artifacts, name)), name)
+            with open(durable, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "keep")
+
 class TestDriverPlanIssues(unittest.TestCase):
     """#5.0-16 H2 unit: plan_contract.driver_plan_issues validates the driver's
     matrix domain-cell plan, distinct from the 4.x panel-review plan_issues."""
