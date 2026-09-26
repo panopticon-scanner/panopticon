@@ -651,7 +651,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `site-packages` in full, which is wall-clock and tool-timeout cost rather than report noise (the
   ingest still drops those findings and hands back only the CRITICAL and secret-class ones), and the
   only knob for it is `--exclude '**/.venv/**'` — gate POLICY, out of scope in every mode and never
-  re-admitted, not a shorter walk. bandit runs with `--ini /panopticon-bandit/bandit.ini`, a file
+  re-admitted, not a shorter walk. bandit runs with `--ini /panopticon-config/bandit.ini`, a file
   staged per run into a scratch directory and bind-mounted read-only, whose text is a CONSTANT —
   bandit's parser defaults plus `.worktrees`, **no `tests`/`skips` key at all**, and no
   target-derived string of any kind, because its one job is to pre-empt bandit's own `.bandit`
@@ -664,9 +664,45 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   used to be pinned with `--ini <target>/.bandit` whenever the target had one, which let the
   reviewed repository choose bandit's `exclude` — and through the same file its `tests`, which no
   exclusion merge mitigates (#1839, run-14 SEC-752508850: a committed `tests = B999` reduced the
-  merge gate's Python SAST to one check). That is the first increment of the
+  merge gate's Python SAST to one check). That was the first increment of the
   target-controlled-configuration class tracked under #1924 (the scan-root half; #1877 closed the
-  cwd half). **A directory whose name cannot be expressed as an exclusion (a path component outside
+  cwd half), and the rest of that class follows it — SPLIT IN TWO, because the two kinds of in-tree
+  suppression are not the same claim (#1839, run-14 SEC-284952751 + SEC-1202454595). An ignore FILE
+  the reviewed repository commits is scanner CONFIGURATION, and it is replaced with a scanner-owned
+  one in BOTH modes: **trivy** runs with `--ignorefile /panopticon-config/.trivyignore`, a constant
+  naming no advisory, staged the way bandit's ini is — one read-only mount per launch, holding only
+  that tool's file — because a committed `.trivyignore` used to choose which advisories trivy
+  reported; **gitleaks** with `--gitleaks-ignore-path <its own scratch>`, because the
+  `.gitleaksignore` lookup is rooted at that flag (default `.`) rather than at the cwd, which is the
+  source-root read `legacy_sarif.py` used to record as "outside this fix"; and **osv-scanner** with
+  `scan --config <its own scratch>/osv-scanner.toml`, an empty document that overrides the
+  per-DIRECTORY `osv-scanner.toml` lookup osv-scanner does inside the scanned tree (the one adapter
+  of the four SEC-1202454595 named that #1742 left standing — cargo-audit, bundler-audit and
+  brakeman already generate their own). Each file is staged per launch and fail-CLOSED: one
+  that cannot be written skips that tool, which then lands in the manifest's `missing`, and never
+  the scanners queued behind it. An inline suppression COMMENT is the other kind, and it lives in
+  the target's SOURCE rather than its config — in the diff a reviewer reads. Under `--security
+  redteam` the tree is untrusted and every scanner whose knob was verified against the pinned image
+  is told to stop honouring one: semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
+  `--ignore-gitleaks-allow`. That last one is appended by the ADAPTER, which builds gitleaks' argv
+  inside the container, so every adapter dispatch now carries this run's mode as an explicit
+  `--security <mode>` argv pair — an argv pair rather than an environment variable, which a target's
+  own hooks could set, and a token the entry point does not recognise fails that tool closed. Under
+  `standard` — the mode CI's merge gate runs, since `.github/workflows/security.yml` passes no
+  `--security` — the comment STANDS: an operator scanning their own repository made a reviewed,
+  in-diff decision, and the scan is not the place to overrule it. It stands DISCLOSED rather than
+  silently: `tools-manifest.json` carries `suppression_comments`,
+  `{"<tool>": "ignored" | "honoured" | "n/a"}`, one row per assessed tool, read off the argv the
+  runner actually built — so taking a flag away changes the claim instead of leaving an intention
+  behind, the same construction as `network` and `redacted`. `n/a` is a tool whose argv honours no
+  such comment at all; a tool with NO row was not assessed, which is deliberately not the same
+  claim. Two residuals are disclosed on that line rather than guessed at on an argv: gosec's
+  `// #nosec` and eslint-security's `/* eslint-disable */` stand in both modes, because neither
+  tool's knob was verified against the pinned image in this round and a flag a scanner rejects is a
+  tool that exits non-zero and writes no SARIF (the #1452 selected-but-unproduced class). semgrep
+  exposes no knob for a scan-root `.semgrepignore`, so none is passed; what a scratch cwd leaves of
+  that file's reach is measured by this change's real-image round rather than asserted here.
+  **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was
   `--exclude=*` and one `mkdir` emptied semgrep's and trivy's scope. It is scanned instead, and its
