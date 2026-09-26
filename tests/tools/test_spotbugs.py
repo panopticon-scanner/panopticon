@@ -218,8 +218,8 @@ class TestHardenedXmlParser(unittest.TestCase):
         with mock.patch.object(builtins, "__import__", side_effect=without_defusedxml):
             spec.loader.exec_module(fallback)
         adapter = fallback.SpotBugsAdapter()
-        self.assertEqual(adapter.parse(SPOTBUGS_SAMPLE, "g1")[0]["title"],
-                         "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE")
+        finding = only(adapter.parse(SPOTBUGS_SAMPLE, "g1"))
+        self.assertEqual(finding["title"], "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE")
         self._assert_external_entities_refused_without_io(adapter, ParseError)
 
 
@@ -285,4 +285,3 @@ class TestOfflineLogPrefix(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
