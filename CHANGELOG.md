@@ -7,6 +7,24 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
+  DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
+  `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back
+  path among them), and every one resolved "absent" and "present but unreadable" to the same empty
+  dict, so a file torn by an interrupted write read as a fresh run: a cell that had spent
+  `MAX_CELL_ATTEMPTS` became dispatchable again and the count restarted at 1, discovery's "one free
+  re-run and no more" stopped bounding anything, and each refund was paid for in launches. One
+  reader now draws #run9 COD-B1A's line for all six (`runio._load_state_json`, the rule
+  `file_issues.load_ledger` already applies one directory away): `{}` only when the file is ABSENT
+  -- a legitimate first run -- and a `DriverError` naming the path and `--reset` for everything
+  else, a dangling symlink (`lexists`) and a deeply nested document (`RecursionError`, previously a
+  bare traceback) included. `driver run` turns that into an `error` status naming the file from
+  every site: the terminal `exhausted_cells` call reads the same ledger and sat outside every `try`,
+  so that block speaks the status protocol now too. The remedy the message names is real:
+  `verify-attempts.json` and `discovery-attempts.json` join `cell-attempts.json` in the legacy flat
+  sweep's `_RESET_GLOBS` (`scout-*.json` already covered the fourth), and a live run's whole folder
+  goes. Fail closed rather than fail-quiet -- a false refusal costs one `--reset`, a silent refund
+  costs launches and invalidates the run's own bound.
 - **The clean-tree baseline is written atomically, and an unusable one is classified instead of
   blamed on the v1 upgrade (#1809, DAT-4027033499).** `tree-baseline.txt` was the one artifact
   writer in `phases/` that truncated in place, and it sits behind an exists-means-done guard that

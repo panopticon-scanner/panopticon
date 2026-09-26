@@ -12,6 +12,11 @@ import scripts.phases.runio as runio
 import scripts.grouping_engine as grouping_engine
 import scripts.phases.review as review
 import scripts.phases.requests as requests
+import scripts.phases.verify as verify
+import scripts.phases.coverage as coverage
+import scripts.phases.persist as persist
+import scripts.phases.discovery as discovery
+import scripts.driver as driver
 
 import scripts.ocrdb as ocrdb
 import scripts.model_resolver as model_resolver
@@ -663,3 +668,186 @@ class TestInventoryLineInjectionSafety(unittest.TestCase):
         self.assertIn("tests/test_café.py", line)
         self.assertIn("group Other", line)
         self.assertNotIn("\\x", line)
+
+
+class TestTornRetryLedgerIsNotAnEmptyOne(unittest.TestCase):
+    """#1809 / DAT-3555180994: a retry-budget ledger that is PRESENT but
+    unreadable is not an absent one. Read as `{}` it refunds every attempt the
+    run really spent -- an exhausted cell becomes dispatchable again and the
+    count restarts at 1, each refund paid for in launches -- so the read
+    refuses instead, naming the file and `--reset`. #run9 COD-B1A's rule,
+    which `file_issues.load_ledger` already applies one directory away.
+
+    Four ledger FILES (cell / verify / scout / discovery attempts) across the
+    SIX readers below, parametrized so no one of them can drift back.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+
+    def _tear(self, path):
+        """A COMPLETE ledger truncated at half its bytes: what an interrupted
+        write (or a host killed mid-replace on a pre-atomic build) leaves."""
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body[:len(body) // 2])
+        return body
+
+    def _spend_cell_budget(self):
+        key = review._cell_key("Auth", "SEC")
+        for _ in range(review.MAX_CELL_ATTEMPTS):
+            review._record_attempts(self.root, [key])
+        return runio._pano(self.root, review._ATTEMPTS_FILE)
+
+    def test_torn_cell_ledger_refuses_rather_than_refunding_the_budget(self):
+        path = self._spend_cell_budget()
+        self.assertTrue(review._cell_exhausted(self.root, "Auth", "SEC"))
+        self.assertTrue(self._tear(path).startswith("{"))    # was complete JSON
+        with self.assertRaises(runio.DriverError) as caught:
+            review._cell_attempts(self.root)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("--reset", str(caught.exception))
+        # The point of the refusal: the exhausted cell does not quietly become
+        # dispatchable again, and nothing rewrites the ledger at 1.
+        with self.assertRaises(runio.DriverError):
+            review._cell_exhausted(self.root, "Auth", "SEC")
+
+    def test_absent_cell_ledger_is_a_legitimate_first_run(self):
+        path = runio._pano(self.root, review._ATTEMPTS_FILE)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(review._cell_attempts(self.root), {})
+        self.assertFalse(review._cell_exhausted(self.root, "Auth", "SEC"))
+        review._record_attempts(self.root, [review._cell_key("Auth", "SEC")])
+        self.assertEqual(review._cell_attempts(self.root), {"Auth/SEC": 1})
+
+    def _ledgers(self):
+        """Every retry-budget reader, so no one of the six sites can drift
+        apart again: (name, path, read, what an ABSENT ledger yields)."""
+        cell = runio._pano(self.root, review._ATTEMPTS_FILE)
+        return (
+            ("review._cell_attempts", cell,
+             lambda: review._cell_attempts(self.root), {}),
+            ("persist._give_back_attempts", cell,
+             lambda: persist._give_back_attempts(cell, ["Auth/SEC"]), []),
+            ("verify._verify_attempts", runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
+             lambda: verify._verify_attempts(self.root, "Auth", "SEC", "primary"), 0),
+            ("verify._bump_verify_attempts", runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
+             lambda: verify._bump_verify_attempts(self.root, "Auth", "SEC", "primary"), 1),
+            ("coverage._bump_scout_attempts", runio._pano(self.root, "scout-attempts.json"),
+             lambda: coverage._bump_scout_attempts(self.root, "Auth"), 1),
+            ("discovery._bump_discovery_attempts",
+             runio._pano(self.root, "discovery-attempts.json"),
+             lambda: discovery._bump_discovery_attempts(self.root), 1),
+        )
+
+    def test_every_ledger_refuses_a_torn_file(self):
+        for name, path, read, _absent in self._ledgers():
+            with self.subTest(ledger=name):
+                runio._write_json(path, {"Auth/SEC": 3, "Auth/SEC/primary": 3, "Auth": 3})
+                self._tear(path)
+                with self.assertRaises(runio.DriverError) as caught:
+                    read()
+                self.assertIn(path, str(caught.exception))
+                self.assertIn("--reset", str(caught.exception))
+                os.remove(path)
+
+    def test_every_ledger_reads_an_absent_file_as_before(self):
+        for name, path, read, absent in self._ledgers():
+            with self.subTest(ledger=name):
+                if os.path.lexists(path):
+                    os.remove(path)
+                self.assertEqual(read(), absent)
+
+    def test_a_dangling_symlink_is_present_not_absent(self):
+        # The WRITE side refuses a symlink at an artifact path outright
+        # (`_open_w_nofollow`), so a read that calls a dangling link ABSENT
+        # would be the looser half of the pair -- and it refunds in full.
+        for name, path, read, _absent in self._ledgers():
+            with self.subTest(ledger=name):
+                if os.path.lexists(path):
+                    os.remove(path)
+                os.symlink(os.path.join(self.root, "nowhere.json"), path)
+                with self.assertRaises(runio.DriverError) as caught:
+                    read()
+                self.assertIn("--reset", str(caught.exception))
+                os.unlink(path)
+
+    def test_a_deeply_nested_ledger_refuses_like_any_other_torn_one(self):
+        # RecursionError is neither OSError nor ValueError, so it used to
+        # escape the read, the helper AND driver.run's own
+        # `except (DriverError, ValueError)` -- a traceback with no status,
+        # for the one unreadable-file class the new remedy never reached.
+        path = runio._pano(self.root, review._ATTEMPTS_FILE)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("[" * 200000)
+        with self.assertRaises(runio.DriverError) as caught:
+            review._cell_attempts(self.root)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("--reset", str(caught.exception))
+
+    def test_the_discovery_malformed_budget_is_not_refundable(self):
+        # #1809 fix round 1: the sixth ledger. _MAX_DISCOVERY_ATTEMPTS is 2 --
+        # "one free re-run and no more" -- so a torn counter read as empty
+        # re-runs a deterministically-broken discovery child without bound.
+        path = runio._pano(self.root, "discovery-attempts.json")
+        self.assertEqual(discovery._bump_discovery_attempts(self.root), 1)
+        self.assertEqual(discovery._bump_discovery_attempts(self.root), 2)
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body[:len(body) // 2])
+        with self.assertRaises(runio.DriverError) as caught:
+            discovery._bump_discovery_attempts(self.root)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("--reset", str(caught.exception))
+
+
+class TestTheTerminalBlockAnswersATornLedgerWithAStatus(unittest.TestCase):
+    """#1809 fix round 1: `review.exhausted_cells` runs in `driver.run`'s
+    TERMINAL block, which sits outside every `try` the engine's own refusals go
+    through -- so a torn ledger read THERE escaped as a traceback and the host
+    parsing stdout got no status JSON at all, the failure mode
+    `engine.EngineStalled`'s conversion exists to prevent.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n")
+
+    def _run(self):
+        """`driver run` with the engine already reporting complete: the narrowest
+        path that reaches the terminal `exhausted_cells` call for real."""
+        args = driver.build_parser().parse_args(["run", self.root])
+        complete = {"status": "complete", "phase": None, "checkpoint": None,
+                    "group": None, "dispatch_request": None, "advanced": [],
+                    "message": "all phases complete"}
+        with mock.patch("scripts.driver._establish_host_posture", return_value=None),                 mock.patch("scripts.phases.validate.capture_tree_baseline"),                 mock.patch("scripts.phases.validate._finalize_worktree"),                 mock.patch("scripts.phases.engine.run_engine", return_value=complete):
+            return driver.run(args, resolved=(self.root, None, None))
+
+    def test_a_torn_ledger_in_the_terminal_block_is_an_error_status(self):
+        first = self._run()                       # mints this run's manifest
+        self.assertEqual(first["status"], "complete", first.get("message"))
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                          {"group": "Auth", "effective": ["SEC"]})
+        path = runio._pano(self.root, review._ATTEMPTS_FILE)
+        for _ in range(review.MAX_CELL_ATTEMPTS):
+            review._record_attempts(self.root, [review._cell_key("Auth", "SEC")])
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body[:len(body) // 2])
+        status = self._run()                      # a status, not a traceback
+        self.assertEqual(status["status"], "error", status.get("message"))
+        self.assertIn(path, status["message"])
+        self.assertIn("--reset", status["message"])

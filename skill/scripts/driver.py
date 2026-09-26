@@ -74,7 +74,13 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "panel-test-inventory.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
-                "cell-attempts.json")
+                # #1809: its three siblings are run-scoped for the same
+                # reason, and an unreadable one now names --reset as the
+                # remedy, so the legacy flat sweep has to actually clear them
+                # (`scout-*.json` already covers the scout counter, and
+                # discovery-attempts.json's own docstring already claimed it).
+                "cell-attempts.json", "verify-attempts.json",
+                "discovery-attempts.json")
 
 
 # How many exhausted cells the terminal `complete` message names before it
@@ -1115,17 +1121,25 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # still named.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
-        validate._finalize_worktree(review_root, manifest)
-        # #1616 item 2: `review_done` counts an exhausted cell as done -- which
-        # is what stops one unrecoverable cell wedging the run -- so a run that
-        # lost cells to their retry budget completes with the same status and
-        # the same message as one where every cell answered. Name them, here
-        # rather than in `orchestrate._finish`, because `driver run` reaches
-        # `complete` on its own too and the loop's terminal `complete` IS this
-        # status: one place, both entrypoints. Added ONLY when there are any,
-        # so a clean run's status stays byte-for-byte what every host parses
-        # today.
-        exhausted = review.exhausted_cells(review_root, manifest)
+        # #1809: both calls below READ the run's own artifacts -- the worktree
+        # state, and `exhausted_cells` -> `cell-attempts.json` -- and this block
+        # sat outside every `try` above, so a refusal here escaped `main()` as a
+        # traceback and a host parsing stdout got no status JSON at all: the
+        # exact failure `engine.EngineStalled`'s conversion exists to prevent.
+        try:
+            validate._finalize_worktree(review_root, manifest)
+            # #1616 item 2: `review_done` counts an exhausted cell as done --
+            # which is what stops one unrecoverable cell wedging the run -- so a
+            # run that lost cells to their retry budget completes with the same
+            # status and the same message as one where every cell answered. Name
+            # them, here rather than in `orchestrate._finish`, because `driver
+            # run` reaches `complete` on its own too and the loop's terminal
+            # `complete` IS this status: one place, both entrypoints. Added ONLY
+            # when there are any, so a clean run's status stays byte-for-byte
+            # what every host parses today.
+            exhausted = review.exhausted_cells(review_root, manifest)
+        except (runio.DriverError, ValueError) as exc:
+            return runio._error_status(str(exc))
         if exhausted:
             # The COUNT is exact; the NAMED list is bounded (fix round 1, N2).
             # A run that loses 100 cells would otherwise put 100 `group/domain`

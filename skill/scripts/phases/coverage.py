@@ -215,11 +215,11 @@ def _scout_shape_errors(scout):
 
 def _bump_scout_attempts(review_root, group):
     """Persisted per-group re-dispatch counter that bounds #3's retry loop.
-    Lives alongside the scout outputs, so --reset clears it with them."""
+    Lives alongside the scout outputs, so --reset clears it with them. A
+    PRESENT but unreadable counter refuses rather than reading as empty
+    (#1809), which would refund every re-dispatch the run already spent."""
     path = runio._pano(review_root, "scout-attempts.json")
-    data = runio._load_json(path) if runio._json_parses(path) else {}
-    if not isinstance(data, dict):
-        data = {}
+    data = runio._load_state_json(path, "the scout retry budget")
     n = int(data.get(group, 0)) + 1
     data[group] = n
     runio._write_json(path, data)

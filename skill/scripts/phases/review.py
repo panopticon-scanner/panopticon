@@ -56,8 +56,11 @@ def _cell_key(group, domain):
 
 
 def _cell_attempts(review_root):
-    data = runio._load_json(runio._pano(review_root, _ATTEMPTS_FILE))
-    return data if isinstance(data, dict) else {}
+    """This run's per-cell dispatch tally: {} before the first dispatch, and a
+    refusal when the file is PRESENT but unreadable (#1809) -- reading a torn
+    budget as empty refunds every attempt the run really spent."""
+    return runio._load_state_json(
+        runio._pano(review_root, _ATTEMPTS_FILE), "the cell retry budget")
 
 
 def _record_attempts(review_root, keys):
