@@ -203,8 +203,7 @@ def _excluded_tools_line(value):
             or not isinstance(globs, list)
             or any(not isinstance(glob, str) or not glob for glob in globs)):
         return ""
-    # JSON quotes preserve the exact glob, including control characters. A
-    # longer code-span delimiter keeps target-authored backticks inert.
+    # JSON quotes keep each glob exact; a longer code span keeps a target's backticks inert.
     def code(glob):
         quoted = json.dumps(glob, ensure_ascii=False)
         ticks = "`"
@@ -213,7 +212,8 @@ def _excluded_tools_line(value):
         return ticks + quoted + ticks
 
     policy = ", ".join(code(glob) for glob in globs) if globs else "none"
-    return "**Tool findings excluded by policy:** %d — globs: %s" % (count, policy)
+    return ("**Tool findings excluded by policy:** %d — globs: %s — a committed "
+            "`exclude_paths:` prunes review CELLS too, not just this axis" % (count, policy))
 
 
 def _config_line(config):
