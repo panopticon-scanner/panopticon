@@ -634,6 +634,23 @@ class TestArtifactStamps(unittest.TestCase):
                                                  sha256="a" * 64))
         self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
 
+    def test_a_stamped_artifact_replaced_by_a_directory_reads_as_gone(self):
+        # "Present" means a FILE: a directory wearing the artifact's name is not
+        # the artifact this run wrote, and must read as gone (refused, reported)
+        # rather than escape as IsADirectoryError.
+        path = os.path.join(self.root, "dispatch-plan-driver.json")
+        calls, err = [], io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(path, rm.claim_artifact(
+                self.root, None, rm.DRIVER_PLAN, path, self._write(path, calls),
+                sha256="a" * 64))
+            os.remove(path)
+            os.mkdir(path)
+            self.assertIsNone(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN,
+                                                path, self._write(path, calls)))
+        self.assertEqual(len(calls), 1, "the writer ran over a directory")
+        self.assertIn("GONE", err.getvalue())
+
     def test_a_claim_on_a_manifest_less_tree_neither_stamps_nor_raises(self):
         with tempfile.TemporaryDirectory() as empty:
             path = os.path.join(empty, "dispatch-plan-driver.json")

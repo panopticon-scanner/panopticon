@@ -481,7 +481,8 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
 
     This file is inside the reviewed tree too -- the claim is NOT that it is
     out of reach. It is the better-defended of the two: on a host whose write
-    guard mediates `Write`, no dispatched agent may write it (the write guard's allowlist is the entries' out_files) and
+    guard mediates `Write`, no dispatched agent may write it (the write
+    guard's allowlist is the entries' out_files) and
     `runio._foreign_manifest` discards a manifest that is git-tracked in the
     tree or stamped for another checkout, while the request is rewritten by
     the driver every iteration and read by every family. Forging the record
@@ -629,7 +630,7 @@ def claim_artifact(review_root, manifest, key, path, write, **fields):
     # skipping this would make the guard fail OPEN for a caller that passes None.
     if manifest is None:
         manifest = load_manifest(review_root)
-    if artifact_stamp(manifest, key) and not os.path.exists(path):
+    if artifact_stamp(manifest, key) and not os.path.isfile(path):
         print("driver: this run wrote %s and it is GONE -- reporting the absence, "
               "NOT re-creating it (SEC-377944137): a re-created artifact would "
               "erase the evidence it exists to carry. This run will report "
@@ -637,7 +638,7 @@ def claim_artifact(review_root, manifest, key, path, write, **fields):
               % os.path.basename(path), file=sys.stderr, flush=True)
         return None
     written = write()
-    if os.path.exists(path):
+    if os.path.isfile(path):
         record_artifact_stamp(review_root, manifest, key, **fields)
     return written
 
