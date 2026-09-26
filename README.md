@@ -62,6 +62,8 @@ docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools
 ```
 
 `latest` moves with every push to `main` and a daily asset refresh. To pin what you reviewed with, pull by digest instead; the digest behind `latest` when this README was written was `sha256:b5250bf0723a5dd65b715e02e4d0f172764051ca466c44439b23df8de77be5ef`, and `docker image inspect` prints the one you have.
+CI attests every image it publishes, so an operator who wants a provenance check can run
+`gh attestation verify oci://<image ref> --owner panopticon-scanner`; no run does it for you.
 
 If you would rather build than pull, the build compiles several scanners from pinned sources and can take over an hour. It builds from the same pinned sources and hashes CI builds from; the published image additionally carries a freshly pinned vulnerability-data layer, so pull it when you can:
 
