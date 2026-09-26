@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A catalog gap with no file location is disclosed, not dropped (#1807, DAT-2501524861).** The X0X
+  emitter drops a candidate cluster when no finding in it carries a `location.file`, because the
+  schema requires a `file` on every occurrence — and a locus-free finding is the CANONICAL shape for
+  a repo-wide catalog gap, which `synth/findings.py` produces deliberately (#1522 COD-D1B pops the
+  empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
+  catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
+  and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
+  short. Nothing is invented — a file cannot be: the drop is now named on stderr (the domain, the
+  one-lined and bounded lead title, how many findings it held, in the style of the existing
+  ZZZ-clamp line), tallied into the artifact as an optional `candidates_dropped_locus_free`, and
+  appended to that stdout line as `, N locus-free cluster(s) dropped` when it is non-zero.
+  `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT companion, which has no
+  pipeline caller — makes the same one-line disclosure at its own locus-free drop.
+  `cross_run_signals`'s line-window join is left as it was: it is intrinsically file-keyed, so a
+  finding with no file has nothing to join on.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending

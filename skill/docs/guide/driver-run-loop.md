@@ -813,7 +813,10 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `<DOM>-X0X` / `ZZZ-X0X` catalog-gap findings packaged as OCRDb new-code **candidate records**
   (schema `skill/reference/x0x-report-schema.json`), mechanically clustered, with
   `generated_by.run_id` from the run manifest; adjudication (the gap rationale, the
-  new_code/refine/retire verdict) happens downstream in OCRDb's pool. SARIF is ingested via
+  new_code/refine/retire verdict) happens downstream in OCRDb's pool. A gap cluster in which no
+  finding carries a file location cannot become a candidate — every occurrence needs a `file`, and
+  none is invented — so it is named on stderr, counted in `candidates_dropped_locus_free`, and
+  reported on the `X0X artifact:` line, whose count was otherwise short. SARIF is ingested via
   `skill/scripts/ingest_tools.py`, but only because `--tools-dir` was passed — a scan that ran but
   was never wired in would sit on disk un-ingested. Every report also carries `meta.cost` — the
   run's dispatch ledger, derived from the artifacts already on disk (scout profiles, the checkpoint

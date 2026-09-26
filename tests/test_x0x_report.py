@@ -11,6 +11,13 @@ import scripts.ocrdb as ocrdb
 import scripts.x0x_report as x0x
 
 
+def _schema():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skill", "reference", "x0x-report-schema.json")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def _f(code, domain, sev, title, file, line=1, fid=None, desc="d", refs=None):
     return {"code": code, "domain": domain, "severity": sev,
             "short_title": title, "title": title, "description": desc,
@@ -69,10 +76,46 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(only(c["occurrences"], "occurrence"),
                          {"file": "x.py", "line_start": 3, "line_end": 5, "finding_id": "f1"})
 
-    def test_occurrence_requires_file(self):
-        f = _f("COD-X0X", "COD", "LOW", "t", None)
+    def test_a_locus_free_cluster_is_dropped_and_announced(self):
+        # #1807 DAT-2501524861: a finding with no location is the CANONICAL shape
+        # for a repo-wide catalog gap (`synth/findings.py` pops the empty location
+        # deliberately), so this drop lands on exactly the gaps this emitter
+        # exists to carry. No occurrence can be invented -- the schema requires a
+        # file on every one -- so the cluster is announced instead of vanishing.
+        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock", None)
         f["location"] = {}   # no file -> no valid occurrence -> candidate dropped
-        self.assertEqual(x0x.build_candidates([f]), [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f]), [])
+        self.assertEqual(err.getvalue(),
+                         "x0x: COD: dropping a catalog-gap cluster with no file "
+                         "location: 'dup dead block' (1 finding(s))\n")
+
+    def test_the_envelope_counts_the_locus_free_clusters_it_dropped(self):
+        # The count `synthesize` prints comes off `candidates`; without this the
+        # artifact is quietly short and nothing on the line says so.
+        gap = {"code": "SEC-X0X", "domain": "SEC", "severity": "HIGH", "id": "gap-1",
+               "short_title": "no code covers repo-wide dependency pinning",
+               "description": "whole-repo gap"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            report = x0x.build_report([gap], {}, run_id="run-1")
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(report["candidates_dropped_locus_free"], 1)
+        # the envelope is a published contract: the new key must still validate
+        self.assertIsNone(jsonschema.validate(report, _schema()))
+
+    def test_a_mixed_cluster_survives_and_reports_nothing_dropped(self):
+        # One located finding is enough to carry the cluster, so nothing was
+        # dropped -- only the locus-free occurrence is missing, and `recurrence`
+        # counts occurrences, as it always has.
+        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1, "f1")
+        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1, "f2")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            report = x0x.build_report([located, locus_free], {}, run_id="run-1")
+        candidate = only(report["candidates"], "candidate")
+        self.assertEqual(candidate["recurrence"], 1)
+        self.assertEqual(only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
+        self.assertNotIn("candidates_dropped_locus_free", report)
+        self.assertEqual(err.getvalue(), "")
 
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
@@ -124,11 +167,7 @@ class TestX0XReport(unittest.TestCase):
             x0x.build_report([], {}, run_id=None)["generated_by"]["run_id"], "unknown")
 
     def test_conforms_to_schema(self):
-        schema_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "skill", "reference", "x0x-report-schema.json")
-        with open(schema_path, encoding="utf-8") as fh:
-            schema = json.load(fh)
+        schema = _schema()
         meta = {"version": "5.0.1", "ocrdb_version": "0.3.1", "target": "/r",
                 "timestamp": "t"}
         findings = [_f("COD-X0X", "COD", "LOW", "dup block", "a.py", 1, "f1"),

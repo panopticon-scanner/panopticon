@@ -93,11 +93,22 @@ def _domain(finding):
     return dom
 
 
-def build_candidates(findings):
+def _lead(cluster):
+    """The most severe finding in a cluster — it leads the candidate's
+    summary/severity/name, and names the cluster in a diagnostic."""
+    return max(cluster,
+               key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "").upper(), -1))
+
+
+def build_candidates(findings, dropped=None):
     """Cluster the X0X fallback findings into candidate records. Cluster key =
     ``(domain, normalized-title)``: the same anti-pattern titled the same way
     merges into one candidate with many occurrences; distinct titles stay
-    separate. (Semantic clustering is a future refinement.)"""
+    separate. (Semantic clustering is a future refinement.)
+
+    ``dropped``, when a list is passed, collects one record per cluster this
+    emitter could not carry because no finding in it had a file location — the
+    tally ``build_report`` publishes (see the ``continue`` below)."""
     clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings], insertion-ordered
     for f in findings:
         if not is_fallback(f.get("code")):
@@ -110,10 +121,24 @@ def build_candidates(findings):
     candidates = []
     for (domain, _), fs in clusters.items():
         occurrences = [o for o in (_occurrence(f) for f in fs) if o is not None]
+        lead = _lead(fs)
         if not occurrences:          # schema: occurrences has minItems 1
+            # #1807 DAT-2501524861: a locus-free finding is the CANONICAL shape
+            # for a repo-wide catalog gap -- `synth/findings.py` pops the empty
+            # location deliberately (#1522 COD-D1B) -- so this drop takes exactly
+            # the repo-wide gaps this emitter exists to carry to OCRDb's pool.
+            # A file cannot be invented for it, so DISCLOSE: one line naming the
+            # cluster (in `_domain`'s style), and a tally the envelope publishes,
+            # because otherwise the candidate count is quietly short.
+            title = " ".join(str(lead.get("short_title") or lead.get("title")
+                                 or "").split())[:120]
+            print("x0x: %s: dropping a catalog-gap cluster with no file "
+                  "location: %r (%d finding(s))" % (domain, title, len(fs)),
+                  file=sys.stderr)
+            if dropped is not None:
+                dropped.append({"domain": domain, "summary": title,
+                                "finding_count": len(fs)})
             continue
-        # the most severe finding leads the candidate's summary/severity/name
-        lead = max(fs, key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "").upper(), -1))
         cwe = []
         for f in fs:
             for c in _cwes(f):
@@ -145,6 +170,8 @@ def build_report(findings, meta, run_id, panopticon_version=None, target=None):
     meta = meta or {}
     if target is None and meta.get("target"):
         target = {"name": str(meta["target"])}
+    dropped: list[dict[str, Any]] = []
+    candidates = build_candidates(findings, dropped)
     report = {
         "schema_version": SCHEMA_VERSION,
         "generated_by": {
@@ -153,8 +180,13 @@ def build_report(findings, meta, run_id, panopticon_version=None, target=None):
             "run_id": str(run_id) if run_id else "unknown",
         },
         "ocrdb_version": meta.get("ocrdb_version") or "unknown",
-        "candidates": build_candidates(findings),
+        "candidates": candidates,
     }
+    if dropped:
+        # #1807: the catalog gaps this artifact could not carry, counted where a
+        # consumer of `candidates` will see them (the schema pins no top-level
+        # `additionalProperties`; the docstring above relies on that already).
+        report["candidates_dropped_locus_free"] = len(dropped)
     if target:
         report["target"] = target
     if meta.get("timestamp"):

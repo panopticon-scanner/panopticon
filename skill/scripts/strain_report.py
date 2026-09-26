@@ -40,6 +40,7 @@ vocabulary already had the other three.
 """
 from typing import Any
 import os
+import sys
 
 SCHEMA_VERSION = 1
 
@@ -111,6 +112,16 @@ def advisor_recode_signals(findings, run_id=None):
             continue
         occ = _occurrence(f, run_id)
         if occ is None:
+            # #1807 DAT-2501524861: the recode is real evidence; only its
+            # occurrence record is impossible, because the schema requires a file
+            # on every one and inventing one would be a lie. Announce the drop --
+            # the same disclosure `x0x_report` makes at its own locus-free drop.
+            title = " ".join(str(f.get("short_title") or f.get("title")
+                                 or "").split())[:120]
+            print("strain: %s: dropping an advisor recode with no file "
+                  "location: %s -> %s %r"
+                  % (f.get("id") or "?", filed, preferred, title),
+                  file=sys.stderr)
             continue
         clusters.setdefault((str(filed), str(preferred)), []).append((f, occ))
 

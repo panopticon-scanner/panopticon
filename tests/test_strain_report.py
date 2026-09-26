@@ -5,6 +5,8 @@ only argue the `new_code` disposition. Strain reports DISAGREEMENT — two codes
 in play and a reader had to choose — which is the only evidence that can argue
 `boundary` or `refine_existing`, both already in OCRDb's vocabulary.
 """
+import contextlib
+import io
 import json
 import os
 import unittest
@@ -85,10 +87,17 @@ class TestAdvisorRecodeSignals(unittest.TestCase):
         g = _finding("B", "QAL-G1A", advisor="QAL-G2A")
         self.assertFalse(sr.advisor_recode_signals([g], "run1")[0]["cross_domain"])
 
-    def test_a_finding_with_no_file_is_skipped(self):
-        f = _finding("A", "DAT-C1B", advisor="QAL-G1A")
+    def test_a_finding_with_no_file_is_announced_then_skipped(self):
+        # #1807 DAT-2501524861: the recode itself is real evidence -- only its
+        # occurrence record is impossible, because the schema requires a file and
+        # inventing one would be a lie. Announce the drop rather than swallow it.
+        f = _finding("A", "DAT-C1B", advisor="QAL-G1A", title="pinning\tpolicy")
         f["location"] = {}
-        self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        self.assertEqual(err.getvalue(),
+                         "strain: A: dropping an advisor recode with no file "
+                         "location: DAT-C1B -> QAL-G1A 'pinning policy'\n")
 
 
 class TestCrossRunSignals(unittest.TestCase):
