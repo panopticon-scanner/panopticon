@@ -3,6 +3,7 @@ finalization.
 """
 import contextlib
 import io
+import json
 import os
 import shlex
 import shutil
@@ -30,6 +31,25 @@ class TestValidatePhase(unittest.TestCase):
             user_email="t@t",
             user_name="t",
         )
+
+    def _assert_delta_refuses_validation(self, repo, expected, runner=subprocess.run):
+        baseline = runio._pano(repo, "tree-baseline.txt")
+        with open(baseline, "rb") as fh:
+            before = fh.read()
+        delta = validate_phase._tree_delta(repo, runner)
+        self.assertTrue(delta)
+        self.assertIn(expected, " ".join(delta))
+        manifest = {"run_id": "R", "worktree": None}
+        with self.assertRaises(runio.DriverError):
+            validate_phase.validate_execute(repo, manifest, runner=runner)
+        with open(baseline, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        marker = runio._pano(repo, "validate.json")
+        with open(marker, encoding="utf-8") as fh:
+            validation = json.load(fh)
+        self.assertFalse(validation["tree_clean"])
+        self.assertIn(expected, " ".join(validation["unexpected_changes"]))
+        self.assertFalse(validate_phase.validate_done(repo, manifest))
 
     def _marker_command(self, root):
         marker = os.path.join(root, ".panopticon", "probe-marker")
@@ -195,6 +215,40 @@ class TestValidatePhase(unittest.TestCase):
             raise OSError("git unavailable")
         with self.assertRaises(runio.DriverError):
             validate_phase.validate_execute(d, {"run_id": "R", "worktree": None}, runner=boom)
+
+    def test_nonzero_verification_status_names_failure_and_refuses_validation(self):
+        repo = self._git_repo()
+        validate_phase.capture_tree_baseline(repo)
+
+        def failed_status(*args, **kwargs):
+            return subprocess.CompletedProcess(args, 7, stdout="", stderr="status failed")
+
+        self._assert_delta_refuses_validation(repo, "verification git-status exited 7",
+                                              runner=failed_status)
+
+    def test_unreadable_recorded_entry_names_path_and_refuses_validation(self):
+        repo = self._git_repo()
+        dirty = os.path.join(repo, "a.py")
+        with open(dirty, "w", encoding="utf-8") as fh:
+            fh.write("dirty\n")
+        validate_phase.capture_tree_baseline(repo)
+        original = validate_phase._entry_for
+
+        def unreadable(root, rel, budget):
+            if rel == "a.py":
+                raise OSError("digest read failed")
+            return original(root, rel, budget)
+
+        with mock.patch.object(validate_phase, "_entry_for", side_effect=unreadable):
+            self._assert_delta_refuses_validation(repo, "a.py content unreadable")
+
+    def test_verification_digest_budget_exhaustion_refuses_validation(self):
+        repo = self._git_repo()
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("dirty\n")
+        validate_phase.capture_tree_baseline(repo)
+        with mock.patch.object(validate_phase, "_MAX_BASELINE_FILES", 0):
+            self._assert_delta_refuses_validation(repo, "a.py content equality not established")
 
     def test_panopticon_prefix_sibling_is_flagged(self):
         # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary
