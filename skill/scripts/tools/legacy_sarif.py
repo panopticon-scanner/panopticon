@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from . import sarif_utils as su
-from .base import run_tool, scratch_cwd
+from .base import REDTEAM, STANDARD, run_tool, scratch_cwd
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.
@@ -56,6 +56,12 @@ TOOL_TIMEOUT = 300
 
 
 class LegacySarifAdapter:
+    # `_run_adapter.py` hands `invoke` the run's `--security` mode only to the
+    # adapters that declare they read it (#1839). Gitleaks is the one tool on
+    # this path whose argv is built HERE rather than by the dispatcher, so the
+    # mode has to cross the container boundary to reach it.
+    reads_security_mode = True
+
     def __init__(self, name: str):
         self.name = name
 
@@ -66,8 +72,14 @@ class LegacySarifAdapter:
     def is_applicable(self, target: str) -> bool:
         return True
 
-    def invoke(self, target: str) -> tuple[bytes, int]:
-        """Run the legacy SARIF tool against target and return its raw output."""
+    def invoke(self, target: str,
+               security_mode: str = STANDARD) -> tuple[bytes, int]:
+        """Run the legacy SARIF tool against target and return its raw output.
+
+        `security_mode` (#1839) decides one thing here: whether gitleaks still
+        honours a `gitleaks:allow` comment in the target's own source. The
+        `.gitleaksignore` LOOKUP is redirected in both modes -- see below.
+        """
         if self.name not in TOOL_CMD:
             raise NotImplementedError(f"no command defined for tool {self.name}")
         cmd = [target if arg == "/src" else arg for arg in TOOL_CMD[self.name]]
@@ -83,8 +95,6 @@ class LegacySarifAdapter:
         # #1877: every other tool here names its scan root on argv (semgrep,
         # trivy, bandit positionally; gitleaks via `--source`), so the cwd is
         # a scratch, so cwd-relative scanner configuration comes from there.
-        # Gitleaks separately reads source-root `.gitleaksignore` even with a
-        # scratch cwd; that remaining source-root behavior is outside this fix.
         with scratch_cwd("%s-cwd-" % self.name) as cwd:
             if self.name == "gitleaks":
                 # An explicit scanner-owned config wins over a target's
@@ -92,6 +102,27 @@ class LegacySarifAdapter:
                 config = Path(cwd) / "gitleaks.toml"
                 config.write_bytes(b"[extend]\nuseDefault = true\n")
                 cmd.extend(("--config", str(config)))
+                # #1839 (run-14 SEC-284952751): the scratch cwd does NOT move
+                # the `.gitleaksignore` lookup -- gitleaks resolves that file
+                # from `--gitleaks-ignore-path`, whose default is `.` in the
+                # v8.18.4 pin, and `detect --source <target>` leaves the
+                # default pointing at the scan root through the container's
+                # `WORKDIR /src` (the dispatcher's `-w` moves it, but an
+                # `invoke` run anywhere else has no dispatcher in front of it).
+                # Naming the scratch EXPLICITLY makes the lookup the scanner's
+                # in both modes: an ignore file is target-authored scanner
+                # CONFIGURATION, the same class as the `.bandit` #1839 took off
+                # the argv, and the scratch holds no `.gitleaksignore` for it
+                # to find.
+                cmd.extend(("--gitleaks-ignore-path", cwd))
+                if security_mode == REDTEAM:
+                    # An inline `gitleaks:allow` comment is in the target's
+                    # SOURCE, not its config. Under `standard` -- the mode CI's
+                    # merge gate runs -- it is an operator's reviewed decision
+                    # about their own repository and stands, DISCLOSED on the
+                    # manifest (`suppression_comments`). Under redteam the tree
+                    # is untrusted and a comment may not silence a finding.
+                    cmd.append("--ignore-gitleaks-allow")
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:

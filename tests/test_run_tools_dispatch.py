@@ -178,8 +178,11 @@ class TestAdapterSelection(unittest.TestCase):
                                    runner=runner, venv_dirs=[])
             self.assertEqual(len(calls), 1)
             scan_argv = calls[0]
-            self.assertEqual(scan_argv[-3:], ["python3",
-                             "/opt/panopticon/scripts/_run_adapter.py", "gitleaks"])
+            # #1839: the `--security` pair rides between the entry point and
+            # the adapter name (TestTheAdapterDispatchCarriesTheSecurityMode).
+            self.assertEqual(scan_argv[-5:],
+                             ["python3", "/opt/panopticon/scripts/_run_adapter.py",
+                              "--security", "standard", "gitleaks"])
             self.assertEqual(scan_argv[scan_argv.index("--network") + 1], "none")
             self.assertIn("%s:/src:ro" % os.path.abspath(target), scan_argv)
             scripts_dir = os.path.dirname(os.path.abspath(rt.__file__))
@@ -372,6 +375,56 @@ class TestAdapterSelection(unittest.TestCase):
         self.assertNotIn("--pids-limit", flags)
         self.assertIn("--memory", flags)
         self.assertIn("--cpus", flags)
+
+
+class TestTheAdapterDispatchCarriesTheSecurityMode(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): the adapter path builds its scanner's argv
+    INSIDE the container, so a decision that depends on this run's security
+    mode -- whether gitleaks still honours a `gitleaks:allow` comment in the
+    target's own source -- only reaches it if the dispatch says which mode this
+    is. It travels as an explicit `--security <mode>` argv pair rather than an
+    environment variable: env is a channel the reviewed repository's own hooks
+    could set, and the argv is what the capture and the test can both read.
+    """
+
+    def _dispatch(self, **kwargs):
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            rt.run_tools(d, ["gitleaks"], os.path.join(d, "out"),
+                         runner=runner, venv_dirs=[], **kwargs)
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_the_mode_is_named_on_every_adapter_dispatch(self):
+        for mode in rt.SECURITY_MODES:
+            with self.subTest(mode=mode):
+                argv = self._dispatch(security_mode=mode)
+                self.assertIn("--security", argv)
+                self.assertEqual(argv[argv.index("--security") + 1], mode)
+                # The adapter NAME stays last: `_DockerStub.dispatches()` and
+                # the progress lines read the argv's tail as the tool.
+                self.assertEqual(argv[-1], "gitleaks")
+                self.assertEqual(argv[-4:], ["/opt/panopticon/scripts/_run_adapter.py",
+                                             "--security", mode, "gitleaks"])
+
+    def test_the_default_is_standard(self):
+        argv = self._dispatch()
+        self.assertEqual(argv[argv.index("--security") + 1], "standard")
+
+    def test_the_mode_is_the_one_run_tools_parses_from_its_own_cli(self):
+        # `main` reads `--security` (the flag `security_gate` takes) and must
+        # hand the same value to the dispatch; a default buried in `run_tools`
+        # would make a redteam run's adapters standard-mode ones.
+        import inspect
+        self.assertIn("security_mode",
+                      inspect.signature(rt.run_tools).parameters)
+        self.assertIn("security_mode",
+                      inspect.signature(rt._run_selected).parameters)
 
 
 class TestBanditConfigIsScannerOwned(unittest.TestCase):

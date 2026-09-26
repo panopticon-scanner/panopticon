@@ -187,6 +187,73 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
 
+class TestGitleaksSuppressionPosture(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): two kinds of in-tree suppression, two rules.
+
+    An ignore FILE read from the scan root is target-authored scanner
+    CONFIGURATION -- the #1924 class -- and is neutralised in both modes: the
+    `.gitleaksignore` lookup is pointed at the adapter's own scratch, which the
+    target cannot write. An inline suppression COMMENT (`gitleaks:allow`) is in
+    the target's SOURCE, and under `standard` -- the mode CI's merge gate runs
+    (`.github/workflows/security.yml` passes no `--security`) -- it is an
+    operator's reviewed, in-diff decision about their own repository, so it is
+    HONOURED and the manifest says so. Under `--security redteam` the reviewed
+    tree is untrusted and the comment buys nothing.
+    """
+
+    def _launch(self, **kwargs):
+        calls = []
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        side_effect=scratch_cwd_recorder(calls)):
+            legacy.LegacySarifAdapter("gitleaks").invoke("/some/target", **kwargs)
+        return only(calls, "gitleaks launch")
+
+    def test_the_ignore_file_lookup_is_the_scratch_in_both_modes(self):
+        # `legacy_sarif` used to record the source-root `.gitleaksignore` as
+        # "outside this fix": a scratch cwd does not move it, because gitleaks
+        # resolves it from `--gitleaks-ignore-path`, whose DEFAULT is `.`.
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                launch = self._launch(security_mode=mode)
+                argv = launch["argv"]
+                self.assertIn("--gitleaks-ignore-path", argv)
+                self.assertEqual(argv[argv.index("--gitleaks-ignore-path") + 1],
+                                 launch["cwd"])
+                self.assertEqual(argv.count("--gitleaks-ignore-path"), 1)
+
+    def test_an_inline_allow_is_ignored_under_redteam(self):
+        self.assertIn("--ignore-gitleaks-allow",
+                      self._launch(security_mode="redteam")["argv"])
+
+    def test_an_inline_allow_is_honoured_under_standard(self):
+        self.assertNotIn("--ignore-gitleaks-allow",
+                         self._launch(security_mode="standard")["argv"])
+
+    def test_the_default_mode_is_standard(self):
+        # A caller that names no mode gets the conservative one, the same
+        # default `run_tools --security` and `partition_venv_dirs` take.
+        self.assertNotIn("--ignore-gitleaks-allow", self._launch()["argv"])
+
+    def test_the_adapter_declares_that_it_reads_the_mode(self):
+        # `_run_adapter` hands the keyword only to adapters that declare it.
+        self.assertTrue(legacy.LegacySarifAdapter("gitleaks").reads_security_mode)
+
+    def test_the_mode_grows_no_flag_on_any_other_tool_here(self):
+        # semgrep's and bandit's suppression flags are appended by the
+        # DISPATCHER (`run_tools._with_suppression_flags`), which builds their
+        # argv; nothing here may add a second copy, and trivy/gosec take none.
+        for tool in ("semgrep", "bandit", "trivy"):
+            with self.subTest(tool=tool):
+                calls = []
+                with mock.patch("scripts.tools.base.subprocess.Popen",
+                                side_effect=scratch_cwd_recorder(calls)):
+                    legacy.LegacySarifAdapter(tool).invoke(
+                        "/some/target", security_mode="redteam")
+                argv = only(calls, "%s launch" % tool)["argv"]
+                self.assertEqual(argv, [("/some/target" if a == "/src" else a)
+                                        for a in legacy.TOOL_CMD[tool]])
+
+
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "goldens", "tool-raw")
 

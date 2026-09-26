@@ -21,7 +21,7 @@ from scripts import groups_schema
 from scripts import executable
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
-from scripts.tools.base import drain_stderr_async
+from scripts.tools.base import SECURITY_FLAG, drain_stderr_async
 from scripts import plan_contract
 from scripts import redact
 from scripts import safe_write
@@ -1338,7 +1338,7 @@ def _atomic_write(out_path, data):
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
               runner=None, online=False, progress=None, venv_dirs=None,
-              run_id=None):
+              run_id=None, security_mode="standard"):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -1351,6 +1351,15 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     default can never hand a scanner something the rules forbid. main() passes
     its own list so the walk is done once and the manifest discloses exactly what
     the scan was told to skip.
+
+    `security_mode` (#1839) is the same `--security` value `partition_venv_dirs`
+    reads, carried all the way to the argv: under `redteam` the scanners are
+    told to stop honouring the inline suppression COMMENTS in the target's own
+    source, and the adapter dispatches name the mode so the argv built inside
+    the container can make the same choice. `standard` is the conservative
+    default for a caller that named no mode -- the mode CI's merge gate runs,
+    where an inline suppression is an operator's reviewed decision about their
+    own repository and is honoured, and DISCLOSED on the manifest.
 
     `run_id` (#1645) names this run's egress network and proxy sidecar, so a
     leftover from a crashed run is recognisable. The whole loop runs inside one
@@ -1400,13 +1409,14 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
                         + egress.SIDECAR_SLACK) as online_egress:
         written = _run_selected(target, tools, out_dir, image, docker_runner,
                                 progress, total, venv_dirs, docker_context,
-                                online_egress)
+                                online_egress, security_mode)
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
-                  venv_dirs, docker_context, online_egress):
+                  venv_dirs, docker_context, online_egress,
+                  security_mode="standard"):
     """The dispatch loop, one docker invocation per selected tool.
 
     Split out of `run_tools` only so the `egress.session` context (#1645) does
@@ -1478,7 +1488,13 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             docker.extend([
                 "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
                 "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
-                "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
+                "python3", "/opt/panopticon/scripts/_run_adapter.py",
+                # #1839: this run's mode, BEFORE the adapter name so the name
+                # stays the argv's last token, and on the argv rather than in
+                # the environment (which the target's own hooks could set).
+                # `_run_adapter._split_security_mode` fails the tool closed on
+                # a token it does not recognise.
+                SECURITY_FLAG, security_mode, tool])
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
                     _capture_run("adapter", tool, docker, out_path, runner,
@@ -1710,7 +1726,7 @@ def main(argv=None):
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
-                      run_id=a.run_id)
+                      run_id=a.run_id, security_mode=a.security_mode)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
                        run_id=a.run_id, excluded_dirs=venv_rows,

@@ -38,6 +38,20 @@ target_root_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 DROP_IF_NO_LOCATION = False  # default; adapters override if needed
 
 
+# The `--security <mode>` contract on `_run_adapter.py`'s argv (#1839, run-14
+# SEC-284952751). ONE definition of the two names, read by the dispatcher that
+# writes the token (`run_tools`), the entry point that parses it
+# (`_run_adapter`) and the adapters that act on it -- an explicit argv pair
+# rather than an environment variable, which is a channel a target's own hooks
+# could set. `run_tools.SECURITY_MODES` still spells the same two names for its
+# argparse `choices` (it must not import the gate, and the gate imports it);
+# `tests/test_run_adapter.py` pins the two tuples equal so they cannot drift.
+SECURITY_FLAG = "--security"
+STANDARD = "standard"
+REDTEAM = "redteam"
+SECURITY_MODES = (STANDARD, REDTEAM)
+
+
 def omit_none(mapping: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of *mapping* with keys whose values are None removed."""
     return {k: v for k, v in mapping.items() if v is not None}
