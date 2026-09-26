@@ -1359,11 +1359,9 @@ class TestResetGlobs(unittest.TestCase):
         self.assertIn("dispatch-plan-driver.json", driver._RESET_GLOBS)
 
     def test_reset_removes_stale_run_files_and_preserves_durable_artifact(self):
-        # Use a newly created review root outside every checkout: this calls
-        # the real deletion boundary.
-        temp_parent = "/private/tmp/panopticon-wave13-20260926"
-        os.makedirs(temp_parent, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=temp_parent) as root:
+        # The suite's external TMPDIR supplies a newly allocated review root
+        # on each platform; this calls the real deletion boundary.
+        with tempfile.TemporaryDirectory() as root:
             artifacts = os.path.join(root, ".panopticon")
             os.mkdir(artifacts)
             stale = ("diff-hunks.json", "out-file-hashes.json",
