@@ -351,6 +351,78 @@ class TestCollect(unittest.TestCase):
             self.assertIsNone(cu.run_started_at(os.path.join(d, "nope")))
 
 
+class TestLaterRunBoundary(unittest.TestCase):
+    def test_selects_earliest_later_sibling_and_skips_irrelevant_entries(self):
+        with tempfile.TemporaryDirectory() as parent:
+            mine = os.path.join(parent, "mine")
+
+            def sibling(name, created):
+                path = os.path.join(parent, name)
+                os.mkdir(path)
+                with open(os.path.join(path, "run-manifest.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"created": created}, fh)
+                return path
+
+            sibling("mine", "2026-09-01T10:15:00Z")
+            sibling("early", "2026-09-01T09:00:00Z")
+            sibling("later", "2026-09-01T13:00:00Z")
+            sibling("nearest", "2026-09-01T11:00:00Z")
+            unreadable = sibling("unreadable", "2026-09-01T10:00:00Z")
+            sibling("latest", "2026-09-01T10:30:00Z")
+            with open(os.path.join(parent, "plain-file"), "w", encoding="utf-8") as fh:
+                fh.write("not a directory")
+            original_open = open
+
+            def fail_one(path, *args, **kwargs):
+                if str(path).startswith(unreadable + os.sep):
+                    raise PermissionError(13, "Permission denied", path)
+                return original_open(path, *args, **kwargs)
+
+            with mock.patch("builtins.open", side_effect=fail_one):
+                result = cu.later_run_started(mine, "2026-09-01T10:00:00Z")
+            self.assertEqual(result, ("nearest", "2026-09-01T11:00:00Z"))
+
+    def test_main_refuses_overlap_but_explicit_until_bypasses_and_dry_run_does_not_write(self):
+        with tempfile.TemporaryDirectory() as parent:
+            mine = os.path.join(parent, "mine")
+            later = os.path.join(parent, "later")
+            os.mkdir(mine)
+            os.mkdir(later)
+            for path, stamp in ((mine, "2026-09-01T10:00:00Z"),
+                                (later, "2026-09-01T11:00:00Z")):
+                with open(os.path.join(path, "run-manifest.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"created": stamp}, fh)
+            transcript = _write(os.path.join(parent, "session.jsonl"), [
+                _rec(usage=_u(o=3), ts="2026-09-01T10:30:00Z"),
+                _rec(usage=_u(o=5), ts="2026-09-01T11:30:00Z"),
+            ])
+            args = ["--run-dir", mine, "--project-dir", parent,
+                    "--transcript", transcript, "--tasks-dir", os.path.join(parent, "none")]
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(cu.main(args), 2)
+            self.assertIn("later", err.getvalue())
+            self.assertIn("--until", err.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(mine, "usage.json")))
+            for ceiling, expected_total in (("2026-09-01T11:00:00Z", 3), ("none", 8)):
+                with self.subTest(ceiling=ceiling):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(cu.main(args + ["--until", ceiling, "--dry-run"]), 0)
+                    self.assertEqual(json.loads(out.getvalue())["total"], expected_total)
+                    self.assertTrue(out.getvalue().endswith("\n"))
+                    self.assertFalse(os.path.exists(os.path.join(mine, "usage.json")))
+
+    def test_main_bad_run_directory_returns_two(self):
+        with tempfile.TemporaryDirectory() as parent:
+            missing = os.path.join(parent, "missing")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cu.main(["--run-dir", missing, "--project-dir", parent])
+            self.assertEqual(rc, 2)
+            self.assertIn(missing, err.getvalue())
+
+
 class TestEndToEndIntoTheReport(unittest.TestCase):
     def test_written_usage_is_what_synthesize_surfaces(self):
         # The whole point of the channel: what the collector writes is what
