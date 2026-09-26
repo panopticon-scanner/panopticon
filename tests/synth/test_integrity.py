@@ -345,7 +345,7 @@ class IntegritySectionTest(unittest.TestCase):
             "invalid_verify_queue", "plans_seen",
             # SEC-377944137 (#1832): the guard on `plans_seen`, published
             # beside it -- always present, like every other key here.
-            "dispatch_plan_missing"]
+            "dispatch_plan_missing", "dispatch_plan_mismatched"]
     # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
     # (which is the only caller that holds the tool axis), not from
     # integrity_section -- so the KEY ORDER pinned here is deliberately
@@ -515,13 +515,18 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
         gr.snapshot_out_files(plan, out_path=os.path.join(self.run_dir,
                                                           "out-file-hashes.json"))
 
-    def _section(self, plan_owed):
+    def _section(self, plan_owed, plan_sha256=None):
         plans = plan_mod.load_dispatch_plans_detailed(self.run_dir)
         with contextlib.redirect_stderr(io.StringIO()) as err:
             sec = integrity_mod.integrity_section(plans[0], self.paths, self.run_dir,
                                                   plans[1], plans[2], None,
-                                                  plan_owed=plan_owed)
+                                                  plan_owed=plan_owed,
+                                                  plan_sha256=plan_sha256)
         return sec, err.getvalue()
+
+    def _plan_hash(self):
+        return integrity_mod._plan_hash(
+            plan_mod.load_dispatch_plans_detailed(self.run_dir)[0][0])
 
     def _integrity_ok(self, section):
         """reconcile's OWN `integrity_ok`, never re-spelled here: a test that
@@ -582,6 +587,30 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
         self.assertFalse(self._integrity_ok(sec))
         self.assertIn("deleted evidence", err)
 
+    def test_the_stamped_hash_clears_the_plan_that_produced_it(self):
+        sec, err = self._section(plan_owed=True, plan_sha256=self._plan_hash())
+        self.assertFalse(sec["dispatch_plan_mismatched"])
+        self.assertTrue(self._integrity_ok(sec))
+        self.assertNotIn("NOT the one this run wrote", err)
+
+    def test_a_plan_that_is_present_but_not_this_run_s_is_tamper(self):
+        # Replacing the plan is the same erasure as deleting it, and cheaper: a
+        # narrower plan has fewer cells for reconcile to miss.
+        sec, err = self._section(plan_owed=True, plan_sha256="0" * 64)
+        self.assertEqual(sec["plans_seen"], 1)          # present, and parses
+        self.assertFalse(sec["dispatch_plan_missing"])   # so not a deletion
+        self.assertTrue(sec["dispatch_plan_mismatched"])
+        self.assertFalse(self._integrity_ok(sec))
+        self.assertIn("NOT the one this run wrote", err)
+
+    def test_a_deleted_plan_is_not_also_reported_as_mismatched(self):
+        # One fault, one key: absence is `dispatch_plan_missing`, and there is
+        # no content to disagree with.
+        os.remove(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN))
+        sec, _err = self._section(plan_owed=True, plan_sha256="0" * 64)
+        self.assertTrue(sec["dispatch_plan_missing"])
+        self.assertFalse(sec["dispatch_plan_mismatched"])
+
     def test_a_run_with_no_driver_to_ask_keeps_the_benign_reading(self):
         # Back-compat pin: a direct `synthesize.py` call over hand-collected
         # findings passes no --plan-owed, and absence stays "not measured" --
@@ -592,4 +621,5 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
                                               plans[1], plans[2], None)
         self.assertEqual(sec["plans_seen"], 0)
         self.assertFalse(sec["dispatch_plan_missing"])
+        self.assertFalse(sec["dispatch_plan_mismatched"])
         self.assertTrue(self._integrity_ok(sec))

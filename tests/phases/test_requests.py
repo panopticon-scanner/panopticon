@@ -1,7 +1,9 @@
 """Tests for scripts.phases.requests: dispatch-request.json, the driver plan and the
 prompt file lists every checkpoint emits.
 """
+import contextlib
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -16,6 +18,7 @@ import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
 import scripts.phases.setup as setup
 import scripts.run_manifest as run_manifest
+import scripts.synth.integrity as integrity_mod
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 
@@ -239,6 +242,120 @@ class TestDriverPlanEntries(unittest.TestCase):
             for entry in entries:
                 self.assertNotIn("scope", entry)
                 self.assertNotIn("marker", entry)
+
+
+class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
+    """SEC-377944137 (#1832) C1: `dispatch-plan-driver.json` and
+    `out-file-hashes.json` are OWED once this run has written them, and both
+    writers used to re-arm the moment the file went away.
+
+    That is how the guards built on them were erased. `synthesize_execute`
+    opens by calling both, so on the next `driver run` after a substitution the
+    snapshot was re-taken OVER THE SUBSTITUTED BYTES -- the tampered file
+    became its own baseline, `content_mismatched_files` went empty and #1208's
+    owed-but-absent reading never fired -- and the plan was re-created, so the
+    deletion left no trace either. The manifest stamp makes absence REPORTED
+    rather than repaired; re-creation stays legal for a run that never wrote
+    the artifact, which is the #5.0-16 fallback (the snapshot's legitimate
+    first take at synthesize when the verify phase was vacuously done).
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+        run_manifest.write_manifest(self.root, {
+            "schema_version": 1, "run_id": "RID", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-26T00:00:00Z",
+            "review_root": self.root, "target": self.root})
+        self.manifest = run_manifest.load_manifest(self.root)
+        write_host_evidence(self.root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                          {"effective": ["SEC"]})
+        self.plan_path = runio._pano(self.root, "dispatch-plan-driver.json")
+        self.snap_path = runio._pano(self.root, "out-file-hashes.json")
+
+    def _stamp(self, key):
+        return run_manifest.artifact_stamp(run_manifest.load_manifest(self.root), key)
+
+    def test_writing_the_plan_stamps_the_manifest_with_its_content_hash(self):
+        requests._write_driver_plan(self.root, self.manifest)
+        stamp = self._stamp(run_manifest.DRIVER_PLAN)
+        self.assertEqual(stamp["sha256"],
+                         integrity_mod._plan_hash(runio._load_json(self.plan_path)))
+
+    def test_a_deleted_plan_is_reported_not_re_created(self):
+        requests._write_driver_plan(self.root, self.manifest)
+        os.remove(self.plan_path)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(requests._write_driver_plan(self.root, self.manifest))
+        self.assertFalse(os.path.exists(self.plan_path))
+        self.assertIn("dispatch-plan-driver.json", err.getvalue())
+
+    def test_an_unstamped_run_still_writes_the_plan(self):
+        # Back-compat AND the honest first write: a run resumed across this
+        # upgrade carries no stamp, and must behave exactly as it did before.
+        self.assertIsNotNone(requests._write_driver_plan(self.root, self.manifest))
+        self.assertTrue(os.path.isfile(self.plan_path))
+
+    def test_the_unenforced_ack_gate_still_runs_on_every_pass(self):
+        # #1519: the refusal must sit BELOW `require_unenforced_ack`, or a run
+        # that was refused could come back with the plan deleted and dispatch
+        # write-capable reviewers unguarded.
+        requests._write_driver_plan(self.root, self.manifest)
+        os.remove(self.plan_path)
+        write_host_evidence(self.root, {hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        with contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(runio.DriverError):
+            requests._write_driver_plan(self.root, self.manifest)
+
+    def test_a_deleted_snapshot_is_reported_not_re_taken(self):
+        requests._write_driver_plan(self.root, self.manifest)
+        cell = runio._pano(self.root, "findings-Auth-SEC.json")
+        runio._write_json(cell, {"findings": []})
+        requests._snapshot_review_out_files(self.root, self.manifest)
+        self.assertTrue(os.path.isfile(self.snap_path))
+        self.assertEqual(self._stamp(run_manifest.OUT_FILE_SNAPSHOT)["cells"], 1)
+        original = runio._load_json(self.snap_path)
+        os.remove(self.snap_path)
+        runio._write_json(cell, {"findings": ["INJECTED"]})   # the substitution
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(
+                requests._snapshot_review_out_files(self.root, self.manifest))
+        self.assertFalse(os.path.exists(self.snap_path))
+        self.assertIn("out-file-hashes.json", err.getvalue())
+        self.assertTrue(original)   # the fixture really did snapshot something
+
+    def test_an_unstamped_run_still_takes_the_snapshot(self):
+        # The #5.0-16 fallback: verify was vacuously done, so synthesize takes
+        # the FIRST snapshot. Nothing is owed yet, so nothing is refused.
+        requests._write_driver_plan(self.root, self.manifest)
+        runio._write_json(runio._pano(self.root, "findings-Auth-SEC.json"),
+                          {"findings": []})
+        self.assertIsNotNone(
+            requests._snapshot_review_out_files(self.root, self.manifest))
+        self.assertTrue(os.path.isfile(self.snap_path))
+
+    def test_an_existing_artifact_is_still_left_alone(self):
+        # Idempotent and one-way, unchanged: a present snapshot is never
+        # re-hashed, which is what makes a substitution detectable at all.
+        requests._write_driver_plan(self.root, self.manifest)
+        runio._write_json(runio._pano(self.root, "findings-Auth-SEC.json"),
+                          {"findings": []})
+        requests._snapshot_review_out_files(self.root, self.manifest)
+        snap = runio._load_json(self.snap_path)
+        plan = runio._load_json(self.plan_path)
+        runio._write_json(runio._pano(self.root, "findings-Auth-SEC.json"),
+                          {"findings": ["INJECTED"]})
+        requests._write_driver_plan(self.root, self.manifest)
+        requests._snapshot_review_out_files(self.root, self.manifest)
+        self.assertEqual(runio._load_json(self.snap_path), snap)
+        self.assertEqual(runio._load_json(self.plan_path), plan)
 
 
 class TestEntryMarkerAndScope(unittest.TestCase):

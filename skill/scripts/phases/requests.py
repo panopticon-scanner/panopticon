@@ -473,17 +473,22 @@ def _write_driver_plan(review_root, manifest):
     cells exist; a later call is a no-op if the file is already present (the
     cell set is fixed once coverage completes, which gates the review phase).
     An empty target (no cells) writes NO plan -- reconcile then stays a correct
-    no-op rather than flagging an empty plan."""
+    no-op rather than flagging an empty plan, and never RE-created once the
+    manifest stamps it (`run_manifest.claim_artifact`, SEC-377944137)."""
     path = runio._pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
     # Before any write-capable cell is dispatched, on EVERY pass -- a resume
     # dispatches cells too, so gating only the first write would let a run that
-    # was refused come back without the flag and proceed (#1519).
+    # was refused come back without the flag and proceed (#1519) -- which is
+    # also why it sits ABOVE the owed-artifact refusal below.
     require_unenforced_ack(review_root, manifest, entries)
     if os.path.isfile(path):
         return path
+    if not run_manifest.claim_artifact(review_root, manifest, run_manifest.DRIVER_PLAN,
+                                       path, sha256=integrity_mod._plan_hash(entries)):
+        return None               # deleted evidence -- reported, never repaired
     return runio._write_json(path, entries)
 
 UNENFORCED_ACK = "unenforced-ack.json"
@@ -680,12 +685,16 @@ def _snapshot_review_out_files(review_root, manifest):
     written) and before any verify-phase agent can touch a findings file, so a
     later substitution -- e.g. by a rogue advisor on the unenforced generic host
     -- is caught. Idempotent AND one-way: if the snapshot already exists it is
-    NOT rewritten -- re-hashing after a substitution would mask it."""
+    NOT rewritten, nor re-taken once DELETED -- either masks a substitution
+    (SEC-377944137; `run_manifest.claim_artifact`)."""
     path = runio._pano(review_root, "out-file-hashes.json")
     if os.path.isfile(path):
         return path
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
+    if not run_manifest.claim_artifact(review_root, manifest,
+                                       run_manifest.OUT_FILE_SNAPSHOT, path, cells=len(entries)):
+        return None               # deleted baseline -- reported, never re-taken
     group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path))
     return path if os.path.isfile(path) else None

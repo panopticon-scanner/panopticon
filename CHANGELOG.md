@@ -7,25 +7,35 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Deleting the dispatch plan no longer certifies a substitution the run had already caught
-  (#1832, SEC-377944137).** #1208 made an owed-but-absent `out-file-hashes.json` fail closed,
-  because deleting that baseline had been the cheapest way to erase evidence of a findings
-  substitution. One file up, the same absence still read as "not measured": every check keyed on
-  `dispatch-plan-driver.json` treats a missing plan as owing nothing -- `_owes_a_snapshot` returns
-  False, so #1208's own guard goes quiet; the planned-vs-ingested reconciliation returns
+- **Deleting a run's own integrity evidence is reported, not repaired -- so a substitution
+  survives the `rm` that used to launder it (#1832, SEC-377944137).** #1208 made an owed-but-absent
+  `out-file-hashes.json` fail closed, because deleting that baseline had been the cheapest way to
+  erase evidence of a findings substitution. It did not hold on a live `driver run`: the synthesize
+  phase opens by calling both artifact writers, and each re-armed the moment its file went away, so
+  the snapshot was simply re-taken OVER THE SUBSTITUTED BYTES -- the tampered findings file became
+  its own baseline, `content_mismatched_files` went empty, and the plan was re-created so its
+  deletion left no trace either. One file up, absence also still read as "not measured": every check
+  keyed on `dispatch-plan-driver.json` treats a missing plan as owing nothing (`_owes_a_snapshot`
+  returns False, so #1208's guard goes quiet; the planned-vs-ingested reconciliation returns
   `([], [])` by design; `duplicate_out_files` sees nothing; and `empty_dispatch_plans` counts empty
-  LISTS, of which there are none when there are no plan FILES. `plans_seen` was the one key that
-  noticed, and `integrity_ok` did not read it, so one more `rm` after the snapshot turned a
-  DETECTED substitution back into `integrity_ok=True`. The run manifest is the anchor now, because
-  a plan cannot attest to its own existence and the manifest is the better-defended file (#1727):
-  a recorded review-or-later dispatch means a plan was written, the driver threads that in as
-  `--plan-owed`, and `meta.integrity.dispatch_plan_missing` reports that the plan is gone -- it
-  fails the gate closed beside its siblings and prints `this run's driver dispatched review
-  cells, so a dispatch-plan-driver.json is OWED ... Treating as deleted evidence (fail-closed),
-  not an unmeasured run; integrity is NOT certified`. A direct `synthesize.py` call over
-  hand-collected findings has no driver to ask, passes nothing, and keeps the benign reading every
-  other key here has; the obligation is never inferred from the findings files present, which the
-  same writer could arrange.
+  LISTS, of which there are none when there are no plan FILES), while `plans_seen` -- the one key
+  that noticed -- was not in `integrity_ok`.
+  Both artifacts are now OWED ONCE: their writers stamp the run manifest as they write
+  (`driver_plan` carries the plan's canonical content hash, `out_file_snapshot` the cell count), the
+  stamps are MONOTONE, and a stamped artifact that is gone is never re-created -- the driver says so
+  on its own stderr, naming `--reset` for a run folder that was cleared on purpose. Synthesis then
+  reports `meta.integrity.dispatch_plan_missing` for a deleted plan and `dispatch_plan_mismatched`
+  for one that is present but is not the plan this run wrote (replacing it is the same erasure and
+  cheaper: a narrower plan declares fewer cells), both failing the gate closed beside their #1208
+  sibling. The manifest is the anchor because a plan cannot attest to its own existence and the
+  manifest is the better-defended file (#1727) -- and a durable stamp rather than the rolling
+  dispatch-request slot, which read `verify` on any run that verified anything, could be rolled
+  BACKWARD to `scout` by the same tamper it was meant to notice, and could not tell a tool-advisor
+  verify dispatch from a review one. A run that never wrote a plan -- a direct `synthesize.py` call
+  over hand-collected findings, a target with no declared cells, a run resumed across this upgrade
+  -- stamps nothing, keeps the benign reading every other key here has, and still gets the #5.0-16
+  first-snapshot fallback when its verify phase was vacuously done. The obligation is never inferred
+  from the findings files present, which the same writer could arrange.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

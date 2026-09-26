@@ -53,7 +53,7 @@ class PlanInputs:
 
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
-             git_drivers_suppressed=None, plan_owed=False):
+             git_drivers_suppressed=None, plan_owed=False, plan_sha256=None):
         """main()'s plan stage (WS-0 S3), in its original order: lane
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
@@ -62,9 +62,10 @@ class PlanInputs:
         ToolAxis.load / FindingSet.load need a piece of each first (#146/C1:
         never load the plans twice).
         `verdicts` is the FindingSet's dict, threaded through resume_stats so
-        the verdicts dir is read once. `plan_owed` is the driver's `--plan-owed`
-        (SEC-377944137, #1832), passed straight to integrity_section -- False
-        for a caller with no driver to ask."""
+        the verdicts dir is read once. `plan_owed` / `plan_sha256` are the
+        driver's `--plan-owed` / `--plan-sha256` (SEC-377944137, #1832), passed
+        straight to integrity_section -- False/None for a caller with no driver
+        to ask."""
         plan_lists, plans_seen, invalid_plans = plans
         queue_obj, invalid_verify_queue = queue
         plan = [e for pl in plan_lists for e in pl]
@@ -78,7 +79,7 @@ class PlanInputs:
         resume = group_runner.resume_stats(plan, queue_obj, verdicts_dir, _verdicts=verdicts)
         integrity = integrity_mod.integrity_section(
             plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue,
-            plan_owed=plan_owed)
+            plan_owed=plan_owed, plan_sha256=plan_sha256)
         scout_requested, scout_profiles_seen = load_scout_requests(run_dir)
         # 5.0 (matrix Sec5.1): auto-discover <run_dir>/coverage-<group>.json the
         # same way groups.json/scout-*.json are -- fed to audit_floor_cells in

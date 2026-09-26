@@ -507,5 +507,108 @@ class TestRecordDiscardedBatch(unittest.TestCase):
         self.assertEqual([], rm.conflicting_flags(rm.load_manifest(self.root)))
 
 
+class TestArtifactStamps(unittest.TestCase):
+    """SEC-377944137 (#1832): the durable record that this run WROTE an
+    owed-once run artifact, so a later absence is a DELETION and not a run
+    that never had one.
+
+    The fifth deliberate `_rewrite` caller, and the only MONOTONE one: the
+    rolling `dispatch_request` slot it replaces could be rolled BACKWARD by the
+    same tamper it was meant to notice (a deleted `coverage-<group>.json` makes
+    the coverage phase re-dispatch scout, which rewrote the slot to `scout`).
+    """
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+        rm.write_manifest(self.root, {"run_id": "r1", "host": "claude"})
+
+    def _stamp(self, key):
+        return rm.artifact_stamp(rm.load_manifest(self.root), key)
+
+    def test_the_stamp_persists_and_is_read_back(self):
+        rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN,
+                                 at="2026-01-01T00:00:00Z", sha256="a" * 64)
+        stored = rm.load_manifest(self.root)[rm.DRIVER_PLAN]
+        self.assertEqual(stored, {"sha256": "a" * 64, "at": "2026-01-01T00:00:00Z"})
+        self.assertEqual(rm.artifact_stamp(rm.load_manifest(self.root),
+                                           rm.DRIVER_PLAN), stored)
+
+    def test_it_is_monotone_a_second_stamp_never_replaces_the_first(self):
+        # The whole point: a re-stamp is how an attacker would launder the
+        # record, and an honest re-write of an owed artifact is refused anyway.
+        rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN,
+                                 at="2026-01-01T00:00:00Z", sha256="a" * 64)
+        rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN,
+                                 at="2026-01-02T00:00:00Z", sha256="b" * 64)
+        self.assertEqual(rm.load_manifest(self.root)[rm.DRIVER_PLAN]["sha256"],
+                         "a" * 64)
+
+    def test_both_artifacts_have_their_own_stamp(self):
+        # One stamp for both would make the vacuous-verify fallback (the
+        # snapshot's legitimate first take at synthesize) read as a deletion.
+        rm.record_artifact_stamp(self.root, None, rm.OUT_FILE_SNAPSHOT, cells=2)
+        manifest = rm.load_manifest(self.root)
+        self.assertEqual(manifest[rm.OUT_FILE_SNAPSHOT]["cells"], 2)
+        self.assertIsNone(rm.artifact_stamp(manifest, rm.DRIVER_PLAN))
+
+    def test_an_unknown_key_is_a_programming_error(self):
+        with self.assertRaises(ValueError):
+            rm.record_artifact_stamp(self.root, None, "made_up_artifact")
+
+    def test_a_tree_with_no_manifest_records_nothing_and_does_not_raise(self):
+        # The pre-manifest window is real (unit callers), and a recorder that
+        # CREATED a manifest here would hand `runio._run_tag` a tag mid-run and
+        # move every `_pano` path under it.
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertIsNone(rm.record_artifact_stamp(
+                empty, {"run_id": "r1"}, rm.DRIVER_PLAN, sha256="a" * 64))
+            self.assertFalse(os.path.exists(rm.manifest_path(empty)))
+
+    def test_a_planted_non_dict_stamp_reads_as_absent(self):
+        # This file is inside the reviewed tree, so the key is a value a target
+        # can choose -- and the fail-open direction (no stamp) is the same
+        # benign reading a run that never wrote a plan gets.
+        for planted in ("yes", 1, [], None, {}):
+            with self.subTest(planted=planted):
+                self.assertIsNone(rm.artifact_stamp({rm.DRIVER_PLAN: planted},
+                                                    rm.DRIVER_PLAN))
+        self.assertIsNone(rm.artifact_stamp(None, rm.DRIVER_PLAN))
+
+    def test_a_claim_is_refused_only_for_a_stamped_and_absent_artifact(self):
+        path = os.path.join(self.root, "dispatch-plan-driver.json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # Unstamped: the claim succeeds AND stamps, so the next absence is
+            # a deletion rather than a second first write.
+            self.assertTrue(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN,
+                                              path, sha256="a" * 64))
+            self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
+            self.assertFalse(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path))
+            with open(path, "w") as fh:
+                fh.write("[]")
+            # Present again: nothing to refuse (the callers return earlier on
+            # `isfile`, but the predicate must not depend on that).
+            self.assertTrue(rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, path))
+        # The operator hears about it on the DRIVER's stderr, which is not
+        # captured the way the synthesize child's is.
+        self.assertIn("dispatch-plan-driver.json", err.getvalue())
+        self.assertIn("--reset", err.getvalue())
+
+    def test_a_claim_on_a_manifest_less_tree_neither_stamps_nor_raises(self):
+        with tempfile.TemporaryDirectory() as empty:
+            path = os.path.join(empty, "dispatch-plan-driver.json")
+            self.assertTrue(rm.claim_artifact(empty, {"run_id": "r"},
+                                              rm.DRIVER_PLAN, path, sha256="a" * 64))
+            self.assertFalse(os.path.exists(rm.manifest_path(empty)))
+
+    def test_the_stamps_are_not_anti_drift_keys(self):
+        for key in rm.ARTIFACT_STAMPS:
+            self.assertNotIn(key, rm._FLAG_KEYS)
+        rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN, sha256="a" * 64)
+        self.assertEqual([], rm.conflicting_flags(rm.load_manifest(self.root)))
+
+
 if __name__ == "__main__":
     unittest.main()

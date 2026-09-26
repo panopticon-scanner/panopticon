@@ -383,6 +383,25 @@ POSTURE_DISCLOSED = "posture_disclosed"
 # spellings of one key is how a reader silently stops finding it.
 DISPATCH_REQUEST = "dispatch_request"
 
+# SEC-377944137 (#1832): {"sha256": <canonical plan hash>, "at": <iso>} -- the
+# durable record that this run WROTE `dispatch-plan-driver.json`, and
+# {"cells": <n>, "at": <iso>} for `out-file-hashes.json`. Each artifact carries
+# its OWN stamp: one shared stamp would make the snapshot's legitimate first
+# take at synthesize (the #5.0-16 fallback for a vacuously-done verify phase)
+# read as a deletion.
+#
+# These replaced an inference off DISPATCH_REQUEST above, which cannot answer
+# the question: that slot is ROLLING (overwritten per checkpoint), so the last
+# recorded kind on any run that verified anything is `verify`, and -- worse --
+# the tamper itself can roll it BACKWARD. Deleting `coverage-<group>.json`
+# makes `coverage_done` False, the coverage phase re-dispatches scout, and the
+# slot goes back to `scout` on a run that had dispatched every review cell.
+# These keys are written by the WRITER of each artifact and are MONOTONE: once
+# stamped, never re-stamped, so nothing a later phase does can un-owe them.
+DRIVER_PLAN = "driver_plan"
+OUT_FILE_SNAPSHOT = "out_file_snapshot"
+ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT)
+
 # #1912: [{"batch": <n>, "at": <iso>}, ...] -- the batch records this run's
 # operator accepted the loss of with `--discard-batch`. The count is the fact
 # worth surfacing (a run that threw one record away is not the run its report
@@ -519,6 +538,89 @@ def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=
     manifest[DISCARDED_BATCHES] = (existing if isinstance(existing, list) else []) + [
         {"batch": int(number), "at": at or _now_iso()}]
     return _rewrite(review_root, manifest, namespace=namespace)
+
+
+def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
+    """Record that this run WROTE the owed-once artifact `key` (SEC-377944137).
+
+    The FIFTH deliberate rewrite, and the only MONOTONE one: an existing stamp
+    is never replaced. `dispatch-plan-driver.json` and `out-file-hashes.json`
+    are each written once and are one-way by design -- re-hashing the snapshot
+    after a substitution would mask it -- so a second stamp could only ever be
+    a laundering of the first.
+
+    Not an anti-drift key: it records what this driver DID, not what the
+    operator asked for, and `conflicting_flags` never reads it.
+
+    A tree with no manifest on disk records NOTHING and does not raise. The
+    pre-manifest window is real (unit callers, and `--setup`, which keeps its
+    own manifest), and a recorder that CREATED one here would be worse than
+    useless: `runio._run_tag` derives the per-run folder from `created`, so
+    conjuring a manifest mid-run would move every `_pano` path under a run
+    folder the artifacts already written are not in.
+
+    `fields` is the stamp's evidence -- `sha256=` for the plan (the canonical
+    `synth.integrity._plan_hash` of the entries, so a REPLACED plan is caught
+    as well as a deleted one) and `cells=` for the snapshot.
+    """
+    if key not in ARTIFACT_STAMPS:
+        raise ValueError("unknown run artifact: %r" % key)
+    if manifest is None:
+        manifest = load_manifest(review_root)
+    if manifest is None or not os.path.isfile(manifest_path(review_root)):
+        return None
+    if artifact_stamp(manifest, key):
+        return manifest                  # monotone -- see above
+    manifest[key] = dict(fields, at=at or _now_iso())
+    return _rewrite(review_root, manifest)
+
+
+def artifact_stamp(manifest, key):
+    """This run's stamp for `key`, or None when it never wrote that artifact.
+
+    TYPE-CHECKED at the boundary: the manifest lives inside the reviewed tree,
+    so the key is a value a target can choose. A non-dict (or an empty one) was
+    never this driver's stamp, so it reads as absent -- the same benign "this
+    run owes nothing" a run that never wrote the artifact gets, which is the
+    property every other key in `meta.integrity` has.
+    """
+    stamp = (manifest or {}).get(key)
+    return stamp if isinstance(stamp, dict) and stamp else None
+
+
+def claim_artifact(review_root, manifest, key, path, **fields):
+    """May this run WRITE the owed-once artifact `path`? (SEC-377944137, #1832)
+
+    True when it may -- and the manifest is STAMPED as part of saying so, so the
+    very next absence of `path` is a DELETION and reads as one. False when this
+    run already wrote it and it is GONE: the caller must then REPORT the absence
+    rather than repair it.
+
+    Re-creating is how the guards built on these two artifacts were erased.
+    `synthesize_execute` opens by calling both writers, so after a findings
+    substitution + one `rm` the snapshot was re-taken OVER THE SUBSTITUTED BYTES
+    -- the tampered file became its own baseline, `content_mismatched_files`
+    went empty and #1208's owed-but-absent reading never fired -- and the plan
+    was re-created, so its deletion left no trace either. Absence is evidence.
+
+    The refusal is announced on the DRIVER's stderr, which an operator actually
+    sees (the synthesize child's streams are captured by `child._run_child`),
+    and names `--reset`: a run folder cleared on purpose is a NEW run, not a
+    repair of this one.
+    """
+    # Loaded when the caller has none: `artifact_stamp(None, ...)` is falsy, so
+    # skipping this would make the guard fail OPEN for a caller that passes None.
+    if manifest is None:
+        manifest = load_manifest(review_root)
+    if artifact_stamp(manifest, key) and not os.path.exists(path):
+        print("driver: this run wrote %s and it is GONE -- reporting the absence, "
+              "NOT re-creating it (SEC-377944137): a re-created artifact would "
+              "erase the evidence it exists to carry. This run will report "
+              "uncertified integrity; use --reset to start a fresh one."
+              % os.path.basename(path), file=sys.stderr, flush=True)
+        return False
+    record_artifact_stamp(review_root, manifest, key, **fields)
+    return True
 
 
 def posture_disclosed_at(manifest, digest):

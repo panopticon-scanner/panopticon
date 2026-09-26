@@ -3183,7 +3183,7 @@ class TestIntegrity(unittest.TestCase):
         # SEC-377944137 (#1832): published beside `plans_seen`, the key it
         # guards, and stated on every report for the same reason as the two
         # reconcile appends below.
-        "dispatch_plan_missing",
+        "dispatch_plan_missing", "dispatch_plan_mismatched",
         "tools_manifest_invalid",
         # #2013 fix round 1: appended by reconcile beside the key above, and
         # stated on every report for the same reason.

@@ -413,6 +413,11 @@ def reconcile(plan, tools, resolved, run=None):
                                      # obligation certified a substitution the
                                      # run had already detected.
                                      or integrity.get("dispatch_plan_missing")
+                                     # ...and a plan that is PRESENT but is not
+                                     # the one this run wrote: a narrower plan
+                                     # declares fewer cells, so replacing it is
+                                     # a cheaper `rm`.
+                                     or integrity.get("dispatch_plan_mismatched")
                                      or integrity.get("invalid_dispatch_plans")
                                      or integrity.get("invalid_verify_queue")
                                      # Fix round 1 F1: an unreadable manifest

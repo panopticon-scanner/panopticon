@@ -14,6 +14,9 @@ from conftest import write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.phases.runio as runio
+import scripts.phases.requests as requests
+import scripts.phases.review as review_phase
+import scripts.phases.verify as verify_phase
 import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
 import scripts.synthesize as syn
@@ -724,13 +727,22 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
     """SEC-377944137 (#1832): the child cannot tell a deleted driver plan from a
     run that never had one, so the driver -- which holds the manifest -- says.
 
-    `run_manifest.record_dispatch_request` stamps the `review` dispatch this run
-    wrote, and `requests._write_driver_plan` writes the plan before that
-    dispatch goes out: a recorded review dispatch therefore means a plan existed
-    and must still be there. The manifest is the anchor rather than the plan
-    itself for the reason #1727 gives -- no dispatched agent may write it, and
-    `runio._foreign_manifest` discards a git-tracked or foreign-stamped one --
-    and it is threaded on the argv like `--tools-disabled-mid-run`, because
+    The anchor is the manifest's `driver_plan` STAMP, written by the writer at
+    the moment it writes the plan (`requests._write_driver_plan` ->
+    `run_manifest.claim_artifact`). Fix round 1 replaced an inference off the
+    rolling `dispatch_request` slot with it: that slot is overwritten per
+    checkpoint, so it read `verify` on every run that verified anything, and the
+    tamper itself could roll it BACKWARD to `scout` (deleting
+    `coverage-<group>.json` makes `coverage_done` False and the coverage phase
+    re-dispatches scout). It also could not tell a tool-advisor `verify` dispatch
+    from a review one, so an honest ZERO-CELL run that verified a tool finding
+    read INCONCLUSIVE.
+
+    The manifest is the anchor rather than the plan because a plan cannot attest
+    to its own existence, and it is the better-defended of the two files
+    (#1727): no dispatched agent may write `run-manifest.json`, and
+    `runio._foreign_manifest` discards a git-tracked or foreign-stamped one. It
+    is threaded on the argv like `--tools-disabled-mid-run`, because
     `run-manifest.json` is a _TOP_LEVEL artifact outside the `--run-dir` the
     child resolves everything else against.
     """
@@ -741,7 +753,8 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         # No groups => `_driver_plan_entries` declares no cells => this phase
         # writes NO dispatch-plan-driver.json. That is the on-disk state a
-        # deletion leaves, reached without tampering with the tree.
+        # deletion leaves, reached without tampering with the tree. The
+        # cells-declared shape is exercised by the class below.
         runio._write_json(runio._pano(self.root, "groups.json"), {"groups": []})
 
     def _manifest(self, **kw):
@@ -774,20 +787,19 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
             runio._pano(self.root, "dispatch-plan-driver.json")))
         return runio._load_json(runio._pano(self.root, "report.json"))
 
-    def _review_dispatch(self):
-        return {run_manifest.DISPATCH_REQUEST:
-                {"checkpoint": "review", "sha256": "a" * 64,
-                 "at": "2026-09-26T00:00:00Z"}}
+    def _stamped(self, sha256="a" * 64, **kw):
+        return self._manifest(**dict(
+            kw, **{run_manifest.DRIVER_PLAN: {"sha256": sha256, "at": "t"}}))
 
-    def test_a_recorded_review_dispatch_makes_the_missing_plan_a_deletion(self):
-        report = self._report(self._manifest(**self._review_dispatch()))
+    def test_a_stamped_plan_that_is_gone_is_a_deletion(self):
+        report = self._report(self._stamped())
         integrity = report["meta"]["integrity"]
         self.assertIs(integrity["dispatch_plan_missing"], True)
         self.assertEqual(integrity["plans_seen"], 0)
         self.assertIs(report["summary"]["coverage_certified"], False)
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
 
-    def test_a_manifest_with_no_recorded_dispatch_owes_no_plan(self):
+    def test_an_unstamped_manifest_owes_no_plan(self):
         report = self._report(self._manifest())
         integrity = report["meta"]["integrity"]
         self.assertIs(integrity["dispatch_plan_missing"], False)
@@ -796,60 +808,209 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
         # here, so that assertion is about this key and not about the fixture.
         self.assertEqual(report["summary"]["gate"], "PASS")
 
-    def test_a_scout_only_run_owes_no_plan(self):
-        # The plan is written at the REVIEW checkpoint. A run that got as far as
-        # scout and no further never had one, so its absence is not a deletion.
-        integrity = self._report(self._manifest(
+    def test_an_honest_zero_cell_run_that_verified_a_tool_finding_still_passes(self):
+        # Fix round 1, I2. `verify_tools` records `checkpoint="verify"` for tool
+        # findings ALONE, independently of review cells, and the record does not
+        # keep the `group="tools"` discriminator -- so the old checkpoint
+        # inference read a plan as owed on a run that correctly wrote none.
+        report = self._report(self._manifest(
             **{run_manifest.DISPATCH_REQUEST:
-               {"checkpoint": "scout", "sha256": "b" * 64,
-                "at": "2026-09-26T00:00:00Z"}}))["meta"]["integrity"]
-        self.assertIs(integrity["dispatch_plan_missing"], False)
+               {"checkpoint": "verify", "sha256": "c" * 64, "at": "t"}}))
+        self.assertIs(report["meta"]["integrity"]["dispatch_plan_missing"], False)
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_a_rolled_back_dispatch_record_cannot_un_owe_the_plan(self):
+        # Fix round 1, I1. The tamper that makes the plan un-creatable (rm the
+        # coverage file) also makes `coverage_done` False, and the coverage
+        # phase re-dispatches scout -- rewriting the rolling slot to `scout` on
+        # a run that had dispatched every review cell. The stamp is MONOTONE, so
+        # it survives that.
+        report = self._report(self._stamped(
+            **{run_manifest.DISPATCH_REQUEST:
+               {"checkpoint": "scout", "sha256": "d" * 64, "at": "t"}}))
+        self.assertIs(report["meta"]["integrity"]["dispatch_plan_missing"], True)
 
     def test_the_flag_is_emitted_only_when_the_plan_is_owed(self):
-        self.assertIn("--plan-owed",
-                      self._cmd(self._manifest(**self._review_dispatch())))
+        self.assertIn("--plan-owed", self._cmd(self._stamped()))
         self.assertNotIn("--plan-owed", self._cmd(self._manifest()))
 
-    def test_the_driver_argv_token_is_a_flag_synthesize_accepts(self):
+    def test_the_stamped_hash_is_threaded_beside_the_flag(self):
+        cmd = self._cmd(self._stamped(sha256="b" * 64))
+        self.assertEqual(cmd[cmd.index("--plan-sha256") + 1], "b" * 64)
+        # A stamp with no usable hash still owes the plan -- the boolean is the
+        # gate, the hash only strengthens it (the #493 R2 ack reads the same way).
+        self.assertNotIn("--plan-sha256", self._cmd(self._stamped(sha256=None)))
+
+    def test_the_driver_argv_tokens_are_flags_synthesize_accepts(self):
         # The #1602 parity rule: `tests/synth/helpers._cli_args` builds a
         # Namespace directly, so argparse never runs and a renamed option would
         # stay green here while the real child exits 2.
-        cmd = self._cmd(self._manifest(**self._review_dispatch()))
-        flags = [a for a in cmd if a.startswith("--plan-owed")]
-        self.assertEqual(len(flags), 1, cmd)
-        self.assertIs(syn.build_parser().parse_args(flags).plan_owed, True)
+        cmd = self._cmd(self._stamped(sha256="b" * 64))
+        index = cmd.index("--plan-owed")
+        parsed = syn.build_parser().parse_args(cmd[index:index + 3])
+        self.assertIs(parsed.plan_owed, True)
+        self.assertEqual(parsed.plan_sha256, "b" * 64)
 
-    def test_a_verify_dispatch_still_owes_the_plan(self):
-        # The record is ROLLING -- one slot, overwritten per checkpoint -- so on
-        # every run that verified anything the LAST recorded checkpoint is
-        # `verify`, not `review`. Keying on `review` alone would leave the guard
-        # inert on exactly the runs that dispatched the most.
-        integrity = self._report(self._manifest(
-            **{run_manifest.DISPATCH_REQUEST:
-               {"checkpoint": "verify", "sha256": "c" * 64,
-                "at": "2026-09-26T00:00:00Z"}}))["meta"]["integrity"]
-        self.assertIs(integrity["dispatch_plan_missing"], True)
-
-    def test_the_owed_checkpoints_are_real_checkpoint_kinds(self):
-        # The two spellings are literals here, and `write_dispatch_request_bound`
-        # validates against `runio.CHECKPOINT_KINDS` -- so a renamed kind would
-        # leave this predicate matching nothing and re-open the hole silently.
-        self.assertTrue(set(synthesize.PLAN_OWED_CHECKPOINTS)
-                        <= set(runio.CHECKPOINT_KINDS),
-                        synthesize.PLAN_OWED_CHECKPOINTS)
-
-    def test_a_garbled_dispatch_record_owes_nothing(self):
+    def test_a_garbled_stamp_owes_nothing(self):
         # The manifest lives inside the reviewed tree, so every field on it is a
-        # value a target can choose. A non-dict (or a dict naming no checkpoint)
-        # is not this driver's record of a review dispatch, so it asserts
-        # nothing -- and must not raise out of a predicate that decides a flag.
-        for record in ("review", ["review"], 7, None, {}, {"checkpoint": None},
-                       {"checkpoint": ["review"]}, {"checkpoint": "scan"}):
-            with self.subTest(record=record):
+        # value a target can choose. A non-dict is not this driver's stamp, so it
+        # asserts nothing -- and must not raise out of a predicate that decides
+        # a flag.
+        for planted in ("yes", ["yes"], 7, None, {}):
+            with self.subTest(planted=planted):
                 self.assertFalse(synthesize._plan_owed(
-                    {run_manifest.DISPATCH_REQUEST: record}))
+                    {run_manifest.DRIVER_PLAN: planted}))
         self.assertFalse(synthesize._plan_owed({}))
         self.assertFalse(synthesize._plan_owed(None))
+
+
+class TestTheOwedPlanOnTheLiveDriverPath(unittest.TestCase):
+    """Fix round 1, C1 + I4: the same four rows over a run that DECLARED CELLS,
+    through the real `synthesize_execute` and the real child.
+
+    Every phase-level case above uses a zero-group fixture, which is the only
+    shape that leaves no plan without touching the tree -- and that is exactly
+    why the re-creation went unnoticed: `synthesize_execute` opens by calling
+    `requests._write_driver_plan` and `requests._snapshot_review_out_files`,
+    both of which used to re-arm the moment their file was deleted. The plan was
+    re-created and the snapshot re-taken OVER THE SUBSTITUTED BYTES, so the
+    substitution became its own baseline and #1208's guard did not fire either.
+    """
+
+    RUN_ID = "RID"
+
+    def setUp(self):
+        self.root = os.path.realpath(
+            self.enterContext(tempfile.TemporaryDirectory()))
+        os.makedirs(os.path.join(self.root, "src"))
+        with open(os.path.join(self.root, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(runio._pano(self.root))
+        self.manifest = run_manifest.build_manifest(
+            target=self.root, review_root=self.root, host="claude",
+            security_mode="standard", run_id=self.RUN_ID,
+            flags={"fail_on": "high"})
+        run_manifest.write_manifest(self.root, self.manifest)
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  app:\n    match: ['src/**']\n")
+        runio._write_json(runio._pano(self.root, "coverage-app.json"),
+                          {"group": "app", "floor": ["QAL"],
+                           "effective": ["QAL"], "run_id": self.RUN_ID})
+        self.plan = runio._pano(self.root, "dispatch-plan-driver.json")
+        self.snapshot = runio._pano(self.root, "out-file-hashes.json")
+        self.cell = runio._pano(self.root, "findings-app-QAL.json")
+
+    def _drive_to_the_snapshot(self):
+        """review -> verify, self-writing each declared cell, as the driver does."""
+        result = review_phase.review_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "review")
+        for entry in requests.load_dispatch_request(self.root)["entries"]:
+            runio._write_json(entry["out_file"], {
+                "findings": [{"title": "nit", "severity": "LOW", "domain": "QAL",
+                              "code": "QAL-A1A", "category": "style",
+                              "location": {"file": "src/app.py", "line_start": 1}}],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": "QAL", "group": "app"}})
+        self.assertTrue(review_phase.review_done(self.root, self.manifest))
+        verify_phase.verify_execute(self.root, self.manifest)   # takes the snapshot
+        self.assertTrue(os.path.isfile(self.plan))
+        self.assertTrue(os.path.isfile(self.snapshot))
+
+    def _substitute(self):
+        """Drop the finding AFTER the snapshot -- the tamper #1208 detects."""
+        runio._write_json(self.cell, {
+            "findings": [],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": "QAL", "group": "app"}})
+
+    def _synthesize(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            synthesize.synthesize_execute(self.root, self.manifest)
+        report = runio._load_json(runio._pano(self.root, "report.json"))
+        return report["meta"]["integrity"], report["summary"]
+
+    def test_row_1_an_honest_run_certifies(self):
+        self._drive_to_the_snapshot()
+        integrity, summary = self._synthesize()
+        self.assertEqual(integrity["content_mismatched_files"], [])
+        self.assertIs(integrity["dispatch_plan_missing"], False)
+        self.assertIs(integrity["dispatch_plan_mismatched"], False)
+        self.assertNotEqual(summary["gate"], "INCONCLUSIVE")
+        self.assertIs(summary["coverage_certified"], True)
+
+    def test_row_2_a_substitution_with_the_evidence_intact_is_caught(self):
+        self._drive_to_the_snapshot()
+        self._substitute()
+        integrity, summary = self._synthesize()
+        self.assertTrue(integrity["content_mismatched_files"])
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_row_3_deleting_the_snapshot_does_not_launder_the_substitution(self):
+        # #1208's row, on the LIVE path. The snapshot must NOT be re-taken: it
+        # would hash the substituted bytes and report a clean run.
+        self._drive_to_the_snapshot()
+        self._substitute()
+        os.remove(self.snapshot)
+        integrity, summary = self._synthesize()
+        self.assertFalse(os.path.exists(self.snapshot), "the snapshot was re-taken")
+        self.assertIs(integrity["content_snapshot_missing"], True)
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_row_4_deleting_the_plan_too_does_not_launder_it_either(self):
+        # THE FINDING's row. The plan must NOT be re-created: `plans_seen` would
+        # go back to 1 and every plan-keyed check would read benign again.
+        self._drive_to_the_snapshot()
+        self._substitute()
+        os.remove(self.snapshot)
+        os.remove(self.plan)
+        integrity, summary = self._synthesize()
+        self.assertFalse(os.path.exists(self.plan), "the plan was re-created")
+        self.assertEqual(integrity["plans_seen"], 0)
+        self.assertIs(integrity["dispatch_plan_missing"], True)
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+        self.assertIs(summary["coverage_certified"], False)
+
+    def test_replacing_the_plan_is_caught_as_well_as_deleting_it(self):
+        # The stamp carries the plan's canonical content hash, so a plan that is
+        # PRESENT but is not the one this run wrote reads as tamper -- otherwise
+        # re-writing the plan would be a cheaper `rm`.
+        #
+        # `enforced` is the field flipped here BECAUSE nothing else notices it:
+        # the plan stays contract-valid (so `invalid_dispatch_plans` is empty)
+        # and declares the same out_file (so reconcile agrees), while
+        # `plan.derive_tool_policy_mode` reads it to report the run's tool-policy
+        # posture -- flipping it makes an UNENFORCED run's report claim it was
+        # enforced. The hash is the only thing standing in the way.
+        self._drive_to_the_snapshot()
+        plan = runio._load_json(self.plan)
+        self.assertIs(plan[0]["enforced"], True)
+        plan[0]["enforced"] = False
+        runio._write_json(self.plan, plan)
+        integrity, summary = self._synthesize()
+        self.assertIs(integrity["dispatch_plan_mismatched"], True)
+        self.assertEqual(integrity["invalid_dispatch_plans"], [])
+        self.assertEqual(integrity["missing_planned_files"], [])
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_the_vacuous_verify_fallback_still_takes_the_first_snapshot(self):
+        # #5.0-16: when the verify phase is vacuously done no agent ran, so
+        # synthesize takes the FIRST snapshot. Nothing is owed yet, so the
+        # owed-once refusal must not break it.
+        result = review_phase.review_execute(self.root, self.manifest)
+        for entry in requests.load_dispatch_request(self.root)["entries"]:
+            runio._write_json(entry["out_file"], {
+                "findings": [],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": "QAL", "group": "app"}})
+        self.assertEqual(result.checkpoint, "review")
+        self.assertFalse(os.path.exists(self.snapshot))
+        integrity, summary = self._synthesize()
+        self.assertTrue(os.path.isfile(self.snapshot))
+        self.assertGreaterEqual(integrity["content_hashes_checked"], 1)
+        self.assertNotEqual(summary["gate"], "INCONCLUSIVE")
 
 
 class TestSynthesizeDonePredicate(unittest.TestCase):
