@@ -1723,6 +1723,7 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         out = hr.render(self._report({"<script>alert(1)</script>": 1}))
         self.assertNotIn("<script>alert(1)</script>", out)
 
+
     def test_the_venv_tally_rows_say_what_they_rest_on(self):
         # #1839: two of these keys NAME A CLASS and count virtualenv DIRECTORIES
         # the scan never entered (review round 1 I4 added the name-only half);
@@ -1751,6 +1752,28 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         self.assertNotIn("<script>", block)
         self.assertIn(r"pyvenv.cfg:&#x27;hostile\x1b[2J\n", block)
         self.assertIn("and 6 more", block)
+
+
+class TestGatedSuppressedToolFindingsInHtml(unittest.TestCase):
+    def _report(self, gated):
+        report = _minimal_report(findings=[])
+        if gated is not None:
+            report["meta"].setdefault("coverage", {})["tools_suppressed_gated"] = gated
+        return report
+
+    def test_nonzero_gated_count_explains_empty_findings_and_escapes_segment(self):
+        out = hr.render(self._report({"<script>alert(1)</script>": 3}))
+        self.assertIn("3", out)
+        self.assertIn("Tool findings suppressed by directory name but GATED", out)
+        self.assertIn("A gate verdict here may rest on findings this report does not list", out)
+        self.assertIn("&lt;script&gt;", out)
+        self.assertNotIn("<script>alert(1)</script>", out)
+
+    def test_absent_zero_and_malformed_gated_blocks_make_no_claim(self):
+        for gated in (None, {}, {"vendor": 0}, "bad", 7, {"vendor": "three"},
+                      {"vendor": True}):
+            with self.subTest(gated=gated):
+                self.assertNotIn("but GATED", hr.render(self._report(gated)))
 
 
 class TestExcludedToolFindingsInHtml(unittest.TestCase):

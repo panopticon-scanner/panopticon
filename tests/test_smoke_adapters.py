@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import scripts.smoke_adapters as sa
+from scripts.tools import legacy_sarif
 from scripts.run_tools import recommendable_tools
 from scripts.smoke_adapters import PROBES
 
@@ -312,10 +314,47 @@ class TestCheckSemgrepScan(unittest.TestCase):
             seen["argv"] = argv
             return subprocess.CompletedProcess(argv, 0, _GOOD_SARIF, b"")
         sa.check_semgrep_scan(runner=run)
-        self.assertEqual(seen["argv"][:6], sa.SEMGREP_SCAN[:6])
-        self.assertEqual(seen["argv"][:2], ["semgrep", "scan"])
-        self.assertIn("--sarif", seen["argv"])
+        self.assertEqual(seen["argv"][:-1], legacy_sarif.TOOL_CMD["semgrep"][:-1])
+        self.assertEqual(legacy_sarif.TOOL_CMD["semgrep"][-1], "/src")
         self.assertTrue(seen["argv"][-1].endswith("probe.py"))   # the fixture
+
+
+class TestWritableProbe(unittest.TestCase):
+    def test_writable_directory_cleans_its_probe(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as path:
+            ok, detail = sa.check_writable(path, "needed for output")
+            self.assertTrue(ok)
+            self.assertEqual(detail, "")
+            self.assertEqual(os.listdir(path), [])
+
+    def test_missing_directory_explains_failure(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as parent:
+            path = os.path.join(parent, "missing")
+            ok, detail = sa.check_writable(path, "needed for output")
+            self.assertFalse(ok)
+            self.assertIn(path, detail)
+            self.assertIn("needed for output", detail)
+            self.assertIn("not writable", detail)
+
+    def test_permission_denial_explains_failure(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as path:
+            original_open = sa.os.open
+
+            def denied(name, flags, mode=0o777):
+                if str(name).startswith(path + os.sep + ".panopticon-write-probe-"):
+                    raise PermissionError(13, "Permission denied", name)
+                return original_open(name, flags, mode)
+
+            with mock.patch.object(sa.os, "open", side_effect=denied):
+                ok, detail = sa.check_writable(path, "needed for output")
+            self.assertFalse(ok)
+            self.assertIn(path, detail)
+            self.assertIn("Permission denied", detail)
+            self.assertIn("needed for output", detail)
+            self.assertEqual(os.listdir(path), [])
 
 
 def _roslyn_runner(rule_id=None, returncode=0, bad_json=False, no_file=False):
