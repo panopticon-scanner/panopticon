@@ -117,6 +117,10 @@ def _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
                for part, chunk in enumerate(_cell_chunks(cell or [])))
 
 _MAX_VERIFY_ATTEMPTS = 3
+# One spelling of the counter's name for the reader and the writer below, the
+# way `review._ATTEMPTS_FILE` does it: two independent literals are the drift
+# #1809 is otherwise closing.
+_VERIFY_ATTEMPTS_FILE = "verify-attempts.json"
 
 def _verify_attempts(review_root, group, domain, stage):
     data = _verify_attempts_doc(review_root)
@@ -127,15 +131,14 @@ def _verify_attempts_doc(review_root):
     the file is PRESENT but unreadable (#1809) -- a torn budget read as empty
     refunds every re-dispatch this run already paid for."""
     return runio._load_state_json(
-        runio._pano(review_root, "verify-attempts.json"),
-        "the verify retry budget")
+        runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), "the verify retry budget")
 
 def _bump_verify_attempts(review_root, group, domain, stage):
     """Persisted per-(group, domain, stage) re-dispatch counter that BOUNDS the A2
     verdict-reconciliation retry loop, so a systematically-re-coding advisor
     surfaces as unanswered -> INCONCLUSIVE instead of wedging the run. Lives with
     the verdicts, so --reset clears it."""
-    path = runio._pano(review_root, "verify-attempts.json")
+    path = runio._pano(review_root, _VERIFY_ATTEMPTS_FILE)
     data = _verify_attempts_doc(review_root)
     key = "%s/%s/%s" % (group, domain, stage)
     n = int(data.get(key, 0)) + 1
