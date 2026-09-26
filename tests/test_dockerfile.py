@@ -681,17 +681,26 @@ class TestDockerfileFixtures(unittest.TestCase):
             self.assertNotRegex(line, r";\s*(true|echo)\b", "the hostile restore must not be made tolerant")
         # #1838 (run-14 SEC-2589722723): the fixture side of the same pin. Every
         # sentence above holds only while `Hostile` hooks BUILD -- re-hooked to
-        # `Restore` it would fire its `curl` in the one step this file does run,
-        # on the networked image builder. Nothing else reads the file: the
-        # corpus is pruned from every review cell before grouping, by decision
-        # (`panopticon.yml:67-72` and `exclude_paths:` at `:405-406`), so this
-        # assertion is the whole of the fixture-side guard.
-        with open(os.path.join(ROOT, "tests", "fixtures", "hostile-csproj",
-                               "evil.csproj"), encoding="utf-8") as fh:
-            csproj = fh.read()
+        # `Restore`, or reached by a `<Project InitialTargets=...>`, it would fire
+        # its `curl` in the one step this file does run, on the networked image
+        # builder. Nothing else reads the file: the corpus is pruned from every
+        # review cell before grouping, by decision (`panopticon.yml`'s `Fixtures:`
+        # header comment, and its top-level `exclude_paths:`), so this is the whole
+        # of the fixture-side guard. Read as XML, not as source text: a
+        # single-quoted attribute and an `InitialTargets` on the root are both
+        # valid MSBuild that a regex over the file misses (fix round 1).
+        from defusedxml import ElementTree as DefusedET   # declared dependency
+        root = DefusedET.parse(
+            os.path.join(ROOT, "tests", "fixtures", "hostile-csproj",
+                         "evil.csproj")).getroot()
         self.assertEqual(
-            re.findall(r'(?:Before|After)Targets="([^"]*)"', csproj), ["Build"],
-            "evil.csproj must hook Build and no other target")
+            [(t.get("Name"), t.get("BeforeTargets"), t.get("AfterTargets"),
+              t.get("DependsOnTargets")) for t in root.iter("Target")],
+            [("Hostile", "Build", None, None)],
+            "evil.csproj must hold one Target, hooked to Build and nothing else")
+        self.assertEqual(
+            (root.get("InitialTargets"), root.get("DefaultTargets")), (None, None),
+            "a Project-level InitialTargets/DefaultTargets fires on restore too")
 
     def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
         # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit

@@ -97,10 +97,12 @@ that starts catching one fails there, and this list is edited with it.
   reading a second program's configuration rather than this job's shell. The
   image the container came from is NOT pinned either, and that is a decided
   residual rather than an oversight: this fleet pulls the tools image by its
-  mutable `:latest` tag (`security.yml:36` and `:301-302`, `security-fork.yml:82`,
-  `adapter-integration.yml:36` and `:110`), which is what lets the nightly
-  rebuild reach every consumer without editing one of them, and DEVELOPMENT.md
-  states the consequence in its own voice at lines 204-208 and 513. The `uses:`
+  mutable `:latest` tag -- the env binding and the `docker pull` in each
+  consumer: `security.yml:36`/`:301`, `security-fork.yml:82`/`:410`,
+  `adapter-integration.yml:36`/`:56` and `:110`/`:128`. DEVELOPMENT.md states
+  the consequence in its own voice twice, in the "One residual to know about"
+  paragraph under "Key design decisions" and in the "Weekly strict security
+  backstop" paragraph ("the tools image remains unpinned"). The `uses:`
   rule pins ACTIONS by SHA and `tests/test_dockerfile.py` pins what the
   Dockerfile FETCHES (`test_all_fetched_binaries_are_checksum_verified`,
   `test_nvd_data_ref_default_is_digest`); neither governs a `docker pull` of a

@@ -43,8 +43,8 @@ Every report carries its own ledger under `meta.cost` (launches, tokens, dollars
 
 Prerequisites: Python 3.11+ with `pyyaml`, `defusedxml` and `jsonschema`, an agent host on `PATH`, and optionally Docker with the `panopticon-tools` image (`docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, a public package, then tag it `panopticon-tools`; or `docker build -t panopticon-tools .` from the checkout, which takes over an hour).
 That pull follows a mutable tag by design. The published image is attested:
-`gh attestation verify oci://<image ref> --owner panopticon-scanner` says where it came from, and
-no run checks it for you.
+`gh attestation verify oci://<image ref> --repo panopticon-scanner/panopticon` says where it came
+from, and no run checks it for you.
 
 Install once (Claude Code shown; Kimi and Codex are in the README):
 

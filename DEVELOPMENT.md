@@ -360,12 +360,12 @@ The `panopticon-fixtures` image contains vulnerable-by-design applications used 
 - Force rebuild: `python3 skill/scripts/run_fixture_tests.py --rebuild`
 - Tag snapshots: `docker tag panopticon-fixtures:latest panopticon-fixtures:YYYY-MM-DD`
 
-Rebuild cadence: monthly, or whenever a new adapter is added — this LOCAL fixtures image, which
-nothing rebuilds for you. The published `panopticon-tools` image is not on that cadence: CI rebuilds
-and republishes it NIGHTLY (`.github/workflows/docker-publish.yml`, cron 06:00 UTC, which also moves
-`:latest` and `:daily`), and `tools-image-health.yml` turns red once `:latest` goes more than
-`MAX_AGE_DAYS: 3` without one. A local copy is as old as your last `docker pull`: adapter CODE is
-mounted from the checkout at run time (never stale), but the scanner BINARIES and their
+Rebuild cadence: monthly, or whenever a new adapter is added — this LOCAL fixtures image, which no
+schedule rebuilds for your checkout. The published `panopticon-tools` image is not on that cadence:
+CI rebuilds and republishes it NIGHTLY (`.github/workflows/docker-publish.yml`, cron 06:00 UTC,
+which also moves `:latest` and `:daily`), and `tools-image-health.yml` turns red once `:latest` goes
+more than `MAX_AGE_DAYS: 3` without one. A local copy is as old as your last `docker pull`: adapter
+CODE is mounted from the checkout at run time (never stale), but the scanner BINARIES and their
 rule/advisory databases age with the image. The fixtures image pulls public fixtures at build time,
 so test runs require no network.
 

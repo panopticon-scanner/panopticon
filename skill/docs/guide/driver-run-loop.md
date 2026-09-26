@@ -583,14 +583,14 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   flag differs from the one the artifact was written under, so a `--no-tools` pass can never stand
   in for a tools-enabled run.
   The remedy names a MUTABLE tag on purpose — it has to be runnable from the line it is printed on
-  (`skill/scripts/phases/readiness_checks.py:40-45`), and DEVELOPMENT.md's "one residual to know
+  (`skill/scripts/phases/readiness_checks.py:40-44`), and DEVELOPMENT.md's "One residual to know
   about" accepts the unpinned tools image as a standing cost. The trust step is there for an
-  operator who wants one, and readiness does not take it for them: CI attests every image it
-  publishes (`docker-publish.yml`'s `attest-build-provenance` step, subject
-  `ghcr.io/panopticon-scanner/panopticon-tools`, pushed to the registry), so
-  `gh attestation verify oci://<image ref> --owner panopticon-scanner` says whether the bytes
-  that arrived came out of this repository's build. That step is `continue-on-error: true`, so a
-  missing attestation reads as unknown, not as tampered.
+  operator who wants one, and readiness does not take it for them: CI attests every
+  `panopticon-tools` image it publishes (`docker-publish.yml`'s `attest-build-provenance` step,
+  subject `ghcr.io/panopticon-scanner/panopticon-tools`, pushed to the registry), so
+  `gh attestation verify oci://<image ref> --repo panopticon-scanner/panopticon` says whether the
+  bytes that arrived came out of this repository's build. That step is `continue-on-error: true`, so
+  a missing attestation reads as unknown, not as tampered.
 - **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/groups.json` against the
   committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`) additionally write
   `.panopticon/diff-hunks.json`. **Discovery completes only on a well-formed groups artifact**

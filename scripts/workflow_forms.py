@@ -383,8 +383,8 @@ def stdin_program(argv):
 
 # The container runners, and the subcommands of theirs that run a command. The
 # image itself is not pinned -- this fleet runs the tools image from a mutable
-# tag by decision (`workflow_guard`'s gap list, DEVELOPMENT.md:204-208); what is
-# read here is the argv after it.
+# tag by decision (`workflow_guard`'s gap list, and DEVELOPMENT.md's "One
+# residual to know about"); what is read here is the argv after it.
 CONTAINERS = ("docker", "podman", "nerdctl")
 _CONTAINER_RUN = ("run", "exec", "create")
 

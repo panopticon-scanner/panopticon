@@ -9,19 +9,21 @@ evidence exposed.
 
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
-  SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and two of the
-  sentences describing them were false. `workflow_guard`'s pin-rule rationale claimed the image a
-  `docker run` step executes is pinned by digest elsewhere; it is not -- every workflow pulls the
-  tools image by its mutable `:latest` tag, which is the residual DEVELOPMENT.md already accepts --
-  and that file said "weekly rebuild" in one place and "monthly" in another about an image CI
-  republishes nightly. The rest state the decision where it lives: the floating .NET SDK channel
-  joins the Dockerfile's own list of the inputs its hash closure does not cover; the report's
-  exclusion line and schema say those globs prune review CELLS, not just the tool axis;
-  `family-pr-review.js` says its finders and refuters are unconfined by design, and now
-  `JSON.stringify`s the three finding fields `evidence` already went through; and the readiness
+  SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences
+  describing them were false, in four places. `workflow_guard`'s pin-rule rationale claimed the
+  image a `docker run` step executes is pinned by digest elsewhere; it is not -- every workflow
+  that consumes it pulls the tools image by its mutable `:latest` tag, which is the residual
+  DEVELOPMENT.md already accepts -- and the same claim one level out in `scripts/workflow_forms.py`
+  went with it. DEVELOPMENT.md itself said "weekly rebuild" in one place and "monthly" in another
+  about an image CI republishes nightly. The rest state the decision where it lives: the floating
+  .NET SDK channel joins the Dockerfile's own list of the inputs its hash closure does not cover;
+  the report's exclusion line and schema say those globs prune review CELLS, not just the tool
+  axis; `family-pr-review.js` says its finders and refuters are unconfined by design, and now
+  `JSON.stringify`s the three finding strings `evidence` already went through; and the readiness
   remedy's mutable pull gains the `gh attestation verify` step an operator can take, in the guide,
-  the README and GETTING-STARTED. One test was owed and is here: `evil.csproj` must hook `Build`
-  and no other target, or its `curl` fires on the networked fixtures-image builder.
+  the README and GETTING-STARTED. One test was owed and is here: `evil.csproj` must hold exactly
+  one target, hooked to `Build` and nothing else, or its `curl` fires on the networked
+  fixtures-image builder.
 - **A path or artifact this run did not create is not this run's evidence (#1841, run-14
   SEC-579863541 + SEC-3360368617).** `driver setup`'s two done-predicates were bare "does this file
   parse" tests on fixed `.panopticon/` paths a reviewed tree can plant or `git add -f`: a planted
