@@ -1137,9 +1137,9 @@ class TestPrWorktree(unittest.TestCase):
             # is one a previous acquisition built, so this drives the REUSE
             # branch -- which prints through the same two lines -- rather than
             # asking `_claim_worktree_leaf` to accept a populated leaf no
-            # `git worktree list` knows about. Private and ours, like the one
-            # acquisition creates.
-            wt = os.path.join(d, "wt"); os.makedirs(wt); os.chmod(wt, 0o700)
+            # `git worktree list` knows about. Ours and writable by no one
+            # else, like the one acquisition creates.
+            wt = os.path.join(d, "wt"); os.makedirs(wt); os.chmod(wt, 0o755)
             with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
 
@@ -1168,6 +1168,14 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
     resumability the docstring exists for depend on it. Refusing a leaf this
     process did not create is the whole fix, and it applies on the REUSE branch
     too: a registered worktree's directory can be `chmod`-ed after the fact.
+
+    The property is OURS AND WRITABLE BY NO ONE ELSE, not private (controller
+    ruling, fix round 1). The threat is create/rename inside the leaf, which
+    needs a WRITE bit; read and traverse by another uid is REQUIRED, because the
+    tools image runs as `scanner` (uid 1000, `Dockerfile`'s closing `USER`) and
+    `run_tools` mounts the review root -- which under `--pr` IS this worktree --
+    as `-v <root>:/src:ro`. A `0o700` leaf would hand every scanner an
+    unreadable tree.
     """
 
     def _leaf(self):
@@ -1200,49 +1208,78 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
 
     def test_a_world_writable_directory_at_the_leaf_is_refused(self):
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
         os.chmod(wt, 0o777)                   # after mkdir: umask cannot mask it
         self.assertIn("0777", self._refused(wt))
 
-    def test_a_group_readable_directory_at_the_leaf_is_refused(self):
-        # Ours, and still refused: any group/other bit means someone else can
-        # read the PR head under review, and `0o750` is what a plant made with
-        # the default umask looks like.
+    def test_a_group_writable_directory_at_the_leaf_is_refused(self):
+        # Ours, and still refused: a group-writable directory lets another local
+        # account create and rename inside the tree under review, which is the
+        # whole finding. `0o750` -- group READ -- is NOT refused: see
+        # `test_a_group_readable_directory_at_the_leaf_is_accepted`.
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
-        os.chmod(wt, 0o750)
-        self.assertIn("0750", self._refused(wt))
+        os.mkdir(wt)
+        os.chmod(wt, 0o770)
+        self.assertIn("0770", self._refused(wt))
+
+    def test_a_group_readable_directory_at_the_leaf_is_accepted(self):
+        # The ruling's other half, pinned so nobody tightens the mode check back
+        # to `& 0o077` without a failing test: read and traverse by another uid
+        # is what the tools image needs (it runs as `scanner`, uid 1000, and the
+        # review root is mounted `-v <root>:/src:ro`).
+        wt = self._leaf()
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
+        runner, info = self._acquire(wt)
+        self.assertEqual(wt, info["worktree"])
+        self.assertEqual(1, runner.adds)
 
     def test_a_non_empty_directory_at_the_leaf_is_refused(self):
         # `git worktree add` refuses this too ("already exists"), but only after
         # the fetch, and it names no remedy.
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
         with open(os.path.join(wt, "planted.txt"), "w", encoding="utf-8") as fh:
             fh.write("x\n")
         self.assertIn("not empty", self._refused(wt))
 
     def test_the_refusal_names_deleting_it_as_the_remedy(self):
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
         os.chmod(wt, 0o777)
         self.assertIn("delete it", self._refused(wt).lower())
 
-    def test_the_leaf_this_process_creates_is_private_and_accepted(self):
+    def test_the_leaf_this_process_creates_is_ours_and_not_writable_by_others(self):
         # The happy path: nothing at the leaf, so acquisition creates it itself
-        # and owns it before the fetch -- which is what closes the window
-        # between the check and `git worktree add`.
-        wt = self._leaf()
-        runner, info = self._acquire(wt)
+        # and owns it before the add -- which is what closes the window between
+        # the check and `git worktree add`.
+        #
+        # The mode is the UMASK's, never a literal: ours, no group or other
+        # WRITE bit, and still traversable by another uid, because the tools
+        # image's `scanner` user has to read the review root through
+        # `-v <root>:/src:ro`. The `0o005` assertion is the one that goes red if
+        # anyone reintroduces `os.mkdir(wt, 0o700)`.
+        previous = os.umask(0o022)
+        try:
+            wt = self._leaf()
+            runner, info = self._acquire(wt)
+        finally:
+            os.umask(previous)
         self.assertEqual(wt, info["worktree"])
         self.assertEqual(1, runner.adds)
-        self.assertEqual(0o700, stat.S_IMODE(os.lstat(wt).st_mode))
+        st = os.lstat(wt)
+        self.assertEqual(os.geteuid(), st.st_uid)
+        self.assertEqual(0, stat.S_IMODE(st.st_mode) & 0o022)
+        self.assertEqual(0o005, stat.S_IMODE(st.st_mode) & 0o005)
 
     def test_our_own_empty_leaf_is_reused_not_refused(self):
         # A leaf a previous refused/crashed acquisition left behind is ours and
-        # private, so it is not a plant and acquisition proceeds.
+        # writable by no one else, so it is not a plant and acquisition
+        # proceeds. `0o755` -- what `os.mkdir` under the default umask and git
+        # itself produce -- is that shape.
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
         runner, info = self._acquire(wt)
         self.assertEqual(wt, info["worktree"])
         self.assertEqual(1, runner.adds)
@@ -1253,17 +1290,18 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
         # same check has to run there or the fix has a hole the size of a
         # resume.
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
         with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
             fh.write("PR head\n")
-        os.chmod(wt, 0o777)
+        os.chmod(wt, 0o775)
         message = self._refused(wt, registered=True)
-        self.assertIn("0777", message)
+        self.assertIn("0775", message)
         self.assertIn("worktree remove", message)   # the remedy for a REGISTERED one
 
     def test_the_reuse_branch_returns_a_registered_worktree_that_is_still_ours(self):
         wt = self._leaf()
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)
+        os.chmod(wt, 0o755)
         with open(os.path.join(wt, "README.md"), "w", encoding="utf-8") as fh:
             fh.write("PR head\n")
         runner, info = self._acquire(wt, registered=True)

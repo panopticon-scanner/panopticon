@@ -20,9 +20,12 @@ evidence exposed.
   its deterministic worktree leaf, `os.path.islink`: a pre-created real, EMPTY directory passed, and
   `git worktree add` populates one rather than refusing it, leaving the planter create and rename
   rights inside the tree under review. `acquire_pr` now refuses a leaf it did not make (a directory,
-  `os.geteuid`-owned, no group/other bits, empty) before the fetch, creates the leaf itself
-  `0o700` in the statement before the add, and runs the same ownership check on the reuse branch a
-  resume takes. The path stays deterministic, because `--pr` resumability depends on it.
+  `os.geteuid`-owned, writable by no one else, empty) before the fetch, creates the leaf itself in
+  the statement before the add, and runs the same check on the reuse branch a resume takes. The
+  guard is on ownership and group/other WRITE, not on every group/other bit: the tools image runs
+  as `scanner` and mounts the review root — which under `--pr` IS that worktree — read-only, so
+  traversal by another uid is required. The path stays deterministic, because `--pr` resumability
+  depends on it.
   `phases/setup.py` gave back the room under its 700-line ceiling first: the #1737 unenforced-scan
   acknowledgement is now `phases/setup_ack.py`.
 

@@ -88,9 +88,11 @@ The host contract (5.2, plan 6):
   dispatch request and refuses the entry as unknown. That worktree sits at a **deterministic** path
   under the system temp dir (so a `--pr` run resumes in the same tree), which means anyone with write
   access to that directory can derive it — so acquisition refuses a leaf it did not create: anything
-  already at the path must be an empty directory you own with no group or other permission bits, and
-  the leaf is created `0o700` here in the statement before `git worktree add`
-  (`diff_map._claim_worktree_leaf`, #1841). The same check runs on the reuse branch a resume takes,
+  already at the path must be an empty directory you own that no other account can write into, and
+  the leaf is created here, by the run, in the statement before `git worktree add`
+  (`diff_map._claim_worktree_leaf`, #1841). Ownership and group/other **write** are what is checked,
+  not every mode bit: the tools image runs as `scanner` and mounts the review root read-only, so
+  another uid has to be able to traverse it. The same check runs on the reuse branch a resume takes,
   and the refusal names the path plus whether to delete it or `git worktree remove --force` it.
   The loop **refuses to advance** until the
   entries' out files exist on disk and pass the phase's own done predicate — a re-entry with nothing

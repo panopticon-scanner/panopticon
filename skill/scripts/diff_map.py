@@ -614,8 +614,8 @@ def _refuse_leaf(wt, clause, remedy):
 
 
 def _require_own_worktree_dir(wt, remedy):
-    """`wt` must be a DIRECTORY owned by this process with no group or other
-    permission bits, else refuse (#1841 SEC-3360368617).
+    """`wt` must be a DIRECTORY owned by this process that no one else can WRITE
+    into, else refuse (#1841 SEC-3360368617).
 
     `_worktree_dir`'s own docstring admits the actor: the leaf name is fully
     derivable by anyone with write access to the shared temp dir, which is why
@@ -633,7 +633,15 @@ def _require_own_worktree_dir(wt, remedy):
     unresolved -- a check that follows the link inspects the destination and
     reports on the wrong file. The MODE matters as much as the owner, because a
     `0o777` directory is writable by the same local actor even when root or the
-    operator owns it."""
+    operator owns it.
+
+    WRITE bits only (`0o022`), not every group/other bit -- controller ruling,
+    fix round 1. The finding is create/rename INSIDE the leaf, which needs a
+    write bit; read and traverse by another uid is required, so refusing it
+    would break a documented path rather than close the hole. See
+    `_claim_worktree_leaf` for the path it would break, and the residual: another
+    local account can list the PR worktree, which is the exposure the operator's
+    own checkout already carries under a default umask."""
     st = os.lstat(wt)
     if not stat.S_ISDIR(st.st_mode):
         _refuse_leaf(wt, "it exists and is not a directory", remedy)
@@ -641,20 +649,20 @@ def _require_own_worktree_dir(wt, remedy):
         _refuse_leaf(wt, "it is owned by uid %d, not by this process (uid %d)"
                      % (st.st_uid, os.geteuid()), remedy)
     mode = stat.S_IMODE(st.st_mode)
-    if mode & 0o077:
-        _refuse_leaf(wt, "its mode is %04o, which grants group or other access "
-                     "to the tree under review" % mode, remedy)
+    if mode & 0o022:
+        _refuse_leaf(wt, "its mode is %04o, which lets group or other WRITE into "
+                     "the tree under review" % mode, remedy)
 
 
 def _vet_worktree_leaf(wt):
-    """Refuse a leaf that is already THERE and is not a private directory of our
-    own making. Creates and mutates nothing, so it is safe to run before the
+    """Refuse a leaf that is already THERE and is not a directory of our own
+    making. Creates and mutates nothing, so it is safe to run before the
     fetch -- and a refusal that has built nothing is the invariant #2041's
     transport refusals already keep.
 
-    Ours, private AND EMPTY. Empty because an UNREGISTERED directory with
-    content in it was not left by an acquisition this repository knows about
-    (the reuse branch owns the registered, populated case); `git worktree add`
+    Ours, unwritable by anyone else, AND EMPTY. Empty because an UNREGISTERED
+    directory with content in it was not left by an acquisition this repo knows
+    about (the reuse branch owns the registered, populated case); `git worktree add`
     refuses it too ("already exists", measured), but only after the fetch and
     without naming a remedy."""
     _require_own_worktree_dir(wt, _LEAF_DELETE_REMEDY)
@@ -667,18 +675,30 @@ def _claim_worktree_leaf(wt):
     """Create the deterministic leaf HERE, immediately before `worktree add`.
     Returns True when this call created it.
 
-    Creating it ourselves is what closes the window: after `os.mkdir(wt, 0o700)`
-    the directory is ours and private, and on a sticky shared temp dir nobody
-    else can replace it between this call and the add. The path stays
-    deterministic -- the idempotence and `--pr` resumability `_worktree_dir`
-    exists for depend on that, so refusing a hostile pre-existing leaf is the
-    fix, not randomizing the name.
+    Creating it ourselves is what closes the window: `os.mkdir` fails EEXIST
+    rather than adopting someone else's directory, the result is ours, and on a
+    sticky shared temp dir nobody else can replace it between this call and the
+    add. The path stays deterministic -- the idempotence and `--pr` resumability
+    `_worktree_dir` exists for depend on that, so refusing a hostile
+    pre-existing leaf is the fix, not randomizing the name.
+
+    NO mode argument, deliberately: the umask's mode (`0o755` by default), not
+    `0o700` (controller ruling, fix round 1). Under `--pr` the review root IS
+    this worktree (`phases/runio.resolve_review_root`), `run_tools` mounts that
+    root into the tools container as `-v <root>:/src:ro` and passes no `--user`,
+    and the image's closing `USER scanner` means the scanners run as uid 1000 --
+    which cannot traverse a `0o700` directory the operator owns, so every tool
+    would see an empty tree. What the finding needs is that nobody ELSE can
+    create or rename inside the leaf, and `_require_own_worktree_dir` enforces
+    exactly that (ownership plus no group/other write bit). There is no `chmod`
+    here either: a mode-less `mkdir` says the same thing without handing the
+    security gate a group/other bit to flag.
 
     `FileExistsError` here is not the ordinary case (the vet above already
     refused a hostile leaf and accepted an empty one of ours): it is the
     interval, so the same refusal runs again on what is actually at the path."""
     try:
-        os.mkdir(wt, 0o700)
+        os.mkdir(wt)                      # umask's mode: see the docstring
         return True
     except FileExistsError:
         _vet_worktree_leaf(wt)
@@ -867,12 +887,12 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
 
     The worktree path is DETERMINISTIC and therefore derivable by any local
     actor with write access to the shared temp dir (`_worktree_dir` says why it
-    has to be). So acquisition REFUSES a pre-existing leaf that is not a private
-    directory of its own making -- before the fetch, building nothing -- and
-    CREATES the leaf itself, `0o700`, in the statement before `worktree add`, so
-    nothing can take the path in between. The check runs on the reuse branch as
-    well, since a registered worktree's directory can be `chmod`-ed afterwards
-    (#1841 SEC-3360368617).
+    has to be). So acquisition REFUSES a pre-existing leaf that is not a
+    directory of its own making, one no other account can write into -- before
+    the fetch, building nothing -- and CREATES the leaf itself in the statement
+    before `worktree add`, so nothing can take the path in between. The check
+    runs on the reuse branch as well, since a registered worktree's directory
+    can be `chmod`-ed afterwards (#1841 SEC-3360368617).
 
     #2012: the FETCH is the only git call here that keeps the operator's
     environment (`gh pr view` does too, and needs to), because the credential helper lives in it and `safe_git`'s
@@ -1089,8 +1109,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
           "fetch", "--no-recurse-submodules", "--no-write-fetch-head", _PR_REMOTE,
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
-    # #1841: ours, 0o700, and one statement away from the add -- nothing else
-    # can take the path in between on a sticky temp dir.
+    # #1841: ours, unwritable by anyone else, and one statement away from the
+    # add -- nothing else can take the path in between on a sticky temp dir.
     created = _claim_worktree_leaf(wt)
     added = False
     try:
