@@ -21,15 +21,16 @@ evidence exposed.
   resolves outside the tree). An interrupted process therefore leaves the last complete baseline or
   the new one; nothing here fsyncs, so a power loss can still tear the file, which is what the
   classifier below is for. **Operator-visible:** a present-but-unusable baseline now says which kind
-  it is -- CORRUPT for one that opens with `{` and does not parse, or parses to something that is
-  not an object; EMPTY for a 0-byte or whitespace-only one (a torn write, or a v1 baseline of a
-  clean tree) -- and both name `--reset` as the remedy and deleting `tree-baseline.txt` as the
-  non-remedy it is (the next capture would re-baseline the reviewer's own writes as clean). All of
-  them used to read "predates content digests (schema v1)": a resume across an upgrade that never
-  happened, with no remedy named -- and 0 bytes is the likeliest shape the old writer's torn write
-  left behind. A genuine v1 baseline (raw porcelain, which never opens with `{`) still reads as v1,
-  a deeply nested one fails closed here instead of ending the invocation with a `RecursionError`
-  traceback, and `--reset` now also sweeps a staging file orphaned by a SIGKILL. Staging opens
+  it is -- CORRUPT for anything that cannot be a porcelain record (a first byte outside the XY
+  status set, or JSON that parses to something that is not an object); EMPTY for a 0-byte or
+  whitespace-only one (a torn write, or a v1 baseline of a clean tree) -- and both name `--reset`
+  as the remedy and deleting `tree-baseline.txt` as the non-remedy it is (the next capture would
+  re-baseline the reviewer's own writes as clean). All of them used to read "predates content
+  digests (schema v1)": a resume across an upgrade that never happened, with no remedy named -- and
+  0 bytes is the likeliest shape the old writer's torn write left behind. A genuine v1 baseline (raw
+  porcelain, which always opens with an XY status byte) still reads as v1, a deeply nested one fails
+  closed here instead of ending the invocation with a `RecursionError` traceback, and `--reset` now
+  also sweeps a staging file orphaned by a SIGKILL. Staging opens
   without `O_EXCL` project-wide (#2093) and an `OSError` from this write still reaches the operator
   as a traceback rather than a status (#2094) -- follow-ups, not fixed here.
 - **Three run-artifact readers in `synth/` no longer end a run on a file a target can pre-commit

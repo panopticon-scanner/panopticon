@@ -836,9 +836,10 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   did not run.
   The baseline is staged and renamed into place, so an interrupted process leaves the last complete
   one rather than a partial document. A present-but-unusable baseline is classified instead of being
-  blamed on that upgrade: one that opens with `{` and does not parse, or parses to something that is
-  not an object, reads as CORRUPT; a 0-byte or whitespace-only one reads as EMPTY (a torn write, or
-  a v1 baseline of a clean tree); anything else is still the raw-porcelain v1 case. All three fail
+  blamed on that upgrade: a 0-byte or whitespace-only one reads as EMPTY (a torn write, or a v1
+  baseline of a clean tree); anything that cannot be a porcelain record -- a first byte outside the
+  XY status set, or JSON that parses to something that is not an object -- reads as CORRUPT; what is
+  left is the raw-porcelain v1 case. All three fail
   closed, and the first two name `--reset` as the remedy -- deleting `tree-baseline.txt` mid-run is
   not one, since the next capture would re-baseline the reviewer's own writes as clean (#1809).
 

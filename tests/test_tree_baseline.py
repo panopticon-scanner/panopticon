@@ -363,6 +363,35 @@ class TornBaselineTest(unittest.TestCase):
                 self.assertIn("CORRUPT", delta[0])
                 self.assertNotIn("predates", delta[0])
 
+    def test_anything_that_cannot_be_a_porcelain_record_is_corrupt(self):
+        # A `git status --porcelain -z` record opens with an XY status pair, and
+        # X is drawn from " MTADRCU?!" -- so a first byte outside that set can
+        # never be v1. Enumerating JSON openers (`{`) got the torn v2 case and
+        # missed everything else: a deeply nested array, a torn probe-failure
+        # sentinel, NUL garbage, an HTML error page, a bare literal or number.
+        for raw in ("[" * 200000, "#panopticon:baseline-pro", "\0\0\0garbage",
+                    "<html><body>503</body></html>", "true", "-1"):
+            with self.subTest(raw=raw[:24]):
+                repo = self._repo()
+                self._put(repo, raw)
+                delta = validate_phase._tree_delta(repo, subprocess.run)
+                self.assertTrue(delta)
+                self.assertIn("CORRUPT", delta[0])
+                self.assertIn("--reset", delta[0])
+                self.assertNotIn("predates", delta[0])
+
+    def test_every_porcelain_opener_still_reads_as_schema_v1(self):
+        # The inverse pin: each byte that CAN open a porcelain record keeps the
+        # v1 diagnosis, so the widening above cannot swallow a real v1 baseline.
+        for xy in (" M", "M ", "T ", "A ", "D ", "R ", "C ", "U ", "??", "!!"):
+            with self.subTest(xy=xy):
+                repo = self._repo()
+                self._put(repo, xy + " app.py\0")
+                delta = validate_phase._tree_delta(repo, subprocess.run)
+                self.assertTrue(delta)
+                self.assertIn("schema v1", delta[0])
+                self.assertNotIn("CORRUPT", delta[0])
+
     def test_a_deeply_nested_baseline_fails_closed_instead_of_raising(self):
         # `json.loads` raises RecursionError -- a RuntimeError, so outside
         # `except ValueError` -- and driver.run catches (DriverError, ValueError)
@@ -407,6 +436,28 @@ class TornBaselineTest(unittest.TestCase):
             validate_phase.capture_tree_baseline(repo)
         self.assertTrue(os.path.exists(keep), "a refusal deleted a file outside the tree")
         with open(keep, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "NOT OURS")
+
+    def test_a_refused_open_never_deletes_a_regular_file_at_the_staging_name(self):
+        # The cleanup gate, pinned directly: the outside-the-tree plant above is
+        # refused by confinement BEFORE the try, so it never reaches the gate.
+        # Here the open itself is refused (any OSError) with a regular file
+        # already sitting at our staging name -- a file this call never opened,
+        # so the failure path must leave it exactly as it found it.
+        repo = self._repo()
+        path = runio._pano(repo, "tree-baseline.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write("NOT OURS")
+
+        def _refuse(_p):
+            raise OSError("open refused")
+
+        with mock.patch.object(runio, "_open_w_nofollow", _refuse), \
+                self.assertRaises(OSError):
+            validate_phase.capture_tree_baseline(repo)
+        self.assertTrue(os.path.exists(path + ".tmp"), "a refused open deleted a file")
+        with open(path + ".tmp", encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "NOT OURS")
 
     def test_reset_sweeps_a_staging_leftover(self):

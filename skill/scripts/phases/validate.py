@@ -36,6 +36,9 @@ _BASELINE_CORRUPT = ("clean-tree baseline is PRESENT but CORRUPT (torn or corrup
 _BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a "
                    "clean-tree v1 baseline; tree integrity cannot be certified -- "
                    + _BASELINE_REMEDY)
+# The only bytes a `git status --porcelain -z` record can OPEN with: the X of
+# its XY status pair. A first byte outside this set was never a v1 baseline.
+_PORCELAIN_XY = " MTADRCU?!"
 
 def _write_baseline(baseline, emit):
     """Write the baseline through `<baseline>.tmp` + `os.replace`, so an
@@ -70,7 +73,8 @@ def _write_baseline(baseline, emit):
     opened = False
     try:
         with runio._open_w_nofollow(tmp) as fh:
-            opened = True
+            opened = True                    # set first thing: an exception between
+                                             # the open and here would orphan `tmp`
             emit(fh)
         os.replace(tmp, baseline)
     except BaseException:                # noqa: BLE001 -- cleanup, then re-raise
@@ -270,10 +274,13 @@ def _tree_delta(review_root, runner):
         # "schema v1" points at a resume across an upgrade that never happened
         # and hides the remedy. RecursionError (a deeply nested document) is a
         # RuntimeError, so `except ValueError` let it out of the phase entirely.
-        if raw.lstrip().startswith("{"):
-            return [_BASELINE_CORRUPT]       # a v2 document, torn or corrupted
+        # Prove porcelain rather than enumerate JSON: a torn v2 document, a torn
+        # probe-failure sentinel, NUL garbage and an HTML page all open with a
+        # byte no porcelain record can, so none of them is v1.
         if not raw.strip():
             return [_BASELINE_EMPTY]         # 0 bytes: torn, or a v1 clean tree
+        if raw[:1] not in _PORCELAIN_XY:
+            return [_BASELINE_CORRUPT]       # never a porcelain record, so never v1
         return ["clean-tree baseline predates content digests (schema v1); "
                 + "content equality not established, so tree integrity cannot "
                 + "be certified"]
