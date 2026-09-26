@@ -1496,3 +1496,40 @@ class TestSuppressedGitDriversReachTheCoverageBlock(unittest.TestCase):
                                "not a row", {"key": "filter.x.clean"}])
         self.assertEqual(rows["git_drivers_suppressed"],
                          [{"repo": ".", "key": "filter.lfs.clean"}])
+
+
+class TestTheReportsToolIngestCarriesTheMode(unittest.TestCase):
+    """`--security redteam` has to reach the parse, or the report body silently
+    loses every `# nosemgrep`'d finding (#1839 fix round 1 §B)."""
+
+    @staticmethod
+    def _sarif():
+        def result(rule, suppressions=None):
+            res = {"ruleId": rule, "level": "error", "message": {"text": rule},
+                   "locations": [{"physicalLocation": {
+                       "artifactLocation": {"uri": "app/%s.py" % rule},
+                       "region": {"startLine": 2}}}]}
+            if suppressions is not None:
+                res["suppressions"] = suppressions
+            return res
+        return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                          "results": [result("nosemd", [{"kind": "inSource"}]),
+                                      result("plain")]}]}
+
+    def _categories(self, security):
+        with tempfile.TemporaryDirectory() as d:
+            tools = os.path.join(d, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif(), fh)
+            args = _cli_args(tools_dir=tools, security=security, target=d,
+                             run_dir=d)
+            with contextlib.redirect_stderr(io.StringIO()):
+                body = plan_mod.ingest_tool_findings(args)[0]
+        return sorted(f["category"] for f in body)
+
+    def test_standard_honours_the_targets_own_comment(self):
+        self.assertEqual(["plain"], self._categories("standard"))
+
+    def test_redteam_reports_the_suppressed_finding(self):
+        self.assertEqual(["nosemd", "plain"], self._categories("redteam"))

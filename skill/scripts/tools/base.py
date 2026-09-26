@@ -33,6 +33,18 @@ target_root_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "panopticon_target_root", default=None)
 
 
+# The INGEST-side suppression policy for this parse (#1839, run-14
+# SEC-284952751), set by `ingest_tools` around each adapter's `parse` for the
+# reason above: `parse(raw, group)` takes no policy argument and the two halves
+# of an adapter do not share a process. `{"security_mode": "standard" |
+# "redteam", "suppressed_in_source": [<rule id>, ...]}` -- the mode travels IN
+# and the rule ids of what the mode dropped travel back OUT through the same
+# dict, because a drop that nobody can count is a silently smaller scan. None
+# means no caller named a policy, and then nothing is dropped.
+ingest_policy_cv: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("panopticon_ingest_policy", default=None))
+
+
 # Adapters may drop results with no actionable location, or synthesize one.
 # Each adapter declares its policy explicitly.
 DROP_IF_NO_LOCATION = False  # default; adapters override if needed

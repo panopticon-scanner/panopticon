@@ -536,3 +536,25 @@ class TestMaxVerifyIsReachable(unittest.TestCase):
         import scripts.driver as driver
         with self.assertRaises(SystemExit):
             driver.build_parser().parse_args(["run", ".", "--max-verify", "-1"])
+
+
+class TestTheToolVerifyQueueCarriesTheRunsMode(_ToolVerifyBase):
+    """The independent tool-verify round adjudicates what the report carries,
+    so it ingests under the RUN's mode (#1839 fix round 1 §B): a `# nosemgrep`'d
+    finding is honoured under standard and queued under redteam, or the two
+    halves disagree about which findings exist."""
+
+    def _queued(self, security_mode):
+        suppressed = _result("nosemd", "src/app.py", 1)
+        suppressed["suppressions"] = [{"kind": "inSource"}]
+        root = self._repo([suppressed, _result("plain", "src/app.py", 2)])
+        manifest = self._manifest()
+        manifest["security_mode"] = security_mode
+        queue = verify_tools._tool_verify_queue(root, manifest)
+        return sorted(f["category"] for _qid, f in queue)
+
+    def test_standard_honours_the_comment(self):
+        self.assertEqual(["plain"], self._queued("standard"))
+
+    def test_redteam_queues_the_suppressed_finding(self):
+        self.assertEqual(["nosemd", "plain"], self._queued("redteam"))

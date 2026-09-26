@@ -249,11 +249,15 @@ def _hit_text(value, cap):
     return (text[:cap] + "…") if len(text) > cap else (text or "?")
 
 @functools.lru_cache(maxsize=None)
-def _ingested_tool_findings(review_root, include_fixtures):
+def _ingested_tool_findings(review_root, include_fixtures,
+                            security_mode="standard"):
     """All normalized tool findings for this run, memoized per (review_root,
-    include_fixtures). Mirrors the driver's tool-verify ingest (same
-    include_fixtures) so the review-time map reflects the SAME findings the
-    independent tool-verify round adjudicates. Returns () when the tools dir is
+    include_fixtures, security_mode). Mirrors the driver's tool-verify ingest
+    (same include_fixtures, same mode) so the review-time map reflects the SAME
+    findings the independent tool-verify round adjudicates. #1839: the mode is
+    part of the memo KEY because it changes the answer -- an inline suppression
+    comment in the scanned tree is honoured at the parse under `standard` -- and
+    both phases ask about the same root. Returns () when the tools dir is
     absent or ingest fails — the map is advisory and must never break a review."""
     tools_dir = runio._pano(review_root, "tools")
     if not os.path.isdir(tools_dir):
@@ -261,7 +265,7 @@ def _ingested_tool_findings(review_root, include_fixtures):
     try:
         findings, _disp = ingest_tools.ingest_dir_detailed(
             tools_dir, None, include_fixtures=include_fixtures,
-            target_root=review_root)
+            target_root=review_root, security_mode=security_mode)
     except Exception:  # noqa: BLE001 - advisory input; never break review on it
         return ()
     return tuple(findings)
@@ -307,8 +311,9 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
     wanted = set(files or ())
     if not wanted:
         return ""
-    findings = _ingested_tool_findings(review_root,
-                                       verify_tools._tools_include_fixtures(manifest))
+    findings = _ingested_tool_findings(
+        review_root, verify_tools._tools_include_fixtures(manifest),
+        manifest.get("security_mode", "standard"))
     hits = [f for f in findings
             if ((f.get("location") or {}).get("file")) in wanted]
     hits.sort(key=lambda h: (str((h.get("location") or {}).get("file") or ""),

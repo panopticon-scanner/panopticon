@@ -255,11 +255,44 @@ def relationship_cwes(rule):
     return out
 
 
-def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
+def is_suppressed_in_source(res):
+    """Did the SCANNED TREE's own source suppress this result? (#1839)
+
+    SARIF 2.1.0 §3.27.23: a result the tool still reports but marks as
+    suppressed carries `suppressions`, each entry naming a `kind` --
+    `inSource` is a comment in the scanned file itself (semgrep's
+    `# nosemgrep`), `external` is a suppression the tool was handed. Only the
+    first kind is the reviewed repository's to write, and only an entry the
+    tool ACCEPTED counts: `status: "rejected"` means the suppression did not
+    take effect, so the finding stands in every mode.
+    """
+    for entry in (res.get("suppressions") or []):
+        if not isinstance(entry, dict) or entry.get("kind") != "inSource":
+            continue
+        if str(entry.get("status") or "accepted").lower() != "rejected":
+            return True
+    return False
+
+
+def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
+                      security_mode=None, suppressed_in_source=None):
     # SARIF in, NARF out. This is the second of the two envelope builders (see
     # make_finding); it emits a deliberately leaner envelope because a SARIF
     # result's message IS the title, with no separate prose body to carry.
-    """Convert SARIF results to panopticon findings with normalized metadata."""
+    """Convert SARIF results to panopticon findings with normalized metadata.
+
+    `security_mode` (#1839, run-14 SEC-284952751) decides what an INLINE
+    suppression comment in the scanned tree's own source is worth here, which
+    is where it is decided at all: semgrep 1.177.0 reports a `# nosemgrep`'d
+    result WITH `suppressions: [{"kind": "inSource"}]` and `--disable-nosem`
+    does not change that output at the pin, so no argv answers this. Under
+    `"standard"` such a result is DROPPED -- an operator scanning their own
+    repository made a reviewed, in-diff decision -- and the rule id is
+    appended to `suppressed_in_source` when a caller passes a list, so the
+    drop is counted rather than silent. Under `"redteam"` the tree is
+    untrusted and the result is an ordinary finding. A caller naming NO mode
+    drops nothing, which is the behaviour every caller had before this.
+    """
     out = []
     n = start
     for run in (sarif.get("runs") or []):
@@ -272,6 +305,10 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
             try:
                 rule_id = res.get("ruleId")
                 if tool_name == "bandit" and rule_id in NOISE_RULES:
+                    continue
+                if security_mode == "standard" and is_suppressed_in_source(res):
+                    if suppressed_in_source is not None:
+                        suppressed_in_source.append(rule_id)
                     continue
                 rule = rules.get(rule_id, {})
                 sev = _sarif_severity(res, rule)

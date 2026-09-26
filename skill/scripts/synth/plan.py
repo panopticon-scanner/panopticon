@@ -465,7 +465,13 @@ def ingest_tool_findings(args):
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped,
-        excluded_out=excluded)
+        excluded_out=excluded,
+        # #1839: this run's mode decides whether an inline suppression COMMENT
+        # in the scanned tree stands, and it is decided at the parse (the
+        # pinned scanners report a suppressed result either way). The same
+        # answer `security_gate` uses, from the same function this module's own
+        # gate decisions read.
+        security_mode=gate_security_mode(args))
     gated = []
     if gate_counts_suppressed(args):
         gated = [findings_mod.normalize_finding(f) for f in dropped]
