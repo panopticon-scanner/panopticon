@@ -10,6 +10,9 @@ import os
 import re
 import tomllib
 import unittest
+import io
+import tempfile
+from unittest import mock
 
 from scripts._version import __version__  # noqa: E402
 
@@ -77,10 +80,21 @@ class TestVersionSingleSourcing(unittest.TestCase):
         self.assertEqual(report["meta"]["version"], __version__)
 
     def test_citations_user_agent_uses_the_constant(self):
-        src = _read("skill/scripts/citations.py")
-        self.assertNotRegex(src, r"panopticon/\d",
-                            "citations.py hardcodes a User-Agent version")
-        self.assertIn("__version__", src)
+        import scripts.citations as citations
+        for version in (__version__, "98.76.54-test-sentinel"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as root:
+                response = io.BytesIO(b'{"data": [{"epss": "0.42", "percentile": "0.7"}]}')
+                with mock.patch.object(citations, "__version__", version), \
+                        mock.patch.object(citations.urllib.request, "urlopen",
+                                          return_value=response) as opener:
+                    result = citations.epss_lookup(
+                        ["CVE-2026-1234"], cache_path=os.path.join(root, "epss.json"))
+                opener.assert_called_once()
+                request = opener.call_args.args[0]
+                self.assertEqual(request.get_header("User-agent"), "panopticon/" + version)
+                self.assertEqual(request.full_url, "https://api.first.org/data/v1/epss?cve=CVE-2026-1234")
+                self.assertEqual(opener.call_args.kwargs, {"timeout": 8})
+                self.assertEqual(result["CVE-2026-1234"]["score"], 0.42)
 
     def test_verify_queue_payload_uses_the_constant(self):
         # #run7 TST-A2A: _version.py names the verify-queue payload as a consumer,

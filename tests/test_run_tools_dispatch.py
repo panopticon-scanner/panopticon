@@ -1,6 +1,5 @@
 """Adapter dispatch tests for scripts.run_tools."""
 import contextlib
-import inspect
 import io
 import json
 import os
@@ -132,9 +131,24 @@ class TestDefaultSelectionBranch(unittest.TestCase):
         # Pin the premise rather than trusting it: if driver ever started
         # passing --tools, this test would be guarding the wrong arm.
         import scripts.phases.tools as tools_phase
-        source = inspect.getsource(tools_phase)
-        self.assertIn("run_tools.py", source)
-        self.assertNotIn('"--tools"', source)
+        from scripts.phases import child, runio
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch.object(child, "_run_child", return_value=_FakeResult(0, "", "")) as run, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                result = tools_phase.tools_execute(root, {"run_id": "default-run"})
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertEqual(os.path.basename(argv[1]), "run_tools.py")
+            self.assertNotIn("--tools", argv)
+            self.assertFalse(any(arg.startswith("--tools=") for arg in argv))
+            self.assertEqual(argv[argv.index("--target") + 1], root)
+            self.assertIn("--deps", argv)
+            marker = runio._load_json(runio._pano(root, "tools-ran.json"))
+            self.assertEqual(marker["run_id"], "default-run")
+            self.assertFalse(marker["ran"])
+            self.assertFalse(marker["crashed"])
+            self.assertEqual(marker["note"], "no tool output produced")
+            self.assertEqual(result.kind, "advanced")
 
     def test_language_detection_feeds_the_selection(self):
         # detect_languages is one of the four composed functions; a target with
