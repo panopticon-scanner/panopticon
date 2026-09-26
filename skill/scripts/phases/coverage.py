@@ -375,15 +375,31 @@ def coverage_execute(review_root, manifest):
         # reached the gate (run-6). Persist the override AND warn loudly: to drop
         # a path corpus entirely (fixtures included, SEC included), use top-level
         # `exclude_paths:`, which prunes before grouping so no domain reviews it.
+        # #1838 SEC-71240568 (review finding 1): `rejected` names every
+        # NON_EXCLUDABLE domain the config tried to exclude, but that does not
+        # mean the domain ran -- a docs-only group's `exclude: [SEC]` is
+        # rejected even though neither the floor nor the scout ever put SEC in
+        # `effective`. Saying "still run" there is a false claim the operator
+        # cannot see through, so split on whether the rejected domain is
+        # actually in `effective` and say only what is true.
         rejected = disclosure.get("exclude_rejected")
         if rejected:
             cov["exclude_rejected"] = rejected
-            print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
-                  "-- these domains still run. To drop paths entirely (e.g. a "
-                  "fixture corpus), use top-level `exclude_paths:` in %s, "
-                  "not per-group `exclude:`."
-                  % (group, ", ".join(rejected), repo_config.CONFIG_NAMES[0]),
-                  file=sys.stderr)
+            ran = [d for d in rejected if d in effective]
+            idle = [d for d in rejected if d not in effective]
+            if ran:
+                print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
+                      "-- these domains still run. To drop paths entirely (e.g. a "
+                      "fixture corpus), use top-level `exclude_paths:` in %s, "
+                      "not per-group `exclude:`."
+                      % (group, ", ".join(ran), repo_config.CONFIG_NAMES[0]),
+                      file=sys.stderr)
+            if idle:
+                print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable), "
+                      "but no %s cell runs in this group (neither the floor nor "
+                      "the scout put it there) -- see `effective`."
+                      % (group, ", ".join(idle), ", ".join(idle)),
+                      file=sys.stderr)
         runio._write_json(runio._pano(review_root, "coverage-%s.json" % group), cov)
         return engine.PhaseResult(kind="advanced",
                            message="coverage: group %s (floor+scout)" % group)

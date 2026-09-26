@@ -557,11 +557,15 @@ class TestCoveragePhase(unittest.TestCase):
                          "    exclude: [SEC]\n")
         runio._write_json(runio._pano(self.root, "scout-Api.json"),
                            {"group": "Api", "domains": []})
-        with contextlib.redirect_stderr(io.StringIO()):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
             coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
         self.assertIn("SEC", cov["effective"])
         self.assertEqual(cov["exclude_rejected"], ["SEC"])
+        # #1838 SEC-71240568 (review finding 1): the "ran" wording must survive
+        # for a group where the rejected exclusion's domain genuinely runs.
+        self.assertIn("still run", err.getvalue())
 
     def test_surfaceless_group_gets_no_sec_floor(self):
         # #5.0-19 stays honored end-to-end: a group with no objective security
@@ -574,6 +578,28 @@ class TestCoveragePhase(unittest.TestCase):
         cov = runio._load_json(runio._pano(self.root, "coverage-Docs.json"))
         self.assertNotIn("SEC", cov["effective"])
         self.assertEqual(cov["sec_floor_applied"], [])
+
+    def test_warns_without_claiming_sec_ran_when_the_floor_never_applied(self):
+        # #1838 SEC-71240568 (review finding 1): a rejected `exclude: [SEC]`
+        # on a docs-only group -- where neither the floor nor the scout ever
+        # put SEC in `effective` -- must NOT be told "these domains still
+        # run". SEC genuinely did not run on this group; the disclosure must
+        # say so instead of the OVERRIDDEN-so-it-runs wording.
+        self._groups_json([{"name": "Docs", "files": ["README.md", "docs/intro.md"]}])
+        self._groups_yml("groups:\n  Docs:\n    match: ['**']\n    panels: [COD]\n"
+                         "    exclude: [SEC]\n")
+        runio._write_json(runio._pano(self.root, "scout-Docs.json"),
+                           {"group": "Docs", "domains": []})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Docs.json"))
+        self.assertEqual(cov["exclude_rejected"], ["SEC"])
+        self.assertNotIn("SEC", cov["effective"])   # SEC genuinely did not run
+        msg = err.getvalue()
+        self.assertNotIn("still run", msg)
+        self.assertIn("SEC", msg)
+        self.assertIn("Docs", msg)
 
     def test_coverage_done_only_when_all_groups_covered(self):
         self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
