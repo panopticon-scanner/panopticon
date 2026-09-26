@@ -317,6 +317,26 @@ jobs:
       # identical from the run page. Safe HERE and not from the driver: nothing
       # reads this process's stderr as a diagnostic, whereas phases/tools.py
       # builds its failure note from the first 300 characters of it.
+      # Both security workflows scan in `redteam` (owner ruling 2026-09-26,
+      # #1839). Today the mode changes two things: under `redteam` the
+      # virtualenv skip is off (run_tools.py, `partition_venv_dirs` hands the
+      # scanners nothing) and the gate re-admits name-suppressed findings
+      # (security_gate.py, policy C), so a PR cannot hide a CRITICAL or a
+      # secret-class finding under a `venv/`-named directory
+      # (`ingest_tools.gates_when_suppressed`). #1839's PR 5 adds the rest:
+      # under `standard`
+      # a target's own `.bandit`, `# nosec`, `# nosemgrep` and
+      # `gitleaks:allow` are honoured, under `redteam` none of them is.
+      # `standard` is an operator scanning their own repository;
+      # `security-fork.yml` scans a fork-authored tree on a required check,
+      # so both routes run `redteam`. This route follows because the captures
+      # this push uploads are the baseline the next PR's gate diffs against,
+      # and that diff is only meaningful within one mode -- nothing records
+      # the mode, so a cross-mode pair is undetectable; the first run after
+      # this change is that pair (measured: zero new HIGH on this tree). The
+      # mode is one attached pair on every scanner run, gate call and
+      # backstop snapshot below, pinned per step by
+      # `tests/test_security_fork_workflow.py`.
       - name: Run static-analysis tools
         run: |
           tools_out="$RUNNER_TEMP/${{ env.TOOLS_OUT }}"
@@ -328,6 +348,7 @@ jobs:
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam \
             --progress \
             --deps
 
@@ -371,6 +392,7 @@ jobs:
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam \
             ${baseline[@]+"${baseline[@]}"}
 
       - name: Strict full-tree gate
@@ -380,7 +402,8 @@ jobs:
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
-            --exclude '${{ env.GOLDEN_GLOB }}'
+            --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam
 
       - name: Publish strict security snapshot and summary
         id: strict-report
@@ -395,7 +418,8 @@ jobs:
             --output "$RUNNER_TEMP/snapshot.json" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
-            --exclude '${{ env.GOLDEN_GLOB }}'
+            --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam
 
       - name: Upload strict security snapshot
         if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.strict-report.outcome == 'success'

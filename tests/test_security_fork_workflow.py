@@ -346,5 +346,39 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
                                         "into a pass: %s" % offenders)
 
 
+class TestBothWorkflowsScanInRedteam(unittest.TestCase):
+    """Owner ruling 2026-09-26 (relayed by Claude): this repository's own CI
+    scans in `redteam` on both routes. Today the mode turns off the
+    virtualenv skip and lets the gate re-admit name-suppressed findings
+    (policy C); #1839's PR 5 adds the split that motivates the switch, under
+    which `standard` honours a target's own `.bandit`, `# nosec`, `# nosemgrep`
+    and `gitleaks:allow` and `redteam` honours none. `standard` is an operator
+    scanning their own repository; the fork route scans a fork-authored tree
+    on the required `fork-scan` check, and the same-repo route must capture
+    in the same mode because its captures are the baseline the next PR's gate
+    diffs against and nothing records the mode. So the mode is pinned as one
+    attached pair on every scanner run, every gate call and the backstop
+    snapshot, in both files."""
+
+    GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
+    STEPS = {
+        BASE: ("scan", ("Run static-analysis tools", GATE, "Strict full-tree gate",
+                        "Publish strict security snapshot and summary")),
+        FORK: ("fork-scan", ("Run static-analysis tools", GATE)),
+    }
+
+    def test_every_scanner_run_gate_and_snapshot_names_redteam(self):
+        for path, (job_name, names) in self.STEPS.items():
+            job = _load(path)["jobs"][job_name]
+            for name in names:
+                with self.subTest(workflow=os.path.basename(path), step=name):
+                    step = _step(job, name)
+                    self.assertIsNotNone(step, name)
+                    tokens = _script(step).split()
+                    self.assertEqual(tokens.count("--security"), 1, tokens)
+                    self.assertEqual(tokens[tokens.index("--security") + 1],
+                                     "redteam")
+
+
 if __name__ == "__main__":
     unittest.main()

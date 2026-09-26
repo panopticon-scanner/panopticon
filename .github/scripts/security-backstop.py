@@ -128,7 +128,8 @@ def retrieve(repository, fetch=gh_read):
         return None, "previous snapshot unavailable: API, archive or schema failure"
 
 
-def build_snapshot(tools_dir, manifest_path, commit, image, excludes):
+def build_snapshot(tools_dir, manifest_path, commit, image, excludes,
+                   security_mode="standard"):
     # Retrieval runs before dependency installation and the target checkout.
     # Only reporting needs the gate's shared scanner parser.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill"))
@@ -136,7 +137,8 @@ def build_snapshot(tools_dir, manifest_path, commit, image, excludes):
 
     manifest = gate.load_manifest(manifest_path)
     findings, _dispositions, failures, high, _suppressed = gate.evaluate(
-        tools_dir, manifest_path, exclude_globs=excludes)
+        tools_dir, manifest_path, exclude_globs=excludes,
+        security_mode=security_mode)
     identities: dict[str, str] = {}
     counts: Counter[str] = Counter()
     severity_counts = Counter({severity: 0 for severity in SEVERITIES})
@@ -232,6 +234,11 @@ def main(argv=None):
         report.add_argument("--" + name, type=Path, required=True)
     report.add_argument("--commit", required=True)
     report.add_argument("--exclude", action="append", default=[])
+    # The mode the captures were taken in, so the snapshot counts the same
+    # population the gate on the same step counts (`security_gate.evaluate`
+    # admits the policy-C suppressed set only under `redteam`).
+    report.add_argument("--security", dest="security_mode", default="standard",
+                        choices=("standard", "redteam"))
     args = parser.parse_args(argv)
     if args.command == "retrieve":
         previous, reason = retrieve(args.repository)
@@ -250,7 +257,8 @@ def main(argv=None):
         pass
     try:
         current = build_snapshot(args.tools_dir, args.manifest, args.commit,
-                                 args.image_file.read_text(encoding="utf-8").strip(), args.exclude)
+                                 args.image_file.read_text(encoding="utf-8").strip(), args.exclude,
+                                 security_mode=args.security_mode)
     except (OSError, ValueError):
         with args.summary.open("a", encoding="utf-8") as stream:
             stream.write("## Strict full-tree security backstop\n\nSnapshot unavailable: capture or image provenance is insufficient.\n")
