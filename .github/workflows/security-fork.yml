@@ -417,11 +417,15 @@ jobs:
 
 
       # `--security redteam`, as in `security.yml` (owner ruling 2026-09-26,
-      # #1839): this job scans a FORK-authored tree, so nothing the tree
-      # carries -- a root `.bandit`, `# nosec`, `# nosemgrep`,
-      # `gitleaks:allow` -- may narrow what the required check sees. The
-      # base commit's baseline was captured in the same mode by
-      # `security.yml`, which `security_gate.load_baseline` requires.
+      # #1839): this job scans a FORK-authored tree. Today that means the
+      # gate re-admits name-suppressed findings and the virtualenv skip is
+      # off (a PR cannot park a HIGH under a `venv/`-named directory); with
+      # #1839's PR 5 it also means a root `.bandit`, `# nosec`, `# nosemgrep`
+      # and `gitleaks:allow` in the tree narrow nothing the required check
+      # sees. The base commit's baseline MUST be captured in the same mode
+      # by `security.yml` -- nothing records the mode, so the gate cannot
+      # tell a cross-mode pair apart -- which is why both files switch in
+      # one change.
       - name: Run static-analysis tools
         run: |
           # Byte-identical to security.yml's invocation EXCEPT for `--deps`,

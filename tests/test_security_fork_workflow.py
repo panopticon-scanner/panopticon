@@ -346,22 +346,19 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
                                         "into a pass: %s" % offenders)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestBothWorkflowsScanInRedteam(unittest.TestCase):
     """Owner ruling 2026-09-26 (relayed by Claude): this repository's own CI
-    scans in `redteam` on both routes. `standard` is an operator scanning
-    their own repository -- a target's `.bandit`, `# nosec`, `# nosemgrep`
-    and `gitleaks:allow` are honoured -- and on the fork route the target is
-    a fork-authored tree, so the required `fork-scan` check would let the PR
-    choose what bandit skips. The same-repo route follows because
-    `security_gate.load_baseline` diffs the head against a baseline captured
-    in the SAME mode: a standard baseline under a redteam head would report
-    every honoured suppression as new. So the mode is pinned as one attached
-    pair on every scanner run, every gate call and the backstop snapshot, in
-    both files."""
+    scans in `redteam` on both routes. Today the mode turns off the name-only
+    virtualenv skip and lets the gate re-admit name-suppressed findings
+    (policy C); #1839's PR 5 adds the split that motivates the switch, under
+    which `standard` honours a target's own `.bandit`, `# nosec`, `# nosemgrep`
+    and `gitleaks:allow` and `redteam` honours none. `standard` is an operator
+    scanning their own repository; the fork route scans a fork-authored tree
+    on the required `fork-scan` check, and the same-repo route must capture
+    in the same mode because its captures are the baseline the next PR's gate
+    diffs against and nothing records the mode. So the mode is pinned as one
+    attached pair on every scanner run, every gate call and the backstop
+    snapshot, in both files."""
 
     GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
     STEPS = {
@@ -381,3 +378,7 @@ class TestBothWorkflowsScanInRedteam(unittest.TestCase):
                     self.assertEqual(tokens.count("--security"), 1, tokens)
                     self.assertEqual(tokens[tokens.index("--security") + 1],
                                      "redteam")
+
+
+if __name__ == "__main__":
+    unittest.main()

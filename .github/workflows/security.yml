@@ -318,15 +318,23 @@ jobs:
       # reads this process's stderr as a diagnostic, whereas phases/tools.py
       # builds its failure note from the first 300 characters of it.
       # Both security workflows scan in `redteam` (owner ruling 2026-09-26,
-      # #1839). `standard` honours the target's own `.bandit`, `# nosec`,
-      # `# nosemgrep` and `gitleaks:allow` -- right for an operator scanning
-      # their own repository, wrong for `security-fork.yml`, which scans a
-      # fork-authored tree on a required check. This route follows because
-      # `security_gate.load_baseline` diffs the head against a baseline
-      # captured in the SAME mode: the captures this push uploads are the
-      # baseline the next PR's gate reads. The mode is one attached pair on
-      # every scanner run, gate call and backstop snapshot below, pinned per
-      # step by `tests/test_security_fork_workflow.py`.
+      # #1839). Today the mode changes two things: under `redteam` the
+      # name-only virtualenv skip hands the scanners nothing (run_tools.py,
+      # `_venv_excludes`) and the gate re-admits name-suppressed findings
+      # (security_gate.py, policy C), so a PR cannot park a HIGH under a
+      # `venv/`-named directory. #1839's PR 5 adds the rest: under `standard`
+      # a target's own `.bandit`, `# nosec`, `# nosemgrep` and
+      # `gitleaks:allow` are honoured, under `redteam` none of them is.
+      # `standard` is an operator scanning their own repository;
+      # `security-fork.yml` scans a fork-authored tree on a required check,
+      # so both routes run `redteam`. This route follows because the captures
+      # this push uploads are the baseline the next PR's gate diffs against,
+      # and that diff is only meaningful within one mode -- nothing records
+      # the mode, so a cross-mode pair is undetectable; the first run after
+      # this change is that pair (measured: zero new HIGH on this tree). The
+      # mode is one attached pair on every scanner run, gate call and
+      # backstop snapshot below, pinned per step by
+      # `tests/test_security_fork_workflow.py`.
       - name: Run static-analysis tools
         run: |
           tools_out="$RUNNER_TEMP/${{ env.TOOLS_OUT }}"
