@@ -473,18 +473,24 @@ def _write_driver_plan(review_root, manifest):
     cells exist; a later call is a no-op if the file is already present (the
     cell set is fixed once coverage completes, which gates the review phase).
     An empty target (no cells) writes NO plan -- reconcile then stays a correct
-    no-op rather than flagging an empty plan."""
+    no-op rather than flagging an empty plan, and never RE-created once the
+    manifest stamps it (`run_manifest.claim_artifact`, SEC-377944137)."""
     path = runio._pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
     # Before any write-capable cell is dispatched, on EVERY pass -- a resume
     # dispatches cells too, so gating only the first write would let a run that
-    # was refused come back without the flag and proceed (#1519).
+    # was refused come back without the flag and proceed (#1519) -- which is
+    # also why it sits ABOVE the owed-artifact refusal below.
     require_unenforced_ack(review_root, manifest, entries)
     if os.path.isfile(path):
         return path
-    return runio._write_json(path, entries)
+    # None when the plan is owed and gone: deleted evidence, reported and never
+    # repaired. The write runs INSIDE the claim so the stamp can only follow it.
+    return run_manifest.claim_artifact(review_root, manifest, run_manifest.DRIVER_PLAN,
+                                       path, lambda: runio._write_json(path, entries),
+                                       sha256=integrity_mod._plan_hash(entries))
 
 UNENFORCED_ACK = "unenforced-ack.json"
 # #1737: `--setup` has a gate of its own -- `phases/setup.
@@ -680,12 +686,15 @@ def _snapshot_review_out_files(review_root, manifest):
     written) and before any verify-phase agent can touch a findings file, so a
     later substitution -- e.g. by a rogue advisor on the unenforced generic host
     -- is caught. Idempotent AND one-way: if the snapshot already exists it is
-    NOT rewritten -- re-hashing after a substitution would mask it."""
+    NOT rewritten, nor re-taken once DELETED -- either masks a substitution
+    (SEC-377944137; `run_manifest.claim_artifact`)."""
     path = runio._pano(review_root, "out-file-hashes.json")
     if os.path.isfile(path):
         return path
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
-    group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path))
-    return path if os.path.isfile(path) else None
+    return run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
+        review_root, manifest, run_manifest.OUT_FILE_SNAPSHOT, path,
+        lambda: path if group_runner.snapshot_out_files(
+            entries, out_path=os.path.abspath(path)) else None, cells=len(entries))

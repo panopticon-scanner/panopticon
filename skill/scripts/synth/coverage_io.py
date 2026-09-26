@@ -34,6 +34,41 @@ import scripts.groups_schema as groups_schema
 _MAX_COVERAGE_BYTES = 1 << 20
 
 
+# #1839 (review round 1 I3): how many per-directory rows of the suppression
+# tally a rendered line shows before it names the remainder. `meta.coverage` is
+# this module's block and two renderers show its rows, so the cap and the
+# escaping live here once -- `synth/render.py` is also inside 20 lines of its
+# ceiling. The KEY SHAPES stay with the renderers, which mirror them from
+# `ingest_tools`; this function is told which prefix is target-authored.
+VENV_ROWS_SHOWN = 10
+
+
+def venv_tally(rows, prefix):
+    """`seg: n, ...` for `(segment, count)` rows, with the key shape that embeds
+    a TARGET-AUTHORED path escaped and capped (#1839, review round 1 I3).
+
+    `meta.coverage.tools_suppressed` carries one `<prefix><dir>` row per
+    marker-confirmed virtualenv, where `<dir>` is a path out of the reviewed
+    tree: a newline in it forged a second report line that read like the real
+    one, and a monorepo mints dozens of rows. So `ascii()` for that half of the
+    key -- non-ASCII too, since a bidi override reorders a line -- and the
+    remainder is named rather than dropped silently. Order is the caller's, and
+    the class rows are never capped: the JSON keeps every row.
+    """
+    out, seen, cut = [], 0, 0
+    for segment, count in rows:
+        if str(segment).startswith(prefix):
+            seen += 1
+            if seen > VENV_ROWS_SHOWN:
+                cut += 1
+                continue
+            segment = prefix + ascii(str(segment)[len(prefix):])
+        out.append("%s: %d" % (segment, count))
+    if cut:
+        out.append("and %d more (see meta.coverage.tools_suppressed)" % cut)
+    return ", ".join(out)
+
+
 def _strings(value):
     """The strings in `value`, accepting a lone string as the one-element list
     it was meant to be; [] for anything else."""

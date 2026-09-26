@@ -726,6 +726,51 @@ def durable_apply(tmp_path, rows, runner, **kwargs):
                         repo='owner/project', progress_path=tmp_path / 'progress.json', **kwargs)
 
 
+def test_two_row_failure_persists_first_and_reconciles_second(tmp_path):
+    first = fix_row(issue=443, verdict='duplicate', rank=None,
+                    duplicate_of=436, status='approved')
+    second = fix_row(issue=444, rank=2, status='approved')
+    ledger = tmp_path / 'ledger.jsonl'
+    triage.save_rows([first, second], ledger)
+    issues = {443: DurableRunner(), 444: DurableRunner()}
+    issues[444].fail = 'edit'
+    issues[444].accept = True
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1:3] == ['api', 'repos/owner/project']:
+            return issues[443](argv, **kwargs)
+        issue = next((number for number in issues if str(number) in argv
+                      or any('/%s/' % number in part for part in argv)), None)
+        assert issue is not None, argv
+        return issues[issue](argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match='mutation pending'):
+        durable_apply(tmp_path, [first, second], runner, ledger_path=ledger)
+    saved = triage.load_rows(ledger)
+    assert [row['status'] for row in saved] == ['applied', 'approved']
+    progress = json.loads((tmp_path / 'progress.json').read_text())['rows']
+    assert progress['443']['pending'] is None
+    assert progress['444']['pending'] == 1
+    assert len(issues[443].comments) == len(issues[444].comments) == 1
+    public_first = [call for call in calls if call[1] == 'issue'
+                    and call[2] in ('comment', 'edit', 'close') and call[3] == '443']
+    assert [call[2] for call in public_first] == ['comment', 'edit', 'close']
+    second_edits = [call for call in calls if call[1:3] == ['issue', 'edit']
+                    and call[3] == '444']
+    assert len(second_edits) == 1
+    issues[444].fail = None
+    assert durable_apply(tmp_path, saved, runner, ledger_path=ledger) == (1, 0)
+    assert [row['status'] for row in triage.load_rows(ledger)] == ['applied', 'applied']
+    assert len(issues[443].comments) == 1
+    assert [call for call in calls if call[1] == 'issue'
+            and call[2] in ('comment', 'edit', 'close') and call[3] == '443'] == public_first
+    assert [call for call in calls if call[1:3] == ['issue', 'edit']
+            and call[3] == '444'] == second_edits
+    assert issues[444].labels == ['triage:fix']
+
+
 @pytest.mark.parametrize('permission', [{}, [], {'permissions': {'admin': False}},
     {'full_name': 'other/project', 'permissions': {'admin': True}},
     {'full_name': 'owner/project', 'permissions': {'admin': 'true'}}])
@@ -849,12 +894,58 @@ def test_setup_preflight_and_target_binding():
         return mock.Mock(returncode=0, stdout=json.dumps(payload), stderr='')
     triage.setup(runner=runner, repo='owner/project')
     assert calls[0] == ['gh', 'api', 'repos/owner/project']
+    label_calls = [call for call in calls if call[1:3] == ['label', 'create']]
+    assert label_calls == [
+        ['gh', 'label', 'create', name, '--color', color, '--description', desc,
+         '--force', '--repo', 'owner/project']
+        for name, color, desc in triage.LABELS.values()
+    ]
+    assert [call for call in calls if call[1:4] == ['api', '-X', 'POST']] == [
+        ['gh', 'api', '-X', 'POST', 'repos/owner/project/milestones',
+         '-f', 'title=' + triage.MILESTONE,
+         '-f', 'description=Ranked fix queue from the remediation triage arc — see ' + triage.SPEC]
+    ]
     for command in calls[1:]:
         if command[1] == 'label':
             assert command[-2:] == ['--repo', 'owner/project']
         else:
             assert any(arg.startswith('repos/owner/project/milestones') for arg in command)
             assert not any('{owner}' in arg for arg in command)
+
+
+def test_setup_existing_milestone_suppresses_post():
+    calls = []
+    def runner(argv, **kw):
+        calls.append(argv)
+        payload = ([triage.MILESTONE] if 'repos/owner/project/milestones?state=all' in argv
+                   else {'full_name': 'owner/project', 'permissions': {'admin': True}})
+        return mock.Mock(returncode=0, stdout=json.dumps(payload), stderr='')
+    triage.setup(runner=runner, repo='owner/project')
+    assert not any(call[1:4] == ['api', '-X', 'POST'] for call in calls)
+
+
+@pytest.mark.parametrize('response', ['{}', 'null', '[1]', 'not-json'])
+def test_setup_rejects_malformed_milestone_response(response):
+    calls = []
+    def runner(argv, **kw):
+        calls.append(argv)
+        payload = (response if 'repos/owner/project/milestones?state=all' in argv
+                   else json.dumps({'full_name': 'owner/project',
+                                    'permissions': {'admin': True}}))
+        return mock.Mock(returncode=0, stdout=payload, stderr='')
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        triage.setup(runner=runner, repo='owner/project')
+    assert not any(call[1:4] == ['api', '-X', 'POST'] for call in calls)
+
+
+@pytest.mark.parametrize('value', [0, False, [], {}, ''])
+def test_gh_env_rejects_declared_invalid_directory_before_command(tmp_path, value):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({'gh_config_dir': value}))
+    with mock.patch.object(triage.subprocess, 'run') as run:
+        with pytest.raises(ValueError, match='gh_config_dir'):
+            triage.gh_env(config_path=path)
+    run.assert_not_called()
 
 
 @pytest.mark.parametrize('repo', ['x', '../repo', 'owner/../repo', 'owner/repo?x', 'owner/repo#x', '-x/repo'])
