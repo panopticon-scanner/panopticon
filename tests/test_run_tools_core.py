@@ -1790,6 +1790,89 @@ class TestTheManifestReportsTheRedactionPass(unittest.TestCase):
         self.assertIs(payload["redacted"], False)
 
 
+class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
+    """#1839 (run-14 SEC-284952751): under `standard` an inline suppression
+    comment in the target's own source is HONOURED -- an operator's reviewed,
+    in-diff decision about their own repository -- and that is a coverage fact a
+    reader of the artifacts is entitled to. So it is honoured DISCLOSED, not
+    silently: `tools-manifest.json` carries one row per assessed tool.
+
+    Like `network` and `redacted`, the claim is an OBSERVATION read off the argv
+    the runner actually built, not a statement of intent that would survive the
+    flag going away.
+    """
+
+    TOOLS = ["semgrep", "bandit", "trivy", "gitleaks", "gosec"]
+
+    def _manifest(self, d, tools=None, **kwargs):
+        def runner(cmd, **kw):
+            return _FakeResult(returncode=0, stdout=b'{"runs":[]}')
+        tools = list(self.TOOLS if tools is None else tools)
+        with contextlib.redirect_stderr(io.StringIO()):
+            written = rt.run_tools(d, tools, os.path.join(d, "tools"),
+                                   runner=runner, venv_dirs=[], **kwargs)
+        return rt.write_manifest(os.path.join(d, "tools-manifest.json"),
+                                 tools, written)
+
+    def test_standard_says_the_comments_stood(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, security_mode="standard")
+        self.assertEqual(payload["suppression_comments"],
+                         {"semgrep": "honoured", "bandit": "honoured",
+                          "gitleaks": "honoured", "gosec": "honoured",
+                          "trivy": "n/a"})
+
+    def test_redteam_says_they_were_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, security_mode="redteam")
+        self.assertEqual(payload["suppression_comments"],
+                         {"semgrep": "ignored", "bandit": "ignored",
+                          "gitleaks": "ignored",
+                          # No knob verified at the pin: the residual is
+                          # disclosed in BOTH modes rather than invented.
+                          "gosec": "honoured",
+                          "trivy": "n/a"})
+
+    def test_an_unassessed_tool_gets_no_row(self):
+        # Absent is not `n/a`: "nobody looked" and "there is nothing to look
+        # at" are different claims, and the tool axis has been burned by
+        # reading one as the other (#1839's own `excluded_dirs` note).
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._manifest(d, tools=["brakeman"])
+        self.assertNotIn("brakeman", payload["suppression_comments"])
+        self.assertNotIn("brakeman", rt.SUPPRESSION_COMMENTS)
+
+    def test_the_claim_follows_the_argv_and_not_the_intent(self):
+        # The coupling, the same way the redaction claim is coupled: with
+        # semgrep's knob taken out of the table the redteam argv carries no
+        # flag, and the manifest says `honoured` instead of repeating a mode.
+        table = dict(rt.SUPPRESSION_COMMENTS)
+        table["semgrep"] = ("# nosemgrep", None)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+            payload = self._manifest(d, tools=["semgrep"],
+                                     security_mode="redteam")
+        self.assertEqual(payload["suppression_comments"],
+                         {"semgrep": "honoured"})
+
+    def test_the_ledger_is_this_runs_and_not_the_last_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._manifest(d, tools=["semgrep"], security_mode="redteam")
+            payload = self._manifest(d, tools=["bandit"],
+                                     security_mode="standard")
+        self.assertEqual(payload["suppression_comments"],
+                         {"bandit": "honoured"})
+
+    def test_a_scan_that_never_ran_claims_nothing(self):
+        # The docker-absent manifest: no tool was launched, so there is no
+        # observation to publish.
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                        ["semgrep"], [],
+                                        suppression_comments={})
+        self.assertEqual(payload["suppression_comments"], {})
+
+
 class TestEslintFileCoverageCapture(unittest.TestCase):
     def test_invalid_eslint_captures_discard_parser_text_and_still_fail_ingestion(self):
         from scripts import ingest_tools, security_gate

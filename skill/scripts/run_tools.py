@@ -656,6 +656,42 @@ def _with_suppression_flags(tool, cmd, security_mode):
     return _insert_flags(tool, cmd, [flag])
 
 
+def _record_suppression_posture(tool, ignored):
+    """Publish what this launch's argv actually does with *tool*'s inline
+    suppression comments (#1839).
+
+    Silent for a tool `SUPPRESSION_COMMENTS` has not assessed: an absent row
+    says nobody looked, which is not the same claim as `n/a`.
+    """
+    entry = SUPPRESSION_COMMENTS.get(tool)
+    if entry is None:
+        return
+    if entry[0] is None:
+        _SUPPRESSION_POSTURE[tool] = SUPPRESSION_NA
+    else:
+        _SUPPRESSION_POSTURE[tool] = (SUPPRESSION_IGNORED if ignored
+                                      else SUPPRESSION_HONOURED)
+
+
+def _suppression_flag_on(tool, cmd):
+    """True when the flag that neutralises *tool*'s suppression comments is on
+    the argv this launch will really run -- read back, not assumed."""
+    flag = SUPPRESSION_COMMENTS.get(tool, (None, None))[1]
+    return bool(flag) and flag in cmd
+
+
+def _adapter_security_mode(docker_argv):
+    """The security mode actually named on an adapter dispatch argv (#1839).
+
+    `--security-opt=no-new-privileges` is one attached token, so it cannot be
+    mistaken for this flag.
+    """
+    try:
+        return docker_argv[docker_argv.index(SECURITY_FLAG) + 1]
+    except (ValueError, IndexError):
+        return "standard"
+
+
 @contextlib.contextmanager
 def _scanner_owned_config(tool, cmd):
     """`(cmd, docker mount flags)` with *tool* pinned to a configuration file WE
@@ -1265,6 +1301,18 @@ _REDACTED_CAPTURES: set[str] = set()
 # `"excluded:online egress unavailable"` (scripts.tools.egress).
 _NETWORK_POSTURE: dict[str, str] = {}
 
+# `tools-manifest.json`'s `suppression_comments` vocabulary (#1839, run-14
+# SEC-284952751): what this run's argv does with an inline suppression comment
+# in the target's own source.
+SUPPRESSION_IGNORED = "ignored"      # a verified knob was passed (redteam)
+SUPPRESSION_HONOURED = "honoured"    # the comment stood, and is disclosed
+SUPPRESSION_NA = "n/a"               # assessed: this argv honours no comment
+# Filled where the argv is built and read back by `write_manifest`, exactly like
+# `_NETWORK_POSTURE` above and for the same reason: "the operator's own
+# suppression comments were honoured" is a coverage fact, and a claim written
+# from the MODE would survive the flag going away.
+_SUPPRESSION_POSTURE: dict[str, str] = {}
+
 # Above this size a capture is re-serialized in json.dumps' default layout
 # instead of the producer's own: matching the layout costs one extra
 # serialization of the ORIGINAL document to verify the guess, which is free on a
@@ -1512,6 +1560,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     # the argv is built, read back by `write_manifest`. A claim written from
     # intent would survive the flags going away; this one does not.
     _NETWORK_POSTURE.clear()
+    _SUPPRESSION_POSTURE.clear()   # #1839: this run's argv, never the last one's
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
@@ -1571,6 +1620,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                              "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
                              image] + cmd)
                 _NETWORK_POSTURE[tool] = egress.NO_NETWORK
+                _record_suppression_posture(tool,
+                                            _suppression_flag_on(tool, cmd))
                 with progress.tool(tool, index, total) as step:
                     done = step.finish(
                         _capture_run("tool", tool, docker, out_path, runner,
@@ -1608,6 +1659,15 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                 # `_run_adapter._split_security_mode` fails the tool closed on
                 # a token it does not recognise.
                 SECURITY_FLAG, security_mode, tool])
+            # #1839: gitleaks' suppression flag is appended by the adapter
+            # inside the container, so what the host can observe is the mode it
+            # put on this argv and the adapter's own declaration that it reads
+            # one -- both read back here rather than assumed.
+            _record_suppression_posture(
+                tool,
+                _adapter_security_mode(docker) == REDTEAM
+                and SUPPRESSION_COMMENTS.get(tool, (None, None))[1] is not None
+                and bool(getattr(adapter, "reads_security_mode", False)))
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
                     _capture_run("adapter", tool, docker, out_path, runner,
@@ -1645,7 +1705,7 @@ def _excluded_dir_row(d):
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None, exclude_globs=()):
+                   network=None, exclude_globs=(), suppression_comments=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1692,6 +1752,20 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     keeps -- an observation, so replacing the choke point with identity makes
     the claim go false rather than leaving a stale `true` behind. The tools
     phase copies it into `tools-ran.json`.
+
+    `suppression_comments` (#1839) is what this run's argv does with an inline
+    suppression comment in the target's own source, per tool: `"ignored"` where
+    the pinned scanner's knob for it was passed (`--security redteam`),
+    `"honoured"` where the comment stood -- under `standard`, the mode CI's
+    merge gate runs, that is an operator's reviewed decision about their own
+    repository, and where no knob exists at the pin it is a residual -- and
+    `"n/a"` for a tool whose argv honours no such comment at all. A tool with no
+    row was not ASSESSED, which is deliberately not the same claim as `n/a`.
+    Defaults to the ledger `run_tools()` filled while building each argv -- an
+    observation, like `redacted` and `network` -- so taking a flag away makes the
+    claim change rather than leaving an intention behind. The ignore FILES of the
+    same class (`.bandit`, `.trivyignore`, `.gitleaksignore`, `osv-scanner.toml`)
+    are neutralised in BOTH modes and so carry no per-mode row.
 
     `network` (#1645) is the egress each tool was given: `"none"` for the
     `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY
@@ -1741,6 +1815,10 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    tool in _REDACTED_CAPTURES for tool in produced),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
                "network": network,
+               "suppression_comments": {
+                   str(k): str(v) for k, v in
+                   (_SUPPRESSION_POSTURE if suppression_comments is None
+                    else suppression_comments).items()},
                "sanitized": dict(sanitized or {}),
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
