@@ -679,6 +679,19 @@ class TestDockerfileFixtures(unittest.TestCase):
             # the probe -- the exact defect the bake exists to prevent.
             self.assertNotIn("||", line, "the hostile restore must fail the image build, not fall through")
             self.assertNotRegex(line, r";\s*(true|echo)\b", "the hostile restore must not be made tolerant")
+        # #1838 (run-14 SEC-2589722723): the fixture side of the same pin. Every
+        # sentence above holds only while `Hostile` hooks BUILD -- re-hooked to
+        # `Restore` it would fire its `curl` in the one step this file does run,
+        # on the networked image builder. Nothing else reads the file: the
+        # corpus is pruned from every review cell before grouping, by decision
+        # (`panopticon.yml:67-72` and `exclude_paths:` at `:405-406`), so this
+        # assertion is the whole of the fixture-side guard.
+        with open(os.path.join(ROOT, "tests", "fixtures", "hostile-csproj",
+                               "evil.csproj"), encoding="utf-8") as fh:
+            csproj = fh.read()
+        self.assertEqual(
+            re.findall(r'(?:Before|After)Targets="([^"]*)"', csproj), ["Build"],
+            "evil.csproj must hook Build and no other target")
 
     def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
         # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit
