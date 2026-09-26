@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A path or artifact this run did not create is not this run's evidence (#1841, run-14
+  SEC-579863541 + SEC-3360368617).** `driver setup`'s two done-predicates were bare "does this file
+  parse" tests on fixed `.panopticon/` paths a reviewed tree can plant or `git add -f`: a planted
+  `setup-proposal.json` made the TARGET's own proposal the ingest's input, and a planted
+  `setup-complete.json` satisfied BOTH, so the verb ran no phase and reported "setup complete" over
+  a tree nothing classified. They now bind to THIS run with bindings that already existed -- the
+  marker's own `run_id` (stamped by the writer, stable across resumes because `run_setup_flow` pins
+  the setup manifest once) and git tracked-ness (`runio._manifest_committed`, the #1093 manifest
+  guard's non-forgeable signal) -- and the refusal is reported once per invocation, naming the file
+  and a remedy that can work. On the other side, `--pr` acquisition checked exactly one thing about
+  its deterministic worktree leaf, `os.path.islink`: a pre-created real, EMPTY directory passed, and
+  `git worktree add` populates one rather than refusing it, leaving the planter create and rename
+  rights inside the tree under review. `acquire_pr` now refuses a leaf it did not make (a directory,
+  `os.geteuid`-owned, no group/other bits, empty) before the fetch, creates the leaf itself
+  `0o700` in the statement before the add, and runs the same ownership check on the reuse branch a
+  resume takes. The path stays deterministic, because `--pr` resumability depends on it.
+  `phases/setup.py` gave back the room under its 700-line ceiling first: the #1737 unenforced-scan
+  acknowledgement is now `phases/setup_ack.py`.
+
 - **The rest of the configuration a scanned repository used to choose for the scanners (#1839,
   run-14 SEC-284952751 + SEC-1202454595).** #1924's scan-root class, split in two, because the two
   kinds of in-tree suppression are not the same claim. An ignore FILE the reviewed repository

@@ -85,7 +85,14 @@ The host contract (5.2, plan 6):
   `persist` and `then` hints already carry it. On a `--pr` or `--base` run, pass the same
   `--pr`/`--base` to **both** as well: a PR run's review root is the PR worktree, not your checkout,
   and `driver persist` has to resolve the same one the loop did or it reads a different tree's
-  dispatch request and refuses the entry as unknown. The loop **refuses to advance** until the
+  dispatch request and refuses the entry as unknown. That worktree sits at a **deterministic** path
+  under the system temp dir (so a `--pr` run resumes in the same tree), which means anyone with write
+  access to that directory can derive it — so acquisition refuses a leaf it did not create: anything
+  already at the path must be an empty directory you own with no group or other permission bits, and
+  the leaf is created `0o700` here in the statement before `git worktree add`
+  (`diff_map._claim_worktree_leaf`, #1841). The same check runs on the reuse branch a resume takes,
+  and the refusal names the path plus whether to delete it or `git worktree remove --force` it.
+  The loop **refuses to advance** until the
   entries' out files exist on disk and pass the phase's own done predicate — a re-entry with nothing
   done re-emits the same set; there is no way to advance on a claim.
 - **`driver readiness [target] [--host NAME] [--json]` is the preflight, and it is not part of the
