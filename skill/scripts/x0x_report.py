@@ -99,8 +99,9 @@ def _domain(finding):
         # rewrites such a code to the ZZZ sentinel upstream; this is the same
         # answer at the artifact's own boundary, because the X0X schema is a
         # SECOND published contract and the repair pass reads only the first.
-        print("x0x: %s: domain %r is not an OCRDb domain; filing the candidate "
-              "under ZZZ" % (finding.get("id") or "?", dom), file=sys.stderr)
+        print("x0x: %r: domain %r is not an OCRDb domain; filing the candidate "
+              "under ZZZ" % (_one_line(finding.get("id")) or "?",
+                             _one_line(dom, 40)), file=sys.stderr)
         return "ZZZ"
     return dom
 
@@ -199,8 +200,9 @@ def build_report(findings, meta, run_id, panopticon_version=None, target=None):
     }
     if dropped:
         # #1807: the catalog gaps this artifact could not carry, counted where a
-        # consumer of `candidates` will see them (the schema pins no top-level
-        # `additionalProperties`; the docstring above relies on that already).
+        # consumer of `candidates` will see them. Declared in
+        # skill/reference/x0x-report-schema.json as an optional integer with
+        # `minimum: 1`, so it must be OMITTED, never 0, when nothing was dropped.
         report["candidates_dropped_locus_free"] = len(dropped)
     if target:
         report["target"] = target

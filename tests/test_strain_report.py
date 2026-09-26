@@ -119,7 +119,9 @@ class TestAdvisorRecodeSignals(unittest.TestCase):
         self.assertIn("\\x1b[2J", out)                    # escaped, inert
         self.assertIn("'DAT-C1B" + "!" * 32 + "\u2026'", out)   # code bound at 40, cut marked
         self.assertIn("'pinning policyxxx", out)          # title squeezed
-        self.assertLess(len(out), 400)                    # 120 + 40 + 40 + prose
+        # %r can expand one escaped character to six, so the real ceiling is
+        # 6 x (title + two codes) + fixed prose -- not the pre-escape caps.
+        self.assertLessEqual(len(out), 6 * (120 + 40 + 40) + 200)
 
 
 class TestCrossRunSignals(unittest.TestCase):

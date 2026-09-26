@@ -76,6 +76,23 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(only(c["occurrences"], "occurrence"),
                          {"file": "x.py", "line_start": 3, "line_end": 5, "finding_id": "f1"})
 
+    def test_the_zzz_line_is_one_bounded_inert_line_for_a_hostile_finding(self):
+        # Re-review of #1807: the pre-existing "not an OCRDb domain" line
+        # rendered the agent-authored id raw and the code prefix unbounded --
+        # one hostile finding could repaint the terminal. Same treatment as
+        # the drop line: squeezed, bounded, %r-escaped, one physical line.
+        f = {"code": ("\x1b[2J" + "Q" * 300) + "-X0X", "severity": "MEDIUM",
+             "short_title": "t", "id": "\x1b[31mID\nx0x: forged: nothing",
+             "location": {"file": "a.py"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            x0x.build_candidates([f])
+        out = err.getvalue()
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertNotIn("\x1b", out)
+        self.assertIn("\\x1b[31mID", out)
+        self.assertLess(len(out), 6 * (120 + 40) + 200)
+
     def test_a_locus_free_cluster_is_dropped_and_announced(self):
         # #1807 DAT-2501524861: a finding with no location is the CANONICAL shape
         # for a repo-wide catalog gap (`synth/findings.py` pops the empty location
@@ -162,7 +179,7 @@ class TestX0XReport(unittest.TestCase):
             candidate = only(x0x.build_candidates([f]), "candidate")
         self.assertEqual(candidate["domain"], "ZZZ")
         self.assertEqual(err.getvalue(),
-                         "x0x: gap-1: domain 'BOG' is not an OCRDb domain; "
+                         "x0x: 'gap-1': domain 'BOG' is not an OCRDb domain; "
                          "filing the candidate under ZZZ\n")
 
     def test_valid_roster_domain_is_retained_without_diagnostic(self):

@@ -807,27 +807,28 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   per-group states land in `meta.coverage.test_inventory` and next to the coverage line in
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
-  (`--tools-dir .panopticon/tools` added when `tools` produced output;
-  `--diff-hunks .panopticon/diff-hunks.json` added when `discovery` emitted it) →
-  `.panopticon/report.json`. It also emits a sibling `.panopticon/report-x0x.json` — the run's
-  `<DOM>-X0X` / `ZZZ-X0X` catalog-gap findings packaged as OCRDb new-code **candidate records**
-  (schema `skill/reference/x0x-report-schema.json`), mechanically clustered, with
-  `generated_by.run_id` from the run manifest; adjudication (the gap rationale, the
-  new_code/refine/retire verdict) happens downstream in OCRDb's pool. A gap cluster in which no
-  finding carries a file location cannot become a candidate — every occurrence needs a `file`, and
-  none is invented — so the artifact carries the count it had to leave out, as
-  `candidates_dropped_locus_free` (omitted when zero); that key is what survives a `driver run`,
-  which keeps a child's output only on failure. Run `synthesize.py` yourself and it also names each
-  dropped cluster on stderr and appends the count to its own `X0X artifact:` line. SARIF is ingested
-  via `skill/scripts/ingest_tools.py`, but only because `--tools-dir` was passed — a scan that ran
-  but was never wired in would sit on disk un-ingested. Every report also carries `meta.cost` — the
-  run's dispatch ledger, derived from the artifacts already on disk (scout profiles, the checkpoint
-  entries, the verify queue), one `{phase, role, model, count}` row per dispatch class, plus a
-  `tokens` slot that stays null until a host exposes per-dispatch usage — never hand-assemble it. It
-  also carries `meta.tools.panels_with_scanner_context` — `{with, without}` over this run's review
-  cells, recorded per cell at the moment its prompt was rendered and rendered next to the tool
-  coverage line in `report.json.html`. Run-13's report looked complete while 85 of its panels had
-  been shown no tool findings at all; this is the field that says so.
+  (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
+  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. It
+  also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
+  `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
+  findings packaged as OCRDb new-code **candidate records** (schema
+  `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from
+  the run manifest; adjudication (the gap rationale, the new_code/refine/retire verdict) happens
+  downstream in OCRDb's pool. A gap cluster in which no finding carries a file location cannot
+  become a candidate — every occurrence needs a `file`, and none is invented — so the artifact
+  carries the count it had to leave out, as `candidates_dropped_locus_free` (omitted when zero);
+  that key is what survives a `driver run`, which keeps a child's output only on failure. Run
+  `synthesize.py` yourself and it also names each dropped cluster on stderr and appends the count to
+  its own `X0X artifact:` line. SARIF is ingested via `skill/scripts/ingest_tools.py`, but only
+  because `--tools-dir` was passed — a scan that ran but was never wired in would sit on disk
+  un-ingested. Every report also carries `meta.cost` — the run's dispatch ledger, derived from the
+  artifacts already on disk (scout profiles, the checkpoint entries, the verify queue), one `{phase,
+  role, model, count}` row per dispatch class, plus a `tokens` slot that stays null until a host
+  exposes per-dispatch usage — never hand-assemble it. It also carries
+  `meta.tools.panels_with_scanner_context` — `{with, without}` over this run's review cells,
+  recorded per cell at the moment its prompt was rendered and rendered next to the tool coverage
+  line in `report.json.html`. Run-13's report looked complete while 85 of its panels had been shown
+  no tool findings at all; this is the field that says so.
 - **`validate`** — captures a working-tree baseline (`.panopticon/tree-baseline.txt`) at run start
   and diffs it here; any change outside `.panopticon/` fails the phase (`status: error`) — treat the
   run as compromised: discard the findings, inspect the flagged paths, re-run. The baseline records
