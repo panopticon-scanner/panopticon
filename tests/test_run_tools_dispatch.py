@@ -581,6 +581,8 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                 # is there when the container starts.
                 with open(host, encoding="utf-8") as fh:
                     seen["ini"] = fh.read()
+                seen["file_mode"] = os.stat(host).st_mode & 0o777
+                seen["dir_mode"] = os.stat(os.path.dirname(host)).st_mode & 0o777
             return fake
         with tempfile.TemporaryDirectory() as d:
             if plant_ini:
@@ -675,6 +677,19 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertIn("[bandit]", seen["ini"])
         self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
                          "scanner-owned")
+
+    def test_the_scratch_directory_is_private_and_only_the_file_is_shared(self):
+        # The tools image runs as `USER scanner` (uid 1000), so the ini has to
+        # be readable across the bind mount -- but that is a property of the
+        # FILE (0644). Mounting the file alone lets the scratch directory keep
+        # `mkdtemp`'s 0700: no `chmod 0755` on a directory, which is the
+        # permissive-mask pattern both bandit (B103) and semgrep flag, and
+        # nothing else in that directory is ever exposed to the container.
+        seen = self._dispatch()
+        self.assertEqual(0o700, seen["dir_mode"])
+        self.assertEqual(0o644, seen["file_mode"])
+        self.assertTrue(seen["mount"].endswith(os.sep + rt.BANDIT_INI_NAME),
+                        seen["mount"])
 
     def test_the_pin_is_unconditional(self):
         # #run7 is a nested checkout's `.bandit` making bandit ERROR and emit

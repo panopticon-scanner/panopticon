@@ -184,6 +184,28 @@ class TestReportingCLI(unittest.TestCase):
             self.assertIn("Comparison unavailable", (root / "summary").read_text())
             self.assertIn("**fail**", (root / "summary").read_text())
 
+    def test_the_snapshot_is_built_in_the_mode_the_workflow_names(self):
+        # The scheduled backstop reads the same redteam captures the gate
+        # does; a snapshot evaluated in `standard` would drop the
+        # policy-C-admitted suppressed set the gate counts, and the two
+        # numbers on one step summary would disagree about one capture.
+        import scripts.security_gate as gate
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot(root)
+            (root / "image").write_text(IMAGE)
+            args = ["report", "--tools-dir", str(root / "tools"),
+                    "--manifest", str(root / "manifest.json"), "--commit", SHA,
+                    "--image-file", str(root / "image"), "--history", str(root / "absent"),
+                    "--output", str(root / "snapshot.json"), "--summary", str(root / "summary"),
+                    "--security", "redteam"]
+            with mock.patch.object(gate, "evaluate", wraps=gate.evaluate) as evaluate:
+                self.assertEqual(backstop.main(args), 0)
+            self.assertEqual(evaluate.call_args.kwargs.get("security_mode"), "redteam")
+            with mock.patch.object(gate, "evaluate", wraps=gate.evaluate) as evaluate:
+                self.assertEqual(backstop.main(args[:-2]), 0)
+            self.assertEqual(evaluate.call_args.kwargs.get("security_mode"), "standard")
+
     def test_insufficient_capture_writes_summary_and_no_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

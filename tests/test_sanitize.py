@@ -9,6 +9,9 @@ so a secret in either went to GitHub verbatim. These tests pin redaction to the
 chokepoint itself, so coverage no longer depends on which artifact a filer reads.
 """
 import unittest
+import subprocess
+from types import SimpleNamespace
+from unittest import mock
 
 from _test_helpers import fake_aws_key
 import sanitize
@@ -23,6 +26,15 @@ UUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
 
 class TestScrubRedactsSecrets(unittest.TestCase):
+    def test_bare_repo_root_and_child_path_have_bounded_replacements(self):
+        root = "/fixture/repo/"
+        text = ("At /fixture/repo, read /fixture/repo/a.py; "
+                "keep /fixture/repo-sibling and /other/fixture/repo intact")
+        with mock.patch.object(sanitize, "repo_root", return_value=root):
+            self.assertEqual(sanitize.scrub(text),
+                             "At the repo root, read a.py; "
+                             "keep /fixture/repo-sibling and /other/fixture/repo intact")
+
     def test_scrub_masks_a_bare_uuid_secret(self):
         out = sanitize.scrub("generic-api-key detected: %s" % UUID)
         self.assertNotIn(UUID, out)
@@ -63,6 +75,25 @@ class TestScrubRedactsSecrets(unittest.TestCase):
                       "run tag claude-redteam-repo-20260909-6cc4359b",
                       "fingerprint a1b2c3d4e5f60718"):
             self.assertEqual(sanitize.scrub(prose), prose, prose)
+
+
+class TestRepoRootFallback(unittest.TestCase):
+    def test_failed_git_detection_returns_normalized_cwd(self):
+        failures = (SimpleNamespace(returncode=1, stdout="/wrong/repo\n"),
+                    SimpleNamespace(returncode=0, stdout=" \n"),
+                    OSError("git unavailable"),
+                    subprocess.TimeoutExpired(["git"], 10))
+        for result in failures:
+            with self.subTest(result=result), \
+                    mock.patch.object(sanitize.os, "getcwd", return_value="/fixture/work//"), \
+                    mock.patch.object(sanitize.subprocess, "run") as run:
+                if isinstance(result, Exception):
+                    run.side_effect = result
+                else:
+                    run.return_value = result
+                self.assertEqual(sanitize._detect_repo_root(), "/fixture/work/")
+                run.assert_called_once_with(["git", "rev-parse", "--show-toplevel"],
+                                            capture_output=True, text=True, timeout=10)
 
 
 class TestResidualAutolinks(unittest.TestCase):

@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -26,6 +27,15 @@ import scripts.phases.requests as requests
 
 
 class PayloadDefectsTest(unittest.TestCase):
+    def test_cell_of_rejects_invalid_names_and_preserves_hyphenated_groups(self):
+        for name in ("report-A-SEC.json", "findings-A-SEC.txt", "findings-A.json",
+                     "findings--SEC.json", "findings-A-.json"):
+            with self.subTest(name=name):
+                self.assertIsNone(fc.cell_of(name))
+        self.assertEqual(fc.cell_of("findings-app-web-SEC.json"), ["app-web", "SEC"])
+        self.assertEqual(fc.cell_of(Path("/tmp/findings-app-web-SEC.json")),
+                         ["app-web", "SEC"])
+
     def test_a_stamped_empty_review_is_acceptable(self):
         # The outcome the pipeline hopes for: the reviewer ran and found nothing.
         self.assertEqual(fc.payload_defects({"findings": []}), [])

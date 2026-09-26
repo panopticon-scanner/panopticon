@@ -394,10 +394,16 @@ class TestResumeIsGatedToo(unittest.TestCase):
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
             plan = runio._pano(root, "dispatch-plan-driver.json")
             os.makedirs(os.path.dirname(plan), exist_ok=True)
+            entries = [dict(ENTRIES[0], out_file=runio._pano(root, "findings-Auth-SEC.json"))]
             with open(plan, "w", encoding="utf-8") as fh:
-                json.dump(ENTRIES, fh)
-            with self.assertRaises(runio.DriverError):
-                requests.require_unenforced_ack(root, _manifest("generic"), ENTRIES)
+                json.dump(entries, fh)
+            with mock.patch.object(requests, "_driver_plan_entries", return_value=entries), \
+                 mock.patch.object(requests, "write_dispatch_request_bound") as emit:
+                with self.assertRaises(runio.DriverError) as caught:
+                    review.review_execute(root, _manifest("generic"))
+            self.assertIn("--allow-unenforced", str(caught.exception))
+            emit.assert_not_called()
+            self.assertEqual(runio._load_json(plan), entries)
 
 
 class TestTheRefusalNamesTheGap(unittest.TestCase):

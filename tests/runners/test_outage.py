@@ -482,6 +482,12 @@ class TestTheClassifierAfterTheR2ReReview(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
 
+    def test_json_host_error_inside_noisy_multiline_stderr(self):
+        self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(
+            'opening noise\n{"error":{"status":403,"message":"Forbidden"}}\nclosing noise'))
+        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(
+            'opening noise\n{"findings":[{"code":403,"title":"ordinary finding"}]}\nclosing noise'))
+
 
 class TestTheFailureTally(unittest.TestCase):
     """#1623: the loop's per-entry streaks, and the host-outage verdict read
@@ -655,6 +661,19 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("70", message)
         self.assertIn(outage.HOST_OUTAGE_CLAUSE, message)  # the guide quotes this verbatim
 
+    def test_host_pause_redacts_secret_and_keeps_safe_context(self):
+        tally = outage.FailureTally("kimi", self._args())
+        secret = "sk-ant-api03-AAAABBBBCCCCDDDD"
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail(
+                "provider rejected key " + secret,
+                host_error="API Error: 403 Forbidden for key " + secret), seq=seq)
+        message = tally.settle(4)
+        self.assertIn(outage.HOST_OUTAGE_CLAUSE, message)
+        self.assertIn("provider rejected key", message)
+        self.assertIn("4", message)
+        self.assertNotIn(secret, message)
+
     def test_uncharged_lists_the_host_class_ids_and_resets_per_batch(self):
         tally = outage.FailureTally("kimi", self._args())
         tally.record("a", self._ok(), seq=0)
@@ -675,6 +694,17 @@ class TestTheFailureTally(unittest.TestCase):
         message = tally.exhausted([{"id": "a"}, {"id": "b"}], 3)
         self.assertIn("entry a failed 3 consecutive launches", message)
         self.assertIn("last: always", message)
+
+    def test_exhausted_entry_redacts_secret_and_keeps_failure_context(self):
+        tally = outage.FailureTally("claude", self._args())
+        secret = "sk-ant-api03-AAAABBBBCCCCDDDD"
+        for _ in range(3):
+            tally.record("a", self._fail("entry parse failure with key " + secret))
+            tally.settle()
+        message = tally.exhausted([{"id": "a"}], 3)
+        self.assertIn("entry a failed 3 consecutive launches", message)
+        self.assertIn("last: entry parse failure with key", message)
+        self.assertNotIn(secret, message)
 
     def test_an_entry_the_host_failed_never_reaches_the_cap(self):
         tally = outage.FailureTally("kimi", self._args())

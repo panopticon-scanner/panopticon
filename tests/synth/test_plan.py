@@ -754,9 +754,15 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIn("unreadable", axis.manifest_invalid)
 
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
-        plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]
-        axis = tool_axis_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
-        self.assertEqual(axis.policy_mode, plan_mod.derive_tool_policy_mode(plans=plans))
+        with tempfile.TemporaryDirectory() as root:
+            for enforced, expected in (([True], "enforced"),
+                                       ([False], "advisory"),
+                                       ([True, False], "mixed")):
+                with self.subTest(enforced=enforced):
+                    plans = [[{"group": "g1", "domain": "SEC", "enforced": flag}
+                              for flag in enforced]]
+                    axis = tool_axis_mod.ToolAxis.load(_cli_args(), root, plans, {}, None)
+                    self.assertEqual(axis.policy_mode, expected)
 
     def test_plan_inputs_load_composes_the_plan_stage(self):
         with tempfile.TemporaryDirectory() as d:

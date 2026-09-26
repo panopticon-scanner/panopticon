@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -522,8 +523,11 @@ class TestMain(unittest.TestCase):
         # The payload is the CLI's, not the model's -- Claude's hook makes the
         # same call, and denying on it would break legitimate work on a CLI
         # whose payload shape moved.
-        with mock.patch("sys.stdin", io.StringIO("not json")):
+        out = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO("not json")), \
+             contextlib.redirect_stdout(out):
             self.assertEqual(guard.main(["read", self.scope_path], env={}), 0)
+        self.assertEqual(out.getvalue(), "")
 
     def test_a_short_argv_denies_and_names_the_invocation(self):
         # I6: argv is the CONFIG's, not the CLI's. A hook the config invoked

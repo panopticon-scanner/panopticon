@@ -186,6 +186,37 @@ class TestCommand(unittest.TestCase):
 
 
 class TestEnvelope(unittest.TestCase):
+    def test_nonobject_json_envelope_fails_without_fabricated_fields(self):
+        runner = claude_runner.Runner("claude")
+        for value in ([], "text", 403, None):
+            with self.subTest(value=value):
+                result = runner.parse_envelope("e1", json.dumps(value), 0)
+                self.assertFalse(result.ok)
+                self.assertIn("not an object", result.error)
+                self.assertEqual(result.usage, {})
+                self.assertEqual(result.denials, [])
+                self.assertEqual(result.text, "")
+                self.assertIsNone(result.host_error)
+
+    def test_wrong_field_types_do_not_fabricate_usage_denials_or_text(self):
+        runner = claude_runner.Runner("claude")
+        for field, invalid, expected in (
+            ("usage", ["tokens"], ({}, ENVELOPE["permission_denials"], ENVELOPE["result"])),
+            ("permission_denials", {"tool_name": "Glob"},
+             (ENVELOPE["usage"], [], ENVELOPE["result"])),
+            ("result", {"findings": []}, (ENVELOPE["usage"], ENVELOPE["permission_denials"], "")),
+        ):
+            with self.subTest(field=field):
+                envelope = dict(ENVELOPE, **{field: invalid})
+                result = runner.parse_envelope("e1", json.dumps(envelope), 0)
+                self.assertTrue(result.ok)
+                self.assertEqual((result.usage, result.denials, result.text), expected)
+        error_envelope = dict(ENVELOPE, is_error=True, result="", error="API Error: 403 Forbidden")
+        result = runner.parse_envelope("e1", json.dumps(error_envelope), 0)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.host_error, "API Error: 403 Forbidden")
+        self.assertEqual(result.failure_class, outage.HOST_FAILURE)
+
     def test_a_success_envelope_becomes_an_ok_result(self):
         res = claude_runner.Runner("claude").parse_envelope("e1", json.dumps(ENVELOPE), 0)
         self.assertTrue(res.ok)

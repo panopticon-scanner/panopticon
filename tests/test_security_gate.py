@@ -178,8 +178,16 @@ class TestSecurityGate(unittest.TestCase):
                 root, {"selected": ["semgrep"], "produced": ["semgrep"],
                        "missing": [], "excluded_scope": ["eslint-security"]},
                 _sarif())
-            _, _, failures, high, _ = gate.evaluate(tools, manifest, ["tests/fixtures/*"])
-        self.assertEqual(failures, [])
+            with open(os.path.join(tools, "eslint-security.json"), "w", encoding="utf-8") as fh:
+                json.dump([], fh)
+            _, dispositions, failures, high, _ = gate.evaluate(
+                tools, manifest, ["tests/fixtures/*"])
+            self.assertIn("eslint-security", dispositions)
+            self.assertEqual(failures, [])
+            with open(os.path.join(tools, "bandit.json"), "w", encoding="utf-8") as fh:
+                json.dump({"results": []}, fh)
+            _, _, control_failures, _, _ = gate.evaluate(tools, manifest)
+        self.assertEqual(control_failures, ["unexpected scanner output: bandit"])
         self.assertEqual(high, [])
 
     def test_excluded_scope_backward_compatible_absent(self):
@@ -273,6 +281,40 @@ class TestSecurityGate(unittest.TestCase):
             _, manifest = self._write(
                 root, {"selected": "semgrep", "produced": [], "missing": []})
             with self.assertRaisesRegex(ValueError, "scanner manifest lists are malformed"):
+                gate.load_manifest(manifest)
+
+    def test_manifest_rejects_malformed_names_in_each_list(self):
+        valid = {"selected": ["semgrep"], "produced": ["semgrep"],
+                 "missing": [], "excluded_scope": []}
+        for field, bad_name, expected in (
+                ("selected", "", "scanner manifest selected no tools"),
+                ("selected", 12, "scanner manifest selected no tools"),
+                ("produced", "", "scanner manifest tool names are malformed"),
+                ("missing", None, "scanner manifest tool names are malformed"),
+                ("excluded_scope", [], "scanner manifest tool names are malformed")):
+            with self.subTest(field=field, bad_name=bad_name), \
+                    tempfile.TemporaryDirectory() as root:
+                data = {key: list(value) for key, value in valid.items()}
+                data[field] = [bad_name]
+                _, manifest = self._write(root, data)
+                with self.assertRaisesRegex(ValueError, expected):
+                    gate.load_manifest(manifest)
+
+    def test_manifest_rejects_inconsistent_missing_set(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, manifest = self._write(root, {
+                "selected": ["semgrep"], "produced": [],
+                "missing": [], "excluded_scope": []})
+            with self.assertRaisesRegex(
+                    ValueError, "scanner manifest missing set is inconsistent"):
+                gate.load_manifest(manifest)
+
+    def test_manifest_rejects_invalid_json_directly(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = os.path.join(root, "manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                fh.write("{invalid")
+            with self.assertRaisesRegex(ValueError, "cannot read scanner manifest"):
                 gate.load_manifest(manifest)
 
     def test_manifest_missing_file_raises(self):

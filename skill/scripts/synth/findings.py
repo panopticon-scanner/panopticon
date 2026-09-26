@@ -15,6 +15,7 @@ import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
+import scripts.tools.base as tool_base
 from . import validate_schema as validate_schema_mod
 
 
@@ -154,6 +155,11 @@ def normalize_finding(f):
     # uniqueness, delta classification, and schema validation all work.
     if "line_start" not in loc and loc.get("line") is not None:
         loc["line_start"] = loc.pop("line")
+    # #1829 SEC-798292895: the path is TARGET-authored and the terminal summary
+    # prints it. Inert before the emptiness rule below, which is unchanged: an
+    # inert "" is still "".
+    if isinstance(loc.get("file"), str):
+        loc["file"] = tool_base.inert_text(loc["file"], mode="path")
     # #1522 (COD-D1B): a location, if present, must identify a FILE -- the old
     # code left `{"line_end": null, "function": null}` behind for a payload with
     # no location, violating both the schema's required array and line_end's
@@ -172,21 +178,28 @@ def normalize_finding(f):
         loc.pop("line_end", None)
         loc.setdefault("function", None)
     f.setdefault("references", [])
-    f.setdefault("impact", "")
-    f.setdefault("remediation", "")
+    # #1829 SEC-798292895: prose an agent or a tool wrote about a target's code,
+    # bounded and inert but keeping its line structure (`tool_base.inert_text`
+    # is the one neutralizer, shared with both tool builders).
+    for key in ("impact", "remediation"):
+        f[key] = tool_base.inert_text(f.get(key) or "", mode="body",
+                                      limit=tool_base.INERT_BODY_MAX)
     title = f.get("title")
     if not title:
         desc = str(f.get("description", "")).strip()
         title = desc.splitlines()[0].strip() if desc else "(untitled)"
-    f["title"] = " ".join(str(title).split())
+    # The collapse this replaced was `" ".join(title.split())`, which splits on
+    # whitespace ONLY: an ESC/NUL/BEL in a tool message or an agent's quotation
+    # of target code reached `render_summary`'s Top-findings line alive, and a
+    # crafted title could clear the operator's screen and reprint "** clean **".
+    f["title"] = tool_base.inert_text(title)
     # Tool messages can be whole remediation paragraphs (observed: 438 chars);
     # issue titles need a short form with the full text kept in the body.
     if len(f["title"]) > SHORT_TITLE_MAX:
         f["short_title"] = f["title"][:SHORT_TITLE_MAX - 1].rstrip() + "\u2026"
     else:
         f["short_title"] = f["title"]
-    if not f.get("category"):
-        f["category"] = "general"
+    f["category"] = tool_base.inert_text(f.get("category") or "general")
     return f
 
 # Fields that confer trust and must NEVER come from an agent-authored payload

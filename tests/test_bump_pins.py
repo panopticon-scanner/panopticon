@@ -397,6 +397,18 @@ class TestRewrite(unittest.TestCase):
 class TestVerification(unittest.TestCase):
     """The #run7 FIXME's rule -- never guess a checksum -- as executable code."""
 
+    def test_latest_rustup_version_reads_multiline_upstream_manifest(self):
+        manifest = b'date = "2026-09-25"\nchannel = "stable"\nversion = "1.28.2"\n'
+        with mock.patch.object(bp, "_get", return_value=manifest) as get:
+            self.assertEqual(bp.latest_rustup_version(), "1.28.2")
+        get.assert_called_once_with(bp.RUSTUP_STABLE)
+
+    def test_latest_rustup_version_refuses_missing_version(self):
+        with mock.patch.object(bp, "_get", return_value=b'date = "2026-09-25"\n') as get:
+            with self.assertRaisesRegex(RuntimeError, "could not parse a version"):
+                bp.latest_rustup_version()
+        get.assert_called_once_with(bp.RUSTUP_STABLE)
+
     def test_malformed_versions_are_refused_before_fetch_or_rewrite(self):
         for version in ("1.2.3/evil", "1.2.3 extra", "1.2.3\n", "1.2", "1.2.3-rc1"):
             with self.subTest(version=version):

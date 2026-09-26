@@ -297,6 +297,25 @@ class TestOutFileContentHashes(unittest.TestCase):
             self.assertEqual(mismatched, [out])
             self.assertFalse(unreadable)
 
+    def test_deleted_recorded_file_mismatches_but_unrecorded_path_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            deleted = os.path.join(d, "deleted.json")
+            unchanged = os.path.join(d, "unchanged.json")
+            unrecorded = os.path.join(d, "unrecorded.json")
+            for path in (deleted, unchanged, unrecorded):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write('{"findings": []}')
+            hashes = os.path.join(d, "out-file-hashes.json")
+            gr.snapshot_out_files([{"out_file": deleted}, {"out_file": unchanged}],
+                                  out_path=hashes)
+            os.unlink(deleted)
+            self.assertEqual(gr.verify_out_file_hashes(
+                [deleted, unrecorded, unchanged], hashes_path=hashes),
+                (2, [deleted], False))
+            self.assertEqual(gr.verify_out_file_hashes(
+                [unrecorded, unchanged], hashes_path=hashes),
+                (1, [], False))
+
     def test_no_snapshot_reads_as_not_measured(self):
         # #1208 read this as a PINNED FAIL-OPEN: deleting the baseline looks
         # exactly like a run that never had one. It stays correct HERE -- this

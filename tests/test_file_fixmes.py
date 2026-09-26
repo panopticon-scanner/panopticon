@@ -90,9 +90,25 @@ class TestScrubbing(unittest.TestCase):
         body = file_fixmes.body_for(f)
         self.assertNotIn(root, body)
         self.assertIn("src/main.py", body)
-        title = file_fixmes.file_issues.scrub(
-            file_fixmes.file_issues.defang("%s — %s" % (f["id"], f["title"])))
-        self.assertNotIn(root, title)
+        doc = os.path.join(self._doc_root(), "fixmes.md")
+        with open(doc, "w", encoding="utf-8") as fh:
+            fh.write("## FIXME-99 — Broken on /synthetic/private/repo/src/main.py\n"
+                     "`bug`\n\nCrash happens under src/main.py.\n")
+        import sanitize
+        synthetic_root = "/synthetic/private/repo/"
+        with mock.patch.object(sanitize, "_REPO_ROOT_CACHE", synthetic_root), \
+             mock.patch.object(file_fixmes.file_issues.sys, "argv",
+                               ["file_fixmes.py", "--doc", doc, "--dry-run"]), \
+             mock.patch.object(file_fixmes, "create", return_value=None) as create:
+            file_fixmes.main()
+        title = create.call_args.args[0]
+        self.assertNotIn(synthetic_root, title)
+        self.assertIn("src/main.py", title)
+
+    def _doc_root(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        return root
 
 
 def test_main_rejects_malformed_ledger_before_github_calls(tmp_path):

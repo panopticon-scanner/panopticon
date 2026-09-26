@@ -258,6 +258,46 @@ class TornBaselineTest(unittest.TestCase):
     def _repo(self):
         return make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
 
+    def _assert_refusal_preserves_baseline(self, repo, expected):
+        path = runio._pano(repo, "tree-baseline.txt")
+        with open(path, "rb") as fh:
+            before = fh.read()
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertTrue(delta)
+        self.assertIn(expected, " ".join(delta))
+        manifest = {"run_id": "R", "worktree": None}
+        with self.assertRaises(runio.DriverError):
+            validate_phase.validate_execute(repo, manifest)
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        marker = runio._pano(repo, "validate.json")
+        with open(marker, encoding="utf-8") as fh:
+            validation = json.load(fh)
+        self.assertFalse(validation["tree_clean"])
+        self.assertIn(expected, " ".join(validation["unexpected_changes"]))
+        self.assertFalse(validate_phase.validate_done(repo, manifest))
+
+    def test_valid_object_with_wrong_schema_refuses_validation(self):
+        repo = self._repo()
+        path = validate_phase.capture_tree_baseline(repo)
+        with open(path, encoding="utf-8") as fh:
+            snapshot = json.load(fh)
+        snapshot["schema_version"] = 999
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(snapshot, fh)
+        self._assert_refusal_preserves_baseline(repo, "schema_version 999")
+
+    def test_digest_budget_truncated_baseline_refuses_validation(self):
+        repo = self._repo()
+        with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("dirty\n")
+        with mock.patch.object(validate_phase, "_MAX_BASELINE_FILES", 0):
+            path = validate_phase.capture_tree_baseline(repo)
+        with open(path, encoding="utf-8") as fh:
+            snapshot = json.load(fh)
+        self.assertTrue(snapshot["truncated"])
+        self._assert_refusal_preserves_baseline(repo, "baseline was truncated")
+
     def _put(self, repo, text):
         """`text` as the baseline on disk, with no complete baseline before it."""
         path = runio._pano(repo, "tree-baseline.txt")

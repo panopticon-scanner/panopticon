@@ -66,6 +66,50 @@ evidence exposed.
   suppression comments were honoured. And CI scans in redteam, so the suite's two `shell=True`
   calls name the shell instead of carrying a `# nosec` (`tests/_test_helpers.py`,
   `tests/test_hook_command_quoting.py`: `/bin/sh -c` is what `shell=True` already ran).
+- **This repository's own CI scans in `redteam` on both routes** (owner ruling 2026-09-26,
+  #1839). Today the mode changes the virtualenv skip (off under `redteam`) and the
+  gate's policy-C re-admission of name-suppressed findings; #1839's PR 5 adds the split that
+  motivates the switch, where `standard` honours a target's own `.bandit`, `# nosec`,
+  `# nosemgrep` and `gitleaks:allow` and `redteam` honours none of them. `standard` is an
+  operator scanning their own repository; the fork-PR route (`security-fork.yml`, the required
+  `fork-scan` check) scans a fork-authored tree, and the same-repo route (`security.yml`) must
+  capture in the same mode because its captures are the baseline the next PR's gate diffs
+  against and nothing records the mode. `--security redteam` is now on every scanner run,
+  every gate call and the scheduled backstop snapshot (`security-backstop.py report
+  --security`, new, so the snapshot counts the population the gate on the same step counts).
+  Pinned per step in `tests/test_security_fork_workflow.py`. Measured on main through the
+  tools image before the switch: the strict gate sees the same 29 HIGH under either mode and
+  the first cross-mode delta run reports zero new.
+- **The code-scanning upload now carries the gate's scope, and the bandit ini is a file mount.**
+  #2117 stopped bandit honouring the reviewed repository's `.bandit`, which on this repository had
+  kept it out of `tests/`; the next security run filed 476 test-suite idioms as open alerts and
+  tripped the post-merge audit. `code_scanning_reports.py --exclude` (repeatable, the same
+  gitignore-style globs `security_gate.py` takes, matched by the same `groups_schema.matched_glob`)
+  drops those results from the Security SARIF only -- the gate still sees `tests/`, no AI
+  inventory result is dropped -- and the excluded count is printed and written into the step
+  summary.
+  The scanner-owned bandit ini is bind-mounted as a FILE (0644) from a scratch directory that keeps
+  `mkdtemp`'s 0700: the `chmod 0755` that made the directory traversable for the image's `scanner`
+  user is gone, along with the two alerts it earned.
+- **Tool and target text is inert wherever it is rendered -- so a scanned repository cannot steer
+  the operator's terminal (#1829: SEC-4277410777, SEC-798292895, SEC-2200312865; closes #2069, the
+  residual of #1752).** Three surfaces printed strings a target or its scanner wrote, with the
+  control bytes still live: the terminal summary's Top-findings line, group line, target path,
+  cross-domain note and target-config line; the `target-discovery-surface` probe's `detail` and
+  its stderr disclosure; and the stored finding's `title`, `category`, `location.file`, `impact`,
+  `remediation` and tool `rule_id`. A crafted SARIF message or a committed filename could
+  therefore clear the screen (`\x1b[2J`), overwrite the line just printed (`\r`) and reprint it as
+  `driver: all clear` -- `sarif_to_findings` only collapsed WHITESPACE, and the run-9 escape
+  covered two fields on the other builder. One neutralizer now lives in `tools/base.inert_text`
+  and runs at the normalization boundary -- both finding builders and `normalize_finding`, so
+  every renderer inherits it -- with belt-and-braces calls for the target path, the group name,
+  the agent-authored cross-domain note and the target's own config values, which normalization
+  does not own. What an operator sees changes: a control byte reads as `\x1b` rather than acting,
+  over-long target text is cut with a marked ellipsis (never mid-escape), and an ordinary
+  multi-line tool message still renders as one line; a PATH is escaped and bounded and otherwise
+  kept byte-for-byte, so a real `src/a  b.py` still resolves on disk. The JSON artifact was
+  already escaped on disk; what is new is that the STORED strings are inert too, so anything that
+  prints a field raw is safe as well.
 - **A file the reviewed repository commits no longer chooses what the scanners look at (#1839,
   run-14 SEC-1486247143 + SEC-752508850).** Three levers, all on the path CI's merge gate runs
   (`run_tools.py` -> `security_gate.py`, which has no agentic axis to compensate). A single

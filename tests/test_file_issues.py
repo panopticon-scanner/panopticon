@@ -50,6 +50,26 @@ FINDING = {
 }
 
 
+@pytest.mark.parametrize(("finding", "rejected", "expected"), [
+    ({}, False, ["self-scan", "severity:info", "evidence:unverified"]),
+    ({"severity": "critical", "evidence": {"status": "tool_confirmed"}}, False,
+     ["self-scan", "severity:critical", "evidence:tool-confirmed"]),
+    ({"severity": "UNKNOWN", "evidence": {"status": "unknown"}}, False,
+     ["self-scan", "severity:info", "evidence:unverified"]),
+    ({"severity": "HIGH", "evidence": {"status": "advisor_confirmed"},
+      "panel": "security"}, False,
+     ["self-scan", "severity:high", "evidence:advisor-confirmed", "panel:security"]),
+    ({"severity": "INFO", "category": "style", "evidence": {"status": "rejected"}}, True,
+     ["self-scan", "severity:info", "evidence:rejected", "false-positive"]),
+    ({"severity": "HIGH", "category": "style"}, False,
+     ["self-scan", "severity:high", "evidence:unverified", "cosmetic"]),
+    ({"severity": "INFO"}, False,
+     ["self-scan", "severity:info", "evidence:unverified", "cosmetic"]),
+])
+def test_labels_for_exact_order_and_cosmetic_rule(finding, rejected, expected):
+    assert file_issues.labels_for(finding, rejected=rejected) == expected
+
+
 def _split_finding(name, rejected=False):
     return {
         **FINDING,

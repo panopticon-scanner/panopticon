@@ -5,6 +5,8 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -111,10 +113,117 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
                 "kimi", registration_dir=d, runner=garbage)
         self.assertEqual(hosts.UNKNOWN, state)
 
+    def test_version_runner_failures_leave_the_tool_vocabulary_unknown(self):
+        failures = (FileNotFoundError("synthetic missing kimi"),
+                    subprocess.TimeoutExpired(["kimi", "--version"], 15))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                with tempfile.TemporaryDirectory() as d:
+                    _kimi_fully_registered(d)
+                    runner = mock.Mock(side_effect=failure)
+                    state, by, detail = kimi_probes.probe_kimi_shell_surface(
+                        "kimi", registration_dir=d, runner=runner)
+                runner.assert_called_once_with(
+                    ["kimi", "--version"], capture_output=True, text=True, timeout=15)
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertEqual(kimi_probes.KIMI_SHELL_SURFACE, by)
+                self.assertIn("version could not be determined", detail)
+
+    def test_version_launch_refusal_propagates(self):
+        import scripts.runners.base as runners_base
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            runner = mock.Mock(side_effect=runners_base.LaunchRefused("synthetic kimi launch"))
+            with self.assertRaisesRegex(runners_base.LaunchRefused, "synthetic kimi launch"):
+                kimi_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, runner=runner)
+        runner.assert_called_once_with(
+            ["kimi", "--version"], capture_output=True, text=True, timeout=15)
+
     def test_a_host_that_registers_no_shells_is_unknown(self):
         state, by, _detail = kimi_probes.probe_kimi_shell_surface("gemini", version="0.42")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
+
+
+class TestKimiGuardRoundTrip(unittest.TestCase):
+    """Drive the real round-trip function through an injected subprocess seam."""
+
+    def test_multirow_round_trip_binds_json_mode_path_and_entry(self):
+        import scripts.kimi_guard_hook as kimi_guard_hook
+
+        with tempfile.TemporaryDirectory() as d:
+            data_path = os.path.join(d, "scope.json")
+            guard_path = os.path.join(d, "fixture-guard.py")
+            rows = [("allowed first", {"tool_name": "Read", "path": "inside"},
+                     "entry-1", True),
+                    ("denied second", {"tool_name": "Read", "path": "outside"},
+                     "entry-2", False),
+                    ("allowed unbound", {"tool_name": "Read", "path": "public"},
+                     None, True)]
+            outputs = iter(("{}", json.dumps({"hookSpecificOutput": {
+                "permissionDecision": "deny"}}), "{}"))
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append((command, kwargs))
+                return subprocess.CompletedProcess(command, 0, stdout=next(outputs), stderr="")
+
+            ok, detail = kimi_probes._guard_round_trip(
+                "read", data_path, rows, guard_path=guard_path, runner=runner)
+
+        self.assertTrue(ok, detail)
+        self.assertIn("read round-trip: 3/3 payloads", detail)
+        self.assertIn("fixture-guard.py", detail)
+        self.assertEqual(3, len(calls))
+        for (command, kwargs), (_name, payload, entry_id, _allowed) in zip(calls, rows):
+            self.assertEqual([sys.executable, guard_path, "read", data_path], command)
+            self.assertEqual(payload, json.loads(kwargs["input"]))
+            self.assertEqual({"capture_output": True, "text": True, "timeout": 30},
+                             {key: kwargs[key] for key in ("capture_output", "text", "timeout")})
+            self.assertEqual(os.environ.get("PATH", ""), kwargs["env"]["PATH"])
+            if entry_id is None:
+                self.assertNotIn(kimi_guard_hook.ENV_ENTRY_ID, kwargs["env"])
+            else:
+                self.assertEqual(entry_id, kwargs["env"][kimi_guard_hook.ENV_ENTRY_ID])
+
+    def test_guard_launcher_failure_reports_the_exception(self):
+        for failure in (FileNotFoundError("synthetic missing guard"),
+                        subprocess.TimeoutExpired([sys.executable, "guard.py"], 30)):
+            with self.subTest(failure=type(failure).__name__):
+                with tempfile.TemporaryDirectory() as d:
+                    runner = mock.Mock(side_effect=failure)
+                    ok, detail = kimi_probes._guard_round_trip(
+                        "read", os.path.join(d, "scope.json"),
+                        [("allowed fixture", {}, "entry-1", True)], runner=runner)
+                self.assertFalse(ok)
+                self.assertIn("the guard-hook subprocess could not run", detail)
+                self.assertIn(type(failure).__name__, detail)
+                runner.assert_called_once()
+
+    def test_unexpected_allow_names_first_failing_row_and_bounds_stdout(self):
+        marker = "TAIL-MARKER"
+        stdout = "allowed " + "x" * 180 + marker
+        runner = mock.Mock(return_value=mock.Mock(stdout=stdout))
+        rows = [("outside read must be denied", {"path": "outside"}, "entry-1", False),
+                ("later row must not run", {"path": "inside"}, "entry-2", True)]
+        ok, detail = kimi_probes._guard_round_trip("read", "scope.json", rows, runner=runner)
+        self.assertFalse(ok)
+        self.assertIn("the guard ALLOWED: outside read must be denied", detail)
+        self.assertIn("(stdout: " + stdout[:160] + ")", detail)
+        self.assertNotIn(marker, detail)
+        runner.assert_called_once()
+
+    def test_unexpected_deny_names_first_failing_row_and_stops(self):
+        stdout = json.dumps({"hookSpecificOutput": {"permissionDecision": "deny"}})
+        runner = mock.Mock(return_value=mock.Mock(stdout=stdout))
+        rows = [("inside read must be allowed", {"path": "inside"}, "entry-1", True),
+                ("later row must not run", {"path": "outside"}, "entry-2", False)]
+        ok, detail = kimi_probes._guard_round_trip("read", "scope.json", rows, runner=runner)
+        self.assertFalse(ok)
+        self.assertIn("the guard DENIED: inside read must be allowed", detail)
+        self.assertNotIn("later row must not run", detail)
+        runner.assert_called_once()
 
 
 class TestKimiReadGuardProbe(unittest.TestCase):
@@ -739,6 +848,70 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
                 fh.write(json.dumps({"type": "llm.tools_snapshot", "agent": agent,
                                      "tools": list(snapshot)}) + "\n")
         return home
+
+    def _wire(self, home, session, lines, mtime):
+        wire = os.path.join(home, "sessions", "wd_1", session,
+                            "agents", "main", "wire.jsonl")
+        os.makedirs(os.path.dirname(wire))
+        with open(wire, "w", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+        os.utime(wire, (mtime, mtime))
+        return wire
+
+    def test_snapshot_accepts_each_agent_key_and_object_named_tools(self):
+        for agent_key in ("agent", "agentName", "agent_file", "agentFile"):
+            with self.subTest(agent_key=agent_key):
+                home = self._home()
+                wire = self._wire(home, "session_x", [
+                    "{corrupt json",
+                    json.dumps(["not an object"]),
+                    json.dumps({"type": "llm.request", "tools": ["ignored"]}),
+                    json.dumps({"type": "llm.tools_snapshot", "tools": "not a list",
+                                agent_key: "ignored.md"}),
+                    json.dumps({"type": "llm.tools_snapshot", "tools": [
+                        {"name": "Read"}, "Grep", {"other": "ignored"}],
+                        agent_key: "/registered/agents/scout.md"})], mtime=100)
+                tools, agent, source = kimi_snapshot._kimi_wire_snapshot(home)
+                self.assertEqual({"Read", "Grep"}, tools)
+                self.assertEqual("scout", agent)
+                self.assertEqual(wire, source)
+
+    def test_snapshot_selects_newest_valid_wire_across_mtimes(self):
+        home = self._home()
+        self._wire(home, "old_valid", [json.dumps({
+            "type": "llm.tools_snapshot", "agent": "old.md", "tools": ["Read"]})],
+            mtime=100)
+        newest_valid = self._wire(home, "new_valid", [json.dumps({
+            "type": "llm.tools_snapshot", "agentName": "new.md",
+            "tools": [{"name": "Write"}]})], mtime=200)
+        self._wire(home, "newest_invalid", [
+            "{corrupt json", json.dumps({"type": "llm.tools_snapshot",
+                                         "agent": "invalid.md", "tools": {"name": "Bash"}})],
+            mtime=300)
+        tools, agent, source = kimi_snapshot._kimi_wire_snapshot(home)
+        self.assertEqual({"Write"}, tools)
+        self.assertEqual("new", agent)
+        self.assertEqual(newest_valid, source)
+
+    def test_invalid_wires_have_no_snapshot_and_probe_falls_back_to_table(self):
+        home = self._home()
+        self._wire(home, "invalid", [
+            "{corrupt json", json.dumps(["not an object"]),
+            json.dumps({"type": "llm.tools_snapshot", "agent": "scout.md",
+                        "tools": {"name": "Bash"}})], mtime=100)
+        tools, agent, reason = kimi_snapshot._kimi_wire_snapshot(home)
+        self.assertIsNone(tools)
+        self.assertIsNone(agent)
+        self.assertIn("no child wire file", reason)
+        with tempfile.TemporaryDirectory() as registration:
+            _kimi_fully_registered(registration)
+            state, by, detail = kimi_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42", run_home=home)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(kimi_probes.KIMI_SHELL_SURFACE, by)
+        self.assertIn("no child wire file", detail)
+        self.assertIn("rests on the version table", detail)
 
     def test_a_snapshot_matching_the_shells_grant_is_proven_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:

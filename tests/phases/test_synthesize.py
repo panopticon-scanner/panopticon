@@ -14,6 +14,7 @@ from conftest import write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.phases.runio as runio
+import scripts.phases.discovery as discovery_phase
 import scripts.phases.requests as requests
 import scripts.phases.review as review_phase
 import scripts.phases.verify as verify_phase
@@ -142,6 +143,7 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertEqual(flags["max_per_group"], 60,
                          "the flag must reach the manifest, or a resume would "
                          "silently re-chunk with a different cap")
+        self._assert_discovery_max_per_group({"max_per_group": 60}, ["--max-per-group", "60"])
 
     def test_max_per_group_absent_leaves_discovery_default_alone(self):
         # Omitting it must not pass the flag at all, so discovery's own default
@@ -151,6 +153,22 @@ class TestHostUsageCollection(unittest.TestCase):
             fail_on = severity = gate_scope = diff_context = max_per_group = None
 
         self.assertIsNone(driver._cli_flags(_Args())["max_per_group"])
+        self._assert_discovery_max_per_group({}, [])
+
+    def _assert_discovery_max_per_group(self, flags, expected):
+        manifest = self._manifest(scope={"mode": "files", "target": []}, flags=flags)
+        with tempfile.TemporaryDirectory() as root, \
+             mock.patch.object(runio, "load_committed_groups", return_value=({}, [])), \
+             mock.patch("scripts.phases.child._run_child") as child:
+            def write_groups(argv, **_kw):
+                runio._write_json(argv[argv.index("--out") + 1], {"groups": []})
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            child.side_effect = write_groups
+            discovery_phase.discovery_execute(root, manifest)
+            argv = child.call_args.args[0]
+        actual = argv[argv.index("--max-per-group"):argv.index("--max-per-group") + 2] \
+            if "--max-per-group" in argv else []
+        self.assertEqual(actual, expected)
 
     def test_non_claude_host_is_skipped(self):
         with tempfile.TemporaryDirectory() as d, \

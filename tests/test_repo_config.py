@@ -1,7 +1,9 @@
 """#1681 Plan 1: the one resolver/reader for the root config file."""
 import os
+import builtins
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.repo_config as rc
 
@@ -101,6 +103,19 @@ class TestReadDocument(unittest.TestCase):
             _write(d, "panopticon.yml", "version: 2\ngroups: {}\n")
             self.assertIsNone(rc.read_document(d).doc)
 
+    def test_boolean_version_is_rejected_while_integer_one_is_valid(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, "panopticon.yml", "version: true\ngroups: {}\n")
+            invalid = rc.read_document(d)
+            self.assertEqual(invalid.path, path)
+            self.assertIsNone(invalid.doc)
+            self.assertEqual(len(invalid.errors), 1)
+            self.assertIn("version: 1", invalid.errors[0])
+            _write(d, "panopticon.yml", "version: 1\ngroups: {}\n")
+            valid = rc.read_document(d)
+            self.assertEqual(valid.errors, [])
+            self.assertEqual(valid.doc["version"], 1)
+
     def test_non_mapping_is_authored_but_invalid(self):
         with tempfile.TemporaryDirectory() as d:
             _write(d, "panopticon.yml", "- a\n- b\n")
@@ -118,6 +133,35 @@ class TestReadDocument(unittest.TestCase):
                           doc.errors[0])
             self.assertIn("expected the node content", doc.errors[0])
             self.assertNotIn("must declare", doc.errors[0])
+
+    def test_authored_config_read_oserror_is_unreadable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, "panopticon.yml", GOOD)
+            real_open = builtins.open
+
+            def fail_config_read(file, mode="r", *args, **kwargs):
+                if os.fspath(file) == path and mode == "rb":
+                    raise OSError("controlled read failure")
+                return real_open(file, mode, *args, **kwargs)
+
+            with mock.patch("builtins.open", side_effect=fail_config_read):
+                doc = rc.read_document(d)
+            self.assertEqual(doc.path, path)
+            self.assertIsNone(doc.doc)
+            self.assertEqual(len(doc.errors), 1)
+            self.assertIn("unreadable: controlled read failure", doc.errors[0])
+
+    def test_authored_config_invalid_utf8_is_unreadable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "panopticon.yml")
+            with open(path, "wb") as fh:
+                fh.write(b"version: 1\ngroups: {}\n#\xff")
+            doc = rc.read_document(d)
+            self.assertEqual(doc.path, path)
+            self.assertIsNone(doc.doc)
+            self.assertEqual(len(doc.errors), 1)
+            self.assertIn("unreadable", doc.errors[0])
+            self.assertIn(path, doc.errors[0])
 
     def test_an_integer_past_pythons_digit_limit_is_refused_not_fatal(self):
         # Final review F2: PyYAML resolves an int scalar with `int(text)`, and

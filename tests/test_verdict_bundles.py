@@ -3,6 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
 import scripts.evidence as evidence
 import scripts.synthesize as synthesize
@@ -20,6 +21,45 @@ def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):
     return str(d)
 
 class TestVerdictBundles(unittest.TestCase):
+    def test_bundle_loader_reports_bad_files_and_retains_wrapped_and_plain_bundles(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            vdir = root / "verdicts"
+            vdir.mkdir()
+            (vdir / "bad.json").write_text("{broken", encoding="utf-8")
+            unreadable = vdir / "unreadable.json"
+            unreadable.write_text("{}", encoding="utf-8")
+            plain = {"verdicts": [{"finding_id": "SEC-PLAIN", "verdict": "CONFIRMED"}],
+                     "_panopticon": {"run_id": "RUN", "stage": "primary"}}
+            wrapped = {"verdicts": [{"finding_id": "SEC-WRAPPED", "verdict": "REJECTED"}],
+                       "_panopticon": {"run_id": "RUN", "stage": "backup"}}
+            (vdir / "plain.json").write_text(json.dumps(plain), encoding="utf-8")
+            (vdir / "wrapped.json").write_text(
+                "Advisor response:\n```json\n" + json.dumps(wrapped) + "\n```",
+                encoding="utf-8")
+            real_open = open
+
+            def selective_open(path, *args, **kwargs):
+                if os.fspath(path) == str(unreadable):
+                    raise OSError("read denied\nsecond line")
+                return real_open(path, *args, **kwargs)
+
+            with mock.patch("builtins.open", side_effect=selective_open):
+                by_fid, bad = evidence.load_verdict_bundles(str(vdir))
+            reasons = {entry["file"]: entry["reason"] for entry in bad}
+            self.assertEqual(set(reasons), {"bad.json", "unreadable.json"})
+            self.assertEqual(reasons["bad.json"],
+                             "Expecting property name enclosed in double quotes: "
+                             "line 1 column 2 (char 1)")
+            self.assertEqual(reasons["unreadable.json"], "read denied")
+            self.assertEqual(set(by_fid), {"SEC-PLAIN", "SEC-WRAPPED"})
+            self.assertEqual(by_fid["SEC-PLAIN"][0]["verdict"], "CONFIRMED")
+            self.assertEqual(by_fid["SEC-PLAIN"][0]["run_id"], "RUN")
+            self.assertEqual(by_fid["SEC-PLAIN"][0]["stage"], "primary")
+            self.assertEqual(by_fid["SEC-WRAPPED"][0]["run_id"], "RUN")
+            self.assertEqual(by_fid["SEC-WRAPPED"][0]["verdict"], "REJECTED")
+            self.assertEqual(by_fid["SEC-WRAPPED"][0]["stage"], "backup")
+
     def test_bundle_flattens_by_finding_id(self):
         with tempfile.TemporaryDirectory() as d:
             tmp_path = Path(d)

@@ -126,6 +126,20 @@ def test_parent_expands_to_flat_subgroup_ids():
     assert g["UI:Admin"]["exclude"] == {"DAT"}
     assert g["UI:Components"]["parent"] == "UI"
 
+
+@pytest.mark.parametrize("bad", ["../escape", "a/b", ".hidden", "a\nb", "a:b", 7])
+def test_invalid_subgroup_name_is_rejected_without_losing_valid_sibling(bad):
+    doc = {"groups": {"UI": {
+        bad: {"match": ["src/unsafe/**"]},
+        "Safe": {"match": ["src/safe/**"]},
+    }}}
+    groups, errors = gs.parse_groups(doc)
+    assert set(groups) == {"UI:Safe"}
+    assert groups["UI:Safe"]["match"] == ["src/safe/**"]
+    assert len(errors) == 1
+    assert "invalid" in errors[0].lower()
+    assert repr(bad) in errors[0]
+
 def test_empty_body_is_error():
     _g, errs = gs.parse_groups({"groups": {"X": {}}})
     assert any("X" in e for e in errs)
