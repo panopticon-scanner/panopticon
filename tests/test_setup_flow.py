@@ -549,7 +549,11 @@ class TestSetupFlow(unittest.TestCase):
             json.dump({"groups": [{"capability": "", "match": []}]}, fh)
         res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
-        self.assertTrue(res["errors"])
+        self.assertEqual(res["errors"], [
+            "proposal rejected -- no draft written:",
+            "  - proposal group #0: missing/empty capability",
+            "  - proposal group #0: match must be a non-empty list of strings",
+        ])
         self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
 
     def test_ingest_missing_proposal_fails_no_draft(self):

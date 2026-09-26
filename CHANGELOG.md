@@ -28,6 +28,60 @@ evidence exposed.
   `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed. Residual,
   filed as #2090: a MIXED cluster still reaches the pool with its locus-free member absent from
   `recurrence`, silently.
+- **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
+  DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
+  panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or
+  shared no path at all with run2 -- so a NARROWER re-run (`--scope-file a.py`, one directory, one
+  group, a PR diff) overlaps on a single path, defeats both, and every still-unfixed finding on the
+  files it never opened landed in the `closed` cohort, which `scripts/reconcile_apply.py apply
+  --confirm-close` turns into a real GitHub close commented "**Reconciliation: fixed (area
+  clear).**". That `(file, panel)`-clear read is now gated on ONE further thing, and only that
+  thing: run3's own claim to have reviewed the file -- `groups[].files`, merged across the report
+  and every part. Nothing stands in for the claim, a record on the file included: a record proves
+  some scanner or cell read the path, not that the (file, panel) whose silence is read as a fix was
+  reviewed. So the diff refuses three ways: a finding on a file run3 does not list goes to
+  `ambiguous` (kept open), reading "<file> was not reviewed in run3 -- absence of findings is not a
+  fix", or, when run3 does carry a record on that path, "run3 produced records on <file> but its
+  report does not list it among the files it reviewed (groups[].files)" -- an under-stated
+  `groups[].files` is a report-side bug, named rather than trusted; a run3 whose report states no
+  files at all guards the whole run (`run3_files_unstated`); and a run3 whose report does not
+  declare `meta.review_type: "repo"` -- a scoped review, an absent, empty or unreadable value, or a
+  part contradicting it -- guards it too (`run3_not_repo_wide`). Missing information fails CLOSED,
+  with no flag to opt back into the old reading. Stage 2 words every one of those refusals as
+  "**Reconciliation: not corroborated.**", where it used to claim the area was still active and the
+  finding probably re-worded -- which for a zero-record or path-drifted run3 was simply false.
+  **Operator-visible:** a close now needs a repo-wide run3 that says what it looked at, and the
+  summary names an active guard once on its own `guard:` line instead of only repeating it per
+  finding; a run3 that is merely NARROWER by file list still closes the findings on the files it
+  does list. Still open as follow-ups: #2084 -- a run3 that declared itself repo-wide but LOST cells
+  (`meta.coverage.cells.missing_floor` non-empty, `summary.coverage_certified` false) still lists
+  every file in `groups`, so it can corroborate closes on files no review cell actually reached; and
+  #2087 -- the claim is per FILE and per RUN while the silence read as a fix is per `(file, panel)`,
+  so a panel or tool axis that never ran on a listed file still reads as clear.
+- **Three run-artifact readers in `synth/` no longer end a run on a file a target can pre-commit
+  (#1811, #1812 — DAT-2808086775, DAT-3713947858, DAT-1553408299).** `coverage-*.json`,
+  `dispatch-plan-driver.json` and the agent findings files are read back out of the run folder,
+  which on the agentic path is globbed out of the SCANNED repository — and all three readers
+  announced a "tolerant: never abort a run" contract their guards were narrower than. A deeply
+  nested document raised `RecursionError` (a `RuntimeError`, so outside
+  `except (OSError, ValueError)`) in every one of them, and nothing bounded the coverage read at
+  all; a scalar dispatch plan (`5`, `true`, `null`, `1.5`) raised `TypeError` on the iteration that
+  counts review cells; and the out-of-scope counter re-read the findings files with neither the
+  parser nor the shape repair the canonical loader uses, so a fence-wrapped file — the shape run-9
+  saw from 94 of 95 tool advisors — silently disclosed ZERO out-of-lane findings while the report
+  ingested them, and a mistyped `location` (string, list, number) or a non-list `findings` raised
+  out of `PlanInputs.load`. That second read now goes through `evidence.load_json_tolerant` and
+  `normalize_finding`, the same two the first read uses, so these two readers of the same files
+  cannot disagree about what the file IS or about what a row means. **Operator-visible:** a report
+  that used to be lost after every dispatch had already been paid for is produced instead — the
+  coverage file skipped and NAMED on stderr (its READ bounded to 1 MiB, so a symlink to a bigger
+  file or to a character device is bounded too, not just one whose declared size is honest), the
+  plan counted as 0 review cells and said so, the fence-wrapped file's out-of-lane findings
+  actually counted, and one unusable finding row costing nothing but itself. Scope: these three
+  readers. Sibling readers in `synth/plan.py`, `synth/cost.py` (`usage.json`) and
+  `synth/integrity.py` still catch only `(OSError, ValueError)` (#2081), a skipped coverage record
+  still fails OPEN on the floor audit rather than recording itself in `meta.integrity` (#2080), and
+  a FIFO named like an artifact still blocks at `open()` (#2082) — follow-ups, not fixed here.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending

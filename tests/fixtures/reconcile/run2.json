@@ -1,5 +1,10 @@
 {
-  "meta": {"parts": ["run2_part2.json"]},
+  "meta": {"parts": ["run2_part2.json"], "review_type": "repo"},
+  "groups": [
+    {"name": "App", "files": ["app/config.py", "app/registry.py", "app/legacy.py",
+                              "app/query.py"],
+     "panel_grades": {"security": "D", "architecture": "C", "test": "C"}}
+  ],
   "findings": [
     {"id": "F-TOOL-1", "severity": "MEDIUM", "panel": "security",
      "category": "hardcoded-secret", "source": "tool:semgrep",

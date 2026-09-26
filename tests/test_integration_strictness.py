@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 
 import yaml
+import shell_reader
 
 from conftest import REPO_ROOT
 import _test_helpers as helpers
@@ -165,13 +166,15 @@ class TestAssertAdapterFindsHonoursTheFlag(unittest.TestCase):
     def test_missing_fixture_fails_when_integration_is_required(self):
         with mock.patch.object(helpers, "require_integration", return_value=True):
             with self.assertRaises(AssertionError) as caught:
-                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture")
+                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture",
+                                             matches=lambda finding: False)
         self.assertIn("no-such-fixture", str(caught.exception))
 
     def test_missing_fixture_skips_when_it_is_not(self):
         with mock.patch.object(helpers, "require_integration", return_value=False):
             with self.assertRaises(unittest.SkipTest):
-                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture")
+                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture",
+                                             matches=lambda finding: False)
 
 
 class TestFixtureResolution(unittest.TestCase):
@@ -324,6 +327,68 @@ def test_two(): pass
         self.assertIn("test_broken.py", sites[0])
 
 
+def _standalone_argv(script):
+    """Credit one foreground command only, with its environment prefixes intact.
+    No shell evaluation: other execution contexts need a deliberate guard update.
+    """
+    statements = shell_reader.statements(script)
+    if len(statements) != 1 or len(statements[0].stages) != 1:
+        return []
+    statement = statements[0]
+    stage = statement.stages[0]
+    if (statement.separator in ("&&", "||", "&")
+            or stage.group_open or stage.group_close
+            or stage.writes or stage.reads or stage.heredoc or stage.substitutions):
+        return []
+    return list(stage.argv)
+
+
+def _strict_pytest_containers(script):
+    """Read the current standalone docker/sh invocation, without expansion.
+    Raw argv preserves assignments/wrappers that could change pytest's env.
+    Unknown Docker options or extra shell commands cannot prove this contract.
+    """
+    argv = _standalone_argv(script)
+    if argv[:2] != ["docker", "run"]:
+        return []
+    options, i = {}, 2
+    while i < len(argv) and argv[i].startswith("-"):
+        flag = argv[i]
+        if flag == "--rm":
+            i += 1
+            continue
+        if flag not in ("-v", "-w", "-e", "--entrypoint") or i + 1 == len(argv):
+            break
+        options.setdefault(flag, []).append(argv[i + 1])
+        i += 2
+    if argv[i:i + 2] != ["panopticon-fixtures:latest", "-c"] or len(argv[i:]) != 3:
+        return []
+    if _standalone_argv(argv[i + 2]) != [
+            "python3", "-m", "pytest", "tests/tools/", "-q", "-rs", "-p", "no:cacheprovider"]:
+        return []
+    if (options.get("--entrypoint") == ["sh"]
+            and options.get("-v") == ["$PWD:/work:ro"]
+            and options.get("-w") == ["/work"]
+            and set(options.get("-e", [])) == {
+                "FIXTURE_ROOT=/opt/panopticon-fixtures",
+                "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1"}):
+        return [argv]
+    return []
+
+
+def _pull_fails_closed(script):
+    # Deliberately support the simple published if/then shape; no shell interpreter.
+    lines = shell_reader.statements(script)
+    argv = [list(part.argv) for line in lines for part in line.stages]
+    if len(argv) > 2 and argv[1] == ["then"]:
+        argv[1:3] = [["then", *argv[2]]]
+    return (len(argv) == 5 and argv[0] == ["if", "!", "docker", "pull", "$IMAGE"]
+            and argv[1][:2] == ["then", "echo"]
+            and len(argv[1]) == 3 and argv[1][2].startswith("::error::")
+            and argv[2] == ["exit", "1"] and argv[3] == ["fi"]
+            and argv[4] == ["docker", "tag", "$IMAGE", "panopticon-tools:latest"])
+
+
 class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
     """The other half of #1422. Strict mode is only worth having if some
     environment actually sets it; otherwise every adapter test still skips
@@ -336,36 +401,56 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             self.wf = yaml.safe_load(fh.read())
         self.steps = self.wf["jobs"]["integration"]["steps"]
-        self.run_step = next(
-            (s for s in self.steps if "pytest" in (s.get("run") or "")), None)
-        self.assertIsNotNone(self.run_step, "no step runs pytest")
+        self.scripts = [step.get("run", "") for step in self.steps]
 
-    def test_the_job_requires_integration(self):
-        self.assertIn("PANOPTICON_REQUIRE_INTEGRATION=1", self.run_step["run"],
-                      "the job does not set the flag, so every adapter test "
-                      "would skip and the job would pass having run nothing")
+    def test_strict_mode_mounts_image_and_whole_suite_are_on_the_same_invocation(self):
+        runs = [argv for script in self.scripts for argv in _strict_pytest_containers(script)]
+        self.assertEqual(len(runs), 1)
 
-    def test_it_runs_inside_the_fixtures_image(self):
-        run = self.run_step["run"]
-        self.assertIn("panopticon-fixtures", run)
-        self.assertIn("FIXTURE_ROOT=/opt/panopticon-fixtures", run,
-                      "without FIXTURE_ROOT the image-only fixtures are "
-                      "invisible and strict mode fails on all of them")
+    @staticmethod
+    def _pytest_script():
+        return ('docker run --rm -v "$PWD:/work:ro" -w /work '
+                  '-e FIXTURE_ROOT=/opt/panopticon-fixtures '
+                  '-e PANOPTICON_REQUIRE_INTEGRATION=1 -e PYTHONDONTWRITEBYTECODE=1 '
+                  '--entrypoint sh panopticon-fixtures:latest '
+                  '-c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"')
 
-    def test_it_mounts_the_checkout(self):
-        # Not just for the test code: insecure-js, vulnerable-node and
-        # vulnerable-python are read from the mounted repo rather than copied
-        # into the image, so without the mount they resolve nowhere.
-        run = self.run_step["run"]
-        self.assertIn('-v "$PWD:/work:ro"', run)
-        self.assertIn("-w /work", run)
+    def test_comments_echoes_wrong_image_command_and_deselection_cannot_satisfy_guard(self):
+        script = self._pytest_script()
+        self.assertEqual(len(_strict_pytest_containers(script)), 1)
+        for bad in ('# ' + script, "echo '" + script + "'",
+                    'if false; then ' + script + '; fi',
+                    script.replace("panopticon-fixtures:latest", "wrong-image"),
+                    script.replace("python3 -m pytest", "echo pytest"),
+                    script.replace("-e PANOPTICON_REQUIRE_INTEGRATION=1", ""),
+                    script.replace("-v ", "-e "),
+                    script.replace("tests/tools/", "tests/tools/test_one.py"),
+                    script.replace(" -q -rs", " -k integration -q -rs"),
+                    script.replace(" -q -rs", " -m integration -q -rs"),
+                    script.replace("PANOPTICON_REQUIRE_INTEGRATION=1", "PANOPTICON_REQUIRE_INTEGRATION=0")
+                    + '\n# PANOPTICON_REQUIRE_INTEGRATION=1'):
+            with self.subTest(script=bad):
+                self.assertEqual(_strict_pytest_containers(bad), [])
 
-    def test_it_runs_the_whole_tools_tree_not_an_integration_glob(self):
-        # test_brakeman.py's railsgoat probe -- the one that caught the stale
-        # CWE map -- is an integration test living in a unit-test file. A
-        # `test_*_integration.py` selector would scope around it.
-        self.assertIn("tests/tools/", self.run_step["run"])
-        self.assertNotIn("_integration.py", self.run_step["run"])
+    def test_inner_environment_changes_cannot_disable_strict_integration(self):
+        script = self._pytest_script()
+        self.assertEqual(len(_strict_pytest_containers(script)), 1)
+        for prefix in ("PANOPTICON_REQUIRE_INTEGRATION=0 ", "env -i ",
+                       "FIXTURE_ROOT=/missing ", "env PANOPTICON_REQUIRE_INTEGRATION=0 "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(_strict_pytest_containers(
+                    script.replace("python3 -m pytest", prefix + "python3 -m pytest")), [])
+
+    def test_only_a_standalone_foreground_container_can_prove_execution(self):
+        script = self._pytest_script()
+        self.assertEqual(len(_strict_pytest_containers(script)), 1)
+        for bad in ("true || " + script, "false && " + script,
+                    "exit 0; " + script, script + " &", script + " | cat",
+                    "( " + script + " )", "if false; then " + script + "; fi",
+                    script.replace("python3 -m pytest", "true || python3 -m pytest"),
+                    script.replace("no:cacheprovider", "no:cacheprovider &")):
+            with self.subTest(script=bad):
+                self.assertEqual(_strict_pytest_containers(bad), [])
 
     def test_it_is_scheduled_not_only_manual(self):
         on = self.wf.get(True, {})
@@ -374,14 +459,19 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
         self.assertIn("workflow_dispatch", on)
 
     def test_it_does_not_substitute_a_degraded_image(self):
-        # security.yml deliberately falls back to a local build with a warning;
-        # here that would report red for an infrastructure reason dressed as a
-        # regression, so the pull must fail loud instead.
-        pull = next(s for s in self.steps
-                    if "docker pull" in (s.get("run") or ""))
-        self.assertIn("::error::", pull["run"])
-        self.assertIn("exit 1", pull["run"])
-        self.assertNotIn("docker build -t panopticon-tools", pull["run"])
+        self.assertEqual(sum(_pull_fails_closed(script) for script in self.scripts), 1)
+
+    def test_pull_failure_requires_exit_in_its_failure_arm(self):
+        good = ('if ! docker pull "$IMAGE"; then echo "::error::unavailable"; '
+                'exit 1; fi; docker tag "$IMAGE" panopticon-tools:latest')
+        self.assertTrue(_pull_fails_closed(good))
+        for bad in (good.replace("exit 1;", 'echo "exit 1";'),
+                    good.replace("exit 1;", "# exit 1\n"),
+                    good.replace("exit 1;", "") + "; if false; then exit 1; fi",
+                    good.replace("! docker pull", "docker pull"),
+                    good + "; docker build ."):
+            with self.subTest(script=bad):
+                self.assertFalse(_pull_fails_closed(bad))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -87,12 +87,13 @@ class _LiveTool(unittest.TestCase):
     def rules_in(self, findings):
         return {(f.get("tool_evidence") or {}).get("rule_id") for f in findings}
 
-    def find_in(self, tool, files):
+    def find_in(self, tool, files, *, matches):
         with tempfile.TemporaryDirectory() as d:
             _materialise(d, files)
             return assert_adapter_finds_at(self, tool, d,
                                            ok_codes=OK_SCAN_EXIT_CODES,
-                                           label=tool + " target")
+                                           label=tool + " target",
+                                           matches=matches)
 
 
 class TestSemgrepIntegration(_LiveTool):
@@ -100,7 +101,12 @@ class TestSemgrepIntegration(_LiveTool):
 
     def test_semgrep_flags_eval_of_untrusted_input(self):
         findings = self.find_in("semgrep", {
-            "app.js": "const userInput = process.argv[2];\neval(userInput);\n"})
+            "app.js": "const userInput = process.argv[2];\neval(userInput);\n"},
+            matches=lambda f: (
+                f["tool_evidence"]["rule_id"] ==
+                "opt.semgrep-rules.javascript.browser.security.eval-detected"
+                and f["location"]["file"].endswith("/app.js")
+                and f["location"]["line_start"] == 2))
         self.assertTrue(
             any(f["location"]["file"].endswith("app.js") for f in findings),
             "semgrep reported findings but none against the planted file: %s"
@@ -122,7 +128,12 @@ class TestBanditIntegration(_LiveTool):
             "def run(cmd):\n"
             "    return subprocess.call(cmd, shell=True)\n"
             "def load(s):\n"
-            "    return eval(s)\n")})
+            "    return eval(s)\n")},
+            matches=lambda f: (
+                (f["tool_evidence"]["rule_id"],
+                 f["location"]["line_start"]) in {("B307", 7), ("B602", 5)}
+                and f["location"]["file"].endswith("/app.py")
+            ))
         rules = self.rules_in(findings)
         # B101/B404/B110/B112 are suppressed by the adapter's own -s list, so
         # these three prove the invocation reaches real analysis rather than
@@ -136,7 +147,11 @@ class TestGitleaksIntegration(_LiveTool):
 
     def test_gitleaks_detects_a_planted_credential(self):
         findings = self.find_in("gitleaks", {
-            "config.yml": 'service:\n  api_key: "%s"\n' % DECOY_DIGEST})
+            "config.yml": 'service:\n  api_key: "%s"\n' % DECOY_DIGEST},
+            matches=lambda f: (
+                f["tool_evidence"]["rule_id"] == "generic-api-key"
+                and f["location"]["file"].endswith("/config.yml")
+                and f["location"]["line_start"] == 2))
         self.assertIn("generic-api-key", self.rules_in(findings))
 
     def test_target_config_cannot_replace_default_rules(self):
@@ -195,7 +210,11 @@ class TestGosecIntegration(_LiveTool):
         # This is the same proof at test time, through the adapter.
         findings = self.find_in("gosec", {
             "go.mod": "module verify\n\ngo 1.21\n",
-            "main.go": 'package verify\n\nvar apiKey = "%s"\n' % DECOY_DIGEST})
+            "main.go": 'package verify\n\nvar apiKey = "%s"\n' % DECOY_DIGEST},
+            matches=lambda f: (
+                f["tool_evidence"]["rule_id"] == "G101"
+                and f["location"]["file"] == "main.go"
+                and f["location"]["line_start"] == 3))
         self.assertIn("G101", self.rules_in(findings))
 
 
@@ -206,7 +225,11 @@ class TestTrivyIntegration(_LiveTool):
         # The one vendored target of the five: trivy reads a manifest, and
         # `vulnerable-python` already has one.
         findings = assert_adapter_finds(self, "trivy", "vulnerable-python",
-                                        ok_codes=OK_SCAN_EXIT_CODES)
+                                        ok_codes=OK_SCAN_EXIT_CODES,
+                                        matches=lambda f: (
+                                            f["tool_evidence"]["rule_id"] == "CVE-2023-32681"
+                                            and f["location"]["file"] == "requirements.txt"
+                                            and f["citations"]["cve"] == ["CVE-2023-32681"]))
         self.assertTrue(
             any((f.get("citations") or {}).get("cve") or
                 (f.get("tool_evidence") or {}).get("rule_id")

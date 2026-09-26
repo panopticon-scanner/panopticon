@@ -25,6 +25,14 @@ import sys
 
 import scripts.groups_schema as groups_schema
 
+# DAT-2808086775: a target-writable artifact gets a bounded read, the shape
+# `tools/pip_audit.py` already uses for pyproject.toml. A realistic record
+# measures a few hundred bytes -- but `scout_invalid` copies unbounded agent
+# strings (phases/coverage.py: the scout's rejected `domains` entries, verbatim
+# and uncapped), and a skip fails OPEN on the floor audit, so a dropped record
+# reads as "nothing missing" rather than "unknown" -- see #2080.
+_MAX_COVERAGE_BYTES = 1 << 20
+
 
 def _strings(value):
     """The strings in `value`, accepting a lone string as the one-element list
@@ -75,16 +83,42 @@ def load_coverage_files(panopticon_dir=".panopticon"):
     (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
     unreadable/malformed/non-dict files are skipped, never raise -- these are
     the same run artifacts groups.json/scout-*.json are read as elsewhere, and
-    each record is normalized by `normalized_cell` at the read."""
+    each record is normalized by `normalized_cell` at the read.
+
+    DAT-2808086775: "never raise" was narrower than the catch. `json.load`
+    raises RecursionError (a RuntimeError, not a ValueError) on a deeply nested
+    document and MemoryError on a huge one, and both escaped this loop into
+    PlanInputs.load -- ending the run after every dispatch had been paid for.
+    The catch now covers both, and the READ itself is bounded: the file is
+    opened in binary mode and one `fh.read(_MAX_COVERAGE_BYTES + 1)` decides,
+    never `os.stat().st_size`. The declared size is not the size of the read --
+    a character device reports 0 and then reads forever, which is a symlink a
+    target repository can commit -- and a stat-then-open bound is a TOCTOU
+    besides. (A FIFO that no one is writing blocks at `open()`, which this
+    bound never reaches: #2082.) Each skip is announced, because
+    `normalized_cell` announces every repair and a file dropped whole is the
+    louder fact."""
     out = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
+        name = os.path.basename(path)
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
+            with open(path, "rb") as fh:
+                body = fh.read(_MAX_COVERAGE_BYTES + 1)
+            if len(body) > _MAX_COVERAGE_BYTES:
+                print("synthesize: coverage: %s: over the %d-byte read limit "
+                      "(at least %d bytes); skipping it unparsed"
+                      % (name, _MAX_COVERAGE_BYTES, len(body)), file=sys.stderr)
+                continue
+            data = json.loads(body.decode("utf-8"))  # UnicodeDecodeError is a ValueError
+        except (OSError, ValueError, RecursionError, MemoryError) as exc:
+            # `str(exc) or type(exc).__name__`, not `exc or ...`: str(MemoryError())
+            # is "" while the instance itself is TRUTHY, so the short form renders
+            # "could not be read ()" -- a line an operator cannot act on.
+            print("synthesize: coverage: %s: could not be read (%s); skipping it"
+                  % (name, str(exc) or type(exc).__name__), file=sys.stderr)
             continue
         if isinstance(data, dict):
-            out.append(normalized_cell(data, path=os.path.basename(path)))
+            out.append(normalized_cell(data, path=name))
     return out
 
 
