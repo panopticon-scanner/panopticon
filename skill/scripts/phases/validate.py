@@ -54,8 +54,18 @@ def _write_baseline(baseline, emit):
     same `_open_w_nofollow` (a `.tmp` in the reviewed tree is as plantable as
     the artifact, and `os.replace` onto a symlinked destination replaces the
     LINK). `_write_json` itself is not reusable here: it writes `indent=2` JSON,
-    and the probe-failure sentinel below is not JSON at all."""
-    tmp = baseline + ".tmp"
+    and the probe-failure sentinel below is not JSON at all.
+
+    Confinement runs on the FINAL name first, then `makedirs`, then the staging
+    open -- `_write_json`'s order, and `safe_write`'s module docstring is why it
+    is that way round: confining after the makedirs would mean the traversal had
+    already happened. Staging alone would have dropped the final component's
+    check (which the pre-fix `_open_w_nofollow(baseline)` had), so a planted
+    final name would be quietly neutralized by `os.replace` instead of refused
+    -- and under redteam "your target planted a symlink at an artifact path" is
+    a signal the operator should get, not one the writer should absorb."""
+    runio._confine_artifact_path(baseline)   # SEC-X0X: before makedirs, which would
+    tmp = baseline + ".tmp"                  # otherwise follow a symlinked dir
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
     opened = False
     try:

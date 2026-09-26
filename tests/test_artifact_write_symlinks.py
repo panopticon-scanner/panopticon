@@ -43,6 +43,7 @@ import scripts.discovery as discovery
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
+import scripts.phases.validate as validate_phase
 import scripts.run_tools as run_tools
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
@@ -194,6 +195,49 @@ class TestX0xArtifact(_Planted):
         # Round 1 ruling: a refusal must not leave the planted link sitting in
         # the run folder for the next invocation to trip over.
         self.assertFalse(os.path.lexists(staging))
+
+
+class TestTreeBaseline(_Planted):
+    """`validate.capture_tree_baseline` stages `tree-baseline.txt.tmp` beside the
+    baseline -- the same fixed-name staging shape as `TestX0xArtifact` above, and
+    new in #1809 (the pre-fix writer opened the final name directly)."""
+
+    def _capture(self):
+        # No git here: the runner is the probe's only contact with the target,
+        # and a clean `status --porcelain -z` is the empty string.
+        runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
+        return validate_phase.capture_tree_baseline(self.root, runner=runner)
+
+    def test_the_staging_write_refuses_a_planted_link(self):
+        staging = self.plant("tree-baseline.txt.tmp")
+        with self.assertRaises(ValueError):
+            self._capture()
+        self.assert_victim_intact()
+        # Round 1 ruling (x0x): a refusal must not leave the planted link sitting
+        # in the run folder for the next invocation to trip over.
+        self.assertFalse(os.path.lexists(staging))
+
+    def test_the_final_name_refuses_a_planted_dangling_link(self):
+        # A plant pointing OUTSIDE the tree at a path that does not exist: the
+        # `exists`-means-done guard does not fire, so the write is reached. The
+        # pre-fix writer opened the final name and its confinement refused this
+        # loudly; staging must not quietly neutralize the plant instead, because
+        # "your target planted a symlink at an artifact path" is the signal.
+        path = os.path.join(self.pano, "tree-baseline.txt")
+        os.symlink(os.path.join(self.root, "gone.txt"), path)
+        with self.assertRaises(ValueError) as caught:
+            self._capture()
+        self.assertIn("escapes .panopticon", str(caught.exception))
+        self.assertTrue(os.path.islink(path), "the plant was silently consumed")
+
+    def test_a_planted_final_name_is_never_written_through(self):
+        # The victim EXISTS, so `os.path.exists(baseline)` is true through the
+        # link and the exists-means-done guard returns first -- no write, no
+        # raise, and (the invariant this suite is about) no victim clobbered.
+        path = self.plant("tree-baseline.txt")
+        self.assertEqual(self._capture(), path)
+        self.assert_victim_intact()
+        self.assertTrue(os.path.islink(path))
 
 
 class _PinnedUuid:
