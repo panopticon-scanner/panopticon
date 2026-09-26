@@ -7,21 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **The clean-tree baseline is written atomically, and a torn one now says so (#1809,
-  DAT-4027033499).** `tree-baseline.txt` was the one artifact writer in `phases/` that truncated in
-  place, and it sits behind an exists-means-done guard that must NOT re-probe `git status` on resume
-  (re-probing would baseline the reviewer's own writes as clean). A write torn mid-way was therefore
-  PERMANENT: every later resume accepted the partial document, the run failed closed at validate
-  forever, and `--reset` -- throwing a paid run away -- was the only exit. Both baseline writes (the
-  snapshot and the probe-failure sentinel) now stage `<baseline>.tmp` through the same
-  `_open_w_nofollow` and `os.replace` it into place -- the shape `runio._write_json` already uses,
-  byte content unchanged -- and remove the staging file if the write fails, so what is on disk is
-  either the last complete baseline or the new one. **Operator-visible:** a baseline that is present
-  but does not parse is now reported as PRESENT but CORRUPT, with `--reset` named as the remedy and
-  deleting `tree-baseline.txt` named as the non-remedy it is (it would re-baseline the reviewer's
-  own writes as clean). It used to be reported as one that "predates content digests (schema
-  v1)" -- a resume across an upgrade that never happened. A genuine v1 baseline (raw porcelain,
-  which never starts `{`) still reads as v1.
+- **The clean-tree baseline is written atomically, and an unusable one is classified instead of
+  blamed on the v1 upgrade (#1809, DAT-4027033499).** `tree-baseline.txt` was the one artifact
+  writer in `phases/` that truncated in place, and it sits behind an exists-means-done guard that
+  must NOT re-probe `git status` on resume (re-probing would baseline the reviewer's own writes as
+  clean). A write torn mid-way was therefore PERMANENT: every later resume accepted the partial
+  document, the run failed closed at validate forever, and `--reset` -- throwing a paid run away --
+  was the only exit. Both baseline writes (the snapshot and the probe-failure sentinel) now confine
+  the final name, then stage `<baseline>.tmp` through the same `_open_w_nofollow` and `os.replace`
+  it into place -- `runio._write_json`'s shape AND order, byte content and file mode unchanged --
+  and on failure remove only the staging file this call opened, or a symlink planted at its name,
+  never a file it never opened (with `.panopticon/runs` force-committed as a symlink, that name
+  resolves outside the tree). An interrupted process therefore leaves the last complete baseline or
+  the new one; nothing here fsyncs, so a power loss can still tear the file, which is what the
+  classifier below is for. **Operator-visible:** a present-but-unusable baseline now says which kind
+  it is -- CORRUPT for one that opens with `{` and does not parse, or parses to something that is
+  not an object; EMPTY for a 0-byte or whitespace-only one (a torn write, or a v1 baseline of a
+  clean tree) -- and both name `--reset` as the remedy and deleting `tree-baseline.txt` as the
+  non-remedy it is (the next capture would re-baseline the reviewer's own writes as clean). All of
+  them used to read "predates content digests (schema v1)": a resume across an upgrade that never
+  happened, with no remedy named -- and 0 bytes is the likeliest shape the old writer's torn write
+  left behind. A genuine v1 baseline (raw porcelain, which never opens with `{`) still reads as v1,
+  a deeply nested one fails closed here instead of ending the invocation with a `RecursionError`
+  traceback, and `--reset` now also sweeps a staging file orphaned by a SIGKILL. Staging opens
+  without `O_EXCL` project-wide (#2093) and an `OSError` from this write still reaches the operator
+  as a traceback rather than a status (#2094) -- follow-ups, not fixed here.
 - **Three run-artifact readers in `synth/` no longer end a run on a file a target can pre-commit
   (#1811, #1812 — DAT-2808086775, DAT-3713947858, DAT-1553408299).** `coverage-*.json`,
   `dispatch-plan-driver.json` and the agent findings files are read back out of the run folder,

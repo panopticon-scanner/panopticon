@@ -834,10 +834,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   before this change (resume across the upgrade), a failed probe, or a tree too large to digest all
   report that content equality was not established and fail closed rather than certify a check that
   did not run.
-  The baseline is staged and renamed into place, so an interrupted write leaves the last complete
-  one rather than a partial document; one that is PRESENT but does not parse is reported as CORRUPT
-  and the remedy is `--reset`, since deleting `tree-baseline.txt` mid-run would re-baseline the
-  reviewer's own writes as clean (#1809).
+  The baseline is staged and renamed into place, so an interrupted process leaves the last complete
+  one rather than a partial document. A present-but-unusable baseline is classified instead of being
+  blamed on that upgrade: one that opens with `{` and does not parse, or parses to something that is
+  not an object, reads as CORRUPT; a 0-byte or whitespace-only one reads as EMPTY (a torn write, or
+  a v1 baseline of a clean tree); anything else is still the raw-porcelain v1 case. All three fail
+  closed, and the first two name `--reset` as the remedy -- deleting `tree-baseline.txt` mid-run is
+  not one, since the next capture would re-baseline the reviewer's own writes as clean (#1809).
 
 At the `scout` checkpoint (one batched checkpoint, one entry per still-pending group, the run's
 first checkpoint — #1056 emits them together so they dispatch concurrently instead of one round-trip
