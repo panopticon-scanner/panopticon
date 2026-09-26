@@ -7,6 +7,24 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A target-committed write allowlist can no longer hand a reviewer a peer cell's findings file
+  (#1831, SEC-611772336).** `write_guard_hook.install` carries a still-live grant forward so that a
+  re-arm never revokes a concurrent fan-out (#11), but the filter deciding what MAY be carried
+  anchored on the `.panopticon` segment and checked a prefix only -- so every path under the whole
+  artifact tree qualified. Entry ids are `review-<group>-<domain>` and the target authors
+  `panopticon.yml`, so a `.panopticon/write-allowlist.json` committed in the scanned repo and keyed
+  with a REAL reviewer id added a PEER cell's `findings-<group>-<domain>.json`, the run's
+  `out-file-hashes.json` integrity snapshot and `dispatch-plan-driver.json` to that reviewer's own
+  grant: the per-entry confinement #1571 exists to establish, re-opened through the one path that
+  fix did not close, on every self-scan and every calibration run started inside the clone. A
+  carried path is now kept only when it sits directly in one of the RUN FOLDERS this install writes
+  into, is named `findings-<group>-<domain>.json`, and is the findings file the entry holding it
+  claims -- so an entry keyed with a real reviewer id carries nothing but that reviewer's own
+  out_file. Everything else is dropped, and the operator is told on stderr, with the count and each
+  entry id (`write guard: dropped 5 carried allowlist path(s) that are not this run's own findings
+  files: review-Core-SEC (5)`) -- a grant narrowed in silence is the #calibration-4 shape, every
+  later write denied and nothing pointing at the allowlist. A concurrent fan-out's in-flight grant
+  is its own cell's findings file in the same run folder, so the #11 property survives untouched.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

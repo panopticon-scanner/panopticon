@@ -41,6 +41,7 @@ never silently drift apart from each other.
 import glob
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -701,36 +702,113 @@ def _read_allowlist(allowlist_path):
     return _load_allowlist(allowlist_path)[0] or {}
 
 
+# The reviewer findings-file name, `findings-<group>-<domain>.json`: the only
+# out_file `phases.review._cell_entry` writes, the one
+# `plan_contract.driver_plan_issues` enforces on the driver plan, and the one
+# `synth.integrity._expected_from_filename` reads back. A COPY, not an import,
+# for the reason `_atomic_write_json` carries the os-flag form itself: this hook
+# is executed as its own subprocess by the host's PreToolUse command and has to
+# import standing alone, so it may not reach into the driver's packages. The copy
+# is pinned equal to integrity's by tests/test_write_guard_hook.py so a second
+# spelling cannot drift into existence.
+_FINDINGS_NAME_RE = re.compile(r"^findings-(?P<group>.+)-(?P<domain>[A-Za-z]+)\.json$")
+
+
+def _findings_cell(path):
+    """The `<group>-<domain>` cell a path's BASENAME declares, or None when the
+    basename is not a reviewer findings file at all.
+
+    The domain is the LAST token because domains are a fixed hyphen-free set, so
+    a group name may itself contain hyphens (integrity says the same)."""
+    m = _FINDINGS_NAME_RE.match(os.path.basename(str(path)))
+    return None if m is None else "%s-%s" % (m.group("group"), m.group("domain"))
+
+
 def _artifact_roots(paths):
-    """The `.panopticon` directory of each path that has one -- the only place a
-    legitimate findings out_file lives (#run10 SEC-C1D)."""
+    """The RUN FOLDER of each added out_file that lives in an artifact tree --
+    `<review root>/.panopticon/runs/<tag>/` by construction, since `runio._pano`
+    puts every non-top-level artifact there.
+
+    #1831 SEC-611772336: this used to truncate at the `.panopticon` segment,
+    which made the WHOLE artifact tree the anchor -- so a planted entry naming any
+    path under it (a peer cell's findings file, the run's `out-file-hashes.json`
+    integrity snapshot, `dispatch-plan-driver.json`, `groups.yml`, a
+    `tools/*.sarif`) was carried forward, re-opening the per-entry confinement
+    #1571 exists to establish. The directory an out_file is written into is the
+    narrowest anchor available at install time, and it is the run folder.
+
+    Only a path that carries a `.panopticon` segment yields an anchor, exactly as
+    before (#run10 SEC-C1D): a plan whose out_files sit in no artifact tree
+    anchors nothing and carries nothing forward."""
     roots = set()
     for p in paths:
-        parts = str(p).split(os.sep)
-        if ".panopticon" in parts:
-            roots.add(os.sep.join(parts[:parts.index(".panopticon") + 1]))
+        p = str(p)
+        if ARTIFACT_DIR in p.split(os.sep):
+            roots.add(os.path.dirname(p))
     return roots
 
 
-def _confined_to_artifact_roots(existing, added):
-    """The `existing` mapping's grants that sit under the same `.panopticon`
-    tree as `added`'s, still keyed by the entry that holds them.
+def _announce_dropped_grants(dropped):
+    """Say on stderr which carried entries lost paths, and how many.
 
-    An in-flight grant from a concurrent fan-out is always a findings out_file in
-    that tree, so it survives (the #11 property). A pre-planted entry pointing
-    anywhere else -- a source file, a dotfile in $HOME -- does not, and can no
-    longer buy write access off the back of our install. With no anchor (a plan
-    whose out_files carry no `.panopticon` segment) nothing is carried forward:
-    fail closed rather than trust an unanchored file."""
+    A grant narrowed in silence is the #calibration-4 / gotify shape: every
+    later write denied, and nothing in the output pointing at the allowlist."""
+    if not dropped:
+        return
+    print("write guard: dropped %d carried allowlist path(s) that are not this "
+          "run's own findings files: %s"
+          % (sum(dropped.values()),
+             ", ".join("%s (%d)" % (eid, n) for eid, n in sorted(dropped.items()))),
+          file=sys.stderr)
+
+
+def _confined_to_artifact_roots(existing, added):
+    """The `existing` mapping's grants that could plausibly be a real in-flight
+    grant from a concurrent fan-out, still keyed by the entry that holds them.
+
+    Three things must hold, and each one is a thing a target-committed
+    `.panopticon/write-allowlist.json` cannot fake (#1831 SEC-611772336):
+
+      * the path sits DIRECTLY IN one of the run folders `added` writes into --
+        not merely somewhere under `.panopticon`, and not in another run's folder,
+        whose grants are by definition not in flight;
+      * its basename has the findings-file shape, so the run's own integrity
+        artifacts (`out-file-hashes.json`, `dispatch-plan-driver.json`) and
+        everything else in the folder are not carried;
+      * the entry holding it CLAIMS that cell -- an id is
+        `review-<group>-<domain>` for the `findings-<group>-<domain>.json` it
+        declares, so an entry keyed with a REAL reviewer id may carry only that
+        reviewer's own out_file and never a PEER's. This is the half the shape
+        check alone does not buy: entry ids are derivable by the target (it
+        authors `panopticon.yml`, and `phases.review` builds the id from the
+        group and domain), so a planted `review-Core-SEC` naming
+        `findings-OtherGroup-ARC.json` is exactly the reachable attack.
+        `UNBOUND_ENTRY` names no cell and is refused by `adjudicate` to every
+        bound agent, so that bucket is held to the first two rules only.
+
+    An in-flight grant from a concurrent fan-out is its own cell's findings file
+    in this run's folder, so it survives all three (the #11 property). With no
+    anchor (a plan whose out_files carry no `.panopticon` segment) nothing is
+    carried forward: fail closed rather than trust an unanchored file."""
     roots = _artifact_roots(union_paths(added))
     if not roots:
         return {}
     out = {}
+    dropped: dict[str, int] = {}
     for eid, paths in existing.items():
-        kept = [p for p in paths
-                if any(str(p) == r or str(p).startswith(r + os.sep) for r in roots)]
+        kept = []
+        for path in paths:
+            p = str(path)
+            cell = _findings_cell(p)
+            if os.path.dirname(p) in roots and cell is not None and (
+                    eid == UNBOUND_ENTRY or eid == cell
+                    or eid.endswith("-" + cell)):
+                kept.append(p)
+            else:
+                dropped[eid] = dropped.get(eid, 0) + 1
         if kept:
             out[eid] = kept
+    _announce_dropped_grants(dropped)
     return out
 
 
@@ -877,9 +955,11 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # inside the scanned tree), so a planted entry -- `~/.ssh/authorized_keys`, a
     # source file -- was unioned in and became a WRITABLE target for every agent
     # in the fan-out. Keep the #11 in-flight property, but only for entries that
-    # could plausibly be a real in-flight grant: a findings out_file lives under
-    # the SAME `.panopticon` tree as the paths we are adding. Anything outside it
-    # was not written by a trusted install and is dropped.
+    # could plausibly be a real in-flight grant: its OWN cell's findings file, in
+    # one of the RUN FOLDERS this install writes into. Anything else -- another
+    # run's folder, the run's integrity artifacts, a peer cell's findings file
+    # under a real reviewer's id (#1831 SEC-611772336) -- was not written by a
+    # trusted install and is dropped, with a count on stderr.
     carried = _confined_to_artifact_roots(_read_allowlist(allowlist_path), added)
     # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
     # survives (the #11 property) without becoming writable by this batch's

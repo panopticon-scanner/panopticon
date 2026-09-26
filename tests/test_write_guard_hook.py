@@ -264,6 +264,147 @@ class TestAllowlistFromPlan(unittest.TestCase):
             self.assertIn(link, str(cm.exception))
 
 
+class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
+    """#1831 SEC-611772336: the grant `install` carries forward from whatever
+    allowlist is already on disk is confined to THIS run's folder and to the
+    findings-file shape, so a target-committed `.panopticon/write-allowlist.json`
+    cannot hand a real reviewer anything but its own out_file.
+
+    The anchor used to truncate at the `.panopticon` segment, which made the
+    whole artifact tree the root, and the kept-filter checked a prefix and never
+    a name -- so a planted entry keyed with a REAL entry id (they are
+    `review-<group>-<domain>`, and the target authors `panopticon.yml`) carried
+    a PEER cell's findings file, the run's `out-file-hashes.json` integrity
+    snapshot and `dispatch-plan-driver.json` into that reviewer's own grant.
+    That is the per-entry confinement #1571 exists to establish, reached through
+    the one path it did not close.
+    """
+
+    TAG = "claude-redteam-repo-20260925-abc"
+
+    def _target(self):
+        """(root, run folder, allowlist path, settings path) -- a scanned tree
+        whose `.panopticon` the target can commit into."""
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        pano = os.path.join(root, ".panopticon")
+        run = os.path.join(pano, "runs", self.TAG)
+        os.makedirs(run)
+        os.makedirs(os.path.join(pano, "tools"))
+        settings = os.path.join(root, "settings.json")
+        with open(settings, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        return root, run, os.path.join(pano, "write-allowlist.json"), settings
+
+    def _plant(self, allow, entries):
+        with open(allow, "w", encoding="utf-8") as fh:
+            json.dump(wg.allowlist_document(entries), fh)
+
+    def _install(self, run, allow, settings, entry_id="review-Core-SEC"):
+        """Arm the guard for the one live cell `review-Core-SEC`, quietly."""
+        plan = [{"id": entry_id,
+                 "out_file": os.path.join(run, "findings-Core-SEC.json")}]
+        with contextlib.redirect_stderr(io.StringIO()):
+            wg.install(plan, settings_path=settings, allowlist_path=allow)
+        with open(allow, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_planted_path_outside_the_run_folder_is_dropped(self):
+        # (a) inside `.panopticon`, outside `runs/<tag>/`: the old anchor kept
+        # every one of these.
+        root, run, allow, settings = self._target()
+        pano = os.path.join(root, ".panopticon")
+        planted = [os.path.join(pano, "groups.yml"),
+                   os.path.join(pano, "tools", "evil.sarif")]
+        self._plant(allow, {"review-Core-SEC": planted})
+        final = self._install(run, allow, settings)
+        for p in planted:
+            self.assertNotIn(p, final["paths"], p)
+        self.assertEqual(final["entries"],
+                         {"review-Core-SEC": [os.path.join(run,
+                                                           "findings-Core-SEC.json")]})
+
+    def test_a_planted_non_findings_name_in_the_run_folder_is_dropped(self):
+        # (b) the run's own integrity artifacts: composing a forged findings
+        # file with a forged `out-file-hashes.json` forges the certification.
+        _root, run, allow, settings = self._target()
+        planted = [os.path.join(run, "out-file-hashes.json"),
+                   os.path.join(run, "dispatch-plan-driver.json")]
+        self._plant(allow, {"review-Core-SEC": planted})
+        final = self._install(run, allow, settings)
+        for p in planted:
+            self.assertNotIn(p, final["paths"], p)
+
+    def test_a_live_entry_id_cannot_carry_a_peers_findings_file(self):
+        # (c) the whole exploit, asserted where it lands: the bound reviewer.
+        # Both cells are dispatched, as in a real fan-out, so the peer's findings
+        # file IS in the armed allowlist -- under the peer's id, and nowhere else.
+        _root, run, allow, settings = self._target()
+        peer = os.path.join(run, "findings-OtherGroup-ARC.json")
+        mine = os.path.join(run, "findings-Core-SEC.json")
+        self._plant(allow, {"review-Core-SEC": [peer]})
+        with contextlib.redirect_stderr(io.StringIO()):
+            wg.install([{"id": "review-Core-SEC", "out_file": mine},
+                        {"id": "review-OtherGroup-ARC", "out_file": peer}],
+                       settings_path=settings, allowlist_path=allow)
+        env = {wg.ENV_ENTRY_ID: "review-Core-SEC"}
+        payload = {"tool_name": "Write", "agent_type": "panopticon-domain-panel"}
+        allowed, reason = wg.adjudicate(
+            dict(payload, tool_input={"file_path": peer}), allow, env=env)
+        self.assertFalse(allowed, "a peer cell's findings file is writable")
+        self.assertIn("peer entry's artifact is not writable", reason)
+        self.assertEqual(
+            (True, ""),
+            wg.adjudicate(dict(payload, tool_input={"file_path": mine}),
+                          allow, env=env))
+        with open(allow, encoding="utf-8") as fh:      # and each id kept its own
+            self.assertEqual(json.load(fh)["entries"],
+                             {"review-Core-SEC": [mine],
+                              "review-OtherGroup-ARC": [peer]})
+
+    def test_a_findings_file_from_another_run_folder_is_dropped(self):
+        # (d) right shape, wrong run: a previous round's grant is not in flight.
+        root, run, allow, settings = self._target()
+        stale = os.path.join(root, ".panopticon", "runs", "other-tag",
+                             "findings-Core-SEC.json")
+        os.makedirs(os.path.dirname(stale))
+        self._plant(allow, {"review-Core-SEC": [stale]})
+        final = self._install(run, allow, settings)
+        self.assertNotIn(stale, final["paths"])
+
+    def test_the_drop_is_announced_on_stderr_with_the_entry_id_and_count(self):
+        # A silently narrowed grant is the #calibration-4 shape: every write
+        # denied and nothing pointing at the allowlist. Say what was dropped.
+        _root, run, allow, settings = self._target()
+        self._plant(allow, {"review-Core-SEC": [
+            os.path.join(run, "out-file-hashes.json"),
+            os.path.join(run, "dispatch-plan-driver.json")]})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            wg.install([{"id": "review-Core-SEC",
+                         "out_file": os.path.join(run, "findings-Core-SEC.json")}],
+                       settings_path=settings, allowlist_path=allow)
+        printed = err.getvalue()
+        self.assertIn("review-Core-SEC", printed)
+        self.assertIn("2", printed)
+
+    def test_the_findings_name_spelling_is_the_one_the_pipeline_owns(self):
+        # The hook runs as its own subprocess and may not import the driver's
+        # packages, so it carries a COPY of the findings-file regex. Pin it to
+        # the original rather than let a second spelling drift into existence.
+        from scripts import plan_contract
+        from scripts.synth import integrity as integrity_mod
+        self.assertEqual(wg._FINDINGS_NAME_RE.pattern,
+                         integrity_mod._FINDINGS_NAME_RE.pattern)
+        for group, domain in (("Core", "SEC"), ("My-Hyphenated-Group", "COD")):
+            name = "findings-%s-%s.json" % (group, domain)
+            self.assertEqual([], plan_contract.driver_plan_issues(
+                [{"group": group, "domain": domain, "out_file": "/r/.panopticon/" + name}]))
+            self.assertEqual("%s-%s" % (group, domain), wg._findings_cell("/r/x/" + name))
+        self.assertIsNone(wg._findings_cell("/r/x/out-file-hashes.json"))
+        self.assertIsNone(wg._findings_cell("/r/x/dispatch-plan-driver.json"))
+
+
 class TestNestedSymlinkComponents(unittest.TestCase):
     """#1640 (run-13 AGT-861284148): every component of a findings path is
     checked, not just the one named `.panopticon`.
@@ -813,15 +954,19 @@ class TestInstallUninstall(unittest.TestCase):
         # #11: a re-arm during an in-flight fan-out must UNION, not replace -- the
         # first fan-out's out_files stay writable while the second's are added
         # (the run-6 leak: a per-group re-arm silently revoked prior agents).
+        #
+        # #1831: the out_files are spelled `findings-<group>-<domain>.json`, as
+        # every real one is, because only a findings file in this install's own
+        # run folder is carried forward now.
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            wg.install([{"out_file": ".panopticon/a.json"}], settings, al)
-            wg.install([{"out_file": ".panopticon/b.json"}], settings, al)
+            a, b = ".panopticon/findings-A-SEC.json", ".panopticon/findings-B-COD.json"
+            wg.install([{"out_file": a}], settings, al)
+            wg.install([{"out_file": b}], settings, al)
             with open(al, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["paths"],
-                                 sorted([os.path.realpath(".panopticon/a.json"),
-                                         os.path.realpath(".panopticon/b.json")]))
+                                 sorted([os.path.realpath(a), os.path.realpath(b)]))
             with open(settings, encoding="utf-8") as fh:      # still one hook entry
                 self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 1)
 
@@ -831,14 +976,14 @@ class TestInstallUninstall(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            plan_a = [{"out_file": ".panopticon/a.json"}]
-            plan_b = [{"out_file": ".panopticon/b.json"}]
+            plan_a = [{"out_file": ".panopticon/findings-A-SEC.json"}]
+            plan_b = [{"out_file": ".panopticon/findings-B-COD.json"}]
             wg.install(plan_a, settings, al)
             wg.install(plan_b, settings, al)
             wg.uninstall(settings, al, plan=plan_a)
             with open(al, encoding="utf-8") as fh:            # B still armed
                 self.assertEqual(json.load(fh)["paths"],
-                                 [os.path.realpath(".panopticon/b.json")])
+                                 [os.path.realpath(plan_b[0]["out_file"])])
             with open(settings, encoding="utf-8") as fh:
                 self.assertIn("PreToolUse", json.load(fh)["hooks"])
             wg.uninstall(settings, al, plan=plan_b)           # last fan-out gone
