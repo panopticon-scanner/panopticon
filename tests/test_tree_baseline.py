@@ -257,6 +257,14 @@ class TornBaselineTest(unittest.TestCase):
     def _repo(self):
         return make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
 
+    def _put(self, repo, text):
+        """`text` as the baseline on disk, with no complete baseline before it."""
+        path = runio._pano(repo, "tree-baseline.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
     def _tear(self, repo):
         """Capture a complete v2 baseline, then truncate it at half its bytes."""
         path = validate_phase.capture_tree_baseline(repo)
@@ -307,10 +315,6 @@ class TornBaselineTest(unittest.TestCase):
         self.assertFalse(os.path.exists(path),
                          "a partial baseline is what every later resume accepts")
         self.assertFalse(os.path.exists(path + ".tmp"), "staging file left behind")
-        # ...and the run recovers rather than wedging: the next capture probes
-        # git and writes a complete baseline validate can certify against.
-        validate_phase.capture_tree_baseline(repo)
-        self.assertEqual(validate_phase._tree_delta(repo, subprocess.run), [])
 
     def test_a_torn_sentinel_write_keeps_the_previous_baseline_byte_identical(self):
         repo = self._repo()
@@ -323,6 +327,57 @@ class TornBaselineTest(unittest.TestCase):
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), before, "a failed write clobbered the baseline")
         self.assertFalse(os.path.exists(path + ".tmp"), "staging file left behind")
+
+    def test_an_empty_baseline_is_diagnosed_as_empty_not_as_schema_v1(self):
+        # The pre-fix writer's MOST likely torn shape: `O_TRUNC` succeeded and
+        # the process died before the first buffer flushed. Telling that operator
+        # the baseline "predates content digests" points at an upgrade that never
+        # happened. Empty is genuinely ambiguous (a v1 baseline of a clean tree
+        # WAS empty), so the message says so -- and still names the remedy.
+        repo = self._repo()
+        self._put(repo, "")
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertTrue(delta)
+        self.assertIn("EMPTY", delta[0])
+        self.assertIn("--reset", delta[0])
+        self.assertNotIn("predates", delta[0])
+
+    def test_a_whitespace_only_baseline_is_diagnosed_as_empty(self):
+        repo = self._repo()
+        self._put(repo, "   \n\t ")
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertIn("EMPTY", delta[0])
+        self.assertIn("--reset", delta[0])
+
+    def test_valid_json_that_is_not_an_object_is_corrupt(self):
+        # "Parses to the wrong shape" is the other half of the classifier: a
+        # porcelain record always opens with an XY status pair, so JSON that
+        # parses to a list/number/null/string is never a v1 baseline.
+        for raw in ("[1, 2]", "5", "null", '"hello"'):
+            with self.subTest(raw=raw):
+                repo = self._repo()
+                self._put(repo, raw)
+                delta = validate_phase._tree_delta(repo, subprocess.run)
+                self.assertTrue(delta)
+                self.assertIn("CORRUPT", delta[0])
+                self.assertNotIn("predates", delta[0])
+
+    def test_a_deeply_nested_baseline_fails_closed_instead_of_raising(self):
+        # `json.loads` raises RecursionError -- a RuntimeError, so outside
+        # `except ValueError` -- and driver.run catches (DriverError, ValueError)
+        # only, so this ended the invocation with a traceback and no status JSON.
+        repo = self._repo()
+        self._put(repo, "[" * 200000)
+        self.assertTrue(validate_phase._tree_delta(repo, subprocess.run))
+
+    def test_the_run_recovers_from_a_torn_capture_write(self):
+        # The end-to-end point of the fix: a torn write is no longer permanent,
+        # so the next resume re-probes git and validate can certify again.
+        repo = self._repo()
+        with mock.patch.object(json, "dump", _torn_dump), self.assertRaises(OSError):
+            validate_phase.capture_tree_baseline(repo)
+        validate_phase.capture_tree_baseline(repo)
+        self.assertEqual(validate_phase._tree_delta(repo, subprocess.run), [])
 
     def test_a_completed_capture_leaves_no_staging_file(self):
         path = validate_phase.capture_tree_baseline(self._repo())

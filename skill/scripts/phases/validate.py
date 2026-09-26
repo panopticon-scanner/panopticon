@@ -22,6 +22,21 @@ from . import runio
 # the redteam clean-tree guard by reading as a clean tree that was never verified.
 _TREE_BASELINE_PROBE_FAILED = "#panopticon:baseline-probe-failed\n"
 
+# #1809 (DAT-4027033499): what to tell an operator whose baseline cannot be
+# trusted. Deleting `tree-baseline.txt` is the tempting move and the wrong one --
+# the next capture would re-probe `git status` and baseline the REVIEWER's own
+# writes as clean -- so every one of these names `--reset` instead.
+_BASELINE_REMEDY = ("deleting tree-baseline.txt would re-baseline the reviewer's "
+                    "own writes as clean, so `--reset` is the remedy")
+_BASELINE_CORRUPT = ("clean-tree baseline is PRESENT but CORRUPT (torn or corrupted); "
+                     "tree integrity cannot be certified -- " + _BASELINE_REMEDY)
+# 0 bytes is the pre-fix truncate-in-place writer's most likely torn shape
+# (`O_TRUNC` succeeded, the process died before the first flush) -- and also what
+# a v1 baseline of a CLEAN tree looked like. Genuinely ambiguous, so say both.
+_BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a "
+                   "clean-tree v1 baseline; tree integrity cannot be certified -- "
+                   + _BASELINE_REMEDY)
+
 def _write_baseline(baseline, emit):
     """Write the baseline through `<baseline>.tmp` + `os.replace`, so the file on
     disk is either the last complete one or the new one -- never half of either.
@@ -223,21 +238,22 @@ def _tree_delta(review_root, runner):
     # perform -- the same fail-closed rule the probe-failure sentinel follows.
     try:
         snapshot = json.loads(raw)
-        if not isinstance(snapshot, dict):
-            raise ValueError("not an object")
-    except ValueError:
+    except (ValueError, RecursionError):
+        # #1809: three different things land here, and calling all of them
+        # "schema v1" points at a resume across an upgrade that never happened
+        # and hides the remedy. RecursionError (a deeply nested document) is a
+        # RuntimeError, so `except ValueError` let it out of the phase entirely.
         if raw.lstrip().startswith("{"):
-            # #1809: a document that opens as JSON but does not parse is a TORN
-            # v2 write, not a pre-digest baseline -- naming it "schema v1" points
-            # at a resume across an upgrade that never happened and hides the
-            # remedy. A v1 baseline is raw porcelain text, which never starts `{`.
-            return ["clean-tree baseline is PRESENT but CORRUPT (torn write); "
-                    + "tree integrity cannot be certified -- deleting "
-                    + "tree-baseline.txt would re-baseline the reviewer's own "
-                    + "writes as clean, so `--reset` is the remedy"]
+            return [_BASELINE_CORRUPT]       # a v2 document, torn or corrupted
+        if not raw.strip():
+            return [_BASELINE_EMPTY]         # 0 bytes: torn, or a v1 clean tree
         return ["clean-tree baseline predates content digests (schema v1); "
                 + "content equality not established, so tree integrity cannot "
                 + "be certified"]
+    if not isinstance(snapshot, dict):
+        # Valid JSON that is not an object is never raw porcelain either: a
+        # porcelain record always opens with an XY status pair.
+        return [_BASELINE_CORRUPT]
     if snapshot.get("schema_version") != _BASELINE_SCHEMA:
         return [("clean-tree baseline schema_version %r is not %d; content "
                  + "equality not established, so tree integrity cannot be certified")
