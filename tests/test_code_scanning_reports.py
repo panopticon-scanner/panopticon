@@ -726,3 +726,168 @@ def test_multiple_runs_and_no_inventory_are_supported(tmp_path):
     assert inventory["count"] == 0
     assert "No authorized AI inventory results" in (
         output / "inventory" / "ai-inventory.md").read_text()
+
+
+def _security_paths(tmp_path):
+    security = json.loads((tmp_path / "out" / "security" / "scan.sarif")
+                          .read_text(encoding="utf-8"))
+    return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            for r in security["runs"][0]["results"]]
+
+
+def test_excluded_paths_leave_the_security_upload_and_are_counted(tmp_path):
+    # The gate scopes itself with `--exclude` globs; the Security upload used
+    # to take the raw capture whole, so a scope the operator had already taken
+    # off the gate still filled the code-scanning inbox (476 test-suite rows on
+    # 2026-09-26). The same gitignore-style matcher the gate uses decides here,
+    # on the path made repo-relative from the container's `/src` mount, in
+    # either spelling a scanner writes it.
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="file:///src/tests/tools/test_a.py"),
+               _result("R", path="/src/tests/test_b.py"),
+               _result("R", path="tests/fixtures/leak.py"),
+               _result("R", path="/src/skill/scripts/run_tools.py"),
+               _result("R", path="src/app.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    payload = reports.prepare_reports(
+        raw, tmp_path / "out", exclude_globs=["tests/fixtures/**", "tests/**"])
+    assert _security_paths(tmp_path) == ["/src/skill/scripts/run_tools.py",
+                                         "src/app.py"]
+    assert payload["excluded_from_security"] == {
+        "count": 3, "globs": ["tests/fixtures/**", "tests/**"]}
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "3 result(s) excluded from the Security upload" in summary
+    # The globs are operator text on a Markdown page: `**` is emphasis there,
+    # so they go through the same escape every other cell uses, and the
+    # summary carries each one whole.
+    assert "tests/fixtures/&#42;&#42;, tests/&#42;&#42;" in summary
+    assert "tests/**" not in summary
+
+
+def test_a_negated_glob_wins_last_like_the_gate(tmp_path):
+    # gitignore semantics, last match wins: the operator can carve one file
+    # back in. This is `groups_schema.matched_glob`, not a second matcher.
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_keep.py"),
+               _result("R", path="/src/tests/test_drop.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    reports.prepare_reports(raw, tmp_path / "out",
+                            exclude_globs=["tests/**", "!tests/test_keep.py"])
+    assert _security_paths(tmp_path) == ["/src/tests/test_keep.py"]
+
+
+def test_no_exclude_means_the_upload_is_the_whole_capture(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_b.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    payload = reports.prepare_reports(raw, tmp_path / "out")
+    assert _security_paths(tmp_path) == ["/src/tests/test_b.py"]
+    assert payload["excluded_from_security"] == {"count": 0, "globs": []}
+
+
+def test_the_cli_takes_repeatable_exclude_globs(tmp_path, capsys):
+    rules = [_rule("R", level="warning", properties={})]
+    results = [_result("R", path="/src/tests/test_b.py"),
+               _result("R", path="/src/src/app.py")]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, results, driver="Bandit"))
+    rc = reports.main(["--input-dir", str(raw), "--output-dir",
+                       str(tmp_path / "out"), "--exclude", "tests/**",
+                       "--exclude", "docs/**"])
+    assert rc == 0
+    assert _security_paths(tmp_path) == ["/src/src/app.py"]
+    out = capsys.readouterr().out
+    assert "1 result(s) excluded from the Security upload" in out
+    assert "tests/**, docs/**" in out
+
+
+def test_markdown_escapes_each_character_once():
+    # `#` used to be escaped AFTER the entities that contain it were written,
+    # so `*` became `&&#35;42;` and a path with `_` rendered as `&#95;`
+    # literally on the step summary. One pass, one entity per character.
+    assert reports._markdown_text("a_b*c#d") == "a&#95;b&#42;c&#35;d"
+    assert reports._markdown_text("x & y") == "x &amp; y"
+    for character in "\\`|*_[]()#!":
+        assert reports._markdown_text("q%sq" % character) == "q&#%d;q" % ord(character)
+
+
+def test_code_cells_carry_a_rule_id_and_a_path_literally(tmp_path):
+    # Rule and Location are code spans: an entity does not decode inside one,
+    # so `run_tools.py` must not become `run&#95;tools.py`. Only the two
+    # characters that can end the span or the table cell are neutralised.
+    assert reports._code_cell("run_tools.py:7") == "`run_tools.py:7`"
+    assert reports._code_cell("a|b`c") == "`a\\|b'c`"
+    assert reports._code_cell("") == ""
+    # A newline in a rule id or a uri would end the table row.
+    assert reports._code_cell("a\n b\t") == "`a b`"
+    rules = [_rule(ANTHROPIC, properties={"precision": "very-high",
+                                          "tags": ["LOW CONFIDENCE"]})]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, [_result(ANTHROPIC, path="src/run_tools.py")]))
+    reports.prepare_reports(raw, tmp_path / "out")
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "| `%s` | `src/run_tools.py:7` |" % ANTHROPIC in summary
+    assert "&#95;" not in summary
+
+
+def test_a_result_is_excluded_only_when_every_location_is(tmp_path):
+    # Fail-closed reading: a multi-location result with one location still in
+    # scope stays in the upload; a result with no location, or a location
+    # outside the scan-root mount, is never a glob's to drop.
+    rules = [_rule("R", level="warning", properties={})]
+    both_out = _result("R", path="/src/tests/a.py")
+    both_out["locations"].append({"physicalLocation": {
+        "artifactLocation": {"uri": "/src/tests/b.py"}, "region": {"startLine": 1}}})
+    one_in = _result("R", path="/src/tests/c.py")
+    one_in["locations"].append({"physicalLocation": {
+        "artifactLocation": {"uri": "/src/skill/scripts/x.py"}, "region": {"startLine": 1}}})
+    no_location = _result("R", path="unused")
+    del no_location["locations"]
+    outside = _result("R", path="/opt/elsewhere/tests/d.py")
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif",
+           _sarif(rules, [both_out, one_in, no_location, outside], driver="Bandit"))
+    payload = reports.prepare_reports(raw, tmp_path / "out", exclude_globs=["tests/**"])
+    security = json.loads((tmp_path / "out" / "security" / "scan.sarif")
+                          .read_text(encoding="utf-8"))
+    kept = security["runs"][0]["results"]
+    assert len(kept) == 3
+    assert [r.get("locations", [{}])[0].get("physicalLocation", {})
+             .get("artifactLocation", {}).get("uri") for r in kept] == [
+        "/src/tests/c.py", None, "/opt/elsewhere/tests/d.py"]
+    assert payload["excluded_from_security"]["count"] == 1
+
+
+def test_the_excluded_count_accumulates_over_captures(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    raw = tmp_path / "raw"
+    _write(raw, "a.sarif", _sarif(rules, [_result("R", path="/src/tests/a.py")],
+                                  driver="Bandit"))
+    _write(raw, "b.sarif", _sarif(rules, [_result("R", path="/src/tests/b.py"),
+                                          _result("R", path="/src/src/app.py")],
+                                  driver="Semgrep OSS"))
+    payload = reports.prepare_reports(raw, tmp_path / "out", exclude_globs=["tests/**"])
+    assert payload["excluded_from_security"]["count"] == 2
+
+
+def test_no_note_is_written_without_globs(tmp_path):
+    rules = [_rule("R", level="warning", properties={})]
+    raw = tmp_path / "raw"
+    _write(raw, "scan.sarif", _sarif(rules, [_result("R", path="/src/tests/a.py")],
+                                     driver="Bandit"))
+    reports.prepare_reports(raw, tmp_path / "out")
+    summary = (tmp_path / "out" / "inventory" / "ai-inventory.md").read_text(
+        encoding="utf-8")
+    assert "excluded from the Security upload" not in summary
+
+
+def test_the_scan_root_mount_is_the_one_run_tools_uses():
+    # The prefix stripped before matching is the container path run_tools
+    # mounts the target at; a drift here would silently match nothing.
+    import scripts.run_tools as rt
+    assert reports.SCAN_ROOT_MOUNT == rt.TARGET_MOUNT

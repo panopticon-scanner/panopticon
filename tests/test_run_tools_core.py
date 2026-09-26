@@ -333,8 +333,14 @@ class TestRunTools(unittest.TestCase):
                                  "%s/%s" % (rt.BANDIT_INI_MOUNT, rt.BANDIT_INI_NAME))
                 self.assertNotIn("/src/.bandit", calls[0])
                 self.assertIn("-v", calls[0])
-                self.assertIn("%s:ro" % rt.BANDIT_INI_MOUNT,
-                              " ".join(calls[0]))    # mounted read-only
+                # The FILE is mounted, read-only, at the path the argv names;
+                # the scratch directory around it is never mounted at all.
+                mounts = [a for a in calls[0]
+                          if a.endswith(":%s/%s:ro" % (rt.BANDIT_INI_MOUNT,
+                                                       rt.BANDIT_INI_NAME))]
+                self.assertEqual(1, len(mounts), calls[0])
+                self.assertNotIn(":%s:ro" % rt.BANDIT_INI_MOUNT,
+                                 " ".join(calls[0]))
 
     def test_run_tools_continues_after_one_tool_fails(self):
         def runner(cmd, **kw):
