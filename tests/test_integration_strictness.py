@@ -22,7 +22,6 @@ from unittest import mock
 
 import yaml
 import shell_reader
-from workflow_forms import regions
 
 from conftest import REPO_ROOT
 import _test_helpers as helpers
@@ -326,45 +325,53 @@ def test_two(): pass
         self.assertIn("test_broken.py", sites[0])
 
 
+def _standalone_argv(script):
+    """Credit one foreground command only, with its environment prefixes intact.
+    No shell evaluation: other execution contexts need a deliberate guard update.
+    """
+    statements = shell_reader.statements(script)
+    if len(statements) != 1 or len(statements[0].stages) != 1:
+        return []
+    statement = statements[0]
+    stage = statement.stages[0]
+    if (statement.separator in ("&&", "||", "&")
+            or stage.group_open or stage.group_close
+            or stage.writes or stage.reads or stage.heredoc or stage.substitutions):
+        return []
+    return list(stage.argv)
+
+
 def _strict_pytest_containers(script):
-    """Read the currently supported docker/sh invocation, without expansion.
+    """Read the current standalone docker/sh invocation, without expansion.
+    Raw argv preserves assignments/wrappers that could change pytest's env.
     Unknown Docker options or extra shell commands cannot prove this contract.
     """
-    found = []
-    statements = shell_reader.statements(script)
-    conditional_regions = regions(statements)
-    for index, statement in enumerate(statements):
-        if index in conditional_regions:
+    argv = _standalone_argv(script)
+    if argv[:2] != ["docker", "run"]:
+        return []
+    options, i = {}, 2
+    while i < len(argv) and argv[i].startswith("-"):
+        flag = argv[i]
+        if flag == "--rm":
+            i += 1
             continue
-        for stage in statement.stages:
-            argv = shell_reader.command(stage.argv)
-            if shell_reader.conditional(stage.argv) or argv[:2] != ["docker", "run"]:
-                continue
-            options, i = {}, 2
-            while i < len(argv) and argv[i].startswith("-"):
-                flag = argv[i]
-                if flag == "--rm":
-                    i += 1
-                    continue
-                if flag not in ("-v", "-w", "-e", "--entrypoint") or i + 1 == len(argv):
-                    break
-                options.setdefault(flag, []).append(argv[i + 1])
-                i += 2
-            if argv[i:i + 2] != ["panopticon-fixtures:latest", "-c"] or len(argv[i:]) != 3:
-                continue
-            commands = [shell_reader.command(part.argv)
-                        for line in shell_reader.statements(argv[i + 2]) for part in line.stages]
-            if commands != [["python3", "-m", "pytest", "tests/tools/", "-q", "-rs",
-                             "-p", "no:cacheprovider"]]:
-                continue
-            if (options.get("--entrypoint") == ["sh"]
-                    and options.get("-v") == ["$PWD:/work:ro"]
-                    and options.get("-w") == ["/work"]
-                    and set(options.get("-e", [])) == {
-                        "FIXTURE_ROOT=/opt/panopticon-fixtures",
-                        "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1"}):
-                found.append(argv)
-    return found
+        if flag not in ("-v", "-w", "-e", "--entrypoint") or i + 1 == len(argv):
+            break
+        options.setdefault(flag, []).append(argv[i + 1])
+        i += 2
+    if argv[i:i + 2] != ["panopticon-fixtures:latest", "-c"] or len(argv[i:]) != 3:
+        return []
+    if _standalone_argv(argv[i + 2]) != [
+            "python3", "-m", "pytest", "tests/tools/", "-q", "-rs", "-p", "no:cacheprovider"]:
+        return []
+    if (options.get("--entrypoint") == ["sh"]
+            and options.get("-v") == ["$PWD:/work:ro"]
+            and options.get("-w") == ["/work"]
+            and set(options.get("-e", [])) == {
+                "FIXTURE_ROOT=/opt/panopticon-fixtures",
+                "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1"}):
+        return [argv]
+    return []
 
 
 def _pull_fails_closed(script):
@@ -398,12 +405,16 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
         runs = [argv for script in self.scripts for argv in _strict_pytest_containers(script)]
         self.assertEqual(len(runs), 1)
 
-    def test_comments_echoes_wrong_image_command_and_deselection_cannot_satisfy_guard(self):
-        script = ('docker run --rm -v "$PWD:/work:ro" -w /work '
+    @staticmethod
+    def _pytest_script():
+        return ('docker run --rm -v "$PWD:/work:ro" -w /work '
                   '-e FIXTURE_ROOT=/opt/panopticon-fixtures '
                   '-e PANOPTICON_REQUIRE_INTEGRATION=1 -e PYTHONDONTWRITEBYTECODE=1 '
                   '--entrypoint sh panopticon-fixtures:latest '
                   '-c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"')
+
+    def test_comments_echoes_wrong_image_command_and_deselection_cannot_satisfy_guard(self):
+        script = self._pytest_script()
         self.assertEqual(len(_strict_pytest_containers(script)), 1)
         for bad in ('# ' + script, "echo '" + script + "'",
                     'if false; then ' + script + '; fi',
@@ -416,6 +427,26 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
                     script.replace(" -q -rs", " -m integration -q -rs"),
                     script.replace("PANOPTICON_REQUIRE_INTEGRATION=1", "PANOPTICON_REQUIRE_INTEGRATION=0")
                     + '\n# PANOPTICON_REQUIRE_INTEGRATION=1'):
+            with self.subTest(script=bad):
+                self.assertEqual(_strict_pytest_containers(bad), [])
+
+    def test_inner_environment_changes_cannot_disable_strict_integration(self):
+        script = self._pytest_script()
+        self.assertEqual(len(_strict_pytest_containers(script)), 1)
+        for prefix in ("PANOPTICON_REQUIRE_INTEGRATION=0 ", "env -i ",
+                       "FIXTURE_ROOT=/missing ", "env PANOPTICON_REQUIRE_INTEGRATION=0 "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(_strict_pytest_containers(
+                    script.replace("python3 -m pytest", prefix + "python3 -m pytest")), [])
+
+    def test_only_a_standalone_foreground_container_can_prove_execution(self):
+        script = self._pytest_script()
+        self.assertEqual(len(_strict_pytest_containers(script)), 1)
+        for bad in ("true || " + script, "false && " + script,
+                    "exit 0; " + script, script + " &", script + " | cat",
+                    "( " + script + " )", "if false; then " + script + "; fi",
+                    script.replace("python3 -m pytest", "true || python3 -m pytest"),
+                    script.replace("no:cacheprovider", "no:cacheprovider &")):
             with self.subTest(script=bad):
                 self.assertEqual(_strict_pytest_containers(bad), [])
 
