@@ -822,6 +822,8 @@ def test_code_cells_carry_a_rule_id_and_a_path_literally(tmp_path):
     assert reports._code_cell("run_tools.py:7") == "`run_tools.py:7`"
     assert reports._code_cell("a|b`c") == "`a\\|b'c`"
     assert reports._code_cell("") == ""
+    # A newline in a rule id or a uri would end the table row.
+    assert reports._code_cell("a\n b\t") == "`a b`"
     rules = [_rule(ANTHROPIC, properties={"precision": "very-high",
                                           "tags": ["LOW CONFIDENCE"]})]
     raw = tmp_path / "raw"
