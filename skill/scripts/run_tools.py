@@ -397,9 +397,10 @@ SECURITY_MODES = ("standard", REDTEAM)
 # from an absence.
 _NOT_A_VENV_NOTE = ("scanned: a %s with no interpreter or site-packages under "
                     "it is not an installed environment" % VENV_MARKER)
-_UNEXPRESSIBLE_NOTE = ("scanned: the directory name holds a glob "
-                       "metacharacter, so no exclusion pattern can name this "
-                       "directory without taking the rest of the tree too")
+_UNEXPRESSIBLE_NOTE = ("scanned: the directory name cannot be handed to an "
+                       "exclusion knob without changing its meaning (only "
+                       "[A-Za-z0-9._-] path components can), so it is scanned "
+                       "rather than expressed as a pattern")
 
 
 def partition_venv_dirs(venv_dirs, security_mode="standard"):
@@ -429,8 +430,9 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
 
     TWO kinds are never skipped, in either mode (#1839):
       - a marker with no environment under it, which is ordinary source;
-      - a directory whose name holds a glob metacharacter, which no exclusion
-        PATTERN can name without taking the rest of the tree with it.
+      - a directory whose name cannot be expressed as an exclusion (a path
+        component outside `[A-Za-z0-9._-]`: a glob metacharacter, a brace, a
+        comma, whitespace, a control byte, non-ASCII, or a leading `-`).
     Both are disclosed: the row says `skipped: False` and carries a `note`
     saying why, because a directory nobody can express as an exclusion must be
     scanned AND visible, not dropped from the list.
@@ -570,6 +572,11 @@ def _scanner_owned_bandit_ini(tool, cmd):
     Same shape as `tools/brakeman.py` and `tools/bundler_audit.py`, which
     answer the same problem with a config they generate themselves.
 
+    The file exists to pre-empt bandit's `.bandit` discovery by the `--ini`
+    FLAG (bandit 1.9.4 reads `pyproject.toml`/`setup.cfg` only via `-c`, which
+    nothing sets) and to keep bandit's stderr free of a config warning that
+    `phases/tools.py` would otherwise surface -- so the mount stays even though
+    its contents are pure belt.
     The contents are `BANDIT_INI_TEXT`, a module constant, so no directory name
     can reach them (review round 1 C1).
 

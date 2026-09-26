@@ -666,8 +666,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   exclusion merge mitigates (#1839, run-14 SEC-752508850: a committed `tests = B999` reduced the
   merge gate's Python SAST to one check). That is the first increment of the
   target-controlled-configuration class tracked under #1924 (the scan-root half; #1877 closed the
-  cwd half). **A directory whose name holds a glob metacharacter is never passed to an exclusion
-  knob** in either mode: `--exclude`/`--skip-dirs` take PATTERNS, so a directory named `*` was
+  cwd half). **A directory whose name cannot be expressed as an exclusion (a path component outside
+  `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
+  take PATTERNS, so a directory named `*` was
   `--exclude=*` and one `mkdir` emptied semgrep's and trivy's scope. It is scanned instead, and its
   manifest row carries `skipped: false` and a `note` saying why — as does a `pyvenv.cfg` with no
   environment under it. In `standard` mode the virtualenv skip that DOES stand is no longer silent

@@ -25,9 +25,10 @@ evidence exposed.
   and re-admitted to a `--security redteam` gate when the finding is CRITICAL or secret-class,
   exactly as #1740 does for a directory NAME. An operator's own `--exclude` glob outranks it. A
   directory literally named `*` became `--exclude=*` / `--skip-dirs=*` -- both flags take GLOB
-  PATTERNS, so one `mkdir` took the whole tree out of two scanners; a path holding `*`, `?`, `[` or
-  `]` is never passed to an exclusion knob, and its manifest row says `skipped: false` with a `note`
-  saying why. Under `--security redteam` NO virtualenv now reaches an exclusion knob (#1740 ruled
+  PATTERNS, so one `mkdir` took the whole tree out of two scanners; a path with any component
+  outside `[A-Za-z0-9._-]` is never passed to an exclusion knob, and its manifest row says
+  `skipped: false` with a `note` saying why. Under `--security redteam` NO virtualenv now reaches an
+  exclusion knob (#1740 ruled
   that for a directory NAME; a file the same target wrote is more attacker-controlled than a name),
   and under `standard` the #1638 P09 walk saving stands but stops being silent: the skipped
   directories are counted as DIRECTORIES under `virtualenv-by-marker` AND `virtualenv-by-name` in

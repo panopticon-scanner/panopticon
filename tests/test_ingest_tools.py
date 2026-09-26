@@ -1522,6 +1522,16 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         self.assertNotIn("caf\u00e9", shown)                  # non-ASCII escaped too
         self.assertIn("'ok'", shown)
 
+    def test_an_escaped_name_is_bounded_after_escaping_not_before(self):
+        # `ascii()` can quadruple a name (`\u00e9` is six bytes for one char), so
+        # a cut applied BEFORE escaping still let ten 120-char non-ASCII names
+        # make a 4,890-character verdict line. The bound applies to what is shown.
+        names = ["caf\u00e9" * 30 for _ in range(it.SCAN_SKIP_NAMES_SHOWN)]
+        shown = it.display_scan_skips(names)
+        self.assertLessEqual(
+            len(shown), it.SCAN_SKIP_NAMES_SHOWN * (it.SCAN_SKIP_NAME_MAX + 4))
+        self.assertIn("\u2026", shown)                        # a MARKED cut
+
     def test_the_name_list_is_capped_with_the_count_kept_honest(self):
         names = ["pkg%02d/.venv" % i for i in range(40)]
         shown = it.display_scan_skips(names)

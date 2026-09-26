@@ -1017,6 +1017,14 @@ def _cut_scan_skip_name(path):
     return path[:SCAN_SKIP_NAME_MAX - 1] + "\u2026"
 
 
+def _bounded(shown):
+    """Cut an ESCAPED name to `SCAN_SKIP_NAME_MAX`, marked: `ascii()` can
+    quadruple a name, so the bound must apply to what is displayed."""
+    if len(shown) <= SCAN_SKIP_NAME_MAX:
+        return shown
+    return shown[:SCAN_SKIP_NAME_MAX - 1] + "\u2026"
+
+
 def display_scan_skips(names):
     """A one-line rendering of scan-skipped directory names for an operator.
 
@@ -1028,7 +1036,7 @@ def display_scan_skips(names):
     monorepo with forty virtualenvs cannot turn one verdict line into a page.
     """
     names = list(names)
-    shown = [ascii(name) for name in names[:SCAN_SKIP_NAMES_SHOWN]]
+    shown = [_bounded(ascii(name)) for name in names[:SCAN_SKIP_NAMES_SHOWN]]
     if len(names) > SCAN_SKIP_NAMES_SHOWN:
         shown.append("and %d more (see excluded_dirs)"
                      % (len(names) - SCAN_SKIP_NAMES_SHOWN))
