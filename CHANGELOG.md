@@ -7,6 +7,32 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The clean-tree baseline is written atomically, and an unusable one is classified instead of
+  blamed on the v1 upgrade (#1809, DAT-4027033499).** `tree-baseline.txt` was the one artifact
+  writer in `phases/` that truncated in place, and it sits behind an exists-means-done guard that
+  must NOT re-probe `git status` on resume (re-probing would baseline the reviewer's own writes as
+  clean). A write torn mid-way was therefore PERMANENT: every later resume accepted the partial
+  document, the run failed closed at validate forever, and `--reset` -- throwing a paid run away --
+  was the only exit. Both baseline writes (the snapshot and the probe-failure sentinel) now confine
+  the final name, then stage `<baseline>.tmp` through the same `_open_w_nofollow` and `os.replace`
+  it into place -- `runio._write_json`'s shape AND order, byte content and file mode unchanged --
+  and on failure remove only the staging file this call opened, or a symlink planted at its name,
+  never a file it never opened (with `.panopticon/runs` force-committed as a symlink, that name
+  resolves outside the tree). An interrupted process therefore leaves the last complete baseline or
+  the new one; nothing here fsyncs, so a power loss can still tear the file, which is what the
+  classifier below is for. **Operator-visible:** a present-but-unusable baseline now says which kind
+  it is -- CORRUPT for anything that cannot be a porcelain record (a first byte outside the XY
+  status set, or JSON that parses to something that is not an object); EMPTY for a 0-byte or
+  whitespace-only one (a torn write, or a v1 baseline of a clean tree) -- and both name `--reset`
+  as the remedy and deleting `tree-baseline.txt` as the non-remedy it is (the next capture would
+  re-baseline the reviewer's own writes as clean). All of them used to read "predates content
+  digests (schema v1)": a resume across an upgrade that never happened, with no remedy named -- and
+  0 bytes is the likeliest shape the old writer's torn write left behind. A genuine v1 baseline (raw
+  porcelain, which always opens with an XY status byte) still reads as v1, a deeply nested one fails
+  closed here instead of ending the invocation with a `RecursionError` traceback, and `--reset` now
+  also sweeps a staging file orphaned by a SIGKILL. Staging opens
+  without `O_EXCL` project-wide (#2093) and an `OSError` from this write still reaches the operator
+  as a traceback rather than a status (#2094) -- follow-ups, not fixed here.
 - **A catalog gap with no file location is disclosed, not dropped (#1807, DAT-2501524861).** The X0X
   emitter drops a candidate cluster when no finding in it carries a `location.file`, because the
   schema requires a `file` on every occurrence — and a locus-free finding is the CANONICAL shape for
