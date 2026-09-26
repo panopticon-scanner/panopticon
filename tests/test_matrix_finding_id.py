@@ -1,3 +1,4 @@
+import contextlib
 import json
 import re
 import tempfile
@@ -113,7 +114,25 @@ class TestMatrixFindingId(unittest.TestCase):
 
     def test_matrix_report_has_no_id_schema_error(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "findings-app-COD.json"
+            root = Path(d)
+            caller_root = root / "caller"
+            caller_artifacts = caller_root / ".panopticon"
+            caller_artifacts.mkdir(parents=True)
+            unrelated_groups = caller_artifacts / "groups.json"
+            unrelated_plan = caller_artifacts / "dispatch-plan-stale.json"
+            unrelated_groups.write_text(json.dumps({
+                "mode": "repo",
+                "groups": [{"name": "unrelated", "files": ["elsewhere.py"]}],
+            }))
+            unrelated_plan.write_text('{"unrelated": true}')
+            original_groups = unrelated_groups.read_bytes()
+            original_plan = unrelated_plan.read_bytes()
+
+            isolated_root = root / "isolated"
+            isolated_root.mkdir()
+            run_dir = isolated_root / "run"
+            run_dir.mkdir()
+            p = isolated_root / "findings-app-COD.json"
             p.write_text(
                 json.dumps(
                     {
@@ -131,11 +150,23 @@ class TestMatrixFindingId(unittest.TestCase):
                     }
                 )
             )
-            out = str(Path(d) / "report.json")
-            synthesize.main(["--out", out, str(p)])
+            out = str(isolated_root / "report.json")
+            expected_id = findings_mod.load_findings([str(p)])[0]["id"]
+            # The caller has unrelated artifacts; synthesis gets a fresh cwd
+            # because --run-dir alone does not disable groups auto-discovery.
+            with contextlib.chdir(caller_root):
+                with contextlib.chdir(isolated_root):
+                    result = synthesize.main(["--run-dir", str(run_dir), "--out", out, str(p)])
             with open(out, encoding="utf-8") as fh:
                 rep = json.load(fh)
-            self.assertTrue(ID_RE.match(rep["findings"][0]["id"]))
+            self.assertEqual(result, 0)
+            self.assertEqual(rep["findings"][0]["id"], expected_id)
+            self.assertTrue(ID_RE.match(expected_id))
+            self.assertEqual(rep["groups"], [])
+            self.assertEqual(rep["meta"]["integrity"]["plans_seen"], 0)
+            self.assertEqual(rep["meta"]["integrity"]["invalid_dispatch_plans"], [])
+            self.assertEqual(unrelated_groups.read_bytes(), original_groups)
+            self.assertEqual(unrelated_plan.read_bytes(), original_plan)
 
 
 if __name__ == "__main__":

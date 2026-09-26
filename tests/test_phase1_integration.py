@@ -1,6 +1,8 @@
 import contextvars
 import json
 import os
+import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,8 +152,7 @@ class TestPhase1Integration(unittest.TestCase):
                 marker = root / (name + ".invoked")
                 # A real child process validates the argv and fixture bytes before
                 # returning planted scanner output. No scanner or network starts.
-                script = """#!/usr/bin/env python3
-import pathlib, sys
+                script = """import pathlib, sys
 args = sys.argv[1:]
 target = pathlib.Path({target!r})
 pathlib.Path({marker!r}).write_text(repr(args))
@@ -173,9 +174,12 @@ sys.exit(1)
                needle=needle, manifest=manifest, marker=str(marker), report=report)
                 executable = bin_dir / {"pip-audit": "pip-audit", "npm-audit": "npm",
                                         "eslint-security": "eslint"}[name]
-                executable.write_text(script)
+                program = root / (name + ".py")
+                program.write_text(script)
+                executable.write_text('#!/bin/sh\nexec %s %s "$@"\n' %
+                                      (shlex.quote(sys.executable), shlex.quote(str(program))))
                 executable.chmod(0o755)
-            with mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+            with mock.patch.dict(os.environ, {"PATH": str(bin_dir),
                                                "TMPDIR": d}), mock.patch.object(tempfile, "tempdir", d):
                 for name, target, _, _, _, citation in cases:
                     def exercise_adapter():
