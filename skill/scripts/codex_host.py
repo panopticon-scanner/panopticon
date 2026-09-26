@@ -108,7 +108,7 @@ def _shell(entry, registration_dir):
         # through the branch below. This stays for the one path that remains
         # shell-less: an UNENFORCED setup dispatch, which the driver only
         # builds when the posture says the shell is not registered or the host
-        # cannot enforce, and which `requests.require_unenforced_scan_ack`
+        # cannot enforce, and which `setup_ack.require_unenforced_scan_ack`
         # refuses unless the operator accepted it explicitly. The running
         # `safety_config()` is still the confined read-only policy.
         if entry.get("id") != "setup-scan":

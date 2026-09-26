@@ -560,7 +560,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     more, which is why both setup entrypoints could afford to differ about
     whether they ran this step at all; now `loop_batch.expected_enforced(...,
     namespace="setup")` reads it to decide whether the setup-scan dispatch
-    gets its registered shell, and `phases/setup.require_unenforced_scan_ack`
+    gets its registered shell, and `phases/setup_ack.require_unenforced_scan_ack`
     reads it to decide whether the shell-less fallback needs the operator's
     acknowledgement. So EVERY caller of `run_setup_flow` passes this step --
     `driver setup` as much as `driver loop --setup`. A caller that skipped it

@@ -55,6 +55,14 @@
 #     host launch seam has `Orchestration:Runners`. Split report rendering
 #     and issue export into `Reporting:Outputs` to leave room in `Core`;
 #     move verdict-bundle-schema.json beside its sibling contracts there.
+#   - 2026-09-26 (#1841): `phases/setup_ack.py` is claimed by
+#     `Orchestration:Core`, not `Phases`. `phases/setup.py` had to give lines
+#     back under the 700-line ceiling and the unenforced-setup-scan
+#     acknowledgement came out as its own module, which put `Phases` one file
+#     OVER the 48 cap. It is parked beside `phases/verify_tools.py` and
+#     `phases/readiness_checks.py`, which sit here for the same reason, and
+#     beside the dispatch machinery (`dispatch.py`, `loop_batch.py`,
+#     `skill/agents/**`) whose registered shells are the thing it gates on.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -129,6 +137,7 @@ groups:
       - '!skill/scripts/phases/verify_tools.py'
       - '!skill/scripts/phases/readiness_checks.py'
       - '!skill/scripts/phases/hard_links.py'
+      - '!skill/scripts/phases/setup_ack.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       tests:
@@ -157,6 +166,7 @@ groups:
       - skill/scripts/procgroup.py
       - skill/scripts/phases/verify_tools.py
       - skill/scripts/phases/readiness_checks.py
+      - skill/scripts/phases/setup_ack.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
