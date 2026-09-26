@@ -348,3 +348,36 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBothWorkflowsScanInRedteam(unittest.TestCase):
+    """Owner ruling 2026-09-26 (relayed by Claude): this repository's own CI
+    scans in `redteam` on both routes. `standard` is an operator scanning
+    their own repository -- a target's `.bandit`, `# nosec`, `# nosemgrep`
+    and `gitleaks:allow` are honoured -- and on the fork route the target is
+    a fork-authored tree, so the required `fork-scan` check would let the PR
+    choose what bandit skips. The same-repo route follows because
+    `security_gate.load_baseline` diffs the head against a baseline captured
+    in the SAME mode: a standard baseline under a redteam head would report
+    every honoured suppression as new. So the mode is pinned as one attached
+    pair on every scanner run, every gate call and the backstop snapshot, in
+    both files."""
+
+    GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
+    STEPS = {
+        BASE: ("scan", ("Run static-analysis tools", GATE, "Strict full-tree gate",
+                        "Publish strict security snapshot and summary")),
+        FORK: ("fork-scan", ("Run static-analysis tools", GATE)),
+    }
+
+    def test_every_scanner_run_gate_and_snapshot_names_redteam(self):
+        for path, (job_name, names) in self.STEPS.items():
+            job = _load(path)["jobs"][job_name]
+            for name in names:
+                with self.subTest(workflow=os.path.basename(path), step=name):
+                    step = _step(job, name)
+                    self.assertIsNotNone(step, name)
+                    tokens = _script(step).split()
+                    self.assertEqual(tokens.count("--security"), 1, tokens)
+                    self.assertEqual(tokens[tokens.index("--security") + 1],
+                                     "redteam")

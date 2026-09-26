@@ -416,6 +416,12 @@ jobs:
           fi
 
 
+      # `--security redteam`, as in `security.yml` (owner ruling 2026-09-26,
+      # #1839): this job scans a FORK-authored tree, so nothing the tree
+      # carries -- a root `.bandit`, `# nosec`, `# nosemgrep`,
+      # `gitleaks:allow` -- may narrow what the required check sees. The
+      # base commit's baseline was captured in the same mode by
+      # `security.yml`, which `security_gate.load_baseline` requires.
       - name: Run static-analysis tools
         run: |
           # Byte-identical to security.yml's invocation EXCEPT for `--deps`,
@@ -438,6 +444,7 @@ jobs:
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam \
             --progress
 
       # Same unverified-strict policy as security.yml's gate (#513), and the
@@ -468,6 +475,7 @@ jobs:
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam \
             ${baseline[@]+"${baseline[@]}"}
 
       # NO `Upload SARIF` step, deliberately: this job holds no

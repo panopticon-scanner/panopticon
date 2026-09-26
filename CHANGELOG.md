@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **This repository's own CI scans in `redteam` on both routes** (owner ruling 2026-09-26,
+  #1839). `standard` is an operator scanning their own repository: a target's `.bandit`,
+  `# nosec`, `# nosemgrep` and `gitleaks:allow` are honoured. The fork-PR route
+  (`security-fork.yml`, the required `fork-scan` check) scans a fork-authored tree, so under
+  `standard` the PR could choose what bandit skips; and `security_gate.load_baseline` diffs a
+  head against a baseline captured in the SAME mode, so the same-repo route (`security.yml`)
+  moves with it. `--security redteam` is now on every scanner run, every gate call and the
+  scheduled backstop snapshot (`security-backstop.py report --security`, new, so the snapshot
+  counts the population the gate on the same step counts). Pinned per step in
+  `tests/test_security_fork_workflow.py`; measured on main through the tools image before
+  the switch.
 - **The code-scanning upload now carries the gate's scope, and the bandit ini is a file mount.**
   #2117 stopped bandit honouring the reviewed repository's `.bandit`, which on this repository had
   kept it out of `tests/`; the next security run filed 476 test-suite idioms as open alerts and
