@@ -7,6 +7,30 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A heredoc handed to an interpreter is read as the script it is, or reported as unread (#1839,
+  run-14 SEC-3915165799).** `scripts/workflow_guard.py` is CI's only enforcement of the #1529
+  fetch-and-exec rule -- `tests/test_workflow_pins.py` runs it over every `run:` step in
+  `.github/workflows/*.yml` -- and its standing requirement is to fail CLOSED: a shell form it
+  cannot read is REPORTED, never accepted, and the accepted silent gaps are the list its docstring
+  keeps. A script on an interpreter's STANDARD INPUT was in neither (`bash -s <<'EOF' … curl … | sh
+  … EOF`, `sh <<'EOF'`, `python3 - <<'EOF'`): the reader filed the body under `Stage.heredoc`, and
+  nothing above it asked whose script that body was, so a `curl … | sh` written inside one passed
+  the gate clean. The split is the one the parse already knew, with no expansion model added. A
+  QUOTED body reaches the interpreter as the text it was written as, so it is now READ -- in place
+  and in order, exactly as an `eval '<script>'` string has been since #1697, which is what makes a
+  step hardened inside its own heredoc come out hardened rather than unread. An EXPANDING body
+  (`<<EOF`) is REPORTED unread instead of read, because its `$(...)` were lifted into the enclosing
+  parse's table before that text was reached; so is a body handed to a language this guard has no
+  grammar for (`python3 -`), which is the answer a `shell: python` step already gets. A heredoc that
+  is a program's INPUT rather than its program is untouched (`bash x.sh <<'EOF'`, `sh -c '…'`, a
+  `sha256sum -c` sums list), and so is the `<<<` here-string that is the only heredoc-ish
+  construct the fleet writes. The two facts this needed were already parsed and are now carried:
+  `shell_reader`'s `Stage.stdin_heredoc` (which body descriptor 0 finally reads and whether it
+  expanded, copied in the same lexical redirect order as the output sinks) and
+  `workflow_forms.stdin_program` (whether a command's program is its standard input at all, or a
+  file, a `-c` string or a `-m` module). No step in the fleet writes the form today, so no check
+  changes verdict: what changes is that the next one that does is read or reported, not waved
+  through.
 - **The rest of the configuration a scanned repository used to choose for the scanners (#1839,
   run-14 SEC-284952751 + SEC-1202454595).** #1924's scan-root class, split in two, because the two
   kinds of in-tree suppression are not the same claim. An ignore FILE the reviewed repository

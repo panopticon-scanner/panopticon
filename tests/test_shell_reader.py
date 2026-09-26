@@ -376,6 +376,46 @@ class TestPipelineStdinProvenance(unittest.TestCase):
             "sh 3<&0 0<&3 <<EOF\necho safe\nEOF").stdin_from_pipe)
 
 
+class TestHeredocOnStandardInput(unittest.TestCase):
+    """#1839 (SEC-3915165799): the heredoc a command's STDIN finally is.
+
+    `Stage.heredoc` carries the body for the one caller that asks only what
+    text was written down (a `sha256sum -c` sums list). Whether that body is
+    what the command READS, and whether it EXPANDS, is a different question and
+    the one that separates a SCRIPT handed to `bash -s` from data handed to a
+    program on another descriptor -- so it is answered here, in the same
+    lexical redirect order the output sinks are copied in.
+    """
+
+    def test_a_quoted_body_on_stdin_does_not_expand(self):
+        self.assertEqual(("echo safe", False),
+                         stage("bash -s <<'EOF'\necho safe\nEOF").stdin_heredoc)
+
+    def test_an_expanding_body_on_stdin_says_so(self):
+        self.assertEqual(("echo safe", True),
+                         stage("bash -s <<EOF\necho safe\nEOF").stdin_heredoc)
+
+    def test_a_body_on_another_descriptor_is_not_stdin(self):
+        parsed = stage("sh 3<<EOF\necho safe\nEOF")
+        self.assertEqual("echo safe", parsed.heredoc)
+        self.assertIsNone(parsed.stdin_heredoc)
+
+    def test_a_later_redirect_of_the_descriptor_replaces_the_body(self):
+        self.assertIsNone(stage(
+            "sh 3<&0 <<EOF 0<&3\necho safe\nEOF").stdin_heredoc)
+        self.assertIsNone(stage("sh <<EOF 0<local\necho safe\nEOF").stdin_heredoc)
+        self.assertEqual(("echo safe", True),
+                         stage("sh 0<local <<EOF\necho safe\nEOF").stdin_heredoc)
+
+    def test_a_descriptor_copy_carries_the_body_to_stdin(self):
+        self.assertEqual(("echo safe", True),
+                         stage("sh 3<<EOF 0<&3\necho safe\nEOF").stdin_heredoc)
+
+    def test_a_command_with_no_heredoc_reads_none(self):
+        self.assertIsNone(stage("bash -s < script.sh").stdin_heredoc)
+        self.assertIsNone(stage("bash -s").stdin_heredoc)
+
+
 class TestPipelineStdoutProvenance(unittest.TestCase):
     def test_stdout_aliases_and_redirect_order(self):
         self.assertTrue(stage("cat >/dev/stdout").stdout_to_pipe)

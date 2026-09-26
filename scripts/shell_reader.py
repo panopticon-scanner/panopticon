@@ -53,10 +53,17 @@ import signal
 # `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
 # Parse-local subshell markers leave argv alone; counts retain their boundaries
 # for the checksum handler without exposing marker tokens as commands.
+# `heredoc` is the body a caller may quote back (a `sha256sum -c` sums list);
+# `stdin_heredoc` is the body descriptor 0 FINALLY reads, with the flag that
+# says whether it expanded -- `(body, expands)` or None. The two are different
+# questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
+# hands stdin somewhere else afterwards, and only the second question can say
+# whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
-             "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds",
-    defaults=(0, 0, True, True, ("0",)))
+             "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
+             "stdin_heredoc",
+    defaults=(0, 0, True, True, ("0",), None))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -489,6 +496,10 @@ def _stage(text, context):
     # fd 0 initially receives the preceding pipeline stage. Like output
     # sinks, input origins are copied in lexical redirect order.
     pipe_inputs = {"0": True}
+    # Which heredoc each descriptor reads, in that same order: a heredoc is an
+    # input FILE opened on one descriptor, so a later open, copy or close of
+    # that descriptor replaces it exactly as it replaces a pipe.
+    bodies: dict[str, tuple[str, bool]] = {}
     # fd 1 initially feeds the next pipeline stage. Opening its aliases copies
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
@@ -497,6 +508,13 @@ def _stage(text, context):
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
                              if kind == "subst")
+
+    def reads_body(number, body):
+        """Descriptor `number` now reads this heredoc body, or none at all."""
+        if body is None:
+            bodies.pop(number, None)
+        else:
+            bodies[number] = body
 
     for raw in tokens:
         word = context.token(context.restore_arithmetic(raw))
@@ -521,11 +539,13 @@ def _stage(text, context):
                     sinks[number] = None if word == "-" else sinks.get(source)
                     pipe_inputs[number] = word != "-" and pipe_inputs.get(source, False)
                     pipe_outputs[number] = word != "-" and pipe_outputs.get(source, False)
+                    reads_body(number, None if word == "-" else bodies.get(source))
                     continue
                 if fd or op == "<&":
                     sinks[number] = None       # invalid/unresolved fd operand
                     pipe_inputs[number] = False
                     pipe_outputs[number] = False
+                    reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
             if op == "<":
@@ -534,22 +554,27 @@ def _stage(text, context):
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
                 pipe_outputs[number] = False
+                reads_body(number, bodies.get(source) if source and source != "?"
+                           else None)
             else:
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False
                 pipe_outputs[number] = (pipe_outputs.get("1", False)
                                         if word in _STDOUT_ALIASES else False)
+                reads_body(number, None)
                 if op.startswith("&"):
                     sinks["2"] = sinks[number]
                     pipe_inputs["2"] = False
                     pipe_outputs["2"] = pipe_outputs[number]
+                    reads_body("2", None)
             continue
         if entry and entry[0] == "heredoc":
             heredoc, expands, fd = entry[1]
             number = fd.lstrip("0") or "0"
             pipe_inputs[number] = False
             pipe_outputs[number] = False
+            reads_body(number, (heredoc, expands))
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
@@ -559,7 +584,8 @@ def _stage(text, context):
     return Stage(argv, writes, reads, heredoc, substitutions,
                  [stdout] if stdout is not None else [], group_open, group_close,
                  pipe_inputs["0"], pipe_outputs["1"],
-                 tuple(fd for fd, connected in pipe_inputs.items() if connected))
+                 tuple(fd for fd, connected in pipe_inputs.items() if connected),
+                 bodies.get("0"))
 
 
 def statements(script):
