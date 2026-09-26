@@ -96,8 +96,30 @@ class TestAdvisorRecodeSignals(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
         self.assertEqual(err.getvalue(),
-                         "strain: A: dropping an advisor recode with no file "
-                         "location: DAT-C1B -> QAL-G1A 'pinning policy'\n")
+                         "strain: 'A': dropping an advisor recode with no file "
+                         "location: 'DAT-C1B' -> 'QAL-G1A' 'pinning policy'\n")
+
+    def test_a_hostile_recode_cannot_forge_a_second_diagnostic_line(self):
+        # Review I1: `id`, `code` and `provenance.advisor_code` are all
+        # agent-authored, and this is the module's ONLY terminal output, so it
+        # inherits no posture. One finding must not be able to clear the screen,
+        # ring the bell, or write a line that reads as this tool's own honest
+        # output -- nor fill the terminal with a 200-char code.
+        f = _finding("\x1b[2J\x07ID\nstrain: FAKE: nothing dropped",
+                     "DAT-C1B" + "!" * 200,
+                     advisor="QAL-G1A\nstrain: forged second line",
+                     title="pinning\npolicy" + "x" * 200)
+        f["location"] = {}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        out = err.getvalue()
+        self.assertEqual(len(out.splitlines()), 1)        # one physical line
+        self.assertNotIn("\x1b", out)                     # no raw ESC
+        self.assertNotIn("\x07", out)                     # no raw BEL
+        self.assertIn("\\x1b[2J", out)                    # escaped, inert
+        self.assertIn("'DAT-C1B" + "!" * 32 + "\u2026'", out)   # code bound at 40, cut marked
+        self.assertIn("'pinning policyxxx", out)          # title squeezed
+        self.assertLess(len(out), 400)                    # 120 + 40 + 40 + prose
 
 
 class TestCrossRunSignals(unittest.TestCase):
