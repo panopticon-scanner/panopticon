@@ -15,6 +15,8 @@ import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.group_runner as gr
 import scripts.synth.report as report_mod
+import scripts.synth.tool_axis as tool_axis_mod
+import scripts.synth.verdicts as verdicts_mod
 
 
 class TestFindingsFileIntegrity(unittest.TestCase):
@@ -340,7 +342,10 @@ class IntegritySectionTest(unittest.TestCase):
             "ack_stale", "content_hashes_checked", "content_mismatched_files",
             "content_snapshot_unreadable", "content_snapshot_missing",
             "empty_dispatch_plans", "invalid_dispatch_plans",
-            "invalid_verify_queue", "plans_seen"]
+            "invalid_verify_queue", "plans_seen",
+            # SEC-377944137 (#1832): the guard on `plans_seen`, published
+            # beside it -- always present, like every other key here.
+            "dispatch_plan_missing"]
     # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
     # (which is the only caller that holds the tool axis), not from
     # integrity_section -- so the KEY ORDER pinned here is deliberately
@@ -463,3 +468,128 @@ class IntegritySectionTest(unittest.TestCase):
         self.assertEqual(sec["plans_seen"], 2)
         self.assertEqual(sec["invalid_dispatch_plans"], 3)
         self.assertEqual(sec["invalid_verify_queue"], "cannot read verify queue: x")
+
+
+class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
+    """SEC-377944137 (#1832): #1208's own reasoning, one file up.
+
+    #1208 closed the cheap erasure -- delete `out-file-hashes.json` and a
+    detected findings substitution read as "not measured". Deleting the driver
+    PLAN as well re-opened it, because every check keyed on that plan reads its
+    ABSENCE as owing nothing: `_owes_a_snapshot` returns False (so
+    `content_snapshot_missing` goes quiet), `reconcile_findings_files` returns
+    `([], [])` by design, `duplicate_out_files([])` is `[]`, and
+    `empty_dispatch_plans` counts empty LISTS, of which there are none when
+    there are no plan FILES. `plans_seen` is the one key that notices, and it
+    was not in `integrity_ok`.
+
+    The anchor is the run manifest's recorded `review` dispatch, threaded in as
+    `plan_owed`: no dispatched agent may write that manifest, and
+    `runio._foreign_manifest` discards a git-tracked or foreign-stamped one. A
+    direct `synthesize.py` call over hand-collected findings has no driver to
+    ask, passes nothing, and keeps today's benign reading.
+    """
+
+    CELLS = (("Core", "SEC"), ("Core", "ARC"))
+
+    def setUp(self):
+        self.run_dir = os.path.realpath(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="sec-integ-")))
+        self.paths = []
+        for group, domain in self.CELLS:
+            path = os.path.join(self.run_dir, "findings-%s-%s.json" % (group, domain))
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"_panopticon": {"group": group, "domain": domain},
+                           "findings": [{"id": "%s-1" % domain,
+                                         "title": "a real HIGH", "severity": "HIGH",
+                                         "confidence": "CERTAIN",
+                                         "location": {"file": "x.py", "line_start": 1}}]},
+                          fh)
+            self.paths.append(path)
+        plan = [{"id": "review-%s-%s" % c, "group": c[0], "domain": c[1],
+                 "out_file": os.path.join(self.run_dir, "findings-%s-%s.json" % c)}
+                for c in self.CELLS]
+        with open(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN),
+                  "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        gr.snapshot_out_files(plan, out_path=os.path.join(self.run_dir,
+                                                          "out-file-hashes.json"))
+
+    def _section(self, plan_owed):
+        plans = plan_mod.load_dispatch_plans_detailed(self.run_dir)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            sec = integrity_mod.integrity_section(plans[0], self.paths, self.run_dir,
+                                                  plans[1], plans[2], None,
+                                                  plan_owed=plan_owed)
+        return sec, err.getvalue()
+
+    def _integrity_ok(self, section):
+        """reconcile's OWN `integrity_ok`, never re-spelled here: a test that
+        re-states the expression cannot fail when the expression is the bug."""
+        inp = report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}],
+                                     integrity=dict(section)))
+        resolved = verdicts_mod.resolve_findings(
+            inp.findings, inp.delta, inp.run,
+            gated_suppressed=inp.tools.gated_suppressed)
+        return tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
+                                       run=inp.run).integrity_ok
+
+    def _substitute(self):
+        """Drop the HIGH out of the SEC cell, after the snapshot was taken."""
+        with open(self.paths[0], "w", encoding="utf-8") as fh:
+            json.dump({"_panopticon": {"group": "Core", "domain": "SEC"},
+                       "findings": []}, fh)
+
+    def test_row_1_an_honest_run_certifies(self):
+        sec, _err = self._section(plan_owed=True)
+        self.assertEqual(sec["plans_seen"], 1)
+        self.assertEqual(sec["content_hashes_checked"], 2)
+        self.assertEqual(sec["content_mismatched_files"], [])
+        self.assertFalse(sec["dispatch_plan_missing"])
+        self.assertTrue(self._integrity_ok(sec))
+
+    def test_row_2_a_substitution_with_the_evidence_intact_is_caught(self):
+        self._substitute()
+        sec, _err = self._section(plan_owed=True)
+        self.assertEqual(sec["content_mismatched_files"], [self.paths[0]])
+        self.assertFalse(sec["dispatch_plan_missing"])
+        self.assertFalse(self._integrity_ok(sec))
+
+    def test_row_3_deleting_the_snapshot_does_not_erase_it(self):
+        # #1208, unchanged: the plan still declares cells, so the snapshot is OWED.
+        self._substitute()
+        os.remove(os.path.join(self.run_dir, "out-file-hashes.json"))
+        sec, _err = self._section(plan_owed=True)
+        self.assertTrue(sec["content_snapshot_missing"])
+        self.assertFalse(sec["dispatch_plan_missing"])
+        self.assertFalse(self._integrity_ok(sec))
+
+    def test_row_4_deleting_the_plan_too_does_not_erase_it_either(self):
+        # The finding: one more `rm` and every plan-keyed check went quiet.
+        self._substitute()
+        os.remove(os.path.join(self.run_dir, "out-file-hashes.json"))
+        os.remove(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN))
+        sec, err = self._section(plan_owed=True)
+        self.assertEqual(sec["plans_seen"], 0)
+        self.assertIsNone(sec["content_hashes_checked"])
+        self.assertEqual(sec["content_mismatched_files"], [])
+        self.assertFalse(sec["content_snapshot_missing"])
+        self.assertTrue(sec["dispatch_plan_missing"])
+        self.assertFalse(self._integrity_ok(sec))
+        self.assertIn("deleted evidence", err)
+
+    def test_a_run_with_no_driver_to_ask_keeps_the_benign_reading(self):
+        # Back-compat pin: a direct `synthesize.py` call over hand-collected
+        # findings passes no --plan-owed, and absence stays "not measured" --
+        # the property every other key in this dict has.
+        os.remove(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN))
+        plans = plan_mod.load_dispatch_plans_detailed(self.run_dir)
+        sec = integrity_mod.integrity_section(plans[0], self.paths, self.run_dir,
+                                              plans[1], plans[2], None)
+        self.assertEqual(sec["plans_seen"], 0)
+        self.assertFalse(sec["dispatch_plan_missing"])
+        self.assertTrue(self._integrity_ok(sec))

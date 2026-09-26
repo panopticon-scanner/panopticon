@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Deleting the dispatch plan no longer certifies a substitution the run had already caught
+  (#1832, SEC-377944137).** #1208 made an owed-but-absent `out-file-hashes.json` fail closed,
+  because deleting that baseline had been the cheapest way to erase evidence of a findings
+  substitution. One file up, the same absence still read as "not measured": every check keyed on
+  `dispatch-plan-driver.json` treats a missing plan as owing nothing -- `_owes_a_snapshot` returns
+  False, so #1208's own guard goes quiet; the planned-vs-ingested reconciliation returns
+  `([], [])` by design; `duplicate_out_files` sees nothing; and `empty_dispatch_plans` counts empty
+  LISTS, of which there are none when there are no plan FILES. `plans_seen` was the one key that
+  noticed, and `integrity_ok` did not read it, so one more `rm` after the snapshot turned a
+  DETECTED substitution back into `integrity_ok=True`. The run manifest is the anchor now, because
+  a plan cannot attest to its own existence and the manifest is the better-defended file (#1727):
+  a recorded review-or-later dispatch means a plan was written, the driver threads that in as
+  `--plan-owed`, and `meta.integrity.dispatch_plan_missing` reports that the plan is gone -- it
+  fails the gate closed beside its siblings and prints `this run's driver dispatched review
+  cells, so a dispatch-plan-driver.json is OWED ... Treating as deleted evidence (fail-closed),
+  not an unmeasured run; integrity is NOT certified`. A direct `synthesize.py` call over
+  hand-collected findings has no driver to ask, passes nothing, and keeps the benign reading every
+  other key here has; the obligation is never inferred from the findings files present, which the
+  same writer could arrange.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back

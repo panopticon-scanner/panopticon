@@ -597,6 +597,10 @@
             "plans_seen": {
               "type": "integer"
             },
+            "dispatch_plan_missing": {
+              "type": "boolean",
+              "description": "SEC-377944137/#1832: this run's driver recorded a review-or-later dispatch, so it WROTE a dispatch plan, and no dispatch-plan file is present at synthesis \u2014 deleted evidence. Fails the gate closed. #1208's reading of an owed-but-absent fan-out snapshot, applied to the file that decides whether the snapshot is owed at all: deleting the plan silenced the planned-vs-ingested reconciliation, the out_file-collision check, the snapshot obligation and the fan-out accounting at once, so one more `rm` turned a DETECTED findings substitution back into a clean run. False on a run with no recorded dispatch (a direct synthesize.py call over hand-collected findings, or one that never got past scout), which keeps the benign 'not measured' reading every other key here has."
+            },
             "write_guard_covers_bash": {
               "type": "boolean"
             }

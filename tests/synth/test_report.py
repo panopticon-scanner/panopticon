@@ -3180,6 +3180,10 @@ class TestIntegrity(unittest.TestCase):
         "content_mismatched_files", "content_snapshot_unreadable",
         "content_snapshot_missing", "empty_dispatch_plans",
         "invalid_dispatch_plans", "invalid_verify_queue", "plans_seen",
+        # SEC-377944137 (#1832): published beside `plans_seen`, the key it
+        # guards, and stated on every report for the same reason as the two
+        # reconcile appends below.
+        "dispatch_plan_missing",
         "tools_manifest_invalid",
         # #2013 fix round 1: appended by reconcile beside the key above, and
         # stated on every report for the same reason.

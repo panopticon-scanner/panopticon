@@ -720,6 +720,138 @@ class TestTheSuppressedGitDriversReachTheChild(unittest.TestCase):
                          [{"repo": ".", "key": "filter.lfs.clean"}])
 
 
+class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
+    """SEC-377944137 (#1832): the child cannot tell a deleted driver plan from a
+    run that never had one, so the driver -- which holds the manifest -- says.
+
+    `run_manifest.record_dispatch_request` stamps the `review` dispatch this run
+    wrote, and `requests._write_driver_plan` writes the plan before that
+    dispatch goes out: a recorded review dispatch therefore means a plan existed
+    and must still be there. The manifest is the anchor rather than the plan
+    itself for the reason #1727 gives -- no dispatched agent may write it, and
+    `runio._foreign_manifest` discards a git-tracked or foreign-stamped one --
+    and it is threaded on the argv like `--tools-disabled-mid-run`, because
+    `run-manifest.json` is a _TOP_LEVEL artifact outside the `--run-dir` the
+    child resolves everything else against.
+    """
+
+    def setUp(self):
+        self.root = os.path.realpath(
+            self.enterContext(tempfile.TemporaryDirectory()))
+        os.makedirs(runio._pano(self.root))
+        # No groups => `_driver_plan_entries` declares no cells => this phase
+        # writes NO dispatch-plan-driver.json. That is the on-disk state a
+        # deletion leaves, reached without tampering with the tree.
+        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": []})
+
+    def _manifest(self, **kw):
+        # `fail_on` so the gate is ARMED: with no findings its base verdict is
+        # PASS, which the integrity failure then raises to INCONCLUSIVE. An
+        # unarmed run reports OFF and preserves it, so the gate assertions
+        # below would say nothing.
+        m = {"run_id": "R", "security_mode": "standard",
+             "flags": {"fail_on": "high"}}
+        m.update(kw)
+        return m
+
+    def _cmd(self, manifest):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            synthesize.synthesize_execute(self.root, manifest)
+        return captured["cmd"]
+
+    def _report(self, manifest):
+        """The REAL child, so the flag is proved to reach the artifact."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            synthesize.synthesize_execute(self.root, manifest)
+        self.assertFalse(os.path.exists(
+            runio._pano(self.root, "dispatch-plan-driver.json")))
+        return runio._load_json(runio._pano(self.root, "report.json"))
+
+    def _review_dispatch(self):
+        return {run_manifest.DISPATCH_REQUEST:
+                {"checkpoint": "review", "sha256": "a" * 64,
+                 "at": "2026-09-26T00:00:00Z"}}
+
+    def test_a_recorded_review_dispatch_makes_the_missing_plan_a_deletion(self):
+        report = self._report(self._manifest(**self._review_dispatch()))
+        integrity = report["meta"]["integrity"]
+        self.assertIs(integrity["dispatch_plan_missing"], True)
+        self.assertEqual(integrity["plans_seen"], 0)
+        self.assertIs(report["summary"]["coverage_certified"], False)
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_a_manifest_with_no_recorded_dispatch_owes_no_plan(self):
+        report = self._report(self._manifest())
+        integrity = report["meta"]["integrity"]
+        self.assertIs(integrity["dispatch_plan_missing"], False)
+        self.assertEqual(integrity["plans_seen"], 0)
+        # The same armed gate the case above raises to INCONCLUSIVE stays PASS
+        # here, so that assertion is about this key and not about the fixture.
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_a_scout_only_run_owes_no_plan(self):
+        # The plan is written at the REVIEW checkpoint. A run that got as far as
+        # scout and no further never had one, so its absence is not a deletion.
+        integrity = self._report(self._manifest(
+            **{run_manifest.DISPATCH_REQUEST:
+               {"checkpoint": "scout", "sha256": "b" * 64,
+                "at": "2026-09-26T00:00:00Z"}}))["meta"]["integrity"]
+        self.assertIs(integrity["dispatch_plan_missing"], False)
+
+    def test_the_flag_is_emitted_only_when_the_plan_is_owed(self):
+        self.assertIn("--plan-owed",
+                      self._cmd(self._manifest(**self._review_dispatch())))
+        self.assertNotIn("--plan-owed", self._cmd(self._manifest()))
+
+    def test_the_driver_argv_token_is_a_flag_synthesize_accepts(self):
+        # The #1602 parity rule: `tests/synth/helpers._cli_args` builds a
+        # Namespace directly, so argparse never runs and a renamed option would
+        # stay green here while the real child exits 2.
+        cmd = self._cmd(self._manifest(**self._review_dispatch()))
+        flags = [a for a in cmd if a.startswith("--plan-owed")]
+        self.assertEqual(len(flags), 1, cmd)
+        self.assertIs(syn.build_parser().parse_args(flags).plan_owed, True)
+
+    def test_a_verify_dispatch_still_owes_the_plan(self):
+        # The record is ROLLING -- one slot, overwritten per checkpoint -- so on
+        # every run that verified anything the LAST recorded checkpoint is
+        # `verify`, not `review`. Keying on `review` alone would leave the guard
+        # inert on exactly the runs that dispatched the most.
+        integrity = self._report(self._manifest(
+            **{run_manifest.DISPATCH_REQUEST:
+               {"checkpoint": "verify", "sha256": "c" * 64,
+                "at": "2026-09-26T00:00:00Z"}}))["meta"]["integrity"]
+        self.assertIs(integrity["dispatch_plan_missing"], True)
+
+    def test_the_owed_checkpoints_are_real_checkpoint_kinds(self):
+        # The two spellings are literals here, and `write_dispatch_request_bound`
+        # validates against `runio.CHECKPOINT_KINDS` -- so a renamed kind would
+        # leave this predicate matching nothing and re-open the hole silently.
+        self.assertTrue(set(synthesize.PLAN_OWED_CHECKPOINTS)
+                        <= set(runio.CHECKPOINT_KINDS),
+                        synthesize.PLAN_OWED_CHECKPOINTS)
+
+    def test_a_garbled_dispatch_record_owes_nothing(self):
+        # The manifest lives inside the reviewed tree, so every field on it is a
+        # value a target can choose. A non-dict (or a dict naming no checkpoint)
+        # is not this driver's record of a review dispatch, so it asserts
+        # nothing -- and must not raise out of a predicate that decides a flag.
+        for record in ("review", ["review"], 7, None, {}, {"checkpoint": None},
+                       {"checkpoint": ["review"]}, {"checkpoint": "scan"}):
+            with self.subTest(record=record):
+                self.assertFalse(synthesize._plan_owed(
+                    {run_manifest.DISPATCH_REQUEST: record}))
+        self.assertFalse(synthesize._plan_owed({}))
+        self.assertFalse(synthesize._plan_owed(None))
+
+
 class TestSynthesizeDonePredicate(unittest.TestCase):
     """#1643 ruling 3: the last parse-only done predicate in the run loop.
 
