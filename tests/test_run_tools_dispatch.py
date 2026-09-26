@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -427,6 +428,17 @@ class TestTheAdapterDispatchCarriesTheSecurityMode(unittest.TestCase):
                       inspect.signature(rt._run_selected).parameters)
 
 
+def _config_mounts(cmd):
+    """The `-v` specs that bind this launch's scanner-owned configuration.
+
+    ONE FILE per launch (review Q4-bis): `<scratch>/<name>:/panopticon-config/
+    <name>:ro`, so the tests read the host side by NAME and the container never
+    sees a directory of ours at all.
+    """
+    return [a for a in cmd if a.endswith(":ro")
+            and a.split(":")[1].startswith(rt.SCANNER_CONFIG_MOUNT + "/")]
+
+
 class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
     """#1839 (run-14 SEC-284952751): trivy reads `.trivyignore` from the scan
     ROOT, so the reviewed repository chose which advisories trivy reported --
@@ -442,22 +454,27 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
     """
 
     def _dispatch(self, tool, plant=None, **kwargs):
-        """One faked dispatch; returns `(argv, {basename: text})` for the files
-        staged in the scanner-owned config mount."""
-        seen = {"argv": None, "staged": {}}
+        """One faked dispatch; returns the argv, `{basename: text}` for the
+        files staged into the scanner-owned config mount, the `-v` specs that
+        mounted them and the permissions each one really had."""
+        seen = {"argv": None, "staged": {}, "specs": [], "modes": {}}
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
-        suffix = ":%s:ro" % rt.SCANNER_CONFIG_MOUNT
 
         def runner(cmd, **_kw):
             cmd = list(cmd)
             seen["argv"] = cmd
-            for host in [a[:-len(suffix)] for a in cmd if a.endswith(suffix)]:
+            seen["specs"] = _config_mounts(cmd)
+            for spec in seen["specs"]:
                 # Read them WHILE the dispatch is in flight: the scratch is
                 # removed when the tool returns, so this also proves each file
                 # is there when the container starts.
-                for name in sorted(os.listdir(host)):
-                    with open(os.path.join(host, name), encoding="utf-8") as fh:
-                        seen["staged"][name] = fh.read()
+                host = spec.split(":")[0]
+                name = os.path.basename(host)
+                with open(host, encoding="utf-8") as fh:
+                    seen["staged"][name] = fh.read()
+                seen["modes"][name] = (
+                    stat.S_IMODE(os.stat(os.path.dirname(host)).st_mode),
+                    stat.S_IMODE(os.stat(host).st_mode))
             return fake
         with tempfile.TemporaryDirectory() as d:
             for name, text in (plant or {}).items():
@@ -473,10 +490,12 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
                 seen = self._dispatch("trivy", security_mode=mode,
                                       plant={".trivyignore": "CVE-2024-0001\n"})
                 argv = seen["argv"]
-                self.assertEqual(argv.count("--ignorefile"), 1)
-                self.assertEqual(argv[argv.index("--ignorefile") + 1],
-                                 "%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
-                                            rt.TRIVY_IGNOREFILE_NAME))
+                # ATTACHED, like the `--skip-dirs=`/`--exclude=` values beside
+                # it on the same argv (review Q4).
+                attached = "--ignorefile=%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
+                                                  rt.TRIVY_IGNOREFILE_NAME)
+                self.assertEqual(argv.count(attached), 1)
+                self.assertNotIn("--ignorefile", argv)  # never the split form
                 # The target's own file is never named on the argv, and the
                 # one that IS named carries none of its entries.
                 self.assertNotIn("/src/.trivyignore", argv)
@@ -495,6 +514,23 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
         # trivy takes the scan root positionally, so the flags go BEFORE it.
         argv = self._dispatch("trivy")["argv"]
         self.assertEqual(argv[-1], "/src")
+
+    def test_each_config_is_a_FILE_mount_from_a_private_scratch(self):
+        # Review Q4-bis, measured on the code-scanning branch: bandit B103
+        # flags a 0o755 chmod on a DIRECTORY and semgrep flags every `0o7xx`,
+        # on our own scanner. A file mount needs no directory permission at
+        # all -- the container reads the bind TARGET, so the 0700 scratch its
+        # parent keeps is irrelevant to it.
+        for tool, name in (("trivy", rt.TRIVY_IGNOREFILE_NAME),
+                           ("bandit", rt.BANDIT_INI_NAME)):
+            with self.subTest(tool=tool):
+                seen = self._dispatch(tool)
+                host = seen["specs"][0].split(":")[0]
+                self.assertEqual(
+                    ["%s:%s/%s:ro" % (host, rt.SCANNER_CONFIG_MOUNT, name)],
+                    seen["specs"])
+                self.assertEqual(os.path.basename(host), name)
+                self.assertEqual((0o700, 0o644), seen["modes"][name])
 
     def test_the_two_scanners_stage_only_their_own_file(self):
         # One mount per launch, holding exactly what that tool is pinned to:
@@ -532,19 +568,18 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         (None when it staged none) and the manifest posture."""
         seen = {"argv": None, "ini": None, "mount": None}
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
-        suffix = ":%s:ro" % rt.SCANNER_CONFIG_MOUNT
 
         def runner(cmd, **_kw):
             cmd = list(cmd)
             seen["argv"] = cmd
-            hosts = [a[:-len(suffix)] for a in cmd if a.endswith(suffix)]
-            if hosts:
-                seen["mount"] = hosts[0]
+            specs = _config_mounts(cmd)
+            if specs:
+                seen["mount"] = specs[0]
+                host = specs[0].split(":")[0]
                 # Read it WHILE the dispatch is in flight: the scratch is
                 # removed when the tool returns, so this also proves the file
                 # is there when the container starts.
-                with open(os.path.join(hosts[0], rt.BANDIT_INI_NAME),
-                          encoding="utf-8") as fh:
+                with open(host, encoding="utf-8") as fh:
                     seen["ini"] = fh.read()
             return fake
         with tempfile.TemporaryDirectory() as d:

@@ -489,10 +489,10 @@ BANDIT_DEFAULT_EXCLUDES = (".svn", "CVS", ".bzr", ".hg", ".git", "__pycache__",
 # `.bandit`: the scan's exclusions are the scanner's to choose.
 BANDIT_SCANNER_EXCLUDES = (".worktrees",)
 # Where the generated configuration is bind-mounted in a scanner's container,
-# and the basenames that live there. A DIRECTORY mount, so the scratch can be
-# created, filled and removed as a unit and the container never sees a
-# half-written file. ONE mount per launch, holding only the file that launch's
-# tool is pinned to -- not a shared bundle every scanner can read.
+# and the basenames that live there. ONE FILE mount per launch --
+# `<scratch>/<name>:/panopticon-config/<name>:ro` -- holding only the file that
+# launch's tool is pinned to, so the container never sees a directory of ours
+# and no host directory needs a permission of its own (review Q4-bis).
 SCANNER_CONFIG_MOUNT = "/panopticon-config"
 BANDIT_INI_NAME = "bandit.ini"
 TRIVY_IGNOREFILE_NAME = ".trivyignore"
@@ -563,26 +563,38 @@ BANDIT_INI_TEXT = ("[bandit]\nexclude = %s\n"
 
 # The SCANNER-OWNED `--ignorefile`, on every trivy run and in BOTH security
 # modes (#1839, run-14 SEC-284952751). Every id in a `.trivyignore` is a finding
-# trivy stops reporting, so the reviewed repository chose what its own
-# dependency and secret scan would say -- the same class as the `.bandit` above,
-# and #1877's scratch cwd did not reach it: whether trivy resolves the default
-# `.trivyignore` against the scan root or against the working directory, an
-# explicit scanner-owned path answers both. A CONSTANT that declares nothing, so
-# the ignore list is the scanner's; `#` is a comment line in trivy's format
-# (trivy 0.74.0, `Dockerfile ARG TRIVY_VERSION=0.74.0`).
+# trivy stops reporting, so a reviewed repository that could choose that file
+# would choose what its own dependency and secret scan said.
+#
+# BELT, and this comment is the only honest word for it (fix round 1 §B):
+# measured in the real-image round, trivy 0.74.0 resolves the default
+# `.trivyignore` against the WORKING DIRECTORY, which has been a per-launch
+# scratch since #1877 -- a `.trivyignore` at the scan root was already not read,
+# on main as well as here. So this flag closes nothing that was open; it pins
+# the posture explicitly against a version that reads the scan root, and it
+# keeps the answer independent of whichever directory trivy resolves from. A
+# CONSTANT that declares nothing, so the ignore list is the scanner's; `#` is a
+# comment line in trivy's format (trivy 0.74.0, `Dockerfile ARG
+# TRIVY_VERSION=0.74.0`).
 TRIVY_IGNOREFILE_TEXT = (
     "# panopticon: the scan's ignore list is the scanner's, not the reviewed\n"
     "# repository's (#1839). Deliberately empty -- it names no advisory.\n")
 
 # Per tool, the scanner-owned configuration file staged into that launch's
-# config mount and the flag that pins it: `{tool: (flag, basename, text)}`.
-# The FLAG is passed on every launch of either tool, so neither scanner's own
-# discovery walk runs whether or not the target ships the file it looks for --
-# what the flag NAMES is this file, except for bandit under `standard`, where
-# the owner ruling of 2026-09-25 leaves the operator's own `.bandit` in place.
+# config mount, the flag that pins it and HOW that flag is spelled:
+# `{tool: (flag, basename, text, attached)}`. The FLAG is passed on every launch
+# of either tool, so neither scanner's own discovery walk runs whether or not
+# the target ships the file it looks for -- what the flag NAMES is this file,
+# except for bandit under `standard`, where the owner ruling of 2026-09-25
+# leaves the operator's own `.bandit` in place. `attached` is `--flag=value` in
+# one token, which is how trivy's neighbours on the same argv are already
+# spelled (`--skip-dirs=`, bandit's `--exclude=`); bandit's `--ini <path>` stays
+# two tokens, the form #1839's first increment pinned and its tests read
+# (review Q4).
 SCANNER_OWNED_CONFIG = {
-    "bandit": ("--ini", BANDIT_INI_NAME, BANDIT_INI_TEXT),
-    "trivy": ("--ignorefile", TRIVY_IGNOREFILE_NAME, TRIVY_IGNOREFILE_TEXT),
+    "bandit": ("--ini", BANDIT_INI_NAME, BANDIT_INI_TEXT, False),
+    "trivy": ("--ignorefile", TRIVY_IGNOREFILE_NAME, TRIVY_IGNOREFILE_TEXT,
+              True),
 }
 
 # Per tool: the inline suppression COMMENT its scan honours in the target's own
@@ -599,6 +611,14 @@ SCANNER_OWNED_CONFIG = {
 # A tool ABSENT from this table has not been assessed, and has no manifest row:
 # that is not the same claim as `n/a`.
 SUPPRESSION_COMMENTS = {
+    # BELT, not the lever (fix round 1 §B). Measured in the pinned image:
+    # semgrep 1.177.0 REPORTS a `# nosemgrep`'d result either way, marking it
+    # `suppressions: [{"kind": "inSource"}]` in its SARIF, and `--disable-nosem`
+    # does not change that output at all. What decides is the INGEST --
+    # `tools/sarif_utils.sarif_to_findings` drops such a result under `standard`
+    # and counts it, keeps it under `redteam` -- so this row's value is true
+    # because of the mode, enforced there. The flag stays because it is the
+    # documented knob and a later semgrep may act on it.
     "semgrep": ("# nosemgrep", "--disable-nosem"),
     "bandit": ("# nosec", "--ignore-nosec"),
     # gitleaks dispatches through its ADAPTER, which appends this flag itself
@@ -666,10 +686,14 @@ def _with_suppression_flags(tool, cmd, security_mode):
     (`.trivyignore`, `osv-scanner.toml`, and bandit's `.bandit` under redteam)
     is target-authored scanner CONFIGURATION and is replaced with a
     scanner-owned one. A COMMENT is in the target's source, in the diff a
-    reviewer reads, and under `standard` -- the mode CI's merge gate runs, since
-    `.github/workflows/security.yml` passes no `--security` -- the operator is
-    scanning their own repository, so it stands. It stands DISCLOSED, not
-    silently: `write_manifest` publishes `suppression_comments` per tool.
+    reviewer reads, and under `standard` the operator is scanning their own
+    repository, so it stands. It stands DISCLOSED, not silently:
+    `write_manifest` publishes `suppression_comments` per tool.
+
+    `standard` is an operator scanning their own repository; this repository's
+    own CI (`security.yml` and the fork-PR `security-fork.yml`) scans in
+    `redteam`, so nothing target-authored is honoured on either check (owner
+    ruling of 2026-09-26; the workflows move in their own PR).
 
     Only knobs `SUPPRESSION_COMMENTS` names are passed, and only where that
     table records one as verified against the pinned image.
@@ -775,9 +799,12 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
     The contents are `BANDIT_INI_TEXT`, a module constant, so no directory name
     can reach them (review round 1 C1).
 
-    World-readable on purpose: the tools image runs as `USER scanner`, so a 0700
-    scratch would be an `--ini` bandit cannot read. The contents are a generated
-    exclusion list with nothing private in them. An ini that does not arrive is
+    ONE FILE is mounted, not the directory holding it (review Q4-bis): the
+    scratch keeps `mkdtemp`'s own 0700 and is never chmodded, because the
+    container reads the bind TARGET and its parent's mode on the host is
+    nothing to it. The file itself is 0644 -- the tools image runs as
+    `USER scanner`, and its contents are a generated exclusion list with
+    nothing private in them. An ini that does not arrive is
     fail-OPEN, not fail-closed -- bandit 1.9.4's `utils.parse_ini_file` CATCHES a
     parse failure or a missing `[bandit]` section, warns
     ("Unable to parse config file ... or missing [bandit] section") and runs on
@@ -800,11 +827,10 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
         yield _insert_flags(tool, _without_skip_list(cmd),
                             ["--ini", TARGET_BANDIT_INI]), []
         return
-    flag, name, text = SCANNER_OWNED_CONFIG[tool]
+    flag, name, text, attached = SCANNER_OWNED_CONFIG[tool]
     scratch = staging_error = None
     try:
         scratch = tempfile.mkdtemp(prefix="pano-scanner-config-")
-        os.chmod(scratch, 0o755)
         config_path = os.path.join(scratch, name)
         with open(config_path, "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -818,10 +844,11 @@ def _scanner_owned_config(tool, cmd, security_mode="standard", target=None):
                   % (tool, staging_error), file=sys.stderr)
             yield None, None
         else:
-            yield (_insert_flags(
-                       tool, cmd,
-                       [flag, "%s/%s" % (SCANNER_CONFIG_MOUNT, name)]),
-                   ["-v", "%s:%s:ro" % (scratch, SCANNER_CONFIG_MOUNT)])
+            inside = "%s/%s" % (SCANNER_CONFIG_MOUNT, name)
+            yield (_insert_flags(tool, cmd,
+                                 ["%s=%s" % (flag, inside)] if attached
+                                 else [flag, inside]),
+                   ["-v", "%s:%s:ro" % (config_path, inside)])
     finally:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -1582,9 +1609,12 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     told to stop honouring the inline suppression COMMENTS in the target's own
     source, and the adapter dispatches name the mode so the argv built inside
     the container can make the same choice. `standard` is the conservative
-    default for a caller that named no mode -- the mode CI's merge gate runs,
-    where an inline suppression is an operator's reviewed decision about their
-    own repository and is honoured, and DISCLOSED on the manifest.
+    default for a caller that named no mode: an operator scanning their own
+    repository, where an inline suppression is their reviewed decision and is
+    honoured, and DISCLOSED on the manifest. This repository's own CI
+    (`security.yml` and the fork-PR `security-fork.yml`) scans in `redteam`, so
+    nothing target-authored is honoured on either check (owner ruling of
+    2026-09-26; the workflows move in their own PR).
 
     `run_id` (#1645) names this run's egress network and proxy sidecar, so a
     leftover from a crashed run is recognisable. The whole loop runs inside one
@@ -1826,12 +1856,14 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     the claim go false rather than leaving a stale `true` behind. The tools
     phase copies it into `tools-ran.json`.
 
-    `suppression_comments` (#1839) is what this run's argv does with an inline
+    `suppression_comments` (#1839) is what this run does with an inline
     suppression comment in the target's own source, per tool: `"ignored"` where
     the pinned scanner's knob for it was passed (`--security redteam`),
-    `"honoured"` where the comment stood -- under `standard`, the mode CI's
-    merge gate runs, that is an operator's reviewed decision about their own
-    repository, and where no knob exists at the pin it is a residual -- and
+    `"honoured"` where the comment stood -- `standard` is an operator scanning
+    their own repository, and where no knob exists at the pin it is a residual;
+    this repository's own CI (`security.yml` and the fork-PR
+    `security-fork.yml`) scans in `redteam`, so nothing target-authored is
+    honoured on either check -- and
     `"n/a"` for a tool whose argv honours no such comment at all. A tool with no
     row was not ASSESSED, which is deliberately not the same claim as `n/a`.
     Defaults to the ledger `run_tools()` filled while building each argv -- an
@@ -1842,10 +1874,19 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     still open (`.gitleaksignore`, which gitleaks 8.18.4 reads from the source
     root unconditionally -- #1957, tracked on #1924).
 
+    One row is true for a reason that is NOT on the argv, and this is the
+    schema of record, so it says so: semgrep's. At the pin the scanner reports
+    a `# nosemgrep`'d result whether or not `--disable-nosem` is passed, so the
+    row tracks the mode and the INGEST enforces it --
+    `ingest_tools.ingest_dir_detailed` drops those results under `standard` and
+    publishes the count per tool as `suppressed_in_source`, which is where a
+    reader sees HOW MUCH a honoured comment cost. `run_tools` never sees that
+    number: this manifest is written before anything is ingested.
+
     `scanner_config` (#1839) is which configuration file each pinned scanner ran
     under: `"scanner-owned"` for a constant of ours staged in a scratch, and
-    `"target .bandit"` for the one case the owner ruling of 2026-09-25 leaves
-    with the operator -- a `.bandit` committed to the repository being scanned,
+    `"target .bandit (its skips and tests)"` for the one case the owner ruling
+    of 2026-09-25 leaves with the operator -- a `.bandit` committed to the repository being scanned,
     honoured under `standard` and never under `redteam`. Same construction as
     the two ledgers above: read off the argv the runner built.
 

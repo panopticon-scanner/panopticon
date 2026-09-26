@@ -11,8 +11,7 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.tools import ADAPTERS
-from scripts.tools.base import (SECURITY_FLAG, SECURITY_MODES,  # noqa: F401
-                                STANDARD)
+from scripts.tools.base import SECURITY_FLAG, SECURITY_MODES, STANDARD
 
 
 # #1051 / SEC-G2B: every failure path exits NON-ZERO. A crash, an emit failure,

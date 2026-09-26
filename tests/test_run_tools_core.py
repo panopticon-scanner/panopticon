@@ -338,11 +338,15 @@ class TestRunTools(unittest.TestCase):
                     self.assertIn("--ini", calls[0])
                     i = calls[0].index("--ini")
                     self.assertEqual(calls[0][i + 1], expected)
+                    # One read-only FILE mount, named for the ini inside the
+                    # container (review Q4-bis) -- never a directory of ours.
+                    mount = "%s:ro" % owned
                     if expected == owned:
                         self.assertNotIn("/src/.bandit", calls[0])
                         self.assertIn("-v", calls[0])
-                        self.assertIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
-                                      " ".join(calls[0]))   # mounted read-only
+                        self.assertTrue(
+                            [a for a in calls[0] if a.endswith(mount)],
+                            calls[0])
                     else:
                         # Nothing of ours is staged, so there is no mount.
                         self.assertNotIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
