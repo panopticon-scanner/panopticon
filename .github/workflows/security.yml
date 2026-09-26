@@ -319,10 +319,12 @@ jobs:
       # builds its failure note from the first 300 characters of it.
       # Both security workflows scan in `redteam` (owner ruling 2026-09-26,
       # #1839). Today the mode changes two things: under `redteam` the
-      # name-only virtualenv skip hands the scanners nothing (run_tools.py,
-      # `_venv_excludes`) and the gate re-admits name-suppressed findings
-      # (security_gate.py, policy C), so a PR cannot park a HIGH under a
-      # `venv/`-named directory. #1839's PR 5 adds the rest: under `standard`
+      # virtualenv skip is off (run_tools.py, `partition_venv_dirs` hands the
+      # scanners nothing) and the gate re-admits name-suppressed findings
+      # (security_gate.py, policy C), so a PR cannot hide a CRITICAL or a
+      # secret-class finding under a `venv/`-named directory
+      # (`ingest_tools.gates_when_suppressed`). #1839's PR 5 adds the rest:
+      # under `standard`
       # a target's own `.bandit`, `# nosec`, `# nosemgrep` and
       # `gitleaks:allow` are honoured, under `redteam` none of them is.
       # `standard` is an operator scanning their own repository;

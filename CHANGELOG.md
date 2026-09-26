@@ -8,7 +8,7 @@ guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
 - **This repository's own CI scans in `redteam` on both routes** (owner ruling 2026-09-26,
-  #1839). Today the mode changes the name-only virtualenv skip (off under `redteam`) and the
+  #1839). Today the mode changes the virtualenv skip (off under `redteam`) and the
   gate's policy-C re-admission of name-suppressed findings; #1839's PR 5 adds the split that
   motivates the switch, where `standard` honours a target's own `.bandit`, `# nosec`,
   `# nosemgrep` and `gitleaks:allow` and `redteam` honours none of them. `standard` is an

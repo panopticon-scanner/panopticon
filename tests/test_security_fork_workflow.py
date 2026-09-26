@@ -348,7 +348,7 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
 
 class TestBothWorkflowsScanInRedteam(unittest.TestCase):
     """Owner ruling 2026-09-26 (relayed by Claude): this repository's own CI
-    scans in `redteam` on both routes. Today the mode turns off the name-only
+    scans in `redteam` on both routes. Today the mode turns off the
     virtualenv skip and lets the gate re-admit name-suppressed findings
     (policy C); #1839's PR 5 adds the split that motivates the switch, under
     which `standard` honours a target's own `.bandit`, `# nosec`, `# nosemgrep`

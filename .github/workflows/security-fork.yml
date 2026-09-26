@@ -419,7 +419,9 @@ jobs:
       # `--security redteam`, as in `security.yml` (owner ruling 2026-09-26,
       # #1839): this job scans a FORK-authored tree. Today that means the
       # gate re-admits name-suppressed findings and the virtualenv skip is
-      # off (a PR cannot park a HIGH under a `venv/`-named directory); with
+      # off (a PR cannot hide a CRITICAL or a secret-class finding under a
+      # `venv/`-named directory: policy C,
+      # `ingest_tools.gates_when_suppressed`); with
       # #1839's PR 5 it also means a root `.bandit`, `# nosec`, `# nosemgrep`
       # and `gitleaks:allow` in the tree narrow nothing the required check
       # sees. The base commit's baseline MUST be captured in the same mode
