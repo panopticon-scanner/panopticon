@@ -1,4 +1,6 @@
 # tests/test_coverage_model.py
+import inspect
+
 import scripts.coverage_model as cov
 
 # The existing cases isolate the core (floor|scout)-exclude logic by passing
@@ -336,6 +338,123 @@ def test_sec_floor_keys_on_files_not_scout_or_missing():
     # and empty/None file lists are tolerated (never crash the coverage phase).
     if cov.applicable_sec_floor([]) != frozenset(): raise AssertionError()
     if cov.applicable_sec_floor(None) != frozenset(): raise AssertionError()
+
+# --- SEC-71240568 (#1838): build/CI surfaces that execute code ------------
+
+def test_sec_floor_on_build_and_ci_execution_surfaces():
+    # run-14 SEC-G2A probe miss list, verbatim (50 code-executing build/CI
+    # surfaces the catalog missed -- Dockerfiles/workflows were already
+    # floored; this is the rest: build tooling, second-tier CI systems, and
+    # project/lockfiles with lifecycle hooks). Each must floor SEC on its own.
+    misses = [
+        "Makefile", "makefile", "GNUmakefile", "build.mk",
+        "setup.py", "setup.cfg", "tox.ini", "noxfile.py",
+        "main.tf", "variables.tf", "terraform/main.tf",
+        ".pre-commit-config.yaml",
+        ".travis.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml",
+        ".drone.yml", "appveyor.yml",
+        ".buildkite/pipeline.yml", ".github/actions/setup/action.yml",
+        "App.csproj", "Solution.sln", "Directory.Build.props", "nuget.config",
+        "go.sum", "Cargo.lock", "yarn.lock", "pnpm-lock.yaml",
+        "composer.json", "composer.lock", "mix.exs", "build.sbt",
+        "CMakeLists.txt", "configure", "Rakefile", "Gruntfile.js", "gulpfile.js",
+        "webpack.config.js", "vite.config.ts",
+        "BUILD.bazel", "WORKSPACE", "MODULE.bazel", "justfile", "Taskfile.yml",
+        "Podfile", "pubspec.yaml", "my.gemspec", ".devcontainer/devcontainer.json",
+        "ansible/playbook.yml", "serverless.yml", "template.yaml",
+    ]
+    if len(misses) != 50:
+        raise AssertionError(len(misses))
+    # review NIT 9: accumulate every miss instead of raising on the first, so a
+    # catalog regression that breaks ten entries names all ten, not just one.
+    bad = [f for f in misses if cov.applicable_sec_floor([f]) != frozenset({"SEC"})]
+    if bad:
+        raise AssertionError(bad)
+
+
+def test_sec_floor_on_build_ci_yaml_alternate_spellings():
+    # review finding 2: seven of the new CI-system entries pinned only ONE of
+    # two equally-valid YAML spellings, so the other spelling stayed a live
+    # miss. Both spellings are now explicit table rows.
+    alternates = [
+        ".travis.yaml", "azure-pipelines.yaml", "bitbucket-pipelines.yaml",
+        ".drone.yaml", "appveyor.yaml", "serverless.yaml", "template.yml",
+    ]
+    if len(alternates) != 7:
+        raise AssertionError(len(alternates))
+    for f in alternates:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} failed to floor SEC")
+
+
+def test_sec_floor_setup_py_hint_is_anchored():
+    # review finding 3 (MEDIUM): the bare "setup.py" hint matched any
+    # *setup.py, including this very repo's own
+    # skill/scripts/phases/setup.py (a driver PHASE, not a packaging script)
+    # and tests/phases/test_setup.py. A root-level setup.py must still floor
+    # SEC; the suffix-pattern false positives must not.
+    if cov.applicable_sec_floor(["setup.py"]) != frozenset({"SEC"}):
+        raise AssertionError("root setup.py must floor SEC")
+    for f in ["tests/phases/test_setup.py", "src/db_setup.py",
+              "app/bootstrap_setup.py", "tools/env_setup.py"]:
+        if cov.applicable_sec_floor([f]) != frozenset():
+            raise AssertionError(f"{f} must not floor SEC (suffix false positive)")
+
+
+def test_sec_floor_workspace_and_configure_hints_are_anchored():
+    # review finding 4 (LOW): bare "configure" and "workspace" reach ordinary
+    # application paths (my_workspace.py, reconfigure.go) because a product
+    # whose domain noun is literally "workspace" turns the floor effectively
+    # unconditional. Anchored to a directory boundary; a pnpm monorepo's
+    # pnpm-workspace.yaml is added explicitly since it has no such boundary.
+    for f in ["WORKSPACE", "configure", "pnpm-workspace.yaml"]:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} must still floor SEC")
+    for f in ["my_workspace.py", "reconfigure.go"]:
+        if cov.applicable_sec_floor([f]) != frozenset():
+            raise AssertionError(f"{f} must not floor SEC (name-noun false positive)")
+
+
+def test_sec_floor_existing_supply_chain_entries_unchanged():
+    # the #1838 extension must not disturb the 19 markers that already floored
+    # SEC (finding SEC-71240568: "_SEC_SUPPLY_CHAIN_HINTS names 19 markers").
+    existing = [
+        ".github/workflows/ci.yml", ".gitlab-ci.yml", "Jenkinsfile",
+        ".circleci/config.yml", "Dockerfile", "docker-compose.yml",
+        ".dockerignore", "helm/values.yaml", "k8s/deploy.yaml",
+        "requirements.txt", "package.json", "package-lock.json", "Gemfile",
+        "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "pyproject.toml",
+        "poetry.lock",
+    ]
+    if len(existing) != 19:
+        raise AssertionError(len(existing))
+    for f in existing:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} regressed off the SEC floor")
+    # review NIT 10: the loop above catches DELETING an original hint but not
+    # WIDENING one (e.g. "dockerfile" -> "file" still floors every path above).
+    # This is the one place asserting the table's literal contents is correct:
+    # pin the original 19 entries byte-for-byte, in order.
+    original_19 = (
+        ".github/workflows/", ".gitlab-ci", "jenkinsfile", ".circleci",
+        "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
+        "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
+        "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
+    )
+    if cov._SEC_SUPPLY_CHAIN_HINTS[:19] != original_19:
+        raise AssertionError(cov._SEC_SUPPLY_CHAIN_HINTS[:19])
+
+
+def test_exclude_rejected_wording_does_not_claim_the_domain_ran():
+    # SEC-71240568's second observation: exclude_rejected names an IGNORED
+    # exclude attempt, not a guarantee the domain ran (a rejected SEC can
+    # still be absent from `effective` when neither the floor nor the scout
+    # ever put it there). Pin the qualifying comment so the misleading
+    # reading can't silently return.
+    src = inspect.getsource(cov.effective_panels)
+    if "does not assert the domain actually ran" not in src:
+        raise AssertionError(src)
+
 
 def test_signal_floor_forces_domain_on_and_discloses_it():
     # a group whose committed panels never list SEC and whose scout never adds it

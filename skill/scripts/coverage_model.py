@@ -52,6 +52,38 @@ _SEC_SUPPLY_CHAIN_HINTS = (
     "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
     "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
     "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
+    # #1838 SEC-71240568: the surface above is CI/container/manifest files,
+    # but the supply chain also includes every BUILD tool and second-tier CI
+    # system that executes code on its own -- a Makefile target, a setup.py,
+    # a Terraform plan, a pre-commit hook, a project file MSBuild loads
+    # (roslyn-secguard's own hostile-csproj fixture is why that class is
+    # here), and a lockfile whose name is not already a superstring of a
+    # manifest listed above. Table-driven, same style as the block above.
+    # `/configure`, `/workspace` and `.mk` are deliberately broad markers:
+    # the first two still catch a head-of-segment name (`workspace_list.go`,
+    # `ConfigureProfile.tsx` -- killing those needs a basename-exact table,
+    # outside this fix) even after anchoring to a directory boundary, and
+    # `.mk` also reaches `.mkv`/`.mkd` media and doc files since a substring
+    # extension check cannot end-anchor. A false positive costs one SEC cell
+    # per group, same calibration as the block below.
+    "makefile", ".mk", "/setup.py", "setup.cfg", "tox.ini", "noxfile.py", ".tf",
+    ".pre-commit-config.yaml", ".travis.yml", "azure-pipelines.yml",
+    "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".buildkite/",
+    ".github/actions/", ".csproj", ".sln", "directory.build.props",
+    "nuget.config", "go.sum", "cargo.lock", "yarn.lock", "pnpm-lock",
+    "composer.json", "composer.lock", "mix.exs", "build.sbt",
+    "cmakelists.txt", "/configure", "rakefile", "gruntfile.js", "gulpfile.js",
+    "webpack.config", "vite.config", "build.bazel", "/workspace",
+    "pnpm-workspace", "module.bazel", "justfile", "taskfile", "podfile", "pubspec.yaml",
+    ".gemspec", ".devcontainer/", "/ansible/", "serverless.yml",
+    "template.yaml",
+    # #1838 SEC-71240568 review finding 2: each of the above CI systems has
+    # two equally-valid YAML spellings, and the first pass pinned only one --
+    # so the other spelling was a live miss for its own tool. Both spellings,
+    # as explicit rows (`.pre-commit-config.yaml` is intentionally excluded:
+    # that tool recognizes only the `.yaml` spelling, not `.yml`).
+    ".travis.yaml", "azure-pipelines.yaml", "bitbucket-pipelines.yaml",
+    ".drone.yaml", "appveyor.yaml", "serverless.yaml", "template.yml",
 )
 _SEC_CODE_HINTS = (
     "auth", "login", "session", "token", "oauth", "jwt",
@@ -194,7 +226,11 @@ def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR,
     }
     rejected = sorted(raw_exclude & NON_EXCLUDABLE)
     if rejected:
-        # surface the attempted-but-ignored exclusion so it's never silent (#1084)
+        # surface the attempted-but-ignored exclusion so it's never silent
+        # (#1084). This does not assert the domain actually ran: a domain
+        # named here can still be absent from `effective` when neither the
+        # floor nor the scout ever put it there (#1838 SEC-71240568) -- check
+        # `effective` (or `floor`) to know whether it ran.
         disclosure["exclude_rejected"] = rejected
     return effective, disclosure
 

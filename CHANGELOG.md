@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The SEC floor's catalog now names the build/CI surfaces that execute code
+  (#1838, SEC-71240568).** Makefiles, setup.py, Terraform, second-tier CI
+  systems, MSBuild project files, and lockfiles were live misses -- a target
+  omitting SEC and a scout that never asks for it left those files unreviewed.
+  The rejected-exclude disclosure now says whether the domain actually ran,
+  instead of always claiming it "still runs".
 - **A path or artifact this run did not create is not this run's evidence (#1841, run-14
   SEC-579863541 + SEC-3360368617).** `driver setup`'s two done-predicates were bare "does this file
   parse" tests on fixed `.panopticon/` paths a reviewed tree can plant or `git add -f`: a planted
