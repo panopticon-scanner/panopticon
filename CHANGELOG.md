@@ -11,10 +11,13 @@ evidence exposed.
   run-14 SEC-284952751 + SEC-1202454595).** #1924's scan-root class, split in two, because the two
   kinds of in-tree suppression are not the same claim. An ignore FILE the reviewed repository
   commits is scanner CONFIGURATION, and two more of them are now replaced with a scanner-owned one
-  in BOTH security modes: trivy runs with `--ignorefile /panopticon-config/.trivyignore` (a
-  constant naming no advisory, staged the way bandit's ini is, in a read-only mount of its own --
-  a committed `.trivyignore` chose which advisories trivy reported, and #1877's scratch cwd never
-  reached that lookup), and osv-scanner with `scan --config <its own scratch>/osv-scanner.toml`
+  in BOTH security modes: trivy runs with `--ignorefile=/panopticon-config/.trivyignore` (a
+  constant naming no advisory, staged the way bandit's ini is, in a read-only FILE mount of its
+  own). That flag is BELT ONLY: the real-image round measured trivy 0.74.0 resolving the default
+  `.trivyignore` against the WORKING DIRECTORY -- a per-launch scratch since #1877 -- so a
+  scan-root `.trivyignore` was already not read on main either, and this closes nothing that was
+  open. It pins the posture against a version that reads the scan root. And osv-scanner runs with
+  `scan --config <its own scratch>/osv-scanner.toml`
   (an empty document; osv-scanner resolves `osv-scanner.toml` per DIRECTORY inside the scanned
   tree, so a committed `[[IgnoredVulns]]` list dropped the target's own advisories -- the one
   adapter of the four SEC-1202454595 named that #1742 left standing). Each file is staged per
@@ -23,21 +26,30 @@ evidence exposed.
   the other kind: it lives in the target's SOURCE, in the diff a reviewer reads. Under `--security
   redteam` the tree is untrusted and every scanner whose knob was verified against the pinned
   image stops honouring one (semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
-  `--ignore-gitleaks-allow`); under `standard` -- the mode CI's merge gate runs, since
-  `security.yml` passes no `--security` -- it STANDS, because an operator scanning their own
-  repository made a reviewed, in-diff decision. It stands DISCLOSED: `tools-manifest.json` carries
+  `--ignore-gitleaks-allow`); under `standard` it STANDS, because `standard` is an operator
+  scanning their own repository, who made a reviewed, in-diff decision. This repository's own CI
+  (`security.yml` and the fork-PR `security-fork.yml`) scans in `redteam`, so nothing
+  target-authored is honoured on either check. For semgrep the flag is BELT and the INGEST is the
+  lever: at the 1.177.0 pin semgrep reports a `# nosemgrep`'d result either way, marked
+  `"suppressions": [{"kind": "inSource"}]`, with and without `--disable-nosem`, so
+  `sarif_to_findings` is what decides: it DROPS such a result under `standard` and counts it, and
+  keeps it under `redteam`. The count is published per tool
+  (`meta.coverage.adapters.<tool>.suppressed_in_source`, and on the gate's verdict line beside the
+  excluded counts), and every ingest on both paths now carries the run's mode so no two of them
+  disagree about which findings exist. It stands DISCLOSED: `tools-manifest.json` carries
   `suppression_comments` (`{"<tool>": "ignored" | "honoured" | "n/a"}`), one row per assessed tool,
   read off the argv the runner actually built, so taking a flag away changes the claim rather than
   leaving an intention behind; a tool with NO row was not assessed, which is not the same claim as
   `n/a`. Two residuals are disclosed there rather than guessed at on an argv -- gosec's `#nosec`
   and eslint-security's inline config, whose knobs were not verified at the pin, since a flag a
   scanner rejects is a tool that exits non-zero and writes no SARIF. Two ignore FILES stay the
-  target's and stay #1924's rows rather than this one's: gitleaks reads the source-root
-  `.gitleaksignore` unconditionally at the 8.18.4 pin (#1957), so no flag here pretends to move
-  it, and semgrep exposes no knob for a scan-root `.semgrepignore`. Gitleaks' allow-comment flag
-  is appended by the adapter that builds its argv inside the container, so every adapter dispatch
-  now names this run's mode as an explicit `--security <mode>` argv pair (not an environment
-  variable, which a target's own hooks could set; an unrecognised token fails that tool closed).
+  target's and stay #1924's rows rather than this one's: `.gitleaksignore` is unchanged here
+  (#1924, Codex's row; see #1957), and a `.semgrepignore` committed at the scan root narrows the
+  scan in both modes with no flag to disable it at the pin (tracked on #2055). Gitleaks'
+  allow-comment flag is appended by the adapter that builds its argv inside the container, so
+  every adapter dispatch now names this run's mode as an explicit `--security <mode>` argv pair
+  (not an environment variable, which a target's own hooks could set; an unrecognised token fails
+  that tool closed).
   Bandit moves the other way in the same breath, by the owner ruling of 2026-09-25 on #1924: the
   bullet below pinned a scanner-owned ini in BOTH modes, which exceeded the ruling, so under
   `standard` a `.bandit` the scanned repository committed is pinned again (`--ini /src/.bandit`,
@@ -50,8 +62,10 @@ evidence exposed.
   `"scanner-owned"`). An operator sees: a
   `.trivyignore` or `osv-scanner.toml` committed to the scanned repository no longer decides what
   its own scan reports in either mode, their own `.bandit` is theirs again under `standard`, and
-  the tool axis says per scanner which config it ran under and whether the repository's own
-  suppression comments were honoured.
+  `tools-manifest.json` says per scanner which config it ran under and whether the repository's own
+  suppression comments were honoured. And CI scans in redteam, so the suite's two `shell=True`
+  calls name the shell instead of carrying a `# nosec` (`tests/_test_helpers.py`,
+  `tests/test_hook_command_quoting.py`: `/bin/sh -c` is what `shell=True` already ran).
 - **A file the reviewed repository commits no longer chooses what the scanners look at (#1839,
   run-14 SEC-1486247143 + SEC-752508850).** Three levers, all on the path CI's merge gate runs
   (`run_tools.py` -> `security_gate.py`, which has no agentic axis to compensate). A single

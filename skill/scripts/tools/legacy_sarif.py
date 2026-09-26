@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from . import sarif_utils as su
-from .base import REDTEAM, STANDARD, run_tool, scratch_cwd
+from .base import (REDTEAM, STANDARD, ingest_policy_cv, run_tool,
+                   scratch_cwd)
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.
@@ -101,21 +102,36 @@ class LegacySarifAdapter:
                 config = Path(cwd) / "gitleaks.toml"
                 config.write_bytes(b"[extend]\nuseDefault = true\n")
                 cmd.extend(("--config", str(config)))
-                # The source-root `.gitleaksignore` is NOT answered here and
-                # no flag pretends otherwise: at the 8.18.4 pin gitleaks loads
-                # it unconditionally (#1957, `cmd/root.go` L204-L224), so
-                # `--gitleaks-ignore-path` pointed at this scratch would move
-                # nothing while reading like a control. It is #1924's open row.
+                # The source-root `.gitleaksignore` is NOT answered here, and
+                # this is the one place that says why: #1957's live test showed
+                # that an explicit empty ignore-path does not prevent the pinned
+                # binary's unconditional source-root ignore load (gitleaks
+                # v8.18.4, `cmd/root.go` L204-L224). So no flag here pretends to
+                # move that read. It stays #1924's open row.
                 if security_mode == REDTEAM:
                     # An inline `gitleaks:allow` comment is in the target's
-                    # SOURCE, not its config. Under `standard` -- the mode CI's
-                    # merge gate runs -- it is an operator's reviewed decision
-                    # about their own repository and stands, DISCLOSED on the
-                    # manifest (`suppression_comments`). Under redteam the tree
-                    # is untrusted and a comment may not silence a finding.
+                    # SOURCE, not its config. `standard` is an operator scanning
+                    # their own repository, so it stands there, DISCLOSED on the
+                    # manifest (`suppression_comments`); this repository's own CI
+                    # (`security.yml` and the fork-PR `security-fork.yml`) scans
+                    # in `redteam`, so nothing target-authored is honoured on
+                    # either check. Under redteam the tree is untrusted and a
+                    # comment may not silence a finding.
                     cmd.append("--ignore-gitleaks-allow")
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         sarif = json.loads(raw)
-        return su.sarif_to_findings(sarif, self.name, group, self.prefix)
+        # #1839: the INGEST decides whether an inline suppression comment in
+        # the scanned tree's own source stands, because the pinned scanners
+        # report a suppressed result either way (semgrep marks it
+        # `suppressions: [{"kind": "inSource"}]` with or without
+        # `--disable-nosem`). `parse` takes no policy argument, so the mode
+        # arrives the way the scanned root does -- a ContextVar the ingest
+        # sets around this call -- and is handed to the converter EXPLICITLY,
+        # so that function stays directly testable in both modes.
+        policy = ingest_policy_cv.get() or {}
+        return su.sarif_to_findings(
+            sarif, self.name, group, self.prefix,
+            security_mode=policy.get("security_mode"),
+            suppressed_in_source=policy.get("suppressed_in_source"))

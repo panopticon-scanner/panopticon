@@ -816,9 +816,10 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     comment the scanned tree's own source carries is honoured HERE -- which is
     the only place it can be, because the pinned scanners report a suppressed
     result either way (semgrep marks it `suppressions: [{"kind": "inSource"}]`
-    with and without `--disable-nosem`). Under `"standard"` -- the default, the
-    mode the merge gate runs -- such a result is dropped as the operator's own
-    reviewed decision about their own repository, and `dispositions[tool]`
+    with and without `--disable-nosem`). Under `"standard"` -- the default, an
+    operator scanning their own repository; this repository's own CI scans in
+    `redteam` -- such a result is dropped as that operator's own reviewed
+    in-diff decision, and `dispositions[tool]`
     carries `suppressed_in_source: N` so the drop is disclosed per tool rather
     than read as a cleaner scan; under `"redteam"` the tree is untrusted and
     those results are ordinary findings. The policy reaches each adapter's
