@@ -1763,11 +1763,12 @@ class TestGatedSuppressedToolFindingsInHtml(unittest.TestCase):
 
     def test_nonzero_gated_count_explains_empty_findings_and_escapes_segment(self):
         out = hr.render(self._report({"<script>alert(1)</script>": 3}))
-        self.assertIn("3", out)
-        self.assertIn("Tool findings suppressed by directory name but GATED", out)
-        self.assertIn("A gate verdict here may rest on findings this report does not list", out)
-        self.assertIn("&lt;script&gt;", out)
-        self.assertNotIn("<script>alert(1)</script>", out)
+        marker = "Tool findings suppressed by directory name but GATED: "
+        self.assertIn(marker, out)
+        block = out.split(marker, 1)[1].split("</div>", 1)[0]
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;: 3", block)
+        self.assertIn("A gate verdict here may rest on findings this report does not list", block)
+        self.assertNotIn("<script>alert(1)</script>", block)
 
     def test_absent_zero_and_malformed_gated_blocks_make_no_claim(self):
         for gated in (None, {}, {"vendor": 0}, "bad", 7, {"vendor": "three"},
