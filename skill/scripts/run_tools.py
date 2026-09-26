@@ -641,6 +641,20 @@ SUPPRESSION_COMMENTS = {
 }
 
 
+# The tools whose suppression-comment answer is decided at the INGEST rather
+# than on the argv (#1839 fix round 2, re-review finding 3). semgrep is the only
+# one today: at the 1.177.0 pin it REPORTS a `# nosemgrep`'d result and marks it
+# `suppressions: [{"kind": "inSource"}]` with and without `--disable-nosem`, so
+# the flag above is belt and `tools/sarif_utils.sarif_to_findings` is the lever
+# -- it drops such a result under `standard` and keeps it under `redteam`.
+# `_record_suppression_posture` therefore reads THESE tools' manifest rows from
+# the run's mode. Reading them off the argv was accidentally correct only while
+# the belt was on: take `--disable-nosem` away and a redteam run would publish
+# `honoured` while the ingest ignored every such comment, which is a false
+# COVERAGE claim -- the one direction an observation ledger may not fail in.
+SUPPRESSION_INGEST_LEVER = frozenset({"semgrep"})
+
+
 def _insert_flags(tool, cmd, flags):
     """*flags* placed where this tool's parser reads them: BEFORE the `/src`
     positional, so the scan root stays the last token for every scanner that
@@ -706,9 +720,16 @@ def _with_suppression_flags(tool, cmd, security_mode):
     return _insert_flags(tool, cmd, [flag])
 
 
-def _record_suppression_posture(tool, ignored):
-    """Publish what this launch's argv actually does with *tool*'s inline
-    suppression comments (#1839).
+def _record_suppression_posture(tool, ignored, security_mode):
+    """Publish what this launch really does with *tool*'s inline suppression
+    comments (#1839), read off whatever DECIDES it for that tool.
+
+    For a flag-lever tool (bandit, gitleaks) that is the argv: *ignored* is read
+    back from the command this launch will run, so taking the flag away changes
+    the claim instead of leaving an intention behind. For an ingest-lever tool
+    (`SUPPRESSION_INGEST_LEVER`) the argv decides nothing and the run's MODE
+    does, so the row follows the mode -- otherwise removing a belt flag would
+    publish `honoured` for a run that ignores every such comment.
 
     Silent for a tool `SUPPRESSION_COMMENTS` has not assessed: an absent row
     says nobody looked, which is not the same claim as `n/a`.
@@ -718,14 +739,18 @@ def _record_suppression_posture(tool, ignored):
         return
     if entry[0] is None:
         _SUPPRESSION_POSTURE[tool] = SUPPRESSION_NA
-    else:
-        _SUPPRESSION_POSTURE[tool] = (SUPPRESSION_IGNORED if ignored
-                                      else SUPPRESSION_HONOURED)
+        return
+    if tool in SUPPRESSION_INGEST_LEVER:
+        ignored = security_mode == REDTEAM
+    _SUPPRESSION_POSTURE[tool] = (SUPPRESSION_IGNORED if ignored
+                                  else SUPPRESSION_HONOURED)
 
 
 def _suppression_flag_on(tool, cmd):
     """True when the flag that neutralises *tool*'s suppression comments is on
-    the argv this launch will really run -- read back, not assumed."""
+    the argv this launch will really run -- read back, not assumed. Only
+    meaningful for a flag-lever tool; `SUPPRESSION_INGEST_LEVER` names the
+    others, whose row `_record_suppression_posture` takes from the mode."""
     flag = SUPPRESSION_COMMENTS.get(tool, (None, None))[1]
     return bool(flag) and flag in cmd
 
@@ -1721,8 +1746,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                              "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
                              image] + cmd)
                 _NETWORK_POSTURE[tool] = egress.NO_NETWORK
-                _record_suppression_posture(tool,
-                                            _suppression_flag_on(tool, cmd))
+                _record_suppression_posture(
+                    tool, _suppression_flag_on(tool, cmd), security_mode)
                 _record_scanner_config(tool, cmd)
                 with progress.tool(tool, index, total) as step:
                     done = step.finish(
@@ -1765,11 +1790,13 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # inside the container, so what the host can observe is the mode it
             # put on this argv and the adapter's own declaration that it reads
             # one -- both read back here rather than assumed.
+            adapter_mode = _adapter_security_mode(docker)
             _record_suppression_posture(
                 tool,
-                _adapter_security_mode(docker) == REDTEAM
+                adapter_mode == REDTEAM
                 and SUPPRESSION_COMMENTS.get(tool, (None, None))[1] is not None
-                and bool(getattr(adapter, "reads_security_mode", False)))
+                and bool(getattr(adapter, "reads_security_mode", False)),
+                adapter_mode)
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
                     _capture_run("adapter", tool, docker, out_path, runner,
@@ -1867,8 +1894,11 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     `"n/a"` for a tool whose argv honours no such comment at all. A tool with no
     row was not ASSESSED, which is deliberately not the same claim as `n/a`.
     Defaults to the ledger `run_tools()` filled while building each argv -- an
-    observation, like `redacted` and `network` -- so taking a flag away makes the
-    claim change rather than leaving an intention behind. This row is about
+    observation, like `redacted` and `network`. For a FLAG-lever tool (bandit,
+    gitleaks) that observation is the argv itself, so taking the flag away makes
+    the claim change rather than leaving an intention behind; for an INGEST-lever
+    tool (`SUPPRESSION_INGEST_LEVER`, semgrep today) the argv decides nothing and
+    the row follows the run's mode, which is what does. This row is about
     COMMENTS only: the ignore FILES of the same class are `scanner_config`
     below (bandit), unconditional (`.trivyignore`, `osv-scanner.toml`), or
     still open (`.gitleaksignore`, which gitleaks 8.18.4 reads from the source
@@ -1877,7 +1907,9 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     One row is true for a reason that is NOT on the argv, and this is the
     schema of record, so it says so: semgrep's. At the pin the scanner reports
     a `# nosemgrep`'d result whether or not `--disable-nosem` is passed, so the
-    row tracks the mode and the INGEST enforces it --
+    row is RECORDED from the mode (fix round 2: reading it off the belt flag
+    would publish `honoured` for a redteam run the moment the belt came off)
+    and the INGEST enforces it --
     `ingest_tools.ingest_dir_detailed` drops those results under `standard` and
     publishes the count per tool as `suppressed_in_source`, which is where a
     reader sees HOW MUCH a honoured comment cost. `run_tools` never sees that

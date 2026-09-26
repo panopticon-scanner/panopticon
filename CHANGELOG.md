@@ -38,8 +38,10 @@ evidence exposed.
   excluded counts), and every ingest on both paths now carries the run's mode so no two of them
   disagree about which findings exist. It stands DISCLOSED: `tools-manifest.json` carries
   `suppression_comments` (`{"<tool>": "ignored" | "honoured" | "n/a"}`), one row per assessed tool,
-  read off the argv the runner actually built, so taking a flag away changes the claim rather than
-  leaving an intention behind; a tool with NO row was not assessed, which is not the same claim as
+  read off whatever decides it -- the argv the runner built for bandit and gitleaks, so taking a
+  flag away changes the claim rather than leaving an intention behind, and the run's mode for
+  semgrep, whose lever is the ingest and whose flag is belt; a tool with NO row was not assessed,
+  which is not the same claim as
   `n/a`. Two residuals are disclosed there rather than guessed at on an argv -- gosec's `#nosec`
   and eslint-security's inline config, whose knobs were not verified at the pin, since a flag a
   scanner rejects is a tool that exits non-zero and writes no SARIF. Two ignore FILES stay the

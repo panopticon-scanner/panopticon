@@ -1325,10 +1325,11 @@ class TestInlineSuppressionIsNeutralisedUnderRedteamOnly(unittest.TestCase):
     other half of the scan-root class, and it is NOT the same thing as an
     ignore file.
 
-    A comment sits in the diff a reviewer reads, and under `standard` -- the
-    mode CI's merge gate runs, since `.github/workflows/security.yml` passes no
-    `--security` -- the operator is scanning their own repository, so it stands
-    and the manifest says it stood. Under `--security redteam` the tree is
+    A comment sits in the diff a reviewer reads, and under `standard` -- an
+    operator scanning their own repository -- it stands, and the manifest says
+    it stood. This repository's own CI (`security.yml` and the fork-PR
+    `security-fork.yml`) scans in `redteam` (#2125), so nothing target-authored
+    is honoured on either check. Under `--security redteam` the tree is
     untrusted and every scanner whose pinned version exposes the knob is told
     to stop honouring it. Only knobs that EXIST are passed: a flag a pinned
     scanner rejects is a tool that exits non-zero and produces no SARIF, which
@@ -1859,17 +1860,52 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
         self.assertNotIn("brakeman", rt.SUPPRESSION_COMMENTS)
 
     def test_the_claim_follows_the_argv_and_not_the_intent(self):
-        # The coupling, the same way the redaction claim is coupled: with
-        # semgrep's knob taken out of the table the redteam argv carries no
-        # flag, and the manifest says `honoured` instead of repeating a mode.
+        # The coupling, the same way the redaction claim is coupled -- for a
+        # tool whose ARGV is the lever. With bandit's knob taken out of the
+        # table the redteam argv carries no `--ignore-nosec`, bandit really does
+        # honour a `# nosec`, and the manifest says `honoured` instead of
+        # repeating the mode back.
         table = dict(rt.SUPPRESSION_COMMENTS)
-        table["semgrep"] = ("# nosemgrep", None)
+        table["bandit"] = ("# nosec", None)
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
-            payload = self._manifest(d, tools=["semgrep"],
+            payload = self._manifest(d, tools=["bandit"],
                                      security_mode="redteam")
         self.assertEqual(payload["suppression_comments"],
-                         {"semgrep": "honoured"})
+                         {"bandit": "honoured"})
+
+    def test_an_ingest_lever_tools_row_follows_the_mode_not_the_flag(self):
+        # Re-review finding 3. semgrep's `--disable-nosem` is BELT at the pin:
+        # the scanner marks and reports a `# nosemgrep`'d result either way, and
+        # `sarif_utils.sarif_to_findings` is what honours the comment (under
+        # `standard`) or ignores it (under `redteam`). So reading semgrep's row
+        # off the argv publishes a FALSE COVERAGE CLAIM the moment the belt comes
+        # off: `honoured` on a redteam run whose ingest ignores every such
+        # comment. The row follows what actually governs -- the mode.
+        table = dict(rt.SUPPRESSION_COMMENTS)
+        table["semgrep"] = ("# nosemgrep", None)   # the belt taken off
+        for mode, expected in (("redteam", "ignored"), ("standard", "honoured")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+                payload = self._manifest(d, tools=["semgrep"],
+                                         security_mode=mode)
+            self.assertEqual(payload["suppression_comments"],
+                             {"semgrep": expected})
+
+    def test_the_belt_is_still_on_the_real_redteam_argv(self):
+        # The test above patches the flag away, so this one pins that the
+        # unpatched redteam launch still carries it -- the belt is documented,
+        # and a later semgrep may act on it.
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(list(cmd))
+            return _FakeResult(returncode=0, stdout=b'{"runs":[]}')
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(io.StringIO()):
+            rt.run_tools(d, ["semgrep"], os.path.join(d, "tools"),
+                         runner=runner, venv_dirs=[], security_mode="redteam")
+        self.assertIn("--disable-nosem", calls[0])
 
     def test_the_ledger_is_this_runs_and_not_the_last_one(self):
         with tempfile.TemporaryDirectory() as d:

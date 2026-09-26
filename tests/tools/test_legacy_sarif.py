@@ -192,11 +192,12 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
     """#1839 (run-14 SEC-284952751): two kinds of in-tree suppression, two rules.
 
     An inline suppression COMMENT (`gitleaks:allow`) is in the target's SOURCE,
-    and under `standard` -- the mode CI's merge gate runs
-    (`.github/workflows/security.yml` passes no `--security`) -- it is an
-    operator's reviewed, in-diff decision about their own repository, so it is
-    HONOURED and the manifest says so. Under `--security redteam` the reviewed
-    tree is untrusted and the comment buys nothing.
+    and under `standard` -- an operator scanning their own repository -- it is
+    their reviewed, in-diff decision, so it is HONOURED and the manifest says
+    so. This repository's own CI (`security.yml` and the fork-PR
+    `security-fork.yml`) scans in `redteam` (#2125), so nothing target-authored
+    is honoured on either check. Under `--security redteam` the reviewed tree is
+    untrusted and the comment buys nothing.
 
     The other kind, the source-root `.gitleaksignore`, is NOT this PR's and is
     not this test's either: #1957 owns that measurement and #1924 owns the row.

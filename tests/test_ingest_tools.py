@@ -1947,6 +1947,46 @@ class TestInSourceSuppressionIsAnIngestPolicy(unittest.TestCase):
         self.assertNotIn("suppressed_in_source", disp["semgrep"])
 
 
+# BOTH public entry points into an ingest (#1839 fix round 2, re-review finding
+# 4). `ingest_dir` is in `ingest_tools.__all__`, takes `security_mode` and
+# defaults it to `standard` exactly as the detailed one does, so a mode-blind
+# production call through the wrapper is the same defect wearing a shorter name.
+INGEST_ENTRY_POINTS = ("ingest_dir_detailed", "ingest_dir")
+
+
+def ingest_calls_without_a_mode(root):
+    """`(seen, missing)` for every ingest entry-point call under *root*.
+
+    `seen` is `(relative path, line, names the keyword)` per call and exists so
+    a caller can tell "the guard found nothing" from "everything passed";
+    `missing` is the subset that would honour the standard-mode policy whatever
+    the run's mode. Taken by ROOT rather than hard-coding one, so the red proof
+    for this guard can run it against a copy of the tree with a mode-blind call
+    planted in it instead of planting one here.
+    """
+    import ast
+    seen = []
+    for dirpath, _dirs, names in os.walk(root):
+        for name in sorted(names):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), filename=path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                called = (func.attr if isinstance(func, ast.Attribute)
+                          else getattr(func, "id", None))
+                if called not in INGEST_ENTRY_POINTS:
+                    continue
+                kwargs = {kw.arg for kw in node.keywords}
+                seen.append((os.path.relpath(path, root), node.lineno,
+                             "security_mode" in kwargs))
+    return seen, [(f, line) for f, line, ok in seen if not ok]
+
+
 class TestEveryProductionIngestNamesAMode(unittest.TestCase):
     """A call site that omits `security_mode` honours nothing (#1839).
 
@@ -1956,33 +1996,26 @@ class TestEveryProductionIngestNamesAMode(unittest.TestCase):
     no text to grep for that, so this reads the AST of every call in
     `skill/scripts` and requires the keyword by name (the tests/ tree is
     exempt: a test names the mode it is about, or deliberately omits it).
+
+    BOTH entry points count: `ingest_dir_detailed` and the public `ingest_dir`
+    wrapper, which the first version of this guard did not match at all.
     """
 
     def test_every_call_in_skill_scripts_passes_security_mode(self):
-        import ast
         root = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "skill", "scripts")
-        seen = []
-        for dirpath, _dirs, names in os.walk(root):
-            for name in sorted(names):
-                if not name.endswith(".py"):
-                    continue
-                path = os.path.join(dirpath, name)
-                with open(path, encoding="utf-8") as fh:
-                    tree = ast.parse(fh.read(), filename=path)
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.Call):
-                        continue
-                    func = node.func
-                    called = (func.attr if isinstance(func, ast.Attribute)
-                              else getattr(func, "id", None))
-                    if called != "ingest_dir_detailed":
-                        continue
-                    kwargs = {kw.arg for kw in node.keywords}
-                    seen.append((os.path.relpath(path, root), node.lineno,
-                                 "security_mode" in kwargs))
-        self.assertTrue(seen, "no ingest_dir_detailed call found at all")
-        missing = [(f, line) for f, line, ok in seen if not ok]
+        seen, missing = ingest_calls_without_a_mode(root)
+        self.assertTrue(seen, "no ingest call found at all")
         self.assertEqual([], missing,
                          "these ingests would honour the standard-mode policy "
                          "whatever the run's mode: %r" % (missing,))
+
+    def test_the_guard_watches_the_wrapper_too(self):
+        # The wrapper is public and defaults the mode, so it is the same defect
+        # under a shorter name. Pinned on the NAMES the walk matches, because
+        # the tree has no mode-blind call to catch -- the red proof for this
+        # plants one in a copy (see the round report).
+        self.assertEqual(("ingest_dir_detailed", "ingest_dir"),
+                         INGEST_ENTRY_POINTS)
+        self.assertTrue(hasattr(it, "ingest_dir"))
+        self.assertIn("ingest_dir", it.__all__)

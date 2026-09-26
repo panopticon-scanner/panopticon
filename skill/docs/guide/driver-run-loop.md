@@ -725,10 +725,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   in `redteam`**, so nothing target-authored is honoured on either check — neither an inline comment
   nor a root `.bandit` — and a `standard` run is an operator's own, deliberately. It stands
   DISCLOSED rather than silently: `tools-manifest.json` carries `suppression_comments`,
-  `{"<tool>": "ignored" | "honoured" | "n/a"}`, one row per assessed tool, read off the argv the
-  runner actually built — so taking a flag away changes the claim instead of leaving an intention
-  behind, the same construction as `network` and `redacted` **in `tools-manifest.json`** (`network`
-  also reaches the report's `meta.tools`; these two rows live in the manifest only). `n/a` is a tool
+  `{"<tool>": "ignored" | "honoured" | "n/a"}`, one row per assessed tool, read off whatever
+  DECIDES it — the argv the runner actually built for bandit and gitleaks, so taking a flag away
+  changes the claim instead of leaving an intention behind, and the run's MODE for semgrep, whose
+  lever is the ingest and whose flag is belt (reading that row off the belt would say `honoured` on
+  a redteam run the moment the belt came off). Same construction as `network` and `redacted` **in
+  `tools-manifest.json`** (`network` also reaches the report's `meta.tools`; these two rows live in
+  the manifest only). `n/a` is a tool
   whose argv honours no such comment at all; a tool with NO row was not assessed, which is
   deliberately not the same claim. Two residuals are disclosed on that line rather than guessed at
   on an argv: gosec's
