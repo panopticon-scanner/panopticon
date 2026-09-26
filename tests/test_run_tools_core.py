@@ -623,21 +623,36 @@ class TestVirtualenvExclusion(unittest.TestCase):
             rt.run_tools(d, ["semgrep", "bandit"], os.path.join(d, "out"),
                          runner=runner)
             # #1839: bandit's argv carries the scanner-owned `--ini` either way
-            # (the #run7 discovery walk must never run), and nothing else.
-            expected = {"semgrep": list(rt.TOOL_CMD["semgrep"]),
-                        "bandit": list(rt.TOOL_CMD["bandit"][:1])
-                        + ["--ini", "%s/%s" % (rt.BANDIT_INI_MOUNT,
-                                               rt.BANDIT_INI_NAME)]
-                        + list(rt.TOOL_CMD["bandit"][1:])}
+            # (the #run7 discovery walk must never run) and the scanner-owned
+            # `--exclude` either way (an ini that fails to arrive is fail-open),
+            # and nothing else. semgrep is byte-identical to TOOL_CMD.
+            at = list(rt.TOOL_CMD["bandit"]).index("/src")
+            expected = {
+                "semgrep": list(rt.TOOL_CMD["semgrep"]),
+                "bandit": (list(rt.TOOL_CMD["bandit"][:1])
+                           + ["--ini", "%s/%s" % (rt.BANDIT_INI_MOUNT,
+                                                  rt.BANDIT_INI_NAME)]
+                           + list(rt.TOOL_CMD["bandit"][1:at])
+                           + ["--exclude=%s" % rt._bandit_exclude_value([])]
+                           + list(rt.TOOL_CMD["bandit"][at:]))}
             for cmd, tool in zip(calls, ("semgrep", "bandit")):
                 self.assertEqual(cmd[-len(expected[tool]):], expected[tool], tool)
 
-    def test_an_option_shaped_directory_name_stays_a_value(self):
-        # F7: the attached form is what makes this safe, not the tool's parser.
+    def test_an_option_shaped_directory_name_is_not_passed_at_all(self):
+        # F7 built the attached `--flag=value` form so a directory named `-rf`
+        # could never read as an OPTION. #1839 round 1 goes further: the
+        # allowlist refuses a leading `-` outright, so such a directory is
+        # SCANNED and named on its manifest row. The attached form stays as
+        # belt for every name that does get through.
         cmd = rt._with_venv_excludes(
             "semgrep", list(rt.TOOL_CMD["semgrep"]), [{"path": "-rf", "reason": "name"}])
-        self.assertIn("--exclude=-rf", cmd)
-        self.assertNotIn("-rf", cmd)
+        self.assertEqual(cmd, list(rt.TOOL_CMD["semgrep"]))
+        self.assertNotIn("-rf", " ".join(cmd))
+        for arg in rt._with_venv_excludes(
+                "semgrep", list(rt.TOOL_CMD["semgrep"]),
+                [{"path": ".venv", "reason": "name"}]):
+            if arg.startswith("--exclude"):
+                self.assertEqual(arg, "--exclude=.venv")   # attached, one arg
 
     def test_bandit_excludes_the_marker_detected_dirs_too(self):
         # F3: `.bandit` carries only the NAME spellings, so a venv detected by
@@ -884,9 +899,15 @@ class TestVirtualenvExclusion(unittest.TestCase):
         for spelling in (".venv", "venv"):
             self.assertNotIn("--exclude=%s" % spelling, semgrep)
             self.assertNotIn("--skip-dirs=%s" % spelling, trivy)
-        # No venv to skip means no bandit --exclude at all; its scanner-owned
-        # ini still carries the defaults (see tests/test_run_tools_dispatch.py).
-        self.assertEqual([a for a in bandit if a.startswith("--exclude=")], [])
+        # bandit's `--exclude` is still there and still SCANNER-owned: no venv
+        # in it, and the entries the scan relies on carried on the argv rather
+        # than left to an ini that is fail-open on arrival (round 1 N1).
+        entries = [a for a in bandit
+                   if a.startswith("--exclude=")][0][len("--exclude="):].split(",")
+        self.assertNotIn("/src/.venv", entries)
+        self.assertNotIn("/src/venv", entries)
+        for owned in rt.BANDIT_SCANNER_EXCLUDES:
+            self.assertIn(owned, entries)
 
     def test_main_records_which_venvs_the_scan_skipped(self):
         for mode, skipped in (("standard", True), ("redteam", False)):
@@ -1122,6 +1143,159 @@ class TestATargetFileCannotNarrowTheScan(unittest.TestCase):
                 for arg in [a for a in cmd if a.startswith("--exclude=")]:
                     for entry in arg[len("--exclude="):].split(","):
                         self.assertNotIn(entry, ("/src/*", "/src/src"))
+
+
+class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
+    """#1839 fix round 1 (review C1/I1/I2): the DIRECTORY NAME is target input too.
+
+    Round 0 replaced the target's `.bandit` with a scanner-owned ini -- and then
+    interpolated a directory name straight off `os.walk` into it, so a
+    venv-shaped directory named `x\ntests = B101` added a second key to the
+    `[bandit]` section (bandit reads `tests`, `skips`, `configfile` and six more
+    from there whenever the CLI leaves them at their default) and a directory
+    named `a,b` injected the bare exclude entry `b`, which substring-matches
+    almost every path. The ini is a CONSTANT now, and a path reaches an exclusion
+    knob only through an ALLOWLIST.
+    """
+
+    # Names the ALLOWLIST must refuse. `a\x00b` is refused by the predicate but
+    # cannot be planted on disk (the kernel rejects it), so it is tested against
+    # the predicate only, in `_PREDICATE_ONLY`.
+    HOSTILE = ("x\ntests = B101", "a,b", "{src,q}", "-rf", "sr c",
+               "pkg\rskips = B602", "caf\u00e9", "*", "q?", "lib[0]")
+    _PREDICATE_ONLY = ("a\x00b",)
+
+    def _shaped_venv(self, root, name):
+        """A directory the SHAPE test accepts, under a hostile name."""
+        os.makedirs(os.path.join(root, name, "bin"), exist_ok=True)
+        for rel in (rt.VENV_MARKER, os.path.join("bin", "python")):
+            with open(os.path.join(root, name, rel), "w") as fh:
+                fh.write("")
+
+    def test_no_hostile_name_is_expressible_as_an_exclusion(self):
+        # An ALLOWLIST, not a denylist: the four glob metacharacters round 0
+        # refused are a subset of what a matcher can read. trivy matches
+        # `--skip-dirs` with doublestar, whose language includes `{a,b}`
+        # alternation, so `{src,q}` removed `src` from trivy on one `mkdir`.
+        for name in self.HOSTILE + self._PREDICATE_ONLY:
+            self.assertFalse(rt.expressible_as_exclusion(name), repr(name))
+        for name in (".venv", "venv", "env", "a/b/.venv", "my-venv",
+                     "venv.old", "_env", "V1.2_env"):
+            self.assertTrue(rt.expressible_as_exclusion(name), repr(name))
+
+    def test_a_relative_component_is_never_expressible(self):
+        for name in (".", "..", "a/..", "../a", "a//b", "a/", "/a", "", "-a/b"):
+            self.assertFalse(rt.expressible_as_exclusion(name), repr(name))
+
+    def test_the_bandit_ini_is_byte_identical_whatever_the_tree_holds(self):
+        # The ini's ONLY job is to pre-empt bandit's `.bandit` discovery walk
+        # (#run7). Nothing in it comes from the target, so nothing in the tree
+        # can change a byte of it.
+        baseline = rt.BANDIT_INI_TEXT
+        for name in self.HOSTILE:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                self._shaped_venv(d, name)
+                skip, _rows = rt.partition_venv_dirs(rt.find_virtualenvs(d),
+                                                     "standard")
+                self.assertEqual(rt.BANDIT_INI_TEXT, baseline)
+                # ...and the CLI value is the scanner-owned baseline exactly:
+                # nothing hostile was added, so nothing can split it either.
+                cmd = rt._with_venv_excludes("bandit",
+                                             list(rt.TOOL_CMD["bandit"]), skip)
+                self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
+                                 ["--exclude=%s" % rt._bandit_exclude_value([])])
+
+    def test_the_ini_holds_exactly_one_key_and_no_target_text(self):
+        lines = [ln for ln in rt.BANDIT_INI_TEXT.splitlines() if ln.strip()]
+        self.assertEqual(lines[0], "[bandit]")
+        self.assertEqual(len([ln for ln in lines if "=" in ln]), 1)
+        self.assertEqual(len(lines), 2)
+        value = lines[1].split("=", 1)[1]
+        for owned in rt.BANDIT_SCANNER_EXCLUDES:
+            self.assertIn(owned, [e.strip() for e in value.split(",")])
+
+    def test_no_scanner_owned_exclude_entry_can_split_or_inject(self):
+        # A future entry with a comma would inject a second exclusion; one with
+        # a newline would inject a second ini KEY. Neither is a target input --
+        # which is exactly why it has to be pinned here rather than validated at
+        # runtime on data nobody can supply.
+        for entry in tuple(rt.BANDIT_DEFAULT_EXCLUDES) + tuple(rt.BANDIT_SCANNER_EXCLUDES):
+            for char in (",", "\n", "\r", "="):
+                self.assertNotIn(char, entry, entry)
+
+    def test_bandit_always_carries_the_scanner_owned_exclusions(self):
+        # bandit's ini is fail-OPEN on arrival: `parse_ini_file` catches a parse
+        # failure, warns, and bandit runs on CLI args alone. So the CLI carries
+        # the exclusions unconditionally -- under redteam there is no venv to
+        # skip, and the ini used to be the only thing carrying `.worktrees`.
+        cmd = rt._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), [])
+        flag = [a for a in cmd if a.startswith("--exclude=")]
+        self.assertEqual(len(flag), 1, cmd)
+        entries = flag[0][len("--exclude="):].split(",")
+        for owned in rt.BANDIT_SCANNER_EXCLUDES:
+            self.assertIn(owned, entries)
+
+    def test_the_library_default_partitions_before_it_excludes_anything(self):
+        # Review I2: `run_tools()`'s own default was the RAW `find_virtualenvs`
+        # list, so a bare-marker `src/` went straight to all three knobs -- the
+        # triage extract's reproduction, on the module's own convenience path.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            for rel in ("app.py", rt.VENV_MARKER):
+                with open(os.path.join(d, "src", rel), "w") as fh:
+                    fh.write("")
+            rt.run_tools(d, ["semgrep", "trivy", "bandit"],
+                         os.path.join(d, "out"), runner=runner)
+        semgrep, trivy, bandit = calls
+        self.assertNotIn("--exclude=src", semgrep)
+        self.assertNotIn("--skip-dirs=src", trivy)
+        entries = [a for a in bandit if a.startswith("--exclude=")][0].split(",")
+        self.assertNotIn("/src/src", entries)
+
+    def test_a_bare_marker_row_is_refused_by_the_argv_builder_too(self):
+        # Belt: the skip list and the argv are built in different functions, so
+        # the rule is enforced in both. A caller that hands the raw list in gets
+        # no flag for it.
+        dirs = [{"path": "src", "reason": rt.VENV_MARKER_NO_SHAPE},
+                {"path": ".venv", "reason": rt.VENV_MARKER}]
+        cmd = rt._with_venv_excludes("semgrep", list(rt.TOOL_CMD["semgrep"]), dirs)
+        self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
+                         ["--exclude=.venv"])
+
+    def test_a_config_that_cannot_be_staged_costs_bandit_and_nothing_else(self):
+        # Review N3: the ini write raised straight out of the dispatch loop, so a
+        # full or read-only $TMPDIR took semgrep and every adapter after bandit
+        # down with it. One tool's problem stays one tool's problem -- and bandit
+        # lands in `missing`, which is the fail-closed direction.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        err = io.StringIO()
+        real_mkdtemp = rt.tempfile.mkdtemp
+
+        def only_the_ini_fails(*a, **kw):
+            if str(kw.get("prefix", "")).startswith("pano-bandit-ini-"):
+                raise OSError("No space left on device")
+            return real_mkdtemp(*a, **kw)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(rt.tempfile, "mkdtemp",
+                                  side_effect=only_the_ini_fails), \
+                contextlib.redirect_stderr(err):
+            written = rt.run_tools(d, ["bandit", "semgrep"],
+                                   os.path.join(d, "out"), runner=runner)
+        self.assertEqual(len(calls), 1)                 # semgrep still ran
+        self.assertIn("semgrep", calls[0])
+        self.assertEqual(len(written), 1)               # bandit produced nothing
+        self.assertIn("No space left on device", err.getvalue())
 
 
 class TestRawCaptureRedaction(unittest.TestCase):

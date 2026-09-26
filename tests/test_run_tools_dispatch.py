@@ -455,13 +455,36 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
             self.assertIn(default, entries)
         for owned in rt.BANDIT_SCANNER_EXCLUDES:        # nested checkouts (#run7)
             self.assertIn(owned, entries)
-        self.assertIn("/src/.venv", entries)            # this run's virtualenvs
         self.assertNotIn("src", entries)                # the target's choice: no
+        # Round 1 C1: this run's virtualenvs are NOT in the ini -- nothing
+        # target-derived is -- they are on the argv, which cannot grow a key.
+        self.assertNotIn("/src/.venv", entries)
+        argv_entries = [a for a in seen["argv"] if a.startswith("--exclude=")]
+        self.assertEqual(len(argv_entries), 1, seen["argv"])
+        self.assertIn("/src/.venv",
+                      argv_entries[0][len("--exclude="):].split(","))
 
-    def test_the_ini_text_is_the_value_the_argv_carries(self):
-        # One definition: a CLI --exclude bandit PREFERS over the ini must not
-        # be able to disagree with the ini it is pinned beside.
+    def test_the_ini_is_a_constant_no_tree_can_change(self):
+        # Round 1 C1: a venv-shaped directory named `x\ntests = B101` used to add
+        # a second key to the `[bandit]` section, and bandit prefers an ini key
+        # over the CLI whenever the CLI left that option at its default -- so one
+        # `mkdir` chose bandit's `tests`, `skips` or `configfile`.
+        plain = self._dispatch(plant_ini=False, plant_venv=False)["ini"]
+        hostile = self._dispatch()["ini"]
+        self.assertEqual(plain, hostile)
+        self.assertEqual(plain, rt.BANDIT_INI_TEXT)
+        self.assertEqual(len([ln for ln in plain.splitlines() if "=" in ln]), 1)
+
+    def test_the_argv_value_extends_the_ini_and_never_contradicts_it(self):
+        # bandit PREFERS the CLI `--exclude` over the ini's, so the CLI value
+        # must carry everything the ini carries -- plus this run's virtualenvs,
+        # which the ini deliberately does not name (round 1 C1).
         venvs = [{"path": ".venv", "reason": rt.VENV_MARKER}]
         cmd = rt._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), venvs)
-        flag = [a for a in cmd if a.startswith("--exclude=")][0]
-        self.assertIn(flag[len("--exclude="):], rt.bandit_ini_text(venvs))
+        argv_value = [a for a in cmd
+                      if a.startswith("--exclude=")][0][len("--exclude="):]
+        ini_value = self._ini_excludes(rt.BANDIT_INI_TEXT)
+        for entry in ini_value:
+            self.assertIn(entry, argv_value.split(","))
+        self.assertIn("/src/.venv", argv_value.split(","))
+        self.assertNotIn("/src/.venv", ini_value)
