@@ -685,11 +685,16 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         # `mkdtemp`'s 0700: no `chmod 0755` on a directory, which is the
         # permissive-mask pattern both bandit (B103) and semgrep flag, and
         # nothing else in that directory is ever exposed to the container.
-        seen = self._dispatch()
+        # Under standard with a target `.bandit` nothing of ours is staged, so
+        # the pin runs on the launch that stages the scanner-owned ini.
+        seen = self._dispatch(plant_ini=False)
         self.assertEqual(0o700, seen["dir_mode"])
         self.assertEqual(0o644, seen["file_mode"])
-        self.assertTrue(seen["mount"].endswith(os.sep + rt.BANDIT_INI_NAME),
-                        seen["mount"])
+        host, inside, mode = seen["mount"].split(":")
+        self.assertTrue(host.endswith(os.sep + rt.BANDIT_INI_NAME), seen["mount"])
+        self.assertEqual("%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME),
+                         inside)
+        self.assertEqual("ro", mode)
 
     def test_the_pin_is_unconditional(self):
         # #run7 is a nested checkout's `.bandit` making bandit ERROR and emit
