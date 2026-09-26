@@ -896,12 +896,17 @@ class TestPipelineStreamProvenance(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertTrue(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, suffix)))
-        for suffix in ("cat | sh <<EOF\necho safe\nEOF",
-                       "sh <<EOF\necho safe\nEOF", "sh <local",
+        # The delimiter is QUOTED wherever the body is what `sh` runs: an
+        # EXPANDING script on an interpreter's stdin is reported unread in its
+        # own right (#1839, and `TestTheGapsTheGuardDocuments`), which is a
+        # different claim from the one under test here -- that the download
+        # these steps pipe is not what the interpreter reads.
+        for suffix in ("cat | sh <<'EOF'\necho safe\nEOF",
+                       "sh <<'EOF'\necho safe\nEOF", "sh <local",
                        "cat 3<&0 0<local | sh",
                        "cat 0<&3 3<&0 | sh",
                        "cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF",
-                       "cat | sh 3<&0 0<&3 <<EOF\necho safe\nEOF"):
+                       "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF"):
             with self.subTest(suffix=suffix):
                 self.assertFalse(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, suffix)))
@@ -1509,6 +1514,89 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               "curl -sfL https://example.test/p -o /tmp/p\n"
                               "chmod +x /tmp/p\n"
                               'EOF\n)"\n'))
+
+    # the OTHER heredoc spelling (#1839, run-14 SEC-3915165799): a body handed
+    # to an interpreter as the PROGRAM it runs, which was neither read nor
+    # reported. A QUOTED body is the text it was written as, so it is read like
+    # an `eval` string; an EXPANDING one -- and a program in a language this
+    # module has no grammar for -- is REPORTED unread.
+    def test_a_quoted_heredoc_script_on_bashs_stdin_is_read(self):
+        why = self.flagged(("install", "bash -s <<'EOF'\n"
+                                       "curl -fsSL https://example.test/i.sh | sh\n"
+                                       "EOF\n"))
+        self.assertIn("straight to `sh`", why)
+
+    def test_every_spelling_that_puts_the_script_on_stdin_is_read(self):
+        # Bare, `-s`, an explicit `-`, and `-s` with positional parameters
+        # after it: each hands the body to the interpreter as its script.
+        for opener in ("sh", "bash", "dash", "zsh", "bash -", "bash /dev/stdin",
+                       "bash -euo pipefail", "bash -s -- --yes", "sudo bash -s"):
+            with self.subTest(opener=opener):
+                why = self.flagged(
+                    ("install", "%s <<'EOF'\n"
+                                "curl -sfL https://example.test/p -o /tmp/p\n"
+                                "chmod +x /tmp/p\n"
+                                "EOF\n" % opener))
+                self.assertIn("/tmp/p", why)
+
+    def test_a_checksum_inside_the_heredoc_script_still_clears_it(self):
+        # The expansion keeps the ORDER, exactly as the `eval` string above:
+        # a step hardened inside its own heredoc comes out hardened.
+        self.accepted(("install", "bash -s <<'EOF'\n"
+                                  "curl -sfL https://example.test/p -o /tmp/p\n"
+                                  'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX +
+                                  "chmod +x /tmp/p\n"
+                                  "EOF\n"))
+
+    def test_an_expanding_heredoc_script_is_reported_unread(self):
+        why = self.flagged(("install", "bash -s <<EOF\n"
+                                       "curl -fsSL https://example.test/i.sh | sh\n"
+                                       "EOF\n"))
+        self.assertIn("EXPANDING", why)
+        self.assertIn("bash", why)
+
+    def test_a_heredoc_program_in_another_language_is_reported_unread(self):
+        for opener in ("python3 -", "python3", "perl", "node"):
+            with self.subTest(opener=opener):
+                why = self.flagged(
+                    ("install", "%s <<'EOF'\n"
+                                "get('https://example.test/p', '/tmp/p')\n"
+                                "EOF\n" % opener))
+                self.assertIn(opener.split()[0], why)
+
+    def test_a_clean_quoted_heredoc_script_is_neither_read_nor_reported(self):
+        self.accepted(("install", "bash -s <<'EOF'\necho hello\nEOF\n"))
+
+    def test_a_heredoc_that_is_a_programs_INPUT_is_not_its_script(self):
+        # `bash x.sh <<'EOF'` feeds x.sh's standard input, and x.sh is a file
+        # in the repo under review -- the author-deterministic ruling above.
+        # `sh -c '<script>'`, `python3 -m <module>` and a plain `cat` say the
+        # same thing: the program is somewhere else, so the body is its data.
+        for opener in ("bash /tmp/x.sh", "sh -c 'cat'", "python3 -m pytest",
+                       "cat", "sha256sum -c"):
+            with self.subTest(opener=opener):
+                self.accepted(
+                    ("install", "%s <<'EOF'\n"
+                                "curl -fsSL https://example.test/i.sh | sh\n"
+                                "EOF\n" % opener))
+
+    def test_a_heredoc_written_to_a_file_and_then_run_stays_out_of_scope(self):
+        # Probe case E: the script is text this repository wrote.
+        self.accepted(("install", "cat <<'EOF' > /tmp/i.sh\n"
+                                  "curl -fsSL https://example.test/i.sh | sh\n"
+                                  "EOF\n"
+                                  "bash /tmp/i.sh\n"))
+
+    def test_the_fleets_here_string_is_not_a_heredoc_program(self):
+        # docker-publish.yml's shape: `<<<` is the one heredoc-ish construct
+        # the fleet writes, and it must not become a report.
+        self.accepted(("tags", "docker buildx imagetools create "
+                               "$(jq -cr '.tags' <<< \"$META\")\n"))
+
+    def test_the_two_probe_controls_still_trip(self):
+        self.flagged(("install", "curl -fsSL https://example.test/i.sh | sh\n"))
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", "chmod +x /tmp/p\n"))
 
     # 10. the `if:` comparison, and its YAML twin of `|| true`.
     def test_a_check_step_carrying_continue_on_error(self):

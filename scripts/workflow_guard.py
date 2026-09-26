@@ -33,7 +33,8 @@ workspace, /tmp and PATH, so a download in step A and the `chmod +x`/run in
 step B is one act split into two innocent halves, and a `sha256sum -c` in a
 later step is a real check of an earlier step's file. A step whose `shell:` is
 not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the
-same act in a grammar this module does not have.
+same act in a grammar this module does not have, and so is a heredoc body
+handed to such an interpreter as its program (`python3 - <<'EOF'`).
 
 Stdlib only, so the test suite imports it with no dependency (`import
 workflow_guard` -- repo-root `scripts/` is on the path via tests/conftest.py).
@@ -115,6 +116,39 @@ that starts catching one fails there, and this list is edited with it.
   a second expansion model. The fleet writes one heredoc-ish construct (a
   `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
   longer CRASHES, which is what it did until #1697's review.
+  CLOSED for the OTHER heredoc spelling, the body handed to an interpreter as
+  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<'EOF'`, `python3 - <<'EOF'` --
+  #1839, run-14 SEC-3915165799, which found it neither read nor reported).
+  Two facts decide it and both are already parsed: whether a command's program
+  is its standard input at all (`workflow_forms.stdin_program`, an operand walk
+  -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
+  then the body is that program's input DATA), and which body descriptor 0
+  finally reads, with the flag saying whether it EXPANDED
+  (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the
+  interpreter as the text it was written as, so `_stdin_scripts` reads it
+  exactly as `_flattened` reads an `eval` string -- a `curl … | sh` inside it
+  is the defect it is at the top level. An EXPANDING body is REPORTED unread
+  (`_unread_stdin`) instead of read, because its `$(...)` were lifted into the
+  enclosing parse's table before this text was reached: the entry above, one
+  redirection over. A program in a language this module has no grammar for is
+  reported too, which is the answer `unparseable` already gives a
+  `shell: python` step. What that leaves unread: an interpreter whose program
+  is on stdin in a spelling the operand walk does not resolve -- behind an
+  option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
+  only `-o`/`-O` as options taking a separate value, or named as a FILE by a
+  builtin outside its table (`. /dev/stdin <<'EOF'`); an interpreter behind a
+  TRANSPORT (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`,
+  `docker exec -i c sh <<'EOF'`), whose argv this walk reads as the transport's;
+  and, as everywhere in this module, an interpreter under a name its tables do
+  not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
+  program's basename. A SECOND heredoc on the same command line
+  (`bash -s <<'A' 3<<'B'`) is a reader limitation, not a ruling: the lifter
+  takes one body per line, so the stdin body is dropped rather than read --
+  tracked as a follow-up from #1839.
+  A heredoc the step WRITES to a file and then runs
+  (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business at all: the
+  script is text in the repo under review, which is the `sed -i` entry's
+  author-deterministic ruling.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
@@ -137,9 +171,10 @@ import sys
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, chmod_executable, chmod_targets, covers, described,
-                            in_container, names_file, parse_fetch, regions,
-                            same_file, scripts, streamed_fetch, swallowed)
+from workflow_forms import (CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, chmod_executable, chmod_targets,
+                            covers, described, in_container, names_file,
+                            parse_fetch, regions, same_file, scripts,
+                            stdin_program, streamed_fetch, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -196,17 +231,61 @@ def _fetch_records(stmts, stream_exec=False):
     return found
 
 
-def _wrapper_records(stmts):
-    """[(statement index, reason)] even when no fetch can be extracted."""
+def _unread_records(stmts):
+    """[(statement index, reason)] even when no fetch can be extracted.
+
+    Two forms arrive here and both get the same answer, which is this module's
+    standing requirement: REPORTED, never accepted. A wrapper whose command
+    cannot be resolved (`shell_reader.unresolved_wrapper`), and a heredoc handed
+    to an interpreter as the PROGRAM it runs that cannot be read as written
+    (`_unread_stdin`).
+    """
     for index, statement in enumerate(stmts):
         for stage in statement.stages:
             reason = shell_reader.unresolved_wrapper(stage.argv)
             if reason:
                 yield index, ("cannot read command behind wrapper: %s; "
                               "the guard cannot determine what it runs" % reason)
+            reason = _unread_stdin(stage)
+            if reason:
+                yield index, reason
             for inner in stage.substitutions:
-                for _inner_index, nested in _wrapper_records(statements(inner)):
+                for _inner_index, nested in _unread_records(statements(inner)):
                     yield index, nested
+
+
+def _unread_stdin(stage):
+    """Why the program on this stage's STANDARD INPUT goes unread, or None.
+
+    A heredoc body handed to an interpreter is a program, not data
+    (`workflow_forms.stdin_program`), and two kinds of it cannot be read: one
+    written in a language this module has no grammar for, and one the shell
+    would EXPAND -- whose `$(...)` were lifted into the enclosing parse's table
+    before the body reached here, so what the interpreter runs is not the text
+    this module holds. Quoted shell is the third kind and is READ, in
+    `_stdin_scripts`.
+    """
+    argv = command(stage.argv)
+    here = stage.stdin_heredoc
+    kind = stdin_program(argv) if here else None
+    if kind is None:
+        return None
+    name = os.path.basename(argv[0])
+    if kind != SHELL_PROGRAM:
+        return ("hands a heredoc body to `%s` as the program to run, which this "
+                "guard does not parse -- it cannot say whether that program "
+                "downloads and executes anything; write it in bash/sh, or "
+                "exempt the step with a reason" % name)
+    if here[1]:
+        return ("hands an EXPANDING heredoc body to `%s` as the script to run: "
+                "its `$(...)` were lifted into the enclosing parse before this "
+                "text was read, so the guard cannot say what the script runs -- "
+                "quote the delimiter (`<<'EOF'`) and the body is read as "
+                "written; pass job values as arguments instead "
+                "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
+                "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
+                % (name, name))
+    return None
 
 
 def _substituted(argv, stage, stream_exec=False):
@@ -238,10 +317,26 @@ def _flattened(stmts):
     out = []
     for statement in stmts:
         for stage in statement.stages:
-            for text in scripts(command(stage.argv)):
+            argv = command(stage.argv)
+            for text in scripts(argv) + _stdin_scripts(argv, stage):
                 out.extend(_flattened(statements(text)))
         out.append(statement)
     return out
+
+
+def _stdin_scripts(argv, stage):
+    """The QUOTED heredoc script this stage hands an interpreter, if it does.
+
+    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
+    quoted delimiter the interpreter reads the body as the text it was written
+    as, so reading it here is exactly as sound as reading that string -- and a
+    `curl … | sh` inside it is the same defect it is at the top level. An
+    EXPANDING body is read nowhere; `_unread_stdin` reports it instead.
+    """
+    here = stage.stdin_heredoc
+    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
+        return []
+    return [here[0]]
 
 
 def read(script):
@@ -551,7 +646,7 @@ def _defects(stmts, conditions=None, soft=()):
     """
     checks = _checks(stmts, soft)
     conditions = conditions or {}
-    found = list(_wrapper_records(stmts))
+    found = list(_unread_records(stmts))
     for index, fetch in _fetch_records(stmts, stream_exec=True):
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:
