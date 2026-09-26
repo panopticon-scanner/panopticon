@@ -22,11 +22,83 @@ from . import runio
 # the redteam clean-tree guard by reading as a clean tree that was never verified.
 _TREE_BASELINE_PROBE_FAILED = "#panopticon:baseline-probe-failed\n"
 
-def _write_probe_failed_baseline(baseline):
+# #1809 (DAT-4027033499): what to tell an operator whose baseline cannot be
+# trusted. Deleting `tree-baseline.txt` is the tempting move and the wrong one --
+# the next capture would re-probe `git status` and baseline the REVIEWER's own
+# writes as clean -- so every one of these names `--reset` instead.
+_BASELINE_REMEDY = ("deleting tree-baseline.txt would re-baseline the reviewer's "
+                    "own writes as clean, so `--reset` is the remedy")
+_BASELINE_CORRUPT = ("clean-tree baseline is PRESENT but CORRUPT (torn or corrupted); "
+                     "tree integrity cannot be certified -- " + _BASELINE_REMEDY)
+# 0 bytes is the pre-fix truncate-in-place writer's most likely torn shape
+# (`O_TRUNC` succeeded, the process died before the first flush) -- and also what
+# a v1 baseline of a CLEAN tree looked like. Genuinely ambiguous, so say both.
+_BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a "
+                   "clean-tree v1 baseline; tree integrity cannot be certified -- "
+                   + _BASELINE_REMEDY)
+# The only bytes a `git status --porcelain -z` record can OPEN with: the X of
+# its XY status pair. A first byte outside this set was never a v1 baseline.
+_PORCELAIN_XY = " MTADRCU?!"
+
+def _write_baseline(baseline, emit):
+    """Write the baseline through `<baseline>.tmp` + `os.replace`, so an
+    interrupted PROCESS leaves the last complete baseline or the new one on
+    disk -- never half of either. (Nothing here fsyncs, exactly as
+    `runio._write_json` does not, so a power loss is still a torn file; the
+    classifier in `_tree_delta` is what makes that one diagnosable.)
+
+    #1809 (DAT-4027033499): this was a truncate-in-place write behind
+    `capture_tree_baseline`'s exists-means-done guard, and that guard must NOT
+    re-probe git on resume (it would baseline the reviewer's own writes as
+    clean). So a write torn mid-way was PERMANENT: every later resume accepted
+    the partial document, the run failed closed at validate forever, and the
+    only exit was `--reset`, which discards a paid run. tmp+replace is the shape
+    `runio._write_json` already uses, down to the staging path going through the
+    same `_open_w_nofollow` (a `.tmp` in the reviewed tree is as plantable as
+    the artifact, and `os.replace` onto a symlinked destination replaces the
+    LINK). `_write_json` itself is not reusable here: it writes `indent=2` JSON,
+    and the probe-failure sentinel below is not JSON at all.
+
+    Confinement runs on the FINAL name first, then `makedirs`, then the staging
+    open -- `_write_json`'s order, and `safe_write`'s module docstring is why it
+    is that way round: confining after the makedirs would mean the traversal had
+    already happened. Staging alone would have dropped the final component's
+    check (which the pre-fix `_open_w_nofollow(baseline)` had), so a planted
+    final name would be quietly neutralized by `os.replace` instead of refused
+    -- and under redteam "your target planted a symlink at an artifact path" is
+    a signal the operator should get, not one the writer should absorb."""
+    runio._confine_artifact_path(baseline)   # SEC-X0X: before makedirs, which would
+    tmp = baseline + ".tmp"                  # otherwise follow a symlinked dir
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with runio._open_w_nofollow(baseline) as fh:
-        fh.write(_TREE_BASELINE_PROBE_FAILED)
+    opened = False
+    try:
+        with runio._open_w_nofollow(tmp) as fh:
+            opened = True                    # set first thing: an exception between
+                                             # the open and here would orphan `tmp`
+            emit(fh)
+        os.replace(tmp, baseline)
+    except BaseException:                # noqa: BLE001 -- cleanup, then re-raise
+        # A KeyboardInterrupt mid-write is exactly the case that must not leave
+        # staging litter in the reviewed tree, which is why this catches
+        # everything rather than `Exception` -- and re-raises unchanged.
+        # Remove only what THIS call is answerable for: the file it opened, or a
+        # SYMLINK the target planted at our staging name (unlinking a link is
+        # never a delete of what it points at, and the x0x round-1 ruling wants
+        # a planted link gone). A regular file we never opened is not ours --
+        # with `.panopticon/runs` force-committed as a symlink,
+        # `<elsewhere>/<tag>/tree-baseline.txt.tmp` wears our name and unlinking
+        # it would be the delete-outside-the-tree primitive `runio._relink`'s
+        # docstring names (#1574).
+        if opened or os.path.islink(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
     return baseline
+
+def _write_probe_failed_baseline(baseline):
+    return _write_baseline(baseline, lambda fh: fh.write(_TREE_BASELINE_PROBE_FAILED))
 
 # #1514 (Codex BR-04): the baseline used to be raw porcelain status, and the
 # delta was set subtraction over those records. A file that was ALREADY dirty at
@@ -142,12 +214,10 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
               "already-dirty/untracked paths; content equality cannot be "
               "established and the integrity guard will fail closed at validate"
               % _MAX_BASELINE_FILES, file=sys.stderr, flush=True)
-    os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with runio._open_w_nofollow(baseline) as fh:
-        json.dump({"schema_version": _BASELINE_SCHEMA, "status": proc.stdout,
-                   "entries": entries, "truncated": truncated}, fh,
-                  sort_keys=True)
-    return baseline
+    return _write_baseline(baseline, lambda fh: json.dump(
+        {"schema_version": _BASELINE_SCHEMA, "status": proc.stdout,
+         "entries": entries, "truncated": truncated}, fh,
+        sort_keys=True))
 
 def _porcelain_z_records(output):
     """Parse `git status --porcelain -z` into a set of (XY, paths) records. Paths
@@ -199,12 +269,25 @@ def _tree_delta(review_root, runner):
     # perform -- the same fail-closed rule the probe-failure sentinel follows.
     try:
         snapshot = json.loads(raw)
-        if not isinstance(snapshot, dict):
-            raise ValueError("not an object")
-    except ValueError:
+    except (ValueError, RecursionError):
+        # #1809: three different things land here, and calling all of them
+        # "schema v1" points at a resume across an upgrade that never happened
+        # and hides the remedy. RecursionError (a deeply nested document) is a
+        # RuntimeError, so `except ValueError` let it out of the phase entirely.
+        # Prove porcelain rather than enumerate JSON: a torn v2 document, a torn
+        # probe-failure sentinel, NUL garbage and an HTML page all open with a
+        # byte no porcelain record can, so none of them is v1.
+        if not raw.strip():
+            return [_BASELINE_EMPTY]         # 0 bytes: torn, or a v1 clean tree
+        if raw[:1] not in _PORCELAIN_XY:
+            return [_BASELINE_CORRUPT]       # never a porcelain record, so never v1
         return ["clean-tree baseline predates content digests (schema v1); "
                 + "content equality not established, so tree integrity cannot "
                 + "be certified"]
+    if not isinstance(snapshot, dict):
+        # Valid JSON that is not an object is never raw porcelain either: a
+        # porcelain record always opens with an XY status pair.
+        return [_BASELINE_CORRUPT]
     if snapshot.get("schema_version") != _BASELINE_SCHEMA:
         return [("clean-tree baseline schema_version %r is not %d; content "
                  + "equality not established, so tree integrity cannot be certified")

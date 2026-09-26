@@ -11,6 +11,13 @@ import scripts.ocrdb as ocrdb
 import scripts.x0x_report as x0x
 
 
+def _schema():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skill", "reference", "x0x-report-schema.json")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def _f(code, domain, sev, title, file, line=1, fid=None, desc="d", refs=None):
     return {"code": code, "domain": domain, "severity": sev,
             "short_title": title, "title": title, "description": desc,
@@ -69,10 +76,96 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(only(c["occurrences"], "occurrence"),
                          {"file": "x.py", "line_start": 3, "line_end": 5, "finding_id": "f1"})
 
-    def test_occurrence_requires_file(self):
-        f = _f("COD-X0X", "COD", "LOW", "t", None)
+    def test_the_zzz_line_is_one_bounded_inert_line_for_a_hostile_finding(self):
+        # Re-review of #1807: the pre-existing "not an OCRDb domain" line
+        # rendered the agent-authored id raw and the code prefix unbounded --
+        # one hostile finding could repaint the terminal. Same treatment as
+        # the drop line: squeezed, bounded, %r-escaped, one physical line.
+        f = {"code": ("\x1b[2J" + "Q" * 300) + "-X0X", "severity": "MEDIUM",
+             "short_title": "t", "id": "\x1b[31mID\nx0x: forged: nothing",
+             "location": {"file": "a.py"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            x0x.build_candidates([f])
+        out = err.getvalue()
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertNotIn("\x1b", out)
+        self.assertIn("\\x1b[31mID", out)
+        self.assertLess(len(out), 6 * (120 + 40) + 200)
+
+    def test_a_locus_free_cluster_is_dropped_and_announced(self):
+        # #1807 DAT-2501524861: a finding with no location is the CANONICAL shape
+        # for a repo-wide catalog gap (`synth/findings.py` pops the empty location
+        # deliberately), so this drop lands on exactly the gaps this emitter
+        # exists to carry. No occurrence can be invented -- the schema requires a
+        # file on every one -- so the cluster is announced instead of vanishing.
+        # The title is agent-authored, so the line renders it through `%r`: the
+        # whitespace squeeze alone would leave an ESC raw and a hostile title
+        # could repaint the operator's terminal (#1807 review N3).
+        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock\x1b[31m", None)
         f["location"] = {}   # no file -> no valid occurrence -> candidate dropped
-        self.assertEqual(x0x.build_candidates([f]), [])
+        dropped = []
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f], dropped), [])
+        self.assertEqual(err.getvalue(),
+                         "x0x: COD: dropping a catalog-gap cluster with no file "
+                         "location: 'dup dead block\\x1b[31m' (1 finding(s))\n")
+        # the out-list `build_report` tallies from, pinned (review N4): the record
+        # carries the squeezed text itself -- escaping belongs at the render.
+        self.assertEqual(dropped, [{"domain": "COD",
+                                    "summary": "dup dead block\x1b[31m",
+                                    "finding_count": 1}])
+
+    def test_an_untitled_cluster_is_named_by_its_finding_id(self):
+        # Review N1: the cluster KEY already falls back to the id and `_domain`'s
+        # line names the id, so the diagnostic was the one place that named
+        # nothing identifiable. A whitespace-only title is empty once squeezed.
+        f = {"code": "SEC-X0X", "domain": "SEC", "severity": "LOW", "id": "gap-77",
+             "short_title": "   "}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f]), [])
+        self.assertEqual(err.getvalue(),
+                         "x0x: SEC: dropping a catalog-gap cluster with no file "
+                         "location: 'gap-77' (1 finding(s))\n")
+
+    def test_a_long_title_is_cut_with_the_cut_marked(self):
+        # Review N2: the house rule (`phases/review.py::_hit_text`) is that a cut
+        # is MARKED, so a truncated value cannot read as a complete one.
+        f = _f("SEC-X0X", "SEC", "LOW", "g" * 200, None)
+        f["location"] = {}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(x0x.build_candidates([f]), [])
+        self.assertIn("'" + "g" * 119 + "\u2026'", err.getvalue())
+
+    def test_the_envelope_counts_the_locus_free_clusters_it_dropped(self):
+        # The count `synthesize` prints comes off `candidates`; without this the
+        # artifact is quietly short and nothing on the line says so.
+        gap = {"code": "SEC-X0X", "domain": "SEC", "severity": "HIGH", "id": "gap-1",
+               "short_title": "no code covers repo-wide dependency pinning",
+               "description": "whole-repo gap"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            report = x0x.build_report([gap], {}, run_id="run-1")
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(report["candidates_dropped_locus_free"], 1)
+        # the envelope is a published contract: the new key must validate AND be
+        # declared, or a downstream ingester has no documented field to read
+        # (review I2).
+        self.assertIsNone(jsonschema.validate(report, _schema()))
+        self.assertIn("candidates_dropped_locus_free", _schema()["properties"])
+
+    def test_a_mixed_cluster_survives_and_reports_nothing_dropped(self):
+        # One located finding is enough to carry the cluster, so nothing was
+        # dropped -- only the locus-free occurrence is missing, and `recurrence`
+        # counts occurrences, as it always has.
+        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1, "f1")
+        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1, "f2")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            report = x0x.build_report([located, locus_free], {}, run_id="run-1")
+        candidate = only(report["candidates"], "candidate")
+        self.assertEqual(candidate["recurrence"], 1)
+        self.assertEqual(only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
+        self.assertNotIn("candidates_dropped_locus_free", report)
+        self.assertEqual(err.getvalue(), "")
 
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
@@ -86,7 +179,7 @@ class TestX0XReport(unittest.TestCase):
             candidate = only(x0x.build_candidates([f]), "candidate")
         self.assertEqual(candidate["domain"], "ZZZ")
         self.assertEqual(err.getvalue(),
-                         "x0x: gap-1: domain 'BOG' is not an OCRDb domain; "
+                         "x0x: 'gap-1': domain 'BOG' is not an OCRDb domain; "
                          "filing the candidate under ZZZ\n")
 
     def test_valid_roster_domain_is_retained_without_diagnostic(self):
@@ -124,11 +217,7 @@ class TestX0XReport(unittest.TestCase):
             x0x.build_report([], {}, run_id=None)["generated_by"]["run_id"], "unknown")
 
     def test_conforms_to_schema(self):
-        schema_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "skill", "reference", "x0x-report-schema.json")
-        with open(schema_path, encoding="utf-8") as fh:
-            schema = json.load(fh)
+        schema = _schema()
         meta = {"version": "5.0.1", "ocrdb_version": "0.3.1", "target": "/r",
                 "timestamp": "t"}
         findings = [_f("COD-X0X", "COD", "LOW", "dup block", "a.py", 1, "f1"),
