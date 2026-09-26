@@ -268,7 +268,7 @@ def load_verify_queue(run_dir):
 
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
-                      invalid_verify_queue):
+                      invalid_verify_queue, plan_owed=False, plan_sha256=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
@@ -276,7 +276,16 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
     list load_dispatch_plans_detailed returned; `plans_seen` / `invalid_plans`
     / `invalid_verify_queue` are that loader's and load_verify_queue's
     disclosures, carried through so "no plan found" and "reconciled, nothing
-    wrong" read apart."""
+    wrong" read apart.
+
+    `plan_owed` / `plan_sha256` are the driver's statement that this run WROTE a
+    dispatch plan, and the content hash its manifest stamped for it
+    (SEC-377944137, #1832) -- see `dispatch_plan_missing` /
+    `dispatch_plan_mismatched` below. Both are threaded from
+    `phases/synthesize.py` rather than read here so this package stays free of
+    `scripts.run_manifest`, and both default to "nothing claimed" because a
+    direct `synthesize.py` call over hand-collected findings has no driver to
+    ask."""
     plan = [e for pl in plan_lists for e in pl]
     unexpected, missing = reconcile_findings_files(plan, files)
     ack = read_unenforced_ack(os.path.join(run_dir, "unenforced-ack.json"))
@@ -332,6 +341,51 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
         print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
               "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
               "snapshot; integrity is NOT certified.", file=sys.stderr)
+    # SEC-377944137 (#1832): #1208's reasoning applied to the file one level up.
+    # Every check keyed on the driver plan reads its ABSENCE as owing nothing --
+    # `_owes_a_snapshot` above returns False, `reconcile_findings_files` returns
+    # ([], []) by design, `duplicate_out_files([])` is [], and
+    # `empty_dispatch_plans` counts empty LISTS, of which there are none when
+    # there are no plan FILES. So one more `rm` after the snapshot turned a
+    # DETECTED substitution back into a clean run, and `plans_seen` -- the one
+    # key that noticed -- was not read by `integrity_ok`.
+    #
+    # The anchor is the run manifest, not the plan: a plan cannot attest to its
+    # own existence. `plan_owed` is the driver's record that it wrote one (the
+    # manifest's recorded review-or-later dispatch request, #1727), so with no
+    # plan on disk the file was deleted. A run that never had a driver says
+    # nothing and keeps the benign reading, which is the back-compat property
+    # every other key here has.
+    #
+    # `plans_seen` counts dispatch-plan FILES of any name, not this one (see
+    # plan.load_dispatch_plans_detailed) -- so a stray `dispatch-plan-decoy.json`
+    # dropped beside a deleted driver plan zeroes this key. That still fails
+    # closed, through `invalid_dispatch_plans` ("unrecognized dispatch-plan
+    # file"), which is the belt this key leans on: a future relaxation of that
+    # loader has to keep it, or key this on DRIVER_DISPATCH_PLAN directly.
+    dispatch_plan_missing = bool(plan_owed) and plans_seen == 0
+    if dispatch_plan_missing:
+        print("synthesize: this run's driver dispatched review cells, so a %s "
+              "is OWED -- no dispatch plan file is present in %s. Treating as "
+              "deleted evidence (fail-closed), not an unmeasured run; integrity "
+              "is NOT certified."
+              % (plan_mod.DRIVER_DISPATCH_PLAN, run_dir), file=sys.stderr)
+    # Replacing the plan is the same erasure as deleting it, and cheaper: a
+    # narrower plan declares fewer cells, so reconcile has less to miss and the
+    # snapshot obligation shrinks. The stamp carries the canonical content hash
+    # of the entries the driver wrote (`_plan_hash`, the same comparison the
+    # #493 R2 ack staleness check makes), so a plan that parses but is not this
+    # run's reads as tamper. An UNREADABLE plan is not counted here: the loader
+    # already reports it as `invalid_dispatch_plans`, and inferring a second
+    # failure from one fault would double-count it.
+    dispatch_plan_mismatched = bool(
+        plan_sha256 and plan_lists
+        and all(_plan_hash(pl) != plan_sha256 for pl in plan_lists))
+    if dispatch_plan_mismatched:
+        print("synthesize: the dispatch plan on disk is NOT the one this run "
+              "wrote -- its content does not hash to the %s stamped in the run "
+              "manifest. Treating as substituted evidence (fail-closed); "
+              "integrity is NOT certified." % plan_sha256[:12], file=sys.stderr)
     malformed = malformed_findings_files(files)
     if malformed:
         print("synthesize: %d findings file(s) violate the findings contract "
@@ -353,7 +407,9 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  "empty_dispatch_plans": sum(1 for pl in plan_lists if not pl),
                  "invalid_dispatch_plans": invalid_plans,
                  "invalid_verify_queue": invalid_verify_queue,
-                 "plans_seen": plans_seen}
+                 "plans_seen": plans_seen,
+                 "dispatch_plan_missing": dispatch_plan_missing,
+                 "dispatch_plan_mismatched": dispatch_plan_mismatched}
     if ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so
         # they appear in meta.integrity in the final report (#680).

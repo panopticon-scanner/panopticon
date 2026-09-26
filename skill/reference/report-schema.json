@@ -597,6 +597,14 @@
             "plans_seen": {
               "type": "integer"
             },
+            "dispatch_plan_missing": {
+              "type": "boolean",
+              "description": "SEC-377944137/#1832: the run manifest's own `driver_plan` stamp says this run WROTE a dispatch plan, and no dispatch-plan file is present at synthesis \u2014 deleted evidence. Fails the gate closed. #1208's reading of an owed-but-absent fan-out snapshot, applied to the file that decides whether the snapshot is owed at all: deleting the plan silenced the planned-vs-ingested reconciliation, the out_file-collision check, the snapshot obligation and the fan-out accounting at once, so one more `rm` turned a DETECTED findings substitution back into a clean run. The driver no longer re-creates either artifact once it has stamped it, so the absence is reported rather than repaired. False on a run that never wrote a plan (a direct synthesize.py call over hand-collected findings, a target with no declared cells, or a run resumed across the upgrade that added the stamp), which keeps the benign 'not measured' reading every other key here has."
+            },
+            "dispatch_plan_mismatched": {
+              "type": "boolean",
+              "description": "SEC-377944137/#1832: a dispatch plan IS present and parses, but its canonical content does not hash to the `driver_plan` stamp the run manifest recorded when the driver wrote it \u2014 substituted evidence. Fails the gate closed. Replacing the plan is the same erasure as deleting it and cheaper: a narrower plan declares fewer cells, so the planned-vs-ingested reconciliation has less to miss and the snapshot obligation shrinks. An UNREADABLE plan is not counted here (the loader reports it as invalid_dispatch_plans; one fault, one key). False when the stamp carries no hash or the run never wrote a plan."
+            },
             "write_guard_covers_bash": {
               "type": "boolean"
             }

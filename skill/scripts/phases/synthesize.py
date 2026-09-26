@@ -121,12 +121,66 @@ def _collect_host_usage(review_root, manifest):
               file=sys.stderr, flush=True)
     return proc
 
+def _plan_owed(manifest):
+    """Did this run's driver WRITE a dispatch plan (SEC-377944137, #1832)?
+
+    If it did, an absent `dispatch-plan-driver.json` at synthesis is DELETED
+    EVIDENCE, not an unmeasured run -- which is #1208's reasoning for the
+    fan-out snapshot, applied to the file that decides whether the snapshot is
+    owed at all. Deleting the plan silenced every check keyed on it at once
+    (the planned-vs-ingested reconciliation, the out_file-collision check, the
+    snapshot obligation and the fan-out accounting), so one more `rm` turned a
+    DETECTED findings substitution back into `integrity_ok=True`.
+
+    Read off `run_manifest.DRIVER_PLAN` -- the MONOTONE stamp
+    `requests._write_driver_plan` writes as it writes the plan. Fix round 1
+    replaced an inference off the rolling `dispatch_request` slot, which could
+    not answer this: that slot is overwritten per checkpoint, so it read
+    `verify` on every run that verified anything; the tamper itself could roll
+    it BACKWARD to `scout` (deleting `coverage-<group>.json` makes
+    `coverage_done` False and the coverage phase re-dispatches scout); and it
+    could not tell a tool-advisor `verify` dispatch from a review one, so an
+    honest ZERO-CELL run that verified a tool finding read INCONCLUSIVE.
+
+    The manifest is the anchor rather than the plan, because a plan cannot
+    attest to its own existence, and this is the better-defended of the two
+    files (#1727) -- better-defended, NOT out of reach. It lives in the
+    reviewed tree, and the "no dispatched agent may write `run-manifest.json`"
+    half is host-conditional: it holds where the write guard mediates `Write`
+    (its allowlist is the entries' out_files), so on `--host generic
+    --allow-unenforced` -- the unmediated host whose rogue advisor
+    `_snapshot_review_out_files` names as its own threat -- deleting the stamp
+    is one unmediated `Write` and restores the benign reading. What is
+    unconditional is that forging it is a SECOND, separate write, and that
+    `runio._foreign_manifest` discards a manifest that is git-tracked in the
+    reviewed tree or stamped for another checkout. The same is true of #1727's
+    own `dispatch_request` anchor.
+
+    Fails OPEN by design in exactly one case, which is the same case every
+    other key in `meta.integrity` treats as "not measured": no stamp at all.
+    That is a direct `synthesize.py` invocation over hand-collected findings, a
+    run that never declared a cell, or one resumed across this upgrade --
+    none of them ever wrote a plan under this rule. It must NOT be inferred
+    from the findings files present: that would let the same writer manufacture
+    the obligation away.
+    """
+    return run_manifest.artifact_stamp(manifest, run_manifest.DRIVER_PLAN) is not None
+
+
 def synthesize_execute(review_root, manifest):
     # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
     # review and before synthesize, even when the verify phase was vacuously
     # done (no engaged cell -> verify_execute never ran, so no agent ran either
     # -- the snapshot here still captures authentic post-review bytes). Both are
     # idempotent no-ops when review_execute/verify_execute already wrote them.
+    #
+    # SEC-377944137 (#1832) C1: a FIRST write only. Once this run has written
+    # either artifact the manifest stamps it, and both writers then REPORT its
+    # absence instead of repairing it (`run_manifest.claim_artifact`) -- these
+    # two lines re-created a deleted plan and re-took the snapshot over
+    # substituted findings bytes, which is how the substitution became its own
+    # baseline and #1208's guard stopped firing. `_plan_owed` below is the same
+    # stamp, so what this phase declines to repair is exactly what it reports.
     requests._write_driver_plan(review_root, manifest)
     requests._snapshot_review_out_files(review_root, manifest)
     _collect_host_usage(review_root, manifest)
@@ -179,6 +233,17 @@ def synthesize_execute(review_root, manifest):
     # direct `synthesize.py` invocation legitimately has no driver to ask.
     if run_manifest.tools_downgraded_mid_run(manifest):
         cmd += ["--tools-disabled-mid-run"]
+    # SEC-377944137 (#1832): threaded rather than re-read by the child for the
+    # reason above, and for one more -- `synth/` must not import
+    # `scripts.run_manifest`, so the stamp's two facts cross the seam, not the
+    # manifest. The hash only STRENGTHENS the boolean (a present-but-replaced
+    # plan is tamper too), so a stamp without one still owes the plan -- the
+    # #493 R2 unenforced ack reads its own `plan_sha256` exactly that way.
+    if _plan_owed(manifest):
+        cmd += ["--plan-owed"]
+        stamped = run_manifest.artifact_stamp(manifest, run_manifest.DRIVER_PLAN)
+        if isinstance(stamped.get("sha256"), str) and stamped["sha256"]:
+            cmd += ["--plan-sha256", stamped["sha256"]]
     # #2013: which of the TARGET's own Git driver commands the probe emptied for
     # this scan, threaded rather than re-read for the reason above --
     # run-manifest.json is a _TOP_LEVEL artifact, outside the `--run-dir` the
