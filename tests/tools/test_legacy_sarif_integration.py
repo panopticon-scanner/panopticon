@@ -45,7 +45,7 @@ from unittest import mock
 import pytest
 
 from _test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
-                           skip_or_fail)
+                           only, skip_or_fail)
 from scripts import run_tools
 from scripts.tools.legacy_sarif import LegacySarifAdapter
 from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
@@ -294,16 +294,17 @@ class TestGitleaksRunToolsDocker(unittest.TestCase):
                                    else "honoured" if ignore else "absent")
                         self.assertEqual(manifest["ignore_files"],
                                          {"gitleaks": posture})
-                        capture = Path(written[0]).read_bytes()
+                        capture = Path(only(written, "Gitleaks capture")).read_bytes()
                         self.assertNotIn(DECOY_DIGEST.encode(), capture)
                         results = [result for run in json.loads(capture).get("runs", [])
                                    for result in run.get("results", [])]
                         expected = int(credential and (not ignore or mode == "redteam"))
                         self.assertEqual(len(results), expected, results)
                         if expected:
-                            result = results[0]
+                            result = only(results, "Gitleaks SARIF result")
                             self.assertEqual(result["ruleId"], "generic-api-key")
-                            location = result["locations"][0]["physicalLocation"]
+                            location = only(result["locations"],
+                                            "Gitleaks SARIF location")["physicalLocation"]
                             self.assertTrue(location["artifactLocation"]["uri"].endswith(
                                 "/config.yml"), location)
                             self.assertEqual(location["region"]["startLine"], 2)
