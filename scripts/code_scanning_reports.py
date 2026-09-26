@@ -16,6 +16,22 @@ from typing import Any, cast
 
 import jsonschema
 
+# The Security upload scopes itself with the SAME gitignore-style matcher the
+# gate uses (`security_gate --exclude` -> `ingest_tools` ->
+# `groups_schema.matched_glob`), so one `--exclude` line means one scope on
+# both. The skill tree is put on the path the way `replay_report.py` does it;
+# this script runs from the repo checkout, not from an installed package.
+_SKILL_DIR = str(Path(__file__).resolve().parents[1] / "skill")
+if _SKILL_DIR not in sys.path:
+    sys.path.append(_SKILL_DIR)   # after the checkout's own entries, never over them
+from scripts import groups_schema  # noqa: E402
+
+# Where run_tools mounts the reviewed tree inside the tools image
+# (`run_tools.TARGET_MOUNT`, pinned equal by test): scanners write locations
+# as `/src/...` or `file:///src/...`, and the operator's globs are
+# repo-relative, so that prefix comes off before matching.
+SCAN_ROOT_MOUNT = "/src"
+
 
 INVENTORY_RULE_IDS = frozenset({
     "opt.semgrep-rules.ai.generic.detect-generic-ai-anthprop",
@@ -405,12 +421,28 @@ def _split_document(document: dict[str, Any],
     return security, inventory
 
 
+_MARKDOWN_ENTITIES = {ord(c): f"&#{ord(c)};"
+                      for c in ("\\", "`", "|", "*", "_", "[", "]", "(", ")", "#", "!")}
+
+
 def _markdown_text(value: Any) -> str:
+    # One pass: a sequential replace re-escaped the `#` inside the entities it
+    # had already written (`*` -> `&#42;` -> `&&#35;42;`), so every escaped
+    # character rendered as its entity text on the step summary.
     text = " ".join(str(value or "").split())
-    escaped = html.escape(text, quote=False)
-    for character in ("\\", "`", "|", "*", "_", "[", "]", "(", ")", "#", "!"):
-        escaped = escaped.replace(character, f"&#{ord(character)};")
-    return escaped
+    return html.escape(text, quote=False).translate(_MARKDOWN_ENTITIES)
+
+
+def _code_cell(value: Any) -> str:
+    """`value` as a Markdown code span inside a table cell. Entities do not
+    decode inside a code span, so nothing is entity-escaped here; the only
+    two characters that can break out are neutralised -- a pipe ends the
+    cell (GFM unescapes `\\|` even inside a span) and a backtick ends the
+    span (rendered as an apostrophe rather than juggling fence lengths)."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    return "`%s`" % text.replace("|", "\\|").replace("`", "'")
 
 
 def _location(result: dict[str, Any]) -> str:
@@ -437,14 +469,72 @@ def _render_markdown(rows: list[dict[str, Any]]) -> str:
     for row in rows:
         result = row["result"]
         text = row["display_message"]
-        lines.append("| %s | `%s` | `%s` | %s |" % (
-            _markdown_text(row["tool"]), _markdown_text(row["rule_id"]),
-            _markdown_text(_location(result)), _markdown_text(text)))
+        lines.append("| %s | %s | %s | %s |" % (
+            _markdown_text(row["tool"]), _code_cell(row["rule_id"]),
+            _code_cell(_location(result)), _markdown_text(text)))
     return "\n".join(lines) + "\n"
 
 
+def _repo_relative(uri: Any) -> str | None:
+    """`uri` as the repo-relative, "/"-separated path the globs are written
+    against, or None when it is not a string. `file://` and the container's
+    scan-root mount are stripped; an absolute path outside that mount is left
+    as it is (no glob will match it, which is the fail-closed reading)."""
+    if not isinstance(uri, str):
+        return None
+    path = uri[len("file://"):] if uri.startswith("file://") else uri
+    path = path.replace(os.sep, "/")   # mirrors ingest_tools: a no-op on POSIX
+    if path == SCAN_ROOT_MOUNT or path.startswith(SCAN_ROOT_MOUNT + "/"):
+        path = path[len(SCAN_ROOT_MOUNT) + 1:]
+    return path
+
+
+def _result_uris(result: dict[str, Any]) -> list[Any]:
+    uris = []
+    locations = result.get("locations")
+    # Shape is guaranteed by the SARIF schema validation that runs first;
+    # the isinstance checks keep this symmetric with `_location` rather
+    # than reachable.
+    for location in locations if isinstance(locations, list) else []:
+        if not isinstance(location, dict):
+            continue
+        physical = location.get("physicalLocation")
+        if not isinstance(physical, dict):
+            continue
+        artifact = physical.get("artifactLocation")
+        if isinstance(artifact, dict) and "uri" in artifact:
+            uris.append(artifact["uri"])
+    return uris
+
+
+def _exclude_from_security(security: dict[str, Any],
+                           exclude_globs: list[str]) -> int:
+    """Drop a result only when EVERY location it names is one an operator
+    glob excludes; the count is disclosed, never silent. A result with no
+    location, a non-string uri, or a location outside the scan-root mount is
+    kept -- the fail-closed reading of "the operator scoped this out"."""
+    if not exclude_globs:
+        return 0
+    dropped = 0
+    for run in security.get("runs", []):
+        kept = []
+        for result in run.get("results", []):
+            paths = [_repo_relative(uri) for uri in _result_uris(result)]
+            if paths and all(
+                    path is not None and groups_schema.matched_glob(
+                        path, exclude_globs, "code-scanning") is not None
+                    for path in paths):
+                dropped += 1
+                continue
+            kept.append(result)
+        if len(kept) != len(run.get("results", [])):
+            run["results"] = kept
+    return dropped
+
+
 def prepare_reports(input_dir: str | os.PathLike[str],
-                    output_dir: str | os.PathLike[str]) -> dict[str, Any]:
+                    output_dir: str | os.PathLike[str],
+                    exclude_globs: list[str] | None = None) -> dict[str, Any]:
     source = Path(input_dir)
     destination = Path(output_dir)
     if not source.is_dir():
@@ -466,6 +556,8 @@ def prepare_reports(input_dir: str | os.PathLike[str],
         security_dir.mkdir()
         inventory_dir.mkdir()
         inventory_rows = []
+        globs = list(exclude_globs or [])
+        excluded = 0
         for capture in captures:
             try:
                 raw = capture.read_bytes()
@@ -475,17 +567,25 @@ def prepare_reports(input_dir: str | os.PathLike[str],
             _validate_sarif(validator, document, capture.name)
             security, rows = _split_document(document, capture.name)
             inventory_rows.extend(rows)
+            excluded += _exclude_from_security(security, globs)
             (security_dir / capture.name).write_text(
                 json.dumps(security, indent=2, sort_keys=False, allow_nan=False) + "\n",
                 encoding="utf-8")
 
         payload = {"version": 1, "count": len(inventory_rows),
-                   "results": inventory_rows}
+                   "results": inventory_rows,
+                   "excluded_from_security": {"count": excluded,
+                                              "globs": globs}}
+        excluded_note = ("\n%d result(s) excluded from the Security upload by "
+                         "`--exclude` (%s); the vulnerability gate ran on its "
+                         "own scope.\n"
+                         % (excluded, _markdown_text(", ".join(globs)))
+                         if globs else "")
         (inventory_dir / "ai-inventory.json").write_text(
             json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n",
             encoding="utf-8")
         (inventory_dir / "ai-inventory.md").write_text(
-            _render_markdown(inventory_rows), encoding="utf-8")
+            _render_markdown(inventory_rows) + excluded_note, encoding="utf-8")
         os.replace(staging, destination)
         return payload
     except Exception:
@@ -499,13 +599,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory containing redacted raw .sarif captures")
     parser.add_argument("--output-dir", required=True,
                         help="new directory to atomically publish")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="repo-relative gitignore-style glob whose results "
+                             "leave the Security upload (repeatable; the same "
+                             "spelling security_gate.py takes)")
     args = parser.parse_args(argv)
     try:
-        payload = prepare_reports(args.input_dir, args.output_dir)
+        payload = prepare_reports(args.input_dir, args.output_dir,
+                                  exclude_globs=args.exclude)
     except (OSError, ReportError) as exc:
         print(f"code-scanning report preparation failed: {exc}", file=sys.stderr)
         return 1
     print(f"prepared Security SARIF and {payload['count']} AI inventory result(s)")
+    if args.exclude:
+        print("%d result(s) excluded from the Security upload by --exclude (%s)"
+              % (payload["excluded_from_security"]["count"],
+                 ", ".join(args.exclude)))
     return 0
 
 

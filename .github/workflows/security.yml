@@ -413,9 +413,18 @@ jobs:
         id: prepare-reports
         if: always()
         run: |
+          # The Security upload carries the gate's scope, plus the test tree:
+          # bandit reads `tests/` since #2117 (the target's `.bandit` is no
+          # longer honoured), and its test-suite idioms (`/tmp` literals,
+          # subprocess stubs, fake tokens) are not alerts an operator acts on.
+          # The gate itself still sees `tests/` -- a HIGH there still fails a
+          # PR -- and the excluded count is printed and in the step summary.
           python controller/scripts/code_scanning_reports.py \
             --input-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
-            --output-dir "$RUNNER_TEMP/code-scanning-reports"
+            --output-dir "$RUNNER_TEMP/code-scanning-reports" \
+            --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}' \
+            --exclude 'tests/**'
 
       - name: Upload raw scanner captures
         if: always()
