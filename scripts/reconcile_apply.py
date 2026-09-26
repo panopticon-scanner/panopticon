@@ -358,6 +358,13 @@ AMBIGUOUS_COMMENT = ("**Reconciliation: not seen, but area still active.** This 
                      "finding's exact/coarse identity did not recur, yet %s, so it "
                      "may have been re-worded or re-categorized. Left OPEN, not "
                      "auto-closed.")
+# #1807: when the new run's SCOPE is why nothing corroborated the fix, the
+# comment above would assert two falsehoods -- that the area is still active, and
+# that a re-word is the likely cause. Stage 1 says which it is on the entry's
+# `basis`, so this is selected off that field, never off the reason's wording.
+UNCORROBORATED_COMMENT = ("**Reconciliation: not corroborated.** This finding did not "
+                          "recur, but the new run cannot corroborate a fix here: %s. "
+                          "Left OPEN, not auto-closed.")
 
 
 def _cohort_actions(entries, cohort, close, comment_fn, ledger):
@@ -394,9 +401,14 @@ def plan_actions(diff, ledger):
     actions += _cohort_actions(
         diff.get("closed"), "closed", True,
         lambda e: CLOSED_COMMENT % neutralize(e.get("reason", "no run3 match")), ledger)
-    actions += _cohort_actions(
-        diff.get("ambiguous"), "ambiguous", False,
-        lambda e: AMBIGUOUS_COMMENT % neutralize(e.get("reason", "area still active")), ledger)
+    def _ambiguous_comment(entry):
+        if entry.get("basis") == "scope":
+            return UNCORROBORATED_COMMENT % neutralize(
+                entry.get("reason", "the new run's coverage cannot speak to it"))
+        return AMBIGUOUS_COMMENT % neutralize(entry.get("reason", "area still active"))
+
+    actions += _cohort_actions(diff.get("ambiguous"), "ambiguous", False,
+                               _ambiguous_comment, ledger)
     return actions
 
 

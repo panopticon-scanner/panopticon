@@ -433,6 +433,40 @@ class TestPlanActions(unittest.TestCase):
         self.assertNotIn("new", by_cohort)
         self.assertIn("clear", by_cohort["closed"]["comment"])
 
+    def _ambiguous_body(self, entry):
+        entry = dict(entry, fingerprint="fp3",
+                     run2=[{"id": "F-3", "stored_fingerprint": "old3",
+                            "location_file": "c.py", "kind": "finding"}])
+        ledger = {"old3|F-3|c.py|finding": "https://github.com/o/r/issues/3"}
+        actions = reconcile_apply.plan_actions({"ambiguous": [entry]}, ledger)
+        self.assertEqual(len(actions), 1)
+        self.assertFalse(actions[0]["close"])
+        return actions[0]["comment"]
+
+    def test_scope_basis_comment_names_scope_not_a_rewording(self):
+        # #1807 I3: under a coverage guard EVERY non-recurring finding gets this
+        # comment, so it must not assert that the area is still active or that
+        # the finding was probably re-worded -- the cause is the new run's SCOPE.
+        # Selected off the entry's `basis`, never by matching the reason text.
+        body = self._ambiguous_body(
+            {"basis": "scope",
+             "reason": ("c.py was not reviewed in run3 -- absence of findings "
+                        "is not a fix")})
+        self.assertIn("not corroborated", body)
+        self.assertIn("cannot corroborate a fix here", body)
+        self.assertNotIn("still active", body)
+        self.assertNotIn("re-worded", body)
+        self.assertNotIn("re-categorized", body)
+        self.assertIn("Left OPEN, not auto-closed.", body)
+
+    def test_active_basis_and_legacy_entries_keep_the_still_active_comment(self):
+        for entry in ({"basis": "active", "reason": "security still active on c.py"},
+                      {"reason": "security still active on c.py"}):
+            with self.subTest(basis=entry.get("basis")):
+                body = self._ambiguous_body(entry)
+                self.assertIn("area still active", body)
+                self.assertNotIn("not corroborated", body)
+
     def test_recurring_coarse_tier_gets_coarse_comment_not_exact(self):
         # F3: a coarse-tier match's comment must not claim the rule/title
         # matched -- that's precisely what did NOT happen on that branch.

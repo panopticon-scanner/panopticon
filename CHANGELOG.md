@@ -15,15 +15,22 @@ evidence exposed.
   the files it never opened landed in the `closed` cohort, which `scripts/reconcile_apply.py apply
   --confirm-close` turns into a real GitHub close commented "**Reconciliation: fixed (area
   clear).**". The diff now reads run3's own statement of coverage -- `groups[].files`, merged across
-  the report and every part, and `meta.review_type` -- and refuses three ways: a finding on a file
-  run3 did not review goes to `ambiguous` (kept open) reading "<file> was not reviewed in run3 --
-  absence of findings is not a fix"; a run3 whose report does not state which files it reviewed
-  guards the whole run (`run3_files_unstated`); and a run3 declared `file`/`directory`/`group`/
-  `changes`/`pr`-scoped guards it too (`run3_not_repo_wide`), whatever its groups list. Missing
-  information fails CLOSED, with no flag to opt back into the old reading. **Operator-visible:** a
-  close now needs a repo-wide run3 that says what it looked at; reconcile against a scoped re-run
-  and the summary reports `closed: 0` with every unfixed finding under "ambiguous (kept open)",
-  where it used to report them fixed.
+  the report and every part, and `meta.review_type` -- together with the files run3 demonstrably
+  produced records on, because a record is proof the file was read and `groups[].files` under-states
+  coverage. It refuses three ways: a finding on a file run3 neither listed nor reported on goes to
+  `ambiguous` (kept open) reading "<file> was not reviewed in run3 -- absence of findings is not a
+  fix"; a run3 whose report does not state which files it reviewed guards the whole run
+  (`run3_files_unstated`); and a run3 that does not declare `meta.review_type: "repo"` -- a scoped
+  review, an absent, empty or unreadable value, or a part contradicting the report -- guards it too
+  (`run3_not_repo_wide`). Missing information fails CLOSED, with no flag to opt back into the old
+  reading. Stage 2 words a scope refusal as "**Reconciliation: not corroborated.**" instead of
+  claiming the area is still active and the finding was probably re-worded.
+  **Operator-visible:** a close now needs a repo-wide run3 that says what it looked at, and the
+  summary names an active guard once on its own `guard:` line instead of only repeating it per
+  finding; a run3 that is merely NARROWER by file list still closes the findings on the files it
+  did review. Still open as follow-up #2084: a run3 that declared itself repo-wide but LOST cells
+  (`meta.coverage.cells.missing_floor` non-empty, `summary.coverage_certified` false) still lists
+  every file in `groups`, so it can corroborate closes on files no review cell actually reached.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending
