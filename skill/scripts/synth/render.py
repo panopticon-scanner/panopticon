@@ -357,7 +357,13 @@ def render_summary(report):
             if isinstance(r, dict):
                 by.setdefault((r.get("cell_domain"), r.get("finding_domain")), 0)
                 by[(r.get("cell_domain"), r.get("finding_domain"))] += 1
-        pairs = ", ".join("%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items()))
+        # Fix round 1: the domain is AGENT-authored -- `synth/integrity` only
+        # type-checks it -- and this line is read in a terminal, so it is the
+        # third field normalization does not own (with meta.target and the
+        # group name above, and the target's own config values).
+        pairs = ", ".join("%s→%s ×%d" % (tool_base.inert_text(a),
+                                         tool_base.inert_text(b), n)
+                          for (a, b), n in sorted(by.items()))
         lines.insert(3, "**Note:** %d cross-domain finding(s) — %s. Reviewers filed "
                         "outside their cell's domain; often a catalog gap (X0X). "
                         "Does NOT affect certification." % (len(xdom), pairs))

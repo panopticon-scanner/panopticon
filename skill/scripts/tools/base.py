@@ -205,6 +205,20 @@ INERT_BODY_MAX = 20000       # prose: description, impact, remediation
 INERT_CUT = "…"         # the cut is MARKED, so a cut value cannot read whole
 INERT_KEEP = "\t\n"          # the only control chars that carry a document's
 #                              own structure; a label collapses them to a space
+# mode -> (what the escape leaves alone, whether whitespace collapses to one
+# line). A PATH is the third mode and it keeps neither: a filename's own bytes
+# are what every consumer resolves it by, so nothing but a control char may
+# change -- `src/a  b.py`, a macOS `Screen\u202fShot.png`, an NBSP or a U+3000
+# name must come back identical (#1829 fix round 1: `str.split()` splits on
+# EVERY Unicode space, so the label form silently renamed them).
+INERT_MODES: dict[str, tuple[str, bool]] = {
+    "label": (INERT_KEEP, True),     # title, category, rule id, group name
+    "body": (INERT_KEEP, False),     # description, impact, remediation
+    "path": ("", False),             # location.file, a probe's relpath
+}
+# The tail of a cut that would leave one of this module's own escapes half
+# written (`\`, `\x`, `\x1`, `\u`, `\u20`, ...). Dropped before the marker.
+_INERT_PARTIAL_TAIL = re.compile(r"\\(x[0-9a-f]?|u[0-9a-f]{0,3})?$")
 
 
 def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
@@ -234,7 +248,7 @@ def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
 
 
 def inert_text(value: Any, *, limit: int = INERT_TEXT_MAX,
-               lines: bool = False) -> str:
+               mode: str = "label") -> str:
     """UNTRUSTED tool/target text made safe to render, and bounded.
 
     The ONE neutralizer for every field a target or its scanner authored, at the
@@ -247,23 +261,38 @@ def inert_text(value: Any, *, limit: int = INERT_TEXT_MAX,
     terminal. Fixing them HERE is what lets every renderer inherit it instead of
     each one remembering.
 
-    A label (the default) is single-line: tabs and newlines survive the escape
-    and are then collapsed with the rest of the whitespace, because an ordinary
+    `mode` (see INERT_MODES) is how much of the text's own shape survives. A
+    LABEL, the default, is single-line: tabs and newlines survive the escape and
+    are then collapsed with the rest of the whitespace, because an ordinary
     multi-line tool message is not an attack and reads better as one line. A
-    body (`lines=True`) keeps its line structure; only `\\r`, which moves the
-    cursor back over what was already printed, is escaped there too.
+    BODY keeps its line structure; only `\\r`, which moves the cursor back over
+    what was already printed, is escaped there too. A PATH keeps every byte a
+    real filename may hold -- the collapse would rename it, and `location.file`
+    is resolved on disk (`evidence_scope._usable`) and compared for equality
+    (`grading`'s group-file match) -- so a tab or newline in a name is escaped
+    and nothing else moves. An unknown mode raises rather than defaulting to
+    the loosest one.
 
     Bounded, with the cut MARKED: a SARIF `message.text` is unbounded inside the
     50 MiB ingest cap, and a value that was cut must not read as a whole one.
     The slice before the escape is `8 * limit` because the escape rebuilds the
     string and expands by at most 6 per character, so a wider window cannot
-    change the answer (`phases/review._hit_text`'s measurement).
+    change the answer (`phases/review._hit_text`'s measurement). The cut itself
+    never splits an escape: a marker after `\\x1` would read as text the target
+    wrote rather than as the six bytes this function replaced.
     """
+    try:
+        keep, collapse = INERT_MODES[mode]
+    except KeyError:
+        raise ValueError("inert_text: unknown mode %r (have %s)"
+                         % (mode, ", ".join(sorted(INERT_MODES)))) from None
     cap = max(int(limit), 1)
-    text = inert_escape(str(value)[:8 * cap])
-    if not lines:
+    text = inert_escape(str(value)[:8 * cap], keep=keep)
+    if collapse:
         text = " ".join(text.split())
-    return text[:cap] + INERT_CUT if len(text) > cap else text
+    if len(text) <= cap:
+        return text
+    return _INERT_PARTIAL_TAIL.sub("", text[:cap]) + INERT_CUT
 
 
 def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
@@ -293,7 +322,7 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
     # location and the tool evidence: the adapter may keep and reuse its own dict
     # (osv/eslint build one per hit), and neutralizing is not ours to do to it.
     if isinstance(location, dict) and isinstance(location.get("file"), str):
-        location = dict(location, file=inert_text(location["file"]))
+        location = dict(location, file=inert_text(location["file"], mode="path"))
     tool_evidence = dict(tool_evidence or {})
     if isinstance(tool_evidence.get("rule_id"), str):
         tool_evidence["rule_id"] = inert_text(tool_evidence["rule_id"])
@@ -303,12 +332,14 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
         "severity": severity,
         "confidence": confidence,
         "panel": "security",
-        "category": inert_text(category),
+        # `or ""`: an absent body field is empty, never the word "None" --
+        # `normalize_finding` has always guarded it that way.
+        "category": inert_text(category or ""),
         "source": f"tool:{adapter.name}",
         "location": location,
-        "description": inert_text(description, limit=INERT_BODY_MAX, lines=True),
-        "impact": inert_text(impact, limit=INERT_BODY_MAX, lines=True),
-        "remediation": inert_text(remediation, limit=INERT_BODY_MAX, lines=True),
+        "description": inert_text(description or "", limit=INERT_BODY_MAX, mode="body"),
+        "impact": inert_text(impact or "", limit=INERT_BODY_MAX, mode="body"),
+        "remediation": inert_text(remediation or "", limit=INERT_BODY_MAX, mode="body"),
         "references": references or [],
         "tool_evidence": tool_evidence,
         "_group": group,

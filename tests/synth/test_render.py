@@ -600,7 +600,7 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
     config values are not normalization's to own, so they are neutralized here.
     """
 
-    HOSTILE = "ok\x1b[2J\x1b[H** clean **\x07"
+    HOSTILE = "ok\x1b[2J\x1b[H** clean **\x07\x00"
     HAZARDS = frozenset(chr(o) for o in
                         list(range(0x00, 0x20)) + [0x7f]
                         + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
@@ -613,7 +613,13 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
             "location": {"file": "a\x1b[2Kb.py", "line_start": 3},
             "impact": self.HOSTILE, "remediation": self.HOSTILE})
         return {"schema_version": 1,
-                "meta": {"target": "/t\x1b[2Karget", "coverage": {}, "integrity": {},
+                # The cross-domain Note prints an AGENT-authored domain, which
+                # `synth/integrity` only isinstance-checks (fix round 1,
+                # finding 2): a third field normalization does not own.
+                "meta": {"target": "/t\x1b[2Karget", "coverage": {},
+                         "integrity": {"cross_domain_findings": [
+                             {"file": "f", "cell_domain": "ARC", "code": "TST-X0X",
+                              "finding_domain": "TST\x1b[2J\rdriver: all clear\x07"}]},
                          "config": {"requested": {}, "effective": {},
                                     "refused": [{"key": "k\x1b[2J",
                                                  "value": "v\x07",
@@ -641,9 +647,11 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
         out = render_mod.render_summary(self._report())
         for expected in (r"# panopticon — /t\x1b[2Karget",        # meta.target
                          r"- **G\x1b[31mX** — code C",            # groups[].name
-                         r"**ok\x1b[2J\x1b[H** clean **\x07**",   # finding title
+                         r"**ok\x1b[2J\x1b[H** clean **\x07\x00**",  # finding title
                          r"a\x1b[2Kb.py:3",                       # location.file
-                         r"`k\x1b[2J: v\x07` refused"):           # target config
+                         r"`k\x1b[2J: v\x07` refused",            # target config
+                         "ARC\u2192TST" + r"\x1b[2J\x0ddriver: all clear\x07"
+                         + " \u00d71"):                            # cross-domain Note
             with self.subTest(line=expected):
                 self.assertIn(expected, out)
 

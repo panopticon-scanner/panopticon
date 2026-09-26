@@ -575,7 +575,7 @@ def probe_discovery_surface(host, review_root, disclose=None):
                 "host %r discovers no target-authored configuration" % host)
     open_hits: list[str] = []
     controlled: list[str] = []
-    problems = []
+    problems: list[str] = []      # a generator fills it; nothing infers it
     patterns = 0
     for entry in row.discovery_surface:
         # PER ROW, not per host. A file two ROWS both name is reported twice,
@@ -602,7 +602,8 @@ def probe_discovery_surface(host, review_root, disclose=None):
                 found.append(os.path.relpath(path, review_root))
             # Target text too: `surface.Walk.failed` names the path it could
             # not read, and that sentence lands in the same `detail` below.
-            problems.extend(tool_base.inert_text(p) for p in walk.unreadable)
+            problems.extend(tool_base.inert_text(p, mode="path")
+                            for p in walk.unreadable)
             if walk.capped:
                 problems.append("%s was not scanned past the cap (%s)"
                                 % (pattern, walk.capped))
@@ -612,8 +613,9 @@ def probe_discovery_surface(host, review_root, disclose=None):
         # names a fixed file), and these sentences reach the operator's stderr
         # and the artifact's `detail` -- so the name is rendered INERT at each
         # of the three sites. `found` stays raw: `surface.hit_identity` and the
-        # shadow-scan comparison above match real paths.
-        inert = [tool_base.inert_text(hit) for hit in found]
+        # shadow-scan comparison above match real paths. PATH mode, so the name
+        # an operator is told to go and look at is the name on disk.
+        inert = [tool_base.inert_text(hit, mode="path") for hit in found]
         if entry.kind == hosts.OPEN:
             open_hits.extend(_OPEN_HIT % (hit, entry.cell) for hit in inert)
         else:

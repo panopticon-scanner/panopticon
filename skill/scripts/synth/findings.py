@@ -159,7 +159,7 @@ def normalize_finding(f):
     # prints it. Inert before the emptiness rule below, which is unchanged: an
     # inert "" is still "".
     if isinstance(loc.get("file"), str):
-        loc["file"] = tool_base.inert_text(loc["file"])
+        loc["file"] = tool_base.inert_text(loc["file"], mode="path")
     # #1522 (COD-D1B): a location, if present, must identify a FILE -- the old
     # code left `{"line_end": null, "function": null}` behind for a payload with
     # no location, violating both the schema's required array and line_end's
@@ -182,7 +182,7 @@ def normalize_finding(f):
     # bounded and inert but keeping its line structure (`tool_base.inert_text`
     # is the one neutralizer, shared with both tool builders).
     for key in ("impact", "remediation"):
-        f[key] = tool_base.inert_text(f.get(key) or "", lines=True,
+        f[key] = tool_base.inert_text(f.get(key) or "", mode="body",
                                       limit=tool_base.INERT_BODY_MAX)
     title = f.get("title")
     if not title:

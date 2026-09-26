@@ -121,7 +121,7 @@ def norm_uri(uri):
         uri = uri[len("/src/"):]
     else:
         uri = uri.lstrip("/")
-    return inert_text(uri)
+    return inert_text(uri, mode="path")
 
 
 _norm_uri = norm_uri

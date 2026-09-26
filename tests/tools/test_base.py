@@ -2,6 +2,7 @@ import contextlib
 import errno
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -309,6 +310,20 @@ class TestBase(unittest.TestCase):
         self.assertEqual(f["location"]["file"], r"a\x07b.py")
 
 
+    def test_make_finding_stores_empty_text_not_the_word_None(self):
+        # Fix round 1, finding 5: `inert_text(None)` coerces to "None", which
+        # would read as a remediation an adapter wrote. `normalize_finding`
+        # already guarded with `or ""`; the builder now matches it.
+        import types
+        ad = types.SimpleNamespace(prefix="XX", name="demo")
+        f = base.make_finding(ad, 1, "g1", title="t", severity="HIGH",
+                              category=None, location={"file": "a", "line_start": 1},
+                              description=None, impact=None, remediation=None)
+        for key in ("description", "impact", "remediation", "category"):
+            with self.subTest(field=key):
+                self.assertEqual("", f[key])
+
+
 class TestInertText(unittest.TestCase):
     r"""#1829 (SEC-4277410777 / SEC-798292895 / SEC-2200312865, #2069): ONE
     neutralizer for untrusted tool/target text, defined once.
@@ -350,7 +365,26 @@ class TestInertText(unittest.TestCase):
         # \r is the overwrite vector (it moves the cursor to column 0), so it is
         # escaped even in a body; \n and \t carry the document's own structure.
         self.assertEqual("line1\n\tline2\\x0dline3",
-                         base.inert_text("line1\n\tline2\rline3", lines=True))
+                         base.inert_text("line1\n\tline2\rline3", mode="body"))
+
+    def test_a_path_keeps_every_byte_a_real_filename_may_hold(self):
+        # Fix round 1, finding 1: the LABEL form collapses on `str.split()`,
+        # which splits on EVERY Unicode space -- so `src/a  b.py`, a macOS
+        # `Screen\u202fShot.png`, an NBSP and U+3000 were rewritten, and every
+        # consumer that resolves `location.file` on disk or by equality missed
+        # the file. A path is escaped and bounded and NOTHING else.
+        for name in ("src/a  b.py", "Screen\u202fShot.png", "doc/\xa0nbsp.py",
+                     "a\u3000b.py", " leading.py", "trailing.py "):
+            with self.subTest(name=name):
+                self.assertEqual(name, base.inert_text(name, mode="path"))
+        # ...but a control char in a filename is still neutralized, tabs and
+        # newlines included: those are not path bytes an operator can read.
+        self.assertEqual(r"a\x09b\x0ac\x0dd\x1be.py",
+                         base.inert_text("a\tb\nc\rd\x1be.py", mode="path"))
+
+    def test_an_unknown_mode_is_loud(self):
+        with self.assertRaises(ValueError):
+            base.inert_text("x", mode="paths")
 
     def test_the_length_bound_cuts_and_MARKS_the_cut(self):
         out = base.inert_text("x" * (base.INERT_TEXT_MAX + 50))
@@ -361,6 +395,20 @@ class TestInertText(unittest.TestCase):
         wide = base.inert_text("\x1b" * (base.INERT_TEXT_MAX + 50))
         self.assertEqual(base.INERT_TEXT_MAX + 1, len(wide))
         self.assertTrue(wide.endswith(base.INERT_CUT))
+
+    def test_the_cut_never_splits_an_escape(self):
+        # Fix round 1, finding 4: the slice landed mid-`\x1b` and the marker
+        # followed a partial escape (`...AAA\x1…`). No raw byte was re-exposed,
+        # but a cut must leave every escape it kept whole.
+        for filler, ch in ((1997, "\x1b"), (1996, "\u2028"), (1999, "\x07")):
+            with self.subTest(filler=filler, codepoint=hex(ord(ch))):
+                out = base.inert_text("A" * filler + ch + "B" * 50)
+                self.assertTrue(out.endswith(base.INERT_CUT), repr(out[-8:]))
+                body = out[:-len(base.INERT_CUT)]
+                self.assertIsNone(
+                    re.search(r"\\(x[0-9a-f]{0,1}|u[0-9a-f]{0,3})$", body),
+                    "the cut split an escape: %r" % out[-8:])
+                self.assertLessEqual(len(out), base.INERT_TEXT_MAX + len(base.INERT_CUT))
 
     def test_a_value_inside_the_bound_is_never_marked(self):
         out = base.inert_text("x" * base.INERT_TEXT_MAX)

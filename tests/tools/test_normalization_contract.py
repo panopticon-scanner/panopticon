@@ -22,11 +22,13 @@ exits 0 still parses perfectly (#1457).
 """
 import json
 import os
+import tempfile
 import types
 import unittest
 
 from _test_helpers import only, skip_or_fail
 
+import scripts.phases.evidence_scope as evidence_scope
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.tools.base as base
@@ -308,6 +310,68 @@ class TestHostileToolTextIsInert(unittest.TestCase):
         self.assertEqual("Reported by static-analysis tool semgrep",
                          f["provenance"]["confirmation_reasoning"])
         self.assertEqual("tool", f["category"])
+
+
+class TestLegitimatePathsSurviveByteForByte(unittest.TestCase):
+    """Fix round 1, finding 1: neutralizing a path must not REWRITE it.
+
+    The first cut sent `location.file` through the label form, whose
+    `" ".join(text.split())` splits on every Unicode space -- so `src/a  b.py`,
+    a macOS `Screen\u202fShot.png`, an NBSP or a U+3000 name came out renamed.
+    Nothing hostile is needed to trigger it, and the consumers that resolve
+    `location.file` on disk (`evidence_scope._usable`, the advisor's read
+    grant) or by equality (`grading`'s group-file attribution, `plan`'s
+    off-plan diagnostic) silently miss the file.
+    """
+
+    REAL_NAMES = ("src/a  b.py", "Screen\u202fShot.png", "doc/\xa0nbsp.py",
+                  "a\u3000b.py")
+
+    def _sarif(self, uri):
+        return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                          "results": [{"ruleId": "r1", "message": {"text": "m"},
+                                       "locations": [{"physicalLocation": {
+                                           "artifactLocation": {"uri": "/src/" + uri},
+                                           "region": {"startLine": 1}}}]}]}]}
+
+    def test_the_sarif_builder_keeps_the_path_it_was_given(self):
+        for name in self.REAL_NAMES:
+            with self.subTest(name=name):
+                f = only(sarif_utils.sarif_to_findings(
+                    self._sarif(name), "semgrep", "G", "SEC"))
+                self.assertEqual(name, f["location"]["file"])
+
+    def test_make_finding_keeps_the_path_it_was_given(self):
+        adapter = types.SimpleNamespace(prefix="XX", name="demo")
+        for name in self.REAL_NAMES:
+            with self.subTest(name=name):
+                f = base.make_finding(
+                    adapter, 1, "G", title="t", severity="HIGH", category="c",
+                    location={"file": name, "line_start": 1}, description="d",
+                    impact="", remediation="")
+                self.assertEqual(name, f["location"]["file"])
+
+    def test_the_advisor_s_read_grant_still_resolves_the_file(self):
+        # The consumer, not a proxy for it: `_usable` is what decides whether
+        # the file a claim is about may be read.
+        with tempfile.TemporaryDirectory() as root:
+            for name in self.REAL_NAMES:
+                with self.subTest(name=name):
+                    full = os.path.join(root, *name.split("/"))
+                    os.makedirs(os.path.dirname(full), exist_ok=True)
+                    with open(full, "w", encoding="utf-8") as fh:
+                        fh.write("x\n")
+                    f = only(sarif_utils.sarif_to_findings(
+                        self._sarif(name), "semgrep", "G", "SEC"))
+                    self.assertEqual(
+                        name, evidence_scope._usable(root, f["location"]["file"]),
+                        "the advisor cannot read the file the finding is about")
+
+    def test_a_control_char_in_a_path_is_still_neutralized(self):
+        f = only(sarif_utils.sarif_to_findings(
+            self._sarif("a\x1b[2Kb\tc.py"), "semgrep", "G", "SEC"))
+        self.assertEqual(r"a\x1b[2Kb\x09c.py", f["location"]["file"])
+        self.assertEqual([], _live_control_bytes(f["location"]["file"]))
 
 
 class TestFindingsSurviveIntoAReport(unittest.TestCase):

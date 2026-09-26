@@ -125,6 +125,18 @@ class TestNormalizeNeutralizesUntrustedText(unittest.TestCase):
         f = findings_mod.normalize_finding({"title": " a \t b\n\nc  "})
         self.assertEqual("a b c", f["title"])
 
+    def test_a_real_path_is_not_rewritten_by_the_neutralizer(self):
+        # Fix round 1, finding 1: the label form collapses on `str.split()`,
+        # which splits on every Unicode space. A path is escaped and bounded,
+        # and otherwise kept byte-for-byte -- `grading`'s group-file match and
+        # `plan`'s off-plan diagnostic compare this string to a real filename.
+        for name in ("src/a  b.py", "Screen\u202fShot.png", "doc/\xa0nbsp.py",
+                     "a\u3000b.py"):
+            with self.subTest(name=name):
+                f = findings_mod.normalize_finding(
+                    {"title": "x", "location": {"file": name, "line_start": 1}})
+                self.assertEqual(name, f["location"]["file"])
+
     def test_an_empty_location_file_still_drops_the_location(self):
         # #1522's rule must survive the neutralizer running before it.
         f = findings_mod.normalize_finding({"title": "x", "location": {"file": ""}})
