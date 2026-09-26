@@ -82,7 +82,7 @@ ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
 # Copied and not imported for the reason the binding helpers above are.
 #
 # #1640 (run-13 AGT-861284148). The `.panopticon` segment is found LEXICALLY
-# -- here and in `_artifact_roots` -- so every directory between the review
+# -- here and in `_is_run_folder` -- so every directory between the review
 # root and the findings file is a component whose NAME the guard trusted and
 # whose target it never looked at. The old rule refused a symlink only when
 # the out_file's IMMEDIATE parent was named `.panopticon`; a real findings
@@ -124,7 +124,7 @@ def _components(path):
 
     (None, []) when the path carries no `.panopticon` segment. There is no
     artifact tree to anchor on then, so there is nothing for this rule to say;
-    `_confined_to_artifact_roots` already refuses to carry such a grant
+    `_carried_paths_this_run_owns` already refuses to carry such a grant
     forward, and the probes' sandbox plans legitimately declare out_files that
     live nowhere near an artifact tree.
 
@@ -237,8 +237,9 @@ def union_paths(allowlist):
     """Every granted path in an entry mapping, flat -- the batch-wide set.
 
     What the ORCHESTRATOR is adjudicated against (it is bound to no entry and
-    writes the run's own artifacts), what `is_armed` counts, and what the
-    `.panopticon`-confinement arithmetic anchors on."""
+    writes the run's own artifacts) and what `is_armed` counts. NOT what the
+    carry-forward confinement anchors on: that needs each path's entry id, so it
+    reads the mapping (`_run_folders`)."""
     out: set[str] = set()
     for paths in (allowlist or {}).values():
         out.update(p for p in paths if isinstance(p, str))
@@ -702,113 +703,203 @@ def _read_allowlist(allowlist_path):
     return _load_allowlist(allowlist_path)[0] or {}
 
 
-# The reviewer findings-file name, `findings-<group>-<domain>.json`: the only
-# out_file `phases.review._cell_entry` writes, the one
-# `plan_contract.driver_plan_issues` enforces on the driver plan, and the one
-# `synth.integrity._expected_from_filename` reads back. A COPY, not an import,
-# for the reason `_atomic_write_json` carries the os-flag form itself: this hook
-# is executed as its own subprocess by the host's PreToolUse command and has to
-# import standing alone, so it may not reach into the driver's packages. The copy
-# is pinned equal to integrity's by tests/test_write_guard_hook.py so a second
-# spelling cannot drift into existence.
-_FINDINGS_NAME_RE = re.compile(r"^findings-(?P<group>.+)-(?P<domain>[A-Za-z]+)\.json$")
+# The dispatch families that write into a run folder, and the ONE artifact each
+# family's entry id declares. Spelled here rather than imported, for the reason
+# `_atomic_write_json` carries the os-flag form itself: this hook is executed as
+# its own subprocess by the host's PreToolUse command and has to import standing
+# alone, so it may not reach into the driver's packages.
+# tests/test_write_guard_hook.py pins every one of these against the phase builder
+# that owns it (`phases/review.py:334+354`, `phases/verify.py:57-64+262`,
+# `phases/verify_tools.py:149+212`, `phases/coverage.py:97+102`), so a rename on
+# either side fails a test instead of silently revoking a live grant.
+RUNS_DIR = "runs"
+VERDICTS_DIR = "verdicts"
+_REVIEW_PREFIX = "review-"
+# Checked BEFORE `_VERIFY_PREFIX`: a tool-finding advisor's id starts with it too.
+_TOOL_VERIFY_PREFIX = "verify-tool-"
+_VERIFY_PREFIX = "verify-"
+_SCOUT_PREFIX = "scout-"
+# `verify-<group>-<domain>-<stage>[-part<N>]`. A group name may carry hyphens
+# (`groups_schema._GROUP_NAME_RE`); a domain and a stage may not -- so the stage is
+# the last token once the optional part suffix is off. Stripped in that ORDER, the
+# way `_verify_out_file` appends it: one regex with an optional trailing group
+# would let a greedy cell swallow the stage and read `part2` as the stage instead.
+_VERIFY_PART_RE = re.compile(r"-part[0-9]+$")
+_VERIFY_CELL_STAGE_RE = re.compile(r"^(?P<cell>.+)-(?P<stage>[A-Za-z0-9]+)$")
 
 
-def _findings_cell(path):
-    """The `<group>-<domain>` cell a path's BASENAME declares, or None when the
-    basename is not a reviewer findings file at all.
+def _claimed_relpath(eid):
+    """The one path, RELATIVE to a run folder, that entry `eid` may hold -- or
+    None when no dispatch family would grant that id anything in a run folder.
 
-    The domain is the LAST token because domains are a fixed hyphen-free set, so
-    a group name may itself contain hyphens (integrity says the same)."""
-    m = _FINDINGS_NAME_RE.match(os.path.basename(str(path)))
-    return None if m is None else "%s-%s" % (m.group("group"), m.group("domain"))
+    DERIVED from the id, never matched against a path's name (#1831 fix round 1).
+    Matching was the hole: cells are `<group>-<domain>` and a group name may carry
+    hyphens, so "does this id end with the cell this name declares" is true
+    whenever one group's name ends with another's -- `Core` and `X-Core`, or an
+    ordinary collision like `API` and `Public-API`. The target authors the group
+    names, so `review-X-Core-SEC` claimed `findings-Core-SEC.json` and a subverted
+    reviewer could forge a PEER cell's findings with no integrity trace, the file
+    being plan-declared. Reading the pairing the builders establish BACKWARDS is
+    exact, and it is exact for every family rather than for one of them.
+
+    `setup-scan` is deliberately absent: it writes `.panopticon/setup-proposal.json`,
+    a TOP-LEVEL artifact outside every run folder (`phases/runio.py:_TOP_LEVEL`), so
+    no run folder can own it and its grant is never carried. `UNBOUND_ENTRY` is
+    absent for the same structural reason -- it names no entry, so there is nothing
+    to derive a path from, and `adjudicate` refuses that bucket to every bound
+    agent anyway.
+
+    An id carrying a path separator or a `..` is refused outright. No builder can
+    produce one (group names admit neither, domains and stages are alphanumeric,
+    and a queue id is a 16-char sha prefix), and without the refusal a planted
+    `verify-tool-../../x` would derive a suffix that strips back OUT of the run
+    folder."""
+    if not isinstance(eid, str) or not eid:
+        return None
+    if os.sep in eid or "/" in eid or ".." in eid or "\x00" in eid:
+        return None
+    if eid.startswith(_REVIEW_PREFIX):
+        cell = eid[len(_REVIEW_PREFIX):]
+        return "findings-%s.json" % cell if cell else None
+    if eid.startswith(_TOOL_VERIFY_PREFIX):
+        queue_id = eid[len(_TOOL_VERIFY_PREFIX):]
+        return os.path.join(VERDICTS_DIR, "%s.json" % queue_id) if queue_id else None
+    if eid.startswith(_VERIFY_PREFIX):
+        rest = eid[len(_VERIFY_PREFIX):]
+        part = _VERIFY_PART_RE.search(rest)
+        part_suffix = part.group(0) if part else ""
+        m = _VERIFY_CELL_STAGE_RE.match(rest[:part.start()] if part else rest)
+        if m is None:
+            return None
+        return os.path.join(VERDICTS_DIR, "verdicts-%s%s%s.json"
+                            % (m.group("cell"),
+                               "-backup" if m.group("stage") == "backup" else "",
+                               part_suffix))
+    if eid.startswith(_SCOUT_PREFIX):
+        group = eid[len(_SCOUT_PREFIX):]
+        return "scout-%s.json" % group if group else None
+    return None
 
 
-def _artifact_roots(paths):
-    """The RUN FOLDER of each added out_file that lives in an artifact tree --
-    `<review root>/.panopticon/runs/<tag>/` by construction, since `runio._pano`
-    puts every non-top-level artifact there.
+def _run_folder_of(eid, path):
+    """The run folder that would make `path` EXACTLY the artifact `eid` declares,
+    or None when nothing would. The one predicate both sides use: it turns an
+    added grant into an anchor and it decides whether a carried grant is real."""
+    rel = _claimed_relpath(eid)
+    if rel is None:
+        return None
+    suffix = os.sep + rel
+    p = str(path)
+    if not p.endswith(suffix):
+        return None
+    return p[:-len(suffix)] or None
 
-    #1831 SEC-611772336: this used to truncate at the `.panopticon` segment,
-    which made the WHOLE artifact tree the anchor -- so a planted entry naming any
-    path under it (a peer cell's findings file, the run's `out-file-hashes.json`
-    integrity snapshot, `dispatch-plan-driver.json`, `groups.yml`, a
-    `tools/*.sarif`) was carried forward, re-opening the per-entry confinement
-    #1571 exists to establish. The directory an out_file is written into is the
-    narrowest anchor available at install time, and it is the run folder.
 
-    Only a path that carries a `.panopticon` segment yields an anchor, exactly as
-    before (#run10 SEC-C1D): a plan whose out_files sit in no artifact tree
-    anchors nothing and carries nothing forward."""
+def _is_run_folder(path):
+    """Is `path` a per-run artifact folder, `<review root>/.panopticon/runs/<tag>`?
+
+    #1831: the anchor used to be the `.panopticon` segment, which made the whole
+    artifact tree the root -- everything the target commits under it included. The
+    run folder is where `runio._pano` puts every non-top-level artifact, so it is
+    the narrowest anchor a plan can establish, and a previous round's tag is a
+    different folder."""
+    parts = str(path).split(os.sep)
+    return len(parts) >= 3 and parts[-3] == ARTIFACT_DIR and parts[-2] == RUNS_DIR
+
+
+def _run_folders(added):
+    """The run folders the `added` grants write into -- derived ONLY from the plan
+    this install was handed, never from the file on disk.
+
+    Anchoring on each out_file's own `dirname` was wrong because the families do
+    not share a directory: review and scout write into the run folder itself,
+    verify and the tool-verdict arm write into `<run>/verdicts/` (#1831 fix round
+    1). A verify arm therefore anchored on `<run>/verdicts` and carried nothing at
+    all -- the #11 revocation harm for three families out of four. Stripping each
+    family's own declared suffix lands on the run folder for all of them."""
     roots = set()
-    for p in paths:
-        p = str(p)
-        if ARTIFACT_DIR in p.split(os.sep):
-            roots.add(os.path.dirname(p))
+    for eid, paths in (added or {}).items():
+        for p in paths:
+            root = _run_folder_of(eid, p)
+            if root is not None and _is_run_folder(root):
+                roots.add(root)
     return roots
 
 
-def _announce_dropped_grants(dropped):
-    """Say on stderr which carried entries lost paths, and how many.
+# Target-authored text reaches the operator's terminal here, so every field is
+# bounded with a MARKED cut and rendered with `%r` -- which escapes newlines and
+# control bytes, so a planted id can neither forge a line of its own nor erase
+# one. `_parse_allowlist` checks only that an id is a str: no grammar, no length.
+_ANNOUNCE_TEXT_CAP = 64
+_ANNOUNCE_IDS_MAX = 10
+_DROP_NOT_THIS_RUN = ("not this run's folder, or not the artifact that entry "
+                      "itself declares")
+_DROP_NO_ANCHOR = "no run folder among the added out_files"
 
-    A grant narrowed in silence is the #calibration-4 / gotify shape: every
-    later write denied, and nothing in the output pointing at the allowlist."""
+
+def _bounded(text):
+    """One field of untrusted text, safe to put on a line of operator output."""
+    s = text if isinstance(text, str) else str(text)
+    if len(s) <= _ANNOUNCE_TEXT_CAP:
+        return "%r" % s
+    return "%r (+%d chars cut)" % (s[:_ANNOUNCE_TEXT_CAP],
+                                   len(s) - _ANNOUNCE_TEXT_CAP)
+
+
+def _dropped_counts(existing):
+    """{entry id: how many paths it holds} -- what is lost when nothing anchors."""
+    return {eid: len(paths) for eid, paths in (existing or {}).items() if paths}
+
+
+def _announce_dropped_grants(dropped, why):
+    """ONE line on stderr: the counts first, then the entry ids that lost paths.
+
+    A grant narrowed in silence is the #calibration-4 / gotify shape: every later
+    write denied, and nothing in the output pointing at the allowlist. The paths
+    themselves are deliberately not printed -- the entry id is what an operator
+    needs to tell a previous round's leftovers from a planted file."""
     if not dropped:
         return
-    print("write guard: dropped %d carried allowlist path(s) that are not this "
-          "run's own findings files: %s"
-          % (sum(dropped.values()),
-             ", ".join("%s (%d)" % (eid, n) for eid, n in sorted(dropped.items()))),
+    ids = sorted(dropped)
+    named = ", ".join("%s (%d)" % (_bounded(eid), dropped[eid])
+                      for eid in ids[:_ANNOUNCE_IDS_MAX])
+    if len(ids) > _ANNOUNCE_IDS_MAX:
+        named += ", and %d more entry(ies)" % (len(ids) - _ANNOUNCE_IDS_MAX)
+    print("write guard: dropped %d carried allowlist path(s) in %d entry(ies) "
+          "-- %s: %s" % (sum(dropped.values()), len(ids), why, named),
           file=sys.stderr)
 
 
-def _confined_to_artifact_roots(existing, added):
-    """The `existing` mapping's grants that could plausibly be a real in-flight
-    grant from a concurrent fan-out, still keyed by the entry that holds them.
+def _carried_paths_this_run_owns(existing, added):
+    """The `existing` mapping's grants that are a real in-flight grant from a
+    concurrent fan-out, still keyed by the entry that holds them.
 
-    Three things must hold, and each one is a thing a target-committed
-    `.panopticon/write-allowlist.json` cannot fake (#1831 SEC-611772336):
+    One condition, applied per (entry id, path) pair: the path must be EXACTLY the
+    artifact that entry declares (`_claimed_relpath`), in one of the run folders
+    `added` writes into (`_run_folders`). So an entry keyed with a REAL reviewer id
+    may carry only that reviewer's own out_file and never a peer's, a previous
+    round's tag is not in flight, and the run's own integrity artifacts
+    (`out-file-hashes.json`, `dispatch-plan-driver.json`) are no entry's grant at
+    all. A concurrent fan-out's grant IS its own declared artifact in this run's
+    folder, whichever family it belongs to, so the #11 property survives.
 
-      * the path sits DIRECTLY IN one of the run folders `added` writes into --
-        not merely somewhere under `.panopticon`, and not in another run's folder,
-        whose grants are by definition not in flight;
-      * its basename has the findings-file shape, so the run's own integrity
-        artifacts (`out-file-hashes.json`, `dispatch-plan-driver.json`) and
-        everything else in the folder are not carried;
-      * the entry holding it CLAIMS that cell -- an id is
-        `review-<group>-<domain>` for the `findings-<group>-<domain>.json` it
-        declares, so an entry keyed with a REAL reviewer id may carry only that
-        reviewer's own out_file and never a PEER's. This is the half the shape
-        check alone does not buy: entry ids are derivable by the target (it
-        authors `panopticon.yml`, and `phases.review` builds the id from the
-        group and domain), so a planted `review-Core-SEC` naming
-        `findings-OtherGroup-ARC.json` is exactly the reachable attack.
-        `UNBOUND_ENTRY` names no cell and is refused by `adjudicate` to every
-        bound agent, so that bucket is held to the first two rules only.
-
-    An in-flight grant from a concurrent fan-out is its own cell's findings file
-    in this run's folder, so it survives all three (the #11 property). With no
-    anchor (a plan whose out_files carry no `.panopticon` segment) nothing is
-    carried forward: fail closed rather than trust an unanchored file."""
-    roots = _artifact_roots(union_paths(added))
+    With no anchor -- a plan whose out_files establish no run folder, which no
+    `driver run` produces once the manifest exists -- nothing is carried forward:
+    fail closed rather than trust an unanchored file. Every drop is announced."""
+    roots = _run_folders(added)
     if not roots:
+        _announce_dropped_grants(_dropped_counts(existing), _DROP_NO_ANCHOR)
         return {}
     out = {}
     dropped: dict[str, int] = {}
     for eid, paths in existing.items():
-        kept = []
-        for path in paths:
-            p = str(path)
-            cell = _findings_cell(p)
-            if os.path.dirname(p) in roots and cell is not None and (
-                    eid == UNBOUND_ENTRY or eid == cell
-                    or eid.endswith("-" + cell)):
-                kept.append(p)
-            else:
-                dropped[eid] = dropped.get(eid, 0) + 1
+        kept = [str(p) for p in paths if _run_folder_of(eid, str(p)) in roots]
+        lost = len(paths) - len(kept)
+        if lost:
+            dropped[eid] = lost
         if kept:
             out[eid] = kept
-    _announce_dropped_grants(dropped)
+    _announce_dropped_grants(dropped, _DROP_NOT_THIS_RUN)
     return out
 
 
@@ -960,7 +1051,7 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # run's folder, the run's integrity artifacts, a peer cell's findings file
     # under a real reviewer's id (#1831 SEC-611772336) -- was not written by a
     # trusted install and is dropped, with a count on stderr.
-    carried = _confined_to_artifact_roots(_read_allowlist(allowlist_path), added)
+    carried = _carried_paths_this_run_owns(_read_allowlist(allowlist_path), added)
     # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
     # survives (the #11 property) without becoming writable by this batch's
     # reviewers -- which is exactly what a flat union made it.

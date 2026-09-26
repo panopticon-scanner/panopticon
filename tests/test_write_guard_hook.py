@@ -209,16 +209,18 @@ class TestAllowlistFromPlan(unittest.TestCase):
         # `.panopticon` tree we are installing into must be dropped.
         with tempfile.TemporaryDirectory() as d:
             pano = os.path.join(d, ".panopticon")
-            os.makedirs(pano)
+            run = os.path.join(pano, "runs", "t-20260925-abc")
+            os.makedirs(run)
             allow = os.path.join(pano, "write-allowlist.json")
             planted = os.path.join(d, "skill", "scripts", "driver.py")
             with open(allow, "w") as fh:
                 json.dump(wg.allowlist_document({"planted-cell": [
                     planted, os.path.expanduser("~/.ssh/authorized_keys")]}), fh)
-            out_file = os.path.join(pano, "findings-app-SEC.json")
+            out_file = os.path.join(run, "findings-app-SEC.json")
             settings = os.path.join(d, "settings.json")
-            wg.install([{"out_file": out_file}],
-                       settings_path=settings, allowlist_path=allow)
+            with contextlib.redirect_stderr(io.StringIO()):
+                wg.install([{"id": "review-app-SEC", "out_file": out_file}],
+                           settings_path=settings, allowlist_path=allow)
             with open(allow) as fh:
                 final = set(json.load(fh)["paths"])
             self.assertIn(os.path.realpath(out_file), final)   # our own grant stands
@@ -227,17 +229,25 @@ class TestAllowlistFromPlan(unittest.TestCase):
 
     def test_install_keeps_a_concurrent_fanouts_in_flight_grant(self):
         # The #11 property must survive SEC-C1D: a REAL in-flight grant from a
-        # concurrent fan-out is a findings out_file in the same .panopticon tree,
-        # so it is still carried forward and never silently revoked.
+        # concurrent fan-out is the findings out_file its own entry declares, in
+        # the run folder this install writes into, so it is still carried forward
+        # and never silently revoked.
+        #
+        # #1831 fix round 1: the fixture now spells the entry id and the path the
+        # way the driver spells them -- `review-<cell>` writing
+        # `runs/<tag>/findings-<cell>.json` (phases/review.py:334+354) -- because
+        # a carried grant is checked against what its OWN id declares. The
+        # property under test is unchanged.
         with tempfile.TemporaryDirectory() as d:
-            pano = os.path.join(d, ".panopticon")
-            os.makedirs(pano)
-            allow = os.path.join(pano, "write-allowlist.json")
-            inflight = os.path.realpath(os.path.join(pano, "findings-other-COD.json"))
+            run = os.path.join(d, ".panopticon", "runs", "t-20260925-abc")
+            os.makedirs(run)
+            allow = os.path.join(d, ".panopticon", "write-allowlist.json")
+            inflight = os.path.realpath(os.path.join(run, "findings-other-COD.json"))
             with open(allow, "w") as fh:
-                json.dump(wg.allowlist_document({"other-COD": [inflight]}), fh)
+                json.dump(wg.allowlist_document({"review-other-COD": [inflight]}), fh)
             settings = os.path.join(d, "settings.json")
-            wg.install([{"out_file": os.path.join(pano, "findings-app-SEC.json")}],
+            wg.install([{"id": "review-app-SEC",
+                         "out_file": os.path.join(run, "findings-app-SEC.json")}],
                        settings_path=settings, allowlist_path=allow)
             with open(allow) as fh:
                 final = set(json.load(fh)["paths"])
@@ -266,9 +276,10 @@ class TestAllowlistFromPlan(unittest.TestCase):
 
 class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
     """#1831 SEC-611772336: the grant `install` carries forward from whatever
-    allowlist is already on disk is confined to THIS run's folder and to the
-    findings-file shape, so a target-committed `.panopticon/write-allowlist.json`
-    cannot hand a real reviewer anything but its own out_file.
+    allowlist is already on disk holds nothing but the EXACT artifact each
+    carried entry id declares, in one of THIS run's folders -- so a
+    target-committed `.panopticon/write-allowlist.json` cannot hand a real
+    reviewer anything but its own out_file.
 
     The anchor used to truncate at the `.panopticon` segment, which made the
     whole artifact tree the root, and the kept-filter checked a prefix and never
@@ -278,6 +289,10 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
     snapshot and `dispatch-plan-driver.json` into that reviewer's own grant.
     That is the per-entry confinement #1571 exists to establish, reached through
     the one path it did not close.
+
+    Fix round 1 replaced name-matching with DERIVATION: a carried entry may hold
+    only the path its own phase builder would have written for it, so the claim
+    is exact for every dispatch family rather than a prefix test on one of them.
     """
 
     TAG = "claude-redteam-repo-20260925-abc"
@@ -289,12 +304,24 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         pano = os.path.join(root, ".panopticon")
         run = os.path.join(pano, "runs", self.TAG)
-        os.makedirs(run)
+        os.makedirs(os.path.join(run, "verdicts"))
         os.makedirs(os.path.join(pano, "tools"))
         settings = os.path.join(root, "settings.json")
         with open(settings, "w", encoding="utf-8") as fh:
             fh.write("{}")
         return root, run, os.path.join(pano, "write-allowlist.json"), settings
+
+    @staticmethod
+    def _every_family(run):
+        """One legitimate in-flight grant per dispatch family that writes into a
+        run folder, spelled exactly as its phase builder spells it:
+        `phases/review.py:334+354`, `phases/verify.py:57-64+262`,
+        `phases/verify_tools.py:149+212`, `phases/coverage.py:97+102`."""
+        return {"review-Other-COD": [os.path.join(run, "findings-Other-COD.json")],
+                "verify-Other-COD-backup": [
+                    os.path.join(run, "verdicts", "verdicts-Other-COD-backup.json")],
+                "verify-tool-q7": [os.path.join(run, "verdicts", "q7.json")],
+                "scout-Other": [os.path.join(run, "scout-Other.json")]}
 
     def _plant(self, allow, entries):
         with open(allow, "w", encoding="utf-8") as fh:
@@ -388,21 +415,173 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         self.assertIn("review-Core-SEC", printed)
         self.assertIn("2", printed)
 
-    def test_the_findings_name_spelling_is_the_one_the_pipeline_owns(self):
-        # The hook runs as its own subprocess and may not import the driver's
-        # packages, so it carries a COPY of the findings-file regex. Pin it to
-        # the original rather than let a second spelling drift into existence.
+    def test_a_group_name_that_is_a_suffix_of_another_cannot_claim_its_cell(self):
+        # C1 (fix round 1). Group names are target-authored and may contain
+        # hyphens (`groups_schema._GROUP_NAME_RE`), so a "does the id END WITH
+        # this cell" test matches the WRONG cell whenever one group's name ends
+        # with another's -- adversarially (`Core` / `X-Core`) or by ordinary
+        # collision (`API` / `Public-API`). Both cells are dispatched, so the
+        # peer's findings file is genuinely armed, under the peer's id alone.
+        _root, run, allow, settings = self._target()
+        victim = os.path.join(run, "findings-Core-SEC.json")
+        attacker = os.path.join(run, "findings-X-Core-SEC.json")
+        self._plant(allow, {"review-X-Core-SEC": [victim]})
+        with contextlib.redirect_stderr(io.StringIO()):
+            wg.install([{"id": "review-Core-SEC", "out_file": victim},
+                        {"id": "review-X-Core-SEC", "out_file": attacker}],
+                       settings_path=settings, allowlist_path=allow)
+        env = {wg.ENV_ENTRY_ID: "review-X-Core-SEC"}
+        payload = {"tool_name": "Write", "agent_type": "panopticon-domain-panel"}
+        allowed, reason = wg.adjudicate(
+            dict(payload, tool_input={"file_path": victim}), allow, env=env)
+        self.assertFalse(allowed, "a hyphen-suffix group name claimed a peer cell")
+        self.assertIn("peer entry's artifact is not writable", reason)
+        self.assertEqual(
+            (True, ""),
+            wg.adjudicate(dict(payload, tool_input={"file_path": attacker}),
+                          allow, env=env))
+        with open(allow, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["entries"],
+                             {"review-Core-SEC": [victim],
+                              "review-X-Core-SEC": [attacker]})
+
+    def test_every_familys_in_flight_grant_survives_an_arm_by_another_family(self):
+        # I2 (fix round 1): the families do not share a directory -- verify and
+        # the tool-verdict arm write into `<run>/verdicts/`, review and scout
+        # write into `<run>/` itself. Anchoring on the added out_file's own
+        # dirname therefore made a verify arm carry NOTHING, revoking every
+        # in-flight review/scout/verify grant on the tree: the #11 harm, for
+        # three families out of four. The anchor is the RUN FOLDER.
+        _root, run, allow, settings = self._target()
+        inflight = self._every_family(run)
+        self._plant(allow, inflight)
+        mine = os.path.join(run, "verdicts", "verdicts-Core-SEC.json")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            wg.install([{"id": "verify-Core-SEC-primary", "out_file": mine}],
+                       settings_path=settings, allowlist_path=allow)
+        self.assertEqual("", err.getvalue(), "a legitimate grant was dropped")
+        with open(allow, encoding="utf-8") as fh:
+            entries = json.load(fh)["entries"]
+        self.assertEqual(dict(inflight, **{"verify-Core-SEC-primary": [mine]}),
+                         entries)
+
+    def test_the_same_grants_under_another_run_tag_are_all_dropped(self):
+        # The other half of the anchor: right family, right shape, wrong run --
+        # a previous round's grants are by definition not in flight.
+        root, run, allow, settings = self._target()
+        stale_run = os.path.join(root, ".panopticon", "runs", "other-tag")
+        os.makedirs(os.path.join(stale_run, "verdicts"))
+        self._plant(allow, self._every_family(stale_run))
+        mine = os.path.join(run, "verdicts", "verdicts-Core-SEC.json")
+        with contextlib.redirect_stderr(io.StringIO()):
+            wg.install([{"id": "verify-Core-SEC-primary", "out_file": mine}],
+                       settings_path=settings, allowlist_path=allow)
+        with open(allow, encoding="utf-8") as fh:
+            self.assertEqual({"verify-Core-SEC-primary": [mine]},
+                             json.load(fh)["entries"])
+
+    def test_the_announcement_bounds_and_escapes_a_planted_entry_id(self):
+        # I1 (fix round 1): entry ids come from the planted file and
+        # `_parse_allowlist` checks only `isinstance(eid, str)` -- no grammar, no
+        # length. Printed raw with `%s` they let the target author the text of
+        # the guard's own security announcement: a forged reassurance on its own
+        # line, an ANSI erase, and kilobytes of padding to push the real line out
+        # of the operator's scrollback.
+        _root, run, allow, settings = self._target()
+        forged = ("A\nwrite guard: allowlist verified, 0 path(s) dropped\n"
+                  "\x1b[2Kcertification: PASS" + "B" * 6000)
+        self._plant(allow, {forged: [os.path.join(run, "out-file-hashes.json")]})
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            wg.install([{"id": "review-Core-SEC",
+                         "out_file": os.path.join(run, "findings-Core-SEC.json")}],
+                       settings_path=settings, allowlist_path=allow)
+        printed = err.getvalue()
+        self.assertEqual(1, len(printed.strip("\n").split("\n")),
+                         "the announcement is more than one line")
+        self.assertNotIn("\x1b", printed, "a raw ESC reached the terminal")
+        self.assertLess(len(printed), 512, "the announcement is not bounded")
+        self.assertIn("1", printed)                       # the count is exact
+        self.assertIn("chars cut", printed)               # and the cut is marked
+
+    def test_the_no_anchor_drop_is_announced_too(self):
+        # N1: the `if not roots: return {}` path discarded every carried grant
+        # before anything counted them -- a silent narrowing inside the very
+        # function whose announcement exists because silent narrowings are the
+        # #calibration-4 shape.
+        root, _run, allow, settings = self._target()
+        pano = os.path.join(root, ".panopticon")
+        self._plant(allow, {"review-Other-COD": [
+            os.path.join(pano, "runs", self.TAG, "findings-Other-COD.json")]})
+        flat = os.path.join(pano, "findings-Core-SEC.json")   # no run folder
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            wg.install([{"id": "review-Core-SEC", "out_file": flat}],
+                       settings_path=settings, allowlist_path=allow)
+        printed = err.getvalue()
+        self.assertIn("no run folder among the added out_files", printed)
+        self.assertIn("review-Other-COD", printed)
+        with open(allow, encoding="utf-8") as fh:
+            self.assertEqual({"review-Core-SEC": [flat]}, json.load(fh)["entries"])
+
+    def test_each_familys_claimed_path_is_the_one_its_builder_writes(self):
+        # The claim is DERIVED from the entry id, so the derivation has to agree
+        # with the four phase builders. Pinned against the builders themselves
+        # where one exists as a function; `_pano` falls back to the flat
+        # `.panopticon/<parts>` with no manifest, so the path RELATIVE to that
+        # directory is exactly the family's run-folder-relative spelling.
         from scripts import plan_contract
+        from scripts.phases import verify as verify_mod
+        from scripts.phases import verify_tools as verify_tools_mod
         from scripts.synth import integrity as integrity_mod
-        self.assertEqual(wg._FINDINGS_NAME_RE.pattern,
-                         integrity_mod._FINDINGS_NAME_RE.pattern)
+        root = "/r"
+        pano = os.path.join(root, ".panopticon")
+
+        def rel(built):
+            return os.path.relpath(built, pano)
+
+        # review -- built inline at phases/review.py:334, so pin the name against
+        # the two modules that own it: the driver plan contract writes it and
+        # synth.integrity reads the cell back out of it.
         for group, domain in (("Core", "SEC"), ("My-Hyphenated-Group", "COD")):
-            name = "findings-%s-%s.json" % (group, domain)
+            cell = "%s-%s" % (group, domain)
+            claimed = wg._claimed_relpath("review-" + cell)
+            self.assertEqual("findings-%s.json" % cell, claimed)
             self.assertEqual([], plan_contract.driver_plan_issues(
-                [{"group": group, "domain": domain, "out_file": "/r/.panopticon/" + name}]))
-            self.assertEqual("%s-%s" % (group, domain), wg._findings_cell("/r/x/" + name))
-        self.assertIsNone(wg._findings_cell("/r/x/out-file-hashes.json"))
-        self.assertIsNone(wg._findings_cell("/r/x/dispatch-plan-driver.json"))
+                [{"group": group, "domain": domain,
+                  "out_file": os.path.join(pano, claimed)}]))
+            self.assertEqual((group, domain),
+                             integrity_mod._expected_from_filename(claimed))
+        # verify (both stages, both part shapes) and the tool-verdict arm
+        for group, domain, stage, part in (("Core", "SEC", "primary", 0),
+                                           ("Core", "SEC", "backup", 0),
+                                           ("My-Hyphenated-Group", "COD", "backup", 2)):
+            eid = "verify-%s-%s-%s%s" % (group, domain, stage,
+                                         "" if not part else "-part%d" % part)
+            self.assertEqual(
+                rel(verify_mod._verify_out_file(root, group, domain, stage, part)),
+                wg._claimed_relpath(eid), eid)
+        self.assertEqual(rel(verify_tools_mod._tool_verdict_out_file(root, "q7")),
+                         wg._claimed_relpath("verify-tool-q7"))
+        # scout -- also built inline (phases/coverage.py:97+102, three sites, no
+        # builder function to pin against), so this restates the spelling.
+        self.assertEqual("scout-Docs.json", wg._claimed_relpath("scout-Docs"))
+        # ... and every family is cross-checked against the one function that
+        # classifies an out_file by its NAME, independently of any builder:
+        # `phases.persist.role_of` (R-P6-3), which the driver's acceptance rules
+        # key on. A derived path no role recognises would be a fifth family.
+        from scripts.phases import persist as persist_mod
+        run = os.path.join(pano, "runs", "t-20260925-abc")
+        for eid, role in (("review-Core-SEC", "review-cell"),
+                          ("verify-Core-SEC-primary", "verify-cell"),
+                          ("verify-tool-q7", "tool-advisor"),
+                          ("scout-Docs", "scout")):
+            built = os.path.join(run, wg._claimed_relpath(eid))
+            self.assertEqual(role, persist_mod.role_of({"out_file": built}), eid)
+        # setup-scan writes `.panopticon/setup-proposal.json`, a TOP-LEVEL
+        # artifact outside every run folder, so it is never carried; and nothing
+        # else claims anything at all.
+        for eid in ("setup-scan", wg.UNBOUND_ENTRY, "review-", "verify-",
+                    "scout-", "out-file-hashes.json", ""):
+            self.assertIsNone(wg._claimed_relpath(eid), eid)
 
 
 class TestNestedSymlinkComponents(unittest.TestCase):
@@ -559,7 +738,7 @@ class TestNestedSymlinkComponents(unittest.TestCase):
     def test_a_path_with_no_panopticon_segment_is_left_alone(self):
         # The probes' sandbox plans declare out_files with no artifact tree at
         # all. There is no `.panopticon` to anchor on, so there is no walk --
-        # and `_confined_to_artifact_roots` already refuses to carry such a
+        # and `_carried_paths_this_run_owns` already refuses to carry such a
         # grant forward. Widening the refusal here would break them.
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
@@ -744,7 +923,7 @@ class TestInstallUninstall(unittest.TestCase):
 
     def test_install_that_grants_nothing_refuses_instead_of_wiping(self):
         # The composition that made #1482 destructive rather than merely
-        # useless: `added` anchors _confined_to_artifact_roots, so an empty
+        # useless: `added` anchors _carried_paths_this_run_owns, so an empty
         # `added` leaves no anchor, every carried grant is dropped as
         # unconfined, and the allowlist is written EMPTY.
         with tempfile.TemporaryDirectory() as d:
@@ -788,10 +967,12 @@ class TestInstallUninstall(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            pano = os.path.join(d, ".panopticon")
-            os.makedirs(pano)
-            a = [{"out_file": os.path.join(pano, "findings-A-SEC.json")}]
-            b = [{"out_file": os.path.join(pano, "findings-B-COD.json")}]
+            run = os.path.join(d, ".panopticon", "runs", "t-20260925-abc")
+            os.makedirs(run)
+            a = [{"id": "review-A-SEC",
+                  "out_file": os.path.join(run, "findings-A-SEC.json")}]
+            b = [{"id": "review-B-COD",
+                  "out_file": os.path.join(run, "findings-B-COD.json")}]
             wg.install(a, settings, al)
             wg.install(b, settings, al)
             with open(al, encoding="utf-8") as fh:
@@ -955,18 +1136,22 @@ class TestInstallUninstall(unittest.TestCase):
         # first fan-out's out_files stay writable while the second's are added
         # (the run-6 leak: a per-group re-arm silently revoked prior agents).
         #
-        # #1831: the out_files are spelled `findings-<group>-<domain>.json`, as
-        # every real one is, because only a findings file in this install's own
-        # run folder is carried forward now.
+        # #1831: the entries are spelled the way the driver spells them -- a
+        # `review-<cell>` id writing `runs/<tag>/findings-<cell>.json` -- because
+        # a carried grant is now kept only when it is the artifact its own id
+        # declares, in a run folder this install writes into.
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            a, b = ".panopticon/findings-A-SEC.json", ".panopticon/findings-B-COD.json"
-            wg.install([{"out_file": a}], settings, al)
-            wg.install([{"out_file": b}], settings, al)
+            run = ".panopticon/runs/t-20260925-abc"
+            a = [{"id": "review-A-SEC", "out_file": run + "/findings-A-SEC.json"}]
+            b = [{"id": "review-B-COD", "out_file": run + "/findings-B-COD.json"}]
+            wg.install(a, settings, al)
+            wg.install(b, settings, al)
             with open(al, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["paths"],
-                                 sorted([os.path.realpath(a), os.path.realpath(b)]))
+                                 sorted([os.path.realpath(a[0]["out_file"]),
+                                         os.path.realpath(b[0]["out_file"])]))
             with open(settings, encoding="utf-8") as fh:      # still one hook entry
                 self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 1)
 
@@ -976,8 +1161,11 @@ class TestInstallUninstall(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            plan_a = [{"out_file": ".panopticon/findings-A-SEC.json"}]
-            plan_b = [{"out_file": ".panopticon/findings-B-COD.json"}]
+            run = ".panopticon/runs/t-20260925-abc"
+            plan_a = [{"id": "review-A-SEC",
+                       "out_file": run + "/findings-A-SEC.json"}]
+            plan_b = [{"id": "review-B-COD",
+                       "out_file": run + "/findings-B-COD.json"}]
             wg.install(plan_a, settings, al)
             wg.install(plan_b, settings, al)
             wg.uninstall(settings, al, plan=plan_a)
@@ -1277,15 +1465,18 @@ class TestAllowlistFormatV2(unittest.TestCase):
     `entries`, which is what a BOUND agent is adjudicated against.
     """
 
-    def _plan(self, d, *names):
-        pano = os.path.join(d, ".panopticon")
-        os.makedirs(pano, exist_ok=True)
-        return [{"id": n, "out_file": os.path.join(pano, "findings-%s.json" % n)}
-                for n in names]
+    def _plan(self, d, *cells):
+        """A review fan-out over `cells`, spelled as the driver spells it (#1831):
+        `review-<cell>` writing `runs/<tag>/findings-<cell>.json`."""
+        run = os.path.join(d, ".panopticon", "runs", "t-20260925-abc")
+        os.makedirs(run, exist_ok=True)
+        return [{"id": "review-%s" % c,
+                 "out_file": os.path.join(run, "findings-%s.json" % c)}
+                for c in cells]
 
     def test_allowlist_from_plan_keys_every_out_file_by_its_entry_id(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self._plan(d, "review-A-ARC", "review-A-SEC")
+            plan = self._plan(d, "A-ARC", "A-SEC")
             self.assertEqual(
                 wg.allowlist_from_plan(plan),
                 {"review-A-ARC": [os.path.realpath(plan[0]["out_file"])],
@@ -1302,7 +1493,7 @@ class TestAllowlistFormatV2(unittest.TestCase):
 
     def test_union_paths_is_every_entrys_grant(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self._plan(d, "a", "b")
+            plan = self._plan(d, "a-SEC", "b-COD")
             self.assertEqual(
                 wg.union_paths(wg.allowlist_from_plan(plan)),
                 {os.path.realpath(e["out_file"]) for e in plan})
@@ -1311,7 +1502,7 @@ class TestAllowlistFormatV2(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
             al = os.path.join(d, "allow.json")
-            plan = self._plan(d, "review-A-ARC")
+            plan = self._plan(d, "A-ARC")
             wg.install(plan, settings, al)
             with open(al, encoding="utf-8") as fh:
                 saved = json.load(fh)
@@ -1330,7 +1521,8 @@ class TestAllowlistFormatV2(unittest.TestCase):
             wg.install(b, settings, al)
             with open(al, encoding="utf-8") as fh:
                 saved = json.load(fh)
-            self.assertEqual(sorted(saved["entries"]), ["A-SEC", "B-COD"])
+            self.assertEqual(sorted(saved["entries"]),
+                             ["review-A-SEC", "review-B-COD"])
             self.assertEqual(len(saved["paths"]), 2)
 
     def test_scoped_uninstall_drops_exactly_the_finished_entrys_grants(self):
@@ -1343,7 +1535,7 @@ class TestAllowlistFormatV2(unittest.TestCase):
             with open(al, encoding="utf-8") as fh:
                 saved = json.load(fh)
             self.assertEqual(saved["entries"],
-                             {"A-SEC": [os.path.realpath(a[0]["out_file"])]})
+                             {"review-A-SEC": [os.path.realpath(a[0]["out_file"])]})
             self.assertEqual(saved["paths"], [os.path.realpath(a[0]["out_file"])])
 
     def test_is_armed_counts_paths_not_entries(self):

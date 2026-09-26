@@ -254,7 +254,7 @@ def _components(path):
 
     (None, []) when the path carries no `.panopticon` segment. There is no
     artifact tree to anchor on then, so there is nothing for this rule to say;
-    `_confined_to_artifact_roots` already refuses to carry such a grant
+    `_carried_paths_this_run_owns` already refuses to carry such a grant
     forward, and the probes' sandbox plans legitimately declare out_files that
     live nowhere near an artifact tree.
 

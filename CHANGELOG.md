@@ -17,14 +17,20 @@ evidence exposed.
   `out-file-hashes.json` integrity snapshot and `dispatch-plan-driver.json` to that reviewer's own
   grant: the per-entry confinement #1571 exists to establish, re-opened through the one path that
   fix did not close, on every self-scan and every calibration run started inside the clone. A
-  carried path is now kept only when it sits directly in one of the RUN FOLDERS this install writes
-  into, is named `findings-<group>-<domain>.json`, and is the findings file the entry holding it
-  claims -- so an entry keyed with a real reviewer id carries nothing but that reviewer's own
-  out_file. Everything else is dropped, and the operator is told on stderr, with the count and each
-  entry id (`write guard: dropped 5 carried allowlist path(s) that are not this run's own findings
-  files: review-Core-SEC (5)`) -- a grant narrowed in silence is the #calibration-4 shape, every
-  later write denied and nothing pointing at the allowlist. A concurrent fan-out's in-flight grant
-  is its own cell's findings file in the same run folder, so the #11 property survives untouched.
+  carried path is now kept only when it is EXACTLY the artifact its own entry id declares, in one of
+  the RUN FOLDERS (`.panopticon/runs/<tag>/`) this install writes into. The path is DERIVED from the
+  id rather than matched against its name -- `review-<cell>` may hold `findings-<cell>.json` and
+  nothing else, `verify-<cell>-<stage>` its `verdicts/verdicts-<cell>.json`, `verify-tool-<queue>`
+  its `verdicts/<queue>.json`, and `scout-<group>` its `scout-<group>.json` -- so a real reviewer id
+  carries that reviewer's own out_file and no peer's, even where one group's name ends with
+  another's (`Core` and `X-Core`), and a previous round's tag is not in flight. Deriving per family
+  is also what keeps #11: a verify or scout arm carries a concurrent fan-out's grant as readily as a
+  review arm does. Everything else is dropped, and the operator is told on one stderr line, counts
+  first, with each entry id bounded and quoted (`write guard: dropped 5 carried allowlist path(s) in
+  1 entry(ies) -- not this run's folder, or not the artifact that entry itself declares:
+  'review-Core-SEC' (5)`) -- a grant narrowed in silence is the #calibration-4 shape, every later
+  write denied and nothing pointing at the allowlist, and an id out of a planted file is
+  target-authored text that may not forge a line of the guard's own output.
 - **A torn retry-budget ledger no longer refunds every attempt the run spent (#1809,
   DAT-3555180994).** Four retry ledgers -- `cell-attempts.json`, `verify-attempts.json`,
   `scout-attempts.json`, `discovery-attempts.json` -- were read at six sites (persist's give-back
