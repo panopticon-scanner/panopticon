@@ -51,11 +51,17 @@ def scratch_cwd_recorder(calls, stdout=b"{}", stderr=b"", returncode=0):
     return _record
 
 
-def assert_scratch_cwd(case, record, target):
+def assert_scratch_cwd(case, record, target, permitted=()):
     """Pin one recorded launch as confined (#1877): the adapter NAMED its
-    working directory, that directory existed and was EMPTY when the scanner
-    started, it is not the target (nor inside it), and it did not outlive
-    `invoke()`.
+    working directory, that directory existed and held nothing but *permitted*
+    when the scanner started, it is not the target (nor inside it), and it did
+    not outlive `invoke()`.
+
+    *permitted* is the basenames the adapter GENERATES there before launching
+    (a scanner-owned config it pins on the argv), named exactly, so "the
+    scratch was empty" stays a real assertion rather than a blanket tolerance
+    for whatever happens to be there -- the same rule
+    `test_adapter_cwd_confinement._GENERATED_IN_CWD` applies to every adapter.
 
     `cwd=None` fails this deliberately: an unnamed cwd is inherited from the
     caller, which inside the tools container is the image's `WORKDIR /src` --
@@ -65,9 +71,10 @@ def assert_scratch_cwd(case, record, target):
     case.assertIsNotNone(cwd, "the adapter passed no cwd at all")
     case.assertTrue(record["existed"],
                     "the cwd %r did not exist when the scanner launched" % cwd)
-    case.assertEqual(record["entries"], [],
-                     "the scratch cwd was not empty at launch: %r"
-                     % (record["entries"],))
+    case.assertEqual(record["entries"], sorted(permitted),
+                     "the scratch cwd held %r at launch; only the adapter's "
+                     "own generated files (%r) may be there"
+                     % (record["entries"], sorted(permitted)))
     real_cwd = os.path.realpath(cwd)
     real_target = os.path.realpath(target)
     case.assertNotEqual(real_cwd, real_target)

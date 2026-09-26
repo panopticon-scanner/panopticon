@@ -127,9 +127,13 @@ _GENERATED_IN_CWD = {
     # the scratch so the target's own .bundler-audit.yml is never the default
     # (#1742 finding 3).
     "bundler-audit": ["empty-bundler-audit.yml"],
-    # Gitleaks explicitly selects scanner-owned rules. Its source-root
-    # .gitleaksignore is read separately by the pinned binary.
+    # Gitleaks explicitly selects scanner-owned rules, and #1839 points its
+    # `.gitleaksignore` lookup at this directory too (which holds none).
     "gitleaks": ["gitleaks.toml"],
+    # The empty `--config` osv-scanner is pinned to, so the per-directory
+    # `osv-scanner.toml` lookup inside the scanned tree is never the one in
+    # effect (#1839).
+    "osv-scanner": ["osv-scanner.toml"],
 }
 
 
