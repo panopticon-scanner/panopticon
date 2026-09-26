@@ -713,6 +713,23 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
                                                             entry["out_file"]))
 
 
+class TestQueueIdGrammarIsAnchoredLikeDispatch(unittest.TestCase):
+    """The guard's queue-id grammar is the third copy of the one `dispatch.py`
+    validates with `\\A...\\Z` -- deliberately not `^...$`, because in Python `$`
+    also matches just BEFORE a trailing newline, and the id is interpolated
+    straight into a filename. The two must agree on that edge."""
+
+    def test_a_trailing_newline_is_not_a_queue_id(self):
+        self.assertIsNone(wg._QUEUE_ID_RE.match("0123456789abcdef\n"))
+        self.assertIsNone(wg._QUEUE_ID_RE.match("0123456789abcdef-2\n"))
+
+    def test_the_two_real_shapes_still_match(self):
+        self.assertIsNotNone(wg._QUEUE_ID_RE.match("0123456789abcdef"))
+        self.assertIsNotNone(wg._QUEUE_ID_RE.match("0123456789abcdef-2"))
+        self.assertIsNone(wg._QUEUE_ID_RE.match("0123456789ABCDEF"))
+        self.assertIsNone(wg._QUEUE_ID_RE.match("0123456789abcde"))
+
+
 class TestNestedSymlinkComponents(unittest.TestCase):
     """#1640 (run-13 AGT-861284148): every component of a findings path is
     checked, not just the one named `.panopticon`.

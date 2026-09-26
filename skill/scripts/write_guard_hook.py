@@ -734,8 +734,10 @@ _SCOUT_PREFIX = "scout-"
 # prevent. Gated on the grammar the two families are disjoint rather than ordered:
 # no queue id can spell `<group>-<domain>-<stage>` (a domain is three letters and
 # a stage is `primary`/`backup`, neither of which a 16-hex token can be), and no
-# cell id can spell a queue id.
-_QUEUE_ID_RE = re.compile(r"^[0-9a-f]{16}(-[0-9]+)?$")
+# cell id can spell a queue id. `\A...\Z`, not `^...$`, for the reason
+# `dispatch.py`'s validator of this same grammar gives: `$` also matches just
+# BEFORE a trailing newline, and the id lands straight in a filename.
+_QUEUE_ID_RE = re.compile(r"\A[0-9a-f]{16}(-[0-9]+)?\Z")
 # `verify-<group>-<domain>-<stage>[-part<N>]`. A group name may carry hyphens
 # (`groups_schema._GROUP_NAME_RE`); a domain and a stage may not -- so the stage is
 # the last token once the optional part suffix is off. Stripped in that ORDER, the
