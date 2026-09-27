@@ -18,7 +18,7 @@ import unittest
 
 import scripts.diff_map as diff_map
 
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 def _git(repo, *args):

@@ -14,9 +14,9 @@ from unittest import mock
 import scripts.run_tools as rt
 from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
 
-from conftest import REPO_ROOT
-from _test_helpers import fake_pem, pem_begin, pem_end
-from run_tools_test_helpers import _FakeResult
+from tests._test_helpers import REPO_ROOT
+from tests._test_helpers import fake_pem, pem_begin, pem_end
+from tests.run_tools_test_helpers import _FakeResult
 
 
 class TestRunTools(unittest.TestCase):

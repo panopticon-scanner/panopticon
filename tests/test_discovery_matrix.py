@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from discovery_test_helpers import (
+from tests.discovery_test_helpers import (
     _git_repo, git_cmd, git_output, repo_with_matrix, repo_with_scalar_match_group,
     repo_with_only_malformed_group, setup_flow, GIT_TIMEOUT,
 )

@@ -5,9 +5,9 @@ import subprocess
 import sys
 import unittest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 import scripts.discovery as discovery
-from _test_helpers import (fake_aws_key, fake_jwt, fake_pem,
+from tests._test_helpers import (fake_aws_key, fake_jwt, fake_pem,
                            pem_begin, pem_end)
 import scripts.redact as redact
 

@@ -7,7 +7,7 @@ import unicodedata
 import unittest
 from unittest import mock
 
-from _test_helpers import hard_link_or_skip
+from tests._test_helpers import hard_link_or_skip
 import scripts.kimi_guard_hook as guard
 import scripts.write_guard_hook as wg
 

@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import fake_pem
+from tests._test_helpers import fake_pem
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review

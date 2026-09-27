@@ -3,7 +3,7 @@ import contextlib, io, json, os, re, shlex, stat, unittest, subprocess, tempfile
 from unittest import mock
 
 import scripts.diff_map as diff_map
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 # The hostile shapes these tests plant are the ones the code refuses -- a

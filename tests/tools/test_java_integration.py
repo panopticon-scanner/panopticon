@@ -3,8 +3,8 @@ import tempfile
 import unittest
 
 from scripts.tools import ADAPTERS
-from _test_helpers import assert_fixture_root, skip_or_fail
-from tests.tools.conftest import FIXTURE_ROOT
+from tests._test_helpers import assert_fixture_root, skip_or_fail
+from tests._test_helpers import FIXTURE_ROOT
 
 
 assert_fixture_root(FIXTURE_ROOT)

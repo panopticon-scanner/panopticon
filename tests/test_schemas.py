@@ -12,7 +12,7 @@ except ImportError:
     validate = None
     ValidationError = None
 
-from _test_helpers import skip_or_fail
+from tests._test_helpers import skip_or_fail
 
 import scripts.tools.pip_audit as pa
 import scripts.tools.npm_audit as na
@@ -477,7 +477,7 @@ def block_jsonschema(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 builtins.__import__ = block_jsonschema
 sys.path.insert(0, sys.argv[1])
-import test_schemas
+import tests.test_schemas
 
 names = (
     "TestSchemas.test_report_schema_shape",

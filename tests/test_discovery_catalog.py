@@ -9,7 +9,7 @@ from unittest import mock
 
 import scripts.groups_schema as groups_schema
 
-from discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
+from tests.discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
                                     run_scan_helper)
 
 

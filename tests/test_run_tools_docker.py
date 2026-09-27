@@ -3,7 +3,7 @@ import unittest
 
 import scripts.run_tools as rt
 
-from run_tools_test_helpers import _FakeResult
+from tests.run_tools_test_helpers import _FakeResult
 
 
 class TestRunTools(unittest.TestCase):

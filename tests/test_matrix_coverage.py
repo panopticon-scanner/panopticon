@@ -36,7 +36,7 @@ itself. `discovery.py`'s own scan path and `phases/readiness.py` both use
 import os
 import unittest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 import scripts.discovery as discovery
 
 # The surfaces a reviewer is expected to see with its architecture context.
@@ -77,8 +77,8 @@ ALLOWLIST = {
     "tests/__init__.py":
         "empty package marker -- no behaviour to review",
     "tests/conftest.py":
-        "pytest session plumbing every group's tests import (path anchors, the "
-        "temp HOME, the LAUNCH_SEAMS refusal). Pinning it to one vertical hands "
+        "pytest session safety setup (the "
+        "temp HOME and LAUNCH_SEAMS refusal). Pinning it to one vertical hands "
         "that vertical's reviewer the whole suite's plumbing and every other "
         "reviewer none",
     "tests/_test_helpers.py":

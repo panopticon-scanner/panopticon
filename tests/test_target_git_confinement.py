@@ -28,7 +28,7 @@ import time
 import unittest
 from unittest import mock
 
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 import scripts.diff_map as diff_map
 import scripts.discovery as discovery
 import scripts.phases.runio as runio
@@ -40,7 +40,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 
-from tools.git_repo import (add_plumbing_submodule, hostile_marker,
+from tests.tools.git_repo import (add_plumbing_submodule, hostile_marker,
                             make_git_repo, path_shim_git, plant_clean_filter,
                             plant_filter_command, plant_fsmonitor_command,
                             plant_hook)

@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from scripts import executable
-from discovery_test_helpers import (
+from tests.discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
     git_cmd, git_output,
 )

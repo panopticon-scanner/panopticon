@@ -27,7 +27,7 @@ import tomllib
 import unittest
 from unittest import mock
 
-from _test_helpers import argv_through_shell
+from tests._test_helpers import argv_through_shell
 import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.kimi_toml as kimi_toml
 import scripts.read_guard_hook as rg

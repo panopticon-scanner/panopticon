@@ -31,11 +31,11 @@ import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 
-from _test_helpers import (all_proven_artifact as _all_proven_artifact,
+from tests._test_helpers import (all_proven_artifact as _all_proven_artifact,
                            hard_link_or_skip,
                            refuted_tool_policy_artifact as _refuted_artifact)
-from conftest import REPO_ROOT, SKILL_ROOT, write_host_evidence
-from tools.git_repo import make_git_repo
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT, write_host_evidence
+from tests.tools.git_repo import make_git_repo
 
 
 class TestDriverSetup(unittest.TestCase):

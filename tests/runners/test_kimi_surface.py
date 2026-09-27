@@ -21,7 +21,7 @@ from unittest import mock
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.kimi_home as kimi_home
 import scripts.runners.base as base
-from _test_helpers import kimi_entry as _entry, kimi_fixture_home, prepared_kimi
+from tests._test_helpers import kimi_entry as _entry, kimi_fixture_home, prepared_kimi
 
 _fixture_home = partial(kimi_fixture_home, include_coding_alias=False)
 _prepared = partial(prepared_kimi, include_coding_alias=False)

@@ -1,7 +1,7 @@
 import unittest
 
-from _test_helpers import assert_adapter_finds
-from .conftest import OK_SCAN_EXIT_CODES
+from tests._test_helpers import assert_adapter_finds
+from tests.tools.helpers import OK_SCAN_EXIT_CODES
 
 
 class TestRubyIntegration(unittest.TestCase):

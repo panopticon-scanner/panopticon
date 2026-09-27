@@ -26,8 +26,8 @@ import shutil
 import subprocess
 import unittest
 
-from conftest import REPO_ROOT
-from _test_helpers import skip_or_fail
+from tests._test_helpers import REPO_ROOT
+from tests._test_helpers import skip_or_fail
 
 HARNESS = os.path.join(REPO_ROOT, "tests", "workflows", "dispatch_harness.mjs")
 DISPATCH_JS = os.path.join(REPO_ROOT, "skill", "workflows", "dispatch.js")

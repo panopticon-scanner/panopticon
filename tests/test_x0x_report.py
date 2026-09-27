@@ -6,7 +6,7 @@ import unittest
 
 import jsonschema
 
-from _test_helpers import only
+from tests._test_helpers import only
 import scripts.ocrdb as ocrdb
 import scripts.x0x_report as x0x
 

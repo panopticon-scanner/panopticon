@@ -3,10 +3,17 @@ import os
 import shlex
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
+
+
+def _child_import_roots():
+    with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as stream:
+        roots = tomllib.load(stream)["tool"]["pytest"]["ini_options"]["pythonpath"]
+    return os.pathsep.join(os.path.join(REPO_ROOT, root) for root in roots)
 
 
 def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True):
@@ -31,6 +38,8 @@ def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True):
         "def test_body():\n    Path(%r).write_text('ran')\n" % (str(collected), str(sentinel)))
     env = dict(os.environ)
     env.pop("PYTEST_ADDOPTS", None)
+    # -c replaces the repository config, and -p loads before collection.
+    env["PYTHONPATH"] = _child_import_roots()
     env["TMPDIR"] = str(tmp_path)
     env["TEMP"] = env["TMP"] = str(tmp_path)
     arguments = ["-p", "tests.conftest", "-q", str(suite)]
@@ -48,10 +57,15 @@ def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True):
         env["PYTEST_ADDOPTS"] = "--basetemp=" + shlex.quote(str(selected))
     if option == "programmatic":
         # No basetemp option is directly present in sys.argv or PYTEST_ADDOPTS.
-        command = [sys.executable, "-c", "import pytest; raise SystemExit(pytest.main(%r))" % arguments]
+        prelude = ("import tempfile\n"
+                   "def forbidden(*args, **kwargs):\n"
+                   "    raise AssertionError('HOME allocation preceded temp-root refusal')\n"
+                   "tempfile.mkdtemp = forbidden\n") if unsafe else ""
+        command = [sys.executable, "-c", prelude +
+                   "import pytest; raise SystemExit(pytest.main(%r))" % arguments]
     else:
         command = [sys.executable, "-m", "pytest", *arguments]
-    result = subprocess.run(command, cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=suite, env=env, capture_output=True, text=True, timeout=30)
     return result, collected, sentinel
 
 

@@ -13,7 +13,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest import mock
 
-from _test_helpers import fake_aws_key
+from tests._test_helpers import fake_aws_key
 import sanitize
 import scripts.redact as redact
 

@@ -9,8 +9,8 @@ import unicodedata
 import unittest
 from unittest import mock
 
-from _test_helpers import hard_link_or_skip
-from conftest import write_host_evidence
+from tests._test_helpers import hard_link_or_skip
+from tests._test_helpers import write_host_evidence
 from scripts import hosts
 import scripts.probes.claude as claude_probes
 import scripts.ocrdb as ocrdb

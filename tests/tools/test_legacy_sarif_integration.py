@@ -44,11 +44,11 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
+from tests._test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
                            only, skip_or_fail)
 from scripts import run_tools
 from scripts.tools.legacy_sarif import LegacySarifAdapter
-from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
+from tests.tools.helpers import OK_SCAN_EXIT_CODES, in_tools_image
 
 # Derived, never literal: the committed source carries a seed, not a
 # credential-shaped string. There is genuinely no secret here -- not a hidden

@@ -7,9 +7,9 @@ import shutil
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first, only, skip_or_fail
+from tests._test_helpers import FakePopen, first, only, skip_or_fail
 import scripts.tools.brakeman as br
-from tests.tools.conftest import FIXTURE_ROOT
+from tests._test_helpers import FIXTURE_ROOT
 
 # Hand-built sample used for unit-level parse-shape assertions. It is NOT a
 # real Brakeman scan; for integration coverage see test_railsgoat_fixture_shape.

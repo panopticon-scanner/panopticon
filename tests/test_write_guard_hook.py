@@ -671,7 +671,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         # the SAME dict still agree, which is the invariant the carry-forward
         # rests on. The manifest makes `_pano` per-run, so the answer is the run
         # folder itself.
-        from conftest import write_host_evidence
+        from tests._test_helpers import write_host_evidence
         from scripts import hosts, run_manifest
         from scripts.phases import coverage as coverage_mod
         from scripts.phases import review as review_mod

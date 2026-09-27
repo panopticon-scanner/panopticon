@@ -42,7 +42,7 @@ import ast
 import os
 import unittest
 
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 
 import scripts.evidence as evidence
 import scripts.synth.codes as codes_mod

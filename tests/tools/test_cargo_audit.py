@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from tests._test_helpers import FakePopen, first
 import scripts.tools.cargo_audit as ca
 
 CARGO_AUDIT_SAMPLE = json.dumps({

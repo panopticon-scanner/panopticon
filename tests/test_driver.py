@@ -29,8 +29,8 @@ import scripts.phases.synthesize as synthesize
 import scripts.phases.tools as tools_phase
 import scripts.phases.validate as validate_phase
 
-from _test_helpers import all_proven_artifact as _all_proven_artifact
-from conftest import docker_probe_runner, write_host_evidence
+from tests._test_helpers import all_proven_artifact as _all_proven_artifact
+from tests._test_helpers import docker_probe_runner, write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
@@ -39,7 +39,7 @@ import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 from scripts import hosts
 
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}

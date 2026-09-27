@@ -28,7 +28,7 @@ import scripts.hosts as hosts_mod
 import scripts.ocrdb as ocrdb
 from scripts._version import __version__
 
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 from tests.synth.helpers import SPLIT_FILE_MAX_BYTES, DEFAULT_TIMESTAMP, _chdir, _make_finding, _target_with_files, _agentic, _VERDICT_STATUS, _cli_args
 
 

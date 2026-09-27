@@ -2,7 +2,7 @@ import contextlib
 import io
 import json
 import os
-from _test_helpers import first
+from tests._test_helpers import first
 import tempfile
 import unittest
 from unittest import mock

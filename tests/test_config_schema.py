@@ -10,9 +10,9 @@ import scripts.discovery as discovery
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
 import scripts.synth.render as render_mod
-# conftest puts tests/ on sys.path, so the literal ratchet's regex is
-# importable by name (see test_the_module_never_spells_a_config_filename).
-import test_repo_config_literals as lit
+# pyproject exposes the canonical tests package to the literal ratchet
+# (see test_the_module_never_spells_a_config_filename).
+import tests.test_repo_config_literals as lit
 
 
 class TestTheTrustClassTable(unittest.TestCase):

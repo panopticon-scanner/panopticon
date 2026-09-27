@@ -22,7 +22,7 @@ import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.kimi_home as kimi_home
 import scripts.runners.outage as outage
-from _test_helpers import (kimi_entry, kimi_fixture_home as _fixture_home,
+from tests._test_helpers import (kimi_entry, kimi_fixture_home as _fixture_home,
                            prepared_kimi as _prepared)
 
 STREAM = "\n".join([
