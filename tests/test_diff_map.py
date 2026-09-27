@@ -2004,6 +2004,44 @@ class TestSyncConfig(unittest.TestCase):
             fh.write("version: 1\ngroups: {}\n")
         return repo
 
+    def test_populated_directories_at_both_config_names_are_removed_and_disclosed(self):
+        for operator_name in (None, "panopticon.yml", ".panopticon.yml"):
+            with self.subTest(operator_name=operator_name), tempfile.TemporaryDirectory() as d:
+                repo, wt = os.path.join(d, "repo"), os.path.join(d, "wt")
+                os.mkdir(wt)
+                if operator_name is None:
+                    os.mkdir(repo)
+                else:
+                    self._repo_with_config(d, name=operator_name)
+                for name in ("panopticon.yml", ".panopticon.yml"):
+                    nested = os.path.join(wt, name, "nested")
+                    os.makedirs(nested)
+                    with open(os.path.join(nested, "target.yml"), "w", encoding="utf-8") as fh:
+                        fh.write("target-controlled directory contents")
+                marker = os.path.join(wt, "unrelated.txt")
+                with open(marker, "w", encoding="utf-8") as fh:
+                    fh.write("keep me")
+                notes = diff_map._sync_config(repo, wt)
+                expected_notes = []
+                for name in ("panopticon.yml", ".panopticon.yml"):
+                    path = os.path.join(wt, name)
+                    expected_notes.append("removed the PR's %s from the worktree "
+                                          "(target content must not govern its own review)" % name)
+                    if name == operator_name:
+                        self.assertTrue(os.path.isfile(path))
+                        with open(path, encoding="utf-8") as fh:
+                            self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+                    else:
+                        self.assertFalse(os.path.lexists(path))
+                expected_notes.append(
+                    "overwrote %s in the worktree with the operator's copy" % operator_name
+                    if operator_name else "no operator config; PR-shipped config removed, reviewing with defaults")
+                self.assertEqual(notes, expected_notes)
+                self.assertEqual(sorted(os.listdir(wt)), sorted(
+                    ["unrelated.txt"] + ([operator_name] if operator_name else [])))
+                with open(marker, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), "keep me")
+
     def test_copies_into_worktree_normally(self):
         with tempfile.TemporaryDirectory() as d:
             repo = self._repo_with_config(d)
