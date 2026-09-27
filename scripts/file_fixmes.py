@@ -32,6 +32,9 @@ RUN_DATE = "2026-08-04"
 LEDGER = ".panopticon/filed-fixmes.json"
 
 HEAD_RE = re.compile(r"^## (FIXME-\d+) — (.+)$")
+# "Looks like a FIXME heading", which HEAD_RE must then agree with: a line this
+# matches while HEAD_RE does not is unparseable input, never body text.
+HEAD_LIKE_RE = re.compile(r"^##\s*FIXME-\d+\b")
 LABEL_RE = re.compile(r"`([^`]+)`")
 
 
@@ -41,11 +44,23 @@ def parse(path):
     Stops at the first horizontal rule that follows the last FIXME: the
     trailing 'Already fixed' / 'Still open' sections are commentary, not
     issues to file.
+
+    Raises ValueError on input it cannot parse, rather than absorbing it,
+    because these sections become GitHub issues. Two refusals: a line that
+    looks like a FIXME heading but does not match HEAD_RE (a hyphen or en dash
+    where the em dash belongs), and a horizontal rule while a section is open
+    that has body text between it and a later FIXME heading, which is a rule
+    inside that body rather than a separator or the end of the list. A rule
+    followed only by blank lines and the next heading closes the section the
+    way the trailing rule does. Each refusal names the line of the doc.
     """
     with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     out: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
+    # Computed once: the index of every heading-like line, so a rule can ask
+    # whether body text sits between it and the next heading without slicing.
+    head_like_at = [i for i, line in enumerate(lines) if HEAD_LIKE_RE.match(line)]
     for i, line in enumerate(lines):
         m = HEAD_RE.match(line)
         if m:
@@ -59,15 +74,33 @@ def parse(path):
             cur = {"id": m.group(1), "title": m.group(2).strip(),
                    "labels": labels, "body": []}
             continue
+        if HEAD_LIKE_RE.match(line):
+            raise ValueError(
+                "%s:%d: cannot parse this FIXME heading: %r. A heading must "
+                "read '## FIXME-<n> — <title>', with an em dash."
+                % (path, i + 1, line))
         if cur is None:
             continue
         if line.strip() == "---":
+            # A rule closes the open section. It is INSIDE the body only when
+            # body text sits between it and the next heading-like line; a rule
+            # followed by blank lines and a heading is a separator, and a rule
+            # with no heading after it ends the list.
+            nxt = next((h for h in head_like_at if h > i), None)
+            if nxt is not None and any(lines[j].strip() for j in range(i + 1, nxt)):
+                raise ValueError(
+                    "%s:%d: horizontal rule inside %s's body. A rule may only "
+                    "separate FIXMEs or follow the LAST one, where it ends the "
+                    "list." % (path, i + 1, cur["id"]))
             out.append(cur)
             cur = None
             continue
         cur["body"].append(line)
     if cur:
         out.append(cur)
+    # Invariant, by construction: HEAD_RE's language is a subset of
+    # HEAD_LIKE_RE's, so every heading-like line either opened a section or
+    # raised above, and every opened section is appended exactly once.
     for f in out:
         # Drop the label line: the first non-blank body line that consists
         # entirely of backtick-quoted tokens separated by ", ".

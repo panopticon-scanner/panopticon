@@ -375,6 +375,7 @@ groups:
       - tests/test_replay_report.py
       - tests/test_report_redaction_e2e.py
     Synth:
+      # Includes synth/artifacts.py and tests/synth/test_artifacts.py (bounded run reads).
       match:
       - skill/scripts/synth/**
       tests:

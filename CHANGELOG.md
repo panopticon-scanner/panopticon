@@ -10,6 +10,40 @@ evidence exposed.
 - **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
   ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
   and the plan CLI keep the same default, and explicit ledger paths behave as before.
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
+- **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
+  limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
+  limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
+  writer, and turns JSON recursion/memory failures into the caller's normal unreadable-input
+  path. Strict metadata and tolerant agent-envelope parsing keep their existing formats.
+  Callers retain their shape checks, fallback values and invalid-artifact disclosures; an
+  unreadable manifest or verify queue cannot become an absent one. Parent-directory aliases
+  such as macOS `/var` remain supported. This supplies the shared reader requested by #2081
+  and #2082; changing the existing coverage-skip certification policy remains #2080.
+- **Align implementation documentation with the current contracts (#1819).** Kimi preparation
+  always creates a fresh home, including on resume; the recorded pointer is informational.
+  Report grades use health when available and display n/a without reviewed lines to grade; the
+  gate keeps its own policy. Repair documentation names the boundaries and distinguishes content
+  bounds from byte limits at the caller. These changes affect comments and docstrings only.
+- **`file_fixmes.parse` refuses a heading or a rule it cannot parse (#1765, ARC-4143722514).**
+  `HEAD_RE` requires an em dash, so `## FIXME-3 - title` did not match it, and with a section open
+  the line was appended to the PREVIOUS FIXME's body -- one issue silently lost, another silently
+  doubled; a `---` inside a body closed the section and dropped the rest of it. Neither case said
+  anything, and these sections become GitHub issues out of a hand-written doc, so input the parser
+  could not read became wrong issues. A second regex, `HEAD_LIKE_RE` ("looks like a FIXME
+  heading"), now makes the disagreement loud: a line it matches while `HEAD_RE` does not raises
+  `ValueError` naming the line of the doc, its text, and the required `## FIXME-<n> — <title>`
+  form. A rule while a section is open raises only when body text sits between it and the next
+  heading-like line, which is what makes that rule INSIDE the body; a rule followed by blank lines
+  and the next heading is a separator and closes the section, and the trailing rule that ends the
+  list -- the documented behaviour -- still stops the parse there and leaves the 'Already fixed'
+  commentary unfiled. `main` parses before it loads the ledger or reads the `gh` environment, so a
+  refusal precedes every GitHub call (now pinned by a test), and no doc under `docs/` or
+  `skill/docs/` mentions this script.
 - **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
   `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
   finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published

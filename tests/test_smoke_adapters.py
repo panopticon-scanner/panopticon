@@ -306,6 +306,19 @@ class TestCheckSemgrepScan(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no response", msg)
 
+    def test_scan_observes_adapter_command_changes(self):
+        seen = []
+        command = legacy_sarif.TOOL_CMD["semgrep"][:-1] + ["--max-target-bytes=4096", "/src"]
+        def run(argv, **kwargs):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, _GOOD_SARIF, b"")
+        with mock.patch.dict(legacy_sarif.TOOL_CMD, {"semgrep": command}):
+            ok, _message = sa.check_semgrep_scan(runner=run)
+        self.assertTrue(ok)
+        self.assertEqual(seen[0][:-1], command[:-1])
+        self.assertTrue(seen[0][-1].endswith("probe.py"))
+        self.assertEqual(command[-1], "/src")
+
     def test_uses_the_real_adapter_argv(self):
         # The gate must run the SAME command the adapter runs, or it proves
         # nothing about the real scan path.
