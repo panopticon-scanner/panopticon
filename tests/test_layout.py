@@ -303,7 +303,7 @@ class FlatImportModeTest(unittest.TestCase):
     FLAT_MODULES = ("evidence", "x0x_report", "citations", "html_report",
                     "ocrdb", "plan_contract", "host_disclosure",
                     "model_resolver", "redact", "safe_write",
-                    "discovery", "collect_usage")
+                    "discovery", "collect_usage", "evidence_sections")
 
     def test_every_flat_importable_module_still_imports_flat(self):
         env = dict(os.environ)
