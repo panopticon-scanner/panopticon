@@ -428,6 +428,7 @@ groups:
       - skill/scripts/html_report.py
       - skill/scripts/x0x_report.py
       - skill/scripts/strain_report.py
+      - skill/scripts/report_records.py
       - scripts/file_issues.py
       - scripts/file_fixmes.py
       - scripts/triage.py
