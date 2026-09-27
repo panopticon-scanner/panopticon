@@ -425,7 +425,7 @@ on Claude hooks, and always uses the return-persist path.
   the ledger lines whose cost could not be read as money, whose tokens are still counted because
   they were still spent) from it after every batch, so `meta.cost.tokens` is exact and host-supplied
   on the headless path. In session mode `collect_usage.py` still runs from synthesize as before,
-  and its `usage.json` discloses its own drops the same way: `sources` counts the transcripts it
+  and its `usage.json` discloses its own drops too: `sources` counts the transcripts it
   could not read, the lines JSON rejected and the non-integer usage fields it ignored, so a
   non-zero count there marks `total` as a floor (#1782).
   Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch

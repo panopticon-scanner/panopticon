@@ -24,10 +24,13 @@ evidence exposed.
   and is not given the accounting dict. `non_integer_usage_fields` counts each present-but-not-int
   value, a `bool` included: `bool` is an `int` subclass, so `"output_tokens": true` used to pass the
   isinstance check and add one fabricated token, and it now adds none. An ABSENT field is still not
-  a drop. `main` prints ONE stderr line naming all three counts when any is non-zero, before the
-  document is written or dumped, so an operator reading the terminal learns the total is a floor; a
-  clean run prints nothing new. No schema change was needed: `meta.cost.tokens` is an unconstrained
-  object in `report-schema.json` and `load_run_usage` surfaces the document verbatim.
+  a drop. The counts surface in `sources`, and so in the report's `meta.cost.tokens.sources`.
+  `main` also prints ONE stderr line naming all three when any is non-zero, before the document is
+  written or dumped; a clean run prints nothing new. That line reaches a terminal on a DIRECT run
+  of the script: synthesize captures the collector's stderr and reads only its exit code -- #1576's
+  own FLOOR line is swallowed the same way -- so on the wired path `sources` is the half that
+  reaches an operator (follow-up #2171). No schema change was needed: `meta.cost.tokens` is an
+  unconstrained object in `report-schema.json` and `load_run_usage` surfaces the document verbatim.
 - **A malformed or empty diff-hunks payload is disclosed, not swallowed (#1783; ARC-2340795244).**
   `synth/delta.py`'s loader is total by design -- an unreadable or non-object `diff-hunks.json`
   yields `{}`, a non-object `hunks` becomes `{}`, and every range that is not a two-integer pair is

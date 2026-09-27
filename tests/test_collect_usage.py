@@ -730,6 +730,12 @@ class TestDroppedInputIsCounted(unittest.TestCase):
         self.assertIn("2 undecodable", lines[0])
         self.assertIn("1 non-integer", lines[0])
         self.assertIn("FLOOR", lines[0])
+        # And the scope, because two of the three are file-scoped: a torn line
+        # is dropped before its timestamp can be read and an OSError loses the
+        # whole file, so neither can be confined to [since, until]. Without
+        # this the line can announce a floor for a run whose total is exact.
+        self.assertIn("every transcript read", lines[0])
+        self.assertIn("not only this run's window", lines[0])
         self.assertEqual(json.loads(out)["total"], 3)
 
 
