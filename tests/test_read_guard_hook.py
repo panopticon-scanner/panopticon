@@ -1280,9 +1280,11 @@ class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
     ARC-1784455652), the way `tests/test_write_guard_hook.py`'s
     `TestBindingHelpersAreACopy` already pins the BINDING helpers.
 
-    The copy is the decision, not an accident: a guard hook is invoked by
-    absolute path, as its own process, with no package on sys.path, so it may
-    not import a sibling (R-P5-5). What the decision needs is enforcement, and
+    The copy is the decision, not an accident: each of the three runs with no
+    package on sys.path -- the hooks because a hook is invoked by absolute path,
+    as its own process (R-P5-5), the broker because it is launched `-I`, which
+    implies `-P` and takes its own directory off the path. None of them can
+    import a sibling. What the decision needs is enforcement, and
     the read-scope half of it had none -- so one copy had already drifted in
     LOGIC. `kimi_guard_hook._load_scope` looped over an inline literal of the
     four scope keys while this module looped over `SCOPE_KEYS`, so a fifth key
@@ -1299,11 +1301,13 @@ class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
     # is the decision itself, the other six are what it is built from.
     NAMES = ("_resolve_path", "_under", "_fold", "_readable", "_load_scope",
              "_hard_link_reason", "_glob_pattern_climbs")
-    # The Codex broker is an in-process MCP server, not a hook: it shares the
-    # path arithmetic and the denial wording, and nothing else (it opens every
-    # file itself, so it has no directory-argument traversal to adjudicate and
-    # no `hard_linked` key to read -- tests/test_codex_read_tools.py owns that
-    # boundary). `_under` is the one piece of code all three run.
+    # The Codex broker is an isolated-mode (`-I`) stdio MCP subprocess, not a
+    # hook -- stdlib-only by construction rather than by convention, and it says
+    # so itself. It shares the path arithmetic and the denial wording, and
+    # nothing else (it opens every file itself, so it has no directory-argument
+    # traversal to adjudicate and no `hard_linked` key to read --
+    # tests/test_codex_read_tools.py owns that boundary). `_under` is the one
+    # piece of code all three run.
     BROKER_NAMES = ("_under",)
 
     def _functions(self, module, names):

@@ -705,19 +705,19 @@ def _read_allowlist(allowlist_path):
 
 # The dispatch families that write into a run folder, and the ONE artifact each
 # family's entry id declares. Spelled here rather than imported, for the reason
-# `atomic_write_json` carries the os-flag form itself: this hook is executed as
-# its own subprocess by the host's PreToolUse command and may not reach into the
-# driver's packages. tests/test_write_guard_hook.py pins every one of these
-# against the phase builder that owns it, so a rename on either side fails a
-# test instead of silently revoking a live grant.
+# `atomic_write_json` carries the os-flag form itself: this hook is its own
+# subprocess under the host's PreToolUse command and may not import the driver's
+# packages. tests/test_write_guard_hook.py pins each against the builder that owns
+# it -- `phases/review`, `phases/verify`, `phases/verify_tools`, `phases/coverage`
+# -- so a rename on either side fails a test rather than silently revoking a grant.
 RUNS_DIR = "runs"
 VERDICTS_DIR = "verdicts"
 _REVIEW_PREFIX = "review-"
 _TOOL_VERIFY_PREFIX = "verify-tool-"
 _VERIFY_PREFIX = "verify-"
 _SCOUT_PREFIX = "scout-"
-# A tool-finding advisor's queue id, produced only in `evidence`: a 16-char
-# sha256 `finding_fingerprint` prefix plus `build_verify_queue`'s `-<n>` suffix.
+# A tool-finding advisor's queue id, produced only in `evidence`: a 16-char sha256
+# `finding_fingerprint` prefix plus `build_verify_queue`'s `-<n>` collision suffix.
 #
 # This GRAMMAR, not the prefix order, is what separates the two verify families
 # (#1831 fix round 2, NI-1). `verify-tool-<queue id>` and

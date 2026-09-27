@@ -1961,23 +1961,30 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
 
 
 class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
-    """One rule, four hand-written opens -- pinned against each other (#1767,
+    """One rule, hand-written per writer -- pinned against each other (#1767,
     ARC-2812051140).
+
+    The family this covers, named rather than counted: the guard hooks'
+    stage-and-rename writers (`write_guard_hook.atomic_write_json`,
+    `read_guard_hook._atomic_write_json`, `runners/kimi_home._write_text`) and
+    `safe_write`'s artifact pair. Not every no-follow create in the tree --
+    `setup_flow` and `diff_map` make files this way too, under their own rules.
 
     The duplication is decided: `safe_write` owns the `.panopticon` artifact
     open and says why the guard hooks cannot call it (a hook subprocess has no
     package on sys.path), and `runners/kimi_home._write_text` says why it
     mirrors the flags rather than importing the hook it would otherwise have to
-    depend on. What was NOT decided anywhere is the flags themselves: four
-    copies of an `os.open` flag word, and nothing that fails when one of them
-    loses a bit. `O_NOFOLLOW` is the security property -- drop it from any one
-    of these and a symlink planted at that name is written THROUGH, the #run9
-    SEC-X0X harm each of them exists to refuse.
+    depend on. What was NOT decided anywhere is the flags themselves: one
+    `os.open` flag word copied per writer, and nothing that fails when one of
+    them loses a bit. `O_NOFOLLOW` is the security property, and the only one
+    `safe_write`'s pair has (`O_EXCL` refuses a link for the other three):
+    drop it there and a symlink planted at that name is written THROUGH, the
+    #run9 SEC-X0X harm every one of them exists to refuse.
 
     Measured, not read: the flags come back from the real `os.open` each writer
     calls, so a flag word assembled somewhere else still answers here.
 
-    The two pairs are deliberately not one set, and that is pinned too. A
+    The two groups are deliberately not one set, and that is pinned too. A
     stage-and-rename writer creates a PRIVATE temp nobody may pre-exist
     (`O_EXCL`, mode 0o600); an artifact writer opens the run's own readable
     output in place (`O_TRUNC`/`O_APPEND`, no `O_EXCL` -- a report is rewritten
@@ -1998,9 +2005,9 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         seen = []
         real = os.open
 
-        def recording(path, flags, mode=0o777, **kwargs):
-            seen.append((flags, mode))
-            return real(path, flags, mode, **kwargs)
+        def recording(path, flags, *args, **kwargs):
+            seen.append((flags, args[0] if args else None))
+            return real(path, flags, *args, **kwargs)
 
         with mock.patch("os.open", recording):
             call()
@@ -2009,12 +2016,22 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         return seen[0]
 
     def _stagers(self):
-        """The two stage-at-`<path>.tmp`-and-rename writers."""
+        """Every stage-at-`<path>.tmp`-and-rename writer.
+
+        `read_guard_hook._atomic_write_json` is the write guard's writer
+        body-for-body, which is exactly why it is in here: a copy nothing
+        measures is the case this class exists for, and it sits in the module
+        the read-scope parity net is built around.
+        """
+        import scripts.read_guard_hook as rg
         import scripts.runners.kimi_home as kimi_home
         return {
             "write_guard_hook.atomic_write_json": self._opened(
                 lambda: wg.atomic_write_json(os.path.join(self.root, "allowlist.json"),
                                              wg.allowlist_document({}))),
+            "read_guard_hook._atomic_write_json": self._opened(
+                lambda: rg._atomic_write_json(os.path.join(self.root, "read-scope.json"),
+                                              {})),
             "runners/kimi_home._write_text": self._opened(
                 lambda: kimi_home._write_text(os.path.join(self.root, "config.toml"),
                                               "model = 'x'\n")),
@@ -2038,17 +2055,18 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
 
     def test_no_writer_will_follow_a_symlink_planted_at_its_name(self):
         measured = dict(self._stagers(), **self._artifact_writers())
-        self.assertEqual(len(measured), 4)
+        self.assertEqual(len(measured), 5)
         for name, (flags, _mode) in sorted(measured.items()):
             with self.subTest(writer=name):
                 self.assertEqual(flags & self.NOFOLLOW, self.NOFOLLOW)
                 self.assertTrue(flags & os.O_WRONLY)
                 self.assertTrue(flags & os.O_CREAT)
 
-    def test_the_two_stage_and_rename_writers_open_identically(self):
+    def test_the_stage_and_rename_writers_open_identically(self):
         measured = self._stagers()
-        (one, two) = measured.values()
-        self.assertEqual(one, two, "the staging writers have drifted: %r" % (measured,))
+        self.assertEqual(len(measured), 3)
+        self.assertEqual(len(set(measured.values())), 1,
+                         "the staging writers have drifted: %r" % (measured,))
         expected = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self.NOFOLLOW
         self.assertEqual(self.PRIVATE, 0o600)
         for name, (flags, mode) in sorted(measured.items()):
@@ -2071,6 +2089,30 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
                 # re-run, and the link at THAT name is refused by O_NOFOLLOW
                 # plus the unlink-and-retry these two carry.
                 self.assertFalse(flags & os.O_EXCL)
+
+    @staticmethod
+    def _private_hook_attributes(source, path="<source>"):
+        """The `write_guard_hook._*` attributes `source` reaches for."""
+        import ast
+        return sorted({node.attr for node in ast.walk(ast.parse(source, path))
+                       if isinstance(node, ast.Attribute)
+                       and node.attr.startswith("_")
+                       and isinstance(node.value, ast.Name)
+                       and node.value.id == "write_guard_hook"})
+
+    def test_the_batch_runner_reaches_for_no_private_name_of_this_hook(self):
+        # ARC-2812051140 as a rule rather than a one-time edit. The alias that
+        # keeps the rest of the tree working is also what would make the
+        # reach-in invisible if it came back, and the identity assertion below
+        # can only pin that the two names are ONE object -- never which of them
+        # a caller wrote.
+        import scripts.runners.batch as batch_mod
+        with open(batch_mod.__file__, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("write_guard_hook.atomic_write_json", source)
+        self.assertEqual(
+            self._private_hook_attributes(source, batch_mod.__file__), [],
+            "runners/batch.py is reaching into the hook's private surface again")
 
     def test_the_private_name_is_the_public_one(self):
         # ARC-2812051140's other residual: `runners/batch.py` reached into the
