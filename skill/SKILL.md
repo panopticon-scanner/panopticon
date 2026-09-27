@@ -134,8 +134,10 @@ resolve against cwd; only the script path substitutes.
 - **Session mode on Claude Code is templated, never ad hoc.** Dispatch the printed batch with the
   shipped workflow: `Workflow({scriptPath: "skill/workflows/dispatch.js", args: {checkpoint,
   entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,
-  marker, prompt_file, delivery, out_file` (never the inline `prompt`). It runs one subagent per
-  entry — inside its registered `panopticon-*` shell when the entry is `enforced`, on the entry's
+  marker, prompt_file, delivery, out_file` (never the inline `prompt`; `agent` is required on an
+  `enforced` entry — it names the shell that IS the enforcement, and the workflow refuses the batch
+  when an enforced entry arrives without it). It runs one subagent per entry — inside its registered
+  `panopticon-*` shell when the entry is `enforced`, on the entry's
   `model` otherwise — marker line first (the read guard binds through the workflow transcript
   layout) and `prompt_file` second (granted to the entry's read scope), and returns `persist`
   (reply text per return-persist id, for `driver persist <id>`), `self_wrote` and `missing` (a

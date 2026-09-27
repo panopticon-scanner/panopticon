@@ -19,9 +19,10 @@ import scripts.run_fixture_tests as rft
 
 
 class _Res:
-    def __init__(self, returncode=0, stdout=""):
+    def __init__(self, returncode=0, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
 
 
 class TestLoadManifest(unittest.TestCase):
@@ -165,6 +166,37 @@ class TestCheckFixtures(unittest.TestCase):
         self.assertEqual(missing, ["rust"])
         self.assertIn("exited 2", stderr.getvalue())
 
+    def test_docker_probe_nonzero_exit_quotes_dockers_own_refusal(self):
+        # A rejected ceiling flag exits non-zero here, so the branch that used
+        # to mean "broken daemon" now also means "the daemon refused a flag".
+        # Without docker's sentence it reads as every baked fixture missing.
+        refusal = ("docker: Error response from daemon: Range of CPUs is from "
+                   "0.01 to 2.00, as there are only 2 CPUs available.\n")
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        stderr = io.StringIO()
+        with mock.patch.object(rft.subprocess, "run",
+                               return_value=_Res(125, stderr=refusal)):
+            with contextlib.redirect_stderr(stderr):
+                present, missing = rft.check_fixtures("tag", fixtures)
+        self.assertEqual((present, missing), ([], ["rust"]))
+        self.assertIn("exited 125", stderr.getvalue())
+        self.assertIn("only 2 CPUs available", stderr.getvalue())
+
+    def test_docker_probe_stderr_is_truncated_to_one_line(self):
+        # An operator note, not a log dump: one line, bounded.
+        noise = "line one\nline two\n" + "x" * 5000
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        stderr = io.StringIO()
+        with mock.patch.object(rft.subprocess, "run",
+                               return_value=_Res(125, stderr=noise)):
+            with contextlib.redirect_stderr(stderr):
+                rft.check_fixtures("tag", fixtures)
+        note = [ln for ln in stderr.getvalue().splitlines()
+                if "exited 125" in ln]
+        self.assertEqual(len(note), 1, stderr.getvalue())
+        self.assertLess(len(note[0]), 500, note[0])
+        self.assertIn("line one line two", note[0])
+
     def test_no_baked_paths_skips_docker_entirely(self):
         with mock.patch.object(rft.subprocess, "run") as m:
             present, missing = rft.check_fixtures("tag", [])
@@ -195,10 +227,55 @@ class TestRunTests(unittest.TestCase):
             rft.run_tests("tag")
         self.assertEqual(m.call_args.kwargs.get("timeout"), rft.TEST_TIMEOUT)  # #1114
 
-    def test_run_tests_timeout_returns_124(self):
-        with mock.patch.object(rft.subprocess, "run",
+    def _timed_out_run(self, cpus):
+        stderr = io.StringIO()
+        with mock.patch.object(rft.run_tools, "CONTAINER_CPUS", cpus), \
+             mock.patch.object(rft.subprocess, "run",
                                side_effect=rft.subprocess.TimeoutExpired("cmd", rft.TEST_TIMEOUT)):
-            self.assertEqual(rft.run_tests("tag"), 124)  # bounded, not an infinite hang
+            with contextlib.redirect_stderr(stderr):
+                rc = rft.run_tests("tag")
+        return rc, stderr.getvalue()
+
+    def test_run_tests_timeout_returns_124(self):
+        rc, err = self._timed_out_run("4")
+        self.assertEqual(rc, 124)  # bounded, not an infinite hang
+        # The number, and the knob that can make it stop happening: `--cpus` is
+        # a throttle, so the ceiling can push a run that used to fit past
+        # TEST_TIMEOUT.
+        self.assertIn("124", err)
+        self.assertIn("PANOPTICON_TOOL_CPUS", err)
+
+    def test_timeout_without_a_cpu_ceiling_does_not_blame_the_throttle(self):
+        # With PANOPTICON_TOOL_CPUS exported empty there is no --cpus flag, so
+        # telling the operator to retune it would misdiagnose a plain timeout.
+        rc, err = self._timed_out_run("")
+        self.assertEqual(rc, 124)
+        self.assertIn("124", err)
+        self.assertNotIn("PANOPTICON_TOOL_CPUS", err)
+
+    def test_oom_kill_at_the_memory_ceiling_names_itself(self):
+        # rc 137 under a live --memory ceiling is the envelope, not an adapter
+        # regression, and the operator has to be told which it is.
+        stderr = io.StringIO()
+        with mock.patch.object(rft.run_tools, "CONTAINER_MEMORY", "6g"), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(137)):
+            with contextlib.redirect_stderr(stderr):
+                rc = rft.run_tests("tag")
+        self.assertEqual(rc, 137)
+        self.assertIn("137", stderr.getvalue())
+        self.assertIn("--memory 6g", stderr.getvalue())
+        self.assertIn("PANOPTICON_TOOL_MEMORY", stderr.getvalue())
+
+    def test_no_oom_note_when_the_memory_ceiling_is_dropped(self):
+        # With PANOPTICON_TOOL_MEMORY empty there is no --memory flag at all, so
+        # 137 means something else and the note would be a false diagnosis.
+        stderr = io.StringIO()
+        with mock.patch.object(rft.run_tools, "CONTAINER_MEMORY", ""), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(137)):
+            with contextlib.redirect_stderr(stderr):
+                rc = rft.run_tests("tag")
+        self.assertEqual(rc, 137)
+        self.assertEqual(stderr.getvalue(), "")
 
 
 class TestDockerTimeouts(unittest.TestCase):
@@ -367,6 +444,88 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
             self.assertEqual(command, ["python", "-m", "pytest", "-v",
                                        "/opt/panopticon/tests/tools"])
             self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
+
+
+class TestContainerHardeningComesFromRunTools(unittest.TestCase):
+    """#1767 ARC-3859414366: one owner for the container-launch policy.
+
+    `run_tools` says its privilege-drop flags and resource ceilings go on every
+    container it and the fixture runner launch. These two launched with neither,
+    and nothing could notice the divergence because this module imported no part
+    of `run_tools` -- the probe did not even isolate the network, while the
+    pytest container runs the real scanners over attacker-shaped inputs on a
+    developer machine. So the flags are READ from `run_tools` here: a local copy
+    would pass a spot-check and drift on the next change to the policy. Argv
+    only; no daemon is reached.
+    """
+
+    def _pytest_argv(self):
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(rft, "REPO_ROOT", Path(root)), \
+                mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as run:
+            rft.run_tests("fixture-image:test")
+        return run.call_args.args[0]
+
+    def _probe_argv(self):
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        probe = _Res(stdout="PRESENT:/opt/f/rust\n")
+        with mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", return_value=probe) as run:
+            rft.check_fixtures("fixture-image:test", fixtures)
+        return run.call_args.args[0]
+
+    def _both(self):
+        return (("pytest", self._pytest_argv()), ("probe", self._probe_argv()))
+
+    def test_both_containers_drop_privileges(self):
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertIn("--cap-drop=ALL", argv)
+                self.assertIn("--security-opt=no-new-privileges", argv)
+
+    def test_both_containers_carry_every_resource_ceiling(self):
+        # Pinned to known constants rather than read from the ambient env: with
+        # all three PANOPTICON_TOOL_* exported empty -- the per-flag escape
+        # hatch -- the helper legitimately returns [] and a guard on its
+        # emptiness would red a correct tree instead of pinning behaviour.
+        with mock.patch.object(rft.run_tools, "CONTAINER_MEMORY", "5g"), \
+                mock.patch.object(rft.run_tools, "CONTAINER_CPUS", "3"), \
+                mock.patch.object(rft.run_tools, "CONTAINER_PIDS_LIMIT", "512"):
+            for container, argv in self._both():
+                with self.subTest(container=container):
+                    for flag, value in (("--memory", "5g"),
+                                        ("--memory-swap", "5g"),
+                                        ("--cpus", "3"),
+                                        ("--pids-limit", "512")):
+                        self.assertEqual(argv[argv.index(flag) + 1], value)
+
+    def test_both_containers_isolate_the_network(self):
+        # The probe had no `--network none` at all, though it only stats baked
+        # paths; the pytest container's is #calibration-6's and stays.
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertEqual(argv[argv.index("--network") + 1], "none")
+
+    def test_the_hardening_is_run_tools_own_lists_verbatim(self):
+        # Parity, not resemblance: the flags between `run --rm` and everything
+        # else are exactly what run_tools returns, in run_tools' own order.
+        expected = (rft.run_tools.resource_limit_flags()
+                    + rft.run_tools.privilege_drop_flags())
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertEqual(argv[:3], ["docker-unit-test", "run", "--rm"])
+                self.assertEqual(argv[3:3 + len(expected)], expected)
+
+    def test_a_retuned_ceiling_in_run_tools_reaches_both_containers(self):
+        # The point of importing rather than copying: an operator's env override
+        # (read by run_tools at import) changes both launches with no edit here.
+        with mock.patch.object(rft.run_tools, "CONTAINER_MEMORY", "123m"), \
+                mock.patch.object(rft.run_tools, "CONTAINER_PIDS_LIMIT", "7"):
+            for container, argv in self._both():
+                with self.subTest(container=container):
+                    self.assertEqual(argv[argv.index("--memory") + 1], "123m")
+                    self.assertEqual(argv[argv.index("--pids-limit") + 1], "7")
 
 
 if __name__ == "__main__":

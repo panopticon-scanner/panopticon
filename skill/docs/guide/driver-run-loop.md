@@ -65,8 +65,11 @@ The host contract (5.2, plan 6):
   shipped workflow `skill/workflows/dispatch.js` (`skill/SKILL.md` names the call; it is the
   mandated, templated path — not one-off Agent calls; its enforced/agentType branch, marker-first
   prompt and reply routing are pinned by `tests/test_workflow_dispatch_script.py`, run through a
-  small Node harness rather than left untested as Workflow-tool source usually is); on another host,
-  however that host likes — but whatever text you dispatch an agent with must begin with
+  small Node harness rather than left untested as Workflow-tool source usually is; the workflow also validates
+  the batch BEFORE it launches anything, so an entry marked `enforced` naming no registered shell in
+  `agent` refuses the whole batch instead of quietly running as an unenforced subagent while the
+  run's accounting calls it enforced, #1783); on another host, however that host likes — but
+  whatever text you dispatch an agent with must begin with
   `entry["marker"]` (`panopticon-entry: <id>`, the first line of `entry["prompt"]`): it already does
   when you pass `entry["prompt"]` verbatim; if you point the agent at `prompt_file` instead, put the
   marker line first and the pointer second — the file is granted to the entry's read scope
@@ -964,7 +967,15 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. It
+  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
+  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and every malformed
+  range it drops are named on stderr, and counted in `meta.coverage.delta` when the payload
+  resolved a `base` (#1783): an ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
+  finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
+  left to fail on — and with nothing rejected, an empty change and a broken artifact look
+  identical, so only regenerating the artifact tells them apart. A payload rejected outright
+  (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
+  `meta.coverage.delta` is null: there, only stderr carries it. It
   also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
   `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema

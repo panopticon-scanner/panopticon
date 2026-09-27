@@ -309,6 +309,17 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
 
     tool_names = {evidence_mod.tool_name(f) for f in findings
                   if evidence_mod.is_tool_sourced(f)}
+    # #1783 (ARC-2340795244): what the artifact was, not just what it claimed.
+    # `files_changed` above is the ARTIFACT's own number; `hunks_files` /
+    # `hunks_ranges` are the map this run actually classified against, and an
+    # ACTIVE delta with `hunks_files: 0` matched no finding at all -- every one
+    # classified off-diff, so under `--gate-scope on-diff` there was nothing
+    # left for `--fail-on` to fail on. `ranges_dropped` / `payload_malformed`
+    # are the loader's tolerances, and are null when this context was not built
+    # from a file read (a direct caller: unmeasured, not the same as zero).
+    hunks_load = delta.report if delta_mode else None
+    hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
+                                 if delta_mode else (0, 0))
     delta_meta = ({"base": delta.diff_hunks.get("base"),
                    "base_source": delta.diff_hunks.get("base_source"),
                    "base_commit": delta.diff_hunks.get("base_commit"),
@@ -317,6 +328,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                    "includes_uncommitted": delta.diff_hunks.get("includes_uncommitted"),
                    "files_changed": delta.diff_hunks.get("files_changed"),
                    "diff_context": delta.diff_context,
+                   "hunks_files": hunks_files,
+                   "hunks_ranges": hunks_ranges,
+                   "ranges_dropped": hunks_load.ranges_dropped if hunks_load else None,
+                   "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
                    "on_diff_total": len(on_diff_active),
                    "pre_existing_total": len(pre_existing_active)}
                   if delta_mode else None)
