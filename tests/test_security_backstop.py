@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import zipfile
 
-from test_security_gate import _sarif
+from tests.test_security_gate import _sarif
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(

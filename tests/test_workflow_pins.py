@@ -18,7 +18,7 @@ import unittest
 
 import yaml
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 from workflow_guard import UNNAMED, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including

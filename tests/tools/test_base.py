@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from _test_helpers import FakePopen, FakeStream, hard_link_or_skip
+from tests._test_helpers import FakePopen, FakeStream, hard_link_or_skip
 import scripts.tools.base as base
 
 

@@ -24,13 +24,13 @@ fixture's real egress. So before running the hostile build we independently
 *verify* the environment is contained -- if any outbound connection succeeds
 the probe refuses to run and fails loudly, rather than trusting the flag."""
 import os
-from _test_helpers import first
+from tests._test_helpers import first
 import shutil
 import socket
 import tempfile
 import unittest
 
-from _test_helpers import REPO_FIXTURES, fixture_path, skip_or_fail
+from tests._test_helpers import REPO_FIXTURES, fixture_path, skip_or_fail
 
 from scripts.tools import ADAPTERS
 

@@ -7,7 +7,7 @@ import unittest
 
 import yaml
 
-from conftest import REPO_ROOT   # #run7 TST-G1B: shared path anchor
+from tests._test_helpers import REPO_ROOT   # #run7 TST-G1B: shared path anchor
 
 SCRIPT = os.path.join(REPO_ROOT, ".github", "scripts", "image-freshness.sh")
 WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "tools-image-health.yml")

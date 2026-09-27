@@ -23,8 +23,8 @@ from unittest import mock
 import yaml
 import shell_reader
 
-from conftest import REPO_ROOT
-import _test_helpers as helpers
+from tests._test_helpers import REPO_ROOT
+import tests._test_helpers as helpers
 
 TOOLS_TESTS = os.path.join(REPO_ROOT, "tests", "tools")
 

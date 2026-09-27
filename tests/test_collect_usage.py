@@ -12,8 +12,8 @@ import scripts.collect_usage as cu
 # NOTE: scripts.synthesize is imported lazily inside the one test that needs it.
 # Importing it at module scope prepends skill/scripts to sys.path[0]
 # (score_gate.py:11), where skill/scripts/tools/ used to shadow tests/tools/ and
-# break collection of every test that does `from tools.git_repo import ...`.
-# tests/conftest.py now binds `tools` before any test module imports (WS-0 S4),
+# break collection of tests using the former bare tools.git_repo import.
+# The canonical tests.tools import is independent of runtime tools (WS-0 S4),
 # so this is no longer load-bearing; kept so the module stays cheap to collect.
 
 

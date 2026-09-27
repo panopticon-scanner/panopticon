@@ -38,14 +38,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.readiness_checks as readiness_checks
 from scripts import hosts
 
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 _READINESS = "scripts.phases.readiness"
@@ -464,7 +464,7 @@ class TestTheSubSkillLookup(_VerbCase):
     def test_the_roots_are_the_ones_skill_md_tells_a_host_about(self):
         """P02 wrote the roots down for a human; this verb searches them. One
         list, or the doc and the code send a host to different directories."""
-        from test_skill_md import SKILL_ROOTS
+        from tests.test_skill_md import SKILL_ROOTS
         documented = {r.replace("…/superpowers/", "").rstrip("/")
                       for r in SKILL_ROOTS}
         self.assertEqual(documented, set(readiness.SUB_SKILL_ROOTS))

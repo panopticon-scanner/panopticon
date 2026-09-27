@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 import scripts.dispatch as dispatch
 from scripts import hosts
 import scripts.phases.requests as requests

@@ -2,7 +2,7 @@ import os
 import unittest
 import scripts.phases.review as review
 
-from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B/QAL-D1B: shared path anchor
+from tests._test_helpers import SKILL_ROOT as ROOT   # #run7 TST-G1B/QAL-D1B: shared path anchor
 
 
 class TestAssets(unittest.TestCase):

@@ -9,7 +9,7 @@ from unittest import mock
 import scripts.run_tools as rt
 import scripts.tools.egress as rt_egress
 
-from run_tools_test_helpers import _DockerStub, _FakeResult, _Interrupted
+from tests.run_tools_test_helpers import _DockerStub, _FakeResult, _Interrupted
 
 
 class TestContainment(unittest.TestCase):

@@ -24,7 +24,7 @@ import sys
 import tempfile
 import unittest
 
-from conftest import REPO_ROOT, SKILL_ROOT
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT
 
 import scripts.claim_scope as claim_scope
 from scripts.phases import runio

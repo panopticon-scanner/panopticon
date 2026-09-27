@@ -37,7 +37,7 @@ import pytest
 
 import scripts.phases.tools as tools_phase
 import scripts.run_tools as run_tools
-from conftest import REAL_DOCKER_AVAILABLE
+from scripts.run_tools import docker_available as REAL_DOCKER_AVAILABLE
 
 
 class _Res:

@@ -10,7 +10,7 @@ import unittest.mock
 
 from scripts import diff_map
 
-from discovery_test_helpers import (
+from tests.discovery_test_helpers import (
     discovery, orchestrator, touch, run_scan, run_scan_with_err, grouped,
     init_repo, git_cmd, make_git_repo, run_script, run_scan_helper,
 )

@@ -3,7 +3,7 @@ import os
 import unittest
 
 import yaml
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 
 import scripts.tests_axis as ta
 

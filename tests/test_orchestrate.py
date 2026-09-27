@@ -31,10 +31,10 @@ import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
 import scripts.probes.shape as shape_probe
 import scripts.write_guard_hook as write_guard_hook
-from _test_helpers import (all_proven_artifact as _all_proven_artifact, dead_pid,
+from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, dead_pid,
                            refuted_tool_policy_artifact as _refuted_artifact,
                            write_guard_not_proven as _write_guard_not_proven)
-from conftest import docker_probe_runner, write_host_evidence
+from tests._test_helpers import docker_probe_runner, write_host_evidence
 from scripts import hosts
 
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}

@@ -39,7 +39,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import REPO_ROOT, write_host_evidence
+from tests._test_helpers import REPO_ROOT, write_host_evidence
 from scripts import hosts
 import scripts.model_resolver as model_resolver
 import scripts.ocrdb as ocrdb

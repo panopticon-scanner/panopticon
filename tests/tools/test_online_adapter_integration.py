@@ -13,8 +13,8 @@ import os
 import shutil
 import unittest
 
-from _test_helpers import assert_adapter_finds
-from .conftest import OK_SCAN_EXIT_CODES
+from tests._test_helpers import assert_adapter_finds
+from tests.tools.helpers import OK_SCAN_EXIT_CODES
 
 _REQUIRE_ONLINE = os.environ.get("PANOPTICON_REQUIRE_ONLINE_INTEGRATION") == "1"
 

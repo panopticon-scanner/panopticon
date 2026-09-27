@@ -33,7 +33,7 @@ import os
 import tempfile
 import unittest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 import scripts.hosts as hosts
 import scripts.run_tools as run_tools
 import scripts.synth.plan as plan_mod

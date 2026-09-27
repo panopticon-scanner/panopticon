@@ -23,8 +23,8 @@ from unittest import mock
 
 import yaml
 
-from conftest import REPO_ROOT
-from run_tools_test_helpers import _FakeResult
+from tests._test_helpers import REPO_ROOT
+from tests.run_tools_test_helpers import _FakeResult
 import scripts.run_tools as run_tools
 from scripts.progress import PREFIX, NullProgress, StderrProgress, make_progress
 

@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import unittest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 
 # The allow-list. Empty on purpose: repository configuration (the review
 # matrix) lives in root panopticon.yml (#1681), not under `.panopticon/`, and

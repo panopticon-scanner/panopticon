@@ -9,8 +9,60 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import FIXTURE_ROOT, REPO_ROOT  # noqa: E402
-from scripts import hosts
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(_TESTS)
+SKILL_ROOT = os.path.join(REPO_ROOT, "skill")
+FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
+
+
+# --- #1344 F3: consumers now read posture(), which is proof, not a claim -----
+# Every phase test that built a "claude" (or synthetic-probe) manifest and
+# expected `enforced: True` / a write-guard early-return / a usage collection
+# used to get that answer from the bare claim (`hosts.declares`). Now it also
+# needs evidence a probe actually proved the capability, or `posture()`
+# reports UNKNOWN and every one of those sites goes the other way. This is the
+# one place that writes it, so every phase test states the same fixture the
+# same way rather than five near-identical inline JSON blobs.
+def write_host_evidence(review_root, states, host="claude", cli_flags=None):
+    """A host-capabilities.json proving exactly `states` (a
+    {capability: state} mapping); every other capability is UNKNOWN. Lands
+    wherever `runio.host_evidence(review_root)` will look for it -- the
+    per-run folder once a manifest is on disk, the flat top-level path
+    otherwise -- so a test needs no manifest just to prove a capability.
+
+    `cli_flags` (D10 F1) seeds the OPERATIONAL block beside `capabilities` --
+    e.g. `{hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True}}`.
+    Omitted by default, which is the fail-safe "nobody asked the CLI" state
+    every entry builder must read as "do not pass a schema"."""
+    from scripts import hosts
+    from scripts.phases import runio
+
+    capabilities = {name: {"state": states.get(name, hosts.UNKNOWN),
+                           "by": "fixture", "detail": "fixture"}
+                    for name in hosts.CAPABILITIES}
+    return runio._write_json(
+        runio._pano(review_root, runio.HOST_CAPABILITIES),
+        {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",
+         "capabilities": capabilities, hosts.CLI_FLAGS: cli_flags or {}})
+
+
+class _DockerProbe:
+    def __init__(self, returncode):
+        self.returncode, self.stdout, self.stderr = returncode, "", ""
+
+
+def docker_probe_runner(daemon=0, image=0):
+    """A fake `subprocess.run` answering readiness's two docker probes.
+
+    Defaults to "daemon up, image present". Pass a non-zero `image` for the
+    run-13 environment (Docker fine, `panopticon-tools` absent) and a non-zero
+    `daemon` for no Docker at all.
+    """
+    def runner(cmd, **_kwargs):
+        if list(cmd[:3]) == ["docker", "image", "inspect"]:
+            return _DockerProbe(image)
+        return _DockerProbe(daemon)
+    return runner
 
 
 def kimi_entry(enforced=True, model="secondary"):
@@ -49,6 +101,7 @@ def prepared_kimi(directory, runner=None, *, include_coding_alias=True):
 
 def all_proven_artifact(host="claude"):
     """A fresh host-capabilities.json body with every capability proven."""
+    from scripts import hosts
     return {"schema_version": 1, "host": host,
             "probed_at": "2026-09-10T00:00:00Z",
             "capabilities": {cap: {"state": hosts.PROVEN, "by": "fixture",
@@ -58,6 +111,7 @@ def all_proven_artifact(host="claude"):
 
 def refuted_tool_policy_artifact(host="claude"):
     """A proven artifact with only tool policy explicitly refuted."""
+    from scripts import hosts
     body = all_proven_artifact(host)
     body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = {
         "state": hosts.REFUTED, "by": "fixture",
@@ -67,6 +121,7 @@ def refuted_tool_policy_artifact(host="claude"):
 
 def write_guard_not_proven(host, target, **kw):
     """Probe stand-in with the write guard left unknown."""
+    from scripts import hosts
     body = all_proven_artifact(host)
     body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
         "state": hosts.UNKNOWN, "by": None,

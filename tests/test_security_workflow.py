@@ -5,7 +5,7 @@ import unittest
 import yaml
 import shell_reader
 
-from test_workflow_pins import _without_comments
+from tests.test_workflow_pins import _without_comments
 
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)

@@ -49,6 +49,8 @@ Repository = "https://github.com/panopticon-scanner/panopticon"
 Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 
 [tool.pytest.ini_options]
+pythonpath = ["skill", "skill/scripts", "scripts", "."]
+addopts = ["--import-mode=importlib"]
 markers = [
     # #1515: the ONLY tests allowed to reach the Docker daemon. Everything else
     # gets run_tools.docker_available() -> False from the autouse fixture in
