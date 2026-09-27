@@ -7,6 +7,115 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A malformed or empty diff-hunks payload is disclosed, not swallowed (#1783; ARC-2340795244).**
+  `synth/delta.py`'s loader is total by design -- an unreadable or non-object `diff-hunks.json`
+  yields `{}`, a non-object `hunks` becomes `{}`, and every range that is not a two-integer pair is
+  dropped -- and it said none of that anywhere. The consequence is asymmetric. A payload with no
+  `base` degrades to a full-repo review, which is the WIDER gate; a payload WITH a base and an
+  empty hunk map stays an ACTIVE delta that matches no finding at all, so every finding classifies
+  off-diff, `--gate-scope on-diff` scopes the gate to that empty set, and a change with findings
+  reports a green gate -- indistinguishable from a genuinely empty diff, over an artifact the
+  driver hands synthesize on file existence alone, from a fixed path inside the reviewed tree's own
+  `.panopticon/`. The loader now returns a `HunksLoad` beside its data (the old name delegates to
+  it, so every caller is unchanged), and `from_args` prints in the #957 register: the rejection
+  reason with the path, a ZERO HUNKS warning naming what that costs the gate and how to tell an
+  empty change from a broken artifact, and a count of the ranges dropped. The warning distinguishes
+  the two shapes zero ranges can take, because `diff_map.classify` fails OPEN for a lined finding
+  in a file the map NAMES without a range. `meta.coverage.delta` carries the same four facts --
+  `hunks_files`, `hunks_ranges`, `ranges_dropped`, `payload_malformed` -- whenever the payload
+  resolved a `base`, with `files_changed` left as the artifact's own claim beside the map actually
+  classified against; a payload rejected outright leaves the review non-delta and that block null,
+  so there only stderr carries it. The gate's scoping RULE is untouched: this is disclosure, and
+  what an empty on-diff gate should DO is a policy call.
+- **`dispatch.js` refuses an entry marked enforced that names no registered shell (#1783,
+  ARC-204863095).** The session-mode Workflow script validated each entry's `id`, `marker` and
+  `prompt_file`, then branched on `e.enforced && e.agent` -- so an entry carrying `enforced: true`
+  with a missing or empty `agent` fell through to the UNENFORCED branch in silence: no registered
+  `panopticon-*` shell, no host-enforced tool grant, no log line, while the request on disk still
+  recorded that entry's launch shape as enforced. The driver holds the same rule one level up
+  (`loop_batch.refuse_misrouted` refuses a request whose enforced entry does not name the shell its
+  output role and checkpoint expect), so the reachable path was a session hand-copying the request's
+  entries into `args.entries` -- exactly the reduction the script's own header asks for. The
+  validation loop now refuses such an entry in the register of `loop_batch.misroute_refusal`, and it
+  refuses THERE rather than in the dispatch loop: an integrity refusal must not leave a batch half
+  launched, so no `agent()` call is made for any entry in it. No production path emits such an entry
+  (all five request builders set `agent` to the registered name exactly when the entry is enforced),
+  so the refusal costs no real request. The pin that had recorded the old fall-through as behaviour
+  now pins the refusal, beside an empty-`agent` case and a two-entry case proving the good entry
+  ahead of the bad one never launched.
+- **The Kimi guard hooks run the driver's own interpreter, and `prepare` refuses one that cannot
+  start (#1777; ARC-1774133676).** Both PreToolUse hooks in the per-run `config.toml` named the bare
+  word `python3`, and nothing resolved it: the CHILD looks that name up in its own PATH, and the
+  launcher rewrites PATH -- `runners/children.py` sanitizes the startup environment and then sets it
+  from `executable.resolve`, which drops every entry inside the review root. An operator whose
+  `python3` came from the reviewed repo's own `.venv/bin` therefore armed two hooks with a name the
+  child resolves differently, or not at all, and a Kimi hook that does not start fails OPEN: read
+  and write confinement silently unarmed -- the exact residual the runner's own C3 comment named
+  while checking only the guard SCRIPT. The interpreter is `sys.executable` now (this process,
+  chosen by neither PATH nor the target -- the binding `read_guard_hook` and `codex_host` already
+  use), armed as its `realpath` so a venv symlink resolves to the binary that actually runs and the
+  reviewed tree's own `site-packages` never joins the guard's `sys.path`; an empty, relative or
+  unrunnable one is REFUSED rather than swapped back for a bare name. One function asks that whole
+  question and returns the path it validated, so what was checked
+  is what the hooks are armed with; `KimiRunner.prepare` asks it, with the guard script's presence,
+  before any child launches, and the two probes that build the same home report the refusal instead
+  of ending posture establishment in a traceback. Pinned with PATH emptied, so no `python3` shim on
+  the machine running the suite can stand in for the name the child could not resolve, and with the
+  interpreter path's own quoting -- it is interpolated into a shell string too, and one under a
+  directory with a space in it is ordinary. What remains is stated where it was: a hook can still
+  die for a reason no pre-flight sees (script or interpreter replaced mid-run, an exec that fails
+  under load, an adjudication past the hook's 30-second timeout), so the shells' tool allowlists
+  stay the primary control.
+- **The scrub funnel binds a deterministic repo root, and reconcile's comments go through it
+  (#1777 ARC-1735086130, #1780 ARC-163067013).** `sanitize._detect_repo_root` fell back to
+  `os.getcwd()` and nothing refused a degenerate root. Probed with an empty PATH at `/`, `scrub()`
+  deleted every `/` in the text it was handed (the literal `str.replace`), `re.escape("")` left the
+  second substitution an empty-match pattern, and `repo_relative` ate the leading slash. The mirror
+  is worse: a filer run from another checkout gets a prefix that strips nothing, so the operator's
+  absolute paths land in a public, permanent issue, which is the one thing that module exists to
+  prevent. Both detection branches now go through one normaliser that REFUSES a filesystem root, a
+  non-absolute root and a root that is not an existing directory, and returns a realpath'd prefix
+  (realpath normalises an operator-supplied LOGICAL root to the physical form locations carry;
+  measured here, `git rev-parse --show-toplevel` and `os.getcwd()` both report the physical path
+  already, so it is a no-op on the two detection branches and defence should a git report a logical
+  one). `scrub`/`repo_relative` take an explicit `root=` that REPLACES the detected root, normalised
+  and refused alike but with its own remedy, since a caller who passed a root cannot act on "pass
+  the root explicitly"; the cached detection stays the default, so no filer changes a call. That
+  determinism is what the second half needs. The module header claimed `scrub()` is the one point
+  every filer shares, but `reconcile_apply._comment_body` posted `action["comment"]` with only
+  `neutralize`'s markdown pass -- no path stripping, no redaction -- while the `reason` it
+  interpolates is built from report locations that `_source_records` proves can be absolute. The
+  comment is now scrubbed BEFORE the `<!-- panopticon-reconcile:KEY -->` marker is appended, so the
+  marker (keyed on the raw action, so no receipt is rebound) survives byte-for-byte and
+  `_comment_present`, which compares the FULL body on the resume path, reconciles against the
+  scrubbed body that was posted. A body that cannot be reproduced is still refused, but the refusal
+  now names the likely cause: a comment posted from a different repo root.
+- **The fixture runner's two containers launch under `run_tools`' container policy (#1767;
+  ARC-3859414366).** `run_tools` owns that policy and its docstrings said so: cap-drop,
+  no-new-privileges and the memory/CPU/pids ceilings "applied to every tool/adapter container".
+  `run_fixture_tests.py` imported no part of it, so the two could not agree by construction -- and
+  the container that runs the whole adapter suite on a developer machine launched with none of them:
+  the real scanners over live attacker-shaped inputs (a planted `eslint.config.js` and a shadow
+  `node_modules` plugin eslint must refuse to load, a planted `.gitleaks.toml` rule set and a
+  `GITLEAKS_CONFIG` hijack gitleaks must ignore) plus the dotnet/MSBuild and JVM toolchains over the
+  baked goat trees. The `hostile-csproj` corpus is baked into that image too, but its build is
+  opt-in under `PANOPTICON_CONTAINMENT_PROBE=1`, which only the containment lane sets, so
+  `evil.csproj`'s `curl` target does not fire on this path. The fixture-presence probe beside it had
+  no `--network none` either. The two helpers carry public names now (`privilege_drop_flags`,
+  `resource_limit_flags`; the underscore spellings stay identity aliases, so no call site moved) and
+  the fixture runner splices both lists into both `docker run` argvs, plus `--network none` on the
+  probe. Pinned as parity rather than resemblance: the flags between `run --rm` and the rest of the
+  argv are exactly what `run_tools` returns, and one test retunes a ceiling inside `run_tools` and
+  watches both launches follow -- a copy passes a spot-check and then drifts. The envelope's failure
+  modes now name themselves instead of arriving as a bare number: the probe quotes docker's refusal
+  when the daemon rejects a ceiling, rc 137 is reported as the memory ceiling's OOM kill, and rc 124
+  as a timeout with the CPU throttle named as the likely cause. What this cannot prove: Docker is
+  out of
+  reach in the fixing session, and the daily `adapter-integration` workflow runs its own
+  `docker run` rather than this script, so the first local `run_fixture_tests.py` is the end-to-end
+  check. The ceilings are the ones these same scanners already run under (6g memory, 4 CPUs, 1024
+  pids), and all three stay retunable through `PANOPTICON_TOOL_MEMORY` / `_CPUS` / `_PIDS`, an empty
+  value dropping that ceiling -- which the fixtures guide now records beside the command.
 - **The CLI advisor renderer confines claim locations and pins the review root (#1767, run-14
   ARC-3314534783).** Advisor-prompt assembly existed twice. The driver's two advisor rounds rewrite
   an escaping `location.file` to a redaction marker and pin `Repo root: <review_root>` before

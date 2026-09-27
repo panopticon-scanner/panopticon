@@ -13,4 +13,7 @@ python3 skill/scripts/run_fixture_tests.py --rebuild
 python3 skill/scripts/run_fixture_tests.py --test rust
 ```
 
+Both containers launch under the tool runner's envelope: `--cap-drop=ALL`, no-new-privileges, and
+6g/4-CPU/1024-pid ceilings. `PANOPTICON_TOOL_MEMORY`, `_CPUS`, `_PIDS` retune one; empty drops it.
+
 This is optional and not part of CI. Rebuild the image periodically to pull updated fixtures.

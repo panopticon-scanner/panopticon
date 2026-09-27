@@ -6,9 +6,12 @@ import glob
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import tomllib
@@ -257,6 +260,116 @@ class TestPrepare(unittest.TestCase):
                     config = tomllib.load(fh)
             self.assertEqual(len(config["hooks"]), 3)
             self.assertIn("Stop", [h["event"] for h in config["hooks"]])
+
+    # --- ARC-1774133676: the hooks' interpreter ------------------------------
+
+    def _prepared_config(self, directory):
+        """The per-run `config.toml` a real `prepare` writes, parsed back.
+
+        `prepared_kimi` is the shared helper for "a prepared runner over a
+        fixture home"; `mock.patch.dict` ADDS to the environment rather than
+        replacing it, so wrapping it empties PATH for the prepare without
+        re-implementing it. PATH must be empty: a `python3` shim on the machine
+        running the suite would otherwise stand in for the very name the child
+        could not resolve, and the assertion would pass on a bare word.
+        """
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            r = _prepared(directory)
+        self.addCleanup(r.teardown, "complete")
+        with open(os.path.join(r.kimi_home, "config.toml"), "rb") as fh:
+            return tomllib.load(fh)
+
+    def test_both_guard_hooks_run_the_drivers_own_interpreter(self):
+        # The command was `python3 <guard> <mode> <data>`, and nothing resolved
+        # that name: it is looked up in the CHILD's PATH, which the launcher
+        # rewrites (runners/children.py sets PATH from `executable.resolve`,
+        # which drops every entry inside the review root). An operator whose
+        # `python3` came from the reviewed repo's own `.venv/bin` handed both
+        # hooks a name the child had no PATH entry for -- and a Kimi hook that
+        # cannot start fails OPEN, so read/write confinement was unarmed with
+        # nothing said. The interpreter is the driver's own process now.
+        with tempfile.TemporaryDirectory() as d:
+            hooks = self._prepared_config(d)["hooks"]
+            self.assertEqual(2, len(hooks))
+            # The armed path is the one `_interpreter` VALIDATED, which is the
+            # realpath -- the shape `read_guard_hook._trusted_hook_argv` uses,
+            # so that what was checked is what runs. On a framework or venv
+            # python the two spellings differ.
+            expected = os.path.realpath(sys.executable)
+            for hook in hooks:
+                argv = shlex.split(hook["command"])
+                self.assertEqual(expected, argv[0],
+                                 "the %r hook does not run the driver's own interpreter"
+                                 % hook["matcher"])
+                self.assertTrue(os.path.isabs(argv[0]),
+                                "the interpreter is not an absolute path: %r" % argv[0])
+                self.assertNotEqual("python3", argv[0],
+                                    "a bare interpreter name is resolved in the child's PATH")
+
+    def _refused_prepare(self, directory, interpreter):
+        """The RuntimeError text `prepare` refuses with under `interpreter`."""
+        fixture = _fixture_home(directory)
+        r = kimi_runner.Runner("kimi")
+        with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": fixture, "PATH": ""}), \
+             mock.patch.object(sys, "executable", interpreter):
+            with self.assertRaises(RuntimeError) as caught:
+                r.prepare(os.path.join(directory, "run"), review_root=directory)
+        self.assertIsNone(r.kimi_home, "the refused prepare minted a home anyway")
+        return str(caught.exception)
+
+    def test_prepare_refuses_an_interpreter_that_is_not_executable(self):
+        with tempfile.TemporaryDirectory() as d:
+            plain = os.path.join(d, "not-an-interpreter")
+            with open(plain, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(plain, stat.S_IRUSR | stat.S_IWUSR)
+            message = self._refused_prepare(d, plain)
+            self.assertIn(plain, message)
+            self.assertIn("confinement would be unarmed", message)
+
+    def test_prepare_refuses_an_empty_interpreter(self):
+        # `sys.executable` can be empty (an embedded interpreter, or a caller
+        # that overwrote it), and the answer is a refusal, never a fallback to
+        # a name a PATH gets to choose.
+        #
+        # The wording asserted is PREPARE's own. Delete its pre-flight and the
+        # same value is refused moments later from inside the home build, by a
+        # message that also names `''` and that also leaves `kimi_home` None --
+        # so a test checking only the path stays green either way, and is a test
+        # of `kimi_home` rather than of `prepare`.
+        with tempfile.TemporaryDirectory() as d:
+            message = self._refused_prepare(d, "")
+            self.assertIn("''", message)
+            self.assertIn("refusing to launch reviewers whose read/write "
+                          "confinement would be unarmed", message)
+
+    def test_kimi_home_arming_path_refuses_a_relative_interpreter_before_prepare(self):
+        # `_interpreter` is what `_hook_entry` arms the hooks with, and a
+        # RELATIVE `sys.executable` is the case a pre-flight over the DRIVER's
+        # cwd cannot judge: the child resolves it against its own cwd (or its
+        # PATH, for a bare name), so it is a different file or none. Both
+        # spellings are refused -- including `python3`, the literal this finding
+        # replaced.
+        for relative in ("python3", os.path.join("bin", "python3")):
+            with self.subTest(interpreter=relative):
+                with mock.patch.object(sys, "executable", relative):
+                    with self.assertRaises(RuntimeError) as caught:
+                        kimi_home._hook_entry(kimi_home.READ_MATCHER, "read",
+                                              "read-scope.json")
+                message = str(caught.exception)
+                self.assertIn("unavailable or not absolute", message)
+                self.assertIn(repr(relative), message)
+
+    def test_prepare_refuses_an_absent_guard_script(self):
+        with tempfile.TemporaryDirectory() as d:
+            fixture = _fixture_home(d)
+            r = kimi_runner.Runner("kimi")
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": fixture}), \
+                 mock.patch.object(kimi_home, "_GUARD", os.path.join(d, "gone.py")):
+                with self.assertRaises(RuntimeError) as caught:
+                    r.prepare(os.path.join(d, "run"), review_root=d)
+            self.assertIn("refusing to launch", str(caught.exception))
+            self.assertIsNone(r.kimi_home, "the refused prepare minted a home anyway")
 
 
 class TestTomlEmission(unittest.TestCase):
@@ -1029,7 +1142,11 @@ class TestHardenedWrites(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             elsewhere = os.path.join(d, "elsewhere")
             os.makedirs(elsewhere)
-            os.chmod(elsewhere, 0o755)
+            # The stat bits rather than the literal: this repo's own B103 scan
+            # reports a `chmod` written as `0o755`, and the mode is only here to
+            # be DIFFERENT from the 0700 the builder would apply.
+            os.chmod(elsewhere, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+                     | stat.S_IROTH | stat.S_IXOTH)
             home = os.path.join(d, "kimi-home")
             os.symlink(elsewhere, home)
             with self.assertRaises(OSError) as caught:

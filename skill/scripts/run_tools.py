@@ -82,48 +82,44 @@ TOOL_TIMEOUT = 900
 # socket cannot hang the whole scan pipeline (#1112).
 DOCKER_PROBE_TIMEOUT = 30
 
-# #run8 OPS-D1A: bound the blast radius of an adversarial target that drives a
-# scanner to allocate pathologically. TOOL_TIMEOUT bounds wall-clock and
-# MAX_TOOL_OUTPUT_BYTES bounds captured stdout, but NEITHER bounds the
-# in-container memory/CPU/PID footprint while a tool runs -- an OOM inside the
-# container (a recursive archive fed to dependency-check, a pathological input
-# to a SAST parser) can exhaust or destabilize the host/CI runner well before
-# the 900s timeout or the output cap is reached. Every `docker run` gets a hard
-# resource ceiling. Operators can retune via env without a code change; setting
-# a value to the empty string drops that individual flag (e.g. on a cgroup that
-# rejects --pids-limit).
+# #run8 OPS-D1A: TOOL_TIMEOUT bounds wall-clock and MAX_TOOL_OUTPUT_BYTES the
+# captured stdout; NEITHER bounds the in-container memory/CPU/PID footprint, so
+# a target that drives a scanner to allocate pathologically (a recursive archive
+# fed to dependency-check) can destabilize the host/CI runner long before either
+# cap. Every container this module and the fixture runner launch gets a hard
+# ceiling (the runner's two only since #1767, ARC-3859414366). Retunable via env;
+# an empty value drops that ceiling (both memory flags, or --cpus, or --pids-limit).
 CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
 CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
 
 
-def _privilege_drop_flags():
-    """Privilege-drop flags applied to every tool/adapter container (#run10
-    SEC-C1A).
+def privilege_drop_flags():
+    """Privilege-drop flags for every container this module and the fixture runner
+    launch: the tool/adapter dispatch below (#run10 SEC-C1A) and
+    `run_fixture_tests.py`'s two, which import them (#1767, ARC-3859414366). Both
+    run attacker-influenced build logic -- a .csproj/.targets executes arbitrary
+    code through build targets, the fixture corpus is hostile by design -- and
+    neither the ceilings above nor `--network none` stops a capability escalation.
 
-    This dispatch path runs attacker-influenced build logic -- a .csproj/.targets
-    can execute arbitrary code through build targets, and the module's own
-    docstring calls the roslyn path 'executes target build logic'. The container
-    had CPU/memory/PID ceilings and `--network none`, but nothing stopped a
-    process inside it from using Linux capabilities or gaining new privileges via
-    a setuid binary.
+    Not repo-wide. The daily `adapter-integration` workflow runs the fixtures image
+    itself, four times, with its own `--user` (and `--network none` in the containment
+    lane) and none of these flags or the ceilings. `tools/egress.py` hardens its sidecar by
+    literal copy (`PROXY_HARDENING`, `PROXY_LIMITS`, the ceilings tighter on purpose).
 
-    --cap-drop=ALL: a scanner needs no capabilities; dropping them removes the
-      whole capability-abuse class (raw sockets, mknod, chroot, ptrace-by-cap).
-    --security-opt=no-new-privileges: a setuid/setgid binary inside the image can
-      no longer raise privileges beyond the starting set.
+    --cap-drop=ALL removes the whole capability-abuse class (raw sockets, mknod, chroot,
+      ptrace-by-cap) and a scanner needs none of it; --security-opt=no-new-privileges
+      stops a setuid/setgid binary in the image raising privileges beyond the start.
 
-    NOT applied here: `--read-only`. Scanners legitimately write inside the
-    container (dependency-check unpacks, dotnet/MSBuild builds, tools spill to
-    /tmp), so a read-only rootfs needs a tuned tmpfs per tool and must be
-    validated against a real tool round -- a broken tool round is a worse
-    outcome than this residual. Tracked rather than half-applied.
-    """
+    NOT applied: `--read-only`. Scanners write inside the container
+    (dependency-check unpacks, dotnet/MSBuild builds, tools spill to /tmp), so it
+    needs a tuned tmpfs per tool and a real tool round to validate -- and a broken
+    tool round is the worse outcome. Tracked, not half-applied."""
     return ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
 
 
-def _resource_limit_flags():
-    """docker-run resource-ceiling flags applied to every tool/adapter container.
+def resource_limit_flags():
+    """docker-run resource ceilings for the same containers as privilege_drop_flags.
 
     --memory-swap is pinned equal to --memory so an adversarial allocation is
     OOM-killed at the ceiling rather than spilling into swap and merely dragging
@@ -136,6 +132,10 @@ def _resource_limit_flags():
     if CONTAINER_PIDS_LIMIT:
         flags += ["--pids-limit", CONTAINER_PIDS_LIMIT]
     return flags
+
+
+_privilege_drop_flags = privilege_drop_flags   # the private spellings the
+_resource_limit_flags = resource_limit_flags   # in-module call sites still use
 
 
 def validate_output_dir(target, out_dir):

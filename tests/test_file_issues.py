@@ -407,7 +407,7 @@ class TestRepoRootPortability(unittest.TestCase):
         self.assertTrue(root.endswith("/"))
         self.assertTrue(os.path.isabs(root))
         # Detected root is this checkout — file_issues.py lives under it.
-        self.assertTrue(os.path.abspath(__file__).startswith(root))
+        self.assertTrue(os.path.realpath(__file__).startswith(root))
 
     def test_scrub_strips_the_detected_root(self):
         abs_path = file_issues.repo_root() + "skill/scripts/run_tools.py"
