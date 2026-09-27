@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
 - **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
   and session instructions share the runner's setup namespace. Brakeman applicability uses the
   same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
