@@ -30,7 +30,10 @@
 //   { id, agent, enforced, model, marker, prompt_file, delivery, out_file }
 // (read the request file the `dispatch` status names; never paste `prompt`,
 // which averages 13-20 KB per entry and is exactly what `prompt_file` exists
-// to keep out of the session's context).
+// to keep out of the session's context). `agent` is REQUIRED whenever
+// `enforced` is true -- it names the registered shell that IS the enforcement,
+// so an enforced entry carrying no shell name is refused below rather than run
+// as an unenforced one (#1783).
 export const meta = {
   name: 'panopticon-dispatch',
   description: 'Run one Panopticon session-mode checkpoint: one subagent per pending entry, in its registered shell, marker line first',
@@ -51,6 +54,14 @@ for (const e of entries) {
   }
   if (typeof e.prompt_file !== 'string' || !e.prompt_file) {
     throw new Error('panopticon-dispatch: entry ' + e.id + ' has no prompt_file; the loop stamps one on every entry and grants it to the read scope')
+  }
+  // A request-integrity refusal, in the register of `loop_batch.misroute_refusal`
+  // and raised HERE, in the validation loop, so it precedes every agent() call:
+  // nothing has launched and nothing is charged. Without it such an entry fell
+  // to the unenforced branch below -- no registered shell, no host-enforced tool
+  // grant, no log line -- while the run's accounting still called it enforced.
+  if (e.enforced && (typeof e.agent !== 'string' || !e.agent)) {
+    throw new Error('panopticon-dispatch: entry ' + e.id + ' is marked enforced but names no registered shell; agent is part of the enforcement binding -- copy it from the dispatch request rather than reducing it away')
   }
 }
 

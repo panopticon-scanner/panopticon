@@ -18,11 +18,11 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import tomllib
 
 from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
+from scripts.runners import kimi_home
 
 from . import common
 from . import kimi_snapshot
@@ -196,7 +196,7 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
         if env_id:
             env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
         try:
-            proc = runner([sys.executable, guard_path, mode, data_path],
+            proc = runner([kimi_home._interpreter(), guard_path, mode, data_path],
                           input=json.dumps(payload), capture_output=True,
                           text=True, timeout=30, env=env)
         except Exception as exc:  # noqa: BLE001 -- report, never raise
@@ -246,7 +246,11 @@ def _kimi_hooks_are_armed(sandbox, mode):
         home, scope_path, allowlist_path = kimi_snapshot._kimi_armed_home(sandbox)
         with open(os.path.join(home, "config.toml"), "rb") as fh:
             config = tomllib.load(fh)
-    except OSError as exc:
+    # RuntimeError is `kimi_home._interpreter` refusing to arm hooks with an
+    # interpreter that cannot run them (ARC-1774133676). A probe reports: this
+    # runs inside `_establish_host_posture`, which no `try` wraps, so an escape
+    # would be a traceback in place of a state.
+    except (OSError, RuntimeError) as exc:
         return None, common.failure_detail(
             exc, "the per-run home could not be built")
     except tomllib.TOMLDecodeError as exc:

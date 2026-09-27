@@ -140,11 +140,55 @@ def disabled_tools(vocabulary=None):
              else set().union(*TOOL_VOCABULARY.values()))
     return sorted(names - allowed_tool_union())
 
+
+def _interpreter():
+    """The interpreter the guard hooks run under: THIS process's own, validated
+    here and RETURNED, so the path that was checked is the path that is armed.
+
+    ARC-1774133676: it was the bare word `python3`, and nothing resolved it --
+    the child looks it up in ITS PATH, which the launcher rewrites
+    (`runners/children.py` sanitizes the startup environment and then sets PATH
+    from `executable.resolve`, which drops every entry inside the review root).
+    An operator whose `python3` came from the reviewed repo's own `.venv/bin`
+    therefore armed two hooks with a name the child resolves differently, or not
+    at all, and a Kimi hook that does not start fails OPEN: read and write
+    confinement unarmed, with nothing said. `sys.executable` is the process
+    already running the driver, so neither PATH nor the target chooses it -- the
+    same binding `read_guard_hook._trusted_hook_argv` and
+    `codex_host.safety_config` use.
+
+    R1-4: the whole question is asked HERE, in that precedent's shape --
+    non-empty, absolute, `realpath`, a file with the execute bit -- because a
+    caller that re-reads `sys.executable` to check one half is checking a value
+    this function reads again, and the two agree only by accident of sharing a
+    global. `sys.executable` can be empty or relative (an embedded interpreter,
+    a caller that overwrote it) and the file it names can be unrunnable; each of
+    those REFUSES rather than falling back to a name a PATH gets to choose. The
+    raise reaches `build_kimi_home`'s caller, where failing to arm is loud:
+    `runners/kimi.py::KimiRunner.prepare` re-raises it as its own refusal before
+    any child launches, and the probes that build a home report it.
+    """
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        raise RuntimeError(
+            "the kimi guard hook's interpreter is unavailable or not absolute "
+            "(%r); refusing to arm hooks whose interpreter a child's own PATH "
+            "would have to resolve" % executable)
+    resolved = os.path.realpath(executable)
+    if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        raise RuntimeError(
+            "the kimi guard hook's interpreter (%r) is not an executable file "
+            "(resolved to %s); refusing to arm hooks with an interpreter that "
+            "cannot run them" % (executable, resolved))
+    return resolved
+
+
 def _hook_entry(matcher, mode, data_path):
-    # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element.
+    # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element,
+    # the interpreter path included (tests/test_hook_command_quoting.py).
     return {"event": "PreToolUse", "matcher": matcher,
             "command": kimi_guard_hook.hook_command(
-                "python3", _GUARD, mode, os.path.abspath(data_path)),
+                _interpreter(), _GUARD, mode, os.path.abspath(data_path)),
             "timeout": 30}
 
 

@@ -142,9 +142,9 @@ class TestPromptFileGuard(DispatchScriptTestCase):
 
 class TestAgentTypeVsModel(DispatchScriptTestCase):
     """(d) enforced + agent -> opts.agentType == agent, NO opts.model.
-    enforced without agent -> falls to model. unenforced with agent ->
-    opts.model, NO agentType -- the #1720 contract: an unenforced entry
-    never names a shell."""
+    enforced WITHOUT an agent -> refused, nothing dispatched (#1783,
+    ARC-204863095). unenforced with agent -> opts.model, NO agentType --
+    the #1720 contract: an unenforced entry never names a shell."""
 
     def test_enforced_with_agent_sets_agent_type_never_model(self):
         entries = [_entry("e1", agent="panopticon-scout", enforced=True,
@@ -155,13 +155,41 @@ class TestAgentTypeVsModel(DispatchScriptTestCase):
         self.assertEqual("panopticon-scout", opts["agentType"])
         self.assertNotIn("model", opts)
 
-    def test_enforced_without_agent_falls_to_model(self):
+    def test_enforced_without_agent_is_refused_and_dispatches_nothing(self):
+        # ARC-204863095 (#1783): the entry claims the enforced posture the
+        # run's own accounting reads, so running it on the unenforced branch
+        # would launch it with no registered shell, no host-enforced tool
+        # grant and no log line saying so. The refusal is the validation
+        # loop's, so nothing is dispatched.
         entries = [_entry("e1", enforced=True, model="opus")]
         out = self.run_harness({"args": {"entries": entries},
                                 "replies": {"e1": "ok"}})
-        opts = out["calls"][0]["opts"]
-        self.assertEqual("opus", opts["model"])
-        self.assertNotIn("agentType", opts)
+        self.assertIsNotNone(out["error"])
+        self.assertIn("e1", out["error"])
+        self.assertIn("marked enforced", out["error"])
+        self.assertEqual([], out["calls"], "no agent should be dispatched")
+
+    def test_an_empty_agent_string_on_an_enforced_entry_is_refused_too(self):
+        # `agent: ""` is falsy, so the enforced branch read it exactly as an
+        # absent name; the refusal has to read it the same way.
+        entries = [_entry("e1", agent="", enforced=True, model="opus")]
+        out = self.run_harness({"args": {"entries": entries},
+                                "replies": {"e1": "ok"}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("e1", out["error"])
+        self.assertEqual([], out["calls"], "no agent should be dispatched")
+
+    def test_a_bad_second_entry_refuses_before_the_first_is_dispatched(self):
+        # Validation precedes dispatch: a request-integrity refusal must not
+        # launch (and charge) the entries that happen to sort before the bad
+        # one -- a partly-dispatched batch is exactly what it refuses.
+        entries = [_entry("e1", agent="panopticon-scout", enforced=True),
+                   _entry("e2", enforced=True, model="opus")]
+        out = self.run_harness({"args": {"entries": entries},
+                                "replies": {"e1": "ok", "e2": "ok"}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("e2", out["error"])
+        self.assertEqual([], out["calls"], "e1 must not be dispatched either")
 
     def test_unenforced_with_agent_uses_model_never_agent_type(self):
         entries = [_entry("e1", agent="panopticon-scout", enforced=False,

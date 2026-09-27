@@ -1839,3 +1839,106 @@ class TestPendingComment(unittest.TestCase):
                 sleep=lambda _: None, progress_path=progress), (0, 0))
             self.assertEqual(len(posted), 1)
             self.assertEqual(len(closed), 1)
+
+
+class TestCommentBodyIsScrubbed(unittest.TestCase):
+    """ARC-163067013 (#1780): scrub() is the one sanitizer every public poster
+    shares, and this module -- the fourth one -- posted comments without it.
+    The interpolated `reason` is built from report locations, and
+    `_source_records` special-cases an absolute `location.file`, so absolute
+    locations do occur; `neutralize` is the markdown half only (control chars,
+    backticks, one code span), with no path stripping and no redaction.
+    """
+
+    SECRET = "ghp_" + "A" * 36
+
+    def _action(self):
+        reason = ("%sskill/scripts/driver.py is still flagged (leaked %s)"
+                  % (file_issues.repo_root(), self.SECRET))
+        return {"cohort": "ambiguous", "fingerprint": "fp1", "close": False,
+                "issue": "https://github.com/o/r/issues/1",
+                "comment": reconcile_apply.AMBIGUOUS_COMMENT
+                % reconcile_apply.neutralize(reason)}
+
+    def test_posted_body_drops_the_root_and_the_secret_and_keeps_the_marker(self):
+        action = self._action()
+        posted = []
+
+        def runner(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "comment"]:
+                posted.append(argv[argv.index("--body") + 1])
+                return FakeCompleted("")
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(reconcile_apply.apply(
+                [action], dry=False, runner=runner, sleep=lambda _: None,
+                progress_path=os.path.join(d, "progress.json")), (1, 0))
+        body, = posted
+        self.assertNotIn(file_issues.repo_root(), body)
+        self.assertNotIn(self.SECRET, body)
+        self.assertIn("skill/scripts/driver.py", body)
+        self.assertIn("[REDACTED_TOKEN]", body)
+        # The marker is appended AFTER the scrub and keyed on the RAW action, so
+        # it survives byte-for-byte and no existing receipt is rebound.
+        marker = ("\n\n<!-- panopticon-reconcile:%s -->"
+                  % reconcile_apply._action_key(action, "o/r"))
+        self.assertTrue(body.endswith(marker), body)
+        self.assertEqual(body, file_issues.scrub(action["comment"]) + marker)
+
+    def test_resume_reconciles_against_the_scrubbed_body_and_posts_once(self):
+        """_comment_present compares the FULL body, so the body a resume matches
+        remotely must be the scrubbed one."""
+        import subprocess
+        action = self._action()
+        posted, probe = [], []
+
+        def runner(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "comment"]:
+                posted.append(argv[argv.index("--body") + 1])
+                raise subprocess.TimeoutExpired(argv, 120)
+            if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                return FakeCompleted(json.dumps(probe))
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = os.path.join(d, "progress.json")
+            with self.assertRaisesRegex(RuntimeError, "pending"):
+                reconcile_apply.apply([action], dry=False, runner=runner,
+                                      sleep=lambda _: None, progress_path=progress)
+            self.assertEqual(len(posted), 1)
+            self.assertNotIn(file_issues.repo_root(), posted[0])
+            self.assertNotIn(self.SECRET, posted[0])
+            probe[:] = [{"body": posted[0]}]
+            self.assertEqual(reconcile_apply.apply(
+                [action], dry=False, runner=runner, sleep=lambda _: None,
+                progress_path=progress), (0, 0))
+            self.assertEqual(len(posted), 1)
+
+    def test_a_resume_that_cannot_reproduce_the_body_names_the_repo_root(self):
+        """The posted body is root-derived, but the receipt records no root, so a
+        resume from a different checkout matches the marker (keyed on the raw
+        action) and never the body. It fails closed, which is right, but the
+        refusal has to say where to look."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        remote = ("the body a different checkout posted"
+                  "\n\n<!-- panopticon-reconcile:%s -->" % key)
+
+        def runner(argv, **kwargs):
+            self.assertNotEqual(argv[:3], ["gh", "issue", "comment"])
+            if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([{"body": remote}]))
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            reconcile_apply._save_progress(receipt, progress)
+            with self.assertRaises(RuntimeError) as caught:
+                reconcile_apply.apply([action], dry=False, runner=runner,
+                                      sleep=lambda _: None, progress_path=progress)
+        self.assertIn("pending", str(caught.exception))
+        self.assertIn("different repo root", str(caught.exception))

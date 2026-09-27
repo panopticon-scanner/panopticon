@@ -115,11 +115,13 @@ def _kimi_generated_disabled():
     survives the call.
 
     R2-4: the except list covers every type the writer it drives can raise --
-    `build_merged_config` raises ValueError (M3/N5's own mechanism) and
-    `dump_toml` raises TypeError (C2's) -- because `run_probes` wraps no probe
-    lambda and `_establish_host_posture` is called unwrapped, so an escape here
-    would abort posture establishment with a traceback. "A probe reports,
-    never raises" is this module's contract, not a tendency.
+    `build_merged_config` raises ValueError (M3/N5's own mechanism), `dump_toml`
+    raises TypeError (C2's), and `kimi_home._interpreter` raises RuntimeError
+    when the interpreter the hooks would be armed with is not one that can run
+    them (ARC-1774133676) -- because `run_probes` wraps no probe lambda and
+    `_establish_host_posture` is called unwrapped, so an escape here would abort
+    posture establishment with a traceback. "A probe reports, never raises" is
+    this module's contract, not a tendency.
     """
     try:
         with tempfile.TemporaryDirectory() as sandbox:
@@ -128,7 +130,7 @@ def _kimi_generated_disabled():
                 config = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         return None, "the generated config.toml is not valid TOML (%s)" % exc
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return None, common.failure_detail(
             exc, "the per-run config could not be generated")
     raw_tools = config.get("tools")
