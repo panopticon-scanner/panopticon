@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
+  The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
+  as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
+  exposes `colliding_ids`, and the seed drops those names too.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
