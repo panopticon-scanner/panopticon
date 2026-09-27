@@ -34,7 +34,8 @@ re-exported. `coverage`/`requests` and `persist`/`requests` import each other (`
 no longer do: `review` reaches the tool round through `verify_tools`, which imports neither); that
 is safe only because of the module-attribute rule, and `tests/test_layout.py` rule 6 proves every
 module still imports standalone. Tests mirror the package in `tests/phases/test_<module>.py`, with
-`tests/test_driver.py` keeping `run()`, the CLI and the end-to-end loops.
+`tests/test_driver.py` keeping the CLI contract; entry and integration tests live in
+`tests/test_driver_entry.py` and `tests/test_driver_*.py`.
 
 `skill/scripts/host_probes.py` is the host-posture registry and nothing else: `PROBE_IDS`,
 `PROBE_CAPABILITY`, the id→runner table `run_probes` walks, and `capabilities_of`. The probes live
