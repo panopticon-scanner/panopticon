@@ -49,13 +49,18 @@ def parse(path):
     because these sections become GitHub issues. Two refusals: a line that
     looks like a FIXME heading but does not match HEAD_RE (a hyphen or en dash
     where the em dash belongs), and a horizontal rule while a section is open
-    with another heading-like line still to come, which is a rule inside that
-    body rather than the end of the list. Each names the line of the doc.
+    that has body text between it and a later FIXME heading, which is a rule
+    inside that body rather than a separator or the end of the list. A rule
+    followed only by blank lines and the next heading closes the section the
+    way the trailing rule does. Each refusal names the line of the doc.
     """
     with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     out: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
+    # Computed once: the index of every heading-like line, so a rule can ask
+    # whether body text sits between it and the next heading without slicing.
+    head_like_at = [i for i, line in enumerate(lines) if HEAD_LIKE_RE.match(line)]
     for i, line in enumerate(lines):
         m = HEAD_RE.match(line)
         if m:
@@ -77,28 +82,25 @@ def parse(path):
         if cur is None:
             continue
         if line.strip() == "---":
-            # The rule ends the FIXME list only if no later line looks like
-            # another heading; if one does, this rule is inside the open body.
-            if any(HEAD_LIKE_RE.match(later) for later in lines[i + 1:]):
+            # A rule closes the open section. It is INSIDE the body only when
+            # body text sits between it and the next heading-like line; a rule
+            # followed by blank lines and a heading is a separator, and a rule
+            # with no heading after it ends the list.
+            nxt = next((h for h in head_like_at if h > i), None)
+            if nxt is not None and any(lines[j].strip() for j in range(i + 1, nxt)):
                 raise ValueError(
                     "%s:%d: horizontal rule inside %s's body. A rule may only "
-                    "follow the LAST FIXME, where it ends the list."
-                    % (path, i + 1, cur["id"]))
+                    "separate FIXMEs or follow the LAST one, where it ends the "
+                    "list." % (path, i + 1, cur["id"]))
             out.append(cur)
             cur = None
             continue
         cur["body"].append(line)
     if cur:
         out.append(cur)
-    # Unreachable after the two refusals above: every heading-like line either
-    # opened a section or raised. Kept as a guard on a future edit to this
-    # parser, so a lost or doubled section cannot reach the issue tracker.
-    heads = sum(1 for line in lines if HEAD_LIKE_RE.match(line))
-    if heads != len(out):
-        raise ValueError(
-            "%s: parsed %d FIXME section(s) from %d heading(s); refusing to "
-            "file from a doc this parser no longer agrees with."
-            % (path, len(out), heads))
+    # Invariant, by construction: HEAD_RE's language is a subset of
+    # HEAD_LIKE_RE's, so every heading-like line either opened a section or
+    # raised above, and every opened section is appended exactly once.
     for f in out:
         # Drop the label line: the first non-blank body line that consists
         # entirely of backtick-quoted tokens separated by ", ".

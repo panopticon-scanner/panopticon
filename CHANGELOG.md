@@ -15,13 +15,13 @@ evidence exposed.
   could not read became wrong issues. A second regex, `HEAD_LIKE_RE` ("looks like a FIXME
   heading"), now makes the disagreement loud: a line it matches while `HEAD_RE` does not raises
   `ValueError` naming the line of the doc, its text, and the required `## FIXME-<n> — <title>`
-  form. A rule while a section is open raises only when a later line also looks like a heading,
-  which is what makes that rule INSIDE the body; the trailing rule that ends the list -- the
-  documented behaviour -- still stops the parse there and leaves the 'Already fixed' commentary
-  unfiled. A post-loop count (heading-like lines == sections returned) is unreachable after those
-  two and exists so a future parser edit cannot go back to losing or doubling a section in silence.
-  `main` parses before it loads the ledger or reads the `gh` environment, so a refusal precedes
-  every GitHub call, and no doc under `docs/` or `skill/docs/` mentions this script.
+  form. A rule while a section is open raises only when body text sits between it and the next
+  heading-like line, which is what makes that rule INSIDE the body; a rule followed by blank lines
+  and the next heading is a separator and closes the section, and the trailing rule that ends the
+  list -- the documented behaviour -- still stops the parse there and leaves the 'Already fixed'
+  commentary unfiled. `main` parses before it loads the ledger or reads the `gh` environment, so a
+  refusal precedes every GitHub call (now pinned by a test), and no doc under `docs/` or
+  `skill/docs/` mentions this script.
 - **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
   `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
   finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published

@@ -41,10 +41,16 @@ Commentary that must not be filed.
 # requires, and a horizontal rule inside a body with a FIXME still to come.
 HYPHEN_HEAD = "## FIXME-3 - Ledger key collides"
 EN_DASH_HEAD = "## FIXME-3 – Ledger key collides"
+assert FIXME_DOC.count("---\n") == 1  # the edits below splice at the one rule
 HYPHEN_HEAD_DOC = FIXME_DOC.replace(
-    "---\n", "%s\n`bug`\n\nA third defect.\n\n---\n" % HYPHEN_HEAD)
-EN_DASH_HEAD_DOC = HYPHEN_HEAD_DOC.replace(HYPHEN_HEAD, EN_DASH_HEAD)
-INNER_RULE_DOC = FIXME_DOC.replace("Second paragraph.", "---\n\nSecond paragraph.")
+    "---\n", "%s\n`bug`\n\nA third defect.\n\n---\n" % HYPHEN_HEAD, 1)
+EN_DASH_HEAD_DOC = HYPHEN_HEAD_DOC.replace(HYPHEN_HEAD, EN_DASH_HEAD, 1)
+INNER_RULE_DOC = FIXME_DOC.replace("Second paragraph.", "---\n\nSecond paragraph.", 1)
+# A rule used as a SEPARATOR between two FIXMEs is ordinary markdown: nothing
+# but blank lines sits between the rule and the next heading, so it closes the
+# section exactly as the trailing rule does.
+SEPARATOR_DOC = FIXME_DOC.replace(
+    "Second paragraph.\n\n## FIXME-2", "Second paragraph.\n\n---\n\n## FIXME-2", 1)
 
 
 class TestParse(unittest.TestCase):
@@ -79,6 +85,13 @@ class TestParse(unittest.TestCase):
                 self.assertIn("FIXME-3", message)
                 self.assertIn(":%d:" % (doc.splitlines().index(head) + 1), message)
                 self.assertIn("—", message)  # the required separator is named
+
+    def test_a_rule_between_two_fixmes_is_a_separator_not_a_refusal(self):
+        fixmes = file_fixmes.parse(self._doc(SEPARATOR_DOC))
+        self.assertEqual([f["id"] for f in fixmes], ["FIXME-1", "FIXME-2"])
+        self.assertIn("Second paragraph.", fixmes[0]["body"])
+        self.assertIn("Chunk names reshuffle", fixmes[1]["body"])
+        self.assertNotIn("Already fixed", " ".join(f["body"] for f in fixmes))
 
     def test_refuses_a_horizontal_rule_inside_a_body(self):
         # A rule with a FIXME still to come is inside a body, not the end of
@@ -159,6 +172,24 @@ def test_main_rejects_malformed_ledger_before_github_calls(tmp_path):
     gh_env.assert_not_called()
     create.assert_not_called()
     assert ledger.read_text(encoding="utf-8") == '{"schema_version": 2, "entries": []}'
+
+
+def test_main_refuses_an_unparseable_doc_before_github_calls(tmp_path):
+    # The refusal is only safe because parse runs before gh_env/create; pin it.
+    doc = tmp_path / "fixmes.md"
+    doc.write_text(HYPHEN_HEAD_DOC, encoding="utf-8")
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text("{}", encoding="utf-8")
+    with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
+            mock.patch.object(file_fixmes.file_issues.sys, "argv",
+                              ["file_fixmes.py", "--doc", str(doc)]), \
+            mock.patch.object(file_fixmes.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_fixmes, "create", return_value="url") as create:
+        with pytest.raises(ValueError):
+            file_fixmes.main()
+    gh_env.assert_not_called()
+    create.assert_not_called()
+    assert ledger.read_text(encoding="utf-8") == "{}"
 
 
 def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
