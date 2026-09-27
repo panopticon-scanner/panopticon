@@ -278,9 +278,12 @@ class FlatImportModeTest(unittest.TestCase):
     """The modules that carry a flat-import fallback still import flat.
 
     #1639 P15 fix round 3, R2-5. `skill/scripts` is also on sys.path in
-    several live paths (`setup_flow` imports `plan_contract`, `discovery`,
-    `grouping_engine`, `coverage_model` flat; `dispatch` imports
-    `model_resolver` flat), and seven modules carry `try: from scripts.x import
+    several live paths (`discovery` imports `diff_map`, `plan_contract` and
+    `repo_config` flat; `setup_proposal` imports `coverage_model` and
+    `groups_schema` flat -- #1766 retired `setup_flow`'s six flat imports,
+    `dispatch`'s `model_resolver` and `grouping_engine`'s three, and
+    tests/test_module_identity.py censuses what is left), and seven modules
+    carry `try: from scripts.x import
     ... except ModuleNotFoundError: from x import ...` for it. Round 2 added a
     package-qualified import to `evidence` and `x0x_report` with no fallback,
     which narrowed the mode for four modules at once -- silently, because

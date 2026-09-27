@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **No module is loaded twice, and the `sys.path` bootstrap gets a gate (#1766; ARC-188610019,
+  ARC-2452079063, ARC-3214704952, ARC-11100703).** A driver-shaped process built two module
+  objects from one file for NINE modules — `config_schema`, `coverage_model`, `diff_map`,
+  `discovery`, `grouping_engine`, `groups_schema`, `model_resolver`, `plan_contract` and
+  `repo_config` — each copy with its own module state and its own patch targets, so
+  `dispatch.registration_model` ran on a `model_resolver` whose profile cache
+  `mock.patch.object(scripts.model_resolver, …)` could not reach. `dispatch.py`,
+  `setup_flow.py` and `grouping_engine.py` now import those siblings from the package, which
+  retires four of the nine; the five that remain are the flat-import mode's own
+  (`discovery.py` and `setup_proposal.py` must still import with only `skill/scripts` on the
+  path) and are named, with their owner, in the new guard. `synth/report.py`'s unreachable
+  `except ModuleNotFoundError: from _version import __version__` arm is gone.
+  `tests/test_module_identity.py` pins all four halves: the census, an enumerated list of the
+  `sys.path` bootstrap sites under `skill/scripts/` and `scripts/` (a new one fails, and so does
+  one that disappears), the two `scripts` portions being name-disjoint, and no import fallback in
+  a package module. `tests/test_phases_child.py` pins the child PYTHONPATH contract by what a
+  child can import rather than by the list of roots. Consolidation continues in #1516.
 - **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
   The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
   as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now

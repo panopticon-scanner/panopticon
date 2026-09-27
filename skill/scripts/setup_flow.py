@@ -20,12 +20,12 @@ import sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import plan_contract  # noqa: E402
-import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
-import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
-import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
-import repo_config  # noqa: E402  (#1681: the one place the config names live)
-import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
+from scripts import plan_contract  # noqa: E402
+from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
+from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
+from scripts import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
+from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
+from scripts import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)

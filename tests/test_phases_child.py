@@ -56,7 +56,42 @@ class _FakeProc:
         return 0
 
 
+# #1766 (ARC-1825871623): the three import SHAPES a phase child uses, one per
+# root `_child_env` provides -- the `scripts.*` namespace package under skill/,
+# a bare skill/scripts module, and a bare repo-root scripts/ module.
+_THREE_ROOT_IMPORTS = ("import scripts.evidence\n"
+                       "import evidence\n"
+                       "import file_issues\n"
+                       "print('three roots')\n")
+
+
 class TestChildPythonStartupEnvironment(_ChildCase):
+    def test_a_child_reaches_every_import_root_it_is_promised(self):
+        """`_child_env`'s docstring says PYTHONPATH must mirror
+        `tests/conftest.py` exactly, because the children import all three
+        shapes. Pinned by what a child can IMPORT rather than by the list of
+        roots: conftest can gain, lose or reorder a root on its own, and the
+        contract that has to survive that is the three shapes resolving."""
+        proc = self._child(_THREE_ROOT_IMPORTS)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "three roots\n")
+
+    def test_every_root_on_the_child_path_is_load_bearing(self):
+        """Vacuity guard for the pin above: with any one root removed, one of
+        the three imports fails. Order-independent on purpose -- it asserts that
+        each root carries something, not which root is where."""
+        full = child._child_env()
+        roots = full["PYTHONPATH"].split(os.pathsep)
+        for dropped in roots:
+            partial = dict(full)
+            partial["PYTHONPATH"] = os.pathsep.join(
+                root for root in roots if root != dropped)
+            with self.subTest(dropped=dropped):
+                with mock.patch.object(child, "_child_env", return_value=partial):
+                    proc = self._child(_THREE_ROOT_IMPORTS)
+                self.assertNotEqual(proc.returncode, 0, proc.stdout)
+                self.assertIn("ModuleNotFoundError", proc.stderr)
+
     def test_target_sitecustomize_cannot_run_from_inherited_pythonpath(self):
         for pythonpath in (".", self.root):
             with self.subTest(pythonpath=pythonpath):

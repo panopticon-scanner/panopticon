@@ -15,10 +15,23 @@ import os
 import re
 import sys
 
+# #5.0-01, the bootstrap driver.py carries and for the same reason: this module
+# is a documented entrypoint run by path (`python3 skill/scripts/dispatch.py
+# --emit-host-agents <host>`, the remedy several readiness messages print), so
+# the package roots are not on sys.path and the `from scripts import ...` lines
+# below would raise ModuleNotFoundError. Same two roots _child_env() puts on
+# PYTHONPATH for subprocesses. Idempotent under pytest, whose conftest already
+# provides them. `skill/` is the root every import here needs; the flat
+# `skill/scripts` root is kept because dropping a root from an entrypoint is
+# #1516's call, and tests/test_module_identity.py gates the site either way.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))         # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
-import model_resolver
+# #1766 (ARC-188610019): package-qualified, so `registration_model` runs on the
+# SAME model_resolver every other importer holds -- one profile cache, one patch
+# target. The `from scripts import ...` line just below already requires
+# `scripts` to resolve, and the bootstrap above guarantees it.
+from scripts import model_resolver
 
 from scripts import claim_scope, codex_read_tools, hosts, toml_values
 
