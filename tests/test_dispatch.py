@@ -771,8 +771,8 @@ class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
                     # comments are the launch header written before them.
                     emitted = [ln for ln in text.splitlines() if not ln.startswith("#")]
                     self.assertEqual(emitted, _legacy_toml_lines(parsed))
-                    self.assertEqual([ln.split(" = ")[0] for ln in emitted][:6],
-                                     self.LEADING_KEYS)
+                    keys = [ln.split(" = ")[0] for ln in emitted]
+                    self.assertEqual(keys[:len(self.LEADING_KEYS)], self.LEADING_KEYS)
                     # Re-emitting the parsed document is only a faithful oracle
                     # if each value's TYPE survived the round trip, so pin one
                     # of every shape the policy carries.
