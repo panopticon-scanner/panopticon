@@ -51,3 +51,15 @@ host CLI, so it is the one that carries a `DEFAULT_RUNNER`; `tests/conftest.py`'
 swaps it for a refusal and `tests/test_host_launch_guard.py` finds the seam by AST walk, so a new
 spawn in any module turns that test red until it has its own. Tests mirror the package in
 `tests/probes/test_<module>.py`, with `tests/test_host_probes.py` keeping the registry.
+
+The 700-line ceiling is not only the packages'. `tests/test_flat_module_ceiling.py` applies rule 5's
+`LINE_CEILING` to every `*.py` directly under `skill/scripts/`, under the repo-root `scripts`
+directory and under the `tools` adapter package too — the entry scripts, the flat modules they
+share, the repo-root CLIs and the scanner adapters — as a SHRINK-ONLY allowlist: its `PENDING` map
+pins each module that was already over the ceiling at the count it had, a pinned module may only get
+smaller (a shrink lowers the pin to the new count in the same change), and one that reaches the
+ceiling loses its entry. A number there is never raised; a module that needs more room gets split.
+So the allowlist is the list of splits owed (tracked in #1762/#1763), and it starts at twenty
+modules because until #1761/#1762/#1763 the largest modules in the tree were the unratcheted ones —
+`run_tools.py` grew by 80% in the six days after run-14 ARC-2609514778 was written, and nothing
+pushed back.
