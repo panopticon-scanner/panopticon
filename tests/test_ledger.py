@@ -20,7 +20,7 @@ import scripts.money as money
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
 import scripts.synth.cost as cost_mod
-from tests.test_orchestrate import LoopCase
+from tests.orchestrate_helpers import LoopCase
 
 
 class TestLedgerMoney(LoopCase):
