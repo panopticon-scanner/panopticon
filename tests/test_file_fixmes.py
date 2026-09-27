@@ -38,7 +38,8 @@ Commentary that must not be filed.
 
 # Hostile variants, built by editing the doc above rather than by adding a
 # second fixture: a heading whose separator is not the em dash HEAD_RE
-# requires, and a horizontal rule inside a body with a FIXME still to come.
+# requires, and a horizontal rule inside a body (body text between it and
+# the next FIXME heading).
 HYPHEN_HEAD = "## FIXME-3 - Ledger key collides"
 EN_DASH_HEAD = "## FIXME-3 – Ledger key collides"
 assert FIXME_DOC.count("---\n") == 1  # the edits below splice at the one rule
@@ -94,8 +95,8 @@ class TestParse(unittest.TestCase):
         self.assertNotIn("Already fixed", " ".join(f["body"] for f in fixmes))
 
     def test_refuses_a_horizontal_rule_inside_a_body(self):
-        # A rule with a FIXME still to come is inside a body, not the end of
-        # the list: closing the section there dropped the rest of that body.
+        # A rule with body text between it and the next FIXME heading is inside
+        # a body, not a separator or the end of the list.
         with self.assertRaises(ValueError) as caught:
             file_fixmes.parse(self._doc(INNER_RULE_DOC))
         message = str(caught.exception)
