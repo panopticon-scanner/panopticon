@@ -712,7 +712,7 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
             body = _comment_body(a, repo_slug)
             if receipt.get("comment_pending"):
                 if not _comment_present(runner, repo_slug, n, body):
-                    raise RuntimeError("comment pending; complete exact remote reconciliation required")
+                    raise RuntimeError("comment pending; body not on the issue -- likely posted from a different repo root: resume from that checkout or reconcile the comment remotely")
                 receipt.pop("comment_pending")
                 receipt["commented"] = True
                 _save_progress(progress, progress_path)

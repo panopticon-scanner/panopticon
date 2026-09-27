@@ -87,14 +87,19 @@ class TestRepoRootFallback(unittest.TestCase):
                     OSError("git unavailable"),
                     subprocess.TimeoutExpired(["git"], 10))
         for result in failures:
-            with self.subTest(result=result), \
-                    mock.patch.object(sanitize.os, "getcwd", return_value="/fixture/work//"), \
+            # A real directory, not a fabricated one: the fallback now refuses a
+            # cwd that is not an existing directory, so the trailing-separator
+            # normalisation this pins has to be measured on one that is.
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as cwd, \
+                    mock.patch.object(sanitize.os, "getcwd",
+                                      return_value=os.path.realpath(cwd) + "//"), \
                     mock.patch.object(sanitize.subprocess, "run") as run:
                 if isinstance(result, Exception):
                     run.side_effect = result
                 else:
                     run.return_value = result
-                self.assertEqual(sanitize._detect_repo_root(), "/fixture/work/")
+                self.assertEqual(sanitize._detect_repo_root(),
+                                 os.path.realpath(cwd) + "/")
                 run.assert_called_once_with(["git", "rev-parse", "--show-toplevel"],
                                             capture_output=True, text=True, timeout=10)
 
@@ -161,9 +166,12 @@ class TestRepoRootBinding(unittest.TestCase):
                          "skill/scripts/driver.py")
 
     def test_both_detection_branches_and_an_explicit_root_are_realpathd(self):
-        """macOS route: `git rev-parse` reports the LOGICAL path, so a /tmp
-        checkout reported /tmp/... while a realpath'd location read
-        /private/tmp/... and the prefix matched nothing."""
+        """An operator can pass the LOGICAL root a shell shows them while the
+        locations carry the physical one, and the prefix would match nothing.
+        Measured on this box: `git rev-parse --show-toplevel` and `os.getcwd()`
+        both report the physical path, so the realpath is a no-op on the two
+        detection branches -- both are stubbed with a logical path here, which
+        is what keeps them defensive should a git ever report one."""
         with tempfile.TemporaryDirectory() as d:
             real = os.path.join(os.path.realpath(d), "checkout")
             os.mkdir(real)
@@ -186,6 +194,43 @@ class TestRepoRootBinding(unittest.TestCase):
                     sanitize.scrub("see /a/b.py", root=root)
                 with self.assertRaises(RuntimeError):
                     sanitize.repo_relative("/a/b.py", root=root)
+
+    def test_a_root_that_is_not_an_existing_directory_is_refused(self):
+        """A typo'd, vanished or file-shaped root is absolute and non-degenerate,
+        so the earlier checks pass it -- and then it strips nothing, which is the
+        leak this module exists to prevent, reached through the explicit door."""
+        with tempfile.TemporaryDirectory() as d:
+            a_file = os.path.join(d, "report.json")
+            with open(a_file, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            for root in (os.path.join(d, "no-such-checkout"), a_file):
+                with self.subTest(root=root):
+                    for name, call in (("scrub", lambda: sanitize.scrub(
+                                            "see /a/b.py", root=root)),
+                                       ("repo_relative", lambda: sanitize.repo_relative(
+                                            "/a/b.py", root=root))):
+                        with self.subTest(call=name):
+                            with self.assertRaises(RuntimeError) as caught:
+                                call()
+                            self.assertIn("not a directory", str(caught.exception))
+
+    def test_each_door_refuses_with_the_remedy_that_fits_it(self):
+        """A caller who passed `root=` cannot act on "pass the root explicitly",
+        so the explicit door has its own remedy; the detection branches keep
+        theirs byte-exact."""
+        with self._no_cache(), self._git_fails(), \
+                mock.patch.object(sanitize.os, "getcwd", return_value="/"):
+            with self.assertRaises(RuntimeError) as detected:
+                sanitize.repo_root()
+        self.assertEqual(
+            str(detected.exception),
+            "git rev-parse failed and the cwd is the filesystem root; run the"
+            " filer from the checkout or pass the root explicitly")
+        with self.assertRaises(RuntimeError) as explicit:
+            sanitize.scrub("see /a/b.py", root="/")
+        self.assertIn("pass an absolute path to an existing checkout",
+                      str(explicit.exception))
+        self.assertNotIn("pass the root explicitly", str(explicit.exception))
 
 
 class TestResidualAutolinks(unittest.TestCase):

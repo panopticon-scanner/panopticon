@@ -1914,3 +1914,31 @@ class TestCommentBodyIsScrubbed(unittest.TestCase):
                 [action], dry=False, runner=runner, sleep=lambda _: None,
                 progress_path=progress), (0, 0))
             self.assertEqual(len(posted), 1)
+
+    def test_a_resume_that_cannot_reproduce_the_body_names_the_repo_root(self):
+        """The posted body is root-derived, but the receipt records no root, so a
+        resume from a different checkout matches the marker (keyed on the raw
+        action) and never the body. It fails closed, which is right, but the
+        refusal has to say where to look."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        remote = ("the body a different checkout posted"
+                  "\n\n<!-- panopticon-reconcile:%s -->" % key)
+
+        def runner(argv, **kwargs):
+            self.assertNotEqual(argv[:3], ["gh", "issue", "comment"])
+            if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([{"body": remote}]))
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            reconcile_apply._save_progress(receipt, progress)
+            with self.assertRaises(RuntimeError) as caught:
+                reconcile_apply.apply([action], dry=False, runner=runner,
+                                      sleep=lambda _: None, progress_path=progress)
+        self.assertIn("pending", str(caught.exception))
+        self.assertIn("different repo root", str(caught.exception))

@@ -32,21 +32,33 @@ _REPO_ROOT_CACHE = None
 # the text, and re.escape of what is left of it makes the bare-root substitution
 # an empty-match pattern; a root from another checkout strips nothing at all.
 _ROOT_REFUSAL = "; run the filer from the checkout or pass the root explicitly"
+# A caller who already passed a root cannot act on "pass the root explicitly".
+_EXPLICIT_REFUSAL = "; pass an absolute path to an existing checkout"
+_NOT_A_DIRECTORY = "the repo root does not exist or is not a directory"
 
 
-def _normalized_root(path, cause):
+def _normalized_root(path, cause, remedy=_ROOT_REFUSAL):
     """An absolute, realpath'd root with a trailing '/', or RuntimeError.
 
-    realpath, not the path as handed over: `git rev-parse` reports the LOGICAL
-    path the checkout was reached by, so a macOS /tmp checkout reports /tmp/...
-    while a location resolved through realpath reads /private/tmp/... and the
-    prefix matched nothing. A filesystem root (`dirname(p) == p`, on any
-    platform) and a non-absolute root are refused rather than returned.
+    realpath, not the path as handed over, because an operator can pass the
+    LOGICAL root a shell shows them (/tmp/x) while locations carry the physical
+    form (/private/tmp/x) and the prefix would match nothing. Measured, not
+    assumed: on this platform `git rev-parse --show-toplevel` and `os.getcwd()`
+    BOTH report the physical path, so realpath is a no-op on the two detection
+    branches -- it normalises an explicitly passed root, and is defensive
+    should a git ever report the logical one.
+
+    Refused rather than returned: a filesystem root (`dirname(p) == p`, on any
+    platform), a non-absolute root, and a root that is not an existing
+    directory. Each one strips nothing, or mangles the text, and publishes the
+    absolute paths this module exists to remove.
     """
     given = str(path)
     real = os.path.realpath(given)
     if not os.path.isabs(given) or os.path.dirname(real) == real:
-        raise RuntimeError(cause + _ROOT_REFUSAL)
+        raise RuntimeError(cause + remedy)
+    if not os.path.isdir(real):
+        raise RuntimeError(_NOT_A_DIRECTORY + remedy)
     return real + "/"
 
 
@@ -54,8 +66,8 @@ def _detect_repo_root():
     """The checkout's absolute, realpath'd root (trailing '/'), detected live.
 
     The cwd fallback stays -- a filer is run from the checkout by SOP -- but a
-    cwd at the filesystem root is not a fallback, it is a silent text mangler,
-    so it is refused loudly instead of returned.
+    cwd at the filesystem root, or one that no longer exists, is not a fallback:
+    it is a silent text mangler, so it is refused loudly instead of returned.
     """
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],  # nosec
@@ -81,14 +93,16 @@ def _resolved_root(root):
     """`None` means the cached detection; an explicit root is normalised alike."""
     if root is None:
         return repo_root()
-    return _normalized_root(root, "the explicit repo root is not a usable checkout path")
+    return _normalized_root(root, "the explicit repo root is not a usable checkout path",
+                            _EXPLICIT_REFUSAL)
 
 
 def repo_relative(path, root=None):
     """Strip the repo-root prefix so a location is portable.
 
-    `root` binds the prefix explicitly; `None` keeps the cached detection, so
-    no existing filer has to change the way it calls this.
+    `root` binds the prefix explicitly and REPLACES the detected root rather
+    than adding to it -- only the root passed is stripped. `None` keeps the
+    cached detection, so no existing filer has to change the way it calls this.
     """
     prefix = _resolved_root(root)
     p = str(path or "")
@@ -103,7 +117,9 @@ def scrub(text, root=None):
     it verbatim). Both are unfixable once posted, so both are handled here.
 
     `root` binds the prefix a caller already knows -- a filer reading a report
-    from another checkout -- instead of inheriting whatever the cwd detects;
+    from another checkout -- instead of inheriting whatever the cwd detects. It
+    REPLACES the detected root rather than adding to it: only the root passed
+    is stripped, so text that mixes two checkouts' paths needs two passes.
     `None` keeps the cached detection.
     """
     prefix = _resolved_root(root)
