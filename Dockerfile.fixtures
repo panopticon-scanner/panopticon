@@ -15,8 +15,8 @@ FROM panopticon-tools:latest
 #
 # The RUNTIME user is the caller's, and CI states it (ARC-2930403871, #1771):
 # both jobs there pass `--user scanner`, so the probes run as the user every
-# production scan runs as (`Dockerfile:486` `useradd -m -u 1000 scanner`,
-# `Dockerfile:506` `USER scanner`), and each asserts `id -u` inside the
+# production scan runs as (the tools image's `useradd -m -u 1000 scanner` and
+# its closing `USER scanner`), and each asserts `id -u` inside the
 # container before running a probe. Without that, the harness proved the
 # adapters at a privilege production never has, and a root-only regression --
 # the #1877 class, a tool refusing its input under the real uid -- passed the
@@ -26,8 +26,8 @@ FROM panopticon-tools:latest
 # to the flag: `ENV NUGET_PACKAGES=/opt/nuget-packages` moves the .NET global
 # package folder out of root's 0700 HOME before the two restores write its
 # absolute path into `project.assets.json`, `chmod -R a+rX` on it afterwards
-# opens it, and `chown -R scanner:scanner /home/scanner/.cargo` hands
-# production's own cargo home back after this build fills it as root. What is
+# opens it, and a chown of the cargo subtrees this build dirties hands those
+# back to `scanner`, whose home they are. What is
 # still root-only is /root/.m2 (WebGoat's maven repo) and /root/.dotnet (a
 # first-run sentinel): no scan reads either -- the jars a source-tree scan looks
 # at are copied into `WebGoat/target/dependency` by the block that says so, and
@@ -35,12 +35,15 @@ FROM panopticon-tools:latest
 # /root in an image that runs a hostile MSBuild target is the wrong direction.
 #
 # A runtime `USER scanner` at the end of this file is therefore no longer
-# blocked by a cache, but it is still not here: it is a separate decision that
-# changes the LOCAL harness too (`skill/scripts/run_fixture_tests.py` passes no
-# `--user`, so it would silently switch posture), and nothing in this file can
-# prove the two remaining caches unread without running the image. The CI lanes
-# state the runtime user on the command line and assert it inside the container,
-# which is the version of this that fails loudly.
+# blocked by a cache. It is still not here because it is the wrong half of the
+# remaining work, not because the remaining work is unwanted: the local harness
+# (`skill/scripts/run_fixture_tests.py`) also runs this image with no `--user`,
+# and it SHOULD run as the scan user -- that is the point of ARC-2930403871, and
+# it is tracked on #1771. What it needs is the loud version of this posture, the
+# flag plus the same `id -u` assertion the CI lanes carry, rather than a baked
+# default that would change the uid with nothing on the command line to say so.
+# The other half of the argument stands on its own: nothing in this file can
+# prove /root/.m2 and /root/.dotnet unread without running the image.
 # hadolint ignore=DL3002
 USER root
 
@@ -136,15 +139,31 @@ RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
-# ...and give `scanner` its CARGO_HOME back (ARC-2930403871). `CARGO_HOME` is
-# inherited from the base image as /home/scanner/.cargo (`Dockerfile:505`),
-# which `Dockerfile:488-489` creates and chowns FOR scanner, so the build above
-# just filled production's own writable cargo home with root-owned registry
-# files. `cargo-audit --no-fetch` reads the lockfile and the a+rX advisory DB
-# and needs none of them, so this is the invariant rather than a live break --
-# and restoring it is one line, whereas pointing CARGO_HOME elsewhere would
-# move `advisory-db` out from under `cargo-audit` and degrade it silently.
-RUN chown -R scanner:scanner /home/scanner/.cargo
+# ...and give `scanner` back the parts of its CARGO_HOME this build dirtied
+# (ARC-2930403871). `CARGO_HOME` is inherited from the base image as
+# /home/scanner/.cargo (its `ENV CARGO_HOME=/home/scanner/.cargo`), which the
+# base creates and chowns FOR scanner (`mkdir -p /home/scanner/.cargo` then
+# `chown scanner:scanner`), so the build above filled production's own writable
+# cargo home with root-owned files: the downloaded crate cache and index under
+# `registry/`, the `git/` checkouts if a dependency is a git one, and the
+# `.package-cache` lock cargo takes while it works. Those, by name, and NOT the
+# whole directory: `advisory-db` beside them is the RustSec clone the base image
+# deliberately leaves read-only (`chmod -R a+rX /home/scanner/.cargo`), and this
+# is the image that executes a hostile MSBuild target -- handing it a writable
+# advisory database buys nothing. `cargo-audit --no-fetch` reads the lockfile
+# and that read-only DB, so this is the invariant rather than a live break, and
+# restoring it beats pointing CARGO_HOME elsewhere, which would move
+# `advisory-db` out from under `cargo-audit` and degrade it silently.
+#
+# `if [ -e ]` per entry rather than one chown: `git/` exists only when a
+# dependency is fetched from git, and naming an absent path would fail the build
+# for the one cache shape that is allowed not to appear. A chown that FAILS
+# still fails the build -- it is inside the `if`, not guarded with `|| true`.
+RUN for d in registry git .package-cache .global-cache; do \
+      if [ -e "/home/scanner/.cargo/$d" ]; then \
+        chown -R scanner:scanner "/home/scanner/.cargo/$d"; \
+      fi; \
+    done
 
 # The hostile C# fixture (#1655). roslyn-secguard refuses a target with no NuGet
 # restore output (`project.assets.json`): a C# project that has not been restored
@@ -169,13 +188,24 @@ RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj
 
 # Both restores are done: make what they cached readable to the user the scans
 # run as (ARC-2930403871). `a+rX` and not a chown, for the same reason the base
-# image uses it on `/opt/semgrep-rules`, `/opt/osv-db` and the advisory DBs
-# (`Dockerfile:403`, `:412`, `:421`, `:480`): the scan only READS packages.
-# `/opt/odc-data` is the counter-example the base image documents
-# (`Dockerfile:482-485`) -- dependency-check opens its H2 file read-write, so
-# that one is chowned. If NuGet turns out to need a write inside the global
-# folder, this line becomes the same chown.
-RUN chmod -R a+rX /opt/nuget-packages
+# image uses it on its own baked assets (`chmod -R a+rX /opt/semgrep-rules`,
+# `/opt/osv-db`, `/opt/trivy-cache`, `/home/scanner/.cargo`,
+# `/root/.local/share/ruby-advisory-db`): the scan only READS packages.
+# `/opt/odc-data` is the counter-example the base image documents beside its
+# `chown -R scanner:scanner /opt/odc-data` -- dependency-check opens its H2 file
+# read-write, and H2 BLOCKS rather than failing when it cannot lock -- so that
+# one is chowned. If NuGet turns out to need a write inside the global folder,
+# this line becomes the same chown.
+#
+# `mkdir -p` first, because the directory is a side effect of a restore that is
+# allowed to fail: AspGoat's is wrapped `|| echo "AspGoat build skipped"` BY
+# DESIGN (a flaky public feed must not fail the image), and evil.csproj declares
+# no `PackageReference` at all, so neither restore is a dependable creator of
+# the folder. Without the `mkdir`, a NuGet hiccup during the AspGoat restore
+# would stop failing one C# probe loudly in `integration` and start failing the
+# fixtures-image BUILD in both jobs, including `containment`, which has nothing
+# to do with C# packages.
+RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages
 
 # Note: skill/scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.

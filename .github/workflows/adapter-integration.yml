@@ -35,8 +35,8 @@ jobs:
     env:
       IMAGE: ghcr.io/${{ github.repository }}-tools:latest
       # ARC-2930403871 (#1771). Production runs the tools image as the `scanner`
-      # user -- `Dockerfile:486` (`RUN useradd -m -u 1000 scanner`) and
-      # `Dockerfile:506` (`USER scanner`) -- and this job ran the SAME adapters
+      # user -- the tools image's `RUN useradd -m -u 1000 scanner` and its
+      # closing `USER scanner` -- and this job ran the SAME adapters
       # against the SAME tools as uid 0, because `Dockerfile.fixtures` ends on
       # `USER root` for its build and nothing dropped that privilege at run
       # time. So the one gate where the adapters meet real tools and real
@@ -51,18 +51,22 @@ jobs:
       # nothing about the gid, so the name is the only spelling that takes
       # production's own primary group rather than a guessed one. The uid is
       # pinned all the same and travels in as `EXPECTED_UID`, so a uid change
-      # in `Dockerfile:486` reddens this job instead of drifting past it.
+      # in that `useradd` reddens this job instead of drifting past it:
+      # `tests/test_workflow_pins.py` reads the number out of the `Dockerfile`
+      # and compares it to both the pin and this value.
       SCANNER_USER: scanner
       SCANNER_UID: "1000"
       # The HOME `USER scanner` gives production, pinned rather than left to
       # docker's own passwd lookup under `--user`. Deliberately NOT an empty
       # scratch dir: bundler-audit reads the REFRESHED ruby advisory DB from
-      # `$HOME/.local/share/ruby-advisory-db` (`Dockerfile:490-492`), so an
-      # empty HOME would silently fall back to the gem's stale vendored copy --
-      # a quieter version of the defect this flag exists to remove. It IS
-      # writable by uid 1000 (`Dockerfile:487` chowns it, and the build-time
-      # gate `skill/scripts/smoke_adapters.py` requires `$HOME` writable), and
-      # every adapter's own scratch is an `mkdtemp` under the container's
+      # `$HOME/.local/share/ruby-advisory-db`, which the tools image populates
+      # with the refreshed copy (`cp -r /root/.local/share/ruby-advisory-db
+      # /home/scanner/.local/share/`), so an empty HOME would silently fall back
+      # to the gem's stale vendored snapshot -- a quieter version of the defect
+      # this flag exists to remove. It IS writable by uid 1000 (the tools image
+      # does `chown scanner:scanner /home/scanner`, and its build-time gate
+      # `skill/scripts/smoke_adapters.py` REQUIRES `$HOME` writable), and every
+      # adapter's own scratch is an `mkdtemp` under the container's
       # world-writable /tmp, exactly as in production.
       SCANNER_HOME: /home/scanner
     steps:
@@ -180,21 +184,13 @@ jobs:
       # carries the reasoning (ARC-2930403871, #1771), and here for one more:
       # this is the lane that runs an adapter on a HOSTILE project, so the
       # privilege the hostile build executes with is part of the answer the job
-      # reports. Repeated per job rather than hoisted to the workflow: a job
-      # that runs the fixtures image without stating its runtime user is the
-      # defect, and that has to be visible where the job is read.
+      # reports. Kept per job rather than hoisted to the workflow `env:`, which
+      # would resolve identically -- the pin merges workflow-level `env:` before
+      # the job's. It is a readability preference, not a constraint: a job that
+      # runs the fixtures image states its runtime user where the job is read.
       SCANNER_USER: scanner
       SCANNER_UID: "1000"
-      # The HOME `USER scanner` gives production, pinned rather than left to
-      # docker's own passwd lookup under `--user`. Deliberately NOT an empty
-      # scratch dir: bundler-audit reads the REFRESHED ruby advisory DB from
-      # `$HOME/.local/share/ruby-advisory-db` (`Dockerfile:490-492`), so an
-      # empty HOME would silently fall back to the gem's stale vendored copy --
-      # a quieter version of the defect this flag exists to remove. It IS
-      # writable by uid 1000 (`Dockerfile:487` chowns it, and the build-time
-      # gate `skill/scripts/smoke_adapters.py` requires `$HOME` writable), and
-      # every adapter's own scratch is an `mkdtemp` under the container's
-      # world-writable /tmp, exactly as in production.
+      # Same HOME, same reason as the `integration` job above.
       SCANNER_HOME: /home/scanner
     steps:
       - name: Checkout

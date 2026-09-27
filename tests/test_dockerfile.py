@@ -640,6 +640,77 @@ class TestDockerBuildPrWorkflow(unittest.TestCase):
         self.assertIn("requirements-fixtures.txt", paths)
 
 
+# --- ARC-2930403871 (#1771): the .NET package cache a non-root scan can read --
+# The fix for that finding is an ORDERING property of this file, and nothing
+# pinned it. `ENV NUGET_PACKAGES=/opt/nuget-packages` has to precede every
+# `dotnet restore`, because a restore bakes the ABSOLUTE path of the global
+# packages folder into the project's `obj/project.assets.json`; and the line that
+# opens that folder to the scan user has to follow the last restore, because the
+# restore is what fills it. Move the ENV three lines down and the image still
+# builds: the path baked in is /root/.nuget/packages again, /root is mode 0700,
+# and the C# probes go back to reporting an empty SCS result -- which
+# `roslyn_secguard` cannot tell from a clean one. That is the #1655 failure shape
+# the bake exists to prevent, reached through the uid instead of through a
+# skipped restore, and the suite would not have said a word.
+NUGET_CACHE = "/opt/nuget-packages"
+
+
+def nuget_cache_defects(text):
+    """Why a scan running as `scanner` could not read this image's .NET packages.
+
+    Comments are dropped BEFORE continuations are folded, the way
+    `test_dockerfile_closures.dockerfile_commands` does it and for the same
+    reason: this file's prose quotes the very commands the rule reads, so a
+    reader that kept it would grade the explanation instead of the build.
+    """
+    body = "\n".join(ln for ln in text.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    env, restores, opens = [], [], []
+    for order, (lineno, joined) in enumerate(_logical_lines(body)):
+        if joined.startswith("ENV") and "NUGET_PACKAGES=" in joined:
+            env.append((order, lineno, joined))
+        elif joined.startswith("RUN") and "dotnet restore" in joined:
+            restores.append((order, lineno, joined))
+        elif (joined.startswith("RUN") and NUGET_CACHE in joined
+                and ("chmod" in joined or "chown" in joined)):
+            opens.append((order, lineno, joined))
+    defects = []
+    if not env:
+        defects.append(
+            "no `ENV NUGET_PACKAGES=...`: the .NET restores below bake "
+            "/root/.nuget/packages into project.assets.json, and /root is not "
+            "readable by the uid the scans run as (ARC-2930403871, #1771)")
+    for order, lineno, joined in env:
+        value = joined.split("NUGET_PACKAGES=", 1)[1].split()[0].strip('"')
+        if value.startswith("/root"):
+            defects.append("line %d points NUGET_PACKAGES at %s, inside root's "
+                           "home" % (lineno, value))
+        later = [n for n, _l, _j in restores if n < order]
+        if later:
+            defects.append(
+                "the `ENV NUGET_PACKAGES` on line %d comes AFTER %d `dotnet "
+                "restore` line(s); a restore that ran before it baked the old "
+                "absolute path into project.assets.json and the scan user "
+                "cannot read it (ARC-2930403871, #1771)" % (lineno, len(later)))
+    if not restores:
+        defects.append("no `dotnet restore` left in this file; #1655's bake is "
+                       "gone and the C# fixtures are inapplicable, not unreadable")
+    if not opens:
+        defects.append(
+            "nothing opens %s to the scan user: the restores run as root, so "
+            "without a `chmod`/`chown` naming it the packages are root-only "
+            "(ARC-2930403871, #1771)" % NUGET_CACHE)
+    for order, lineno, _joined in opens:
+        after = [n for n, _l, _j in restores if n > order]
+        if after:
+            defects.append(
+                "the line that opens %s (line %d) comes BEFORE %d `dotnet "
+                "restore` line(s), so what they cache afterwards keeps the "
+                "root-only mode it was written with" % (NUGET_CACHE, lineno,
+                                                        len(after)))
+    return defects
+
+
 class TestDockerfileFixtures(unittest.TestCase):
     def test_bundles_fixture_clone_refs_and_rust_build(self):
         text = _read_dockerfile_fixtures()
@@ -714,6 +785,67 @@ class TestDockerfileFixtures(unittest.TestCase):
             self.assertIsNotNone(m, "%s not found" % arg)
             self.assertRegex(m.group(1), r"^[0-9a-f]{40}$",
                              "%s must be a full 40-hex commit SHA, not a ref" % arg)
+
+    # --- ARC-2930403871 (#1771) -------------------------------------------
+    def test_the_nuget_cache_is_out_of_roots_home_and_opened_after_the_restores(self):
+        defects = nuget_cache_defects(_read_dockerfile_fixtures())
+        self.assertEqual([], defects, "\n".join(defects))
+
+    def test_the_rule_reads_this_file_rather_than_its_prose(self):
+        # Guards the guard: the comments above the fix QUOTE
+        # `ENV NUGET_PACKAGES=...` and `chmod -R a+rX /opt/nuget-packages`, so a
+        # reader that graded the prose would pass on a file whose instructions
+        # said neither. Strip the instructions, keep the prose: defects.
+        text = _read_dockerfile_fixtures()
+        prose_only = "\n".join(ln for ln in text.splitlines()
+                               if ln.lstrip().startswith("#"))
+        self.assertNotEqual([], nuget_cache_defects(prose_only))
+
+    def test_moving_the_env_below_a_restore_is_a_defect(self):
+        # On a string copy, never on the file: this is the edit that leaves the
+        # image building green while the C# probes go back to reporting an empty
+        # result that reads as a clean one.
+        text = _read_dockerfile_fixtures()
+        env_line = "ENV NUGET_PACKAGES=/opt/nuget-packages\n"
+        self.assertIn(env_line, text)
+        restore = "RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj\n"
+        self.assertIn(restore, text)
+        moved = text.replace(env_line, "").replace(restore, restore + env_line)
+        defects = nuget_cache_defects(moved)
+        self.assertNotEqual([], defects, "the ENV below a restore passed")
+        self.assertTrue(any("AFTER" in d for d in defects), defects)
+
+    def test_dropping_the_env_is_a_defect(self):
+        text = _read_dockerfile_fixtures().replace(
+            "ENV NUGET_PACKAGES=/opt/nuget-packages\n", "")
+        defects = nuget_cache_defects(text)
+        self.assertNotEqual([], defects)
+        self.assertTrue(any("NUGET_PACKAGES" in d for d in defects), defects)
+
+    def test_pointing_the_cache_back_into_roots_home_is_a_defect(self):
+        text = _read_dockerfile_fixtures().replace(
+            "ENV NUGET_PACKAGES=/opt/nuget-packages",
+            "ENV NUGET_PACKAGES=/root/.nuget/packages")
+        self.assertNotEqual([], nuget_cache_defects(text))
+
+    def test_opening_the_cache_before_the_last_restore_is_a_defect(self):
+        text = _read_dockerfile_fixtures()
+        chmod = "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages\n"
+        self.assertIn(chmod, text)
+        aspgoat = [ln for ln in text.splitlines()
+                   if ln.startswith("RUN cd /opt/panopticon-fixtures/AspGoat")][0]
+        moved = text.replace(chmod, "").replace(aspgoat, chmod.rstrip("\n") + "\n" + aspgoat)
+        defects = nuget_cache_defects(moved)
+        self.assertNotEqual([], defects, "an open before the last restore passed")
+        self.assertTrue(any("BEFORE" in d for d in defects), defects)
+
+    def test_dropping_the_open_is_a_defect(self):
+        text = _read_dockerfile_fixtures().replace(
+            "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages\n", "")
+        defects = nuget_cache_defects(text)
+        self.assertNotEqual([], defects)
+        self.assertTrue(any("opens" in d for d in defects), defects)
+
 
 
 class TestDockerPublishWorkflow(unittest.TestCase):

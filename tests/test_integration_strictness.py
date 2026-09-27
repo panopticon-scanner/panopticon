@@ -374,12 +374,18 @@ def _strict_pytest_containers(script):
     # gate that could catch it. Read as the RAW token, like every other option
     # here -- this module evaluates nothing -- so what is pinned is that the
     # invocation takes its user from the job's `env:` block; that block's VALUE
-    # is pinned by `tests/test_workflow_pins.py` (`user_defect`), which resolves
-    # it against `Dockerfile:486`/`:506`.
+    # is pinned by `tests/test_workflow_pins.py` (`user_defect`), which reads the
+    # uid out of the `Dockerfile`'s `useradd -m -u 1000 scanner`.
+    #
+    # Either spelling, because docker accepts either and the walk above collects
+    # both: checking only the long one made `-u` a dead branch that read as
+    # supported and failed the equality instead. A SECOND `--user` still fails
+    # it -- `setdefault(...).append(...)` makes the list two long -- which is the
+    # ambiguity docker resolves by honouring the last flag.
     if (options.get("--entrypoint") == ["sh"]
             and options.get("-v") == ["$PWD:/work:ro"]
             and options.get("-w") == ["/work"]
-            and options.get("--user") == ["$SCANNER_USER"]
+            and (options.get("--user") or options.get("-u")) == ["$SCANNER_USER"]
             and set(options.get("-e", [])) == {
                 "FIXTURE_ROOT=/opt/panopticon-fixtures",
                 "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1",
@@ -492,6 +498,22 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
                     + '\n# PANOPTICON_REQUIRE_INTEGRATION=1'):
             with self.subTest(script=bad):
                 self.assertEqual(_strict_pytest_containers(bad), [])
+
+    def test_either_spelling_of_the_user_flag_satisfies_the_contract(self):
+        # docker takes `-u` and `--user` alike; the walk collects both, so the
+        # contract must accept both rather than carrying a dead branch.
+        for spelling in ("--user", "-u"):
+            with self.subTest(spelling=spelling):
+                script = self._pytest_script().replace(
+                    '--user "$SCANNER_USER"', '%s "$SCANNER_USER"' % spelling)
+                self.assertEqual(len(_strict_pytest_containers(script)), 1)
+
+    def test_a_second_user_flag_cannot_satisfy_the_contract(self):
+        # docker honours the LAST one, so two flags mean the uid depends on
+        # order -- which is not a contract.
+        script = self._pytest_script().replace(
+            '--user "$SCANNER_USER"', '--user "$SCANNER_USER" --user root')
+        self.assertEqual(_strict_pytest_containers(script), [])
 
     def test_inner_environment_changes_cannot_disable_strict_integration(self):
         script = self._pytest_script()

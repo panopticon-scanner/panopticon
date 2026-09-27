@@ -11,8 +11,8 @@ evidence exposed.
   `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
   writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
   adapters meet real tools and real fixtures proved them as uid 0 while every production scan runs
-  the tools image as `scanner` (`Dockerfile:486`, `:506`). A root-only adapter regression, the #1877
-  class, passed the only gate that could catch it. Both jobs now pass `--user scanner` with
+  the tools image as `scanner` (its `useradd -m -u 1000 scanner`, then its closing `USER scanner`).
+  A root-only adapter regression, the #1877 class, passed the only gate that could catch it. Both jobs now pass `--user scanner` with
   production's `HOME`, and each asserts `id -u` inside the container before running a probe;
   `Dockerfile.fixtures` says that build-time root is not a runtime posture and that the image is no
   longer local-only, moves the .NET package cache out of root's 0700 HOME (`NUGET_PACKAGES`, then
