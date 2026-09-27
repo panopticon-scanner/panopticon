@@ -10,9 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# `run_tools` OWNS this repo's container-launch policy -- the privilege-drop
-# flags and the resource ceilings -- and these two containers launch under it
-# too, rather than under a weaker copy of their own (#1767, ARC-3859414366).
+# `run_tools` owns the container-launch policy these two containers now launch
+# under -- its privilege-drop flags and its resource ceilings, read from it
+# rather than copied weakly into here (#1767, ARC-3859414366).
 # skill/ is not on sys.path when this file runs as a script, so put it there
 # first: the same bootstrap run_tools.py itself uses. Acyclic and stdlib-only
 # (run_tools imports no part of this module), so a module-level import costs a
@@ -151,10 +151,11 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
         'done'
     )
     # The probe stats baked paths only, but it launches under the same policy as
-    # every other container here: run_tools' flags, and a network it cannot use.
+    # every other container here: run_tools' flags, in run_tools' own order, and
+    # a network it cannot use.
     cmd = [_docker_bin(), "run", "--rm",
-           *run_tools.privilege_drop_flags(),
            *run_tools.resource_limit_flags(),
+           *run_tools.privilege_drop_flags(),
            "--network", "none",
            tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
@@ -178,8 +179,15 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
                 missing_paths.add(line.split(":", 1)[1])
     else:
         if result is not None:   # ran but rc != 0 -> also worth an operator note
-            print("check_fixtures: docker probe exited %s; treating all baked "
-                  "fixtures as missing" % result.returncode, file=sys.stderr)
+            # A ceiling the daemon REFUSES exits here too (`--cpus` above the
+            # host's CPU count is the concrete case), so quote docker's own
+            # sentence, flattened and bounded -- without it a refused flag reads
+            # as every baked fixture having gone missing.
+            why = " ".join((result.stderr or "").split())[:300]
+            print("check_fixtures: docker probe exited %s%s; treating all baked "
+                  "fixtures as missing"
+                  % (result.returncode, ": " + why if why else ""),
+                  file=sys.stderr)
         missing_paths.update(paths)
     path_to_name = {f["path"]: f["name"] for f in baked}
     present += [path_to_name[p] for p in present_paths if p in path_to_name]
@@ -197,12 +205,20 @@ def run_tests(tag: str, test: str | None = None) -> int:
     pytest_args.extend(test_paths)
     cmd = [
         _docker_bin(), "run", "--rm",
-        # This container executes the HOSTILE fixture corpus on a developer
-        # machine (evil.csproj's curl target among it), and it did so with no
-        # cap-drop, no no-new-privileges and no memory/CPU/pids ceiling until
+        # This container runs the whole adapter suite on a developer machine:
+        # the REAL scanners over live attacker-shaped inputs (a planted
+        # eslint.config.js and a shadow node_modules plugin eslint must refuse
+        # to load, a planted .gitleaks.toml rule set and a GITLEAKS_CONFIG
+        # hijack gitleaks must ignore) plus the dotnet/MSBuild and JVM
+        # toolchains over the baked goat trees. The hostile-csproj corpus is
+        # baked into the image as well, but its BUILD is opt-in
+        # (PANOPTICON_CONTAINMENT_PROBE=1, set only by the containment lane of
+        # .github/workflows/adapter-integration.yml), so evil.csproj's curl
+        # target does not fire here -- that test skips. All of that launched
+        # with no cap-drop, no no-new-privileges and no memory/CPU/pids ceiling until
         # #1767 (ARC-3859414366). The flags come from the module that owns them.
-        *run_tools.privilege_drop_flags(),
         *run_tools.resource_limit_flags(),
+        *run_tools.privilege_drop_flags(),
         # #calibration-6: scans run with NO NETWORK, so the fixture suite must
         # too -- otherwise it certifies scanners in an environment that does not
         # exist. Three broken adapters passed here for exactly that reason:
@@ -229,9 +245,22 @@ def run_tests(tag: str, test: str | None = None) -> int:
     try:
         result = subprocess.run(cmd, timeout=TEST_TIMEOUT)  # nosec B603
     except subprocess.TimeoutExpired:
-        print("fixture test run timed out after %ds; aborting" % TEST_TIMEOUT,
+        # `--cpus` only throttles, but it throttles against a pre-existing
+        # wall-clock bound, so a run that used to fit can now cross it.
+        # PANOPTICON_TOOL_CPUS retunes that ceiling or drops it.
+        print("fixture test run timed out after %ds; aborting (exit 124). "
+              "If the CPU ceiling is what slowed it, retune or drop it with "
+              "PANOPTICON_TOOL_CPUS." % TEST_TIMEOUT,
               file=sys.stderr, flush=True)
         return 124
+    if result.returncode == 137 and run_tools.CONTAINER_MEMORY:
+        # 128+SIGKILL. --memory-swap is pinned equal to --memory, so an
+        # over-ceiling allocation is killed rather than swapped: at a live
+        # ceiling this is the envelope, not an adapter regression.
+        print("fixture test run exited 137 (SIGKILL): at the --memory %s "
+              "ceiling that is the OOM killer, not an adapter failure. "
+              "Retune or drop it with PANOPTICON_TOOL_MEMORY."
+              % run_tools.CONTAINER_MEMORY, file=sys.stderr, flush=True)
     return result.returncode
 
 

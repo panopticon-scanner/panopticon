@@ -11,20 +11,27 @@ evidence exposed.
   ARC-3859414366).** `run_tools` owns that policy and its docstrings said so: cap-drop,
   no-new-privileges and the memory/CPU/pids ceilings "applied to every tool/adapter container".
   `run_fixture_tests.py` imported no part of it, so the two could not agree by construction -- and
-  the one container that executes the HOSTILE fixture corpus, on a developer machine, with
-  `evil.csproj`'s `curl` target in it, launched with none of them; the fixture-presence probe beside
-  it had no `--network none` either. The two helpers carry public names now (`privilege_drop_flags`,
+  the container that runs the whole adapter suite on a developer machine launched with none of them:
+  the real scanners over live attacker-shaped inputs (a planted `eslint.config.js` and a shadow
+  `node_modules` plugin eslint must refuse to load, a planted `.gitleaks.toml` rule set and a
+  `GITLEAKS_CONFIG` hijack gitleaks must ignore) plus the dotnet/MSBuild and JVM toolchains over the
+  baked goat trees. The `hostile-csproj` corpus is baked into that image too, but its build is
+  opt-in under `PANOPTICON_CONTAINMENT_PROBE=1`, which only the containment lane sets, so
+  `evil.csproj`'s `curl` target does not fire on this path. The fixture-presence probe beside it had
+  no `--network none` either. The two helpers carry public names now (`privilege_drop_flags`,
   `resource_limit_flags`; the underscore spellings stay identity aliases, so no call site moved) and
   the fixture runner splices both lists into both `docker run` argvs, plus `--network none` on the
   probe. Pinned as parity rather than resemblance: the flags between `run --rm` and the rest of the
   argv are exactly what `run_tools` returns, and one test retunes a ceiling inside `run_tools` and
-  watches both launches follow -- a copy passes a spot-check and then drifts. What this cannot
-  prove: Docker is out of reach in the fixing session, and the daily `adapter-integration` workflow
-  runs its own `docker run` rather than this script, so the first local `run_fixture_tests.py` is
-  the end-to-end check. The ceilings are the ones these same scanners already run under (6g memory,
-  4 CPUs, 1024 pids), and all three stay retunable through `PANOPTICON_TOOL_MEMORY` / `_CPUS` /
-  `_PIDS`, an empty value dropping that flag entirely.
-
+  watches both launches follow -- a copy passes a spot-check and then drifts. The envelope's own two
+  ways to die now name themselves instead of arriving as a bare number: the probe quotes docker's
+  refusal when the daemon rejects a ceiling, and rc 137 is reported as the memory ceiling's OOM
+  kill, rc 124 as the CPU throttle meeting `TEST_TIMEOUT`. What this cannot prove: Docker is out of
+  reach in the fixing session, and the daily `adapter-integration` workflow runs its own
+  `docker run` rather than this script, so the first local `run_fixture_tests.py` is the end-to-end
+  check. The ceilings are the ones these same scanners already run under (6g memory, 4 CPUs, 1024
+  pids), and all three stay retunable through `PANOPTICON_TOOL_MEMORY` / `_CPUS` / `_PIDS`, an empty
+  value dropping that ceiling -- which the fixtures guide now records beside the command.
 - **One spelling of the read-scope keys, and the guard hooks' read-scope copies pinned (#1767;
   ARC-1784455652, ARC-2812051140).** The read guards are three deliberate copies of one rule, and
   each of the three runs with no package on sys.path -- the hooks because a hook is invoked by
