@@ -10,6 +10,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# `run_tools` OWNS this repo's container-launch policy -- the privilege-drop
+# flags and the resource ceilings -- and these two containers launch under it
+# too, rather than under a weaker copy of their own (#1767, ARC-3859414366).
+# skill/ is not on sys.path when this file runs as a script, so put it there
+# first: the same bootstrap run_tools.py itself uses. Acyclic and stdlib-only
+# (run_tools imports no part of this module), so a module-level import costs a
+# few tens of milliseconds and keeps the coupling visible.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts import run_tools            # noqa: E402  (needs the path above)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
 MANIFEST = REPO_ROOT / "tests" / "fixtures" / "manifest.json"
@@ -140,7 +150,13 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
         'if [ -d "$p" ]; then printf "PRESENT:%s\n" "$p"; else printf "MISSING:%s\n" "$p"; fi; '
         'done'
     )
-    cmd = [_docker_bin(), "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
+    # The probe stats baked paths only, but it launches under the same policy as
+    # every other container here: run_tools' flags, and a network it cannot use.
+    cmd = [_docker_bin(), "run", "--rm",
+           *run_tools.privilege_drop_flags(),
+           *run_tools.resource_limit_flags(),
+           "--network", "none",
+           tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
     try:
@@ -181,6 +197,12 @@ def run_tests(tag: str, test: str | None = None) -> int:
     pytest_args.extend(test_paths)
     cmd = [
         _docker_bin(), "run", "--rm",
+        # This container executes the HOSTILE fixture corpus on a developer
+        # machine (evil.csproj's curl target among it), and it did so with no
+        # cap-drop, no no-new-privileges and no memory/CPU/pids ceiling until
+        # #1767 (ARC-3859414366). The flags come from the module that owns them.
+        *run_tools.privilege_drop_flags(),
+        *run_tools.resource_limit_flags(),
         # #calibration-6: scans run with NO NETWORK, so the fixture suite must
         # too -- otherwise it certifies scanners in an environment that does not
         # exist. Three broken adapters passed here for exactly that reason:

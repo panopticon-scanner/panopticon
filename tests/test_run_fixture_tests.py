@@ -369,5 +369,78 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
 
 
+class TestContainerHardeningComesFromRunTools(unittest.TestCase):
+    """#1767 ARC-3859414366: one owner for the container-launch policy.
+
+    `run_tools` says its privilege-drop flags and resource ceilings go on every
+    container this repo launches. These two launched with neither, and nothing
+    could notice the divergence because this module imported no part of
+    `run_tools` -- the probe did not even isolate the network, while the pytest
+    container executes the hostile fixture corpus on a developer machine. So the
+    flags are READ from `run_tools` here: a local copy would pass a spot-check
+    and drift on the next change to the policy. Argv only; no daemon is reached.
+    """
+
+    def _pytest_argv(self):
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(rft, "REPO_ROOT", Path(root)), \
+                mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as run:
+            rft.run_tests("fixture-image:test")
+        return run.call_args.args[0]
+
+    def _probe_argv(self):
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        probe = _Res(stdout="PRESENT:/opt/f/rust\n")
+        with mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", return_value=probe) as run:
+            rft.check_fixtures("fixture-image:test", fixtures)
+        return run.call_args.args[0]
+
+    def _both(self):
+        return (("pytest", self._pytest_argv()), ("probe", self._probe_argv()))
+
+    def test_both_containers_drop_privileges(self):
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertIn("--cap-drop=ALL", argv)
+                self.assertIn("--security-opt=no-new-privileges", argv)
+
+    def test_both_containers_carry_every_resource_ceiling(self):
+        ceilings = rft.run_tools.resource_limit_flags()
+        self.assertTrue(ceilings)          # a helper answering empty proves nothing
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                for flag in ceilings:
+                    self.assertIn(flag, argv)
+
+    def test_both_containers_isolate_the_network(self):
+        # The probe had no `--network none` at all, though it only stats baked
+        # paths; the pytest container's is #calibration-6's and stays.
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertEqual(argv[argv.index("--network") + 1], "none")
+
+    def test_the_hardening_is_run_tools_own_lists_verbatim(self):
+        # Parity, not resemblance: the flags between `run --rm` and everything
+        # else are exactly what run_tools returns, in that order.
+        expected = (rft.run_tools.privilege_drop_flags()
+                    + rft.run_tools.resource_limit_flags())
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertEqual(argv[:3], ["docker-unit-test", "run", "--rm"])
+                self.assertEqual(argv[3:3 + len(expected)], expected)
+
+    def test_a_retuned_ceiling_in_run_tools_reaches_both_containers(self):
+        # The point of importing rather than copying: an operator's env override
+        # (read by run_tools at import) changes both launches with no edit here.
+        with mock.patch.object(rft.run_tools, "CONTAINER_MEMORY", "123m"), \
+                mock.patch.object(rft.run_tools, "CONTAINER_PIDS_LIMIT", "7"):
+            for container, argv in self._both():
+                with self.subTest(container=container):
+                    self.assertEqual(argv[argv.index("--memory") + 1], "123m")
+                    self.assertEqual(argv[argv.index("--pids-limit") + 1], "7")
+
+
 if __name__ == "__main__":
     unittest.main()
