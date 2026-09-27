@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The Kimi probes report a hung doctor, a failing home writer and a malformed config (#1788;
+  COD-2149752625).** Three posture probes on `--host kimi` let an exception escape where their
+  siblings already turn it into a reported state: `_kimi_home_arms_and_validates` caught only
+  `OSError` around `kimi doctor`, so a doctor that outlives its timeout or writes output that
+  does not decode escaped as a traceback; `_kimi_hooks_are_armed` caught only
+  `(OSError, RuntimeError)` around the per-run home writer, so a `ValueError` or `TypeError` from
+  it escaped too; and `probe_kimi_model_alias` let a malformed or unreadable operator
+  `config.toml` escape the same way. All three now report instead of raising, and the writer's
+  exception tuple is defined once (`kimi_snapshot._HOME_WRITER_EXCEPTIONS`) so the two probes
+  that drive it cannot drift apart again.
 - **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
   `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
   naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
