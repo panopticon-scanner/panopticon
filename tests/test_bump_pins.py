@@ -824,6 +824,35 @@ class TestPypiVerification(unittest.TestCase):
 
 
 class TestRequirementsRewrite(unittest.TestCase):
+    def test_markers_extras_and_inline_comments_survive_hash_refresh(self):
+        for clause in ('demo==1.2; python_version < "3.13"',
+                       'demo[fast,ssl]==1.2; sys_platform == "linux"',
+                       'demo[fast]==1.2; platform_release == "--hash=sha256:keep"'):
+            for old_hash in ("", " --hash=sha256:old",
+                             " \\\n    --hash sha256:old \\\n    --hash=sha256:older"):
+                with self.subTest(clause=clause, old_hash=old_hash):
+                    text = "# before\n\n" + clause + old_hash + "  # reason\n# after\n"
+                    self.assertEqual(bp.parse_requirements(text), [("demo", "1.2")])
+                    hashes = {("demo", "1.2"): [WHEEL_SHA, OTHER_SHA]}
+                    expected = ("# before\n\n" + clause + " \\\n"
+                                "    --hash=sha256:" + WHEEL_SHA + " \\\n"
+                                "    --hash=sha256:" + OTHER_SHA + "  # reason\n# after\n")
+                    actual = bp.rewrite_requirements(text, hashes)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(bp.rewrite_requirements(actual, hashes), actual)
+
+    def test_a_marker_on_a_continuation_is_kept(self):
+        text = 'demo[fast]==1.2 \\\n    ; python_version >= "3.11"\n'
+        self.assertEqual(bp.rewrite_requirements(text, {("demo", "1.2"): [WHEEL_SHA]}),
+                         'demo[fast]==1.2 ; python_version >= "3.11" \\\n'
+                         '    --hash=sha256:' + WHEEL_SHA + '\n')
+
+    def test_extras_pins_still_require_verified_hashes(self):
+        for hashes in ({}, {("demo", "1.2"): []}):
+            with self.subTest(hashes=hashes), self.assertRaisesRegex(
+                    RuntimeError, "no verified hashes for demo==1.2"):
+                bp.rewrite_requirements('demo[fast]==1.2; python_version < "3.13"\n', hashes)
+
     def test_reads_every_pin_including_hashed_ones(self):
         self.assertEqual([("pytest", "9.1.1"), ("pluggy", "1.6.0")],
                          bp.parse_requirements(REQUIREMENTS))
@@ -864,6 +893,46 @@ class TestRequirementsRewrite(unittest.TestCase):
 
 
 class TestRequirementsMain(unittest.TestCase):
+    def test_continued_extras_query_base_name_and_keep_non_pin_lines(self):
+        for continued, clause in (
+                ('demo[fast,\\\n    ssl]==1.2', 'demo[fast, ssl]==1.2'),
+                ('demo[fast,ssl]\\\n    ==1.2', 'demo[fast,ssl] ==1.2')):
+            with self.subTest(continued=continued):
+                import tempfile
+                marker = '; python_version >= "3.11"'
+                surrounding = '# before\n--extra-index-url \\\n    https://mirror.example/simple\n'
+                text = (surrounding + continued + marker
+                        + ' \\\n    --hash=sha256:old  # reason\n# after\n')
+                expected = (surrounding + clause + marker + ' \\\n'
+                            '    --hash=sha256:' + WHEEL_SHA + '  # reason\n# after\n')
+                self.assertEqual(bp.parse_requirements(text), [('demo', '1.2')])
+                with tempfile.TemporaryDirectory() as directory:
+                    path = os.path.join(directory, 'requirements.txt')
+                    with open(path, 'w', encoding='utf-8') as fh:
+                        fh.write(text)
+                    with mock.patch.object(bp, 'verified_pypi_hashes',
+                                           return_value=[WHEEL_SHA]) as fetch:
+                        self.assertEqual(bp.main(['requirements', '--file', path, '--write']), 0)
+                    fetch.assert_called_once_with('demo', '1.2')
+                    with open(path, encoding='utf-8') as fh:
+                        actual = fh.read()
+                self.assertEqual(actual, expected)
+                self.assertEqual(bp.rewrite_requirements(actual,
+                                                         {('demo', '1.2'): [WHEEL_SHA]}), actual)
+
+    def test_extras_and_markers_query_the_base_distribution(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "requirements.txt")
+            clause = 'demo[fast]==1.2; python_version >= "3.11"'
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(clause + "\n")
+            with mock.patch.object(bp, "verified_pypi_hashes", return_value=[WHEEL_SHA]) as fetch:
+                self.assertEqual(bp.main(["requirements", "--file", path, "--write"]), 0)
+            fetch.assert_called_once_with("demo", "1.2")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), clause + " \\\n    --hash=sha256:" + WHEEL_SHA + "\n")
+
     def _run(self, tmp, write=False, seed="pytest==9.1.1\n"):
         p = os.path.join(tmp, "requirements-gate.txt")
         if seed is not None:

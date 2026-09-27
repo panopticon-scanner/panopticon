@@ -1511,6 +1511,599 @@ class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
                     "not a workflow edit." % workflow)
 
 
+# --- ARC-2930403871 (#1771): both adapter lanes run as production's user ------
+# `Dockerfile.fixtures` ends on `USER root`, correctly, for its BUILD: it
+# installs language toolchains and writes build artifacts. Nothing dropped that
+# privilege at run time and this workflow passed no `--user`, so the ONE gate
+# where the adapters meet real tools and real fixtures exercised them as uid 0
+# while every production scan runs the tools image as `scanner` (the
+# `Dockerfile`'s `useradd -m -u 1000 scanner` and its closing `USER scanner`).
+# A root-only adapter regression -- the #1877 class, a tool refusing
+# its input under the real uid -- passed the only gate that could catch it.
+#
+# The posture has two halves and both are pinned. STATIC: every `docker run` of
+# the fixtures image carries `--user` naming production's user, read through the
+# workflow's own `env:` block so the pin follows the VALUE rather than the
+# spelling. RUNTIME: each job asks the CONTAINER what it is before it runs
+# anything else, which is the half that catches a `--user` docker could not
+# honour (an image whose passwd stopped carrying the user) -- otherwise that is
+# a green tick over probes run as root, which is the finding itself.
+#
+# By name rather than `1000:1000`: the Dockerfile states the uid and says
+# nothing about the gid, so the name is the only spelling that takes
+# production's own primary group instead of a guessed one. The uid is pinned all
+# the same -- it travels into the container as `EXPECTED_UID`, which is what the
+# assertion compares `id -u` against. And the number is not hand-copied: it is
+# READ out of the `Dockerfile`'s `useradd` line below and compared to both this
+# constant and the workflow's `env:` value, so the PR that changes the uid goes
+# red rather than the daily job one PR later.
+FIXTURES_IMAGE = "panopticon-fixtures:latest"
+EXPECTED_SCANNER_USER = "scanner"        # the tools image's closing `USER scanner`
+EXPECTED_SCANNER_UID = "1000"            # its `useradd -m -u 1000 scanner`
+UID_ASSERTION_ENV = "EXPECTED_UID"
+# Every spelling of the user flag docker accepts, for the readers AND for the
+# mutations that take it away: one pattern, so a meta-test cannot drift from the
+# rule it is exercising (R2-2).
+_USER_FLAG = re.compile(r"(?:--user|-u)(?:=\S+|\s+\S+)")
+# The account the tools image creates, as the `Dockerfile` writes it. Anchored on
+# the flags rather than on a line number: this is the one fact three files repeat
+# (the workflow's `env:`, the constant above, the image's own `USER`), so it is
+# read from the source of it.
+_USERADD = re.compile(r"useradd\s+-m\s+-u\s+(\d+)\s+%s\b" % EXPECTED_SCANNER_USER)
+
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def dockerfile_scanner_uid(text=None):
+    """The uid the tools image's `useradd` creates `scanner` with, or None."""
+    if text is None:
+        with open(os.path.join(REPO_ROOT, "Dockerfile"), encoding="utf-8") as fh:
+            text = fh.read()
+    match = _USERADD.search(text)
+    return match.group(1) if match else None
+
+
+def resolve_env(value, env):
+    """Every `$VAR` / `${VAR}` in *value* through a step's env; the rest as written.
+
+    The workflow writes `--user "$SCANNER_USER"` and keeps the value in the
+    job's `env:` block beside the `Dockerfile` command it comes from, so a reader
+    that stopped at the token would pin the spelling and never see the user. A
+    name the env does not carry is left as written (`$PWD` stays `$PWD`), which
+    is what lets two texts written with different spellings be compared.
+    """
+    if not value:
+        return value
+    return _VAR.sub(
+        lambda m: env.get(m.group(1) or m.group(2), m.group(0)), value)
+
+
+def fixtures_runs(script):
+    """[(flags, argv, why unreadable)] for each run of the fixtures image.
+
+    `flags` is the part of the invocation docker reads -- everything before the
+    image operand -- because a `--user` written after it is an argument handed
+    to the container's own command and sets no uid at all.
+    """
+    found = []
+    for argv in docker_run_argvs(script):
+        index, why = docker_image_index(argv)
+        if why is not None:
+            found.append((None, argv, why))
+        elif argv[index] == FIXTURES_IMAGE:
+            found.append((argv[:index], argv, None))
+    return found
+
+
+def user_defect(script, env):
+    """Why a step's run of the fixtures image is not production's user, or None.
+
+    Silent about a step that runs no container: which steps must be asked is
+    `fixtures_runs`' answer, and the fleet test below guards that there is one.
+    """
+    for flags, _argv, why in fixtures_runs(script):
+        if why is not None:
+            return why
+        # docker applies the LAST `--user`, and `_flag_value` returns the
+        # first, so a second one would be read as clean while the container ran
+        # as whatever it names. An ambiguity is a defect here, the way an
+        # unknown flag is above: the sibling reader in
+        # `tests/test_integration_strictness.py` fails closed on duplicates too.
+        written = [token for token in flags if token in ("--user", "-u")
+                   or token.startswith(("--user=", "-u="))]
+        if len(written) > 1:
+            return ("this `docker run %s` carries %d `--user` flags; docker "
+                    "honours the LAST one, so which uid the probes get depends "
+                    "on flag order (ARC-2930403871, #1771)"
+                    % (FIXTURES_IMAGE, len(written)))
+        value = _flag_value(flags, ("--user", "-u"))
+        if value is None:
+            return ("this `docker run %s` carries no `--user` among its flags, "
+                    "so the adapter probes run as uid 0 while every production "
+                    "scan runs the tools image as %r (ARC-2930403871, #1771)"
+                    % (FIXTURES_IMAGE, EXPECTED_SCANNER_USER))
+        resolved = resolve_env(value, env)
+        if resolved.split(":")[0] not in (EXPECTED_SCANNER_USER,
+                                          EXPECTED_SCANNER_UID):
+            return ("this `docker run %s` runs as %r; production runs the tools "
+                    "image as %r, uid %s (its `useradd -m -u 1000 scanner` and "
+                    "its closing `USER scanner`) "
+                    "-- a root-only adapter regression passes a harness that "
+                    "runs as root (ARC-2930403871, #1771)"
+                    % (FIXTURES_IMAGE, resolved, EXPECTED_SCANNER_USER,
+                       EXPECTED_SCANNER_UID))
+    return None
+
+
+# A shell test expression: `[ ... ]` or `test ...`, up to the `;`/`&&`/`||` that
+# ends it. The COMPARISON is the subject, not the command: the shipped payload
+# names `EXPECTED_UID` twice -- once where it is compared and once in the
+# `::error::` sentence -- so a rule that searched the whole command was satisfied
+# by the MESSAGE while the comparison drifted to a literal. That is the exact
+# drift this half was written to catch, so it is read where it happens.
+_TEST_EXPR = re.compile(r"(?:\[|\btest\b)[^;&|]*")
+
+
+def uid_comparisons(command):
+    """Every `[ ... ]` / `test ...` expression in a command that reads `id -u`."""
+    return [m.group(0) for m in _TEST_EXPR.finditer(command)
+            if "id -u" in m.group(0)]
+
+
+def asserts_the_uid(script, env):
+    """True if this step asks the CONTAINER its uid and fails on a mismatch.
+
+    Not `--user` read a second time: this is the runtime half, and what makes
+    it an assertion rather than a log line is the failure arm. The uid it
+    compares against travels in as `EXPECTED_UID`, and it has to be the thing
+    `id -u` is COMPARED WITH -- a literal there pins a number nothing else in
+    the file agrees with, however often the message repeats the variable.
+    """
+    for flags, argv, why in fixtures_runs(script):
+        if why is not None:
+            continue
+        passed = dict(_DOCKER_ENV.findall(" ".join(flags))).get(UID_ASSERTION_ENV)
+        if resolve_env(passed, env) != EXPECTED_SCANNER_UID:
+            continue
+        command = " ".join(argv[len(flags):])
+        compared = uid_comparisons(command)
+        if not any(UID_ASSERTION_ENV in expression for expression in compared):
+            continue
+        # The failure arm may live outside the expression (`else ... exit 1`),
+        # so it is the command that must carry it.
+        if "exit 1" in command:
+            return True
+    return False
+
+
+class TestTheScannerUserRule(unittest.TestCase):
+    """The static half, on scratch scripts -- both answers."""
+
+    ENV = {"SCANNER_USER": "scanner", "SCANNER_UID": "1000",
+           "SCANNER_HOME": "/home/scanner"}
+    SHIPPED = ('docker run --rm \\\n'
+               '  --user "$SCANNER_USER" \\\n'
+               '  -v "$PWD:/work:ro" -w /work \\\n'
+               '  -e HOME="$SCANNER_HOME" \\\n'
+               '  --entrypoint sh panopticon-fixtures:latest \\\n'
+               '  -c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"\n')
+
+    def test_the_shipped_shape_is_not_a_defect(self):
+        self.assertIsNone(user_defect(self.SHIPPED, self.ENV))
+
+    def test_dropping_the_flag_is_a_defect(self):
+        why = user_defect(
+            self.SHIPPED.replace('  --user "$SCANNER_USER" \\\n', ""), self.ENV)
+        self.assertIsNotNone(why, "a root run of the fixtures image passed")
+        self.assertIn("--user", why)
+
+    def test_running_as_root_is_a_defect(self):
+        for spelling in ("--user root", "--user 0:0", "-u 0", "--user=root"):
+            with self.subTest(spelling=spelling):
+                why = user_defect(
+                    self.SHIPPED.replace('--user "$SCANNER_USER"', spelling),
+                    self.ENV)
+                self.assertIsNotNone(why, "%s passed" % spelling)
+
+    def test_the_value_is_read_through_the_jobs_env_block(self):
+        # The pin follows the VALUE: an `env:` block that points the flag at
+        # root is the same defect as writing root on the command line, and a
+        # reader that stopped at `$SCANNER_USER` could not tell them apart.
+        why = user_defect(self.SHIPPED, dict(self.ENV, SCANNER_USER="root"))
+        self.assertIsNotNone(why, "the pin read the spelling, not the value")
+        self.assertIn("root", why)
+
+    def test_the_numeric_spelling_of_the_same_user_is_accepted(self):
+        for spelling in ("1000", "1000:1000"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNone(user_defect(
+                    self.SHIPPED.replace('"$SCANNER_USER"', spelling), self.ENV))
+
+    def test_a_second_user_flag_is_a_defect(self):
+        # docker honours the LAST `--user`; a reader that returns the first
+        # would call this clean while the container ran as root.
+        for second in ("--user root", "-u 0", "--user=root",
+                       '--user "$SCANNER_USER"'):
+            with self.subTest(second=second):
+                script = self.SHIPPED.replace(
+                    '  --user "$SCANNER_USER" \\\n',
+                    '  --user "$SCANNER_USER" %s \\\n' % second)
+                why = user_defect(script, self.ENV)
+                self.assertIsNotNone(why, "two --user flags passed")
+                self.assertIn("honours the LAST one", why)
+
+    def test_a_flag_written_after_the_image_is_not_dockers(self):
+        # docker hands everything past the image to the container's command, so
+        # `--user` there sets no uid -- the same defect as its absence.
+        script = ('docker run --rm -v "$PWD:/work:ro" -w /work \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  --user scanner -c "python3 -m pytest tests/tools/"\n')
+        why = user_defect(script, self.ENV)
+        self.assertIsNotNone(why, "a --user past the image read as a uid")
+        self.assertIn("--user", why)
+
+    def test_another_images_run_is_not_this_rules_business(self):
+        self.assertIsNone(user_defect("docker run --rm alpine true\n", self.ENV))
+
+    def test_an_unknown_flag_is_refused_rather_than_guessed(self):
+        # Where the image starts decides which `--user` docker reads, so an
+        # unknown flag means UNREAD, not clean.
+        why = user_defect(
+            self.SHIPPED.replace("docker run --rm",
+                                 "docker run --rm --frobnicate 3"), self.ENV)
+        self.assertIsNotNone(why)
+        self.assertIn("--frobnicate", why)
+
+
+class TestTheUidAssertionRule(unittest.TestCase):
+    """The runtime half, on scratch scripts -- both answers."""
+
+    ENV = TestTheScannerUserRule.ENV
+    ASSERTION = ('docker run --rm \\\n'
+                 '  --user "$SCANNER_USER" \\\n'
+                 '  -e EXPECTED_UID="$SCANNER_UID" \\\n'
+                 '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                 '  -c \'if [ "$(id -u)" = "$EXPECTED_UID" ]; then echo ok; '
+                 'else echo "::error::not the scanner uid $EXPECTED_UID"; '
+                 'exit 1; fi\'\n')
+
+    def test_the_shipped_assertion_is_found(self):
+        self.assertTrue(asserts_the_uid(self.ASSERTION, self.ENV))
+
+    def test_an_assertion_with_no_failure_arm_is_a_log_line(self):
+        self.assertFalse(asserts_the_uid(
+            self.ASSERTION.replace("exit 1", "true"), self.ENV))
+
+    def test_an_assertion_that_never_asks_the_container_is_not_one(self):
+        self.assertFalse(asserts_the_uid(
+            self.ASSERTION.replace("id -u", "echo 1000"), self.ENV))
+
+    def test_the_uid_it_compares_against_must_be_the_pinned_one(self):
+        self.assertFalse(asserts_the_uid(self.ASSERTION,
+                                         dict(self.ENV, SCANNER_UID="0")))
+
+    def test_a_hardcoded_uid_in_the_comparison_is_not_an_assertion(self):
+        # The env var is what ties the runtime half to the pin, and it is the
+        # COMPARISON that has to carry it. This mutation leaves the variable in
+        # the `::error::` sentence -- as the shipped payload does -- so a rule
+        # that searched the whole command would be satisfied by the message
+        # while the number actually pinned became nobody's.
+        drifted = self.ASSERTION.replace('= "$EXPECTED_UID" ]', '= "999" ]')
+        self.assertIn(UID_ASSERTION_ENV, drifted,
+                      "the mutation removed every mention; it would pass the "
+                      "old command-wide rule too and prove nothing")
+        self.assertFalse(asserts_the_uid(drifted, self.ENV))
+
+    def test_the_comparison_reader_finds_both_shell_spellings(self):
+        for spelling in ('[ "$(id -u)" = "$EXPECTED_UID" ]',
+                         'test "$(id -u)" = "$EXPECTED_UID"'):
+            with self.subTest(spelling=spelling):
+                found = uid_comparisons("sh -c if %s; then echo ok; fi" % spelling)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(UID_ASSERTION_ENV, found[0])
+
+    def test_the_comparison_reader_stops_at_the_end_of_the_expression(self):
+        # ...so the `::error::` sentence after the `;` is never read as part of
+        # what `id -u` was compared with.
+        found = uid_comparisons(
+            'sh -c if [ "$(id -u)" = "1000" ]; then echo ok; '
+            'else echo "::error::not $EXPECTED_UID"; exit 1; fi')
+        self.assertEqual(1, len(found), found)
+        self.assertNotIn(UID_ASSERTION_ENV, found[0])
+
+    def test_an_expected_uid_past_the_image_never_reaches_the_container(self):
+        script = ('docker run --rm --user scanner \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  -e EXPECTED_UID=1000 -c \'[ "$(id -u)" = 1000 ] || exit 1\'\n')
+        self.assertFalse(asserts_the_uid(script, self.ENV))
+
+    def test_the_pytest_step_is_not_mistaken_for_the_assertion(self):
+        self.assertFalse(asserts_the_uid(TestTheScannerUserRule.SHIPPED,
+                                         self.ENV))
+
+
+class TestThePinnedUidIsTheDockerfilesOwn(unittest.TestCase):
+    """#1771 F7. Three files repeat one number -- this constant, the workflow's
+    `env:`, and the image's own account -- and only the `Dockerfile` decides it.
+    Read it there, so the PR that changes the uid reddens instead of the daily
+    job one PR later."""
+
+    def test_the_tools_image_still_creates_the_account_at_the_pinned_uid(self):
+        found = dockerfile_scanner_uid()
+        self.assertIsNotNone(
+            found, "no `useradd -m -u <uid> scanner` in the Dockerfile; the "
+                   "account this workflow names by user is gone, or written in "
+                   "a shape this reader cannot see")
+        self.assertEqual(
+            EXPECTED_SCANNER_UID, found,
+            "the Dockerfile creates `scanner` with uid %s; this module pins %s. "
+            "The uid is repeated in the workflow's `env:` and asserted inside "
+            "the container, so change all three together (#1771)."
+            % (found, EXPECTED_SCANNER_UID))
+
+    def test_both_jobs_env_blocks_carry_the_dockerfiles_uid(self):
+        jobs = (_adapter_doc().get("jobs") or {})
+        for job in EXPECTED_ADAPTER_JOBS:
+            with self.subTest(job=job):
+                value = str(((jobs.get(job) or {}).get("env") or {})
+                            .get("SCANNER_UID", ""))
+                self.assertEqual(
+                    dockerfile_scanner_uid(), value,
+                    "%s / %s pins SCANNER_UID=%r; the Dockerfile's `useradd` "
+                    "says %r" % (ADAPTER_WORKFLOW, job, value,
+                                 dockerfile_scanner_uid()))
+
+    def test_the_reader_reads_the_account_and_not_any_useradd(self):
+        # Guards the guard, both answers, on scratch text.
+        self.assertEqual("1234", dockerfile_scanner_uid(
+            "RUN useradd -m -u 1234 scanner \\\n    && chown scanner /x\n"))
+        self.assertIsNone(dockerfile_scanner_uid(
+            "RUN useradd -m -u 1234 builder\n"))
+        self.assertIsNone(dockerfile_scanner_uid("USER scanner\n"))
+
+
+class TestBothAdapterLanesRunAsProductionsUser(unittest.TestCase):
+    """The fleet. Both jobs, because both run the fixtures image."""
+
+    def _rows(self, job):
+        doc = _adapter_doc()
+        return [(step.name, step.script,
+                 step_env(doc, job, step.name, step.script))
+                for step in _adapter_run_steps(job)]
+
+    def test_every_run_of_the_fixtures_image_names_the_scanner_user(self):
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                with self.subTest(job=job, step=name):
+                    why = user_defect(script, env)
+                    self.assertIsNone(why, "%s / %s: %s" % (job, name, why or ""))
+
+    def test_there_is_a_run_to_ask(self):
+        # Guards the guard: `user_defect` is silent about a step that runs no
+        # container, so the answer above only means something while both jobs
+        # actually run the fixtures image.
+        for job in EXPECTED_ADAPTER_JOBS:
+            with self.subTest(job=job):
+                self.assertTrue(
+                    [run for _name, script, _env in self._rows(job)
+                     for run in fixtures_runs(script)],
+                    "no `docker run %s` in %s / %s" % (FIXTURES_IMAGE,
+                                                       ADAPTER_WORKFLOW, job))
+
+    def test_the_rule_would_speak_if_a_lane_lost_the_flag(self):
+        # ...and that it is this workflow the rule is reading: the same steps,
+        # with the flag deleted, are defects. Every spelling docker accepts and
+        # `user_defect` reads, `=` forms included: a mutation that only knew
+        # `--user` would delete nothing from a lane written `-u`, and then
+        # assert a defect that cannot appear on a file that is correct.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                with self.subTest(job=job, step=name):
+                    stripped = _USER_FLAG.sub("", script)
+                    self.assertIsNotNone(
+                        user_defect(stripped, env),
+                        "deleting the user flag from %s / %s left the lane "
+                        "passing; the pin reads something else" % (job, name))
+
+    def test_either_spelling_is_legal_on_the_shipped_lanes(self):
+        # `-u` and `--user` are one flag to docker, to `user_defect` and to the
+        # strict contract in tests/test_integration_strictness.py. A lane
+        # written the short way is correct, so it must be green here -- and the
+        # mutation above must still be able to take it away.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                with self.subTest(job=job, step=name):
+                    short = script.replace('--user "$SCANNER_USER"',
+                                           '-u "$SCANNER_USER"')
+                    self.assertIsNone(user_defect(short, env))
+                    self.assertIsNotNone(user_defect(_USER_FLAG.sub("", short),
+                                                     env))
+
+    def test_each_job_asserts_the_uid_before_it_runs_a_probe(self):
+        for job in EXPECTED_ADAPTER_JOBS:
+            rows = self._rows(job)
+            asserted = [i for i, (_n, script, env) in enumerate(rows)
+                        if asserts_the_uid(script, env)]
+            selected = [i for i, (_n, script, _e) in enumerate(rows)
+                        if pytest_argvs(script)]
+            with self.subTest(job=job):
+                self.assertTrue(
+                    asserted,
+                    "%s / %s runs the adapter probes without ever asking the "
+                    "container which uid it got. `--user` is the intent; `id "
+                    "-u` inside the container is the proof (ARC-2930403871, "
+                    "#1771)." % (ADAPTER_WORKFLOW, job))
+                self.assertTrue(selected, "no pytest step in %s" % job)
+                self.assertLess(
+                    asserted[0], selected[0],
+                    "%s / %s asserts its uid AFTER running the probes, so a "
+                    "root run reports its findings first" % (ADAPTER_WORKFLOW,
+                                                            job))
+
+
+# --- ARC-2930403871 (#1771) F10: the hand-run recipe DEVELOPMENT.md publishes --
+# `DEVELOPMENT.md` prints the containment lane's `docker run` and says it IS the
+# job's own line, so a developer reproducing the lane by hand reproduces the
+# lane. This PR falsified that sentence for one edit cycle -- the two new flags
+# landed in the workflow and not in the doc -- and only a human reading both
+# noticed. The same command is pinned twice from this suite; the PUBLISHED copy
+# had no pin at all.
+#
+# Found by the SENTENCE that claims it rather than by position: the claim is what
+# turns a code block into a promise about the workflow, so a block that drifted
+# away from its claim is the same defect as one that drifted from the job. The
+# job's `env:` is substituted into BOTH sides (`step_env` + `resolve_env`), which
+# is what lets the doc write `--user scanner` where the workflow writes
+# `--user "$SCANNER_USER"` and still be the same command -- and what makes a
+# changed VALUE a defect rather than a spelling difference.
+HAND_RUN_DOC = "DEVELOPMENT.md"
+HAND_RUN_CLAIM = "the job's `run:` line"
+HAND_RUN_STEP = "Run the hostile-build containment probe offline"
+
+
+def _hand_run_doc_text():
+    with open(os.path.join(REPO_ROOT, HAND_RUN_DOC), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def published_hand_run(text):
+    """(the block published as the lane's own command, None), or (None, why not).
+
+    Unterminated or unfound is UNREAD, which is a defect rather than a pass --
+    the same stance the flag-table reader takes on an unknown docker flag.
+    """
+    index = text.find(HAND_RUN_CLAIM)
+    if index < 0:
+        return None, ("%s no longer says the command it publishes is %s, so "
+                      "nothing there promises to match the lane (#1771)"
+                      % (HAND_RUN_DOC, HAND_RUN_CLAIM))
+    fence = text.find("\n```", index)
+    if fence < 0:
+        return None, ("no fenced block follows the sentence in %s that claims "
+                      "to publish %s" % (HAND_RUN_DOC, HAND_RUN_CLAIM))
+    start = text.find("\n", fence + 1)
+    end = text.find("\n```", start + 1) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return None, ("the fenced block after that sentence in %s is "
+                      "unterminated" % HAND_RUN_DOC)
+    return text[start + 1:end], None
+
+
+def hand_run_defect(text):
+    """Why the published hand-run command is not the lane's own, or None."""
+    published, why = published_hand_run(text)
+    if why is not None:
+        return why
+    steps = [step for step in _adapter_run_steps(CONTAINMENT_JOB)
+             if step.name == HAND_RUN_STEP]
+    if len(steps) != 1:
+        return ("%s / %s has no step named %r, so the command %s publishes "
+                "matches nothing" % (ADAPTER_WORKFLOW, CONTAINMENT_JOB,
+                                     HAND_RUN_STEP, HAND_RUN_DOC))
+    step = steps[0]
+    env = step_env(_adapter_doc(), CONTAINMENT_JOB, step.name, step.script)
+    shipped = docker_run_argvs(step.script)
+    printed = docker_run_argvs(published)
+    if len(shipped) != 1:
+        return ("the %r step runs %d containers; this pin describes one"
+                % (HAND_RUN_STEP, len(shipped)))
+    if len(printed) != 1:
+        return ("the block %s publishes as %s carries %d `docker run` commands; "
+                "the step runs one" % (HAND_RUN_DOC, HAND_RUN_CLAIM,
+                                       len(printed)))
+    lane = [resolve_env(token, env) for token in shipped[0]]
+    doc = [resolve_env(token, env) for token in printed[0]]
+    if lane != doc:
+        return ("%s publishes a command that is not the one %s / %s runs, while "
+                "saying it is %s -- so a developer reproducing the lane by hand "
+                "reproduces something else (#1771).\n  published: %s\n  lane:    "
+                "  %s" % (HAND_RUN_DOC, ADAPTER_WORKFLOW, CONTAINMENT_JOB,
+                          HAND_RUN_CLAIM, " ".join(doc), " ".join(lane)))
+    return None
+
+
+class TestTheHandRunRecipeRule(unittest.TestCase):
+    """The rule, on copies of the doc -- both answers. Never on the file."""
+
+    @staticmethod
+    def _doc_with(mutate):
+        """The doc with its PUBLISHED BLOCK mutated, and nothing else.
+
+        Mutating the raw text is what these tests did first, and two of them
+        went green against a defect: `--user scanner` and the hostile-csproj
+        selector both appear in the PROSE above the block (the sentence that
+        explains the two flags, and the paragraph naming the file the lane
+        runs), so a first-occurrence replace edited the explanation and left the
+        command alone. The block is the subject; edit it, not the page.
+        """
+        text = _hand_run_doc_text()
+        block, why = published_hand_run(text)
+        assert why is None, why
+        return text.replace(block, mutate(block), 1)
+
+    def test_the_shipped_doc_publishes_the_lanes_command(self):
+        self.assertIsNone(hand_run_defect(_hand_run_doc_text()))
+
+    def test_a_flag_dropped_from_the_published_copy_is_a_defect(self):
+        # Through `_USER_FLAG`, not a literal: `-u` is a legal spelling of the
+        # same flag, and a mutation that only knew `--user` would delete nothing
+        # from a doc that used the short one and then assert a defect that
+        # cannot appear (R2-2, the same trap one module over).
+        why = hand_run_defect(self._doc_with(
+            lambda block: _USER_FLAG.sub("", block, count=1)))
+        self.assertIsNotNone(why, "a published command missing `--user` passed")
+        self.assertIn("published", why)
+
+    def test_a_value_changed_in_the_published_copy_is_a_defect(self):
+        # The doc writes literals where the workflow writes `$SCANNER_USER`, so
+        # the comparison has to substitute -- and still notice `root`.
+        why = hand_run_defect(self._doc_with(
+            lambda block: _USER_FLAG.sub("--user root", block, count=1)))
+        self.assertIsNotNone(why, "a published `--user root` passed")
+
+    def test_a_changed_selector_in_the_published_copy_is_a_defect(self):
+        self.assertIsNotNone(hand_run_defect(self._doc_with(
+            lambda block: block.replace("tests/tools/test_hostile_csproj.py",
+                                        "tests/tools/"))))
+
+    def test_the_home_the_doc_writes_out_is_compared_by_value(self):
+        # The one that would have caught this PR's own drift: the doc spells the
+        # HOME as a literal, the workflow as `$SCANNER_HOME`.
+        self.assertIsNotNone(hand_run_defect(self._doc_with(
+            lambda block: block.replace("-e HOME=/home/scanner",
+                                        "-e HOME=/root"))))
+
+    def test_losing_the_claim_is_a_defect(self):
+        why = hand_run_defect(_hand_run_doc_text().replace(
+            HAND_RUN_CLAIM, "one way to run it", 1))
+        self.assertIsNotNone(why, "a doc that stopped claiming anything passed")
+        self.assertIn("promises", why)
+
+    def test_an_unterminated_block_is_refused_rather_than_guessed(self):
+        text = _hand_run_doc_text()
+        fence = text.find("\n```", text.find(HAND_RUN_CLAIM))
+        why = hand_run_defect(text[:fence + 4])
+        self.assertIsNotNone(why)
+        self.assertIn("unterminated", why)
+
+
+class TestThePublishedHandRunIsTheLanesOwnCommand(unittest.TestCase):
+    def test_the_doc_publishes_the_command_the_lane_actually_runs(self):
+        why = hand_run_defect(_hand_run_doc_text())
+        self.assertIsNone(why, why or "")
+
+    def test_the_reader_actually_found_a_command(self):
+        # Guards the guard: an empty answer above is only meaningful while the
+        # doc still publishes a runnable command under that sentence.
+        published, why = published_hand_run(_hand_run_doc_text())
+        self.assertIsNone(why, why or "")
+        self.assertEqual(1, len(docker_run_argvs(published)), published)
+
+
 class TestVerifiedPinFreshnessJobs(unittest.TestCase):
     def _defects(self, job, family):
         steps = job.get("steps", [])

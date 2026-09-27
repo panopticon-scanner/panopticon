@@ -60,6 +60,8 @@ import tomllib
 import urllib.parse
 import urllib.request
 
+from pin_requirements import parse_requirements, rewrite_requirements
+
 RUSTUP_STABLE = "https://static.rust-lang.org/rustup/release-stable.toml"
 RUSTUP_ARCHIVE = "https://static.rust-lang.org/rustup/archive/{v}/{triple}/rustup-init"
 RUSTUP_TRIPLES = {"AMD64": "x86_64-unknown-linux-gnu",
@@ -722,42 +724,6 @@ def run_tinyproxy(args) -> int:
 # how a digest gets invented; this reads each one from PyPI's JSON API and
 # recomputes it from the downloaded wheel, exactly as the rustup family does.
 
-_PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s;\\]+)")
-
-
-def _logical_lines(text: str) -> list[tuple[int, str]]:
-    """[(lineno, joined)] with `\\`-continuations folded in. lineno is where the
-    logical line STARTS."""
-    out: list[tuple[int, str]] = []
-    buf: list[str] = []
-    start = None
-    for n, line in enumerate(text.splitlines(), 1):
-        if start is None:
-            start = n
-        stripped = line.strip()
-        if stripped.endswith("\\"):
-            buf.append(stripped[:-1].strip())
-            continue
-        buf.append(stripped)
-        out.append((start, " ".join(p for p in buf if p)))
-        buf, start = [], None
-    if buf:
-        out.append((start or 1, " ".join(p for p in buf if p)))
-    return out
-
-
-def parse_requirements(text: str) -> list[tuple[str, str]]:
-    """[(name, version)] for every `name==version` pin in a requirements file."""
-    pins = []
-    for _n, joined in _logical_lines(text):
-        if joined.startswith("#"):
-            continue
-        m = _PIN.match(joined)
-        if m:
-            pins.append((m.group("name"), m.group("version")))
-    return pins
-
-
 # The machine architectures the builds these pins protect actually run on.
 # ubuntu-latest (the gate) is amd64 only, but docker-publish.yml builds the
 # tools image -- and with it the fixtures image FROM it -- for linux/amd64 AND
@@ -828,44 +794,6 @@ def verified_pypi_hashes(name: str, version: str) -> list[str]:
             "%s==%s publishes no wheel this platform may install; pin a version "
             "that does rather than falling back to an sdist" % (name, version))
     return sorted(set(digests))
-
-
-def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) -> str:
-    """Requirements text with every pin's hash block regenerated.
-
-    Pure, and total in both directions: a pin with no hashes raises, and so does
-    a set of hashes with no pin to attach them to. Comments and blank lines are
-    left exactly where they were -- the prose around a pin is why anyone can
-    review it.
-    """
-    lines = text.splitlines()
-    out: list[str] = []
-    written = set()
-    i = 0
-    while i < len(lines):
-        stripped = lines[i].strip()
-        m = None if stripped.startswith("#") else _PIN.match(stripped)
-        if not m:
-            out.append(lines[i])
-            i += 1
-            continue
-        while i < len(lines) - 1 and lines[i].rstrip().endswith("\\"):
-            i += 1
-        i += 1
-        key = (m.group("name"), m.group("version"))
-        digests = hashes.get(key)
-        if not digests:
-            raise RuntimeError("no verified hashes for %s==%s" % key)
-        out.append("%s==%s \\" % key)
-        for n, digest in enumerate(digests):
-            out.append("    --hash=sha256:%s%s"
-                       % (digest, "" if n == len(digests) - 1 else " \\"))
-        written.add(key)
-    unused = sorted(set(hashes) - written)
-    if unused:
-        raise RuntimeError("hashes for pins this file does not carry: %s"
-                           % ", ".join("%s==%s" % k for k in unused))
-    return "\n".join(out) + "\n"
 
 
 def run_requirements(args) -> int:
