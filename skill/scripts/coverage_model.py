@@ -1,8 +1,7 @@
 """Compute a group's effective panel set: floor forces ON, exclude forces OFF
-(loudly), the scout widens the undeclared middle. Pure -- every function here is
-a total function of its arguments -- though since #1770 importing this module
-also imports `discovery`, for the TST floor's naming rule, and that import
-touches `sys.path` as it always has. See spec §5.
+(loudly), the scout widens the undeclared middle. Pure (no I/O, no state);
+importing it pulls in `discovery` for the TST naming rule (#1770), which touches
+`sys.path` as it always has. See spec §5.
 """
 
 from typing import TYPE_CHECKING
@@ -12,9 +11,13 @@ import os
 # #1770 ARC-3682668884: the TST floor's test-file signal is the UNION of
 # discovery's naming rule and the local hints, so `discovery.TEST_PATTERNS` is a
 # dependency of this module rather than a second, drifting derivation of "is
-# this a test file". One-way: `discovery` does not import this module, and
-# nothing in its import closure does either. Same fallback shape as `discovery`
-# uses for its own siblings -- this module is imported both as
+# this a test file". No module-level import runs the other way: `discovery`
+# does not import this module, and the one edge back in its closure is lazy --
+# `discovery._capability_aliases` imports `setup_proposal` (which imports this
+# module) at CALL time, and it must stay lazy. This module, in turn, binds the
+# `discovery` module object here and reads `discovery.is_test_file` only at
+# call time, so neither order can see a half-initialised module. Same fallback
+# shape as `discovery` uses for its own siblings -- this module is imported both as
 # `scripts.coverage_model` (the driver's children, which get `skill/` on
 # PYTHONPATH) and flat by `setup_flow` / `grouping_engine` / `setup_proposal`,
 # and the flat mode has only `skill/scripts` on sys.path.
