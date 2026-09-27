@@ -1,35 +1,16 @@
-"""Tests for scripts.synth.report: build_report end to end -- ReportInputs, meta.*
-sections, gates and grades as the assembled report shows them.
-"""
+"""Report assembly, validation, and synthesis entry-point contracts."""
+
 import contextlib
 import io
 import os
 import json
 import tempfile
 import unittest
-
 import scripts.synthesize as syn
-import scripts.dispatch as dispatch_mod
-import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
-import scripts.synth.codes as codes_mod
-import scripts.synth.delta as delta_mod
-import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
-import scripts.synth.repair as repair_mod
-import scripts.synth.tool_axis as tool_axis_mod
-import scripts.synth.integrity as integrity_mod
-import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
-import scripts.synth.verdicts as verdicts_mod
-import scripts.synth.render as render_mod
-import scripts.evidence as evidence_mod
-import scripts.hosts as hosts_mod
-import scripts.ocrdb as ocrdb
-from scripts._version import __version__
-
-from tests._test_helpers import SKILL_ROOT
-from tests.synth.helpers import SPLIT_FILE_MAX_BYTES, DEFAULT_TIMESTAMP, _chdir, _make_finding, _target_with_files, _agentic, _VERDICT_STATUS, _cli_args
+from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding
 
 
 class TestReport(unittest.TestCase):

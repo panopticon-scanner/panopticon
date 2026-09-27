@@ -464,7 +464,7 @@ class TestTheSubSkillLookup(_VerbCase):
     def test_the_roots_are_the_ones_skill_md_tells_a_host_about(self):
         """P02 wrote the roots down for a human; this verb searches them. One
         list, or the doc and the code send a host to different directories."""
-        from tests.test_skill_md import SKILL_ROOTS
+        from tests.doc_helpers import SKILL_ROOTS
         documented = {r.replace("…/superpowers/", "").rstrip("/")
                       for r in SKILL_ROOTS}
         self.assertEqual(documented, set(readiness.SUB_SKILL_ROOTS))
