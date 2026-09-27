@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The 700-line ceiling now covers the flat modules and the entry scripts (#1761, #1762,
+  #1763; run-14 ARC-2609514778).** `tests/test_layout.py` rule 5 ratchets only the `synth`,
+  `phases`, `runners` and `probes` packages, so the largest modules in the tree were the
+  unmeasured ones: `skill/scripts/run_tools.py` went from 1231 to 2215 lines in the six days
+  after that finding was written, because every new scanner policy landed there and nothing
+  pushed back. `tests/test_flat_module_ceiling.py` applies the same `LINE_CEILING` to every
+  `*.py` directly under `skill/scripts/`, the repo-root `scripts` directory and the `tools`
+  adapter package (which rule 5 does not name either), as a shrink-only allowlist: twenty
+  modules pinned at the count they have today, each free to shrink and never to grow, and a pin
+  that reaches the ceiling has to go. Raising a number is not a fix -- the allowlist is the list
+  of splits owed.
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
   SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences
