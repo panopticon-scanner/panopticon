@@ -37,10 +37,10 @@ that needs more room is a new module.
 """
 from typing import TYPE_CHECKING
 
-# PACKAGE first, flat fallback -- the order `score_gate` and `html_report` use,
-# and the one tests/test_layout.py rule 2 explains: skill/scripts is on sys.path
-# as well as its parent, so a flat-first import builds a SECOND `evidence`
-# module object with its own module-level state.
+# PACKAGE first, flat fallback -- the order `score_gate` and `html_report` use
+# (tests/test_layout.py pins flat mode for these modules): skill/scripts is on
+# sys.path as well as its parent, so a flat-first import would build a SECOND
+# `evidence` module object with its own module-level state.
 if TYPE_CHECKING:
     import scripts.evidence as evidence
 else:

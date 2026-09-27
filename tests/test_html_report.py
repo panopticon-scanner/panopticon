@@ -2002,4 +2002,5 @@ class TestOneOwnerForVerified(unittest.TestCase):
         expected = sum(1 for f in findings
                        if sections.is_verified(f["evidence"]["status"]))
         self.assertEqual(expected, len(sections.VERIFIED_STATUSES))
-        self.assertIn("%d verified" % expected, hr._render_header(report))
+        self.assertIn("Coverage: %d verified &middot;" % expected,
+                      hr._render_header(report))

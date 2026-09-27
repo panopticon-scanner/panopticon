@@ -296,10 +296,6 @@ class TestReconcileKeyCollision(unittest.TestCase):
         self.assertNotEqual(a, b)   # only panel=="code" can collide
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestReportSectionPartition(unittest.TestCase):
     """#1774 (ARC-3073755386): `evidence_sections` owns which statuses the report
     calls verified and which ones it collapses. Both sets are CLOSED and the
@@ -344,3 +340,7 @@ class TestReportSectionPartition(unittest.TestCase):
         sections = self._sections()
         self.assertEqual(set(ev.GATE_ELIGIBLE_DEFAULT),
                          set(sections.VERIFIED_STATUSES) | {ev.BACKUP_SCOPE_LIMITED})
+
+
+if __name__ == "__main__":
+    unittest.main()
