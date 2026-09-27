@@ -413,12 +413,12 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
                           if role in _driver_roles
                           and not dispatch._is_registered(reg_dir, rf, resolved_host)]
-        checks.append(("enforced-shells", not missing_shells,
-                       "ok" if not missing_shells else
+        checks.append(("enforced-shells", not (missing_shells or row.registration_refusal),
+                       row.registration_refusal or ("ok" if not missing_shells else
                        "unregistered reviewer shell(s): %s -- run python3 "
                        "skill/scripts/dispatch.py --emit-host-agents %s and start "
                        "a fresh session"
-                       % (", ".join(missing_shells), resolved_host)))
+                       % (", ".join(missing_shells), resolved_host))))
 
     # 5.1 surface 4: this is where an operator looks BEFORE a run to find out
     # what to fix, and the remedy is the reason the line exists at all. What

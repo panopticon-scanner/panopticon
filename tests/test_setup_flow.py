@@ -70,6 +70,28 @@ def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     assert row[1] is False
     assert "migrate-config" in row[2]
 
+def test_readiness_names_a_refused_codex_home_not_the_emit_remedy(tmp_path, monkeypatch):
+    # COD-1638371699: the `enforced-shells` row resolved the codex row's
+    # relative directory against the cwd -- in the documented flow, the
+    # reviewed tree -- so a target shipping `agents/panopticon-*.toml` read as
+    # registered. The row here is the one `CODEX_HOME=.` leaves, its directory
+    # patched to `./agents` (where that value pointed before the fix). The
+    # `--emit-host-agents` remedy cannot help: emission refuses the same value.
+    import dataclasses
+
+    import dispatch  # the module `_check_host_shells` imports
+    dispatch.emit_host_agents("codex", str(tmp_path / "agents"))
+    monkeypatch.chdir(tmp_path)
+    hosts = setup_flow.hosts
+    _home, refusal = hosts.codex_home(".")
+    monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
+        hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
+        registration_refusal=refusal))
+    with mock.patch.object(setup_flow.host_probes, "run_probes", return_value={}):
+        rows = {name: (ok, detail) for name, ok, detail in
+                setup_flow._check_host_shells("codex", lambda *a, **k: None, str(tmp_path))}
+    assert rows["enforced-shells"] == (False, refusal)
+
 class TestSetupFlow(SetupFixtureBase):
     """Provisioning, seed, migration, and gitignore behavior."""
 

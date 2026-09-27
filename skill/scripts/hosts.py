@@ -106,8 +106,40 @@ STATES = (PROVEN, REFUTED, UNKNOWN)
 # `spec(host).registration_dir`.
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
-CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
-CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
+
+
+def codex_home(value):
+    """`$CODEX_HOME` as a directory: `(home, "")`, or `("", refusal)` when the
+    value cannot name one (COD-1638371699).
+
+    Unset and EMPTY both mean `~/.codex` (owner ruling 2026-09-27), and an
+    absolute value, after `~` is expanded, is used unchanged. A value that is
+    still RELATIVE is never used as a path. Before this, an empty value made
+    the codex row's directory `agents` and a relative one kept it relative,
+    and every codex consumer resolved it against the cwd -- in the documented
+    flow, the TARGET repo -- so a target shipping `agents/panopticon-*.toml`
+    supplied every role's registered shell. The refusal says why instead, and
+    each codex consumer refuses with it. `os.path.abspath` is no fix: it
+    binds to the cwd at import, which in that flow is the same tree.
+
+    Pure, as this module has to be: it computes a path and stats nothing.
+    """
+    home = os.path.expanduser(value or "~/.codex")
+    if os.path.isabs(home):
+        return home, ""
+    if value:
+        return "", ("CODEX_HOME must be an absolute path (it is %r); unset it "
+                    "to use ~/.codex" % value)
+    # Only under a relative HOME: the default itself is relative, and telling
+    # the operator to unset a variable that is already unset would not help.
+    return "", ("~/.codex expands to %r, which is not an absolute path; set "
+                "CODEX_HOME to an absolute path" % home)
+
+
+# Once, at import, and never raising: a Claude- or Kimi-host run, and every
+# other importer of this table, is unaffected by what CODEX_HOME says.
+CODEX_HOME, CODEX_HOME_REFUSAL = codex_home(os.environ.get("CODEX_HOME"))
+CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents") if CODEX_HOME else ""
 
 
 # --- where the guide is (#1637 P01) ----------------------------------------
@@ -222,6 +254,11 @@ class HostSpec:
     name: str
     claims: frozenset
     registration_dir: str = ""      # "" when the host registers no shells
+    # Why this machine gives the row NO usable `registration_dir` although
+    # the host registers shells: codex's under a relative CODEX_HOME
+    # (`codex_home`). The directory is then "", and every codex consumer
+    # refuses with this sentence rather than resolve anything against the cwd.
+    registration_refusal: str = ""
     shell_format: str = ""          # "md" | "toml" | ""
     project_scope_dirs: tuple = ()
     # The `Surface` rows above: what a TARGET can ship that this host's CLI
@@ -329,6 +366,7 @@ HOSTS = {
         name="codex",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
         registration_dir=CODEX_AGENTS_DIR,
+        registration_refusal=CODEX_HOME_REFUSAL,
         shell_format="toml",
         project_scope_dirs=(os.path.join(".codex", "agents"),),
         # CX-1..CX-6. CX-1..CX-3 are CONTROLLED by the cwd move (#1717), a
