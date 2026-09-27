@@ -18,6 +18,10 @@ evidence exposed.
   be an absolute path (it is 'rel/home'); unset it to use ~/.codex" -- by the runner and its shell
   loader, both codex probes, emission (exit 1, nothing written) and the readiness row. An explicit
   directory still wins, and importing `hosts` never raises.
+- **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
+  The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
+  as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
+  exposes `colliding_ids`, and the seed drops those names too.
 - **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
   COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
   shares its "before" boundary: no ASCII letter, digit or underscore immediately
