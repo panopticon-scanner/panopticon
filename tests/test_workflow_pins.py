@@ -342,7 +342,13 @@ EXEMPT_INSTALLS = (
 
 
 def _write_scopes(permissions):
-    """The write grants in a `permissions:` block, in either spelling."""
+    """The write grants in a `permissions:` block, in either spelling.
+
+    An absent block holds no write grant, which is all this answers. Whether a
+    job may HAVE no block is a different question, and `privilege_defect` asks
+    it: the answer depends on the workflow-level block, which is not in scope
+    here.
+    """
     if permissions is None:
         return []
     if isinstance(permissions, str):            # `permissions: write-all`
@@ -361,6 +367,13 @@ def privilege_defect(doc):
     `ci.yml` would silently keep four unpinned installs exempt in a workflow that
     had just become reachable from a fork PR. So the posture is asserted, not
     assumed.
+
+    Which is why an UNDECLARED token is a defect too (#1784, ARC-3955973987): a
+    job with no `permissions:` of its own and no workflow-level block to inherit
+    takes its scopes from the repository's `GITHUB_TOKEN` default -- a setting
+    outside this tree, invisible to a PR, and read-write on repositories created
+    before GitHub changed that default. "Read-only" has to be written down here
+    to be asserted at all.
     """
     on = doc.get(True, doc.get("on")) or {}
     if isinstance(on, dict):
@@ -371,14 +384,21 @@ def privilege_defect(doc):
         triggers = [on]
     if "pull_request_target" in triggers:
         return "runs on pull_request_target, so a fork PR reaches it"
-    grants = [("workflow", _write_scopes(doc.get("permissions")))]
+    workflow_block = doc.get("permissions")
+    grants = [("workflow", _write_scopes(workflow_block))]
+    undeclared = []
     for name, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict):
             grants.append(("job %s" % name, _write_scopes(job.get("permissions"))))
-    held = ["%s holds %s" % (where, ", ".join(scopes))
-            for where, scopes in grants if scopes]
-    if held:
-        return "; ".join(held)
+            if workflow_block is None and job.get("permissions") is None:
+                undeclared.append(name)
+    defects = ["%s holds %s" % (where, ", ".join(scopes))
+               for where, scopes in grants if scopes]
+    defects += ["job %s declares no `permissions:` block, so the token's scopes "
+                "come from the repository default" % name
+                for name in sorted(undeclared)]
+    if defects:
+        return "; ".join(defects)
     return None
 
 
@@ -674,6 +694,10 @@ class TestExemptionPosture(unittest.TestCase):
     READ_ONLY = {True: {"pull_request": {"branches": ["main"]}},
                  "permissions": {"contents": "read"},
                  "jobs": {"test": {"steps": []}}}
+    # The same document with no `permissions:` block at all -- the posture the
+    # rule used to read as unprivileged (#1784, ARC-3955973987).
+    NO_BLOCK = {True: {"pull_request": {"branches": ["main"]}},
+                "jobs": {"test": {"steps": []}}}
 
     def test_an_unprivileged_pull_request_workflow_may_be_exempt(self):
         self.assertIsNone(privilege_defect(self.READ_ONLY))
@@ -699,6 +723,46 @@ class TestExemptionPosture(unittest.TestCase):
     def test_write_all_disqualifies_it(self):
         self.assertIn("write-all",
                       privilege_defect(dict(self.READ_ONLY, permissions="write-all")))
+
+    # --- ARC-3955973987 (#1784): an UNDECLARED posture is not a read-only one --
+    # An absent block grants no write scope, so the rule read it as clean and the
+    # exemptions' "default read-only token" was the repository's `GITHUB_TOKEN`
+    # setting -- which is not in this tree, cannot be reviewed in a PR, and flips
+    # every one of these workflows to a write token the day someone changes it.
+    # An undeclared effective posture is now the defect; a block at EITHER level
+    # is the assertion that satisfies it.
+
+    def test_no_permissions_block_at_any_level_is_a_defect(self):
+        why = privilege_defect(self.NO_BLOCK)
+        self.assertIsNotNone(why, "a workflow declaring no `permissions:` at any "
+                                  "level read as unprivileged")
+        self.assertIn("job test declares no `permissions:` block", why)
+        self.assertIn("repository default", why)
+
+    def test_a_workflow_level_block_covers_every_job(self):
+        self.assertIsNone(privilege_defect(
+            dict(self.NO_BLOCK, permissions={"contents": "read"})))
+
+    def test_a_job_level_block_on_every_job_is_enough(self):
+        # `codeql.yml`, `nvd-cache.yml`, `security.yml` and `docker-publish.yml`
+        # are this shape: no workflow-level block, one per job.
+        self.assertIsNone(privilege_defect(dict(self.NO_BLOCK, jobs={
+            "lint": {"permissions": {"contents": "read"}, "steps": []},
+            "test": {"permissions": {"contents": "read"}, "steps": []}})))
+
+    def test_only_the_job_that_declares_nothing_is_named(self):
+        why = privilege_defect(dict(self.NO_BLOCK, jobs={
+            "lint": {"permissions": {"contents": "read"}, "steps": []},
+            "test": {"steps": []}}))
+        self.assertIsNotNone(why, "a job inheriting nothing read as unprivileged")
+        self.assertIn("job test declares no `permissions:` block", why)
+        self.assertNotIn("job lint", why)
+
+    def test_a_write_grant_is_still_named_when_no_workflow_block_exists(self):
+        self.assertIn("job test holds contents: write", privilege_defect(
+            dict(self.NO_BLOCK,
+                 jobs={"test": {"permissions": {"contents": "write"},
+                                "steps": []}})))
 
 
 class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):

@@ -18,6 +18,17 @@ on:
       - .github/workflows/docker-build-pr.yml
       - skill/scripts/**
 
+# #1784 (ARC-3955973987): the other workflow that declared nothing. Every step
+# below only reads the checkout -- hadolint is fetched from a public release URL
+# and checksummed, `docker/build-push-action` runs with `load: true` and no
+# `push:`, and there is no `docker/login-action` anywhere in the file, so nothing
+# here authenticates to a registry. `packages: read` would be a scope with no
+# consumer: `Dockerfile`'s `FROM ${NVD_DATA_REF}` is an ANONYMOUS daemon pull,
+# which `permissions:` does not govern, and the `type=gha` cache it reads runs on
+# the Actions runtime token, not on `GITHUB_TOKEN`.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
