@@ -103,6 +103,10 @@ evidence exposed.
   the README and GETTING-STARTED. One test was owed and is here: `evil.csproj` must hold exactly
   one target, hooked to `Build` and nothing else, or its `curl` fires on the networked
   fixtures-image builder.
+- **Malformed Kimi usage records remain unknown data (#1847).** Invalid counters are skipped
+  as a whole record while adjacent valid turns still count. Wire lookup rejects non-string,
+  traversal and glob identifiers. Runner refusal diagnostics redact credentials before taking
+  their 200-character excerpt, including credentials crossing that boundary (#1853).
 - **Gitleaks root ignore file follows the scan mode (#1924).** In `standard`, a
   repository's regular `.gitleaksignore` is honoured. In `redteam`, an existing
   regular file is covered by a scanner-owned empty file mounted read-only at
