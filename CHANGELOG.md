@@ -23,10 +23,11 @@ evidence exposed.
   the fixture runner splices both lists into both `docker run` argvs, plus `--network none` on the
   probe. Pinned as parity rather than resemblance: the flags between `run --rm` and the rest of the
   argv are exactly what `run_tools` returns, and one test retunes a ceiling inside `run_tools` and
-  watches both launches follow -- a copy passes a spot-check and then drifts. The envelope's own two
-  ways to die now name themselves instead of arriving as a bare number: the probe quotes docker's
-  refusal when the daemon rejects a ceiling, and rc 137 is reported as the memory ceiling's OOM
-  kill, rc 124 as the CPU throttle meeting `TEST_TIMEOUT`. What this cannot prove: Docker is out of
+  watches both launches follow -- a copy passes a spot-check and then drifts. The envelope's failure
+  modes now name themselves instead of arriving as a bare number: the probe quotes docker's refusal
+  when the daemon rejects a ceiling, rc 137 is reported as the memory ceiling's OOM kill, and rc 124
+  as a timeout with the CPU throttle named as the likely cause. What this cannot prove: Docker is
+  out of
   reach in the fixing session, and the daily `adapter-integration` workflow runs its own
   `docker run` rather than this script, so the first local `run_fixture_tests.py` is the end-to-end
   check. The ceilings are the ones these same scanners already run under (6g memory, 4 CPUs, 1024

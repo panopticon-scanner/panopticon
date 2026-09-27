@@ -88,7 +88,7 @@ DOCKER_PROBE_TIMEOUT = 30
 # fed to dependency-check) can destabilize the host/CI runner long before either
 # cap. Every container this module and the fixture runner launch gets a hard
 # ceiling (the runner's two only since #1767, ARC-3859414366). Retunable via env;
-# an empty value drops that one flag (a cgroup that rejects --pids-limit, say).
+# an empty value drops that ceiling (both memory flags, or --cpus, or --pids-limit).
 CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
 CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
@@ -103,8 +103,8 @@ def privilege_drop_flags():
     neither the ceilings above nor `--network none` stops a capability escalation.
 
     Not repo-wide. The daily `adapter-integration` workflow runs the fixtures image
-    itself, four times, with its own `--user`/`--network none` and none of these
-    flags or the ceilings. And `tools/egress.py` hardens its tinyproxy sidecar by
+    itself, four times, with its own `--user` (and `--network none` in the containment
+    lane) and none of these flags or the ceilings. `tools/egress.py` hardens its sidecar by
     literal copy (`PROXY_HARDENING`, `PROXY_LIMITS`, the ceilings tighter on purpose).
 
     --cap-drop=ALL removes the whole capability-abuse class (raw sockets, mknod, chroot,

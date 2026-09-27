@@ -248,10 +248,11 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # `--cpus` only throttles, but it throttles against a pre-existing
         # wall-clock bound, so a run that used to fit can now cross it.
         # PANOPTICON_TOOL_CPUS retunes that ceiling or drops it.
-        print("fixture test run timed out after %ds; aborting (exit 124). "
-              "If the CPU ceiling is what slowed it, retune or drop it with "
-              "PANOPTICON_TOOL_CPUS." % TEST_TIMEOUT,
-              file=sys.stderr, flush=True)
+        msg = "fixture test run timed out after %ds; aborting (exit 124)." % TEST_TIMEOUT
+        if run_tools.CONTAINER_CPUS:
+            msg += (" If the CPU ceiling is what slowed it, retune or drop it with "
+                    "PANOPTICON_TOOL_CPUS.")
+        print(msg, file=sys.stderr, flush=True)
         return 124
     if result.returncode == 137 and run_tools.CONTAINER_MEMORY:
         # 128+SIGKILL. --memory-swap is pinned equal to --memory, so an

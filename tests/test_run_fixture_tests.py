@@ -227,18 +227,31 @@ class TestRunTests(unittest.TestCase):
             rft.run_tests("tag")
         self.assertEqual(m.call_args.kwargs.get("timeout"), rft.TEST_TIMEOUT)  # #1114
 
-    def test_run_tests_timeout_returns_124(self):
+    def _timed_out_run(self, cpus):
         stderr = io.StringIO()
-        with mock.patch.object(rft.subprocess, "run",
+        with mock.patch.object(rft.run_tools, "CONTAINER_CPUS", cpus), \
+             mock.patch.object(rft.subprocess, "run",
                                side_effect=rft.subprocess.TimeoutExpired("cmd", rft.TEST_TIMEOUT)):
             with contextlib.redirect_stderr(stderr):
                 rc = rft.run_tests("tag")
+        return rc, stderr.getvalue()
+
+    def test_run_tests_timeout_returns_124(self):
+        rc, err = self._timed_out_run("4")
         self.assertEqual(rc, 124)  # bounded, not an infinite hang
         # The number, and the knob that can make it stop happening: `--cpus` is
         # a throttle, so the ceiling can push a run that used to fit past
         # TEST_TIMEOUT.
-        self.assertIn("124", stderr.getvalue())
-        self.assertIn("PANOPTICON_TOOL_CPUS", stderr.getvalue())
+        self.assertIn("124", err)
+        self.assertIn("PANOPTICON_TOOL_CPUS", err)
+
+    def test_timeout_without_a_cpu_ceiling_does_not_blame_the_throttle(self):
+        # With PANOPTICON_TOOL_CPUS exported empty there is no --cpus flag, so
+        # telling the operator to retune it would misdiagnose a plain timeout.
+        rc, err = self._timed_out_run("")
+        self.assertEqual(rc, 124)
+        self.assertIn("124", err)
+        self.assertNotIn("PANOPTICON_TOOL_CPUS", err)
 
     def test_oom_kill_at_the_memory_ceiling_names_itself(self):
         # rc 137 under a live --memory ceiling is the envelope, not an adapter
