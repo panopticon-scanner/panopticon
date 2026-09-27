@@ -49,16 +49,17 @@ def _normalized_root(path, cause, remedy=_ROOT_REFUSAL):
     should a git ever report the logical one.
 
     Refused rather than returned: a filesystem root (`dirname(p) == p`, on any
-    platform), a non-absolute root, and a root that is not an existing
-    directory. Each one strips nothing, or mangles the text, and publishes the
-    absolute paths this module exists to remove.
+    platform) mangles the text; a root that is not an existing directory strips
+    nothing; a non-absolute root resolves against the cwd and re-opens the
+    ambient nondeterminism this module exists to close. Each would publish the
+    absolute paths it exists to remove.
     """
     given = str(path)
     real = os.path.realpath(given)
     if not os.path.isabs(given) or os.path.dirname(real) == real:
         raise RuntimeError(cause + remedy)
     if not os.path.isdir(real):
-        raise RuntimeError(_NOT_A_DIRECTORY + remedy)
+        raise RuntimeError("%s: %s%s" % (cause, _NOT_A_DIRECTORY, remedy))
     return real + "/"
 
 
@@ -66,8 +67,10 @@ def _detect_repo_root():
     """The checkout's absolute, realpath'd root (trailing '/'), detected live.
 
     The cwd fallback stays -- a filer is run from the checkout by SOP -- but a
-    cwd at the filesystem root, or one that no longer exists, is not a fallback:
-    it is a silent text mangler, so it is refused loudly instead of returned.
+    cwd at the filesystem root is not a fallback (a silent text mangler), and a
+    root that no longer exists is refused whoever reported it: git under a stale
+    GIT_WORK_TREE prints one with exit 0. (A vanished cwd never reaches this
+    guard; os.getcwd itself raises first.)
     """
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],  # nosec
