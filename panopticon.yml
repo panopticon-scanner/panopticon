@@ -225,6 +225,7 @@ groups:
       - tests/test_safe_write.py
       - tests/test_artifact_write_symlinks.py
       - tests/test_agent_templates.py
+      - tests/test_agent_docs.py
       - tests/test_domain_advisor_template.py
       - tests/test_write_guard_hook.py
       - tests/test_collect_usage.py
@@ -243,7 +244,6 @@ groups:
       - tests/test_skill_md.py
       - tests/doc_helpers.py
       - tests/test_readme_docs.py
-      - tests/test_role_docs.py
       - tests/test_setup_docs.py
       - tests/test_driver_docs.py
       - tests/test_guide_docs.py
@@ -289,6 +289,7 @@ groups:
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
       - tests/test_workflow_dispatch_script.py
+      - tests/test_workflow_docs.py
       - tests/workflows/dispatch_harness.mjs
       panels:
       - ARC

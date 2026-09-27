@@ -668,3 +668,10 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("ScopeProfile", loop)
         self.assertTrue("returns" in loop.lower() or "returned" in loop.lower(), loop)
         self.assertIn("read-only", loop)
+
+
+class TestDocPolicyDocs(unittest.TestCase):
+    def test_skill_documents_doc_severity_policy(self):
+        skill = _read_doc()
+        self.assertIn("--doc-paths", skill)
+        self.assertIn("meta.coverage.doc_policy", skill)
