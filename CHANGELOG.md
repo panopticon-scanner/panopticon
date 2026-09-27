@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
