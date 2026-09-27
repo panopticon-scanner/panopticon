@@ -50,11 +50,13 @@ jobs:
         id: dc
         run: |
           set -euo pipefail
-          ver="$(grep -E '^ARG DEPENDENCY_CHECK_VERSION=' Dockerfile | head -1 | cut -d= -f2)"
-          sha="$(grep -E '^ARG DEPENDENCY_CHECK_SHA256=' Dockerfile | head -1 | cut -d= -f2)"
-          # constrain to expected shapes so a tampered ARG can't inject downstream
-          echo "$ver" | grep -Eq '^[0-9][0-9.]*$' || { echo "::error::unexpected DEPENDENCY_CHECK_VERSION '$ver'"; exit 1; }
-          echo "$sha" | grep -Eq '^[0-9a-f]{64}$'  || { echo "::error::unexpected DEPENDENCY_CHECK_SHA256"; exit 1; }
+          # One tested reader, shared with docker-publish.yml (#1774). It still
+          # constrains each value to its expected shape so a tampered ARG can't
+          # inject downstream -- the version keys the tag below and the SHA256
+          # is what the release zip is checked against -- and it exits 2 rather
+          # than return one it cannot, which `set -e` turns into a failed step.
+          ver="$(python3 scripts/dockerfile_args.py read-arg DEPENDENCY_CHECK_VERSION)"
+          sha="$(python3 scripts/dockerfile_args.py read-arg DEPENDENCY_CHECK_SHA256)"
           {
             echo "version=$ver"
             echo "sha256=$sha"
