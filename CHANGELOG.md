@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A refused ledger recovery names the issue it could not read (#1805; COD-273223337).**
+  Recovering the filed-issues ledger from GitHub refused the whole batch, anonymously, when a
+  quoted marker block in one issue's own text tripped the check; `refusing:` now prefixes that
+  issue's URL, and the exactly-once marker, source-report and location rules stay unchanged.
 - **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
   `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
   (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
