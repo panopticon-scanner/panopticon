@@ -457,8 +457,17 @@ class RepositoryHooksNeverRun(unittest.TestCase):
     """
 
     def _repo(self):
-        return make_git_repo(test_case=self, panopticon=True,
-                            files={"a.py": "value = 1\n"})
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1  # initial fixture\n",
+                                    "refresh.txt": "unchanged\n"})
+        # A clean tracked path with a distinct stat forces status to refresh
+        # the index and exercise post-index-change even if the index timestamp
+        # is ahead of the same-second a.py rewrite on a fast filesystem.
+        companion = os.path.join(repo, "refresh.txt")
+        stat = os.stat(companion)
+        os.utime(companion, ns=(stat.st_atime_ns,
+                                stat.st_mtime_ns - 120_000_000_000))
+        return repo
 
     def test_a_planted_hook_runs_under_plain_git(self):
         # Vacuity guard for both tests below.
