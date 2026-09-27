@@ -11,6 +11,37 @@ evidence exposed.
   `orchestrate.loop` called `_first_run`, and the resume seam's `_run`, before its own `try`, so
   a Ctrl-C there escaped as a traceback and `_finish` never ran. Both calls now live inside the
   same `try`, so the loop's existing handlers cover them; nothing before `_first_run` changed.
+- **`ci.yml` states its token posture instead of inheriting one (#1784, ARC-3955973987).**
+  `tests/test_workflow_pins.py`'s `privilege_defect` asserts the posture the three `ci.yml` install
+  exemptions are written against -- unprivileged trigger, read-only token -- but it read an ABSENT
+  `permissions:` block as unprivileged, because a block that does not exist grants no `write` scope.
+  So "the default read-only token" in those exemptions meant the repository's `GITHUB_TOKEN`
+  setting: not in this tree, not reviewable in a PR, and one settings change away from a write token
+  that would keep four unpinned installs exempt. A job with no `permissions:` of its own and no
+  workflow-level block to inherit is now a defect naming that job; a block at either level satisfies
+  it, which is how `codeql.yml`, `nvd-cache.yml`, `security.yml` and `docker-publish.yml` already
+  stood. `ci.yml` and `docker-build-pr.yml`, the only two files that declared nothing, now carry a
+  top-level `permissions: contents: read` -- neither pushes, logs in to a registry, nor publishes.
+- **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
+  #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
+  a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
+  default `--gate-scope on-diff` the gate's source set is not a measured diff, and a change
+  carrying active findings reported a green `PASS` on findings that were never gated.
+  OWNER RULING 2026-09-27: refuse to certify. `summary.gate` now reads `INCONCLUSIVE` and
+  `summary.coverage_note` names the zero-hunk map plus the remedy (regenerate the diff-hunks
+  artifact; the driver's discovery phase writes it) -- or names the REJECTED payload instead, when
+  that is why the map is empty, rather than sending the operator to compare a known-broken artifact
+  against itself. Two carve-outs are part of the ruling: an empty legitimate change with NO active
+  findings still passes, and falling back to the wider scope was REJECTED, because a benign empty
+  `--changes` run would then go red on pre-existing findings it did not introduce. `ranges == 0` is
+  the measure, not `files == 0`: a map that names a file and gives it no range scopes the gate by
+  `diff_map.classify`'s two FAIL-OPEN arms, which is not a measured diff either.
+  `delta.zero_hunk_gate_gap` is the one place that decides whether there is a gap, and `certify`'s
+  new `delta_zero_hunks` reason joins `gate_relevant_gap` -- so a real FAIL and an armed-but-OFF
+  gate are untouched, and `coverage_certified` is false either way. No new report key: the reason
+  rides the existing certification note, placed after the unreadable-manifest note (which names a
+  broken file) and before every other caveat, since an empty gate scope invalidates the gate
+  wholesale.
 - **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
   `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
   `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived

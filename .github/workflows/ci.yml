@@ -6,6 +6,19 @@ on:
   pull_request:
     branches: [main]
 
+# #1784 (ARC-3955973987): stated here, not inherited. The three install
+# exemptions `tests/test_workflow_pins.py` grants this file are justified by its
+# read-only token, and until this block that token was the repository's
+# `GITHUB_TOKEN` default -- a setting outside this tree that no PR can review and
+# a repository-settings change can widen. `contents: read` is the whole need: the
+# jobs below check out, lint, type-check and run the matrix, and publish nothing.
+# `actions/upload-artifact` uploads within its own run, which the Actions runtime
+# token covers -- `docker-publish.yml`'s build job uploads under `contents: read`
+# too, and only reading ANOTHER run's artifact needs a scope (security.yml's
+# `actions: read`).
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
