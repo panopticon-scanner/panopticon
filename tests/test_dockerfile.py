@@ -10,7 +10,7 @@ import shell_reader
 import workflow_guard
 from workflow_forms import names_file, regions
 
-from _test_helpers import fake_aws_key
+from tests._test_helpers import fake_aws_key
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 

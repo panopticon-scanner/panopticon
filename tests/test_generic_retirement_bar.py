@@ -34,7 +34,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 from scripts import dispatch, hosts, host_probes
 import scripts.ocrdb as ocrdb
 import scripts.probes.common as probes_common

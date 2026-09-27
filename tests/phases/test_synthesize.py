@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.phases.runio as runio

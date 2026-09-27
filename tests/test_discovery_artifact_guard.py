@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from discovery_test_helpers import orchestrator, touch, init_repo, git_cmd
+from tests.discovery_test_helpers import orchestrator, touch, init_repo, git_cmd
 
 
 class TestArtifactOutputGuard(unittest.TestCase):

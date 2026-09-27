@@ -24,13 +24,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import all_proven_artifact as _all_proven_artifact
+from tests._test_helpers import all_proven_artifact as _all_proven_artifact
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
 
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 _READINESS = "scripts.phases.readiness"
@@ -312,7 +312,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
         import ast
         import subprocess
         import sys
-        from conftest import REPO_ROOT, SKILL_ROOT
+        from tests._test_helpers import REPO_ROOT, SKILL_ROOT
         # Asserted in a FRESH interpreter: this process has patched the
         # attribute a dozen times by now, so reading it here proves nothing.
         env = dict(os.environ)
@@ -360,7 +360,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
                          "must leave it None:\n" + "\n".join(offenders))
 
     def test_the_launch_guard_still_finds_exactly_the_known_seams(self):
-        from test_host_launch_guard import _seams
+        from tests.test_host_launch_guard import _seams
         relatives = [relative for _, relative, _ in _seams()]
         for name in ("readiness.py", "readiness_checks.py"):
             self.assertNotIn(os.path.join("phases", name), relatives)

@@ -51,7 +51,7 @@ import unittest
 from unittest import mock
 
 from scripts.tools import ADAPTERS
-from .conftest import scratch_cwd_recorder
+from tests.tools.helpers import scratch_cwd_recorder
 
 
 # Adapters that legitimately need cwd equal to (or inside) the target. An
@@ -181,7 +181,7 @@ def _record_popen_calls(name, adapter, target):
     """Run *adapter*.invoke(target) with its scanner subprocess faked, and
     return one record per launch: `{argv, cwd, existed, entries}`.
 
-    The recorder itself is `conftest.scratch_cwd_recorder`, shared with the
+    The recorder itself is `tests.tools.helpers.scratch_cwd_recorder`, shared with the
     per-adapter pins (#1877 M6), so there is ONE definition of what "recorded
     at launch" means: `existed` and `entries` are read INSIDE the fake Popen,
     at the instant the scanner would have started, because that -- not what

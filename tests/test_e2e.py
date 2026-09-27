@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 
-from _test_helpers import first, only
+from tests._test_helpers import first, only
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 SCRIPTS = os.path.join(ROOT, "skill", "scripts")

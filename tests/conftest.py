@@ -1,12 +1,4 @@
-"""Make panopticon's packages importable from any test without per-file
-sys.path juggling (#547).
-
-pytest imports this before collecting tests, so a test can do
-`import scripts.tools.base` (needs skill/ on the path), `import evidence`
-(skill/scripts/), or `import file_issues` (repo-root scripts/) with no
-boilerplate. Previously 18 tests/tools/ files each repeated the same
-`sys.path.insert(...)` line.
-"""
+"""Establish isolated test HOME and refuse unsafe roots or live launches."""
 import os
 import sys
 import shlex
@@ -57,23 +49,6 @@ def pytest_configure(config):
     _refuse_repository_temp_root(config.getoption("basetemp"), "--basetemp")
 
 
-_TESTS = os.path.dirname(os.path.abspath(__file__))
-_REPO = os.path.dirname(_TESTS)
-FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
-
-# Public path anchors (#run7 TST-G1B): tests that need the repo or skill root
-# previously each re-derived it via nested dirname(__file__) / os.pardir. Import
-# these instead: `from conftest import REPO_ROOT` / `SKILL_ROOT`.
-REPO_ROOT = _REPO
-SKILL_ROOT = os.path.join(_REPO, "skill")
-for _p in reversed((_TESTS,
-                    os.path.join(_REPO, "skill"),
-                    os.path.join(_REPO, "skill", "scripts"),
-                    os.path.join(_REPO, "scripts"))):
-    if _p in sys.path:
-        sys.path.remove(_p)
-    sys.path.insert(0, _p)
-
 # --- Family guardrails section 3, Suite: "tests use temp dirs only ... never
 # a home directory". The session-mode usage probe resolves
 # `~/.claude/projects/<slug>` whenever a caller passes no `home=`, and four
@@ -90,11 +65,7 @@ for _p in reversed((_TESTS,
 # `-c user.name=`, so the operator's global config going out of reach
 # changes nothing they measure.
 #
-# Minted ONCE per process and handed on through the environment: this file
-# is imported twice -- as pytest's conftest module and, because tests/ is on
-# sys.path, as `conftest` by the tests that `from conftest import
-# write_host_evidence` -- and a second mkdtemp here moved HOME out from
-# under the registry the first import had already expanded.
+# Reuse the isolated home in child pytest processes through the environment.
 import atexit  # noqa: E402
 import shutil  # noqa: E402
 
@@ -121,16 +92,6 @@ if shutil.which("docker") is None:
     os.chmod(_TEST_DOCKER, 0o700)
     os.environ["PATH"] = os.pathsep.join([_TEST_BIN, os.environ.get("PATH", "")])
 
-# Bind tests/tools as the bare `tools` package NOW, while tests/ is at
-# sys.path[0]. Entry scripts (skill/scripts/synthesize.py, driver.py,
-# score_gate.py) each `sys.path.insert(0, skill/scripts)` when imported, after
-# which skill/scripts/tools/ would shadow tests/tools/ for every later
-# `from tools.git_repo import ...` (test_diff_map, discovery_test_helpers,
-# test_driver). Collection order used to hide this -- tests/synth/ (WS-0 S4)
-# sorts before tests/test_*.py and imports scripts.synthesize at module scope,
-# so the suite must not depend on which file imports an entry script first.
-import tools  # noqa: E402,F401
-
 # --- #1515: no live scanner containers from the unit suite -------------------
 # driver.run() advances into tools_execute unless --no-tools; run_tools then
 # asks docker_available() whether to launch `docker run --memory 6g --cpus 4`
@@ -149,36 +110,6 @@ import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.runners.kimi as _kimi_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
-from scripts import hosts as _hosts  # noqa: E402
-from scripts.phases import runio as _runio  # noqa: E402
-
-
-# --- #1344 F3: consumers now read posture(), which is proof, not a claim -----
-# Every phase test that built a "claude" (or synthetic-probe) manifest and
-# expected `enforced: True` / a write-guard early-return / a usage collection
-# used to get that answer from the bare claim (`hosts.declares`). Now it also
-# needs evidence a probe actually proved the capability, or `posture()`
-# reports UNKNOWN and every one of those sites goes the other way. This is the
-# one place that writes it, so every phase test states the same fixture the
-# same way rather than five near-identical inline JSON blobs.
-def write_host_evidence(review_root, states, host="claude", cli_flags=None):
-    """A host-capabilities.json proving exactly `states` (a
-    {capability: state} mapping); every other capability is UNKNOWN. Lands
-    wherever `runio.host_evidence(review_root)` will look for it -- the
-    per-run folder once a manifest is on disk, the flat top-level path
-    otherwise -- so a test needs no manifest just to prove a capability.
-
-    `cli_flags` (D10 F1) seeds the OPERATIONAL block beside `capabilities` --
-    e.g. `{hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True}}`.
-    Omitted by default, which is the fail-safe "nobody asked the CLI" state
-    every entry builder must read as "do not pass a schema"."""
-    capabilities = {name: {"state": states.get(name, _hosts.UNKNOWN),
-                           "by": "fixture", "detail": "fixture"}
-                    for name in _hosts.CAPABILITIES}
-    return _runio._write_json(
-        _runio._pano(review_root, _runio.HOST_CAPABILITIES),
-        {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",
-         "capabilities": capabilities, _hosts.CLI_FLAGS: cli_flags or {}})
 
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 
@@ -230,34 +161,6 @@ def _no_live_scanner_containers(request, monkeypatch):
         return                      # opted in with @pytest.mark.docker
     monkeypatch.setattr(_run_tools, "docker_available", _refuse_docker)
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
-
-
-# --- #1637 P08: the readiness phase's docker probe ---------------------------
-# The readiness phase reuses `setup_flow._check_docker`, so the autouse fixture
-# above already refuses it for every test that says nothing -- which is the
-# right default and the wrong answer for the dozens of lifecycle tests that
-# need the engine to get PAST readiness and on to the phase they are about.
-# Those state the environment they mean with this fake runner, which answers
-# the two probe argvs and touches no daemon. Handed to `readiness_checks.DOCKER_RUNNER`
-# (a module attribute, so one patch reaches it), never to PATH: a `docker` shim
-# proof over the whole suite must stay at zero lines.
-class _DockerProbe:
-    def __init__(self, returncode):
-        self.returncode, self.stdout, self.stderr = returncode, "", ""
-
-
-def docker_probe_runner(daemon=0, image=0):
-    """A fake `subprocess.run` answering readiness's two docker probes.
-
-    Defaults to "daemon up, image present". Pass a non-zero `image` for the
-    run-13 environment (Docker fine, `panopticon-tools` absent) and a non-zero
-    `daemon` for no Docker at all.
-    """
-    def runner(cmd, **_kwargs):
-        if list(cmd[:3]) == ["docker", "image", "inspect"]:
-            return _DockerProbe(image)
-        return _DockerProbe(daemon)
-    return runner
 
 
 # --- #1344: no live host-CLI launches from the unit suite --------------------

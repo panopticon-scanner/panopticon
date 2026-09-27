@@ -28,7 +28,7 @@ import time
 import unittest
 from unittest import mock
 
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 import scripts.diff_map as diff_map
 import scripts.discovery as discovery
 import scripts.phases.runio as runio
@@ -40,7 +40,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 
-from tools.git_repo import (add_plumbing_submodule, hostile_marker,
+from tests.tools.git_repo import (add_plumbing_submodule, hostile_marker,
                             make_git_repo, path_shim_git, plant_clean_filter,
                             plant_filter_command, plant_fsmonitor_command,
                             plant_hook)
@@ -457,8 +457,17 @@ class RepositoryHooksNeverRun(unittest.TestCase):
     """
 
     def _repo(self):
-        return make_git_repo(test_case=self, panopticon=True,
-                            files={"a.py": "value = 1\n"})
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1  # initial fixture\n",
+                                    "refresh.txt": "unchanged\n"})
+        # A clean tracked path with a distinct stat forces status to refresh
+        # the index and exercise post-index-change even if the index timestamp
+        # is ahead of the same-second a.py rewrite on a fast filesystem.
+        companion = os.path.join(repo, "refresh.txt")
+        stat = os.stat(companion)
+        os.utime(companion, ns=(stat.st_atime_ns,
+                                stat.st_mtime_ns - 120_000_000_000))
+        return repo
 
     def test_a_planted_hook_runs_under_plain_git(self):
         # Vacuity guard for both tests below.

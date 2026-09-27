@@ -18,7 +18,7 @@ import scripts.phases.validate as validate_phase
 import scripts.diff_map as diff_map
 import scripts.run_manifest as run_manifest
 
-from tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo
 
 
 class TestValidatePhase(unittest.TestCase):

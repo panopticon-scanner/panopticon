@@ -1,12 +1,5 @@
-"""Shared constants for the tools integration test sub-package."""
+"""Pure support helpers for tools tests."""
 import os
-
-# Define FIXTURE_ROOT for the tools sub-package so existing imports of the
-# form ``from conftest import FIXTURE_ROOT`` resolve against this file.
-FIXTURE_ROOT = os.environ.get(
-    "FIXTURE_ROOT",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures"),
-)
 
 OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
 
@@ -35,7 +28,7 @@ def scratch_cwd_recorder(calls, stdout=b"{}", stderr=b"", returncode=0):
     scanner would have resolved its own config against is what was there when
     it started, not what is there afterwards.
     """
-    from _test_helpers import FakePopen
+    from tests._test_helpers import FakePopen
 
     def _record(cmd, **kwargs):
         cwd = kwargs.get("cwd")

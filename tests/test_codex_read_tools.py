@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from _test_helpers import hard_link_or_skip
+from tests._test_helpers import hard_link_or_skip
 from scripts import codex_read_tools as read_tools
 
 
@@ -573,7 +573,7 @@ def test_the_repository_checkout_itself_is_listable_under_production_caps():
     # exclusion loop, and a path reached through a symlinked component made
     # every O_NOFOLLOW open fail, because Reader realpaths its cwd but leaves
     # scope["dirs"] at abspath.
-    from conftest import REPO_ROOT
+    from tests._test_helpers import REPO_ROOT
     root = os.path.realpath(REPO_ROOT)
     reader = read_tools.Reader({"files": [], "dirs": [root], "reads": []}, root)
 
@@ -606,7 +606,7 @@ def test_the_exclusion_list_matches_the_one_discovery_prunes():
     duplicate honest -- Codex's enumeration and Claude's agentic scan must
     prune the same names, or the two hosts cover the same tree differently.
     """
-    from conftest import REPO_ROOT
+    from tests._test_helpers import REPO_ROOT
     from scripts import discovery
 
     # The broker has no git, so it cannot read the target's .gitignore the way

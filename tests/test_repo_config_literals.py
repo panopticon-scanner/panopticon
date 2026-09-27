@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 
 RUNTIME_ROOTS = ("skill/scripts", "scripts", "skill/workflows")
 RUNTIME_SUFFIXES = frozenset({".py", ".js", ".cjs", ".mjs", ".sh", ".bash", ".zsh"})

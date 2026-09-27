@@ -1,7 +1,7 @@
 """Chunking, depth, and panel-priority tests."""
 import unittest
 
-from discovery_test_helpers import orchestrator
+from tests.discovery_test_helpers import orchestrator
 
 
 class TestChunkFiles(unittest.TestCase):

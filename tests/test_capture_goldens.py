@@ -21,7 +21,7 @@ import unittest
 import unittest.mock
 import xml.etree.ElementTree as ET
 
-from _test_helpers import fake_uuid, last
+from tests._test_helpers import fake_uuid, last
 import scripts.capture_goldens as cg
 
 

@@ -9,7 +9,7 @@ import ast
 from pathlib import Path
 import unittest
 
-from conftest import SKILL_ROOT
+from tests._test_helpers import SKILL_ROOT
 
 
 RAW_READERS = {

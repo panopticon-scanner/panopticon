@@ -6,7 +6,7 @@ import unittest
 
 import yaml
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 
 SCRIPT = os.path.join(REPO_ROOT, ".github", "apply-labels.sh")
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "labels.yml")

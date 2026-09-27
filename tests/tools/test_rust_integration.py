@@ -4,9 +4,10 @@ import subprocess
 import unittest
 from unittest import mock
 
-from _test_helpers import (REQUIRE_INTEGRATION_ENV,
+from tests._test_helpers import (REQUIRE_INTEGRATION_ENV,
                            assert_adapter_finds, skip_or_fail)
-from .conftest import FIXTURE_ROOT, OK_SCAN_EXIT_CODES
+from tests._test_helpers import FIXTURE_ROOT
+from tests.tools.helpers import OK_SCAN_EXIT_CODES
 
 # #run8 TST-F1A: the only END-TO-END cargo-audit RUSTSEC test used to hide behind
 # three stacked SOFT skips (cargo absent / `cargo audit` broken / fixture not

@@ -4,7 +4,7 @@ import sys
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from tests._test_helpers import FakePopen, first
 import scripts.tools.bundler_audit as ba
 
 BUNDLE_AUDIT_SAMPLE = b"""

@@ -10,8 +10,8 @@ import types
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
-from _test_helpers import touch  # noqa: E402
-from tools.git_repo import make_git_repo  # noqa: E402
+from tests._test_helpers import touch  # noqa: E402
+from tests.tools.git_repo import make_git_repo  # noqa: E402
 
 import scripts.discovery as discovery  # noqa: E402
 import scripts.discovery as orch  # noqa: E402

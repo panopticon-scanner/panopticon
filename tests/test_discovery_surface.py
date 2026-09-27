@@ -2,7 +2,7 @@
 and test-candidate generation."""
 import unittest
 
-from discovery_test_helpers import orchestrator
+from tests.discovery_test_helpers import orchestrator
 
 
 class TestIsTestFile(unittest.TestCase):

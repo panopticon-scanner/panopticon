@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import _test_helpers as helpers
+import tests._test_helpers as helpers
 from scripts.tools import ADAPTERS
 
 
@@ -123,7 +123,7 @@ class TestSharedAdapterExpectation(unittest.TestCase):
 
 class TestIntegrationCallerPredicates(unittest.TestCase):
     def test_semgrep_caller_rejects_wrong_rule_and_wrong_file(self):
-        from tools.test_legacy_sarif_integration import TestSemgrepIntegration
+        from tests.tools.test_legacy_sarif_integration import TestSemgrepIntegration
 
         case = TestSemgrepIntegration("test_semgrep_flags_eval_of_untrusted_input")
         rule = "opt.semgrep-rules.javascript.browser.security.eval-detected"
@@ -140,7 +140,7 @@ class TestIntegrationCallerPredicates(unittest.TestCase):
                         case.test_semgrep_flags_eval_of_untrusted_input()
 
     def test_bundler_caller_rejects_wrong_package_and_wrong_file(self):
-        from tools.test_ruby_integration import TestRubyIntegration
+        from tests.tools.test_ruby_integration import TestRubyIntegration
 
         case = TestRubyIntegration("test_bundler_audit_finds_railsgoat_vulns")
         for row, should_pass in (

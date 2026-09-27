@@ -21,9 +21,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import assert_adapter_finds, skip_or_fail
+from tests._test_helpers import assert_adapter_finds, skip_or_fail
 from scripts.tools.eslint_security import EslintSecurityAdapter, _TS_PARSER_ENTRY
-from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
+from tests.tools.helpers import OK_SCAN_EXIT_CODES, in_tools_image
 
 
 class TestEslintSecurityIntegration(unittest.TestCase):
