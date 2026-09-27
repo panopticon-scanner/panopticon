@@ -20,6 +20,23 @@ evidence exposed.
   accepted `10.0.3.` and `1..2`, and a value carrying a second `=` is now refused rather than
   truncated to the part before it. `tests/test_dockerfile_args.py` covers the reader, both
   callers, and the committed Dockerfile's own two pins.
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
+- **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
+  limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
+  limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
+  writer, and turns JSON recursion/memory failures into the caller's normal unreadable-input
+  path. Strict metadata and tolerant agent-envelope parsing keep their existing formats.
+  Callers retain their shape checks, fallback values and invalid-artifact disclosures; an
+  unreadable manifest or verify queue cannot become an absent one. Parent-directory aliases
+  such as macOS `/var` remain supported. This supplies the shared reader requested by #2081
+  and #2082; changing the existing coverage-skip certification policy remains #2080.
 - **Align implementation documentation with the current contracts (#1819).** Kimi preparation
   always creates a fresh home, including on resume; the recorded pointer is informational.
   Report grades use health when available and display n/a without reviewed lines to grade; the

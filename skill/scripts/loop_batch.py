@@ -26,13 +26,13 @@ import scripts.phases.setup as setup
 import scripts.probes.shape as shape_probe
 import scripts.run_manifest as run_manifest
 import scripts.runners.batch as batch_mod
+import scripts.runners.base as runner_base
 
-SETUP_NAMESPACE = "setup"
+SETUP_NAMESPACE = runner_base.SETUP_NAMESPACE
 
 # #1662: the two sentences a Ctrl-C ends a run with. Constants because
-# docs/guide/driver-run-loop.md quotes the first one back and the guide test
-# reads it off
-# here. "had been HANDLED", not completed: the count is every entry the loop
+# docs/guide/driver-run-loop.md quotes the first one and the guide test reads it here.
+# "had been HANDLED", not completed: the count is every entry the loop
 # got back, a failed launch included -- ledgered as the failure it was rather
 # than persisted (F2), and rolled back either way.
 INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rolled "

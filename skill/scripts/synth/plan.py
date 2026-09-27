@@ -7,7 +7,6 @@ reached the 700-line ceiling (#1701).
 from typing import Any
 from dataclasses import dataclass, field
 import glob
-import json
 import os
 import sys
 
@@ -16,6 +15,7 @@ import scripts.group_runner as group_runner
 import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
+from . import artifacts as artifacts_mod
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
@@ -175,12 +175,10 @@ def out_of_scope_findings(findings_paths, plan):
         # `load_json_tolerant` to parse, `normalize_finding` (which pins
         # `location` to a dict and drops it when it names no file) to repair --
         # so these two readers of the same files cannot disagree about what the
-        # file IS or about what a row means. Sibling readers in this module
-        # still catch only (OSError, ValueError); that pattern is #2081 and is
-        # not touched here.
+        # file IS or about what a row means. The shared artifact reader bounds
+        # these secondary reads and normalizes parser resource errors (#2081).
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = evidence_mod.load_json_tolerant(fh.read())
+            data = artifacts_mod.read_json(path, tolerant=True, announce=True)
         except Exception:  # noqa: BLE001 - tolerant by design, like load_findings_detailed
             continue
         raws = data.get("findings") if isinstance(data, dict) else None
@@ -212,8 +210,7 @@ def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):
     paths = sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB)))
     for path in paths:
         try:
-            with open(path, encoding="utf-8") as fh:
-                plan = json.load(fh)
+            plan = artifacts_mod.read_json(path)
         except (OSError, ValueError) as exc:
             invalid.append({"file": path, "reason": "unreadable: %s" % exc})
             continue
@@ -246,8 +243,7 @@ def load_dispatch_plans(panopticon_dir=".panopticon"):
     plans = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB))):
         try:
-            with open(path, encoding="utf-8") as fh:
-                plan = json.load(fh)
+            plan = artifacts_mod.read_json(path, announce=True)
         except (OSError, ValueError):
             continue
         if isinstance(plan, list):
@@ -288,11 +284,10 @@ def load_groups_json(path):
     makes a second caller safe by construction. It lived at the caller for one
     round only because this module was two lines under its ceiling.
     """
-    if not (path and os.path.isfile(path)):
+    if not (path and os.path.lexists(path)):
         return {}
     try:
-        with open(path, encoding="utf-8") as fh:
-            gj = json.load(fh)
+        gj = artifacts_mod.read_json(path)
     except (OSError, ValueError) as e:
         print("synthesize: could not read %s (%s); ignoring" % (path, e), file=sys.stderr)
         return {}
@@ -323,8 +318,7 @@ def load_panel_tools_context(run_dir):
     """
     counts = {"with": 0, "without": 0}
     try:
-        with open(os.path.join(run_dir, PANEL_TOOLS_CONTEXT), encoding="utf-8") as fh:
-            body = json.load(fh)
+        body = artifacts_mod.read_json(os.path.join(run_dir, PANEL_TOOLS_CONTEXT), announce=True)
     except (OSError, ValueError):
         return counts
     cells = body.get("cells") if isinstance(body, dict) else None
@@ -356,8 +350,7 @@ def load_test_inventory(run_dir):
     """
     out: dict[str, str] = {}
     try:
-        with open(os.path.join(run_dir, TEST_INVENTORY), encoding="utf-8") as fh:
-            body = json.load(fh)
+        body = artifacts_mod.read_json(os.path.join(run_dir, TEST_INVENTORY), announce=True)
     except (OSError, ValueError):
         return out
     groups = body.get("groups") if isinstance(body, dict) else None
@@ -377,8 +370,7 @@ def load_scout_requests(run_dir):
     profiles_seen = 0
     for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
         try:
-            with open(sp, encoding="utf-8") as fh:
-                sd = evidence_mod.load_json_tolerant(fh.read())
+            sd = artifacts_mod.read_json(sp, tolerant=True, announce=True)
         except (OSError, ValueError):  # tolerant by design: never abort a run
             continue
         if not isinstance(sd, dict):

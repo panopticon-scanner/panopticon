@@ -103,7 +103,7 @@ class TestCoverageReadIsBounded(unittest.TestCase):
             path = self._write_over_limit(os.path.join(d, "coverage-Huge.json"))
             self.assertGreater(os.stat(path).st_size, coverage_io._MAX_COVERAGE_BYTES)
             err = io.StringIO()
-            with mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+            with mock.patch("scripts.synth.artifacts.json.loads") as loads, \
                     contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)
             loads.assert_not_called()
@@ -118,7 +118,7 @@ class TestCoverageReadIsBounded(unittest.TestCase):
             big = self._write_over_limit(os.path.join(d, "big.txt"))  # not in the glob
             os.symlink(big, os.path.join(d, "coverage-Link.json"))
             err = io.StringIO()
-            with mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+            with mock.patch("scripts.synth.artifacts.json.loads") as loads, \
                     contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)
             loads.assert_not_called()
@@ -147,7 +147,7 @@ class TestCoverageReadIsBounded(unittest.TestCase):
             self._write_over_limit(os.path.join(d, "coverage-Sparse.json"))
             err = io.StringIO()
             with mock.patch("scripts.synth.coverage_io.os.stat", lying_stat), \
-                    mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+                    mock.patch("scripts.synth.artifacts.json.loads") as loads, \
                     contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)
             loads.assert_not_called()
@@ -176,7 +176,7 @@ class TestCoverageReadIsBounded(unittest.TestCase):
             with open(os.path.join(d, "coverage-Core.json"), "w", encoding="utf-8") as fh:
                 json.dump({"group": "Core"}, fh)
             err = io.StringIO()
-            with mock.patch("scripts.synth.coverage_io.json.loads",
+            with mock.patch("scripts.synth.artifacts.json.loads",
                             side_effect=MemoryError()), \
                     contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)

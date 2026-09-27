@@ -27,6 +27,7 @@ import sys
 import threading
 
 from scripts.run_tools import recommendable_tools
+import scripts.tools.legacy_sarif as legacy_sarif
 
 # Directories a tool must be able to WRITE, not merely read. Keep the reason
 # attached: a bare path list invites someone to "tidy" it back to a+rX.
@@ -164,9 +165,7 @@ _validate_probe_registry(PROBES)
 # SARIF that reads as "no findings"). Running the REAL adapter argv against a
 # fixture exercises the whole path — startup + ~/.semgrep creation + rule load +
 # SARIF emission — so the only way it passes is if `semgrep scan` genuinely
-# works in this image. Mirrors tools/legacy_sarif.py's TOOL_CMD["semgrep"].
-SEMGREP_SCAN = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
-                "--metrics=off", "--disable-version-check", "--sarif", "--quiet"]
+# works in this image. The invocation reads the adapter-owned command at call time.
 
 # Bandit ships its own SARIF formatter. The image used to install a second
 # distribution under the same entry-point name, making formatter selection
@@ -318,11 +317,13 @@ def check_semgrep_scan(runner=subprocess.run):
         fixture = os.path.join(d, "probe.py")
         with open(fixture, "w", encoding="utf-8") as fh:
             fh.write(_SEMGREP_FIXTURE)
+        command = [fixture if arg == "/src" else arg
+                   for arg in legacy_sarif.TOOL_CMD["semgrep"]]
         try:
-            res = runner(SEMGREP_SCAN + [fixture], stdout=subprocess.PIPE,
+            res = runner(command, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, timeout=PROBE_TIMEOUT)
         except FileNotFoundError:
-            return False, "semgrep scan: binary not found (%s)" % SEMGREP_SCAN[0]
+            return False, "semgrep scan: binary not found (%s)" % command[0]
         except subprocess.TimeoutExpired:
             return False, "semgrep scan: no response in %ds" % PROBE_TIMEOUT
         except OSError as e:

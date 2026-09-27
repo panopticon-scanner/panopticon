@@ -30,7 +30,7 @@ class SessionRunner(base.HostRunner):
         entries = list(entries)
         ids = [e.get("id") for e in entries]
         rp = [e.get("id") for e in entries if e.get("delivery") == "return_json"]
-        setup = " --setup" if self.namespace == "setup" else ""
+        setup = " --setup" if self.namespace == base.SETUP_NAMESPACE else ""
         sys.stdout.write(json.dumps({
             "status": "dispatch",
             "pending": ids,

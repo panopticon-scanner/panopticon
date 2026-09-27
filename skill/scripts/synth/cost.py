@@ -1,10 +1,10 @@
 """The run's dispatch/usage ledger (meta.cost)."""
 from dataclasses import dataclass
 import glob
-import json
 import os
 import sys
 
+from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 
 
@@ -45,8 +45,7 @@ def load_run_usage(run_dir):
     if not run_dir:
         return None
     try:
-        with open(os.path.join(run_dir, "usage.json"), encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = artifacts_mod.read_json(os.path.join(run_dir, 'usage.json'), announce=True)
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and data else None
@@ -115,11 +114,10 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_produced):
                        `tools_ran`, which answers the coverage question
     """
     plan_path = os.path.join(pano_dir, plan_mod.DRIVER_DISPATCH_PLAN)
-    if not os.path.isfile(plan_path):
+    if not os.path.lexists(plan_path):
         return None
     try:
-        with open(plan_path, encoding="utf-8") as fh:
-            entries = json.load(fh)
+        entries = artifacts_mod.read_json(plan_path)
     # tolerant: a corrupt plan counts 0 cells. RecursionError (a RuntimeError,
     # from a deeply nested document) and MemoryError (from a huge one) are part
     # of "corrupt" -- `except (OSError, ValueError)` left both escaping into
