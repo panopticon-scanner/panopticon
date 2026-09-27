@@ -234,7 +234,8 @@ class TestSchemas(unittest.TestCase):
         for name in ("legacyPanelFinding", "domainRoleFinding"):
             with self.subTest(definition=name):
                 loc = envelope["definitions"][name]["properties"]["location"]
-                self.assertEqual(loc["required"], published["required"])
+                self.assertEqual(set(loc.get("required", [])),
+                                 set(published.get("required", [])))
 
     def test_advisor_verdict_schema_accepts_schema_version(self):
         _require_jsonschema(self)
