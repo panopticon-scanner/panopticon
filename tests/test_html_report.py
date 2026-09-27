@@ -6,6 +6,7 @@ import unittest
 from html.parser import HTMLParser
 from unittest import mock
 
+import scripts.evidence as evidence
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.html_report as hr
@@ -1921,3 +1922,84 @@ class TestMeasuredHeatmap(unittest.TestCase):
         self.assertEqual([_text(c) for c in rows["Unit_1"]], ["—", "0", "0"])
         self.assertEqual([_text(c) for c in rows["Unit_2"]], ["0", "1", "1"])
         self.assertNotIn(["Unit_2", "SEC"], cells["reviewed"])
+
+
+class TestOneOwnerForVerified(unittest.TestCase):
+    """#1774 (ARC-3073755386): the header's "N verified" count and the findings
+    split are two different questions with ONE owner
+    (`scripts.evidence_sections`), so a status cannot be verified in the header
+    and unverified in the tabs -- and a status the owner does not name fails
+    CLOSED into the collapsed section instead of joining the main list."""
+
+    # Where each of the eight known statuses is reported. Written down so "this
+    # change moves none of them" is a test rather than a promise.
+    KNOWN = {
+        "tool_confirmed": "main",
+        "advisor_confirmed": "main",
+        "corroborated": "main",
+        "rejected": "main",
+        "backup_scope_limited": "main",
+        "tool_reported": "unverified",
+        "needs_more_info": "unverified",
+        "unverified": "unverified",
+    }
+
+    def _placement(self, status):
+        """"main" or "unverified": which section the one finding rendered in."""
+        report = _minimal_report()
+        report["findings"][0]["evidence"] = {
+            "status": status,
+            "verified_by": "agent:advisor",
+            "reasoning": "r",
+            "citation_quality": "none",
+        }
+        root = _parse(hr._render_findings(report))
+        fid = report["findings"][0]["id"]
+        main = [node for node in _nodes(root, "div")
+                if node["attrs"].get("data-severity-results") == "ALL"]
+        collapsed = [node for node in _nodes(root, "section")
+                     if "unverified-findings" in (node["attrs"].get("class") or "")]
+        places = [name for name, nodes in (("main", main), ("unverified", collapsed))
+                  if any(fid in _text(node) for node in nodes)]
+        self.assertEqual(len(places), 1,
+                         "status %r rendered in %r, not exactly one section"
+                         % (status, places))
+        return places[0]
+
+    def test_an_unknown_or_missing_status_lands_in_the_unverified_section(self):
+        # The split used to be an EXCLUSION list, so every status it did not
+        # name -- a future one, or a finding carrying no evidence at all -- was
+        # promoted into the main list, which reads as reviewed.
+        for status in (None, "some_future_status"):
+            with self.subTest(status=status):
+                self.assertEqual(self._placement(status), "unverified")
+
+    def test_the_eight_known_statuses_do_not_move(self):
+        self.assertEqual(sorted(self.KNOWN), sorted(evidence.EVIDENCE_STATUSES))
+        for status, where in sorted(self.KNOWN.items()):
+            with self.subTest(status=status):
+                self.assertEqual(self._placement(status), where)
+
+    def test_the_render_and_the_predicate_cannot_disagree(self):
+        import scripts.evidence_sections as sections
+        for status in list(evidence.EVIDENCE_STATUSES) + [None, "some_future_status"]:
+            with self.subTest(status=status):
+                expected = "unverified" if sections.is_unverified(status) else "main"
+                self.assertEqual(self._placement(status), expected)
+
+    def test_the_header_counts_the_findings_its_own_word_means(self):
+        import scripts.evidence_sections as sections
+        findings, stats = [], {}
+        for i, status in enumerate(sorted(evidence.EVIDENCE_STATUSES)):
+            finding = dict(_minimal_report()["findings"][0])
+            finding["id"] = "SEC-%03d" % (i + 10)
+            finding["evidence"] = {"status": status, "verified_by": "agent:advisor",
+                                   "reasoning": "r", "citation_quality": "none"}
+            findings.append(finding)
+            stats[status] = stats.get(status, 0) + 1
+        report = _minimal_report(findings)
+        report["summary"]["evidence_stats"] = stats
+        expected = sum(1 for f in findings
+                       if sections.is_verified(f["evidence"]["status"]))
+        self.assertEqual(expected, len(sections.VERIFIED_STATUSES))
+        self.assertIn("%d verified" % expected, hr._render_header(report))

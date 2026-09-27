@@ -298,3 +298,49 @@ class TestReconcileKeyCollision(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReportSectionPartition(unittest.TestCase):
+    """#1774 (ARC-3073755386): `evidence_sections` owns which statuses the report
+    calls verified and which ones it collapses. Both sets are CLOSED and the
+    three of them partition EVIDENCE_STATUSES, so a status added to that tuple
+    cannot join either set (or the main list) by default."""
+
+    def _sections(self):
+        import scripts.evidence_sections as sections
+        return sections
+
+    def test_the_three_sets_partition_every_known_status(self):
+        sections = self._sections()
+        named = (list(sections.VERIFIED_STATUSES) + list(sections.UNVERIFIED_STATUSES)
+                 + list(sections.MAIN_LIST_STATUSES))
+        self.assertEqual(sorted(named), sorted(ev.EVIDENCE_STATUSES))
+
+    def test_is_verified_is_the_headers_word_not_the_split(self):
+        sections = self._sections()
+        for status in ev.EVIDENCE_STATUSES:
+            with self.subTest(status=status):
+                self.assertEqual(sections.is_verified(status),
+                                 status in sections.VERIFIED_STATUSES)
+        # #1638 P16: a second opinion could not look, so the header's word does
+        # not apply -- and the finding still belongs in the main list.
+        self.assertFalse(sections.is_verified(ev.BACKUP_SCOPE_LIMITED))
+        self.assertFalse(sections.is_unverified(ev.BACKUP_SCOPE_LIMITED))
+
+    def test_is_unverified_fails_closed_outside_the_known_statuses(self):
+        sections = self._sections()
+        self.assertTrue(sections.is_unverified(None))
+        self.assertTrue(sections.is_unverified("some_future_status"))
+        self.assertFalse(sections.is_verified(None))
+        self.assertFalse(sections.is_verified("some_future_status"))
+        for status in ev.EVIDENCE_STATUSES:
+            with self.subTest(status=status):
+                self.assertEqual(sections.is_unverified(status),
+                                 status in sections.UNVERIFIED_STATUSES)
+
+    def test_gate_eligibility_is_a_third_question(self):
+        # Not a re-spelling of GATE_ELIGIBLE_DEFAULT: a scope-limited finding
+        # gates (the primary CONFIRMED stands) without being called verified.
+        sections = self._sections()
+        self.assertEqual(set(ev.GATE_ELIGIBLE_DEFAULT),
+                         set(sections.VERIFIED_STATUSES) | {ev.BACKUP_SCOPE_LIMITED})

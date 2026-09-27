@@ -24,6 +24,11 @@ Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings only 
 an advisor verified, whatever their source. Run a verify phase (or pass `--gate-unverified`) or the
 gate has nothing to fail on.
 
+`skill/scripts/evidence_sections.py` owns what the HTML report does with these statuses: the
+header's "N verified" counts those same two, the collapsed "Unverified findings" section holds
+`tool_reported`/`needs_more_info`/`unverified` plus any status it does not know, and the rest
+(`corroborated`, `backup_scope_limited`) are listed with the findings.
+
 Every finding queues for verification, tool claims included, so `--max-verify N` now caps a queue
 holding the whole finding set: each tool finding costs one advisor dispatch, and an unverified tool
 HIGH competes with an agent HIGH for the same capped budget. Size N with that in mind — anything cut
