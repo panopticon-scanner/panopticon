@@ -722,7 +722,24 @@ def run_tinyproxy(args) -> int:
 # how a digest gets invented; this reads each one from PyPI's JSON API and
 # recomputes it from the downloaded wheel, exactly as the rustup family does.
 
-_PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s;\\]+)")
+_PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[A-Za-z0-9._,\s-]+\])?"
+                  r"==(?P<version>[^\s;\\]+)")
+_REQUIREMENT_PART = re.compile(
+    r'''"[^"]*"|'[^']*'|(?P<comment>(?<!\S)\#.*$)|(?P<hash>(?<!\S)--hash(?:=|\s+)\S+)''')
+
+
+def _requirement_clause(joined: str) -> tuple[str, str]:
+    """Remove hash options, keeping quoted marker values and trailing prose."""
+    comment = ""
+
+    def keep(match):
+        nonlocal comment
+        if match.group("comment"):
+            comment = match.group()
+            return ""
+        return "" if match.group("hash") else match.group()
+
+    return _REQUIREMENT_PART.sub(keep, joined).rstrip(), comment
 
 
 def _logical_lines(text: str) -> list[tuple[int, str]]:
@@ -834,9 +851,9 @@ def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) ->
     """Requirements text with every pin's hash block regenerated.
 
     Pure, and total in both directions: a pin with no hashes raises, and so does
-    a set of hashes with no pin to attach them to. Comments and blank lines are
-    left exactly where they were -- the prose around a pin is why anyone can
-    review it.
+    a set of hashes with no pin to attach them to. Extras and markers stay in
+    the requirement clause; trailing comments follow the final hash. Standalone
+    comments and blank lines stay where they were.
     """
     lines = text.splitlines()
     out: list[str] = []
@@ -849,17 +866,21 @@ def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) ->
             out.append(lines[i])
             i += 1
             continue
+        start = i
         while i < len(lines) - 1 and lines[i].rstrip().endswith("\\"):
             i += 1
         i += 1
+        joined = _logical_lines("\n".join(lines[start:i]))[0][1]
+        clause, comment = _requirement_clause(joined)
         key = (m.group("name"), m.group("version"))
         digests = hashes.get(key)
         if not digests:
             raise RuntimeError("no verified hashes for %s==%s" % key)
-        out.append("%s==%s \\" % key)
+        out.append(clause + " \\")
         for n, digest in enumerate(digests):
+            suffix = " \\" if n < len(digests) - 1 else ("  " + comment if comment else "")
             out.append("    --hash=sha256:%s%s"
-                       % (digest, "" if n == len(digests) - 1 else " \\"))
+                       % (digest, suffix))
         written.add(key)
     unused = sorted(set(hashes) - written)
     if unused:

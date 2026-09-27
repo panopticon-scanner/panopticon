@@ -103,18 +103,21 @@ class TestReadDocument(unittest.TestCase):
             _write(d, "panopticon.yml", "version: 2\ngroups: {}\n")
             self.assertIsNone(rc.read_document(d).doc)
 
-    def test_boolean_version_is_rejected_while_integer_one_is_valid(self):
+    def test_version_requires_integer_one_not_a_boolean_or_float(self):
         with tempfile.TemporaryDirectory() as d:
-            path = _write(d, "panopticon.yml", "version: true\ngroups: {}\n")
-            invalid = rc.read_document(d)
-            self.assertEqual(invalid.path, path)
-            self.assertIsNone(invalid.doc)
-            self.assertEqual(len(invalid.errors), 1)
-            self.assertIn("version: 1", invalid.errors[0])
+            for value, parsed in (("true", True), ("1.0", 1.0), ('"1"', "1")):
+                with self.subTest(value=value):
+                    path = _write(d, "panopticon.yml", "version: %s\ngroups: {}\n" % value)
+                    invalid = rc.read_document(d)
+                    self.assertEqual(invalid.path, path)
+                    self.assertIsNone(invalid.doc)
+                    self.assertEqual(invalid.errors, [
+                        "%s must declare `version: 1` (found %r)" % (path, parsed)])
             _write(d, "panopticon.yml", "version: 1\ngroups: {}\n")
             valid = rc.read_document(d)
             self.assertEqual(valid.errors, [])
             self.assertEqual(valid.doc["version"], 1)
+            self.assertIs(type(valid.doc["version"]), int)
 
     def test_non_mapping_is_authored_but_invalid(self):
         with tempfile.TemporaryDirectory() as d:

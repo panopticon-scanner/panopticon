@@ -18,6 +18,12 @@ evidence exposed.
   modules pinned at the count they have today, each free to shrink and never to grow, and a pin
   that reaches the ceiling has to go. Raising a number is not a fix -- the allowlist is the list
   of splits owed.
+
+- **Requirement hash refreshes preserve extras and environment markers (#1847).** The updater
+  replaces hash options while retaining the requirement clause and comments, and requests
+  artifact hashes for the base distribution. Root configuration also requires integer
+  `version: 1`; YAML `1.0` is refused with the existing version diagnostic.
+
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
   SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences

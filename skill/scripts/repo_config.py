@@ -125,7 +125,7 @@ def read_document(review_root):
         return Document(res.path, None, ["%s unreadable: %s" % (res.path, exc)], disclosures)
     if not isinstance(doc, dict):
         return Document(res.path, None, ["%s must be a mapping" % res.path], disclosures)
-    if doc.get("version") != VERSION or isinstance(doc.get("version"), bool):
+    if type(doc.get("version")) is not int or doc["version"] != VERSION:
         return Document(res.path, None,
                         ["%s must declare `version: %d` (found %r)"
                          % (res.path, VERSION, doc.get("version"))], disclosures)
