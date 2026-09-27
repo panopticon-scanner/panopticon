@@ -98,6 +98,18 @@ ALLOWLIST_VERSION = 2
 # in this module is (a hook runs standing alone, with no package on sys.path),
 # and pinned equal to the write guard's in tests/test_write_guard_hook.py.
 UNBOUND_ENTRY = "<unbound>"
+# The read-scope keys, ONE tuple per guard rather than a literal per loader
+# (ARC-1784455652/#1767). `hard_linked` (#1683) is the driver's ONE walk of a
+# directory grant, taken when it is built: the paths beneath it a
+# directory-argument Grep/Glob must not traverse. An older scope file has no
+# such key and loads as an empty list -- the FORMAT is unchanged, a new
+# optional key in a schema-less object, so there is no version to bump (the
+# `read-scope.json` contract has no version field, and the one that does, the
+# v2 write allowlist, is not this file). A copy of read_guard_hook's constant,
+# for the reason everything here is one, and pinned equal to it in
+# tests/test_read_guard_hook.py: a key added to the read guard alone would be
+# honoured by Claude's hook and silently ignored by this one.
+SCOPE_KEYS = ("files", "dirs", "reads", "hard_linked")
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 
@@ -154,20 +166,14 @@ def _load_scope(scope_path):
         if not isinstance(eid, str) or not isinstance(scope, dict):
             return None, "read guard scope is malformed"
         entry: dict[str, list[str]] = {}
-        # `hard_linked` (#1683) is the driver's one walk of a directory grant,
-        # written by phases/setup; absent from an older file, which loads as
-        # an empty list. The file's FORMAT is unchanged -- a new optional key
-        # in a schema-less object -- so there is no version to bump: the
-        # `read-scope.json` contract has no version field, and the one that
-        # does (the v2 write allowlist) is not this file.
-        for key in ("files", "dirs", "reads", "hard_linked"):
-            val = scope.get(key)
+        for k in SCOPE_KEYS:
+            val = scope.get(k)
             if val is None:
-                entry[key] = []
+                entry[k] = []
                 continue
             if not isinstance(val, list):
                 return None, "read guard scope is malformed"
-            entry[key] = [p for p in val if isinstance(p, str)]
+            entry[k] = [p for p in val if isinstance(p, str)]
         out[eid] = entry
     return out, ""
 
