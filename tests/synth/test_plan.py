@@ -643,9 +643,7 @@ class PlanLoadersTest(unittest.TestCase):
 
     def test_ingest_tool_findings_without_tools_dir_is_not_measured(self):
         with tempfile.TemporaryDirectory() as d:
-            cwd = os.getcwd()
-            try:
-                os.chdir(d)
+            with _chdir(d):
                 # no .panopticon/tools -> silent
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
@@ -667,8 +665,6 @@ class PlanLoadersTest(unittest.TestCase):
                 self.assertEqual(
                     plan_mod.ingest_tool_findings(_cli_args(tools_dir=os.path.join(d, "no")))[2],
                     None)
-            finally:
-                os.chdir(cwd)
 
     def test_ingest_tool_findings_with_an_empty_tools_dir_measures_nothing_ran(self):
         with tempfile.TemporaryDirectory() as d:

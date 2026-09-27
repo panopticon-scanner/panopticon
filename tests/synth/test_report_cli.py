@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
@@ -171,7 +172,7 @@ class TestCliAndSummary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
             # If os.replace fails partway, no incomplete files should be left behind
-            with unittest.mock.patch("os.replace", side_effect=OSError("disk full")):
+            with mock.patch("os.replace", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
                     render_mod.write_report(report, out, max_bytes=SPLIT_FILE_MAX_BYTES)
             self.assertFalse(os.path.exists(out))
