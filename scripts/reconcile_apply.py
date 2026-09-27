@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 import file_issues
 import triage
 
-LEDGER = ".panopticon/filed-issues.json"
+LEDGER = file_issues.LEDGER
 PROGRESS_VERSION = 2
 PROGRESS_MAX_BYTES = 4 * 1024 * 1024
 

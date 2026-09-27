@@ -143,8 +143,7 @@ class BrakemanAdapter:
         """
         if not os.path.isdir(target):
             return False
-        for marker in ("config/routes.rb", "config/application.rb",
-                       "config/environment.rb"):
+        for marker in self._RAILS_ROOT_MARKERS:
             if os.path.isfile(os.path.join(target, marker)):
                 return True
         app = os.path.join(target, "app")
