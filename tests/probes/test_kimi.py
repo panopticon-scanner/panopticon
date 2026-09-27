@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -254,6 +255,40 @@ class TestKimiReadGuardProbe(unittest.TestCase):
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn("could not run", detail)
 
+    def test_a_hung_doctor_is_unknown_not_raised(self):
+        # COD-2149752625: `_kimi_home_arms_and_validates` caught only OSError
+        # around this launch, and `subprocess.TimeoutExpired` is a
+        # SubprocessError -- a doctor outliving its 60s timeout escaped as a
+        # traceback instead of the `unknown` this module's siblings report.
+        def hangs(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 60))
+        state, _by, detail = kimi_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=hangs)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("doctor", detail)
+        self.assertIn("could not run", detail)
+
+    def test_undecodable_doctor_output_is_unknown_not_raised(self):
+        # Doctor output that is not valid UTF-8 raises UnicodeDecodeError (a
+        # ValueError) from the `text=True` decode, which also escaped.
+        def non_utf8(cmd, **kw):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        state, _by, detail = kimi_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=non_utf8)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("doctor", detail)
+        self.assertIn("could not run", detail)
+
+    def test_a_doctor_launch_refusal_propagates(self):
+        # Mirrors test_version_launch_refusal_propagates: the suite's launch
+        # guard must still escape every handler on this path, never get
+        # reported as "doctor unknown".
+        import scripts.runners.base as runners_base
+        runner = mock.Mock(side_effect=runners_base.LaunchRefused("synthetic kimi doctor launch"))
+        with self.assertRaisesRegex(runners_base.LaunchRefused, "synthetic kimi doctor launch"):
+            kimi_probes.probe_kimi_read_guard("kimi", doctor_runner=runner)
+        runner.assert_called_once()
+
     def test_a_guard_failure_is_refuted_with_the_row_named(self):
         # The mutation, at the probe's own seam: a guard that allows an
         # outside read must flip the probe to refuted.
@@ -373,6 +408,30 @@ class TestKimiModelAliasProbe(unittest.TestCase):
         state, _by, detail = kimi_probes.probe_kimi_model_alias("kimi", configured=frozenset())
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("no [models] table", detail)
+
+    def test_a_malformed_operator_config_refutes_without_raising(self):
+        # COD-2149752625: `configured_models()` reads config.toml through
+        # `runners/kimi.configured_models` -> `kimi_home._read_source_config`,
+        # and a malformed file raises `tomllib.TOMLDecodeError` (a
+        # ValueError), which escaped instead of refuting like an empty table.
+        # A real parse raises it: the constructor's signature differs across
+        # the supported Pythons (3.14 wants msg/doc/pos, 3.11-3.13 no keywords).
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "configured_models",
+                               side_effect=lambda *_a, **_k: tomllib.loads("key")):
+            state, _by, detail = kimi_probes.probe_kimi_model_alias("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no [models] table", detail)
+        self.assertIn("Expected '=' after a key", detail)
+
+    def test_an_unreadable_operator_config_refutes_without_raising(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "configured_models",
+                               side_effect=PermissionError(13, "Permission denied")):
+            state, _by, detail = kimi_probes.probe_kimi_model_alias("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no [models] table", detail)
+        self.assertIn("Permission denied", detail)
 
     def test_a_host_that_claims_no_model_binding_is_unknown(self):
         state, by, _detail = kimi_probes.probe_kimi_model_alias("gemini")
@@ -630,6 +689,27 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                 self.assertIsNone(ok, detail)
                 self.assertIn("the per-run home could not be built", detail)
                 self.assertIn("interpreter", detail)
+
+    def test_every_exception_the_writer_raises_is_reported_by_both_guards(self):
+        # Mirrors kimi_snapshot's test_every_exception_the_writer_raises_is_
+        # reported_not_raised: this probe drives the SAME writer through the
+        # same `_kimi_armed_home`, and used to catch only
+        # `(OSError, RuntimeError)` -- a ValueError from `build_merged_config`
+        # (M3/N5) or a TypeError from `dump_toml` (C2) escaped as a traceback
+        # on BOTH the read and the write guard (COD-2149752625).
+        import scripts.kimi_toml as kimi_toml
+        import scripts.runners.kimi_home as kimi_home
+        for target, name, boom in ((kimi_toml, "dump_toml", TypeError("cannot emit TOML")),
+                                   (kimi_home, "build_merged_config",
+                                    ValueError("expected a table at `tools`"))):
+            for mode in ("read", "write"):
+                with self.subTest(raises=type(boom).__name__, mode=mode):
+                    with tempfile.TemporaryDirectory() as sandbox:
+                        with mock.patch.object(target, name, side_effect=boom):
+                            ok, detail = kimi_probes._kimi_hooks_are_armed(sandbox, mode)
+                    self.assertIsNone(ok, detail)
+                    self.assertIn("the per-run home could not be built", detail)
+                    self.assertIn(str(boom), detail)
 
     def test_a_config_the_writer_corrupts_is_refuted(self):
         import scripts.kimi_toml as kimi_toml
