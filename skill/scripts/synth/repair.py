@@ -7,20 +7,17 @@ normalized to the pinned types AT ITS BOUNDARY -- never trusted, never allowed
 to fail the artifact it rides into. A malformed row costs a warning and the
 row; it never costs the run.
 
-Three such boundaries live here, all of them files inside the reviewed tree
-that a hostile target can pre-commit: `.panopticon/groups.json` (#1639 P15),
-and `tools-manifest.json`'s `sanitized` (#1646) and `network` (#1645) blocks.
-They split out of `validate_schema` when the third one arrived and pushed that
-module past the 700-line ratchet -- the agent-sourced repairs (`repair_finding`,
-`repair_verdict`) stay there with the schema-node machinery they are built on,
-which this module reaches by module attribute for `repair_groups_json`.
+These repairs normalize target-writable `groups.json` and the tools manifest's
+sanitized inputs, network posture, exclusions, Git-driver declarations and
+suppression counts. They split out of `validate_schema` as the boundary work
+outgrew its 700-line ratchet. Agent-sourced repairs (`repair_finding` and
+`repair_verdict`) stay there with the schema-node machinery this module uses.
 
-BOUNDS. Everything here is text bound for two published artifacts (the report
-and its HTML), so every read is bounded: how many rows it may carry, and how
-long a name may be. One set of numbers (`ROWS_MAX`/`NAME_MAX`/`VALUE_MAX`),
-and the announcements about them are bounded too -- a producer that caps its
-own output (`scripts.tools.pip_audit`) is a statement about the CONTROLLER's
-manifest and no defence at all on the path these functions exist for.
+BOUNDS. These functions bound already-parsed content for the report and HTML:
+row counts, names and values, plus the diagnostics about dropped or repaired
+content. They do not bound the bytes the caller reads before parsing JSON.
+Producer-side limits alone cannot protect these readers of target-writable
+artifacts.
 
 The one thing NOT cut, said plainly rather than covered by "identically":
 `groups.json`'s `files[]` entries. They are repo-relative paths, a cut path
@@ -63,8 +60,8 @@ PATH_MAX = 4096
 def warn_repairs(artifact, changes, warn):
     """Announce the repairs a boundary read made, one line each -- through
     `warn` when a caller supplied one (synthesis collects them), on stderr
-    otherwise. Shared by the three repairers below, which each held the same
-    seven lines: a fourth must not have to remember the wording.
+    otherwise. The boundary repairers share this wording and its disclosure
+    limits rather than implementing separate warning loops.
 
     BOUNDED on both axes, like the content it describes: at most
     `WARN_LINES_MAX` lines, each naming a path cut to `NAME_MAX`. A repair

@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Align implementation documentation with the current contracts (#1819).** Kimi preparation
+  always creates a fresh home, including on resume; the recorded pointer is informational.
+  Report grades use health when available and display n/a without reviewed lines to grade; the
+  gate keeps its own policy. Repair documentation names the boundaries and distinguishes content
+  bounds from byte limits at the caller. These changes affect comments and docstrings only.
 - **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
   `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
   finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published

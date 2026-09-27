@@ -287,15 +287,14 @@ def new_kimi_home():
 def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
     """Populate `home` with the per-run config and credential links; idempotent.
 
-    `home` is a directory this process owns -- `new_kimi_home()`'s, or the one
-    a previous `prepare` recorded and `is_temp_home` re-admitted. It is never
-    derived from the reviewed tree.
+    `home` is a directory this process owns. `Runner.prepare` supplies a fresh
+    `new_kimi_home()` on every invocation, including resume; the recorded pointer
+    is informational and is never read back to choose a home.
     """
     real_home = real_home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
     # I2: lstat BEFORE the chmod. `makedirs(exist_ok=True)` is happy with a symlink to a
-    # directory and `chmod` follows it, so a link planted at this name (on a resume, where
-    # the path is re-derived rather than freshly minted) would relax someone else's
-    # directory to 700 and then take the merged config -- api_key included -- through it.
+    # directory and `chmod` follows it. Refuse a link at the supplied path before
+    # changing permissions or writing the merged config, which can contain an api_key.
     if os.path.islink(home):
         raise OSError("refusing to build the kimi home through a symlink: %s" % home)
     os.makedirs(home, exist_ok=True)
