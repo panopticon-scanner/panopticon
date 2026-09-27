@@ -531,9 +531,10 @@ def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
 # imported by `runners/*`, which layout rule 3 forbids from reaching this
 # package -- so the rule moved down to a leaf rather than being copied, exactly
 # as the no-follow artifact open did in #1735. An alias of a definition from
-# outside the package is what rule 4 leaves legal and asks to justify: the call
-# sites in `phases/evidence_scope.py` and the suite spell the predicate with
-# this name, so keeping it keeps ONE name -- and one patch target -- for them.
+# outside the package is what rule 4 leaves legal and asks to justify: the two
+# call sites in `phases/evidence_scope.py`, and the suite, spell the predicate
+# with this name, so keeping it keeps ONE name -- and one patch target -- for
+# them.
 # tests/test_claim_scope.py pins the identity.
 _confined_to_root = claim_scope.confined_to_root
 

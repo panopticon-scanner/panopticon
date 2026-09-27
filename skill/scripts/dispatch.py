@@ -499,9 +499,10 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
     answer apply (`claim_scope`): an escaping location becomes the redaction
     marker, and the pinned root is the review root -- defaulting, when the
     caller names none, to the root the queue's own `.panopticon` path belongs
-    to. An unresolvable root RAISES: the cwd fallback it replaces was the bug
-    (run-14 ARC-3314534783), because a wrong root silently points the advisor
-    at another checkout.
+    to. An unresolvable root RAISES, and so does a named root that is not an
+    existing directory: the cwd fallback this replaces was the bug (run-14
+    ARC-3314534783), because a wrong root silently points the advisor at
+    another checkout, and a root that is not there points it at nothing.
     """
     try:
         with open(queue_path, encoding="utf-8") as fh:
@@ -518,12 +519,23 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
         raise ValueError("verify queue %s has no run_id" % queue_path)
     if review_root is None:
         review_root = claim_scope.review_root_of_artifact_path(queue_path)
-    if review_root is None:
+        if review_root is None:
+            raise ValueError(
+                "cannot resolve the review root from verify queue %s: a queue is a "
+                "`.panopticon` artifact, and the review root is the directory above "
+                "that segment. Pass the root explicitly (--review-root PATH)."
+                % queue_path)
+    elif not os.path.isdir(review_root):
+        # A named root is NOT cross-checked against the queue's own segment --
+        # rendering a queue copied out of its run folder is what the override is
+        # for. But it must be a tree that exists: every relative location in the
+        # prompt resolves against it, so a root that is not there is the wrong
+        # root by another name, and the point of the refusal above is that a
+        # wrong root is worse than no render.
         raise ValueError(
-            "cannot resolve the review root from verify queue %s: a queue is a "
-            "`.panopticon` artifact, and the review root is the directory above "
-            "that segment. Pass the root explicitly (--review-root PATH)."
-            % queue_path)
+            "review root %s is not an existing directory: the rendered claims' "
+            "relative locations resolve against this tree, so it has to be the "
+            "checkout under review." % review_root)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for entry in entries:

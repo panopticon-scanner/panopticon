@@ -21,10 +21,12 @@ the same way in #1735: a module that imports nothing of ours is reachable from
 every side. `phases/runio._confined_to_root` and
 `phases/verify_tools._confine_claim_location` keep their private names as
 ALIASES of these functions (rule 4 leaves an alias of a definition from outside
-the package legal and asks it to say why: ~5 call sites across `phases/` spell
-the predicate with runio's name, and the claim-confinement name is what
-`phases/verify.py` and the existing tests call). tests/test_claim_scope.py pins
-both identities, so a second implementation cannot appear behind either name.
+the package legal and asks it to say why: the predicate's two call sites, both
+in `phases/evidence_scope.py`, spell it with runio's name, and the
+claim-confinement name is what `verify_tools._tool_verify_entry` and
+tests/phases/test_verify.py call -- `phases/verify.py` calls this module
+directly). tests/test_claim_scope.py pins both identities, so a second
+implementation cannot appear behind either name.
 """
 import os
 
@@ -84,14 +86,16 @@ def confine_claim_location(review_root, loc):
     return loc
 
 
-def root_pin_paragraph(review_root, plural=False):
+def root_pin_paragraph(review_root, *, plural=False):
     """The `Repo root:` paragraph an advisor prompt opens with (#975).
 
     Advisors inherit the session cwd, never review_root or the `--pr` worktree,
     and a claim's `location` stays repo-relative on disk -- so without this
     header a relative location resolves against whichever checkout the host
     happened to start in. `plural` picks the claimS wording the cell advisor
-    (a list of claims) uses; the default is the single-claim form."""
+    (a list of claims) uses; the default is the single-claim form. It is
+    keyword-only: a bare `True` at a call site names neither the switch nor
+    the noun it selects."""
     return _ROOT_PIN % (os.path.abspath(review_root),
                         "claims" if plural else "claim")
 

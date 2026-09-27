@@ -19,13 +19,25 @@ layout rule 4 exists to prevent, and is what this issue was.
 """
 import ast
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 
+from conftest import REPO_ROOT, SKILL_ROOT
+
 import scripts.claim_scope as claim_scope
 from scripts.phases import runio
 from scripts.phases import verify_tools
+
+SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
+
+# One fresh interpreter per entry point, printing every `scripts.phases*` key
+# its import left in sys.modules. A -c string rather than a helper file: what
+# is under test is an import GRAPH, so the probe must add nothing to it.
+_LEAK_PROBE = ("import %s, sys\n"
+               "print(' '.join(sorted(m for m in sys.modules "
+               "if m.startswith('scripts.phases'))))\n")
 
 
 # The two paragraphs the driver pinned before the move, byte for byte. A golden
@@ -40,6 +52,10 @@ GOLDEN_PLURAL = (
     "Repo root: /repo\nEvery relative path in the claims below resolves against "
     "this root -- read files THERE, never in your session's default "
     "checkout.\n\n")
+# And the marker that replaces an escaping location, for the same reason: the
+# only reader that cannot be refactored is the advisor LLM, and every assertion
+# elsewhere compares the constant against itself, so its TEXT was free to drift.
+GOLDEN_REDACTION = "<redacted: location escapes review root>"
 
 
 class TestOneImplementation(unittest.TestCase):
@@ -78,6 +94,70 @@ class TestThisModuleIsALeaf(unittest.TestCase):
                 roots.append((node.module or "").split(".")[0])
         outside = sorted(r for r in roots if r not in sys.stdlib_module_names)
         self.assertEqual(outside, [], "claim_scope must import nothing of ours")
+
+
+class TestDispatchNeverReachesThePhasesPackage(unittest.TestCase):
+    """The invariant this module exists for, pinned by a transitive check.
+
+    The predicate moved out of `phases/runio` -- at the cost of an alias there
+    and in `phases/verify_tools` -- for ONE reason: `runners/*` import
+    `dispatch`, and layout rule 3 forbids `runners/*` from reaching
+    `scripts.phases`, so a phases import in `dispatch` (or in anything
+    `dispatch` reaches, this module included) would put the phases package in
+    every runner's graph. Rule 3 scans each file's own AST and cannot see that,
+    which is the back door the module docstring names -- so one `import
+    scripts.phases.x` in this leaf, or in `dispatch`, or in `model_resolver`,
+    breaks the design with a green suite, and the alias then looks like
+    gratuitous indirection to whoever next reads it.
+
+    An interpreter per entry point, because sys.modules is the only place a
+    transitive import shows up, and one process per module so an earlier
+    import cannot supply a later one's answer.
+    """
+
+    def _entry_points(self):
+        """`dispatch` plus every module in `runners/`, which is what imports it."""
+        runners = os.path.join(SCRIPTS, "runners")
+        return ["scripts.dispatch"] + [
+            "scripts.runners.%s" % name[:-3]
+            for name in sorted(os.listdir(runners))
+            if name.endswith(".py") and name != "__init__.py"]
+
+    def test_no_entry_point_pulls_the_phases_package_into_its_graph(self):
+        entry_points = self._entry_points()
+        self.assertGreater(len(entry_points), 1, "no runner modules found next "
+                           "to %s: this guard would be vacuous" % SCRIPTS)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [SKILL_ROOT, SCRIPTS]
+            + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        offenders = []
+        for mod in entry_points:
+            command = [sys.executable, "-c", _LEAK_PROBE % mod]
+            try:
+                probe = subprocess.run(  # nosec B603
+                    command, capture_output=True, text=True, timeout=60,
+                    env=env, cwd=REPO_ROOT)
+            except subprocess.TimeoutExpired as exc:
+                self.fail("module=%s command=%r timed out: %s"
+                          % (mod, command, exc))
+            if probe.returncode != 0:
+                # Fail CLOSED: a module that did not import reports no
+                # sys.modules at all, and "no leak observed" would be a pass
+                # for the wrong reason.
+                offenders.append(
+                    "%s: did not import -- %s"
+                    % (mod, (probe.stderr.strip().splitlines() or [""])[-1]))
+                continue
+            leaked = probe.stdout.split()
+            if leaked:
+                offenders.append("%s -> %s" % (mod, " ".join(leaked)))
+        self.assertEqual(offenders, [], "an entry script that `runners/*` "
+                         "import now reaches the phases package (layout rule "
+                         "3, through the import graph rather than one file's "
+                         "AST). Move what is shared into a stdlib-only leaf "
+                         "like scripts.claim_scope instead:\n"
+                         + "\n".join(offenders))
 
 
 class TestConfinedToRoot(unittest.TestCase):
@@ -143,6 +223,11 @@ class TestConfineClaimLocation(unittest.TestCase):
         self.assertEqual(loc["file"], "../../../.ssh/id_rsa")
 
 
+class TestRedactionMarker(unittest.TestCase):
+    def test_the_marker_is_the_drivers_bytes(self):
+        self.assertEqual(claim_scope.REDACTED_CLAIM_PATH, GOLDEN_REDACTION)
+
+
 class TestRootPinParagraph(unittest.TestCase):
     def test_the_singular_paragraph_is_the_drivers_bytes(self):
         self.assertEqual(claim_scope.root_pin_paragraph("/repo"),
@@ -155,6 +240,13 @@ class TestRootPinParagraph(unittest.TestCase):
     def test_the_pinned_root_is_absolute(self):
         pin = claim_scope.root_pin_paragraph(os.path.join(".", "sub"))
         self.assertIn("Repo root: %s\n" % os.path.abspath("sub"), pin)
+
+    def test_the_plural_switch_must_be_named(self):
+        # `root_pin_paragraph(root, True)` reads like nothing at a call site,
+        # and a bare boolean is the easiest argument to pass to the wrong
+        # parameter. Keyword-only, so the noun the caller means is in the call.
+        with self.assertRaises(TypeError):
+            claim_scope.root_pin_paragraph("/repo", True)
 
 
 class TestReviewRootOfArtifactPath(unittest.TestCase):

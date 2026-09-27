@@ -47,8 +47,9 @@ from . import tools
 # advisor prompt of its own with NEITHER the confinement nor the review-root
 # pin, and one rule reached from both sides is what keeps that from recurring.
 # Rule 4 leaves an alias of a definition from outside the package legal and asks
-# it to say why: `verify._render_findings` and the suite call the claim
-# confinement by this name, and the marker is compared against below.
+# it to say why: `_tool_verify_entry` below and tests/phases/test_verify.py call
+# the claim confinement by this name (`verify._render_findings` calls
+# `scripts.claim_scope` directly), and the marker is compared against below.
 # tests/test_claim_scope.py pins both identities.
 _REDACTED_CLAIM_PATH = claim_scope.REDACTED_CLAIM_PATH
 _confine_claim_location = claim_scope.confine_claim_location

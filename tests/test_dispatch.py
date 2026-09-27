@@ -485,16 +485,52 @@ class TestRenderAdvisorConfinement(unittest.TestCase):
 
     def test_a_queue_outside_any_artifact_directory_is_refused(self):
         # Never a cwd fallback: an unresolvable root is a refusal, because a
-        # wrong root points the advisor at another checkout.
+        # wrong root points the advisor at another checkout. A REAL entry, and
+        # an --out that must not exist afterwards: what makes the refusal SAFE
+        # rather than merely loud is that it precedes every write, and an empty
+        # queue would leave nothing to write either way.
         with tempfile.TemporaryDirectory() as tmp:
             qpath = os.path.join(tmp, "verify-queue.json")
+            entry = {"queue_id": self.QID, "priority": 1,
+                     "finding": {"id": "SEC-001", "title": "sqli",
+                                 "severity": "HIGH", "panel": "security",
+                                 "location": {"file": "src/auth.py"}}}
             with open(qpath, "w", encoding="utf-8") as fh:
                 json.dump({"version": "4.2.0", "run_id": "run-test",
-                           "cut_by_max_verify": 0, "entries": []}, fh)
+                           "cut_by_max_verify": 0, "entries": [entry]}, fh)
+            outdir = os.path.join(tmp, "out")
             with self.assertRaises(ValueError) as ctx:
-                dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "out"))
+                dispatch.render_advisor_prompts(qpath, outdir)
+            self.assertFalse(os.path.exists(outdir))
         self.assertIn("review root", str(ctx.exception))
         self.assertIn("--review-root", str(ctx.exception))
+
+    def test_a_review_root_that_is_not_a_directory_is_refused(self):
+        # The override is deliberately NOT cross-checked against the queue's
+        # own root -- rendering a queue copied out of its run folder is what it
+        # is for -- but a root that is not on disk at all points the advisor at
+        # nothing, which is the harm the unresolvable-root refusal exists for.
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, {"file": "src/auth.py"})
+            outdir = os.path.join(tmp, "out")
+            missing = os.path.join(tmp, "no", "such", "tree")
+            with self.assertRaises(ValueError) as ctx:
+                dispatch.render_advisor_prompts(qpath, outdir,
+                                                review_root=missing)
+            self.assertFalse(os.path.exists(outdir))
+        self.assertIn(missing, str(ctx.exception))
+        self.assertIn("directory", str(ctx.exception))
+
+    def test_a_review_root_that_is_not_a_directory_is_a_nonzero_cli_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, {"file": "src/auth.py"})
+            missing = os.path.join(tmp, "no", "such", "tree")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = dispatch.main(["--render-advisor", qpath,
+                                    "--out", os.path.join(tmp, "out"),
+                                    "--review-root", missing])
+        self.assertEqual(rc, 1)
+        self.assertIn(missing, err.getvalue())
 
     def test_an_unresolvable_root_is_a_nonzero_cli_exit(self):
         with tempfile.TemporaryDirectory() as tmp:

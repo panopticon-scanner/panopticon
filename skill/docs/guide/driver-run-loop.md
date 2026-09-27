@@ -1031,6 +1031,6 @@ soon as you re-emit (a 4.x install carried live `panopticon-panel-review` / `pan
 agents until this landed). Files outside the `panopticon-` namespace are never touched. The
 advisor's own prompt renderer (`dispatch.py --render-advisor`) pins `Repo root: <path>` (#975) for
 its other, non-driver callers, and confines every claim `location` to that root exactly as the two
-driver rounds do (#1767): the root is `--review-root PATH` when given, else the directory above the
-queue's own `.panopticon` segment, and it refuses to render when neither resolves rather than
-pinning the process cwd.
+driver rounds do (#1767): the root is `--review-root PATH` (an existing directory) when given, else
+the directory above the queue's own `.panopticon` segment, and it refuses to render when neither
+resolves rather than pinning the process cwd.
