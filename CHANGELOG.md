@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`collect_usage` counts the input it drops, and the summary line says so (#1782,
+  ARC-2134807886).** Three drops were silent: `_iter_records` returned on an `OSError` (an
+  unreadable transcript yielded nothing at all, and `collect`'s `if not n: continue` then did not
+  even count it), it skipped a line `json.loads` rejected, and `_add` ignored a usage value that
+  was not an `int` -- so `total` read as authoritative while being a floor, the one thing the
+  module docstring promises against ("an absent number stays absent rather than becoming a
+  fabricated zero"). `sources` already held the channel and the precedent:
+  `subagent_transcripts_truncated` (#1576) is the number that keeps the rest of the document honest
+  when the cap binds. Three counters join it, always present and 0 on a clean run.
+  `unreadable_transcripts` counts the FILE once, controller or subagent, and deliberately does NOT
+  fold into `subagent_transcripts`: that count has to keep re-summing to
+  `subagent_transcripts_by_phase` and to the transcripts actually summed, and an unreadable file
+  contributed no record to either. `undecodable_lines` counts each torn line, once per file rather
+  than once per read -- `classify_transcript` re-reads a subagent transcript for its first prompt
+  and is not given the accounting dict. `non_integer_usage_fields` counts each present-but-not-int
+  value, a `bool` included: `bool` is an `int` subclass, so `"output_tokens": true` used to pass the
+  isinstance check and add one fabricated token, and it now adds none. An ABSENT field is still not
+  a drop. `main` prints ONE stderr line naming all three counts when any is non-zero, before the
+  document is written or dumped, so an operator reading the terminal learns the total is a floor; a
+  clean run prints nothing new. No schema change was needed: `meta.cost.tokens` is an unconstrained
+  object in `report-schema.json` and `load_run_usage` surfaces the document verbatim.
 - **`dispatch.js` refuses an entry marked enforced that names no registered shell (#1783,
   ARC-204863095).** The session-mode Workflow script validated each entry's `id`, `marker` and
   `prompt_file`, then branched on `e.enforced && e.agent` -- so an entry carrying `enforced: true`

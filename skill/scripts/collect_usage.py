@@ -187,7 +187,23 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     return _cap_transcripts(sorted(out), info)
 
 
-def _iter_records(path):
+def _bump(info, key):
+    """Count one dropped input, when the caller asked for the accounting.
+
+    `info` is the same dict `_cap_transcripts` writes its truncation count to,
+    so every disclosure this module makes reaches `collect` by one route.
+    """
+    if info is not None:
+        info[key] = info.get(key, 0) + 1
+
+
+def _iter_records(path, info=None):
+    """Every JSON object in a transcript, counting into `info` what it drops.
+
+    A transcript is read once per call, so `info` is passed only by the pass
+    that accounts for the file (`scan` from `collect`); `classify_transcript`
+    re-reads the same file to read its first prompt and must not count it twice.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -197,12 +213,18 @@ def _iter_records(path):
                 try:
                     rec = json.loads(line)
                 except ValueError:
-                    continue          # a partially-flushed line is not fatal
+                    # A partially-flushed line is not fatal, but it is a record
+                    # this run's usage may have been on.
+                    _bump(info, "undecodable_lines")
+                    continue
                 # A transcript line is not guaranteed to be an object: task
                 # output files interleave bare scalars with records.
                 if isinstance(rec, dict):
                     yield rec
     except OSError:
+        # Nothing was read, or the read stopped part-way: the FILE is the unit,
+        # counted once here because this is the only place the failure is seen.
+        _bump(info, "unreadable_transcripts")
         return
 
 
@@ -210,11 +232,20 @@ def _zero():
     return dict.fromkeys(USAGE_FIELDS, 0)
 
 
-def _add(into, usage):
+def _add(into, usage, info=None):
+    """Sum the integer usage fields of `usage` into `into`.
+
+    An ABSENT field is not a drop -- absent stays absent. A field that is
+    PRESENT and not a whole number is, and it is counted into `info`: a `bool`
+    included, because `bool` is an `int` subclass and `"output_tokens": true`
+    would otherwise add one fabricated token.
+    """
     for f in USAGE_FIELDS:
         v = usage.get(f)
-        if isinstance(v, int):
+        if isinstance(v, int) and not isinstance(v, bool):
             into[f] += v
+        elif v is not None:
+            _bump(info, "non_integer_usage_fields")
 
 
 def dispatched_prompt(path):
@@ -260,8 +291,11 @@ def classify_transcript(path):
     return "unattributed"
 
 
-def scan(path, since=None, until=None):
+def scan(path, since=None, until=None, info=None):
     """(totals, record_count, models) for one transcript, within [since, until].
+
+    `info`, when a dict, collects what this transcript made the collector drop,
+    for the caller to publish beside the total it qualifies (ARC-2134807886).
 
     #1494: `until` bounds the END of the window. A floor alone is not enough when
     several runs share one session transcript -- re-collecting an earlier run after
@@ -272,7 +306,7 @@ def scan(path, since=None, until=None):
     totals = _zero()
     n = 0
     models: dict[str, int] = {}
-    for rec in _iter_records(path):
+    for rec in _iter_records(path, info):
         msg = rec.get("message")
         if not isinstance(msg, dict):
             continue
@@ -284,7 +318,7 @@ def scan(path, since=None, until=None):
             continue
         if until and ts > until:
             continue
-        _add(totals, usage)
+        _add(totals, usage, info)
         n += 1
         m = msg.get("model")
         if m:
@@ -309,14 +343,14 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
     by_phase_transcripts: dict[str, int] = {}
 
     if controller:
-        t, n, m = scan(controller, since, until)
+        t, n, m = scan(controller, since, until, info=found)
         _add(by_source["controller"], t)
         for k, v in m.items():
             models[k] = models.get(k, 0) + v
         controller_records = n
 
     for p in tasks:
-        t, n, m = scan(p, since, until)
+        t, n, m = scan(p, since, until, info=found)
         if not n:
             continue
         phase = classify_transcript(p)
@@ -378,6 +412,12 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
             # bound and `total` is a floor -- the one number that makes the
             # rest of this document honest when it does.
             "subagent_transcripts_truncated": found.get("transcripts_truncated", 0),
+            # ARC-2134807886, same contract for input that WAS reached and could
+            # not be used: a transcript that raised OSError (counted once, and
+            # not as a subagent transcript -- it contributed no record to sum).
+            "unreadable_transcripts": found.get("unreadable_transcripts", 0),
+            "undecodable_lines": found.get("undecodable_lines", 0),
+            "non_integer_usage_fields": found.get("non_integer_usage_fields", 0),
         },
     }
 
@@ -529,6 +569,17 @@ def main(argv=None):
         print("collect-usage: no transcript found; writing nothing "
               "(meta.cost.tokens stays null)", file=sys.stderr)
         return 1
+
+    dropped = [doc["sources"][k] for k in ("unreadable_transcripts",
+                                           "undecodable_lines",
+                                           "non_integer_usage_fields")]
+    if any(dropped):
+        # ARC-2134807886: one line, only when there is something to say. The
+        # counts are in the document either way; an operator reading the
+        # terminal would otherwise take the total below as the whole run.
+        print("collect-usage: dropped input -- %d unreadable transcript(s), %d "
+              "undecodable line(s), %d non-integer usage field(s); the reported "
+              "total is a FLOOR" % tuple(dropped), file=sys.stderr)
 
     if args.dry_run:
         json.dump(doc, sys.stdout, indent=2)

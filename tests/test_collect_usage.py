@@ -498,6 +498,9 @@ class TestSourcesIsASummary(unittest.TestCase):
             "subagent_usage_records": 5,
             "subagent_transcripts_by_phase": {"unattributed": 5},
             "subagent_transcripts_truncated": 0,
+            "unreadable_transcripts": 0,
+            "undecodable_lines": 0,
+            "non_integer_usage_fields": 0,
         }, u["sources"])
         self.assertEqual(5, u["subagent_transcripts"])
         self.assertEqual({"input_tokens": 6, "output_tokens": 6,
@@ -586,6 +589,148 @@ class TestTranscriptEnumerationIsBounded(unittest.TestCase):
                      and isinstance(n.func.value, ast.Name)
                      and n.func.value.id == "sources"]
         self.assertEqual(offenders, [])
+
+
+class TestDroppedInputIsCounted(unittest.TestCase):
+    """ARC-2134807886: what the collector could not read, it counts.
+
+    Three silent drops shared one consequence -- `total` read as authoritative
+    while being a floor. An OSError on a transcript ended `_iter_records` with a
+    bare `return`, a line `json.loads` rejected was skipped, and a usage value
+    that was not an int was ignored. `sources` already carried
+    `subagent_transcripts_truncated` for exactly this purpose (#1576), so the
+    three counters live beside it and are always present.
+    """
+
+    def test_an_unreadable_transcript_is_counted_once(self):
+        # A DIRECTORY where a transcript is expected: open() raises
+        # IsADirectoryError, an OSError, without a chmod (a chmod-000 file is
+        # readable by root, which is who CI is, and it tempts a mode literal).
+        with tempfile.TemporaryDirectory() as d:
+            unreadable = os.path.join(d, "not-a-file.jsonl")
+            os.makedirs(unreadable)
+            doc = cu.collect(d, d, transcript=unreadable,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertIsNotNone(doc, "a named controller transcript is still a source")
+        self.assertEqual(doc["sources"]["unreadable_transcripts"], 1)
+        # It contributed no usage record, so it is NOT folded into
+        # `subagent_transcripts`: that count has to keep re-summing to
+        # `subagent_transcripts_by_phase` and to `subagent_usage_records`.
+        self.assertEqual(doc["sources"]["subagent_transcripts"], 0)
+        self.assertEqual(doc["total"], 0)
+
+    def test_a_torn_line_is_counted_and_the_good_lines_still_sum(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctl = os.path.join(d, "ctl.jsonl")
+            with open(ctl, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(_rec(usage=_u(o=7))) + "\n")
+                fh.write('{"message": {"usage":\n')     # partially flushed
+                fh.write(json.dumps(_rec(usage=_u(o=11))) + "\n")
+            doc = cu.collect(d, d, transcript=ctl,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertEqual(doc["sources"]["undecodable_lines"], 1)
+        # The torn line costs its own record and nothing else.
+        self.assertEqual(doc["total"], 18)
+        self.assertEqual(doc["sources"]["controller_usage_records"], 2)
+        self.assertEqual(doc["sources"]["unreadable_transcripts"], 0)
+
+    def test_a_subagent_torn_line_is_counted_once_not_once_per_read(self):
+        # `collect` scans a subagent transcript and then classifies it, which
+        # re-reads the same file for its first prompt. The drop belongs to the
+        # file, so the second read must not count it again.
+        with tempfile.TemporaryDirectory() as d:
+            tasks = os.path.join(d, "tasks")
+            os.makedirs(tasks)
+            with open(os.path.join(tasks, "a.output"), "w", encoding="utf-8") as fh:
+                fh.write('{"message": {"usage":\n')
+                fh.write(json.dumps(
+                    _rec(role="user",
+                         content="write /r/.panopticon/findings-G-SEC.json")) + "\n")
+                fh.write(json.dumps(_rec(usage=_u(o=4))) + "\n")
+            ctl = _write(os.path.join(d, "ctl.jsonl"), [_rec(usage=_u(o=1))])
+            doc = cu.collect(d, d, transcript=ctl, tasks_dir=tasks)
+        self.assertEqual(doc["sources"]["undecodable_lines"], 1)
+        self.assertEqual(doc["by_phase"]["review"], 4)
+
+    def test_a_float_usage_field_is_counted_and_the_int_fields_still_sum(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctl = _write(os.path.join(d, "ctl.jsonl"), [
+                _rec(usage={"input_tokens": 5, "output_tokens": 2.5,
+                            "cache_creation_input_tokens": 1,
+                            "cache_read_input_tokens": 3})])
+            doc = cu.collect(d, d, transcript=ctl,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertEqual(doc["sources"]["non_integer_usage_fields"], 1)
+        self.assertEqual(doc["by_field"]["output_tokens"], 0)
+        self.assertEqual(doc["total"], 9)
+        # The record itself still counted: it carried usage, and three of its
+        # four fields were summed.
+        self.assertEqual(doc["sources"]["controller_usage_records"], 1)
+
+    def test_an_absent_usage_field_is_not_a_drop(self):
+        # The module's own promise -- "an absent number stays absent rather than
+        # becoming a fabricated zero" -- means absence is normal, not a drop.
+        with tempfile.TemporaryDirectory() as d:
+            ctl = _write(os.path.join(d, "ctl.jsonl"),
+                         [_rec(usage={"input_tokens": 4})])
+            doc = cu.collect(d, d, transcript=ctl,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertEqual(doc["sources"]["non_integer_usage_fields"], 0)
+        self.assertEqual(doc["total"], 4)
+
+    def test_a_bool_usage_field_is_a_drop_and_adds_no_tokens(self):
+        # `bool` is an `int` subclass, so `"output_tokens": true` used to pass
+        # the isinstance check and add ONE token -- a fabricated count from a
+        # value that is not a count. It is a non-integer field like any other.
+        with tempfile.TemporaryDirectory() as d:
+            ctl = _write(os.path.join(d, "ctl.jsonl"), [
+                _rec(usage={"input_tokens": 4, "output_tokens": True})])
+            doc = cu.collect(d, d, transcript=ctl,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertEqual(doc["sources"]["non_integer_usage_fields"], 1)
+        self.assertEqual(doc["by_field"]["output_tokens"], 0)
+        self.assertEqual(doc["total"], 4)
+
+    def _dry_run(self, d, transcript):
+        """`main --dry-run` over one transcript: (rc, stderr, stdout)."""
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            rc = cu.main(["--run-dir", d, "--project-dir", d,
+                          "--transcript", transcript, "--since", "none",
+                          "--tasks-dir", os.path.join(d, "none"), "--dry-run"])
+        return rc, err.getvalue(), out.getvalue()
+
+    def test_a_clean_run_adds_nothing_to_the_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctl = _write(os.path.join(d, "ctl.jsonl"), [_rec(usage=_u(o=9))])
+            rc, err, out = self._dry_run(d, ctl)
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "", "a clean run must print no new warning")
+        doc = json.loads(out)
+        for key in ("unreadable_transcripts", "undecodable_lines",
+                    "non_integer_usage_fields"):
+            self.assertEqual(doc["sources"][key], 0, key)
+
+    def test_the_summary_gains_one_line_naming_all_three_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctl = os.path.join(d, "ctl.jsonl")
+            with open(ctl, "w", encoding="utf-8") as fh:
+                fh.write('{"message": {"usage":\n')
+                fh.write('[unterminated\n')
+                fh.write(json.dumps(_rec(usage={"input_tokens": 3,
+                                                "output_tokens": 1.5})) + "\n")
+            rc, err, out = self._dry_run(d, ctl)
+        self.assertEqual(rc, 0)
+        lines = [ln for ln in err.splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1,
+                         "one line for the whole disclosure, got: %r" % err)
+        # An operator reading the terminal learns which drops happened and that
+        # the total below them is a floor.
+        self.assertIn("0 unreadable", lines[0])
+        self.assertIn("2 undecodable", lines[0])
+        self.assertIn("1 non-integer", lines[0])
+        self.assertIn("FLOOR", lines[0])
+        self.assertEqual(json.loads(out)["total"], 3)
 
 
 if __name__ == "__main__":
