@@ -7,6 +7,32 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The fixture runner's two containers launch under `run_tools`' container policy (#1767;
+  ARC-3859414366).** `run_tools` owns that policy and its docstrings said so: cap-drop,
+  no-new-privileges and the memory/CPU/pids ceilings "applied to every tool/adapter container".
+  `run_fixture_tests.py` imported no part of it, so the two could not agree by construction -- and
+  the container that runs the whole adapter suite on a developer machine launched with none of them:
+  the real scanners over live attacker-shaped inputs (a planted `eslint.config.js` and a shadow
+  `node_modules` plugin eslint must refuse to load, a planted `.gitleaks.toml` rule set and a
+  `GITLEAKS_CONFIG` hijack gitleaks must ignore) plus the dotnet/MSBuild and JVM toolchains over the
+  baked goat trees. The `hostile-csproj` corpus is baked into that image too, but its build is
+  opt-in under `PANOPTICON_CONTAINMENT_PROBE=1`, which only the containment lane sets, so
+  `evil.csproj`'s `curl` target does not fire on this path. The fixture-presence probe beside it had
+  no `--network none` either. The two helpers carry public names now (`privilege_drop_flags`,
+  `resource_limit_flags`; the underscore spellings stay identity aliases, so no call site moved) and
+  the fixture runner splices both lists into both `docker run` argvs, plus `--network none` on the
+  probe. Pinned as parity rather than resemblance: the flags between `run --rm` and the rest of the
+  argv are exactly what `run_tools` returns, and one test retunes a ceiling inside `run_tools` and
+  watches both launches follow -- a copy passes a spot-check and then drifts. The envelope's failure
+  modes now name themselves instead of arriving as a bare number: the probe quotes docker's refusal
+  when the daemon rejects a ceiling, rc 137 is reported as the memory ceiling's OOM kill, and rc 124
+  as a timeout with the CPU throttle named as the likely cause. What this cannot prove: Docker is
+  out of
+  reach in the fixing session, and the daily `adapter-integration` workflow runs its own
+  `docker run` rather than this script, so the first local `run_fixture_tests.py` is the end-to-end
+  check. The ceilings are the ones these same scanners already run under (6g memory, 4 CPUs, 1024
+  pids), and all three stay retunable through `PANOPTICON_TOOL_MEMORY` / `_CPUS` / `_PIDS`, an empty
+  value dropping that ceiling -- which the fixtures guide now records beside the command.
 - **The CLI advisor renderer confines claim locations and pins the review root (#1767, run-14
   ARC-3314534783).** Advisor-prompt assembly existed twice. The driver's two advisor rounds rewrite
   an escaping `location.file` to a redaction marker and pin `Repo root: <review_root>` before
