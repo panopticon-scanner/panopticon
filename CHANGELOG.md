@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The Kimi guard hooks run the driver's own interpreter, and `prepare` refuses one that cannot
+  start (#1777; ARC-1774133676).** Both PreToolUse hooks in the per-run `config.toml` named the bare
+  word `python3`, and nothing resolved it: the CHILD looks that name up in its own PATH, and the
+  launcher rewrites PATH -- `runners/children.py` sanitizes the startup environment and then sets it
+  from `executable.resolve`, which drops every entry inside the review root. An operator whose
+  `python3` came from the reviewed repo's own `.venv/bin` therefore armed two hooks the child could
+  not start, and a Kimi hook that does not start fails OPEN: read and write confinement silently
+  unarmed -- the exact residual the runner's own C3 comment named while checking only the guard
+  SCRIPT. The interpreter is `sys.executable` now (this process, chosen by neither PATH nor the
+  target -- the binding `read_guard_hook` and `codex_host` already use), and an empty or relative
+  one is REFUSED rather than swapped back for a bare name. `KimiRunner.prepare` checks both halves
+  of that command before any child launches: the guard script is present, and the interpreter is a
+  file that can be executed. Pinned with PATH emptied, so no `python3` shim on the machine running
+  the suite can stand in for the name the child could not resolve, and with the interpreter path's
+  own quoting -- it is interpolated into a shell string too, and one under a directory with a space
+  in it is ordinary. What remains is stated where it was: a hook can still die for a reason no
+  pre-flight sees (script or interpreter replaced mid-run, an exec that fails under load, an
+  adjudication past the hook's 30-second timeout), so the shells' tool allowlists stay the primary
+  control.
 - **The fixture runner's two containers launch under `run_tools`' container policy (#1767;
   ARC-3859414366).** `run_tools` owns that policy and its docstrings said so: cap-drop,
   no-new-privileges and the memory/CPU/pids ceilings "applied to every tool/adapter container".

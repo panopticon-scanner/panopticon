@@ -16,10 +16,16 @@ session-model fallback. The alias that REALLY ran is read back from the
 session's wire file, which is also the usage ledger's source:
 ``usage.record{usageScope: "turn"}`` events, one per LLM request, summed.
 
-Residuals, stated plainly: Kimi hooks fail open if the guard's interpreter
-cannot start (kimi_guard_hook.py's docstring); and `kimi -p` gives no USD
-metering on an OAuth plan, so cost_usd is None -- the ledger's token figures
-are the honest cost signal.
+Residuals, stated plainly: Kimi hooks fail OPEN when the guard does not start
+(kimi_guard_hook.py's docstring), and the interpreter that starts it is the
+DRIVER's own -- `sys.executable`, not a `python3` the child's PATH resolves --
+checked together with the guard script by `prepare` before anything launches.
+What remains is a hook that dies for a reason no pre-flight can see: script or
+interpreter replaced or removed mid-run, an exec that fails under load, or an
+adjudication that outruns the hook's 30-second timeout, each of which the CLI
+treats as allow. The shells' tool allowlists stay the primary control. And
+`kimi -p` gives no USD metering on an OAuth plan, so cost_usd is None -- the
+ledger's token figures are the honest cost signal.
 """
 import atexit
 import glob
@@ -215,14 +221,28 @@ class Runner(base.HostRunner):
         ours" true. The probes get the live path in-process (`run_home`).
         """
         self.review_root = os.path.abspath(review_root)
-        # C3: a Kimi hook whose interpreter cannot start fails OPEN, so a
-        # missing guard script is a SILENT un-confinement -- the one residual
-        # the hook cannot catch. `loop` turns this into a reported `error`.
+        # C3: a Kimi hook that cannot start fails OPEN, so a missing guard
+        # SCRIPT or an interpreter that cannot run it is a SILENT
+        # un-confinement -- the residual the hook itself cannot catch. Both
+        # halves of the command the per-run config arms are checked here, before
+        # anything launches; `loop` turns either refusal into a reported `error`.
         if not os.path.isfile(kimi_home_mod._GUARD):
             raise RuntimeError(
                 "the kimi guard hook is absent at %s; refusing to launch "
                 "reviewers whose read/write confinement would be unarmed"
                 % kimi_home_mod._GUARD)
+        # ARC-1774133676: the interpreter is this process's own (`sys.executable`,
+        # bound by kimi_home._interpreter), never a `python3` the CHILD's
+        # rewritten PATH resolves. Absoluteness is that binding's own check,
+        # raised from the `build_kimi_home` call below; what is checked here is
+        # that the path can actually be executed.
+        interpreter = sys.executable
+        if not interpreter or not (os.path.isfile(interpreter)
+                                   and os.access(interpreter, os.X_OK)):
+            raise RuntimeError(
+                "the kimi guard hook's interpreter is not an executable file "
+                "(%r); refusing to launch reviewers whose read/write "
+                "confinement would be unarmed" % interpreter)
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.kimi_home = kimi_home_mod.build_kimi_home(

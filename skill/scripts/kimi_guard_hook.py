@@ -9,8 +9,9 @@ THE SHAPE OF THE THING. Kimi Code registers hooks only in
 twice::
 
     [[hooks]] matcher = "Read|ReadMediaFile|Grep|Glob"
-                                          -> python3 <this file> read  <scope path>
-    [[hooks]] matcher = "Write|Edit"      -> python3 <this file> write <allowlist path>
+                            -> <the driver's python> <this file> read  <scope path>
+    [[hooks]] matcher = "Write|Edit"
+                            -> <the driver's python> <this file> write <allowlist path>
 
 The scope and allowlist DATA files are the ones the loop already arms through
 read_guard_hook.install / write_guard_hook.install (orchestrate.Guards):
@@ -22,10 +23,12 @@ document
 ``{"version": 2, "entries": {entry id: [path, ...]}, "paths": [...]}`` (#1571;
 version 1 was a flat list and is refused, not read). This
 script re-implements the small loaders rather than importing those modules:
-Kimi runs hooks as ``python3 <abs path> <mode> <abs data path>`` -- one SHELL
-STRING, which is why the command is built here, shell-quoted, by
+Kimi runs hooks as ``<interpreter> <abs path> <mode> <abs data path>`` -- one
+SHELL STRING, which is why the command is built here, shell-quoted, by
 `hook_command` (#1633) -- with no package on sys.path, the same constraint that
-keeps the Claude hooks stdlib-only and self-locating (R-P5-5).
+keeps the Claude hooks stdlib-only and self-locating (R-P5-5). That interpreter
+is the DRIVER's own `sys.executable` (`runners/kimi_home._interpreter`,
+ARC-1774133676), never a bare name the child's own PATH would resolve.
 
 BINDING. A headless child IS one dispatch entry (spec 5.3), so the entry id
 arrives in the environment as PANOPTICON_ENTRY_ID (orchestrate.Guards.env_for),

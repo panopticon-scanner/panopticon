@@ -12,14 +12,23 @@ syntax that the host then executes on every PreToolUse event.
 
 The tests take a path carrying every payload shape at once, ask the REAL
 builder for its command, and let a real shell parse it. The interpreter is
-stubbed (see `_test_helpers.argv_through_shell`) so the only thing that can run
-is a script printing its argv -- never the hook itself, never a host binary --
-and an escape shows up twice over: as a truncated argv, and as a marker file
-the shell created in the test's own temporary directory.
+stubbed so the only thing that can run is a script printing its argv -- never
+the hook itself, never a host binary -- and an escape shows up twice over: as a
+truncated argv, and as a marker file the shell created in the test's own
+temporary directory.
+
+Which stub depends on what the builder names. The write guard's command still
+starts with a bare `python3`, so `_test_helpers.argv_through_shell` replaces
+that NAME on PATH. The read guard and the Kimi hooks name an ABSOLUTE
+interpreter -- the driver's own `sys.executable` (ARC-1774133676) -- and a PATH
+entry cannot stand in for a path: they get `stub_interpreter` below, whose own
+path is then one more element whose quoting is on trial, and that helper must
+never be pointed at the real `sys.executable`.
 """
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -51,6 +60,36 @@ class HookCommandCase(unittest.TestCase):
             "the hook command ran an extra command out of its own path: a "
             "crafted path is executed on every PreToolUse event")
 
+    def stub_interpreter(self, directory, name="trusted-python"):
+        """A stand-in for a pinned ABSOLUTE interpreter, at `directory/name`.
+
+        It prints its own argv as JSON and runs nothing else, so a command that
+        reaches it delivered arguments rather than shell source. Owner-only
+        mode: the shell that runs it is this test's own process (a `0o755`
+        literal in a test is also what the repo's own B103 scan reports).
+        """
+        stub = os.path.join(directory, name)
+        with open(stub, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexec %s -c 'import json, sys; "
+                     "print(json.dumps(sys.argv[1:]))' \"$@\"\n"
+                     % shlex.quote(sys.executable))
+        os.chmod(stub, stat.S_IRWXU)
+        return stub
+
+    def argv_through_real_shell(self, command, cwd):
+        """The argv `command` delivers through `/bin/sh -c`, as a list.
+
+        The SHELL is named rather than implied (#1839 fix round 1): these tests
+        are ABOUT surviving a real shell, and `shell=True` runs exactly
+        `/bin/sh -c <command>` on POSIX, so saying so changes nothing about what
+        runs and leaves no `# nosec` behind for a redteam scan of our own tree
+        to trip over.
+        """
+        proc = subprocess.run(["/bin/sh", "-c", command], cwd=cwd,
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        return json.loads(proc.stdout)
+
 
 class TestWriteGuardHookCommand(HookCommandCase):
 
@@ -78,26 +117,13 @@ class TestReadGuardHookCommand(HookCommandCase):
     def test_a_hostile_scope_path_arrives_as_one_argument(self):
         with tempfile.TemporaryDirectory() as d:
             scope = os.path.join(d, HOSTILE_NAME)
-            # This private stub stands in for the pinned absolute interpreter;
-            # never let the shared PATH-stub helper write to sys.executable.
-            stub = os.path.join(d, "trusted-python")
-            with open(stub, "w", encoding="utf-8") as fh:
-                fh.write("#!/bin/sh\nexec %s -c 'import json, sys; "
-                         "print(json.dumps(sys.argv[1:]))' \"$@\"\n"
-                         % shlex.quote(sys.executable))
-            os.chmod(stub, 0o755)
+            # This stub stands in for the pinned absolute interpreter; never
+            # let the shared PATH-stub helper write to sys.executable.
+            stub = self.stub_interpreter(d)
             with mock.patch.object(rg, "_trusted_hook_argv",
                                    return_value=(stub, "-I", os.path.abspath(rg.__file__))):
                 command = rg._hook_entry(scope)["hooks"][0]["command"]
-            # `/bin/sh -c` is what `shell=True` runs on POSIX, named
-            # explicitly: this test is ABOUT surviving a real shell, and the
-            # explicit form carries no `# nosec` for a redteam scan of our own
-            # tree to trip over (#1839 fix round 1).
-            proc = subprocess.run(["/bin/sh", "-c", command], cwd=d,
-                                  capture_output=True,
-                                  text=True, timeout=5)
-            self.assertEqual(0, proc.returncode, proc.stderr)
-            argv = json.loads(proc.stdout)
+            argv = self.argv_through_real_shell(command, cwd=d)
             self.assertEqual(["-I", os.path.abspath(rg.__file__),
                               os.path.abspath(scope)], argv,
                              "the scope path did not survive the shell intact")
@@ -107,23 +133,48 @@ class TestReadGuardHookCommand(HookCommandCase):
 class TestKimiPerRunConfigHookCommands(HookCommandCase):
     """The Kimi half: the commands are written into the per-run `config.toml`,
     so they are checked as the CLI reads them -- serialized, parsed back with
-    `tomllib`, then handed to a shell."""
+    `tomllib`, then handed to a shell. Their interpreter is the driver's own
+    `sys.executable`, so the stub stands in for that, not for a name on PATH."""
+
+    def _hook_commands(self, stub, scope, allowlist):
+        """{matcher: command} out of the generated config, built while the
+        runner's own interpreter is `stub`."""
+        with mock.patch.object(sys, "executable", stub):
+            config = tomllib.loads(kimi_toml.dump_toml(
+                kimi_home.build_merged_config({}, scope, allowlist)))
+        return {h["matcher"]: h["command"] for h in config["hooks"]}
 
     def test_hostile_scope_and_allowlist_paths_arrive_as_arguments(self):
         with tempfile.TemporaryDirectory() as d:
             scope = os.path.join(d, "read-" + HOSTILE_NAME)
             allowlist = os.path.join(d, "write-" + HOSTILE_NAME)
-            config = tomllib.loads(kimi_toml.dump_toml(
-                kimi_home.build_merged_config({}, scope, allowlist)))
-            commands = {h["matcher"]: h["command"] for h in config["hooks"]}
+            commands = self._hook_commands(self.stub_interpreter(d), scope, allowlist)
             guard = os.path.abspath(kimi_guard_hook.__file__)
             for matcher, mode, data in (
                     (kimi_home.READ_MATCHER, "read", scope),
                     (kimi_home.WRITE_MATCHER, "write", allowlist)):
-                argv = argv_through_shell(commands[matcher], cwd=d)
+                argv = self.argv_through_real_shell(commands[matcher], cwd=d)
                 self.assertEqual([guard, mode, os.path.abspath(data)], argv,
                                  "the %s hook's argv did not survive the shell"
                                  % mode)
+            self.assert_no_marker(d)
+
+    def test_an_interpreter_path_that_needs_escaping_survives_the_shell(self):
+        # ARC-1774133676 put `sys.executable` into that shell string, so the
+        # interpreter's own path is now on trial with the rest: an interpreter
+        # under a directory with a space in it is ordinary, and one carrying a
+        # quote is possible. It reaches the shell as ONE word or the hook does
+        # not start -- and a Kimi hook that does not start fails OPEN.
+        with tempfile.TemporaryDirectory() as d:
+            scope = os.path.join(d, "read-scope.json")
+            allowlist = os.path.join(d, "write-allowlist.json")
+            stub = self.stub_interpreter(d, "py 3 'trusted' interpreter")
+            commands = self._hook_commands(stub, scope, allowlist)
+            self.assertIn(shlex.quote(stub), commands[kimi_home.READ_MATCHER],
+                          "the interpreter path is not quoted in the command")
+            argv = self.argv_through_real_shell(commands[kimi_home.READ_MATCHER], cwd=d)
+            self.assertEqual([os.path.abspath(kimi_guard_hook.__file__), "read", scope],
+                             argv, "the read hook's argv did not survive the shell")
             self.assert_no_marker(d)
 
 

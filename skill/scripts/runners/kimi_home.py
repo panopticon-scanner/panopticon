@@ -140,11 +140,42 @@ def disabled_tools(vocabulary=None):
              else set().union(*TOOL_VOCABULARY.values()))
     return sorted(names - allowed_tool_union())
 
+
+def _interpreter():
+    """The interpreter the guard hooks run under: THIS process's own, absolute.
+
+    ARC-1774133676: it was the bare word `python3`, and nothing resolved it --
+    the child looks it up in ITS PATH, which the launcher rewrites
+    (`runners/children.py` sanitizes the startup environment and then sets PATH
+    from `executable.resolve`, which drops every entry inside the review root).
+    An operator whose `python3` came from the reviewed repo's own `.venv/bin`
+    therefore armed two hooks with a name the child had no entry for, and a Kimi
+    hook that cannot start fails OPEN: read and write confinement unarmed, with
+    nothing said. `sys.executable` is the process already running the driver, so
+    neither PATH nor the target chooses it -- the same binding
+    `read_guard_hook._trusted_hook_argv` and `codex_host.safety_config` use.
+
+    It can be empty or relative (an embedded interpreter, a caller that
+    overwrote it), and then this REFUSES rather than falling back to a name a
+    PATH gets to choose: the raise reaches `build_kimi_home`'s caller, where
+    failing to arm is loud, and `runners/kimi.py::KimiRunner.prepare` checks the
+    same interpreter can actually run before any child launches.
+    """
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        raise RuntimeError(
+            "the kimi guard hook's interpreter is unavailable or not absolute "
+            "(%r); refusing to arm hooks whose interpreter a child's own PATH "
+            "would have to resolve" % executable)
+    return executable
+
+
 def _hook_entry(matcher, mode, data_path):
-    # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element.
+    # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element,
+    # the interpreter path included (tests/test_hook_command_quoting.py).
     return {"event": "PreToolUse", "matcher": matcher,
             "command": kimi_guard_hook.hook_command(
-                "python3", _GUARD, mode, os.path.abspath(data_path)),
+                _interpreter(), _GUARD, mode, os.path.abspath(data_path)),
             "timeout": 30}
 
 
