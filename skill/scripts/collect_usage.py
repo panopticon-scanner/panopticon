@@ -570,7 +570,10 @@ def main(argv=None):
               "(meta.cost.tokens stays null)", file=sys.stderr)
         return 1
 
-    dropped = [doc["sources"][k] for k in ("unreadable_transcripts",
+    # A document without `sources` (an older or hand-built one) has nothing
+    # to disclose; the summary line is owed only when a counter is non-zero.
+    sources = doc.get("sources") or {}
+    dropped = [sources.get(k, 0) for k in ("unreadable_transcripts",
                                            "undecodable_lines",
                                            "non_integer_usage_fields")]
     if any(dropped):
