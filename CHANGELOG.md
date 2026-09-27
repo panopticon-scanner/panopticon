@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A malformed or empty diff-hunks payload is disclosed, not swallowed (#1783; ARC-2340795244).**
+  `synth/delta.py`'s loader is total by design -- an unreadable or non-object `diff-hunks.json`
+  yields `{}`, a non-object `hunks` becomes `{}`, and every range that is not a two-integer pair is
+  dropped -- and it said none of that anywhere. The consequence is asymmetric. A payload with no
+  `base` degrades to a full-repo review, which is the WIDER gate; a payload WITH a base and an
+  empty hunk map stays an ACTIVE delta that matches no finding at all, so every finding classifies
+  off-diff, `--gate-scope on-diff` scopes the gate to that empty set, and a change with findings
+  reports a green gate -- indistinguishable from a genuinely empty diff, over an artifact the
+  driver hands synthesize on file existence alone, from a fixed path inside the reviewed tree's own
+  `.panopticon/`. The loader now returns a `HunksLoad` beside its data (the old name delegates to
+  it, so every caller is unchanged), and `from_args` prints in the #957 register: the rejection
+  reason with the path, a ZERO HUNKS warning naming what that costs the gate and how to tell an
+  empty change from a broken artifact, and a count of the ranges dropped. The warning distinguishes
+  the two shapes zero ranges can take, because `diff_map.classify` fails OPEN for a lined finding
+  in a file the map NAMES without a range. `meta.coverage.delta` carries the same four facts --
+  `hunks_files`, `hunks_ranges`, `ranges_dropped`, `payload_malformed` -- so the report says it
+  too, with `files_changed` left as the artifact's own claim beside the map actually classified
+  against. The gate's scoping RULE is untouched: this is disclosure, and what an empty on-diff gate
+  should DO is a policy call.
 - **The Kimi guard hooks run the driver's own interpreter, and `prepare` refuses one that cannot
   start (#1777; ARC-1774133676).** Both PreToolUse hooks in the per-run `config.toml` named the bare
   word `python3`, and nothing resolved it: the CHILD looks that name up in its own PATH, and the

@@ -964,7 +964,12 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. It
+  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
+  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and every malformed
+  range it drops are named on stderr and counted in `meta.coverage.delta` (#1783): an ACTIVE delta
+  whose map is empty (`hunks_files: 0`) matches no finding at all, so every one classifies off-diff
+  and a `--gate-scope on-diff` gate has nothing left to fail on — an empty change and a broken
+  artifact look identical, and only regenerating the artifact tells them apart. It
   also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
   `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
