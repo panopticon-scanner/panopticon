@@ -382,8 +382,9 @@ def stdin_program(argv):
 # --- whether a command's failure is allowed to matter -------------------------
 
 # The container runners, and the subcommands of theirs that run a command. The
-# image itself is pinned by digest elsewhere; what is read here is the argv
-# after it.
+# image itself is not pinned -- this fleet runs the tools image from a mutable
+# tag by decision (`workflow_guard`'s gap list, and DEVELOPMENT.md's "One
+# residual to know about"); what is read here is the argv after it.
 CONTAINERS = ("docker", "podman", "nerdctl")
 _CONTAINER_RUN = ("run", "exec", "create")
 

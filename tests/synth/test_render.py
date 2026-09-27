@@ -509,6 +509,10 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn("`\"vendor/**\"`", out)
         self.assertIn("`\"tests/fixtures/**\"`", out)
         self.assertIn("**Tool findings suppressed:** vendor: 2", out)
+        # Fix round 1 (run-14 SEC-1915770944): a policy that pruned something says
+        # what it pruned -- the same globs took those paths out of every review
+        # cell, not just off the tool axis.
+        self.assertIn("a committed `exclude_paths:` prunes review CELLS too", out)
 
     def test_the_venv_tally_rows_say_what_they_rest_on(self):
         # #1839: this line is about findings dropped on a directory NAME, and
@@ -558,6 +562,11 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
                     {"count": 0, "globs": globs}))
                 self.assertIn("**Tool findings excluded by policy:** 0", out)
                 self.assertEqual('`"vendor/**"`' in out, bool(globs))
+                # ...but the review-cell clause is a disclosure about THIS run, so
+                # it appears only where a policy exists. Appended to `globs: none`
+                # it advertises a prune that did not happen, which is the same
+                # defect as reading an absent field as "nothing was excluded".
+                self.assertEqual("prunes review CELLS" in out, bool(globs))
 
     def test_legacy_missing_and_malformed_optional_block_do_not_claim_zero(self):
         for excluded in (_OMIT, None, "bad", {"count": "many", "globs": []},

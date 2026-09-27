@@ -679,6 +679,28 @@ class TestDockerfileFixtures(unittest.TestCase):
             # the probe -- the exact defect the bake exists to prevent.
             self.assertNotIn("||", line, "the hostile restore must fail the image build, not fall through")
             self.assertNotRegex(line, r";\s*(true|echo)\b", "the hostile restore must not be made tolerant")
+        # #1838 (run-14 SEC-2589722723): the fixture side of the same pin. Every
+        # sentence above holds only while `Hostile` hooks BUILD -- re-hooked to
+        # `Restore`, or reached by a `<Project InitialTargets=...>`, it would fire
+        # its `curl` in the one step this file does run, on the networked image
+        # builder. Nothing else reads the file: the corpus is pruned from every
+        # review cell before grouping, by decision (`panopticon.yml`'s `Fixtures:`
+        # header comment, and its top-level `exclude_paths:`), so this is the whole
+        # of the fixture-side guard. Read as XML, not as source text: a
+        # single-quoted attribute and an `InitialTargets` on the root are both
+        # valid MSBuild that a regex over the file misses (fix round 1).
+        from defusedxml import ElementTree as DefusedET   # declared dependency
+        root = DefusedET.parse(
+            os.path.join(ROOT, "tests", "fixtures", "hostile-csproj",
+                         "evil.csproj")).getroot()
+        self.assertEqual(
+            [(t.get("Name"), t.get("BeforeTargets"), t.get("AfterTargets"),
+              t.get("DependsOnTargets")) for t in root.iter("Target")],
+            [("Hostile", "Build", None, None)],
+            "evil.csproj must hold one Target, hooked to Build and nothing else")
+        self.assertEqual(
+            (root.get("InitialTargets"), root.get("DefaultTargets")), (None, None),
+            "a Project-level InitialTargets/DefaultTargets fires on restore too")
 
     def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
         # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit
