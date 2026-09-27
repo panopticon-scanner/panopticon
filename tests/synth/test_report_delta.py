@@ -1,10 +1,16 @@
 """Delta classification, coverage, and gate contracts."""
 
+import contextlib
+import io
+import json
+import os
+import tempfile
 import unittest
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+from tests.synth.helpers import _cli_args
 
 
 class TestDeltaClassify(unittest.TestCase):
@@ -224,3 +230,50 @@ class TestDeltaGate(unittest.TestCase):
         self.assertNotEqual(rep["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(rep["summary"]["delta"])
         self.assertIsNone(rep["meta"]["coverage"]["delta"])
+
+    def test_a_zero_hunk_active_delta_is_disclosed_not_silent(self):
+        """ARC-2340795244 (#1783): a based artifact with an EMPTY hunk map keeps
+        the delta ACTIVE while matching no finding, so every finding classifies
+        off-diff and `--gate-scope on-diff` has an empty gate source -- a green
+        gate over a change with findings. The scoping RULE is a policy call and
+        is left alone here; what is pinned is that the run no longer passes in
+        silence. #1783 leaves the policy open (refuse to certify vs fall back to
+        the wider scope) -- an owner call; when it is made, this pin must change
+        with it."""
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "diff-hunks.json")
+            with open(hp, "w", encoding="utf-8") as fh:
+                json.dump({"base": "main", "base_source": "explicit",
+                           "diff_context": 5, "files_changed": 0, "hunks": {}}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                delta = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=hp, fail_on="high", gate_scope="on-diff"))
+            rep = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-01-01T00:00:00Z",
+                    gate_unverified=True,
+                    gate_scope="on-diff",
+                ),
+                findings=findings_mod.FindingSet(findings=self._findings()),
+                delta=delta,
+                plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+            ))
+        # Current behaviour, pinned honestly: two active HIGHs, and the gate
+        # has nothing to fail on because none of them is on-diff.
+        self.assertTrue(delta.active)
+        self.assertEqual(rep["summary"]["counts"]["active"], 2)
+        self.assertEqual(rep["summary"]["delta"]["on_diff"].get("high"), 0)
+        self.assertEqual(rep["summary"]["delta"]["pre_existing"].get("high"), 2)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        # The disclosure: the report says the delta was scoped to nothing...
+        cov = rep["meta"]["coverage"]["delta"]
+        self.assertEqual(cov["hunks_ranges"], 0)
+        self.assertEqual(cov["hunks_files"], 0)
+        self.assertEqual(cov["ranges_dropped"], 0)
+        self.assertIsNone(cov["payload_malformed"])
+        self.assertEqual(cov["on_diff_total"], 0)
+        # ...and the operator was told at load time.
+        self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err.getvalue())
