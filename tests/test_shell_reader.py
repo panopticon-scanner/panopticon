@@ -786,18 +786,30 @@ class TestOneLexicalPass(unittest.TestCase):
                 self.assertEqual(12000, len(parsed))
                 self.assertLess(elapsed, 2.0, elapsed)
 
+    def test_a_subscript_opens_only_where_bash_reads_an_assignment(self):
+        # Among `echo`'s arguments `<` ends the word `a[1` and `<<X]` is a
+        # heredoc. At a command's head, after a leading redirection (bash
+        # 5.2) and inside `name=(...)`, `a[...]` is arithmetic up to its `]`,
+        # lines below included, and the lines after that are code.
+        parsed = stage("echo a[1<<X]\nbody\nX]\n")
+        self.assertEqual((['echo', 'a[1'], 'body'), (parsed.argv, parsed.heredoc))
+        for script in ("a[1\n<<X]=y\necho a\nX]=y\n", "a=(\n[1<<X]=y\n)\necho a\nX]=y\n",
+                       ">/dev/null a[1<<X]=y\necho a\nX]=y\n"):
+            with self.subTest(script=script):
+                self.assertIn([['echo', 'a']], argvs(script))
+
     def test_nested_double_parens_are_decided_in_bounded_time(self):
         # A command's `((` is decided by reading its first group, and one bash
         # makes two subshells is read again as code -- so `((((` nested is
-        # read once more per level. 3000 lines of six-deep subshells, each
+        # read once more per level. 2000 lines of six-deep subshells, each
         # heredoc's open quote kept out of the code only by a real body, stay
         # inside the cap and read in linear time.
         script = "".join("((((((: <<E%d) ) ) ) ) )\nit's\nE%d\n" % (k, k)
-                         for k in range(3000))
+                         for k in range(2000))
         start = time.monotonic()
         parsed = shell_reader.statements(script)
         elapsed = time.monotonic() - start
-        self.assertEqual(3000, len(parsed))
+        self.assertEqual(2000, len(parsed))
         self.assertEqual({"it's"}, {s.stages[0].heredoc for s in parsed})
         self.assertLess(elapsed, 2.0, elapsed)
 

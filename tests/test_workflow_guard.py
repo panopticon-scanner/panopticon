@@ -1995,16 +1995,42 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.flagged(script % self.PAYLOAD)
 
     def test_an_array_subscript_is_arithmetic(self):
-        # At the head of a command -- after `x=1` or `then` as well -- bash
-        # reads `a[...]` as an arithmetic subscript, spaces and all, so its
-        # `<<` is a shift. The regex this replaced took `a[i << X ]=y` for a
-        # heredoc and let the decoy line below end it.
-        for opening, word in (("a[1<<2]=x", "2]=x"),
-                              ("a[i << X ]=y", "X"),
+        # Where bash 5.2 reads an assignment -- at the head of a command, after
+        # `x=1`, `then`, `time -p`, a pipe, `function f {` or a leading
+        # redirection, and inside `name=(...)`, `declare`'s too -- it reads
+        # `a[...]` as an arithmetic subscript, spaces, lines and all, so its
+        # `<<` is a shift (3.2 rejects the two-line `a=(` and reads the
+        # redirection line as a heredoc). The regex this replaced took
+        # `a[i << X ]=y` for a heredoc and let the decoy line below end it;
+        # the subscript rule before this one ended a subscript at its line
+        # and opened none inside `(...)`, with the same result.
+        for opening, word in (("a[1<<2]=x", "2]=x"), ("a[i << X ]=y", "X"),
                               ("x=1 a[1<<2]=y", "2]=y"),
-                              ("if true; then a[1<<2]=y; fi", "2]=y")):
+                              ("if true; then a[1<<2]=y; fi", "2]=y"),
+                              ("a[1\n<<X]=y", "X]=y"), ("a=([1<<X]=y)", "X]=y"),
+                              ("declare a=([1<<X]=y)", "X]=y"),
+                              ("a=(\n[1<<X]=y\n)", "X]=y"),
+                              (">/dev/null a[1<<X]=y", "X]=y"),
+                              ("time -p a[1<<X]=y", "X]=y"),
+                              ("function f { a[1<<X]=y; }", "X]=y"),
+                              ("x=$(echo) a[1<<X]=y", "X]=y"), ("true | a[1<<X]=y", "X]=y")):
             with self.subTest(opening=opening):
                 self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+
+    def test_an_argument_is_no_subscript(self):
+        # Among a command's arguments -- `echo`'s, `declare`'s, `printf`'s,
+        # and a `time` after a pipe, an `if` after an assignment or a
+        # redirection, which name programs there -- `<` ends the word and
+        # `<<X]` is a heredoc, whose body holds the open quote. Read as a
+        # subscript, the quote hid the payload bash runs after `X]`.
+        for opening, word in (("echo a[1<<X]", "X]"), ("declare a[1<<X]=y", "X]=y"),
+                              ("printf '%s' a[1<<X]", "X]"), ("true | time a[1<<X]", "X]"),
+                              ("a=1 if a[1<<X]", "X]"), (">/dev/null if a[1<<X]", "X]"),
+                              ("echo 2>&1 a[1<<X]", "X]"), ("echo &>/dev/null a[1<<X]", "X]"),
+                              ("declare a=(x) b[1<<X]", "X]"), ("coproc c d a[1<<X]", "X]"),
+                              ("\\a[1<<X]", "X]"), ("a[1]x]=y b[1<<X]", "X]")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\nit's\n%s\n%s\n" % (opening, word, self.PAYLOAD))
 
     def test_a_command_double_paren_is_read_as_bash_decides_it(self):
         # Bash matches a command's `((` to the close of its first group --

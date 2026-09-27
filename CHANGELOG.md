@@ -17,10 +17,12 @@ evidence exposed.
   (`<<$(...)`) stays text. A command's `((` is arithmetic or two subshells, whose heredocs are
   real, by the character after its first group, as bash decides it; nesting that would take
   over eight re-readings of the script to decide raises `shell_lex.Unreadable` rather than
-  guess. The scanners after the lexer now agree on `\"` inside "...", `$'...'` and an
-  apostrophe inside "...": misread, each hid what followed it. Every heredoc on a line is read
-  and filed under its descriptor, so the guard reads the script `bash -s <<'A' 3<<'B'` runs
-  (#2128).
+  guess. An `a[...]` subscript, where `<<` is a shift, opens only where bash reads an
+  assignment -- across lines, and inside `a=(...)` -- so among a command's arguments
+  (`echo a[1<<X]`) `<<` is a heredoc. The scanners after the lexer now agree on `\"`
+  inside "...", `$'...'` and an apostrophe inside "...": misread, each hid what followed it.
+  Every heredoc on a line is read and filed under its descriptor, so the guard reads the
+  script `bash -s <<'A' 3<<'B'` runs (#2128).
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO

@@ -50,11 +50,15 @@ no step it could not read, and its command line exits non-zero. An exception
 rather than a reading, because the reader has no channel yet for a step it
 cannot read, and raising one needs no line in the modules that call it.
 
-One place still parts from bash, because its grammar decides it and this
-pass reads text. A name and `[` open an array subscript, which is arithmetic
-(`a[1<<2]=x`), up to its `]` or the end of its line wherever it stands -- bash
-opens one only at the head of a command, so `echo a[1<<X]` is a heredoc to
-bash and text here.
+A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
+`]` however many lines on -- only where bash reads an assignment: at the head
+of a command, after assignments or (bash 5.2) nothing but redirections before
+its name, and at a word's start inside `name=(...)`. Among a command's
+arguments, `echo a[1<<X]` is the word `a[1` and a heredoc. So `lex` tracks
+where each word stands, as bash's parser does (`_HEADS`), which also settles
+where a reserved word starts a command. Where bash 3.2 and 5.2 part -- a
+redirection before an assignment, `time -p --`, `coproc`, `{fd}>`, `|&`,
+`function f ((` -- it reads what 5.2, the CI runners' bash, reads.
 
 Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
 the `$(...)` matcher `shell_reader` lifts substitutions with.
@@ -88,6 +92,23 @@ _PLAIN = {'"': ("'", '"', "$'", '$"'), "((": ("${", "$["), "[": ("${", "$["),
 # again before `lex` stops (`Unreadable`).
 _REREAD = 8
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Where the next word stands, as bash's parser tracks it: at the head of a
+# command -- "head", or after a pipe ("|", "|\n"), where `time` names a program
+# -- after nothing but redirections ("redirected", bash 5.2) or assignments
+# ("assigned"), as the name `function`, `coproc`, `for` and `select` take
+# ("named"), or among the arguments ("argument"). `name[` opens a subscript
+# anywhere but among the arguments; a reserved word starts a command only at
+# a head, and `-p` and `--` only after `time`.
+_HEADS = ("head", "|", "|\n")
+_STARTERS = ("!", "{", "coproc", "do", "elif", "else", "for", "function", "if",
+             "select", "then", "time", "until", "while")
+_NAMERS = ("coproc", "for", "function", "select")
+_TIMED = (("time", "-p"), ("time", "--"), ("-p", "--"))
+_ASSIGNS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
+_COMPOUND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[.*\])?\+?=", re.S)  # then `(`
+_IO_NUMBER = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
+# The state a word is read in: saved around a `$(...)`, and at a `((`.
+_STATE = ("word", "named", "at", "target", "last", "compound", "assigned")
 # A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
 _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
                      re.S)
@@ -150,6 +171,7 @@ class _Frame:
     def __init__(self, kind: str, depth: int = 0, undo: tuple = ()):
         self.kind, self.depth, self.undo = kind, depth, undo
         self.queue: list[tuple[int, str, bool, bool, str]] = []
+        self.saved: dict = {}           # a `$(...)`: the state around it
 
 
 class _Lexer:
@@ -159,6 +181,9 @@ class _Lexer:
         self.frames = [_Frame("top")]
         self.word = 0                   # where in `out` the current word began
         self.named = -1                 # the last word whose first `[` was read
+        self.at, self.target, self.last = "head", False, ""     # `_HEADS`
+        self.compound = ""              # in `name=(...)`: `at` from before it
+        self.assigned = -1              # the last word a `[...]=` assigns in
         self.lines: dict[bool, _Lines] = {}
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
@@ -198,9 +223,14 @@ class _Lexer:
     def push(self, i: int, opener: str, kind: str, depth: int) -> int:
         self.out.append(opener)
         self.frames.append(_Frame(kind, depth))
-        if kind in _CODE:
-            self.word = len(self.out)   # a `$(...)` starts at a word's start
+        if kind in _CODE:               # a `$(...)` holds commands of its own
+            self.frames[-1].saved = self.saved()
+            vars(self).update(word=len(self.out), at="head", target=False, last="",
+                              compound="")
         return i + len(opener)
+
+    def saved(self) -> dict:
+        return {name: getattr(self, name) for name in _STATE}
 
     def step(self, i: int, frame: _Frame) -> int:
         """Read the character at `i`, which opens nothing; the index after it."""
@@ -211,10 +241,12 @@ class _Lexer:
                 end = text.find("\n", i)
                 return len(text) if end < 0 else end
             if text.startswith("((", i) and start and i != self.plain:
-                undo = (i, len(self.frames), len(out), self.word, self.named)
+                undo = (i, len(self.frames), len(out), self.saved())
                 i = self.push(i, "((", "((", 2)
                 self.frames[-1].undo = undo
                 return i
+            if ch in _BREAK:
+                self.token(i)
             if text.startswith("<<<", i):
                 out.append("<<<")
                 self.word = len(out)
@@ -223,11 +255,9 @@ class _Lexer:
                 return self.operator(i, frame)
             if ch == "[" and self.named != self.word:  # only a word's first `[`
                 self.named = self.word
-                if _NAME.fullmatch(text, i - (len(out) - self.word), i):
+                if start and self.compound or self.at != "argument" and _NAME.fullmatch(
+                        "".join(out[self.word:])):
                     return self.push(i, "[", "a[", 1)
-        elif ch == "\n" and frame.kind == "a[":
-            self.frames.pop()           # unclosed on its line: a word, read on
-            return i
         out.append(ch)
         pair = _PAIRS.get(frame.kind, "")
         if ch in pair:
@@ -238,6 +268,10 @@ class _Lexer:
                 frame.undo = ()         # `))`: an arithmetic command
             if not frame.depth:
                 self.frames.pop()       # heredocs still queued in it stay text
+                if frame.kind == "(":
+                    vars(self).update(frame.saved)
+                elif frame.kind == "a[" and text.startswith(("=", "+="), i + 1):
+                    self.assigned = self.word
                 return i + 1
         if ch in _BREAK and frame.kind in _CODE:
             self.word = len(out)
@@ -250,15 +284,51 @@ class _Lexer:
         the two subshells bash makes of it; the index it is at. The group was
         read to `i` for nothing, so past `_REREAD` times the script's length
         of such re-reading, `Unreadable` -- the cap on nesting them deep."""
-        at, frames, size, self.word, self.named = undo
+        at, frames, size, saved = undo
         self.reread += i - at
         if self.reread > _REREAD * len(self.text):
             raise Unreadable("shell_lex: this script nests `((` so deep that reading it "
                              "the way bash does costs over %d times its length; "
                              "not read, so nothing in it is accepted" % _REREAD)
         del self.frames[frames:], self.out[size:]
+        vars(self).update(saved)
         self.plain = at
         return at
+
+    def token(self, i: int) -> None:
+        """Move `self.at` past the word the metacharacter at `i` ends -- none,
+        if it is an IO number -- and past that metacharacter."""
+        text, ch, before = self.text, self.text[i], self.text[i - 1:i]
+        word = "".join(self.out[self.word:])
+        if word and not (ch in "<>" and _IO_NUMBER.fullmatch(word)):
+            self.at = self.stood(word)
+        if ch in "<>":
+            self.target = True
+        elif ch == "(" and _COMPOUND.fullmatch(word):
+            self.compound = self.at
+        elif ch == ")" and self.compound:
+            self.at, self.compound = self.compound, ""
+        elif ch in "\n;()" or ch == "|" and before != ">" or ch == "&" and not (
+                before in ("<", ">", "|") or text.startswith("&>", i)):
+            self.at = ("|" if ch == "|" and before != "|" else
+                       "|\n" if ch == "\n" and self.at == "|" else "head")
+            self.last, self.target = "", False
+
+    def stood(self, word: str) -> str:
+        """Where the word after `word` stands, `word` having stood at `self.at`."""
+        at, last, self.last = self.at, self.last, word
+        if self.target:                 # a redirection's word: 5.2's rule
+            self.target = False
+            return ("argument" if at == "assigned" else
+                    at if at in ("named", "argument") else "redirected")
+        if at == "named":
+            return "head"
+        if at in _HEADS and (word in _STARTERS and (word != "time" or at == "head")
+                             or (last, word) in _TIMED):
+            return "named" if word in _NAMERS else "head"
+        if at != "argument" and (self.assigned == self.word or _ASSIGNS.match(word)):
+            return "assigned"
+        return "argument"
 
     def operator(self, i: int, frame: _Frame) -> int:
         """Queue the heredoc whose `<<` is at `i`; the index after its word.
@@ -281,7 +351,7 @@ class _Lexer:
             fd = ""
         out.append(fd + text[i:end])
         frame.queue.append((len(out) - 1, delimiter, quoted, after > i + 2, fd or "0"))
-        self.word = len(out)
+        self.word, self.at = len(out), self.stood(delimiter)
         return end
 
     def bodies(self, frame: _Frame, i: int) -> int:
