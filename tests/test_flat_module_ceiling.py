@@ -3,20 +3,22 @@ the 700-line ceiling, extended to the flat modules and the entry scripts.
 
 `tests/test_layout.py` rule 5 ratchets the four packages -- `synth`, `phases`,
 `runners`, `probes` -- and every module under that ratchet is under the
-ceiling. Nothing ratcheted the rest of `skill/scripts/` or `scripts/`, so the
+ceiling. Nothing ratcheted the rest of `skill/scripts/`, `scripts/` or the
+`tools/` adapter package, so the
 largest modules in the tree were the unmeasured ones: `run_tools.py` went from
 1231 to 2215 lines in the six days after the finding was written, because the
 whole post-run scanner-policy series landed there and nothing pushed back. The
 ratchet exists to make growth a visible decision; on this surface it was
-invisible for nineteen modules at once.
+invisible for twenty modules at once.
 
 So the same ceiling applies here, as a SHRINK-ONLY allowlist. `PENDING` pins
 every module already over the ceiling at the count it had when this guard
 landed, and such a module may only get smaller. A number here is never raised
--- a module that needs more room gets split, and the splits owed are Phase C
-of the ARC plan (`skill/docs/guide/code-layout.md`) -- and a module that
-reaches the ceiling loses its entry, so the allowlist cannot outlive the work
-it records.
+-- a module that needs more room gets split; the splits owed are tracked in
+#1762/#1763 -- and a module that reaches the ceiling loses its entry, so the
+allowlist cannot outlive the work it records. A module that shrinks but stays
+over the ceiling lowers its pin to the new count in the same change, so the
+allowlist stays a measurement and not a permission.
 
 `LINE_CEILING` is imported from rule 5 rather than restated: two ratchets that
 disagree about the number are two different rules. Lines are counted the way
@@ -29,21 +31,25 @@ import unittest
 from conftest import REPO_ROOT
 from test_layout import LINE_CEILING
 
-# The flat surface: `*.py` directly under each of these, which is everything
-# the package ratchet does not reach -- the entry scripts (`driver.py`,
+# The surface: `*.py` directly under each of these, which is everything the
+# package ratchet does not reach -- the entry scripts (`driver.py`,
 # `synthesize.py`, `orchestrate.py`, `host_probes.py`), the flat modules they
-# share, and the repo-root CLIs. NOT recursive: `skill/scripts/synth/*` and
-# friends are rule 5's, and tests are nobody's business here.
-SURFACES = ("skill/scripts", "scripts")
+# share, the repo-root CLIs, and the `tools/` adapter package, which rule 5's
+# PACKAGES tuple does not name (its `base.py` is ARC-2990316730). NOT
+# recursive: `skill/scripts/synth/*` and friends are rule 5's, and tests are
+# nobody's business here.
+SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 
 # path -> the line count it had when this guard landed (2026-09-26, main
 # de4675d; measured with `wc -l`, which agrees with `splitlines()` on every
 # file here). An entry is a debt, not a permission: it may only go DOWN, and it
-# must disappear once the module is at or under LINE_CEILING. Nineteen modules,
-# and the four with a fix shape written down are the first ones owed:
+# must disappear once the module is at or under LINE_CEILING, and it is lowered
+# to the new count whenever the module shrinks. Twenty modules, and the five
+# with a fix shape written down are the first ones owed:
 # `run_tools.py` (three extractions -- scanner config, capture, manifest --
 # ARC-2609514778), `setup_flow.py` (ARC-1181155147), `orchestrate.py`
-# (ARC-4087467862) and `driver.py` (ARC-3080609219).
+# (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
+# (ARC-2990316730).
 PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 943,
     "scripts/reconcile_apply.py": 830,
@@ -63,6 +69,7 @@ PENDING: dict[str, int] = {
     "skill/scripts/safe_git.py": 852,
     "skill/scripts/setup_flow.py": 1340,
     "skill/scripts/setup_proposal.py": 741,
+    "skill/scripts/tools/base.py": 798,
     "skill/scripts/write_guard_hook.py": 1184,
 }
 
@@ -124,7 +131,7 @@ class FlatModuleCeilingTest(unittest.TestCase):
         self.assertEqual(
             over, [],
             "%d flat module(s)/entry script(s) over the %d-line ceiling:\n  %s\n"
-            "Split the module (the ARC plan's Phase C names the extractions), or "
+            "Split the module (the extractions are tracked in #1762/#1763), or "
             "shrink it. Never raise the number: a PENDING pin may only go down, "
             "and a new module gets no pin at all."
             % (len(over), LINE_CEILING, "\n  ".join(over)))
@@ -163,8 +170,9 @@ class RatchetMechanicsTest(unittest.TestCase):
 
     def test_a_pinned_module_that_grew_past_its_pin_is_named(self):
         relative, count = self._largest()
-        self.assertGreater(count, LINE_CEILING, "the largest flat module is under "
-                           "the ceiling: PENDING should be empty by now")
+        if count <= LINE_CEILING:
+            self.skipTest("no module on the surface is over the ceiling: PENDING "
+                          "is paid off, and this mechanics test has no subject")
         rows = _over_ceiling({relative: count - 1})
         self.assertIn("%s: %d lines (ceiling %d)" % (relative, count, count - 1), rows)
 
@@ -185,6 +193,7 @@ class RatchetMechanicsTest(unittest.TestCase):
     def test_the_surface_is_every_flat_module_and_nothing_nested(self):
         with tempfile.TemporaryDirectory() as directory:
             for relative in ("skill/scripts/driver.py", "scripts/triage.py",
+                             "skill/scripts/tools/base.py", "skill/scripts/tools/x/y.py",
                              "skill/scripts/synth/report.py", "scripts/sub/tool.py",
                              "tests/test_thing.py", "skill/scripts/notes.md"):
                 path = os.path.join(directory, *relative.split("/"))
@@ -192,7 +201,8 @@ class RatchetMechanicsTest(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("x = 1\n")
             self.assertEqual(_flat_modules(directory),
-                             ["scripts/triage.py", "skill/scripts/driver.py"])
+                             ["scripts/triage.py", "skill/scripts/driver.py",
+                              "skill/scripts/tools/base.py"])
 
     def test_a_last_line_without_a_newline_still_counts(self):
         # `splitlines()`, not `count("\n")`: rule 5's reading, so the two

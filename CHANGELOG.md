@@ -13,7 +13,8 @@ evidence exposed.
   unmeasured ones: `skill/scripts/run_tools.py` went from 1231 to 2215 lines in the six days
   after that finding was written, because every new scanner policy landed there and nothing
   pushed back. `tests/test_flat_module_ceiling.py` applies the same `LINE_CEILING` to every
-  `*.py` directly under `skill/scripts/` and `scripts/`, as a shrink-only allowlist: nineteen
+  `*.py` directly under `skill/scripts/`, the repo-root `scripts` directory and the `tools`
+  adapter package (which rule 5 does not name either), as a shrink-only allowlist: twenty
   modules pinned at the count they have today, each free to shrink and never to grow, and a pin
   that reaches the ceiling has to go. Raising a number is not a fix -- the allowlist is the list
   of splits owed.
