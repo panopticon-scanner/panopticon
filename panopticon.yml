@@ -98,6 +98,7 @@ groups:
       - skill/scripts/capture_goldens.py
       - skill/scripts/security_gate.py
       - scripts/bump_pins.py
+      - scripts/dockerfile_args.py
       - scripts/pin_requirements.py
       - scripts/open_pin_pr.py
       # #1734: the tools image's committed closures, claimed beside the script
@@ -129,6 +130,7 @@ groups:
       - tests/test_dockerfile_closures.py
       - tests/test_semgrep_rule_corrections.py
       - tests/test_bump_pins.py
+      - tests/test_dockerfile_args.py
       - tests/test_pin_pr.py
       panels:
       - ARC
