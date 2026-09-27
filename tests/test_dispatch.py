@@ -263,6 +263,46 @@ def _write_queue(root, queue, name="verify-queue.json", run_tag="claude-redteam-
 
 
 class TestRenderAdvisor(unittest.TestCase):
+    def test_invalid_queue_shapes_refuse_without_writing_any_prompts(self):
+        valid = {"run_id": "run-test", "entries": [
+            {"queue_id": "a1b2c3d4e5f60001", "finding": {"id": "F-1"}}]}
+        cases = [({"entries": valid["entries"]}, "has no run_id"),
+                 ({"run_id": "run-test"}, "has no entries list")]
+        cases.extend(({**valid, "run_id": value}, "has no run_id")
+                     for value in (None, "", 1, [], {}))
+        cases.extend(({**valid, "entries": value}, "has no entries list")
+                     for value in (None, "entries", 1, {}))
+        cases.append(({**valid, "entries": [{"finding": {}}]}, ": malformed entry None"))
+        cases.extend(({**valid, "entries": [{"queue_id": value, "finding": {}}]},
+                      ": malformed entry %r" % value) for value in (None, "", 0, False, [], {}))
+        cases.append(({**valid, "entries": [{"queue_id": "a1b2c3d4e5f60001"}]},
+                      ": malformed entry 'a1b2c3d4e5f60001'"))
+        cases.extend(({**valid, "entries": [{"queue_id": "a1b2c3d4e5f60001", "finding": value}]},
+                      ": malformed entry 'a1b2c3d4e5f60001'") for value in (None, [], "finding", 1))
+        for queue, reason in cases:
+            with self.subTest(queue=queue), tempfile.TemporaryDirectory() as directory:
+                qpath = os.path.join(directory, "queue.json")
+                outdir = os.path.join(directory, "prompts")
+                os.mkdir(outdir)
+                with open(qpath, "w", encoding="utf-8") as fh:
+                    json.dump(queue, fh)
+                with self.assertRaises(ValueError) as raised:
+                    dispatch.render_advisor_prompts(qpath, outdir)
+                separator = "" if reason.startswith(":") else " "
+                self.assertEqual(str(raised.exception), "verify queue " + qpath + separator + reason)
+                self.assertEqual(os.listdir(outdir), [])
+                with open(qpath, encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh), queue)
+        with tempfile.TemporaryDirectory() as directory:
+            qpath = os.path.join(directory, "queue.json")
+            outdir = os.path.join(directory, "prompts")
+            with open(qpath, "w", encoding="utf-8") as fh:
+                json.dump(valid, fh)
+            written = dispatch.render_advisor_prompts(qpath, outdir)
+            self.assertEqual(written, [os.path.join(outdir, "a1b2c3d4e5f60001.md")])
+            with open(written[0], encoding="utf-8") as fh:
+                self.assertIn("Verification run id: run-test", fh.read())
+
     # 16 hex chars: shape of evidence.finding_fingerprint's output (#443).
     # Hand-picked here (rather than computed) because this class tests
     # dispatch's rendering behavior in isolation from evidence -- the
@@ -1167,4 +1207,3 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
                     detected = dispatch._detect_host()
                 self.assertEqual(expected, detected)
                 self.assertIn(detected, hosts.known_hosts())
-

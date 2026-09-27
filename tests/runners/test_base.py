@@ -1064,6 +1064,22 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
         self.assertIn(repr("a" * 200), result.error)
         self.assertNotIn("a" * 201, result.error)
 
+    def test_refusal_redacts_tokens_before_taking_the_diagnostic_excerpt(self):
+        token = "ghp_" + "A1b2" * 9
+        for offset in (0, 150, 185, 197, 205):
+            for roles in (None, ["scout"]):
+                with self.subTest(offset=offset, roles=roles):
+                    prefix = "x" * offset + " "
+                    result = base.refuse_unregistered_agent(
+                        {"id": "e", "agent": prefix + token + " suffix"}, roles=roles)
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.entry_id, "e")
+                    self.assertNotIn(token, result.error)
+                    self.assertNotIn("ghp", result.error)
+                    self.assertNotIn("A1b2", result.error)
+                    expected = (prefix + "[REDACTED_TOKEN] suffix")[:200]
+                    self.assertIn(repr(expected), result.error)
+
 
 class TestTheAgentIsBoundToItsCheckpointsRole(unittest.TestCase):
     """#1727: the allowlist alone lets any of the four shells stand in for any

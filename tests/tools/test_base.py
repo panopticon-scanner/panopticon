@@ -177,9 +177,18 @@ class TestHardLinkFixture(unittest.TestCase):
 
 
 class TestBase(unittest.TestCase):
-    def test_run_tool_rejects_unsafe_args_or_env(self):
-        with self.assertRaises(Exception):
-            base.run_tool(["tool", ";", "rm", "-rf", "/"], env={"LD_PRELOAD": "malicious.so"})
+    def test_run_tool_passes_literal_arguments_without_a_shell(self):
+        argv = ["tool", ";", "$(printf inert)", "`printf inert`", "a b", "*.py", "$HOME"]
+        fake = FakePopen(stdout=b"literal arguments", returncode=0)
+        with mock.patch.object(base.subprocess, "Popen", return_value=fake) as launch:
+            self.assertEqual(base.run_tool(argv, timeout=5, env={"FIXTURE": "literal"}),
+                             (b"literal arguments", 0))
+        launch.assert_called_once()
+        args, kwargs = launch.call_args
+        self.assertEqual(args, (argv,))
+        self.assertIsInstance(args[0], list)
+        self.assertFalse(kwargs.get("shell", False))
+        self.assertEqual(kwargs["env"], {"FIXTURE": "literal"})
 
     def test_normalize_severity_maps_common_values(self):
         self.assertEqual(base.normalize_severity("critical"), "CRITICAL")

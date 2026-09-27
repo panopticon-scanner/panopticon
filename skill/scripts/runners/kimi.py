@@ -25,6 +25,7 @@ import atexit
 import glob
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -121,11 +122,14 @@ def configured_models(real_home=None):
 
 USAGE_RECORD = "usage.record"
 _LLM_REQUEST = "llm.request"
+_TOKEN_FIELDS = {"inputOther": "input_tokens", "output": "output_tokens",
+                 "inputCacheRead": "cache_read_input_tokens",
+                 "inputCacheCreation": "cache_creation_input_tokens"}
 
 
 def wire_path(kimi_home, session_id):
     """The child session's wire file under the per-run home, or None."""
-    if not session_id or "/" in session_id or os.sep in session_id:
+    if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
         return None
     pattern = os.path.join(glob.escape(kimi_home), "sessions", "*",
                            session_id, "agents", "main", "wire.jsonl")
@@ -138,7 +142,8 @@ def parse_wire(path):
 
     usage: one `usage.record` per LLM request (`usageScope: "turn"`, measured
     on 0.42.0), summed into the ledger's four fields. Other scopes are not
-    summed -- an unmeasured record shape is unknown data, not a figure.
+    summed -- an unmeasured record shape is unknown data, not a figure. Invalid
+    records are skipped whole; known counters must be non-negative integers.
     model: the alias the last `usage.record`/`llm.request` names, i.e. what
     REALLY ran, never what was requested.
     """
@@ -147,7 +152,7 @@ def parse_wire(path):
     model = None
     found = False
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 try:
                     record = json.loads(line)
@@ -155,20 +160,23 @@ def parse_wire(path):
                     continue
                 if not isinstance(record, dict):
                     continue
-                if record.get("type") == _LLM_REQUEST and record.get("modelAlias"):
-                    model = record["modelAlias"]
+                alias = record.get("modelAlias")
+                if record.get("type") == _LLM_REQUEST and isinstance(alias, str) and alias.strip():
+                    model = alias
                 if record.get("type") != USAGE_RECORD or record.get("usageScope") != "turn":
                     continue
                 body = record.get("usage")
-                if not isinstance(body, dict):
+                if not isinstance(body, dict) or not any(key in body for key in _TOKEN_FIELDS):
+                    continue
+                counters = {dest: body.get(key, 0) for key, dest in _TOKEN_FIELDS.items()}
+                if any(type(value) is not int or value < 0 for value in counters.values()):
                     continue
                 found = True
-                if record.get("model"):
-                    model = record["model"]
-                usage["input_tokens"] += int(body.get("inputOther") or 0)
-                usage["output_tokens"] += int(body.get("output") or 0)
-                usage["cache_read_input_tokens"] += int(body.get("inputCacheRead") or 0)
-                usage["cache_creation_input_tokens"] += int(body.get("inputCacheCreation") or 0)
+                alias = record.get("model")
+                if isinstance(alias, str) and alias.strip():
+                    model = alias
+                for key, count in counters.items():
+                    usage[key] += count
     except OSError:
         return {}, None
     return (usage if found else {}), model

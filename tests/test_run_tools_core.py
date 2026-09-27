@@ -204,6 +204,27 @@ class TestRunTools(unittest.TestCase):
                 rt.run_tools(d, ["semgrep"],
                              os.path.join(d, ".panopticon", "tools"))
 
+    def test_nested_artifact_output_symlink_cannot_escape_a_real_artifact_root(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as outside:
+            artifacts = os.path.join(target, ".panopticon")
+            os.mkdir(artifacts)
+            marker = os.path.join(outside, "untouched.txt")
+            with open(marker, "wb") as fh:
+                fh.write(b"outside contents stay intact\n")
+            os.symlink(outside, os.path.join(artifacts, "tools"))
+            with mock.patch.object(rt, "docker_available", return_value=False) as docker, \
+                    mock.patch.object(rt.subprocess, "run") as launch:
+                with self.assertRaisesRegex(
+                        ValueError, "^scanner output escapes the target artifact directory$"):
+                    rt.run_tools(target, ["semgrep"], os.path.join(artifacts, "tools", "scan"))
+                docker.assert_not_called()
+                launch.assert_not_called()
+            self.assertEqual(os.listdir(outside), ["untouched.txt"])
+            with open(marker, "rb") as fh:
+                self.assertEqual(fh.read(), b"outside contents stay intact\n")
+            inside = os.path.join(artifacts, "runs", "owned", "tools")
+            self.assertEqual(rt.validate_output_dir(target, inside), inside)
+
     def test_run_tools_builds_exact_docker_argv(self):
         calls = []
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')

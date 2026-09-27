@@ -105,7 +105,28 @@ class TestTemplateFrontmatter(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             dispatch.parse_template_frontmatter(
                 "---\nname: a\n---\nbody", source="y.md")
-        self.assertIn("y.md", str(ctx.exception))  # missing tool_policy
+        self.assertIn("y.md", str(ctx.exception))  # missing description is checked first
+
+    def test_each_incomplete_frontmatter_shape_names_its_source_and_reason(self):
+        good = ("---\nname: sample\ndescription: fixture\ntool_policy:\n"
+                "  allowed: [Read]\n  forbidden: [Bash]\n---\nbody")
+        cases = (
+            (good.rsplit("---", 1)[0], "unterminated frontmatter block"),
+            (good.replace("name: sample", "not a header"),
+             "cannot parse frontmatter line 'not a header'"),
+            (good.replace("name: sample\n", ""), "frontmatter missing 'name'"),
+            (good.replace("  allowed: [Read]\n", ""), "tool_policy missing 'allowed' list"),
+            (good.replace("  forbidden: [Bash]\n", ""), "tool_policy missing 'forbidden' list"),
+        )
+        for text, reason in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaises(ValueError) as raised:
+                    dispatch.parse_template_frontmatter(text, source="broken-role.md")
+                self.assertEqual(str(raised.exception), "broken-role.md: " + reason)
+        meta, body = dispatch.parse_template_frontmatter(good, source="valid-role.md")
+        self.assertEqual(meta, {"name": "sample", "description": "fixture",
+                                "tool_policy": {"allowed": ["Read"], "forbidden": ["Bash"]}})
+        self.assertEqual(body, "body")
 
     def test_missing_template_fails_fast(self):
         with self.assertRaises(ValueError) as ctx:
