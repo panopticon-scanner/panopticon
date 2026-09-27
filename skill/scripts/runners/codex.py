@@ -19,8 +19,6 @@ import scripts.runners.schema as schema_argv_rules
 # The attribute keeps its name and its place (LAUNCH_SEAMS, the AST walk in
 # tests/test_host_launch_guard.py); only its value changed.
 DEFAULT_RUNNER = None
-# The loop's value for `runner.namespace` under `--setup` (runners/base.py).
-SETUP_NAMESPACE = "setup"
 
 
 class Runner(base.HostRunner):
@@ -67,7 +65,7 @@ class Runner(base.HostRunner):
         # `--allow-unenforced`. That is how a fresh machine starts, so refusing
         # up front here would break the documented first command for the sake
         # of a shell that launch never asks for.
-        if self.namespace != SETUP_NAMESPACE:
+        if self.namespace != base.SETUP_NAMESPACE:
             codex_host.require_registered_shells()
         self.run_dir = os.path.abspath(run_dir)
         self.review_root = os.path.abspath(review_root)

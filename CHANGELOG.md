@@ -11,6 +11,39 @@ evidence exposed.
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
   A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
+- **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
+  `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
+  (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
+  of three (`tool_reported`, `needs_more_info`, `unverified`), so five of the ten possible inputs
+  fell on one side of the word in the header and the other side in the tabs -- and the exclusion
+  form failed OPEN: a status added to `evidence.EVIDENCE_STATUSES` later would have joined the main
+  list silently. Both vocabularies are now closed sets in the new
+  `skill/scripts/evidence_sections.py`, which partitions `EVIDENCE_STATUSES` and raises at import if
+  it ever stops doing so, the way `score_gate.EVIDENCE_FACTOR` already did. They answer two
+  different questions, so neither is the other's complement: `VERIFIED_STATUSES` is the header's
+  WORD -- a second opinion agreed, which is why `backup_scope_limited` is not in it (#1638 P16) and
+  keeps its own disclosed segment -- and `UNVERIFIED_STATUSES` is the report's SPLIT, what the
+  collapsed "Unverified findings" section holds. `corroborated`, `rejected` and
+  `backup_scope_limited` are the named remainder that stays in the main severity tabs; `rejected`
+  cannot reach them anyway, because `synth/report.py` publishes `resolve_findings`'s `active` list
+  as `findings` and the rejected half goes to `discarded_claims` and its own section. **Nothing
+  moves for the eight known statuses**: both rules were run over each of them and agree, the
+  header's count is the same sum of the same two keys, and
+  `test_the_eight_known_statuses_do_not_move` pins that table. What changes is the tenth input -- a
+  finding whose `evidence.status` is unknown or missing now lands in the "Unverified findings"
+  section instead of the main list, disclosed rather than read as reviewed. The sets live in their
+  own module rather than in `evidence.py` because that module and `html_report.py` are both pinned
+  at their exact current size by the shrink-only ratchet in `tests/test_flat_module_ceiling.py`,
+  whose stated remedy for a module that needs room is a new module; `html_report.py` came down two
+  lines and its pin came down with it.
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
