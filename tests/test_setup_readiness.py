@@ -23,9 +23,6 @@ from tests.setup_helpers import (
     SetupFixtureBase,
 )
 
-_REPO_ROOT_EXEMPT = "repo-root-exempt:"
-
-
 class TestSetupFlow(SetupFixtureBase):
     """Setup readiness and host posture behavior."""
 
