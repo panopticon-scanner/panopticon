@@ -10,6 +10,7 @@ import re
 
 if TYPE_CHECKING:
     import scripts.evidence as evidence
+    import scripts.evidence_sections as evidence_sections
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
     import scripts.ocrdb as ocrdb
@@ -17,12 +18,14 @@ if TYPE_CHECKING:
 else:
     try:
         import scripts.evidence as evidence
+        import scripts.evidence_sections as evidence_sections
         import scripts.host_disclosure as host_disclosure
         import scripts.hosts as hosts
         import scripts.ocrdb as ocrdb
         import scripts.safe_write as safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
+        import evidence_sections
         import host_disclosure
         import hosts
         import ocrdb
@@ -573,18 +576,15 @@ def _render_header(report):
                      % _escape(note))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
-    verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
+    verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
     unverified = int(ev.get("unverified", 0))
     tool_reported = int(ev.get("tool_reported", 0))
     cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
     policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
     coverage_parts = ["%d verified" % verified, "%d unverified" % unverified,
                        "%d tool-reported" % tool_reported]
-    # #1638 P16 (fix round 1, F2): `backup_scope_limited` keeps gate-eligibility
-    # and factor 1.5 -- the primary CONFIRMED stands -- but it is NOT "verified"
-    # here: that word means a second opinion agreed, and in this state a second
-    # opinion could not look. Its own segment, so the count is disclosed rather
-    # than folded into a number that would overstate it.
+    # #1638 P16: gate-eligible, but not in `evidence_sections.VERIFIED_STATUSES`
+    # (which says why), so it is disclosed in a segment of its own.
     scope_limited = int(ev.get(evidence.BACKUP_SCOPE_LIMITED, 0))
     if scope_limited:
         coverage_parts.append("%d backup-scope-limited" % scope_limited)
@@ -1445,15 +1445,13 @@ def _render_findings(report):
     file_to_group = _file_to_group(report)
     has_profile = len(file_to_group) > 0
     labels = _group_display_labels(report)
-    unverified_statuses = ("tool_reported", "needs_more_info", "unverified")
-    verified = [f for f in findings
-                if (f.get("evidence") or {}).get("status") not in unverified_statuses]
-    unverified = [f for f in findings
-                  if (f.get("evidence") or {}).get("status") in unverified_statuses]
+    # #1774: one owner for the split, which is NOT the header's "verified" set.
+    main_list = [f for f in findings if not evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
+    unverified = [f for f in findings if evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
 
     by_sev: dict[str, list[dict[str, Any]]] = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []
-    for f in verified:
+    for f in main_list:
         by_sev["ALL"].append(f)
         sev = f.get("severity", "INFO")
         if sev in by_sev:

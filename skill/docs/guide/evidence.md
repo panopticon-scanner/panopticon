@@ -20,9 +20,16 @@ Findings carry two independent axes: **severity** (impact if true — never rewr
   gate-eligible by default).
 - `unverified` — no verification attempted.
 
-Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings only — i.e. only claims
-an advisor verified, whatever their source. Run a verify phase (or pass `--gate-unverified`) or the
-gate has nothing to fail on.
+Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
+`backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
+whatever their source. Run a verify phase (or pass `--gate-unverified`) or the gate has nothing to
+fail on.
+
+`skill/scripts/evidence_sections.py` owns what the HTML report does with these statuses: the
+header's "N verified" counts those same two, the collapsed "Unverified findings" section holds
+`tool_reported`/`needs_more_info`/`unverified` plus any status it does not know, and the rest
+(`corroborated`, `backup_scope_limited`; `rejected` never reaches the report's findings) are listed
+with the findings.
 
 Every finding queues for verification, tool claims included, so `--max-verify N` now caps a queue
 holding the whole finding set: each tool finding costs one advisor dispatch, and an unverified tool
