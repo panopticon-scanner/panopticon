@@ -17,6 +17,10 @@ evidence exposed.
   `config.toml` escape the same way. All three now report instead of raising, and the writer's
   exception tuple is defined once (`kimi_snapshot._HOME_WRITER_EXCEPTIONS`) so the two probes
   that drive it cannot drift apart again.
+- **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
+  `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
+  naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
+  another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
 - **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
