@@ -15,12 +15,12 @@ Two halves that must not disagree about what the pinned type IS: `schema_errors`
 validates on the way out, the `repair_*` functions normalize on the way in, and
 the second derives its rules from the first's schema file rather than restating
 them. They lived in one module for that reason until #1645 pushed it past the
-700-line ratchet; the three TARGET-boundary readers now live in `synth/repair`
-(`repair_groups_json` and `tools-manifest.json`'s `sanitized` and `network`
-blocks, which also bound what they republish) and reach BACK across the split
-by module attribute for `_report_doc`, `_repair_node` and `_conforms` -- so the
-rules still come from this module's schema file, and nothing was copied. The
-AGENT-sourced repairs stay here, beside that machinery. EVERY boundary where
+700-line ratchet; the TARGET-boundary repairs now live in `synth/repair`
+(groups and the tools manifest's `sanitized`, `network`, `excluded`,
+`git_drivers_suppressed` and `suppressed` blocks). They bound the content they
+republish and reach back by module attribute for `_report_doc`, `_repair_node`
+and `_conforms`, so the schema remains the source of those rules. Agent-sourced
+repairs stay here, beside that machinery. EVERY boundary where
 agent or target content enters is covered, against BOTH schemas the completion
 path enforces (fix round 2):
 

@@ -62,17 +62,14 @@ def _render_severity_block(stats, roles, gate_eligible_stats=None):
 def _health_headline(health):
     """The health index as a headline field, or None when unavailable.
 
-    #calibration: promoted onto the top line beside Grade/Risk/Gate. The letter
-    grade is a worst-severity rollup, so it saturates -- across six calibration
-    targets every one graded D or F off the same severity ceiling, while health
-    ranged 35.68 to 70.45. The grade answers "does this gate?"; health answers
-    "how much of this codebase is clean?", and only the second told them apart.
+    The numeric score appears beside Grade/Risk/Gate. The letter grade is
+    derived from the same health score. With no reviewed lines to grade, health
+    is unavailable and the displayed grade is n/a. The numeric score preserves
+    detail within a grade; incomplete coverage can make the grade provisional.
 
-    Rendered "N / 100" rather than bare, because the scale is the whole point:
-    the predecessor ratio was unbounded, so a reader had no way to know whether
-    1.75 was good. Deliberately unbanded even so -- six targets, none of them a
-    healthy control, is not a sample to draw healthy/fair/poor thresholds from.
-    Health never touches the gate (#1057); this is presentation only.
+    Rendered "N / 100" makes the scale explicit. Health and its grade bands
+    describe code health; the severity/evidence policy determines the gate.
+    This function only formats the already-computed score.
     """
     if not isinstance(health, dict) or health.get("score") is None:
         return None

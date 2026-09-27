@@ -193,11 +193,10 @@ def severity_stats(findings):
             stats[sev] += 1
     return stats
 
-# #1146: a secondary "health" ratio reported ALONGSIDE the max-severity letter
-# (never replacing it, never touching the gate -- see #1057's adjudication). It
-# is non-blank LoC divided by a severity-weighted defect footprint, so HIGHER =
-# healthier: more clean code per unit of confirmed, severity-weighted defect.
-# Weights escalate x5 per band; INFO is weightless.
+# Severity weights for the defect footprint used by the bounded health score.
+# The score drives the report's letter grade when available; severity/evidence
+# policy independently determines the gate. Weights escalate x5 per band;
+# INFO is weightless.
 HEALTH_WEIGHTS = {"INFO": 0, "LOW": 1, "MEDIUM": 5, "HIGH": 25, "CRITICAL": 125}
 
 def _loc_span(finding):
@@ -611,8 +610,8 @@ def grade_report(run, resolved, reconciled):
         # them the FAIL is actually made of. Computed off `gate_eligible`,
         # NOT off `stats` above -- see gate_severity_roles().
         "gate_severities": gate_severity_roles(gate_eligible, run.fail_on),
-        # #1146: size-aware health ratio alongside the letter; denominator is
-        # the gate-eligible set, numerator the reviewed scope's non-blank LoC.
+        # The health score uses gate-eligible defects and the reviewed scope's
+        # non-blank LoC; the same score supplies the headline letter above.
         "health": health,
         "evidence_stats": findings_mod.evidence_stats(resolved.findings),
         "evidence_stats_population": "all",
