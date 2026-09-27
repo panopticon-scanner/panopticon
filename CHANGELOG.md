@@ -21,6 +21,10 @@ evidence exposed.
   pins every reviewer `out_file` to `findings-<group>-<domain>.json`, and nothing in the 5.x
   pipeline can produce the old spelling. A file whose trailing token is no domain code is still
   named wherever it was read -- as a dropped file that names no cell, never as a phantom one.
+- **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
+  `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
+  naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
+  another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
 - **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
