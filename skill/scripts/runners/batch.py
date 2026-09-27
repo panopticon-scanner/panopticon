@@ -116,7 +116,7 @@ def record_discard(run_dir, number, owner, at=None):
             existing = []
     entry = {"batch": int(number), "owner": owner,
              "accepted_at": at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    write_guard_hook._atomic_write_json(path, existing + [entry], indent=2)
+    write_guard_hook.atomic_write_json(path, existing + [entry], indent=2)
     return entry
 
 
@@ -404,7 +404,7 @@ class Batch:
         # the same reason `runners/claude.py` writes host-settings.json with it.
         self._confine(self.path)
         self._validated_artifacts()
-        write_guard_hook._atomic_write_json(self.path, self.document(), indent=2)
+        write_guard_hook.atomic_write_json(self.path, self.document(), indent=2)
 
     def add_artifact(self, entry_id, path):
         """Record a file the batch wrote that `open` could not have known
