@@ -28,8 +28,8 @@ evidence exposed.
   so a locus-free catalog-gap finding is still refused. `skill/agents/domain-panel.md` now tells
   the reviewer to omit `line_start`/`line_end` entirely (not `null`) for a whole-file finding
   rather than invent one, and the new `test_envelope_location_required_matches_report` pins each
-  envelope `location` `required` set to the report schema's -- #1602's "no schema/report parity
-  test" sleeper is exactly this gap.
+  envelope `location` `required` set to the report schema's, extending #1602's parity guard
+  (`tests/test_schema_parity.py`, report vs schema) to the emission envelope.
 - **`collect_usage` counts the input it drops, and the summary line says so (#1782,
   ARC-2134807886).** Three drops were silent: `_iter_records` returned on an `OSError` (an
   unreadable transcript yielded nothing at all, and `collect`'s `if not n: continue` then did not
