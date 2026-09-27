@@ -8,13 +8,8 @@ import scripts.runners.batch as batch_mod
 
 
 class TestTheBatchManifest(unittest.TestCase):
-    """#1662: the list a Ctrl-C rolls back, written before the batch's first
-    launch. Its own module (`runners/batch.py`) but not its own test file:
-    when this was written the host leaf of the review matrix was one file
-    short of its cap, and a file past the cap chunks the leaf into a name the
-    matrix has no entry for (the #1638 P13 defect). #1718 has since split the
-    runner seam into its own `Orchestration:Runners` layer, so a
-    `test_batch.py` would fit today; this class stays here by inertia only."""
+    """#1662: focused contracts for the manifest written before a batch's
+    first launch and used to roll back its artifacts after Ctrl-C."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
