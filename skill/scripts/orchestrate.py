@@ -41,7 +41,7 @@ def _after_first_run(review_root):
     loop.
 
     Production always returns False -- a no-op, never patched outside
-    tests/test_orchestrate.py. This is load-bearing, not decorative: a resume whose very
+    tests/test_orchestrate_checkpoint.py. This is load-bearing, not decorative: a resume whose very
     first `driver.run` already lands on the `review` checkpoint (coverage was
     established by an earlier, now-dead process) would, with an UNCONDITIONAL second
     call here, re-run `review_execute` a second time with ZERO launches in between --

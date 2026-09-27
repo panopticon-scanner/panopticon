@@ -230,10 +230,26 @@ groups:
       - tests/test_collect_usage.py
       - tests/test_tool_aware_review.py
       - tests/test_version.py
-      - tests/test_skill_md.py
       panels:
       - ARC
       - SEC
+      - OPS
+    Docs:
+      match:
+      - skill/SKILL.md
+      - skill/docs/**
+      - README.md
+      tests:
+      - tests/test_skill_md.py
+      - tests/doc_helpers.py
+      - tests/test_readme_docs.py
+      - tests/test_role_docs.py
+      - tests/test_setup_docs.py
+      - tests/test_driver_docs.py
+      - tests/test_guide_docs.py
+      - tests/test_dependency_docs.py
+      panels:
+      - ARC
       - OPS
     Hosts:
       match:

@@ -129,7 +129,7 @@ GUIDE = "PANOPTICON.md"
 # files: `GUIDE` keeps the front matter (Overview, Required sub-skills, Modes,
 # Global flags) plus a Contents list, and every other H2 lives in one file
 # under `docs/guide/`. The order below is DOCUMENT order -- the guide reads as
-# the concatenation of these files, and `tests/test_skill_md.py` slices that
+# the concatenation of these files, and `tests/test_guide_docs.py` slices that
 # concatenation on the H2 lines each chapter opens with -- so reordering this
 # tuple reorders the guide, and dropping a name hides a chapter from
 # `driver readiness`. The repo root carries `docs/guide` as a symlink onto the
