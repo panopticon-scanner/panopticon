@@ -168,8 +168,9 @@ def _run_child(cmd, review_root, phase, timeout=None):
     capture has to be BOUNDED and `capture_output=True` cannot be. #1575: in its
     own session, so the timeout can reach the whole tree (`procgroup`). #2199:
     that session is out of the terminal's reach as well, so ANY exception while
-    the readers start or while the child is awaited -- a Ctrl-C above all --
-    ends the tree the same way before it propagates.
+    the readers start or while the child is awaited -- a Ctrl-C, or a SIGTERM
+    the driver's CLI raises as one -- ends the tree the same way before it
+    propagates.
 
     A descendant that outlives the child (or escaped its process group) is
     deliberately LEFT once the readers' shared join grace expires: the child
