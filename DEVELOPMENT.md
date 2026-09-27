@@ -389,7 +389,10 @@ cannot produce one at scan time. It is restored, never built — the hostile tar
 `BeforeTargets="Build"`, so it may only fire inside the no-egress container.
 
 To run it by hand, reproduce the lane rather than setting the flag on your shell — the command
-below is the job's `run:` line verbatim. `Dockerfile.fixtures` is `FROM panopticon-tools:latest`,
+below is the job's `run:` line, with the two values the workflow keeps in its `env:` block written
+out (`--user scanner` and `HOME=/home/scanner`: the fixtures image is built as root, so both lanes
+run it as the user production scans run as, and assert `id -u` inside the container first —
+ARC-2930403871, #1771). `Dockerfile.fixtures` is `FROM panopticon-tools:latest`,
 so build or pull the tools image first (`docker build -t panopticon-tools:latest .`, or pull
 `ghcr.io/<owner>/panopticon-tools:latest` and `docker tag` it).
 
@@ -397,7 +400,9 @@ so build or pull the tools image first (`docker build -t panopticon-tools:latest
 docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 docker run --rm \
   --network none \
+  --user scanner \
   -v "$PWD:/work:ro" -w /work \
+  -e HOME=/home/scanner \
   -e FIXTURE_ROOT=/opt/panopticon-fixtures \
   -e PANOPTICON_REQUIRE_INTEGRATION=1 \
   -e PANOPTICON_CONTAINMENT_PROBE=1 \
