@@ -14,6 +14,7 @@ import scripts.ocrdb as ocrdb
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
 from scripts import read_guard_hook
+from . import budget
 from . import engine
 import scripts.findings_contract as findings_contract
 
@@ -36,6 +37,10 @@ from . import verify_tools
 # has failed three times is not going to be fixed by a fourth identical prompt.
 MAX_CELL_ATTEMPTS = 3
 _ATTEMPTS_FILE = "cell-attempts.json"
+# One spelling of what this ledger IS, for every reader of it -- including
+# `persist.rollback_markers`, which already reaches here for the file name and
+# would otherwise word the same refusal its own way (#1767).
+_ATTEMPTS_WHAT = "the cell retry budget"
 
 # #1637 P08 ruling 5: the per-cell record of whether tool output was on disk
 # when this cell's prompt was rendered. Durable and merged rather than
@@ -55,24 +60,27 @@ def _cell_key(group, domain):
     return "%s/%s" % (group, domain)
 
 
+def _attempts_path(review_root):
+    return runio._pano(review_root, _ATTEMPTS_FILE)
+
+
 def _cell_attempts(review_root):
-    """This run's per-cell dispatch tally: {} before the first dispatch, and a
-    refusal when the file is PRESENT but unreadable (#1809) -- reading a torn
-    budget as empty refunds every attempt the run really spent."""
-    return runio._load_state_json(
-        runio._pano(review_root, _ATTEMPTS_FILE), "the cell retry budget")
+    """This run's per-cell dispatch tally as a WHOLE document: {} before the
+    first dispatch, and a refusal when the file is PRESENT but unreadable
+    (#1809) -- reading a torn budget as empty refunds every attempt the run
+    really spent. The per-key arithmetic is `budget`'s (#1767)."""
+    return runio._load_state_json(_attempts_path(review_root), _ATTEMPTS_WHAT)
 
 
 def _record_attempts(review_root, keys):
-    """Count one dispatch per cell. Written at dispatch time, not completion:
-    the whole point is to bound cells that never complete."""
-    data = _cell_attempts(review_root)
-    for key in keys:
-        try:
-            data[key] = int(data.get(key, 0)) + 1
-        except (TypeError, ValueError):
-            data[key] = 1
-    runio._write_json(runio._pano(review_root, _ATTEMPTS_FILE), data)
+    """Count one dispatch per cell, in ONE write. Written at dispatch time, not
+    completion: the whole point is to bound cells that never complete.
+
+    #1767: this loop used to swallow a value that was not a count and write the
+    key back as 1 -- a RESET, which refunds every attempt already spent and is
+    the one outcome the ledger exists to prevent. `budget.bump_many` refuses it
+    instead, naming the file, the key and `--reset`."""
+    budget.bump_many(_attempts_path(review_root), keys, _ATTEMPTS_WHAT)
 
 
 def _tools_context(review_root):
@@ -124,12 +132,14 @@ def _record_test_inventory(review_root, entries):
 
 
 def _cell_exhausted(review_root, group, domain):
-    """True when this cell has used its retry budget without ever completing."""
-    try:
-        used = int(_cell_attempts(review_root).get(_cell_key(group, domain), 0))
-    except (TypeError, ValueError):
-        return False
-    return used >= MAX_CELL_ATTEMPTS
+    """True when this cell has used its retry budget without ever completing.
+
+    #1767: a value that is not a count used to read as "not exhausted", which
+    is the same refund the torn-document read refuses -- a planted tally made
+    an exhausted cell dispatchable again, silently. It refuses now."""
+    return (budget.count(_attempts_path(review_root), _cell_key(group, domain),
+                         _ATTEMPTS_WHAT)
+            >= MAX_CELL_ATTEMPTS)
 
 
 def _get_valid_cell_data(review_root, manifest, group, domain):
