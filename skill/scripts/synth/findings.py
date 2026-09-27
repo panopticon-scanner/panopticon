@@ -302,13 +302,15 @@ def load_findings_detailed(paths):
         if not os.path.isfile(path):
             print("MISSING: %s" % path, file=sys.stderr)
             continue
+        # One answer per path: the diagnostics below and the `_group` stamp are
+        # keyed by the same cell, so nothing here can read as two cells.
+        cell = findings_contract.cell_of(path)
         try:
             with open(path, encoding="utf-8") as fh:
                 data = evidence_mod.load_json_tolerant(fh.read())
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("PARSE ERROR %s: %s" % (path, e), file=sys.stderr)
-            diagnostics.append({"file": str(path),
-                                "cell": findings_contract.cell_of(path),
+            diagnostics.append({"file": str(path), "cell": cell,
                                 "defects": [{"index": None,
                                              "reason": "parse error: %s" % e}]})
             continue
@@ -318,15 +320,13 @@ def load_findings_detailed(paths):
                 print("synthesize: dropped %s in %s (%s)"
                       % ("finding %d" % d["index"] if d["index"] is not None
                          else "the payload", path, d["reason"]), file=sys.stderr)
-            diagnostics.append({"file": str(path),
-                                "cell": findings_contract.cell_of(path),
+            diagnostics.append({"file": str(path), "cell": cell,
                                 "defects": defects})
         if not isinstance(data, dict):
             continue
         findings = data.get("findings", [])
         if not isinstance(findings, list):
             continue
-        cell = findings_contract.cell_of(path)
         group = cell[0] if cell else None
         for f in findings:
             if not isinstance(f, dict):

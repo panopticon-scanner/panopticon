@@ -11,6 +11,8 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -20,6 +22,7 @@ import scripts.phases.review as review
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.findings as findings_mod
 import scripts.synth.integrity as integrity_mod
+import scripts.synth.plan as plan_mod
 import scripts.synthesize as syn
 import shutil
 from tests._test_helpers import write_host_evidence
@@ -89,6 +92,11 @@ class OneCellIdentityParserTest(unittest.TestCase):
     guard said "nothing wrong", the floor audit could not see the cell -- and
     the defect diagnostic claimed a cell for it anyway. Every branch failed
     toward invisible, in four different directions.
+
+    `plan.out_of_scope_findings` is the fifth reader -- it was `GROUP_RE`'s other
+    caller, so the symbol could not be deleted without repointing it, and a
+    re-drift there is exactly as silent as the four this finding was written
+    about. It is in the table for that reason, not for symmetry.
     """
 
     # The triage probe table, plus a hyphenated group, a hyphenated group with a
@@ -117,6 +125,41 @@ class OneCellIdentityParserTest(unittest.TestCase):
         self.assertEqual(len(loaded), 1, name)
         return loaded[0].get("_group")
 
+    @staticmethod
+    def _candidate_groups(name):
+        """Every group some hyphen-splitting parse of `name` could arrive at.
+
+        The plan in `_out_of_scope_checked` names them all, so a leaner reader
+        cannot escape the assertion by deriving a DIFFERENT group from a retired
+        spelling: `findings-App-security-panel_review.json` yields `App` under
+        the 4.x alternation and `App-security` under a bare rpartition, and both
+        are in the plan.
+        """
+        if not (name.startswith("findings-") and name.endswith(".json")):
+            return []
+        parts = name[len("findings-"):-len(".json")].split("-")
+        return ["-".join(parts[:i]) for i in range(1, len(parts))]
+
+    def _out_of_scope_checked(self, name):
+        """`out_of_scope_findings`' `checked` for one in-scope finding in a file
+        so named -- 1 when the reader placed the file against its group, 0 when
+        it did not.
+
+        The plan also names one unrelated group: with no plan groups at all the
+        function returns None ("nothing could be checked"), which is a third
+        answer this parity assertion has no use for.
+        """
+        plan = [{"group": group, "files": ["a.py"]}
+                for group in self._candidate_groups(name) + ["Unrelated"]]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"severity": "LOW", "panel": "code",
+                                         "location": {"file": "a.py"}}]}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = plan_mod.out_of_scope_findings([path], plan)
+        return result["checked"]
+
     def test_every_reader_of_the_name_agrees_on_the_cell(self):
         for name, cell in self.CASES:
             with self.subTest(name=name):
@@ -126,6 +169,8 @@ class OneCellIdentityParserTest(unittest.TestCase):
                 self.assertEqual(integrity_mod._expected_from_filename(name), cell)
                 self.assertEqual(self._ingested_group(name),
                                  cell[0] if cell else None)
+                self.assertEqual(self._out_of_scope_checked(name),
+                                 1 if cell else 0)
 
     def test_a_dropped_off_roster_file_is_named_without_a_cell(self):
         # Validating the domain must not cost the diagnostic its subject: a file
@@ -142,6 +187,32 @@ class OneCellIdentityParserTest(unittest.TestCase):
         self.assertIsNone(diagnostics[0]["cell"])
         self.assertEqual([entry["file"] for entry in malformed], [path])
         self.assertIsNone(malformed[0]["cell"])
+
+
+class FlatImportArmTest(unittest.TestCase):
+    """#1765: `cell_of` validates against `groups_schema`, so this module gained
+    a dual-import fallback, and the `except ModuleNotFoundError` arm is reached
+    by nothing in the suite -- every importer today uses `scripts.findings_
+    contract`. `tests/test_layout.py`'s `FLAT_MODULES` does not list this module,
+    so the pin lives here, in the same fresh-interpreter shape #1770 used for
+    `coverage_model`. Round 2 of #1639 P15 is the regression this closes: an
+    import narrowed for four modules at once, silently, because nothing live
+    reached them flat and the suite stayed green.
+    """
+
+    def test_findings_contract_imports_flat_with_only_skill_scripts_on_the_path(self):
+        scripts = os.path.dirname(os.path.abspath(fc.__file__))
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = scripts
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import findings_contract as fc; "
+             "print(fc.cell_of('findings-a-SEC.json'), fc.cell_of('findings-a-XYZ.json'))"],
+            cwd=scripts, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # The roster has to be the one that answers, not an empty stand-in: a
+        # fallback that imported a DIFFERENT module would still exit 0.
+        self.assertEqual(proc.stdout.strip(), "['a', 'SEC'] None")
 
 
 class SharedAcceptanceTest(unittest.TestCase):

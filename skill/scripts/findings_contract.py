@@ -15,6 +15,11 @@ the contract says a reviewer writes? Whether a given finding is *good* (severity
 vocabulary, citations, location) is normalization's job downstream, and pulling
 that in here would make a reviewer's judgement call look like a protocol
 violation.
+
+The module owns a second contract, for the same reason: `cell_of` is the one
+parse of the `findings-<group>-<domain>.json` NAME (ARC-3899903550, #1765). Four
+readers each had their own and disagreed, so a file's cell identity -- not its
+payload shape -- is settled here too.
 """
 from typing import TYPE_CHECKING
 import os
@@ -74,10 +79,11 @@ def cell_of(path):
 
     Domain codes (`groups_schema.DOMAINS`) are hyphen-free, so the domain is the
     last hyphen-delimited token before `.json` and a group name may contain
-    hyphens. A trailing token that is not a domain code names NO cell: such a
-    file is still reported BY NAME wherever it was read, but nothing may key a
-    cell off it -- claiming one invents a cell the rest of the pipeline cannot
-    see.
+    hyphens. A trailing token that is not a domain code names NO cell: claiming
+    one invents a cell the rest of the pipeline cannot see. Such a file whose
+    PAYLOAD was rejected is still named, now without a cell
+    (`malformed_findings_files`); one that parses cleanly is surfaced by
+    `unexpected_findings_files` wherever a dispatch plan exists.
     """
     base = os.path.basename(str(path))
     if not (base.startswith("findings-") and base.endswith(".json")):

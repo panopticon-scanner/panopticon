@@ -19,8 +19,10 @@ evidence exposed.
   the parse; the other three call it, and so does `synth/plan.out_of_scope_findings`. The 4.x
   alternation is DROPPED rather than moved into it: the roles retired in #1441, `plan_contract`
   pins every reviewer `out_file` to `findings-<group>-<domain>.json`, and nothing in the 5.x
-  pipeline can produce the old spelling. A file whose trailing token is no domain code is still
-  named wherever it was read -- as a dropped file that names no cell, never as a phantom one.
+  pipeline can produce the old spelling. A file whose trailing token is no domain code now names no
+  cell: one whose PAYLOAD was rejected is still named without a cell
+  (`malformed_findings_files`), and one that parses cleanly is surfaced by
+  `unexpected_findings_files` wherever a dispatch plan exists.
 - **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
   `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
   naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless

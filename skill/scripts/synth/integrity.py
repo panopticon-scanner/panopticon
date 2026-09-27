@@ -29,10 +29,10 @@ def duplicate_out_files(plan):
             (dupes if of in seen else seen).add(of)
     return sorted(dupes)
 
-def _expected_from_filename(basename):
+def _expected_from_filename(path):
     """(group, domain) declared by a reviewer findings filename, or None when
     the name is not a reviewer findings file or its trailing token is not a
-    known OCRDb domain.
+    known OCRDb domain. Takes a path or a bare name -- `cell_of` basenames it.
 
     `findings_contract.cell_of` owns the parse (ARC-3899903550, #1765); this is
     the tuple the callers below unpack. #run10: the check keyed on the 4.x
@@ -42,7 +42,7 @@ def _expected_from_filename(basename):
     matched -- so every caller below silently returned "nothing wrong" on every
     5.x run.
     """
-    cell = findings_contract.cell_of(basename)
+    cell = findings_contract.cell_of(path)
     return (cell[0], cell[1]) if cell else None
 
 def mislabeled_findings_files(paths):
@@ -57,7 +57,7 @@ def mislabeled_findings_files(paths):
     dispatched: this one screens whatever synthesize was actually handed."""
     bad = []
     for p in paths or []:
-        exp = _expected_from_filename(os.path.basename(p))
+        exp = _expected_from_filename(p)
         if not exp:
             continue
         group, domain = exp
@@ -130,7 +130,7 @@ def cross_domain_findings(paths):
     """
     out = []
     for p in paths or []:
-        exp = _expected_from_filename(os.path.basename(p))
+        exp = _expected_from_filename(p)
         if not exp:
             continue
         _group, domain = exp
