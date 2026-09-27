@@ -11,6 +11,26 @@ evidence exposed.
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
   A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
+- **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
+  #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
+  a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
+  default `--gate-scope on-diff` the gate's source set is not a measured diff, and a change
+  carrying active findings reported a green `PASS` on findings that were never gated.
+  OWNER RULING 2026-09-27: refuse to certify. `summary.gate` now reads `INCONCLUSIVE` and
+  `summary.coverage_note` names the zero-hunk map plus the remedy (regenerate the diff-hunks
+  artifact; the driver's discovery phase writes it) -- or names the REJECTED payload instead, when
+  that is why the map is empty, rather than sending the operator to compare a known-broken artifact
+  against itself. Two carve-outs are part of the ruling: an empty legitimate change with NO active
+  findings still passes, and falling back to the wider scope was REJECTED, because a benign empty
+  `--changes` run would then go red on pre-existing findings it did not introduce. `ranges == 0` is
+  the measure, not `files == 0`: a map that names a file and gives it no range scopes the gate by
+  `diff_map.classify`'s two FAIL-OPEN arms, which is not a measured diff either.
+  `delta.zero_hunk_gate_gap` is the one place that decides whether there is a gap, and `certify`'s
+  new `delta_zero_hunks` reason joins `gate_relevant_gap` -- so a real FAIL and an armed-but-OFF
+  gate are untouched, and `coverage_certified` is false either way. No new report key: the reason
+  rides the existing certification note, placed after the unreadable-manifest note (which names a
+  broken file) and before every other caveat, since an empty gate scope invalidates the gate
+  wholesale.
 - **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
   `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
   `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived
