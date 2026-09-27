@@ -95,10 +95,7 @@ class TestSchemas(unittest.TestCase):
         src = schema["properties"]["findings"]["items"]["properties"]["source_role"]
         self.assertLessEqual({"domain_panel", "domain_advisor"}, set(src["enum"]))
 
-    def test_findings_envelope_accepts_legacy_panel_review(self):
-        _require_jsonschema(self)
-        # Legacy panel_review / lens_sweep envelope still validates.
-        schema = _load("findings-envelope-schema.json")
+    def _legacy_panel_envelope(self):
         finding = {
             "id": "SEC-001", "severity": "HIGH", "panel": "security",
             "category": "injection",
@@ -107,10 +104,15 @@ class TestSchemas(unittest.TestCase):
             "references": [], "source_role": "panel_review", "depth": "standard",
             "provenance": {}, "citations": {},
         }
-        envelope = {"findings": [finding],
-                    "_panopticon": {"run_id": "R", "role": "panel_review"},
-                    "schema_version": 1}
-        validate(instance=envelope, schema=schema)  # must not raise
+        return {"findings": [finding],
+                "_panopticon": {"run_id": "R", "role": "panel_review"},
+                "schema_version": 1}
+
+    def test_findings_envelope_accepts_legacy_panel_review(self):
+        _require_jsonschema(self)
+        # Legacy panel_review / lens_sweep envelope still validates.
+        schema = _load("findings-envelope-schema.json")
+        validate(instance=self._legacy_panel_envelope(), schema=schema)
 
     def _domain_panel_envelope(self):
         finding = {
@@ -183,6 +185,57 @@ class TestSchemas(unittest.TestCase):
             "schema_version": 1,
         }
         validate(instance=envelope, schema=schema)  # must not raise
+
+    def _whole_file_cases(self):
+        """Both envelope finding definitions, each as a valid envelope."""
+        return (("domainRoleFinding", self._domain_panel_envelope()),
+                ("legacyPanelFinding", self._legacy_panel_envelope()))
+
+    def test_findings_envelope_accepts_whole_file_finding(self):
+        _require_jsonschema(self)
+        # ARC-2002725967 (#1784): a whole-file finding -- a missing header, a bad
+        # config -- has no locus INSIDE the file. The report schema's `location`
+        # description (#1522) already says such a finding is legitimate and must
+        # not have a line number invented for it, and `synth/findings.py` drops a
+        # `line_start` a finding does not carry rather than filling one in. The
+        # envelope is the schema a `review-cell` reply is validated against and
+        # the one `phases/persist.py` (`ROLE_SCHEMAS` / `role_schema`) hands the
+        # CLI as its output schema, so requiring `line_start` THERE is what
+        # refuses the honest finding or forces the invention.
+        schema = _load("findings-envelope-schema.json")
+        for name, envelope in self._whole_file_cases():
+            with self.subTest(definition=name):
+                envelope["findings"][0]["location"] = {"file": "README.md"}
+                validate(instance=envelope, schema=schema)  # must not raise
+
+    def test_findings_envelope_still_refuses_an_invented_line(self):
+        _require_jsonschema(self)
+        # The other half of ARC-2002725967: dropping `line_start` from `required`
+        # must not relax `minimum: 1`. A 0 is not a 1-based line -- it is exactly
+        # the invented line the change above makes unnecessary.
+        schema = _load("findings-envelope-schema.json")
+        for name, envelope in self._whole_file_cases():
+            with self.subTest(definition=name):
+                envelope["findings"][0]["location"] = {"file": "x.py", "line_start": 0}
+                with self.assertRaises(ValidationError):
+                    validate(instance=envelope, schema=schema)
+
+    def test_envelope_location_required_matches_report(self):
+        """#1602: the emission envelope and the published report must agree.
+
+        Nothing had asserted that the `location` a `review-cell` reply is
+        REQUIRED to carry is the `location` the report schema publishes, so the
+        envelope could demand a field the report calls optional and the drift
+        stayed invisible -- which is what ARC-2002725967 found.
+        """
+        envelope = _load("findings-envelope-schema.json")
+        report = _load("report-schema.json")
+        published = report["properties"]["findings"]["items"]["properties"]["location"]
+        for name in ("legacyPanelFinding", "domainRoleFinding"):
+            with self.subTest(definition=name):
+                loc = envelope["definitions"][name]["properties"]["location"]
+                self.assertEqual(set(loc.get("required", [])),
+                                 set(published.get("required", [])))
 
     def test_advisor_verdict_schema_accepts_schema_version(self):
         _require_jsonschema(self)

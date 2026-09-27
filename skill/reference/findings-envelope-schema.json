@@ -63,7 +63,7 @@
         "category": {"type": "string"},
         "location": {
           "type": "object",
-          "required": ["file", "line_start"],
+          "required": ["file"],
           "properties": {
             "file": {"type": "string"},
             "line_start": {"type": "integer", "minimum": 1},
@@ -114,7 +114,7 @@
         "category": {"type": "string"},
         "location": {
           "type": "object",
-          "required": ["file", "line_start"],
+          "required": ["file"],
           "properties": {
             "file": {"type": "string"},
             "line_start": {"type": "integer", "minimum": 1},

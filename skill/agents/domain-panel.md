@@ -55,7 +55,10 @@ Each finding MUST carry:
   no reason is reverted to the code default at synthesis.
 - `title`, `description`, `location: {file, line_start, line_end}` — `file` MUST be
   **repository-relative** (e.g. `src/app.py`; never absolute or `./`-prefixed, so the
-  delta/`--pr` gate can match it against the diff), and `line_start` is 1-based
+  delta/`--pr` gate can match it against the diff). `line_start`/`line_end` are
+  1-based, and belong on a finding that has a locus in the file; a whole-file
+  finding (a missing header, a bad config) MUST omit `line_start`/`line_end`
+  entirely (not `null`) rather than invent one
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 
