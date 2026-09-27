@@ -515,7 +515,10 @@ class TestOutOfScopeShapeTolerance(unittest.TestCase):
         """`body` written verbatim -- the shape a reviewer's RETURN channel
         actually produced, not what json.dumps would have produced."""
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            # A name the pipeline can produce: #1765 made one parser answer for
+            # every reader, and the retired 4.x spelling names no cell at all --
+            # this counter would skip the file before reading a row of it.
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w", encoding="utf-8") as fh:
                 fh.write(body)
             with contextlib.redirect_stderr(io.StringIO()):

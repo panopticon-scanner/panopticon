@@ -13,7 +13,6 @@ import sys
 import scripts.citations as citations
 import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
-import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 import scripts.tools.base as tool_base
 from . import validate_schema as validate_schema_mod
@@ -327,8 +326,8 @@ def load_findings_detailed(paths):
         findings = data.get("findings", [])
         if not isinstance(findings, list):
             continue
-        m = GROUP_RE.match(os.path.basename(path))
-        group = m.group(1) if m else None
+        cell = findings_contract.cell_of(path)
+        group = cell[0] if cell else None
         for f in findings:
             if not isinstance(f, dict):
                 continue
@@ -364,18 +363,6 @@ def _present(findings, sev):
 HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 ID_RE = re.compile(r"\A[A-Z]{2,8}-\d{3,}\Z")  # {2,8}: real agents emit e.g. STRUCT-001
-
-# Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
-# [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes
-# (findings-<group>-<domain>.json, no further suffix -- see present_cells, which
-# parses the same P4 shape independently off groups_schema.DOMAINS to avoid
-# drift). Keyed off groups_schema.DOMAINS, not a hardcoded literal, so a future
-# roster change (P6+) only has to update one place.
-_AXES = list(PANEL_ORDER) + sorted(groups_schema.DOMAINS)
-
-GROUP_RE = re.compile(
-    r"^findings-(.+)-(?:%s)"
-    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(_AXES))
 
 # #487: committed planning-doc trees (specs, plans, ADRs) are prose, not
 # code -- code-oriented findings against them are noise. Path-scoped,

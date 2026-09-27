@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One parser for the `findings-<group>-<domain>` cell identity (#1765, ARC-3899903550).** Four
+  modules read that name independently and disagreed at the edges: `findings_contract.cell_of` did
+  not validate the domain, `synth/coverage_io.present_cells` and
+  `synth/integrity._expected_from_filename` did, and `synth/findings.GROUP_RE` also accepted the
+  4.x panel names and their retired `-panel_review` / `-lens_sweep-<lens>` suffixes. On an
+  off-roster or mistyped domain -- `findings-App-XYZ.json` -- ingest stamped no `_group`, the
+  mislabel guard said "nothing wrong", the floor audit could not see the cell, and the defect
+  diagnostic claimed a cell for it anyway: every branch failed toward invisible, in four different
+  directions. `cell_of` now validates the trailing token against `groups_schema.DOMAINS` and owns
+  the parse; the other three call it, and so does `synth/plan.out_of_scope_findings`. The 4.x
+  alternation is DROPPED rather than moved into it: the roles retired in #1441, `plan_contract`
+  pins every reviewer `out_file` to `findings-<group>-<domain>.json`, and nothing in the 5.x
+  pipeline can produce the old spelling. A file whose trailing token is no domain code is still
+  named wherever it was read -- as a dropped file that names no cell, never as a phantom one.
 - **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
