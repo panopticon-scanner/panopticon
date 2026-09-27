@@ -18,7 +18,7 @@ session's wire file, which is also the usage ledger's source:
 
 Residuals, stated plainly: Kimi hooks fail OPEN when the guard does not start
 (kimi_guard_hook.py's docstring), and the interpreter that starts it is the
-DRIVER's own -- `sys.executable`, not a `python3` the child's PATH resolves --
+DRIVER's own -- `sys.executable`, resolved, not a `python3` the child's PATH resolves --
 checked together with the guard script by `prepare` before anything launches.
 What remains is a hook that dies for a reason no pre-flight can see: script or
 interpreter replaced or removed mid-run, an exec that fails under load, or an

@@ -17,8 +17,10 @@ evidence exposed.
   and write confinement silently unarmed -- the exact residual the runner's own C3 comment named
   while checking only the guard SCRIPT. The interpreter is `sys.executable` now (this process,
   chosen by neither PATH nor the target -- the binding `read_guard_hook` and `codex_host` already
-  use), and an empty, relative or unrunnable one is REFUSED rather than swapped back for a bare
-  name. One function asks that whole question and returns the path it validated, so what was checked
+  use), armed as its `realpath` so a venv symlink resolves to the binary that actually runs and the
+  reviewed tree's own `site-packages` never joins the guard's `sys.path`; an empty, relative or
+  unrunnable one is REFUSED rather than swapped back for a bare name. One function asks that whole
+  question and returns the path it validated, so what was checked
   is what the hooks are armed with; `KimiRunner.prepare` asks it, with the guard script's presence,
   before any child launches, and the two probes that build the same home report the refusal instead
   of ending posture establishment in a traceback. Pinned with PATH emptied, so no `python3` shim on

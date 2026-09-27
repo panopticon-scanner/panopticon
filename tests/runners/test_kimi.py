@@ -343,7 +343,7 @@ class TestPrepare(unittest.TestCase):
             self.assertIn("refusing to launch reviewers whose read/write "
                           "confinement would be unarmed", message)
 
-    def test_the_arming_path_refuses_a_relative_interpreter(self):
+    def test_kimi_home_arming_path_refuses_a_relative_interpreter_before_prepare(self):
         # `_interpreter` is what `_hook_entry` arms the hooks with, and a
         # RELATIVE `sys.executable` is the case a pre-flight over the DRIVER's
         # cwd cannot judge: the child resolves it against its own cwd (or its

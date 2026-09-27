@@ -18,11 +18,11 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import tomllib
 
 from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
+from scripts.runners import kimi_home
 
 from . import common
 from . import kimi_snapshot
@@ -196,7 +196,7 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
         if env_id:
             env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
         try:
-            proc = runner([sys.executable, guard_path, mode, data_path],
+            proc = runner([kimi_home._interpreter(), guard_path, mode, data_path],
                           input=json.dumps(payload), capture_output=True,
                           text=True, timeout=30, env=env)
         except Exception as exc:  # noqa: BLE001 -- report, never raise

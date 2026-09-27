@@ -27,7 +27,7 @@ Kimi runs hooks as ``<interpreter> <abs path> <mode> <abs data path>`` -- one
 SHELL STRING, which is why the command is built here, shell-quoted, by
 `hook_command` (#1633) -- with no package on sys.path, the same constraint that
 keeps the Claude hooks stdlib-only and self-locating (R-P5-5). That interpreter
-is the DRIVER's own `sys.executable` (`runners/kimi_home._interpreter`,
+is the DRIVER's own `sys.executable`, resolved (`runners/kimi_home._interpreter`,
 ARC-1774133676), never a bare name the child's own PATH would resolve.
 
 BINDING. A headless child IS one dispatch entry (spec 5.3), so the entry id
