@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`dispatch.js` refuses an entry marked enforced that names no registered shell (#1783,
+  ARC-204863095).** The session-mode Workflow script validated each entry's `id`, `marker` and
+  `prompt_file`, then branched on `e.enforced && e.agent` -- so an entry carrying `enforced: true`
+  with a missing or empty `agent` fell through to the UNENFORCED branch in silence: no registered
+  `panopticon-*` shell, no host-enforced tool grant, no log line, while the request on disk still
+  recorded that entry's launch shape as enforced. The driver holds the same rule one level up
+  (`loop_batch.refuse_misrouted` refuses a request whose enforced entry does not name the shell its
+  output role and checkpoint expect), so the reachable path was a session hand-copying the request's
+  entries into `args.entries` -- exactly the reduction the script's own header asks for. The
+  validation loop now refuses such an entry in the register of `loop_batch.misroute_refusal`, and it
+  refuses THERE rather than in the dispatch loop: an integrity refusal must not leave a batch half
+  launched, so no `agent()` call is made for any entry in it. No production path emits such an entry
+  (all five request builders set `agent` to the registered name exactly when the entry is enforced),
+  so the refusal costs no real request. The pin that had recorded the old fall-through as behaviour
+  now pins the refusal, beside an empty-`agent` case and a two-entry case proving the good entry
+  ahead of the bad one never launched.
 - **The Kimi guard hooks run the driver's own interpreter, and `prepare` refuses one that cannot
   start (#1777; ARC-1774133676).** Both PreToolUse hooks in the per-run `config.toml` named the bare
   word `python3`, and nothing resolved it: the CHILD looks that name up in its own PATH, and the

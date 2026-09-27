@@ -65,8 +65,11 @@ The host contract (5.2, plan 6):
   shipped workflow `skill/workflows/dispatch.js` (`skill/SKILL.md` names the call; it is the
   mandated, templated path — not one-off Agent calls; its enforced/agentType branch, marker-first
   prompt and reply routing are pinned by `tests/test_workflow_dispatch_script.py`, run through a
-  small Node harness rather than left untested as Workflow-tool source usually is); on another host,
-  however that host likes — but whatever text you dispatch an agent with must begin with
+  small Node harness rather than left untested as Workflow-tool source usually is; the workflow also validates
+  the batch BEFORE it launches anything, so an entry marked `enforced` naming no registered shell in
+  `agent` refuses the whole batch instead of quietly running as an unenforced subagent while the
+  run's accounting calls it enforced, #1783); on another host, however that host likes — but
+  whatever text you dispatch an agent with must begin with
   `entry["marker"]` (`panopticon-entry: <id>`, the first line of `entry["prompt"]`): it already does
   when you pass `entry["prompt"]` verbatim; if you point the agent at `prompt_file` instead, put the
   marker line first and the pointer second — the file is granted to the entry's read scope
