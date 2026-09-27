@@ -7,6 +7,67 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One spelling of the read-scope keys, and the guard hooks' read-scope copies pinned (#1767;
+  ARC-1784455652, ARC-2812051140).** The read guards are three deliberate copies of one rule, and
+  each of the three runs with no package on sys.path -- the hooks because a hook is invoked by
+  absolute path, as its own process, the broker because it is launched `-I`. None of them can
+  import a sibling. But only the BINDING half of that copy was pinned, and the read-scope half had
+  already drifted in logic. `kimi_guard_hook._load_scope` looped over an inline literal of the
+  four scope keys while `read_guard_hook` looped over its `SCOPE_KEYS` constant, so a fifth key
+  added to the read guard would have been honoured by Claude's hook and silently ignored by
+  Kimi's: one entry, confined two ways. Kimi's loader now reads a `SCOPE_KEYS` of its own, and a
+  new parity class pins all seven read-scope helpers plus both constants AST-identical, docstrings
+  stripped (each copy explains itself where it stands; prose is what a copy may differ in, code is
+  not). That net also caught the one place the Codex broker's `_under` answered a grant
+  differently from the hooks': with `/` as a directory grant, `rstrip(os.sep)` left "" and every
+  absolute path was admitted, where the hooks' `or os.sep` reads a `/` grant as the root directory
+  ALONE. The broker takes the hooks' edge. Two residuals close with it: the write guard's atomic
+  writer has a public `atomic_write_json` (the underscore spelling stays an alias, and a source
+  pin keeps `runners/batch.py` off the private surface) so a package module no longer reaches into
+  a hook script's private function, and a measured flags pin now holds the writers that spell the
+  no-follow open by hand -- the three stage-and-rename writers (the two guard hooks' and
+  `runners/kimi_home`'s) and `safe_write`'s artifact pair -- with `O_NOFOLLOW` on every one, the
+  three stagers identical at mode 0o600, and the artifact pair differing only in the two ways
+  that were decided.
+- **The codex enforcement shells are encoded by the shared TOML encoder (#1763, run-14
+  ARC-981076646).** `emit_host_agents`'s codex branch flattened its policy with a nested
+  `emit_values` that spelled every value with a bare `json.dumps` and carried its own copy of the
+  bare-key regex, duplicating `skill/scripts/toml_values.py` -- the encoder `codex_host` and
+  `kimi_toml` both already go out through. `json.dumps` defaults to ASCII mode, which writes a
+  non-BMP character as a surrogate pair, invalid in TOML: one emoji in a template `description`
+  registered a shell `tomllib`, and codex's own parser, refuses ("Escaped character is not a
+  Unicode scalar value"), and a lone surrogate went out escaped instead of refused. The three
+  inputs -- a template description, the codex charter, the resolved model -- are ASCII today, so
+  nothing had fired yet. Emission now calls `toml_values.key` / `toml_values.value`, the
+  flattener's nested-table-to-dotted-key shape is untouched, and a new test re-emits every ASCII
+  role's file through the old flattener and demands the same lines back.
+- **The TST global floor now recognises the test-file suffix conventions discovery already
+  knows (#1770; run-14 ARC-3682668884).** `coverage_model._TEST_FILE_HINTS` gated the TST floor
+  on substring hints -- `.test.`, `/tests/`, `test_` -- and knew none of the SUFFIX conventions
+  `discovery.TEST_PATTERNS` has always matched: `AppTest.java`, `AccountTests.cs`,
+  `AuthTest.php`, `app_tests.py`. So a flat Java layout and every standard C# or PHP repo drew
+  no guaranteed TST cell, while the floor's own docstring promised the opposite -- that a
+  mis-reporting scout "cannot suppress a floor domain whose surface objectively exists". For
+  three languages it could. `applicable_global_floor`'s TST signal is now the UNION of
+  `discovery.is_test_file` and the hints: the hints stay, because they cover the plumbing the
+  naming rule misses (`conftest`, a `/tests/` corpus, `.feature`), and the union ends the drift
+  between two independent derivations of "is this a test file" -- a convention added to
+  `TEST_PATTERNS` floors TST from then on, and a parity meta-test fails if one arrives without
+  a fixture. The behavioural ratchet on this repo is nil: every group in the committed
+  `panopticon.yml` matrix, and both chunks of the residual sink, already had a TST floor cell.
+- **The adapter-integration lanes run as the user production scans run as (#1771, ARC-2930403871).**
+  `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
+  writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
+  adapters meet real tools and real fixtures proved them as uid 0 while every production scan runs
+  the tools image as `scanner` (its `useradd -m -u 1000 scanner`, then its closing `USER scanner`).
+  A root-only adapter regression, the #1877 class, passed the only gate that could catch it. Both
+  jobs now pass `--user scanner` with production's `HOME`, and each asserts `id -u` inside the
+  container before running a probe. `Dockerfile.fixtures` says that build-time root is not a runtime
+  posture and that the image is no longer local-only; it moves the .NET package cache out of root's
+  0700 HOME (`NUGET_PACKAGES`, then `a+rX`) so `project.assets.json` names a path uid 1000 can read;
+  and it hands `scanner` back the four cargo subtrees this build dirties as root -- `registry`,
+  `git`, `.package-cache`, `.global-cache` -- leaving the RustSec `advisory-db` beside them
+  root-owned and read-only, which is what the scan needs and all it needs.
 - **The 700-line ceiling now covers the flat modules and the entry scripts (#1761, #1762,
   #1763; run-14 ARC-2609514778).** `tests/test_layout.py` rule 5 ratchets only the `synth`,
   `phases`, `runners` and `probes` packages, so the largest modules in the tree were the
@@ -18,6 +79,13 @@ evidence exposed.
   modules pinned at the count they have today, each free to shrink and never to grow, and a pin
   that reaches the ceiling has to go. Raising a number is not a fix -- the allowlist is the list
   of splits owed.
+
+- **Requirement hash refreshes preserve extras and environment markers (#1847).** The updater
+  replaces hash options while retaining the requirement clause and comments, and requests
+  artifact hashes for the base distribution. Root configuration also requires integer
+  `version: 1`; YAML `1.0` is refused with the existing version diagnostic. Reconciliation
+  rejects boolean `schema_version` values before action planning.
+
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
   SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences

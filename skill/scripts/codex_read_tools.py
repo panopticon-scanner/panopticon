@@ -132,7 +132,16 @@ def _path(value, cwd):
 
 
 def _under(path, directory):
-    return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
+    """Separator-bounded prefix test: /repo admits /repo/x, never /repo-other.
+
+    The `or os.sep` is the ROOT edge, and it is why this is the guard hooks'
+    function rather than a near-copy of it (ARC-1784455652/#1767): with `/` as
+    the grant, `rstrip(os.sep)` leaves "" and every absolute path starts with
+    os.sep, so the grant admitted the whole filesystem here while the hooks read
+    it as the root directory alone. Pinned AST-identical to
+    `read_guard_hook._under` in tests/test_read_guard_hook.py."""
+    directory = directory.rstrip(os.sep) or os.sep
+    return path == directory or path.startswith(directory + os.sep)
 
 
 class HardLinkDenied(ValueError):
