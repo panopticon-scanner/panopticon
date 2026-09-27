@@ -21,8 +21,10 @@ no registered shape is refused too: a shared reader that hands back arbitrary
 values is the thing neither caller was allowed to have.
 
 `SHAPES` is that closed map, every pattern anchored and enforced with
-`fullmatch`, and `read_arg` takes the FIRST matching line, which is what
-`head -1` did. Nothing is stripped, so trailing whitespace fails the shape
+`fullmatch`. Where `head -1` silently took the first of two `ARG <NAME>=` lines,
+`read_arg` REFUSES the duplicate: the tag the workflows prime and the default the
+image builds from must never disagree (`bump_pins._single_arg` draws the same
+line). Nothing is stripped, so trailing whitespace fails the shape
 exactly as it did when the inline `echo "$ver" | grep -Eq` saw it. Refusals are
 one line and always start with this module's name, so a tampered value cannot
 begin a line in the runner log and forge a `::error::` workflow command.
@@ -58,11 +60,12 @@ def _brief(value: str, limit: int = 60) -> str:
 
 
 def read_arg(dockerfile_text: str, name: str) -> str:
-    """The first `ARG <name>=<value>` line's value, shape-checked.
+    """The single `ARG <name>=<value>` line's value, shape-checked.
 
     Raises `ValueError` naming the ARG when it has no registered shape, when no
-    `ARG <name>=` line declares it, or when the declared value fails that
-    shape. Pure: no I/O, so the callers' file reading stays in `main`.
+    `ARG <name>=` line declares it, when more than one line does, or when the
+    declared value fails that shape. Pure: no I/O, so the callers' file reading
+    stays in `main`.
     """
     shape = SHAPES.get(name)
     if shape is None:
@@ -70,11 +73,14 @@ def read_arg(dockerfile_text: str, name: str) -> str:
             "ARG %s has no registered shape: add one to SHAPES in "
             "scripts/dockerfile_args.py, or read that value somewhere else"
             % name)
-    match = re.search(r"^ARG " + re.escape(name) + r"=(.*)$",
-                      dockerfile_text, re.M)
-    if match is None:
+    values = re.findall(r"^ARG " + re.escape(name) + r"=(.*)$",
+                        dockerfile_text, re.M)
+    if not values:
         raise ValueError("no `ARG %s=` line in the Dockerfile" % name)
-    value = match.group(1)
+    if len(values) > 1:
+        raise ValueError("ARG %s is declared %d times in the Dockerfile; "
+                         "expected exactly one line" % (name, len(values)))
+    value = values[0]
     if not shape.fullmatch(value):
         raise ValueError("ARG %s is not of the form %s: %s"
                          % (name, shape.pattern, _brief(value)))

@@ -60,11 +60,20 @@ class ReadArgTest(unittest.TestCase):
         self.assertEqual(da.read_arg(text, "DEPENDENCY_CHECK_VERSION"), "10.0.3")
         self.assertEqual(da.read_arg(text, "DEPENDENCY_CHECK_SHA256"), SHA)
 
-    def test_the_first_matching_line_wins(self):
-        # `head -1`'s reading, and the Dockerfile's own: the first ARG default
-        # is the one a later stage inherits unless it redeclares it.
+    def test_a_duplicated_arg_is_refused_not_first_matched(self):
+        # The old `grep | head -1` took the first line silently, so the tag the
+        # workflows primed could disagree with the default the image built
+        # from. `bump_pins._single_arg` refuses the same ambiguity.
         text = _dockerfile() + "ARG DEPENDENCY_CHECK_VERSION=9.9.9\n"
-        self.assertEqual(da.read_arg(text, "DEPENDENCY_CHECK_VERSION"), "10.0.3")
+        with self.assertRaises(ValueError) as caught:
+            da.read_arg(text, "DEPENDENCY_CHECK_VERSION")
+        self.assertIn("DEPENDENCY_CHECK_VERSION is declared 2 times", str(caught.exception))
+
+    def test_the_closed_map_holds_exactly_the_two_registered_pins(self):
+        # The shape tests iterate SHAPES; this pins its membership so an
+        # emptied or renamed map cannot make them vacuous.
+        self.assertEqual(set(da.SHAPES),
+                         {"DEPENDENCY_CHECK_VERSION", "DEPENDENCY_CHECK_SHA256"})
 
     def test_an_absent_arg_is_refused_and_named(self):
         with self.assertRaises(ValueError) as caught:
@@ -256,8 +265,13 @@ class WorkflowCallersTest(unittest.TestCase):
         # a failed command substitution in an assignment carries its status.
         for workflow, job, name, _args in self.CALLERS:
             with self.subTest(workflow=workflow):
-                self.assertIn("set -euo pipefail",
-                              self._step(workflow, job, name)["run"])
+                run = self._step(workflow, job, name)["run"]
+                self.assertIn("set -euo pipefail", run)
+                # ... and nothing on the reader's own line swallows that status:
+                # `|| true` or `|| echo <default>` would be the fail-open back.
+                for line in run.splitlines():
+                    if "dockerfile_args.py" in line:
+                        self.assertNotIn("||", line, line)
 
     def test_neither_caller_greps_the_dockerfile_for_an_arg_any_more(self):
         # Whole file, not just the step: a second reader anywhere in it is the
