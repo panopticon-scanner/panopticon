@@ -15,7 +15,27 @@ the contract says a reviewer writes? Whether a given finding is *good* (severity
 vocabulary, citations, location) is normalization's job downstream, and pulling
 that in here would make a reviewer's judgement call look like a protocol
 violation.
+
+The module owns a second contract, for the same reason: `cell_of` is the one
+parse of the `findings-<group>-<domain>.json` NAME (ARC-3899903550, #1765). Four
+readers each had their own and disagreed, so a file's cell identity -- not its
+payload shape -- is settled here too.
 """
+from typing import TYPE_CHECKING
+import os
+
+# The domain roster `cell_of` validates a name's trailing token against. Dual
+# import convention (#742): this module sits in the flat `skill/scripts`
+# namespace beside `plan_contract`, which carries the same fallback, so both
+# `scripts.findings_contract` and a bare `import findings_contract` resolve it.
+# The edge adds no cycle -- `groups_schema` imports nothing from this tree.
+if TYPE_CHECKING:
+    from scripts import groups_schema
+else:
+    try:
+        from scripts import groups_schema
+    except ModuleNotFoundError:   # imported flat, with skill/scripts on sys.path
+        import groups_schema
 
 
 def payload_defects(data):
@@ -47,18 +67,29 @@ def is_acceptable(data):
 def cell_of(path):
     """``[group, domain]`` for a `findings-<group>-<domain>.json` path, else None.
 
-    Domain codes (groups_schema.DOMAINS) are hyphen-free, so the domain is the
-    last hyphen-delimited token before `.json`. Shared with `present_cells` so a
-    defect diagnostic and a coverage cell are keyed the same way -- naming a
-    dropped file without being able to say which cell it belonged to would leave
-    the floor audit unable to act on it.
+    THE cell-identity parser. `synth.coverage_io.present_cells`,
+    `synth.integrity._expected_from_filename`, `synth.plan.out_of_scope_findings`
+    and the ingest's `_group` stamp all call it, so a coverage cell, the mislabel
+    guard, a scope lane, a finding's group and a defect diagnostic are keyed the
+    same way. Four independent parses used to answer this one question and they
+    disagreed at the edges (ARC-3899903550, #1765): an off-roster or mistyped
+    domain made ingest stamp no group, told the mislabel guard nothing was wrong
+    and hid the cell from the floor audit -- while this function still named a
+    cell for it. Every branch failed toward invisible, in four directions.
+
+    Domain codes (`groups_schema.DOMAINS`) are hyphen-free, so the domain is the
+    last hyphen-delimited token before `.json` and a group name may contain
+    hyphens. A trailing token that is not a domain code names NO cell: claiming
+    one invents a cell the rest of the pipeline cannot see. Such a file whose
+    PAYLOAD was rejected is still named, now without a cell
+    (`malformed_findings_files`); one that parses cleanly is surfaced by
+    `unexpected_findings_files` wherever a dispatch plan exists.
     """
-    import os
     base = os.path.basename(str(path))
     if not (base.startswith("findings-") and base.endswith(".json")):
         return None
     stem = base[len("findings-"):-len(".json")]
-    if "-" not in stem:
+    group, sep, domain = stem.rpartition("-")
+    if not (sep and group and domain in groups_schema.DOMAINS):
         return None
-    group, _, domain = stem.rpartition("-")
-    return [group, domain] if group and domain else None
+    return [group, domain]
