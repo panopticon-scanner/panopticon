@@ -246,9 +246,85 @@ class TestResidualAutolinks(unittest.TestCase):
         text = "GH-123 _www.example.test"
         self.assertEqual(sanitize.defang(sanitize.defang(text)), sanitize.defang(text))
 
-    def test_ordinary_identifiers_and_paths_are_unchanged(self):
-        for text in ("myGH-123", "MY_GH-123", "GH-123suffix", "src/GH-123/file.py",
-                     "GH-123.py", "prefix-GH-123", "GH-123/notes", "www", "mywww.example.test"):
+    def test_gh_reference_is_defanged_in_every_form_github_links(self):
+        # Measured against GitHub's renderer on 2026-09-27 (gfm mode, this repo as
+        # context): GH-N links in any letter case and beside '/', '-', '.' or a
+        # non-ASCII letter (#2192; COD-3436467706).
+        cases = [
+            ("gh-1", "gh", "1"),
+            ("Gh-1", "Gh", "1"),
+            ("gH-2175", "gH", "2175"),
+            ("src/GH-123/file.py", "GH", "123"),
+            ("GH-123.py", "GH", "123"),
+            ("prefix-GH-123", "GH", "123"),
+            ("GH-123/notes", "GH", "123"),
+            (".GH-1", "GH", "1"),
+            ("éGH-1", "GH", "1"),
+            ("src/gh-123/file.py", "gh", "123"),
+            ("gh-123.py", "gh", "123"),
+            ("prefix-gh-123", "gh", "123"),
+        ]
+        for text, letters, digits in cases:
+            out = sanitize.defang(text)
+            self.assertNotIn(letters + "-" + digits, out)
+            self.assertIn(letters + "-​" + digits, out)
+            self.assertEqual(sanitize.defang(out), out)
+
+    def test_gh_reference_after_ascii_lookalike_letters_is_defanged(self):
+        # A module-level re.IGNORECASE case-folds the lookbehind's ASCII class too,
+        # so these non-ASCII look-alikes wrongly blocked the match even though none
+        # of them is an ASCII letter, digit or underscore; GitHub's renderer links
+        # all five (fix round 1 F1; #2192; COD-3436467706).
+        cases = {
+            "KGH-1": "KGH-​1",  # KELVIN SIGN
+            "İGH-1": "İGH-​1",  # LATIN CAPITAL LETTER I WITH DOT ABOVE
+            "ıGH-1": "ıGH-​1",  # LATIN SMALL LETTER DOTLESS I
+            "ſGH-1": "ſGH-​1",  # LATIN SMALL LETTER LONG S
+            "Kgh-1": "Kgh-​1",  # KELVIN SIGN, lower-case gh
+        }
+        for text, expected in cases.items():
+            out = sanitize.defang(text)
+            self.assertEqual(out, expected)
+            self.assertEqual(sanitize.defang(out), out)
+
+    def test_hash_reference_after_non_ascii_letter_is_defanged(self):
+        out = sanitize.defang("é#1")
+        self.assertEqual(out, "é#​1")
+        self.assertEqual(sanitize.defang(out), out)
+
+    def test_http_reference_is_defanged_in_every_form_github_links(self):
+        # _HTTP_RE used '\b', a Unicode word boundary, so a digit, underscore or
+        # non-ASCII letter right before the scheme wrongly blocked the match;
+        # GitHub's own boundary is only an ASCII letter (fix round 1 F2; #2192;
+        # COD-3436467706).
+        cases = {
+            "1http://example.com": "1h​ttp://example.com",
+            "_http://example.com": "_h​ttp://example.com",
+            "_https://example.com": "_h​ttps://example.com",
+            "x_http://example.com": "x_h​ttp://example.com",
+            "éhttp://example.com": "éh​ttp://example.com",
+            "中http://example.com": "中h​ttp://example.com",
+            "ßhttp://example.com": "ßh​ttp://example.com",
+            "ıhttp://example.com": "ıh​ttp://example.com",  # dotless i
+            "Khttp://example.com": "Kh​ttp://example.com",  # Kelvin sign
+            "١http://example.com": "١h​ttp://example.com",  # Arabic-indic 1
+            "HtTp://example.com": "H​tTp://example.com",  # mixed case, letters kept
+        }
+        for text, expected in cases.items():
+            out = sanitize.defang(text)
+            self.assertEqual(out, expected)
+            self.assertEqual(sanitize.defang(out), out)
+
+    def test_autolink_http_still_inert_and_idempotent(self):
+        out = sanitize.defang("<http://example.com>")
+        self.assertNotIn("<http://", out)
+        self.assertEqual(sanitize.defang(out), out)
+
+    def test_forms_github_does_not_link_are_unchanged(self):
+        for text in ("myGH-123", "MY_GH-123", "GH-123suffix", "1GH-1", "GH-1é",
+                     "x_gh-123", "mygh-123", "x#1", "_#1", "1#1",
+                     "www", "mywww.example.test",
+                     "xhttps://example.com", "Xhttp://example.com", "Fhttp://example.com"):
             self.assertEqual(sanitize.defang(text), text)
 
 

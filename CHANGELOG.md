@@ -18,6 +18,27 @@ evidence exposed.
   be an absolute path (it is 'rel/home'); unset it to use ~/.codex" -- by the runner and its shell
   loader, both codex probes, emission (exit 1, nothing written) and the readiness row. An explicit
   directory still wins, and importing `hosts` never raises.
+- **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
+  COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
+  shares its "before" boundary: no ASCII letter, digit or underscore immediately
+  precedes either, and no word character follows `GH-N`'s number. `http(s)://` links
+  unless an ASCII letter (not a digit or underscore) sits right before the scheme. Case
+  insensitivity no longer folds those ASCII checks, and the `GH-N` substitution keeps the
+  matched text's own letters, as the `http(s)://` one already did.
+- **The Kimi probes report a hung doctor, a failing home writer and a malformed config (#1788;
+  COD-2149752625).** Three posture probes on `--host kimi` let an exception escape where their
+  siblings already turn it into a reported state: `_kimi_home_arms_and_validates` caught only
+  `OSError` around `kimi doctor`, so a doctor that outlives its timeout or writes output that
+  does not decode escaped as a traceback; `_kimi_hooks_are_armed` caught only
+  `(OSError, RuntimeError)` around the per-run home writer, so a `ValueError` or `TypeError` from
+  it escaped too; and `probe_kimi_model_alias` let a malformed or unreadable operator
+  `config.toml` escape the same way. All three now report instead of raising, and the writer's
+  exception tuple is defined once (`kimi_snapshot._HOME_WRITER_EXCEPTIONS`) so the two probes
+  that drive it cannot drift apart again.
+- **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
+  `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
+  naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
+  another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
 - **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
