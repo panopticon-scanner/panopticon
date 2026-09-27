@@ -97,9 +97,10 @@ that starts catching one fails there, and this list is edited with it.
   reading a second program's configuration rather than this job's shell. The
   image the container came from is NOT pinned either, and that is a decided
   residual rather than an oversight: this fleet pulls the tools image by its
-  mutable `:latest` tag -- the env binding and the `docker pull` in each
-  consumer: `security.yml:36`/`:301`, `security-fork.yml:82`/`:410`,
-  `adapter-integration.yml:36`/`:56` and `:110`/`:128`. DEVELOPMENT.md states
+  mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
+  each consumer: the "Pull or build panopticon-tools image" step of
+  `security.yml` and of `security-fork.yml`, and both "Pull the nightly tools
+  image" steps of `adapter-integration.yml`. DEVELOPMENT.md states
   the consequence in its own voice twice, in the "One residual to know about"
   paragraph under "Key design decisions" and in the "Weekly strict security
   backstop" paragraph ("the tools image remains unpinned"). The `uses:`

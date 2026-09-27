@@ -60,9 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # cargo-audit --locked` uses the crate's packaged lockfile, not a repository-owned
 # hash closure; `dotnet tool install` also lacks a repository-owned lock; and the
 # .NET SDK arrives through `dotnet-install.sh --channel 8.0` (below), a FLOATING
-# SDK version -- the channel floats the feature band as well as the patch, the
+# SDK version: the channel floats the feature band as well as the patch. The
 # installer SCRIPT is pinned by commit SHA and `sha256sum -c`'d, but no
-# repository-owned digest governs which SDK bytes that script then fetches, and
+# repository-owned digest governs which SDK bytes that script then fetches;
 # that is the accepted cost of not having to bump a `--version` pin
 # (and give `scripts/bump_pins.py` another family) at every .NET patch and EOL.
 # Distro apt packages stay unpinned for the reason given above. Direct binary
