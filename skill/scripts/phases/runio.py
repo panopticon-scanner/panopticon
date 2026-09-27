@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 
+import scripts.claim_scope as claim_scope
 import scripts.config_schema as config_schema
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence
@@ -525,24 +526,16 @@ def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
     # own path derivation agree, on every branch of this function.
     return os.path.realpath(start if os.path.isdir(start) else target), None, None
 
-def _confined_to_root(review_root, path):
-    """True iff the claim path resolves inside review_root. An absolute path or a
-    `../`-escape resolves outside and is rejected (#1096) -- the claim's
-    location.file is LLM/panel-supplied (steerable by injection planted in the
-    reviewed repo), so it must not be able to point a downstream advisor at files
-    outside the review tree.
-
-    #run7 ARC-F2A: resolve SYMLINKS (realpath), not just `..`/join (abspath). A
-    committed in-tree symlink whose lexical path starts with root+sep (e.g.
-    `src/evil -> /etc/passwd`) passed the old abspath check, then the backup
-    advisor's unconfined Read followed it out of the repo. realpath on a
-    non-existent tail resolves the existing prefix and appends the rest lexically,
-    so a legitimate not-yet-written path still confines correctly."""
-    if not isinstance(path, str) or not path:
-        return False
-    root = os.path.realpath(review_root)
-    full = os.path.realpath(os.path.join(root, path))
-    return full == root or full.startswith(root + os.sep)
+# The claim-path confinement lives in `scripts.claim_scope` (#1767): the CLI
+# advisor renderer in `dispatch` needs the same predicate, and `dispatch` is
+# imported by `runners/*`, which layout rule 3 forbids from reaching this
+# package -- so the rule moved down to a leaf rather than being copied, exactly
+# as the no-follow artifact open did in #1735. An alias of a definition from
+# outside the package is what rule 4 leaves legal and asks to justify: the call
+# sites in `phases/evidence_scope.py` and the suite spell the predicate with
+# this name, so keeping it keeps ONE name -- and one patch target -- for them.
+# tests/test_claim_scope.py pins the identity.
+_confined_to_root = claim_scope.confined_to_root
 
 _DEFAULTS = {"host": "claude", "security": "standard"}
 

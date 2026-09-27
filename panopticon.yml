@@ -159,6 +159,7 @@ groups:
     Core:
       match:
       - skill/scripts/dispatch.py
+      - skill/scripts/claim_scope.py
       - skill/scripts/money.py
       - skill/scripts/ledger.py
       - skill/scripts/loop_batch.py
@@ -178,6 +179,7 @@ groups:
       - skill/reference/model-profiles.yml
       tests:
       - tests/test_dispatch.py
+      - tests/test_claim_scope.py
       - tests/test_dispatch_request.py
       - tests/test_money.py
       - tests/test_ledger.py

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
 import model_resolver
 
-from scripts import codex_read_tools, hosts, toml_values
+from scripts import claim_scope, codex_read_tools, hosts, toml_values
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -480,7 +480,7 @@ def _is_registered(reg_dir, role_file, host=None):
         os.path.join(reg_dir, registered_agent_filename(host, role_file)))
 
 
-def render_advisor_prompts(queue_path, out_dir, host=None):
+def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
     """Render one advisor prompt per verify-queue entry to out_dir.
 
     Deterministic replacement for the orchestrating agent hand-rendering
@@ -491,6 +491,17 @@ def render_advisor_prompts(queue_path, out_dir, host=None):
     surface (#1677). It defaults to None -- the neutral Claude vocabulary --
     so every existing caller is unchanged; the live driver path in
     `phases/verify.py` renders its own prompts and already passes the host.
+
+    `review_root` is the tree the advisor must read, and it is not optional
+    information: every claim `location` here is panel/LLM-supplied, the advisor
+    the prompt is for reads unconfined, and until #1767 this renderer embedded
+    the finding VERBATIM and pinned `os.getcwd()`. Both halves of the driver's
+    answer apply (`claim_scope`): an escaping location becomes the redaction
+    marker, and the pinned root is the review root -- defaulting, when the
+    caller names none, to the root the queue's own `.panopticon` path belongs
+    to. An unresolvable root RAISES: the cwd fallback it replaces was the bug
+    (run-14 ARC-3314534783), because a wrong root silently points the advisor
+    at another checkout.
     """
     try:
         with open(queue_path, encoding="utf-8") as fh:
@@ -505,6 +516,14 @@ def render_advisor_prompts(queue_path, out_dir, host=None):
     run_id = queue.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("verify queue %s has no run_id" % queue_path)
+    if review_root is None:
+        review_root = claim_scope.review_root_of_artifact_path(queue_path)
+    if review_root is None:
+        raise ValueError(
+            "cannot resolve the review root from verify queue %s: a queue is a "
+            "`.panopticon` artifact, and the review root is the directory above "
+            "that segment. Pass the root explicitly (--review-root PATH)."
+            % queue_path)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for entry in entries:
@@ -528,17 +547,25 @@ def render_advisor_prompts(queue_path, out_dir, host=None):
         if not re.match(r"\A[0-9a-f]{16}(-[0-9]+)?\Z", queue_id):
             raise ValueError("verify queue %s: unsafe queue_id %r"
                              % (queue_path, queue_id))
-        claim = json.dumps(finding, indent=2, ensure_ascii=False)
+        # #run8 ARC-F2A, on this path as of #1767: a location that escapes the
+        # review root is neutralized BEFORE it reaches the claim JSON. Copy on
+        # write, and only when there is a location dict to confine, so a finding
+        # carrying none renders exactly as it did.
+        safe_finding = finding
+        if isinstance(finding.get("location"), dict):
+            safe_finding = dict(finding)
+            safe_finding["location"] = claim_scope.confine_claim_location(
+                review_root, finding["location"])
+        claim = json.dumps(safe_finding, indent=2, ensure_ascii=False)
         prompt = render_prompt("advisor.md", {"claim_json": claim}, host=host)
         prompt = ("Verification run id: %s\nEcho it as the top-level JSON field "
               "`run_id` in your verdict.\n\n%s" % (run_id, prompt))
         # #975: pin the review root. Advisors inherit the session cwd, so a
         # relative location in the claim resolved against the wrong checkout
-        # when the session root diverged from the tree under review.
-        prompt = ("Repo root: %s\nEvery relative path in the claim below "
-                  "resolves against this root -- read files THERE, never in "
-                  "your session's default checkout.\n\n%s"
-                  % (os.path.abspath(os.getcwd()), prompt))
+        # when the session root diverged from the tree under review. #1767: what
+        # it pinned WAS the cwd, which is that wrong checkout whenever this
+        # renderer is not run from the reviewed tree.
+        prompt = claim_scope.root_pin_paragraph(review_root) + prompt
         path = os.path.join(out_dir, "%s.md" % queue_id)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(prompt)
@@ -562,6 +589,9 @@ def main(argv=None):
                     help="Output directory for --render-advisor")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
+    ap.add_argument("--review-root", metavar="PATH", default=None,
+                    help="Tree the rendered claims resolve against (default: the "
+                         "directory above the queue's .panopticon segment)")
     _REGISTRABLE = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
     ap.add_argument("--emit-host-agents", metavar="HOST",
                     choices=_REGISTRABLE, default=None)
@@ -587,7 +617,8 @@ def main(argv=None):
             return 2
         try:
             written = render_advisor_prompts(args.render_advisor, args.out,
-                                             host=args.host)
+                                             host=args.host,
+                                             review_root=args.review_root)
         except ValueError as e:
             print("dispatch: %s" % e, file=sys.stderr)
             return 1

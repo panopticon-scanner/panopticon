@@ -13,14 +13,17 @@ is the one flag both sides read, which is why `phases/review.py` and
 
 `_confine_claim_location` came along because this is the channel #run8
 ARC-F2A was about -- a finding's `location.file` embedded verbatim in an
-UNCONFINED advisor's claim -- and `verify._render_findings` calls it back
-through this module. The dependency runs one way: nothing here reads
+UNCONFINED advisor's claim. #1767 moved the rule itself down to
+`scripts.claim_scope`, where the CLI advisor renderer can reach it too; the
+name here is an alias of that function, kept because this module's callers and
+tests spell it this way. The dependency runs one way: nothing here reads
 `verify`.
 """
 import glob as _glob
 import json
 import os
 
+import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.ingest_tools as ingest_tools
@@ -39,27 +42,16 @@ from . import runio
 from . import tools
 
 
-_REDACTED_CLAIM_PATH = "<redacted: location escapes review root>"
-
-def _confine_claim_location(review_root, loc):
-    """Return `loc` with an out-of-tree `location.file` neutralized.
-
-    #run8 ARC-F2A: the verify claims JSON handed to the domain/tool advisor
-    carries each finding's `location.file` VERBATIM, and the advisor's
-    Read/Grep/Glob are unconfined -- so a path-traversal or committed-symlink
-    location (e.g. `../../../.ssh/id_rsa`) planted by a redteam target would
-    steer the advisor to read OUTSIDE review_root in every verify round.
-    _confined_to_root already guarded the derived backup file LIST but never this
-    channel. A genuine review finding always cites an in-tree file, so redacting
-    an escaping path both defuses the steer and signals the advisor the location
-    is untrusted. Non-dict/absent locations pass through unchanged."""
-    if not isinstance(loc, dict):
-        return loc
-    path = loc.get("file")
-    if isinstance(path, str) and path and not runio._confined_to_root(review_root, path):
-        loc = dict(loc)
-        loc["file"] = _REDACTED_CLAIM_PATH
-    return loc
+# Both names are ALIASES of `scripts.claim_scope`'s definitions (#1767 ARC-
+# 3314534783): the CLI renderer `dispatch.render_advisor_prompts` assembled an
+# advisor prompt of its own with NEITHER the confinement nor the review-root
+# pin, and one rule reached from both sides is what keeps that from recurring.
+# Rule 4 leaves an alias of a definition from outside the package legal and asks
+# it to say why: `verify._render_findings` and the suite call the claim
+# confinement by this name, and the marker is compared against below.
+# tests/test_claim_scope.py pins both identities.
+_REDACTED_CLAIM_PATH = claim_scope.REDACTED_CLAIM_PATH
+_confine_claim_location = claim_scope.confine_claim_location
 
 def _tools_include_fixtures(manifest):
     """Whether tool-finding ingestion keeps test-fixture-corpus findings.
@@ -192,9 +184,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
         safe_finding["location"] = _confine_claim_location(review_root, finding["location"])
     claim = json.dumps(safe_finding, indent=2, ensure_ascii=False)
     prompt = dispatch.render_prompt("advisor.md", {"claim_json": claim}, host)
-    prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
-              "against this root -- read files THERE, never in your session's "
-              "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
+    prompt = claim_scope.root_pin_paragraph(review_root) + prompt
     prompt = tools.partial_audit_note(review_root, safe_finding) + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = loop_batch.expected_enforced(review_root, host)

@@ -59,7 +59,13 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/scripts/dispatch.py` — agent-template renderer + host enforcement-shell emitter
   (host-neutral frontmatter parser, `render_prompt`, `--render-advisor`,
   `--emit-host-agents`). The 4.x DispatchPlan builder it was named for is retired;
-  the driver builds its own matrix-cell plan.
+  the driver builds its own matrix-cell plan. `--render-advisor QUEUE` confines every
+  claim `location` to the review root and pins that root: `--review-root PATH` when
+  given, else the directory above the queue's own `.panopticon` segment, and it
+  refuses to render when neither resolves (never the process cwd).
+- `skill/scripts/claim_scope.py` — the ONE claim-path confinement (an escaping
+  `location.file` becomes a redaction marker) and the `Repo root:` pin both advisor
+  prompt builders use. Stdlib-only, so the CLI renderer and `phases/*` can share it.
 - `skill/scripts/model_resolver.py` — role+host → model resolution (profiles yml, env/CLI
   overrides, host-aware fallbacks).
 - `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
