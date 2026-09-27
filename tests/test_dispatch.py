@@ -9,6 +9,7 @@ import tomllib
 import unittest
 from unittest import mock
 
+import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 from scripts import codex_read_tools, hosts
@@ -241,6 +242,26 @@ class TestRenderGoldens(unittest.TestCase):
             self.assertEqual(dispatch.render_prompt(role, m), expected, role)
 
 
+def _queue_path(root, name="verify-queue.json", run_tag="claude-redteam-x"):
+    """The path a verify queue occupies under `root`'s run folder."""
+    run_dir = os.path.join(root, ".panopticon", "runs", run_tag)
+    os.makedirs(run_dir, exist_ok=True)
+    return os.path.join(run_dir, name)
+
+
+def _write_queue(root, queue, name="verify-queue.json", run_tag="claude-redteam-x"):
+    """Write `queue` where a real one lives: under the run folder of `root`.
+
+    The renderer resolves the review root from the queue's own `.panopticon`
+    segment (#1767), so a fixture that drops the queue in a bare temp directory
+    is not a verify queue at all -- it is the case the renderer now refuses.
+    """
+    qpath = _queue_path(root, name=name, run_tag=run_tag)
+    with open(qpath, "w", encoding="utf-8") as fh:
+        json.dump(queue, fh)
+    return qpath
+
+
 class TestRenderAdvisor(unittest.TestCase):
     def test_invalid_queue_shapes_refuse_without_writing_any_prompts(self):
         valid = {"run_id": "run-test", "entries": [
@@ -260,11 +281,11 @@ class TestRenderAdvisor(unittest.TestCase):
                       ": malformed entry 'a1b2c3d4e5f60001'") for value in (None, [], "finding", 1))
         for queue, reason in cases:
             with self.subTest(queue=queue), tempfile.TemporaryDirectory() as directory:
-                qpath = os.path.join(directory, "queue.json")
+                # Under the run folder, so the shape refusal (not the review-root
+                # refusal, #1767) is the one the message pins.
+                qpath = _write_queue(directory, queue)
                 outdir = os.path.join(directory, "prompts")
                 os.mkdir(outdir)
-                with open(qpath, "w", encoding="utf-8") as fh:
-                    json.dump(queue, fh)
                 with self.assertRaises(ValueError) as raised:
                     dispatch.render_advisor_prompts(qpath, outdir)
                 separator = "" if reason.startswith(":") else " "
@@ -273,10 +294,8 @@ class TestRenderAdvisor(unittest.TestCase):
                 with open(qpath, encoding="utf-8") as fh:
                     self.assertEqual(json.load(fh), queue)
         with tempfile.TemporaryDirectory() as directory:
-            qpath = os.path.join(directory, "queue.json")
+            qpath = _write_queue(directory, valid)
             outdir = os.path.join(directory, "prompts")
-            with open(qpath, "w", encoding="utf-8") as fh:
-                json.dump(valid, fh)
             written = dispatch.render_advisor_prompts(qpath, outdir)
             self.assertEqual(written, [os.path.join(outdir, "a1b2c3d4e5f60001.md")])
             with open(written[0], encoding="utf-8") as fh:
@@ -302,10 +321,7 @@ class TestRenderAdvisor(unittest.TestCase):
                           "panel": "code", "category": "correctness",
                           "location": {"file": "b.py", "line_start": 4}}},
         ]}
-        qpath = os.path.join(tmp, "verify-queue.json")
-        with open(qpath, "w", encoding="utf-8") as fh:
-            json.dump(queue, fh)
-        return qpath
+        return _write_queue(tmp, queue)
 
     def test_writes_one_prompt_per_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -391,11 +407,12 @@ class TestRenderAdvisor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             queue = {"version": "4.0.0", "run_id": "run-test",
                      "cut_by_max_verify": 0, "entries": [None]}
-            qpath = os.path.join(tmp, "bad-entry.json")
-            with open(qpath, "w") as fh:
-                json.dump(queue, fh)
-            with self.assertRaises(ValueError):
+            # Under the run folder, so the refusal pinned is the entry
+            # shape, not the review root (#1767).
+            qpath = _write_queue(tmp, queue, name="bad-entry.json")
+            with self.assertRaises(ValueError) as raised:
                 dispatch.render_advisor_prompts(qpath, tmp)
+            self.assertIn("malformed entry (not an object)", str(raised.exception))
 
     def test_unsafe_queue_id_fails_fast(self):
         # queue_id is OUR artifact (built by evidence.build_verify_queue), but
@@ -412,12 +429,172 @@ class TestRenderAdvisor(unittest.TestCase):
                               "panel": "security", "category": "injection",
                               "location": {"file": "app.py", "line_start": 1}}},
             ]}
-            qpath = os.path.join(tmp, "unsafe-queue.json")
-            with open(qpath, "w") as fh:
-                json.dump(queue, fh)
+            qpath = _write_queue(tmp, queue, name="unsafe-queue.json")
             with self.assertRaises(ValueError) as ctx:
                 dispatch.render_advisor_prompts(qpath, tmp)
             self.assertIn("unsafe queue_id", str(ctx.exception))
+
+
+class TestRenderAdvisorConfinement(unittest.TestCase):
+    """#1767 ARC-3314534783 (run-14): the CLI renderer confines claim locations
+    and pins the REVIEW root, exactly as the driver's two advisor rounds do.
+
+    It did neither: the finding went into the claim JSON verbatim and the root
+    pinned was `os.getcwd()`. An advisor's Read/Grep/Glob are unconfined, so a
+    redteam target whose planted `location.file` is `../../../.ssh/id_rsa`
+    steered this path out of the tree -- the #run8 ARC-F2A channel the driver
+    side had already closed.
+    """
+
+    QID = "a1b2c3d4e5f60001"
+
+    def _queue(self, root, location, **extra):
+        finding = {"id": "SEC-001", "title": "sqli", "severity": "HIGH",
+                   "panel": "security", "category": "injection",
+                   "description": "raw query"}
+        finding.update(extra)
+        if location is not None:
+            finding["location"] = location
+        return _write_queue(root, {"version": "4.2.0", "run_id": "run-test",
+                                   "cut_by_max_verify": 0,
+                                   "entries": [{"queue_id": self.QID,
+                                                "priority": 1,
+                                                "finding": finding}]})
+
+    def _render(self, root, location, **kwargs):
+        qpath = self._queue(root, location)
+        written = dispatch.render_advisor_prompts(
+            qpath, os.path.join(root, "out"), **kwargs)
+        with open(written[0], encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_an_escaping_claim_location_is_redacted_in_the_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, {"file": "../../../.ssh/id_rsa",
+                                      "line_start": 3})
+        self.assertIn(claim_scope.REDACTED_CLAIM_PATH, text)
+        self.assertNotIn("../../../.ssh/id_rsa", text)
+        self.assertIn('"line_start": 3', text)          # siblings still there
+
+    def test_an_absolute_claim_location_is_redacted_in_the_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, {"file": "/etc/passwd"})
+        self.assertIn(claim_scope.REDACTED_CLAIM_PATH, text)
+        self.assertNotIn("/etc/passwd", text)
+
+    def test_a_planted_symlink_location_is_redacted_in_the_prompt(self):
+        # The committed-symlink form: lexically in-tree, resolves outside.
+        with tempfile.TemporaryDirectory() as outside, \
+             tempfile.TemporaryDirectory() as tmp:
+            secret = os.path.join(os.path.realpath(outside), "secret.txt")
+            with open(secret, "w", encoding="utf-8") as fh:
+                fh.write("PRECIOUS")
+            os.makedirs(os.path.join(tmp, "src"))
+            os.symlink(secret, os.path.join(tmp, "src", "evil"))
+            text = self._render(tmp, {"file": "src/evil", "line_start": 1})
+        self.assertIn(claim_scope.REDACTED_CLAIM_PATH, text)
+        self.assertNotIn("src/evil", text)
+
+    def test_an_in_tree_claim_location_survives_verbatim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, {"file": "src/auth.py", "line_start": 9})
+        self.assertIn('"file": "src/auth.py"', text)
+        self.assertNotIn(claim_scope.REDACTED_CLAIM_PATH, text)
+
+    def test_a_finding_without_a_location_renders_without_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, None)
+        self.assertNotIn('"location"', text)
+
+    def test_the_prompt_pins_the_passed_review_root_not_the_cwd(self):
+        with tempfile.TemporaryDirectory() as elsewhere, \
+             tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, {"file": "src/auth.py"},
+                                review_root=elsewhere)
+            self.assertIn("Repo root: %s\n" % os.path.abspath(elsewhere), text)
+            self.assertNotIn("Repo root: %s\n" % os.path.abspath(os.getcwd()),
+                             text)
+
+    def test_the_review_root_defaults_to_the_queues_own_review_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._render(tmp, {"file": "src/auth.py"})
+            self.assertIn("Repo root: %s\n" % os.path.abspath(tmp), text)
+            self.assertNotIn("Repo root: %s\n" % os.path.abspath(os.getcwd()),
+                             text)
+
+    def test_a_queue_outside_any_artifact_directory_is_refused(self):
+        # Never a cwd fallback: an unresolvable root is a refusal, because a
+        # wrong root points the advisor at another checkout. A REAL entry, and
+        # an --out that must not exist afterwards: what makes the refusal SAFE
+        # rather than merely loud is that it precedes every write, and an empty
+        # queue would leave nothing to write either way.
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "verify-queue.json")
+            entry = {"queue_id": self.QID, "priority": 1,
+                     "finding": {"id": "SEC-001", "title": "sqli",
+                                 "severity": "HIGH", "panel": "security",
+                                 "location": {"file": "src/auth.py"}}}
+            with open(qpath, "w", encoding="utf-8") as fh:
+                json.dump({"version": "4.2.0", "run_id": "run-test",
+                           "cut_by_max_verify": 0, "entries": [entry]}, fh)
+            outdir = os.path.join(tmp, "out")
+            with self.assertRaises(ValueError) as ctx:
+                dispatch.render_advisor_prompts(qpath, outdir)
+            self.assertFalse(os.path.exists(outdir))
+        self.assertIn("review root", str(ctx.exception))
+        self.assertIn("--review-root", str(ctx.exception))
+
+    def test_a_review_root_that_is_not_a_directory_is_refused(self):
+        # The override is deliberately NOT cross-checked against the queue's
+        # own root -- rendering a queue copied out of its run folder is what it
+        # is for -- but a root that is not on disk at all points the advisor at
+        # nothing, which is the harm the unresolvable-root refusal exists for.
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, {"file": "src/auth.py"})
+            outdir = os.path.join(tmp, "out")
+            missing = os.path.join(tmp, "no", "such", "tree")
+            with self.assertRaises(ValueError) as ctx:
+                dispatch.render_advisor_prompts(qpath, outdir,
+                                                review_root=missing)
+            self.assertFalse(os.path.exists(outdir))
+        self.assertIn(missing, str(ctx.exception))
+        self.assertIn("directory", str(ctx.exception))
+
+    def test_a_review_root_that_is_not_a_directory_is_a_nonzero_cli_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, {"file": "src/auth.py"})
+            missing = os.path.join(tmp, "no", "such", "tree")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = dispatch.main(["--render-advisor", qpath,
+                                    "--out", os.path.join(tmp, "out"),
+                                    "--review-root", missing])
+        self.assertEqual(rc, 1)
+        self.assertIn(missing, err.getvalue())
+
+    def test_an_unresolvable_root_is_a_nonzero_cli_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "verify-queue.json")
+            with open(qpath, "w", encoding="utf-8") as fh:
+                json.dump({"version": "4.2.0", "run_id": "run-test",
+                           "cut_by_max_verify": 0, "entries": []}, fh)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = dispatch.main(["--render-advisor", qpath,
+                                    "--out", os.path.join(tmp, "out")])
+        self.assertEqual(rc, 1)
+        self.assertIn("review root", err.getvalue())
+
+    def test_the_cli_threads_its_review_root_into_the_prompts(self):
+        with tempfile.TemporaryDirectory() as elsewhere, \
+             tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, {"file": "src/auth.py"})
+            outdir = os.path.join(tmp, "out")
+            self.assertEqual(0, dispatch.main(
+                ["--render-advisor", qpath, "--out", outdir,
+                 "--review-root", elsewhere]))
+            with open(os.path.join(outdir, self.QID + ".md"),
+                      encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertIn("Repo root: %s\n" % os.path.abspath(elsewhere), text)
 
 
 class TestQueueIdResiduals(unittest.TestCase):
@@ -429,12 +606,9 @@ class TestQueueIdResiduals(unittest.TestCase):
     digit. Non-string ids must still fail fast either way."""
 
     def _queue(self, tmp, entries):
-        qpath = os.path.join(tmp, "q.json")
-        with open(qpath, "w") as fh:
-            json.dump({"version": "4.2.0", "run_id": "run-test",
-                       "cut_by_max_verify": 0,
-                       "entries": entries}, fh)
-        return qpath
+        return _write_queue(tmp, {"version": "4.2.0", "run_id": "run-test",
+                                  "cut_by_max_verify": 0, "entries": entries},
+                            name="q.json")
 
     def test_multi_digit_collision_suffix_accepted(self):
         qid = "a1b2c3d4e5f60001-10"
@@ -486,7 +660,7 @@ class TestQueueIdContractWithEvidence(unittest.TestCase):
         findings = [self._finding("A"), self._finding("B", severity="LOW")]
         entries, cut = evidence.build_verify_queue(findings)
         with tempfile.TemporaryDirectory() as tmp:
-            qpath = os.path.join(tmp, "verify-queue.json")
+            qpath = _queue_path(tmp)
             evidence.write_verify_queue(entries, cut, qpath)
             written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
         self.assertEqual(len(written), 2)
@@ -504,7 +678,7 @@ class TestQueueIdContractWithEvidence(unittest.TestCase):
         self.assertEqual(sorted(e["queue_id"] for e in entries),
                          sorted([fp, fp + "-1"]))                    # collision fired
         with tempfile.TemporaryDirectory() as tmp:
-            qpath = os.path.join(tmp, "verify-queue.json")
+            qpath = _queue_path(tmp)
             evidence.write_verify_queue(entries, cut, qpath)
             written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
         self.assertEqual(len(written), 2)

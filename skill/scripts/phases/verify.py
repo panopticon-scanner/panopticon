@@ -1,12 +1,14 @@
 """Phase 5 -- verify: cell, backup and tool verification (one phase, three
 flavours). The TOOL round -- its queue, its entries and the claim-location
-confinement they share with `_render_findings` -- is `phases/verify_tools.py`.
+confinement they share with `_render_findings` -- is `phases/verify_tools.py`;
+the confinement rule and the root pin themselves are `scripts.claim_scope`.
 """
 from typing import Any
 import json
 import os
 import sys
 
+import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.score_gate as score_gate
@@ -211,15 +213,15 @@ def _render_findings(review_root, cell):
     """The cell's claims as a compact JSON array the advisor adjudicates.
 
     #run8 ARC-F2A: each claim's `location` is confined to review_root (see
-    _confine_claim_location). The location is panel/LLM-supplied and the
-    advisor's Read/Grep/Glob are unconfined, so an out-of-tree `location.file`
+    claim_scope.confine_claim_location). The location is panel/LLM-supplied and
+    the advisor's Read/Grep/Glob are unconfined, so an out-of-tree `location.file`
     embedded verbatim here would steer the advisor to read outside the review
     tree in BOTH verify rounds -- the prior _confined_to_root guard covered only
     the derived backup file list, never this channel."""
     slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
              "title": f["title"], "category": f.get("category"),
-             "location": verify_tools._confine_claim_location(review_root,
-                                                             f.get("location")),
+             "location": claim_scope.confine_claim_location(review_root,
+                                                            f.get("location")),
              "description": _capped_description(f.get("description", ""))}
             for f in cell]
     return json.dumps(slim, indent=2)
@@ -244,9 +246,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     # repo-root pin and the template (fix round 1, F4 -- it was ahead of the pin,
     # which the comment did not say): root first, then the fence over it, then
     # the claims.
-    pin = ("Repo root: %s\nEvery relative path in the claims below resolves "
-           "against this root -- read files THERE, never in your session's "
-           "default checkout.\n\n" % os.path.abspath(review_root))
+    pin = claim_scope.root_pin_paragraph(review_root, plural=True)
     prompt = pin + (_grant_block(review_root, grant, ambiguous) if grant else "") + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = loop_batch.expected_enforced(review_root, host)
