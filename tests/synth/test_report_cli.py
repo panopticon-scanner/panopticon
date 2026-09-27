@@ -271,7 +271,7 @@ class ReportInputsTest(unittest.TestCase):
                                                  gated_suppressed=inp.tools.gated_suppressed)
         reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                              run=inp.run)
-        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled, delta=inp.delta)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
         self.assertEqual(whole, by_hand)
@@ -302,7 +302,7 @@ class ReportInputsTest(unittest.TestCase):
                                                  gated_suppressed=inp.tools.gated_suppressed)
         reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                              run=inp.run)
-        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled, delta=inp.delta)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
         self.assertEqual(whole["summary"]["gate"], "FAIL")
