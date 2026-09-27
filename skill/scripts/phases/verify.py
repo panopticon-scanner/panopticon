@@ -17,6 +17,7 @@ import scripts.score_gate as score_gate
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
+from . import budget
 from . import engine
 from . import evidence_scope
 from . import runio
@@ -124,29 +125,30 @@ _MAX_VERIFY_ATTEMPTS = 3
 # #1809 is otherwise closing.
 _VERIFY_ATTEMPTS_FILE = "verify-attempts.json"
 
-def _verify_attempts(review_root, group, domain, stage):
-    data = _verify_attempts_doc(review_root)
-    return int(data.get("%s/%s/%s" % (group, domain, stage), 0))
+_VERIFY_ATTEMPTS_WHAT = "the verify retry budget"
 
-def _verify_attempts_doc(review_root):
-    """The whole counter document: {} before the first bump, and a refusal when
-    the file is PRESENT but unreadable (#1809) -- a torn budget read as empty
-    refunds every re-dispatch this run already paid for."""
-    return runio._load_state_json(
-        runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), "the verify retry budget")
+def _verify_budget(review_root, group, domain, stage):
+    """This budget's (path, key) for the one owner of the arithmetic. The key
+    scheme is part of the on-disk contract a resumed run reads back, so it stays
+    spelled here, once, for the reader and the writer below."""
+    return (runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
+            "%s/%s/%s" % (group, domain, stage))
+
+def _verify_attempts(review_root, group, domain, stage):
+    """Attempts spent on this cell/stage: 0 before the first bump, and a refusal
+    when the file is PRESENT but unreadable (#1809) or its value is not a count
+    (#1767) -- a budget read as empty refunds every re-dispatch this run
+    already paid for."""
+    path, key = _verify_budget(review_root, group, domain, stage)
+    return budget.count(path, key, _VERIFY_ATTEMPTS_WHAT)
 
 def _bump_verify_attempts(review_root, group, domain, stage):
     """Persisted per-(group, domain, stage) re-dispatch counter that BOUNDS the A2
     verdict-reconciliation retry loop, so a systematically-re-coding advisor
     surfaces as unanswered -> INCONCLUSIVE instead of wedging the run. Lives with
     the verdicts, so --reset clears it."""
-    path = runio._pano(review_root, _VERIFY_ATTEMPTS_FILE)
-    data = _verify_attempts_doc(review_root)
-    key = "%s/%s/%s" % (group, domain, stage)
-    n = int(data.get(key, 0)) + 1
-    data[key] = n
-    runio._write_json(path, data)
-    return n
+    path, key = _verify_budget(review_root, group, domain, stage)
+    return budget.bump(path, key, _VERIFY_ATTEMPTS_WHAT)
 
 def _verify_bundle_labeled(review_root, manifest, group, domain, stage, part=0):
     """The verdict bundle exists, parses, and is labeled for THIS cell -- the
