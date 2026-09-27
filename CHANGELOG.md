@@ -28,6 +28,26 @@ evidence exposed.
   document is written or dumped, so an operator reading the terminal learns the total is a floor; a
   clean run prints nothing new. No schema change was needed: `meta.cost.tokens` is an unconstrained
   object in `report-schema.json` and `load_run_usage` surfaces the document verbatim.
+- **A malformed or empty diff-hunks payload is disclosed, not swallowed (#1783; ARC-2340795244).**
+  `synth/delta.py`'s loader is total by design -- an unreadable or non-object `diff-hunks.json`
+  yields `{}`, a non-object `hunks` becomes `{}`, and every range that is not a two-integer pair is
+  dropped -- and it said none of that anywhere. The consequence is asymmetric. A payload with no
+  `base` degrades to a full-repo review, which is the WIDER gate; a payload WITH a base and an
+  empty hunk map stays an ACTIVE delta that matches no finding at all, so every finding classifies
+  off-diff, `--gate-scope on-diff` scopes the gate to that empty set, and a change with findings
+  reports a green gate -- indistinguishable from a genuinely empty diff, over an artifact the
+  driver hands synthesize on file existence alone, from a fixed path inside the reviewed tree's own
+  `.panopticon/`. The loader now returns a `HunksLoad` beside its data (the old name delegates to
+  it, so every caller is unchanged), and `from_args` prints in the #957 register: the rejection
+  reason with the path, a ZERO HUNKS warning naming what that costs the gate and how to tell an
+  empty change from a broken artifact, and a count of the ranges dropped. The warning distinguishes
+  the two shapes zero ranges can take, because `diff_map.classify` fails OPEN for a lined finding
+  in a file the map NAMES without a range. `meta.coverage.delta` carries the same four facts --
+  `hunks_files`, `hunks_ranges`, `ranges_dropped`, `payload_malformed` -- whenever the payload
+  resolved a `base`, with `files_changed` left as the artifact's own claim beside the map actually
+  classified against; a payload rejected outright leaves the review non-delta and that block null,
+  so there only stderr carries it. The gate's scoping RULE is untouched: this is disclosure, and
+  what an empty on-diff gate should DO is a policy call.
 - **`dispatch.js` refuses an entry marked enforced that names no registered shell (#1783,
   ARC-204863095).** The session-mode Workflow script validated each entry's `id`, `marker` and
   `prompt_file`, then branched on `e.enforced && e.agent` -- so an entry carrying `enforced: true`
