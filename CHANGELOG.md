@@ -11,6 +11,10 @@ evidence exposed.
   Recovering the filed-issues ledger from GitHub refused the whole batch, anonymously, when a
   quoted marker block in one issue's own text tripped the check; `refusing:` now prefixes that
   issue's URL, and the exactly-once marker, source-report and location rules stay unchanged.
+- **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
+  The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
+  as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
+  exposes `colliding_ids`, and the seed drops those names too.
 - **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
   COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
   shares its "before" boundary: no ASCII letter, digit or underscore immediately
