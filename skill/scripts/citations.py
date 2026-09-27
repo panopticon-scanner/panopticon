@@ -40,12 +40,13 @@ CATEGORY_CWE_OVERRIDES = {
     # only emits an in-catalog id -- so dropping the entry (letting the finding
     # fall through with no wrong derived CWE) is the fix. SQL-specific findings
     # still map via the explicit "sql_injection" key below.
+    #
+    # COD-4238512708: "config" (CWE-16), "logging" (CWE-778) and "headers"
+    # (CWE-693) are gone the same way -- none of the three ids has ever been
+    # in cwe-catalog.json, so they never derived anything.
     "xss": "CWE-79",
     "auth": "CWE-287",
     "crypto": "CWE-327",
-    "config": "CWE-16",
-    "logging": "CWE-778",
-    "headers": "CWE-693",
     "csrf": "CWE-352",
     "ssrf": "CWE-918",
     "path_traversal": "CWE-22",

@@ -550,26 +550,28 @@ on Claude hooks, and always uses the return-persist path.
   cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
   clean run's status is unchanged for everything that already parses it. A budget file that is
   PRESENT but unreadable — a torn write — refuses instead, naming the file and `--reset`: read as
-  empty it would refund every attempt the run really spent (#1809). **A dispatch entry does not get
-  to describe itself** (#1720): the request travels through `.panopticon/dispatch-request.json`,
-  a file inside the reviewed tree, so an entry's `agent` must be one of the registered panopticon
-  shell names (`panopticon-scout`, `panopticon-domain-panel`, `panopticon-domain-advisor`,
-  `panopticon-advisor`, `panopticon-setup-scan` — and on kimi, where the name becomes a
-  `--agent-file=` path, that path must still resolve inside the registration directory), and an
-  entry's `enforced` flag must agree with the posture this run's own capability evidence proves. A
-  foreign, traversing or absent `agent` refuses the ENTRY — never a quiet fall-back to a bare,
-  unenforced launch; a disagreeing `enforced` flag refuses the whole RUN before the batch opens, so
-  nothing is launched and nothing is charged, and the remedy is `--reset` or a fresh readiness run
-  rather than a retry. The engine's own refusals (flag drift, posture drift, shadow shells,
-  unmediated Write) surface unchanged; Ctrl-C in headless mode — or a SIGTERM, which the driver
-  raises as the same interrupt (every later SIGTERM while it cleans up is ignored) — cancels the
-  queue, terminates any child its runner registered a handle for and the running phase child's
-  whole process group (each leads its own session, which the terminal's process-group SIGINT
-  never reaches), ledgers what it cut, disarms both guards, rolls the interrupted phase back to its
-  checkpoint, and exits `error` with a message beginning "interrupted:" — the next `driver loop`
-  re-runs that phase from scratch, and `--reset` discards the whole run instead. A `SIGKILL` or a
-  power loss reaches none of that teardown, so it leaves the batch's own record behind instead, and
-  the next `driver loop` rolls that batch back before it resumes (#1698, above).
+  empty it would refund every attempt the run really spent (#1809). One module owns every budget's
+  arithmetic, so a VALUE that is not a count refuses the same way, naming the offending key as well
+  as the file (#1767). **A dispatch entry does not get to describe itself** (#1720): the request
+  travels through `.panopticon/dispatch-request.json`, a file inside the reviewed tree, so an
+  entry's `agent` must be one of the registered panopticon shell names (`panopticon-scout`,
+  `panopticon-domain-panel`, `panopticon-domain-advisor`, `panopticon-advisor`,
+  `panopticon-setup-scan` — and on kimi, where the name becomes a `--agent-file=` path, that path
+  must still resolve inside the registration directory), and an entry's `enforced` flag must agree
+  with the posture this run's own capability evidence proves. A foreign, traversing or absent
+  `agent` refuses the ENTRY — never a quiet fall-back to a bare, unenforced launch; a disagreeing
+  `enforced` flag refuses the whole RUN before the batch opens, so nothing is launched and nothing
+  is charged, and the remedy is `--reset` or a fresh readiness run rather than a retry. The engine's
+  own refusals (flag drift, posture drift, shadow shells, unmediated Write) surface unchanged;
+  Ctrl-C in headless mode — or a SIGTERM, which the driver raises as the same interrupt (every later
+  SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
+  registered a handle for and the running phase child's whole process group (each leads its own
+  session, which the terminal's process-group SIGINT never reaches), ledgers what it cut, disarms
+  both guards, rolls the interrupted phase back to its checkpoint, and exits `error` with a message
+  beginning "interrupted:" — the next `driver loop` re-runs that phase from scratch, and `--reset`
+  discards the whole run instead. A `SIGKILL` or a power loss reaches none of that teardown, so it
+  leaves the batch's own record behind instead, and the next `driver loop` rolls that batch back
+  before it resumes (#1698, above).
 
 Phases run in order — `readiness` → `discovery` → `coverage` → `tools` → `review` → `verify` →
 `synthesize` → `validate`:
