@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The adapter-integration lanes run as the user production scans run as (#1771, ARC-2930403871).**
+  `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
+  writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
+  adapters meet real tools and real fixtures proved them as uid 0 while every production scan runs
+  the tools image as `scanner` (its `useradd -m -u 1000 scanner`, then its closing `USER scanner`).
+  A root-only adapter regression, the #1877 class, passed the only gate that could catch it. Both
+  jobs now pass `--user scanner` with production's `HOME`, and each asserts `id -u` inside the
+  container before running a probe. `Dockerfile.fixtures` says that build-time root is not a runtime
+  posture and that the image is no longer local-only; it moves the .NET package cache out of root's
+  0700 HOME (`NUGET_PACKAGES`, then `a+rX`) so `project.assets.json` names a path uid 1000 can read;
+  and it hands `scanner` back the four cargo subtrees this build dirties as root -- `registry`,
+  `git`, `.package-cache`, `.global-cache` -- leaving the RustSec `advisory-db` beside them
+  root-owned and read-only, which is what the scan needs and all it needs.
 - **The 700-line ceiling now covers the flat modules and the entry scripts (#1761, #1762,
   #1763; run-14 ARC-2609514778).** `tests/test_layout.py` rule 5 ratchets only the `synth`,
   `phases`, `runners` and `probes` packages, so the largest modules in the tree were the
