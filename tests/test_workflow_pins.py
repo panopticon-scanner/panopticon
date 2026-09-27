@@ -1541,6 +1541,10 @@ FIXTURES_IMAGE = "panopticon-fixtures:latest"
 EXPECTED_SCANNER_USER = "scanner"        # the tools image's closing `USER scanner`
 EXPECTED_SCANNER_UID = "1000"            # its `useradd -m -u 1000 scanner`
 UID_ASSERTION_ENV = "EXPECTED_UID"
+# Every spelling of the user flag docker accepts, for the readers AND for the
+# mutations that take it away: one pattern, so a meta-test cannot drift from the
+# rule it is exercising (R2-2).
+_USER_FLAG = re.compile(r"(?:--user|-u)(?:=\S+|\s+\S+)")
 # The account the tools image creates, as the `Dockerfile` writes it. Anchored on
 # the flags rather than on a line number: this is the one fact three files repeat
 # (the workflow's `env:`, the constant above, the image's own `USER`), so it is
@@ -1631,13 +1635,29 @@ def user_defect(script, env):
     return None
 
 
+# A shell test expression: `[ ... ]` or `test ...`, up to the `;`/`&&`/`||` that
+# ends it. The COMPARISON is the subject, not the command: the shipped payload
+# names `EXPECTED_UID` twice -- once where it is compared and once in the
+# `::error::` sentence -- so a rule that searched the whole command was satisfied
+# by the MESSAGE while the comparison drifted to a literal. That is the exact
+# drift this half was written to catch, so it is read where it happens.
+_TEST_EXPR = re.compile(r"(?:\[|\btest\b)[^;&|]*")
+
+
+def uid_comparisons(command):
+    """Every `[ ... ]` / `test ...` expression in a command that reads `id -u`."""
+    return [m.group(0) for m in _TEST_EXPR.finditer(command)
+            if "id -u" in m.group(0)]
+
+
 def asserts_the_uid(script, env):
     """True if this step asks the CONTAINER its uid and fails on a mismatch.
 
     Not `--user` read a second time: this is the runtime half, and what makes
     it an assertion rather than a log line is the failure arm. The uid it
-    compares against travels in as `EXPECTED_UID`, so the assertion is pinned
-    to the same `Dockerfile` value the flag is.
+    compares against travels in as `EXPECTED_UID`, and it has to be the thing
+    `id -u` is COMPARED WITH -- a literal there pins a number nothing else in
+    the file agrees with, however often the message repeats the variable.
     """
     for flags, argv, why in fixtures_runs(script):
         if why is not None:
@@ -1646,12 +1666,12 @@ def asserts_the_uid(script, env):
         if resolve_env(passed, env) != EXPECTED_SCANNER_UID:
             continue
         command = " ".join(argv[len(flags):])
-        # `EXPECTED_UID` in the COMMAND too, not only among the flags: without
-        # it, a payload that compares `id -u` to a hard-coded literal reads as
-        # an assertion while the env var it was handed goes unused -- and the
-        # runtime half then pins a number nothing else in the file agrees with.
-        if (UID_ASSERTION_ENV in command
-                and "id -u" in command and "exit 1" in command):
+        compared = uid_comparisons(command)
+        if not any(UID_ASSERTION_ENV in expression for expression in compared):
+            continue
+        # The failure arm may live outside the expression (`else ... exit 1`),
+        # so it is the command that must carry it.
+        if "exit 1" in command:
             return True
     return False
 
@@ -1744,7 +1764,8 @@ class TestTheUidAssertionRule(unittest.TestCase):
                  '  -e EXPECTED_UID="$SCANNER_UID" \\\n'
                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
                  '  -c \'if [ "$(id -u)" = "$EXPECTED_UID" ]; then echo ok; '
-                 'else echo "::error::not the scanner uid"; exit 1; fi\'\n')
+                 'else echo "::error::not the scanner uid $EXPECTED_UID"; '
+                 'exit 1; fi\'\n')
 
     def test_the_shipped_assertion_is_found(self):
         self.assertTrue(asserts_the_uid(self.ASSERTION, self.ENV))
@@ -1761,12 +1782,34 @@ class TestTheUidAssertionRule(unittest.TestCase):
         self.assertFalse(asserts_the_uid(self.ASSERTION,
                                          dict(self.ENV, SCANNER_UID="0")))
 
-    def test_a_hardcoded_uid_in_the_payload_is_not_an_assertion(self):
-        # The env var is what ties the runtime half to the pin. A payload that
-        # compares `id -u` to a literal keeps its shape while `SCANNER_UID`
-        # becomes decorative, and the number it pins is then nobody's.
-        self.assertFalse(asserts_the_uid(
-            self.ASSERTION.replace('"$EXPECTED_UID"', '"999"'), self.ENV))
+    def test_a_hardcoded_uid_in_the_comparison_is_not_an_assertion(self):
+        # The env var is what ties the runtime half to the pin, and it is the
+        # COMPARISON that has to carry it. This mutation leaves the variable in
+        # the `::error::` sentence -- as the shipped payload does -- so a rule
+        # that searched the whole command would be satisfied by the message
+        # while the number actually pinned became nobody's.
+        drifted = self.ASSERTION.replace('= "$EXPECTED_UID" ]', '= "999" ]')
+        self.assertIn(UID_ASSERTION_ENV, drifted,
+                      "the mutation removed every mention; it would pass the "
+                      "old command-wide rule too and prove nothing")
+        self.assertFalse(asserts_the_uid(drifted, self.ENV))
+
+    def test_the_comparison_reader_finds_both_shell_spellings(self):
+        for spelling in ('[ "$(id -u)" = "$EXPECTED_UID" ]',
+                         'test "$(id -u)" = "$EXPECTED_UID"'):
+            with self.subTest(spelling=spelling):
+                found = uid_comparisons("sh -c if %s; then echo ok; fi" % spelling)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(UID_ASSERTION_ENV, found[0])
+
+    def test_the_comparison_reader_stops_at_the_end_of_the_expression(self):
+        # ...so the `::error::` sentence after the `;` is never read as part of
+        # what `id -u` was compared with.
+        found = uid_comparisons(
+            'sh -c if [ "$(id -u)" = "1000" ]; then echo ok; '
+            'else echo "::error::not $EXPECTED_UID"; exit 1; fi')
+        self.assertEqual(1, len(found), found)
+        self.assertNotIn(UID_ASSERTION_ENV, found[0])
 
     def test_an_expected_uid_past_the_image_never_reaches_the_container(self):
         script = ('docker run --rm --user scanner \\\n'
@@ -1849,17 +1892,36 @@ class TestBothAdapterLanesRunAsProductionsUser(unittest.TestCase):
 
     def test_the_rule_would_speak_if_a_lane_lost_the_flag(self):
         # ...and that it is this workflow the rule is reading: the same steps,
-        # with the flag deleted, are defects.
+        # with the flag deleted, are defects. Every spelling docker accepts and
+        # `user_defect` reads, `=` forms included: a mutation that only knew
+        # `--user` would delete nothing from a lane written `-u`, and then
+        # assert a defect that cannot appear on a file that is correct.
         for job in EXPECTED_ADAPTER_JOBS:
             for name, script, env in self._rows(job):
                 if not fixtures_runs(script):
                     continue
                 with self.subTest(job=job, step=name):
-                    stripped = re.sub(r"--user\s+\S+", "", script)
+                    stripped = _USER_FLAG.sub("", script)
                     self.assertIsNotNone(
                         user_defect(stripped, env),
-                        "deleting `--user` from %s / %s left the lane passing; "
-                        "the pin reads something else" % (job, name))
+                        "deleting the user flag from %s / %s left the lane "
+                        "passing; the pin reads something else" % (job, name))
+
+    def test_either_spelling_is_legal_on_the_shipped_lanes(self):
+        # `-u` and `--user` are one flag to docker, to `user_defect` and to the
+        # strict contract in tests/test_integration_strictness.py. A lane
+        # written the short way is correct, so it must be green here -- and the
+        # mutation above must still be able to take it away.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                with self.subTest(job=job, step=name):
+                    short = script.replace('--user "$SCANNER_USER"',
+                                           '-u "$SCANNER_USER"')
+                    self.assertIsNone(user_defect(short, env))
+                    self.assertIsNotNone(user_defect(_USER_FLAG.sub("", short),
+                                                     env))
 
     def test_each_job_asserts_the_uid_before_it_runs_a_probe(self):
         for job in EXPECTED_ADAPTER_JOBS:
@@ -1987,8 +2049,12 @@ class TestTheHandRunRecipeRule(unittest.TestCase):
         self.assertIsNone(hand_run_defect(_hand_run_doc_text()))
 
     def test_a_flag_dropped_from_the_published_copy_is_a_defect(self):
+        # Through `_USER_FLAG`, not a literal: `-u` is a legal spelling of the
+        # same flag, and a mutation that only knew `--user` would delete nothing
+        # from a doc that used the short one and then assert a defect that
+        # cannot appear (R2-2, the same trap one module over).
         why = hand_run_defect(self._doc_with(
-            lambda block: block.replace("  --user scanner \\\n", "")))
+            lambda block: _USER_FLAG.sub("", block, count=1)))
         self.assertIsNotNone(why, "a published command missing `--user` passed")
         self.assertIn("published", why)
 
@@ -1996,7 +2062,7 @@ class TestTheHandRunRecipeRule(unittest.TestCase):
         # The doc writes literals where the workflow writes `$SCANNER_USER`, so
         # the comparison has to substitute -- and still notice `root`.
         why = hand_run_defect(self._doc_with(
-            lambda block: block.replace("--user scanner", "--user root")))
+            lambda block: _USER_FLAG.sub("--user root", block, count=1)))
         self.assertIsNotNone(why, "a published `--user root` passed")
 
     def test_a_changed_selector_in_the_published_copy_is_a_defect(self):

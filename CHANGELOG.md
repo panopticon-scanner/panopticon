@@ -12,12 +12,14 @@ evidence exposed.
   writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
   adapters meet real tools and real fixtures proved them as uid 0 while every production scan runs
   the tools image as `scanner` (its `useradd -m -u 1000 scanner`, then its closing `USER scanner`).
-  A root-only adapter regression, the #1877 class, passed the only gate that could catch it. Both jobs now pass `--user scanner` with
-  production's `HOME`, and each asserts `id -u` inside the container before running a probe;
-  `Dockerfile.fixtures` says that build-time root is not a runtime posture and that the image is no
-  longer local-only, moves the .NET package cache out of root's 0700 HOME (`NUGET_PACKAGES`, then
-  `a+rX`) so `project.assets.json` names a path uid 1000 can read, and hands `scanner` back the
-  cargo home this build fills as root.
+  A root-only adapter regression, the #1877 class, passed the only gate that could catch it. Both
+  jobs now pass `--user scanner` with production's `HOME`, and each asserts `id -u` inside the
+  container before running a probe. `Dockerfile.fixtures` says that build-time root is not a runtime
+  posture and that the image is no longer local-only; it moves the .NET package cache out of root's
+  0700 HOME (`NUGET_PACKAGES`, then `a+rX`) so `project.assets.json` names a path uid 1000 can read;
+  and it hands `scanner` back the four cargo subtrees this build dirties as root -- `registry`,
+  `git`, `.package-cache`, `.global-cache` -- leaving the RustSec `advisory-db` beside them
+  root-owned and read-only, which is what the scan needs and all it needs.
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
   SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences

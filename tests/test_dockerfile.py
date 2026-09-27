@@ -658,13 +658,16 @@ NUGET_CACHE = "/opt/nuget-packages"
 def nuget_cache_defects(text):
     """Why a scan running as `scanner` could not read this image's .NET packages.
 
-    Comments are dropped BEFORE continuations are folded, the way
+    Comment CONTENT is dropped before continuations are folded, the way
     `test_dockerfile_closures.dockerfile_commands` does it and for the same
     reason: this file's prose quotes the very commands the rule reads, so a
-    reader that kept it would grade the explanation instead of the build.
+    reader that kept it would grade the explanation instead of the build. The
+    lines themselves stay, blanked, so every `lineno` below is the line a reader
+    of a red CI job will open -- in a file whose whole point is that position
+    matters, a number counted in a stripped copy points somewhere else.
     """
-    body = "\n".join(ln for ln in text.splitlines()
-                     if not ln.lstrip().startswith("#"))
+    body = "\n".join("" if ln.lstrip().startswith("#") else ln
+                      for ln in text.splitlines())
     env, restores, opens = [], [], []
     for order, (lineno, joined) in enumerate(_logical_lines(body)):
         if joined.startswith("ENV") and "NUGET_PACKAGES=" in joined:
@@ -800,6 +803,20 @@ class TestDockerfileFixtures(unittest.TestCase):
         prose_only = "\n".join(ln for ln in text.splitlines()
                                if ln.lstrip().startswith("#"))
         self.assertNotEqual([], nuget_cache_defects(prose_only))
+
+    def test_the_reported_line_numbers_are_the_files_own(self):
+        # R2-4: the rule blanks comment CONTENT rather than dropping the lines,
+        # so a defect points at the line a reader will open. Checked against the
+        # file rather than against a constant.
+        text = _read_dockerfile_fixtures()
+        lines = text.splitlines()
+        expected = 1 + next(i for i, ln in enumerate(lines)
+                            if ln.startswith("ENV NUGET_PACKAGES="))
+        defects = nuget_cache_defects(text.replace(
+            "ENV NUGET_PACKAGES=/opt/nuget-packages",
+            "ENV NUGET_PACKAGES=/root/.nuget/packages"))
+        self.assertTrue(any("line %d" % expected in d for d in defects),
+                        "expected line %d in %s" % (expected, defects))
 
     def test_moving_the_env_below_a_restore_is_a_defect(self):
         # On a string copy, never on the file: this is the edit that leaves the
