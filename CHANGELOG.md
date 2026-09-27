@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Align implementation documentation with the current contracts (#1819).** Kimi preparation
+  always creates a fresh home, including on resume; the recorded pointer is informational.
+  Report grades use health when available and display n/a without reviewed lines to grade; the
+  gate keeps its own policy. Repair documentation names the boundaries and distinguishes content
+  bounds from byte limits at the caller. These changes affect comments and docstrings only.
 - **`file_fixmes.parse` refuses a heading or a rule it cannot parse (#1765, ARC-4143722514).**
   `HEAD_RE` requires an em dash, so `## FIXME-3 - title` did not match it, and with a section open
   the line was appended to the PREVIOUS FIXME's body -- one issue silently lost, another silently
