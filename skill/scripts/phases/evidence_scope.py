@@ -88,7 +88,7 @@ _EVIDENCE_FIELD = "evidence"
 # missed one only leaves today's behaviour.
 _PATH_RE = re.compile(
     r"(?<![\w./-])([\w./-]+\.(?:py|js|ts|rb|go|java|cs|rs|toml|yml|yaml|json|md))"
-    r"(?![\w./-])")
+    r"(?![\w/-]|\.[\w/-])")
 
 # Extensions whose imports this module can resolve. Anything else gets (a)+(b):
 # a closure is only worth granting when it is derived, not guessed.

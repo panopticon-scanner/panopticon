@@ -27,6 +27,132 @@ evidence exposed.
   body would follow raises `shell_lex.Unreadable` too: bash 5.2 takes that body from the lines
   below and runs what follows its terminator, which the guard does not model. Inside `$((...))`
   a `$(...)` is read as the commands bash runs there.
+- **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
+  The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
+  as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
+  exposes `colliding_ids`, and the seed drops those names too.
+- **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
+  COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
+  shares its "before" boundary: no ASCII letter, digit or underscore immediately
+  precedes either, and no word character follows `GH-N`'s number. `http(s)://` links
+  unless an ASCII letter (not a digit or underscore) sits right before the scheme. Case
+  insensitivity no longer folds those ASCII checks, and the `GH-N` substitution keeps the
+  matched text's own letters, as the `http(s)://` one already did.
+- **The Kimi probes report a hung doctor, a failing home writer and a malformed config (#1788;
+  COD-2149752625).** Three posture probes on `--host kimi` let an exception escape where their
+  siblings already turn it into a reported state: `_kimi_home_arms_and_validates` caught only
+  `OSError` around `kimi doctor`, so a doctor that outlives its timeout or writes output that
+  does not decode escaped as a traceback; `_kimi_hooks_are_armed` caught only
+  `(OSError, RuntimeError)` around the per-run home writer, so a `ValueError` or `TypeError` from
+  it escaped too; and `probe_kimi_model_alias` let a malformed or unreadable operator
+  `config.toml` escape the same way. All three now report instead of raising, and the writer's
+  exception tuple is defined once (`kimi_snapshot._HOME_WRITER_EXCEPTIONS`) so the two probes
+  that drive it cannot drift apart again.
+- **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
+  `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
+  naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
+  another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
+- **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
+  COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
+  carried, so those three entries never derived a citation and dropping them changes no output.
+  A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
+- **One owner for the persisted retry budgets (#1767, ARC-655791509).** Five phase modules
+  hand-copied the same read-bump-write over a counter file under `.panopticon/` in the reviewed
+  tree, and the #1809 round consolidated only the READ -- `runio._load_state_json` refuses a
+  present-but-torn document -- so the arithmetic on top of it kept THREE answers to the same
+  planted value. `coverage._bump_scout_attempts`, `discovery._bump_discovery_attempts` and
+  `verify._bump_verify_attempts` raised a bare `ValueError` out of `int()`, a message an operator
+  cannot act on where the read one line away would have named the file and `--reset`;
+  `review._record_attempts` RESET the cell's tally to 1, refunding every attempt the run really
+  spent, which is the one outcome #1809 says the ledger exists to prevent; and
+  `persist._give_back_attempts` silently `continue`d, which made a planted value
+  indistinguishable from a key nothing had ever charged. The new `phases/budget.py` owns the
+  arithmetic -- `count` / `bump` / `bump_many` / `give_back` -- and answers all three the same
+  way: a value that is not a non-negative `int` (`bool` excluded, since `isinstance(True, int)`
+  is True) is UNREADABLE exactly like a torn document, and refuses with the same actionable
+  shape, naming the file, the offending key and `--reset`. Never a reset, never a skip. Each
+  caller keeps its own file name, key scheme and description, because those are the on-disk
+  contract a RESUMED run reads back; reads still go through `runio._load_state_json` and writes
+  through `runio._write_json`, so the symlink refusal at an artifact path is not re-implemented
+  behind the new names. `review._cell_exhausted` was the sixth site and the quietest: an
+  unreadable value read as "not exhausted" made a spent cell dispatchable again, silently.
+- **`ci.yml` states its token posture instead of inheriting one (#1784, ARC-3955973987).**
+  `tests/test_workflow_pins.py`'s `privilege_defect` asserts the posture the three `ci.yml` install
+  exemptions are written against -- unprivileged trigger, read-only token -- but it read an ABSENT
+  `permissions:` block as unprivileged, because a block that does not exist grants no `write` scope.
+  So "the default read-only token" in those exemptions meant the repository's `GITHUB_TOKEN`
+  setting: not in this tree, not reviewable in a PR, and one settings change away from a write token
+  that would keep four unpinned installs exempt. A job with no `permissions:` of its own and no
+  workflow-level block to inherit is now a defect naming that job; a block at either level satisfies
+  it, which is how `codeql.yml`, `nvd-cache.yml`, `security.yml` and `docker-publish.yml` already
+  stood. `ci.yml` and `docker-build-pr.yml`, the only two files that declared nothing, now carry a
+  top-level `permissions: contents: read` -- neither pushes, logs in to a registry, nor publishes.
+- **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
+  #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
+  a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
+  default `--gate-scope on-diff` the gate's source set is not a measured diff, and a change
+  carrying active findings reported a green `PASS` on findings that were never gated.
+  OWNER RULING 2026-09-27: refuse to certify. `summary.gate` now reads `INCONCLUSIVE` and
+  `summary.coverage_note` names the zero-hunk map plus the remedy (regenerate the diff-hunks
+  artifact; the driver's discovery phase writes it) -- or names the REJECTED payload instead, when
+  that is why the map is empty, rather than sending the operator to compare a known-broken artifact
+  against itself. Two carve-outs are part of the ruling: an empty legitimate change with NO active
+  findings still passes, and falling back to the wider scope was REJECTED, because a benign empty
+  `--changes` run would then go red on pre-existing findings it did not introduce. `ranges == 0` is
+  the measure, not `files == 0`: a map that names a file and gives it no range scopes the gate by
+  `diff_map.classify`'s two FAIL-OPEN arms, which is not a measured diff either.
+  `delta.zero_hunk_gate_gap` is the one place that decides whether there is a gap, and `certify`'s
+  new `delta_zero_hunks` reason joins `gate_relevant_gap` -- so a real FAIL and an armed-but-OFF
+  gate are untouched, and `coverage_certified` is false either way. No new report key: the reason
+  rides the existing certification note, placed after the unreadable-manifest note (which names a
+  broken file) and before every other caveat, since an empty gate scope invalidates the gate
+  wholesale.
+- **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
+  `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
+  `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived
+  `DEPENDENCY_CHECK_VERSION` -- and one of them `DEPENDENCY_CHECK_SHA256` -- with its own
+  `grep | head -1 | cut -d= -f2` and its own inline shape check. Both now call `python3
+  scripts/dockerfile_args.py read-arg <NAME>`. The shape checks MOVED there, they were not
+  dropped: the module is a closed map of ARG name to anchored pattern, it refuses a name with
+  no registered shape, and it exits 2 so `set -euo pipefail` still fails the step -- the
+  control nvd-cache.yml described as "constrain to expected shapes so a tampered ARG can't
+  inject downstream". The version shape is STRICTER than the grep it replaces, which also
+  accepted `10.0.3.` and `1..2`, and a value carrying a second `=` is now refused rather than
+  truncated to the part before it. `tests/test_dockerfile_args.py` covers the reader, both
+  callers, and the committed Dockerfile's own two pins.
+- **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
+  `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
+  (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
+  of three (`tool_reported`, `needs_more_info`, `unverified`), so five of the ten possible inputs
+  fell on one side of the word in the header and the other side in the tabs -- and the exclusion
+  form failed OPEN: a status added to `evidence.EVIDENCE_STATUSES` later would have joined the main
+  list silently. Both vocabularies are now closed sets in the new
+  `skill/scripts/evidence_sections.py`, which partitions `EVIDENCE_STATUSES` and raises at import if
+  it ever stops doing so, the way `score_gate.EVIDENCE_FACTOR` already did. They answer two
+  different questions, so neither is the other's complement: `VERIFIED_STATUSES` is the header's
+  WORD -- a second opinion agreed, which is why `backup_scope_limited` is not in it (#1638 P16) and
+  keeps its own disclosed segment -- and `UNVERIFIED_STATUSES` is the report's SPLIT, what the
+  collapsed "Unverified findings" section holds. `corroborated`, `rejected` and
+  `backup_scope_limited` are the named remainder that stays in the main severity tabs; `rejected`
+  cannot reach them anyway, because `synth/report.py` publishes `resolve_findings`'s `active` list
+  as `findings` and the rejected half goes to `discarded_claims` and its own section. **Nothing
+  moves for the eight known statuses**: both rules were run over each of them and agree, the
+  header's count is the same sum of the same two keys, and
+  `test_the_eight_known_statuses_do_not_move` pins that table. What changes is the tenth input -- a
+  finding whose `evidence.status` is unknown or missing now lands in the "Unverified findings"
+  section instead of the main list, disclosed rather than read as reviewed. The sets live in their
+  own module rather than in `evidence.py` because that module and `html_report.py` are both pinned
+  at their exact current size by the shrink-only ratchet in `tests/test_flat_module_ceiling.py`,
+  whose stated remedy for a module that needs room is a new module; `html_report.py` came down two
+  lines and its pin came down with it.
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO

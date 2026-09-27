@@ -460,6 +460,11 @@ installs. The tools image installs each `.gem` with `--ignore-dependencies` (#17
 is something this repo asserts rather than something RubyGems works out — and a release that
 requires a new gem would carry a perfectly good digest and still be wrong to pin.
 
+The two workflows that CONSUME the Dockerfile's dependency-check pins — `nvd-cache.yml` and
+`docker-publish.yml` — read them with `python3 scripts/dockerfile_args.py read-arg <NAME>`,
+which refuses a value that is not of its expected shape before it reaches an image tag or a
+download (#1774).
+
 ### Regenerating the pinned dependency hashes
 
 The three requirements files are what the repo's **privileged** builds install (#1641, #1734): the
@@ -650,7 +655,12 @@ with `npm install --package-lock-only --ignore-scripts`. The image installs it w
 `tests/test_workflow_pins.py` holds the rule: every `pip install` in `.github/workflows/*.yml` and
 `Dockerfile*` either installs from a `--require-hashes` file or is on that module's
 `EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
-placeholder is refused), and the pinned pip may not be older than the one the runner ships.
+placeholder is refused), and the pinned pip may not be older than the one the runner ships. An
+exempted workflow's **posture** is asserted rather than assumed: it may not run on
+`pull_request_target`, may not hold a `write` scope at workflow or job level, and may not leave a
+job's effective `permissions:` undeclared, which is why `ci.yml` states `contents: read` at the top
+instead of inheriting the repository's `GITHUB_TOKEN` default (#1784). `docker-build-pr.yml`, the
+only other workflow that declared nothing, now does the same, though no exemption holds it there.
 
 The third door is what a workflow **downloads and then runs**, and `scripts/workflow_guard.py`
 holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from

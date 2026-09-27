@@ -73,8 +73,10 @@ jobs:
           NVD_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}-tools-nvd
         run: |
           set -euo pipefail
-          ver="$(grep -E '^ARG DEPENDENCY_CHECK_VERSION=' Dockerfile | head -1 | cut -d= -f2)"
-          echo "$ver" | grep -Eq '^[0-9][0-9.]*$' || { echo "::error::unexpected DEPENDENCY_CHECK_VERSION '$ver'"; exit 1; }
+          # One tested reader for the pin AND its shape check (#1774): the
+          # value names an image tag below, so a tampered ARG must not reach
+          # it. The reader exits 2 and `set -e` fails this step.
+          ver="$(python3 scripts/dockerfile_args.py read-arg DEPENDENCY_CHECK_VERSION)"
           tag="${NVD_IMAGE}:dc-${ver}"
           digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null)" \
             || { echo "::error::NVD cache $tag not found — run the 'Refresh NVD data cache' workflow to prime dc-${ver}, then re-run this build"; exit 1; }

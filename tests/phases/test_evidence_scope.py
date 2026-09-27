@@ -905,3 +905,61 @@ class TestTheResolverIsBoundedPerEntry(_Repo):
             runs.append((evidence_scope.grant(self.root, files, scope,
                                               ambiguous=ambiguous), ambiguous))
         self.assertEqual(runs[0], runs[1])
+
+
+class TestSentenceFinalPathNames(_Repo):
+    """COD-148287761. `_PATH_RE`'s trailing lookahead used to veto on `.`, the
+    same class as the path body, so a name that ends a sentence -- "the call
+    sites live in grading.py." -- never matched, although the comment above
+    `_PATH_RE` already promised that exact case. A `.` now ends a name unless
+    another path character follows it, so `grading.py.bak`, `notafile.python`
+    and `a.pyc.` still yield nothing.
+    """
+
+    def test_a_name_at_the_end_of_a_sentence_reaches_the_closure(self):
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "grading.py", "import os\n")
+        claim = {"location": {"file": "claim.py"},
+                 "description": "the call sites live in grading.py."}
+        self.assertEqual(
+            evidence_scope.closure(self.root, claim,
+                                   ["claim.py", "grading.py"]),
+            ["claim.py", "grading.py"])
+
+    def test_a_name_before_a_trailing_newline_reaches_the_closure(self):
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "synth/render.py", "import os\n")
+        claim = {"location": {"file": "claim.py"},
+                 "description": "the defect is in synth/render.py.\nNext line"}
+        self.assertEqual(
+            evidence_scope.closure(self.root, claim,
+                                   ["claim.py", "synth/render.py"]),
+            ["claim.py", "synth/render.py"])
+
+    def test_a_dot_followed_by_another_path_character_is_not_a_boundary(self):
+        # `grading.py.bak` and `notafile.python` each contain a shorter, real
+        # extension ("grading.py", "notafile.py"); the character right after
+        # that dot is still a path character, so neither is a name of its own.
+        # Each shorter file exists here, so a regression that matched the
+        # substring would resolve it rather than yield nothing.
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "grading.py", "import os\n")
+        _write(self.root, "notafile.py", "import os\n")
+        _write(self.root, "a.py", "import os\n")
+        files = ["claim.py", "grading.py", "notafile.py", "a.py"]
+        for text in ("see grading.py.bak", "see notafile.python",
+                     "see a.pyc."):
+            claim = {"location": {"file": "claim.py"}, "description": text}
+            self.assertEqual(
+                evidence_scope.named_paths(self.root, claim, files), [], text)
+
+    def test_a_bracketed_name_and_a_mid_sentence_name_are_unchanged(self):
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "a.py", "import os\n")
+        _write(self.root, "b.py", "import os\n")
+        claim = {"location": {"file": "claim.py"},
+                 "description": "[a.py:12] and see b.py for details"}
+        self.assertEqual(
+            evidence_scope.named_paths(self.root, claim,
+                                       ["claim.py", "a.py", "b.py"]),
+            ["a.py", "b.py"])
