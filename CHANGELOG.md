@@ -32,6 +32,23 @@ evidence exposed.
   check. The ceilings are the ones these same scanners already run under (6g memory, 4 CPUs, 1024
   pids), and all three stay retunable through `PANOPTICON_TOOL_MEMORY` / `_CPUS` / `_PIDS`, an empty
   value dropping that ceiling -- which the fixtures guide now records beside the command.
+- **The CLI advisor renderer confines claim locations and pins the review root (#1767, run-14
+  ARC-3314534783).** Advisor-prompt assembly existed twice. The driver's two advisor rounds rewrite
+  an escaping `location.file` to a redaction marker and pin `Repo root: <review_root>` before
+  rendering `advisor.md` (#run8 ARC-F2A); `dispatch.render_advisor_prompts` -- reachable as
+  `--render-advisor QUEUE`, and documented -- did neither: the finding went into the claim JSON
+  VERBATIM and the root pinned was `os.getcwd()`. An advisor's Read/Grep/Glob are unconfined, so a
+  redteam target whose planted `location.file` is `../../../.ssh/id_rsa` steered this path straight
+  out of the review tree, on the exact channel the project had already ruled closed. Both halves now
+  live in one stdlib-only leaf, `skill/scripts/claim_scope.py`, reached from both sides: the
+  confinement predicate moved DOWN out of `phases/runio`, because a leaf is the only module
+  `dispatch` and `phases/*` can share -- `runners/*` import `dispatch`, and layout rule 3 forbids
+  them from reaching the phases package -- and `runio._confined_to_root` /
+  `verify_tools._confine_claim_location` keep their names as aliases whose identity a new test pins,
+  so a second implementation cannot reappear behind either. The renderer takes `--review-root` and
+  otherwise resolves the root from the queue's own `.panopticon` path, REFUSING when it cannot
+  (a wrong root points the advisor at another checkout, which is what the cwd fallback did). The
+  driver's own prompts are byte-identical, pin paragraph included.
 - **One spelling of the read-scope keys, and the guard hooks' read-scope copies pinned (#1767;
   ARC-1784455652, ARC-2812051140).** The read guards are three deliberate copies of one rule, and
   each of the three runs with no package on sys.path -- the hooks because a hook is invoked by

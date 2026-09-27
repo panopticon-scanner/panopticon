@@ -15,6 +15,7 @@ import tempfile
 import time
 
 import scripts._version as version
+import scripts.claim_scope as claim_scope
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
@@ -461,18 +462,17 @@ def _verify_cell_of(entry):
     Entry-anchored, exactly as the review-cell rule is: `run_id` comes off the
     entry that ASKED for this bundle -- the same key `_stamp_matches` checks --
     and `review_root` off the artifact path it was told to write, the segment
-    above its own `.panopticon` (the anchor `runio._confine_artifact_path`
-    already uses). The verify phase reads only `run_id` off the manifest, so
-    that one key is the whole manifest these predicates need.
+    above its own `.panopticon` (`claim_scope.review_root_of_artifact_path`,
+    shared with the advisor renderer). The verify phase reads only `run_id`
+    off the manifest, so that one key is the whole manifest a placement needs.
 
     None is fail-closed at both call sites: a bundle nobody can place is
     refused, and an entry nobody can place is never `done`.
     """
     out_file = os.path.abspath(entry.get("out_file") or "")
-    parts = out_file.split(os.sep)
-    if ".panopticon" not in parts or not entry.get("group") or not entry.get("domain"):
+    review_root = claim_scope.review_root_of_artifact_path(out_file)
+    if review_root is None or not entry.get("group") or not entry.get("domain"):
         return None
-    review_root = os.sep.join(parts[:parts.index(".panopticon")]) or os.sep
     run_id = entry.get("run_id")
     if run_id is None:
         run_id = (run_manifest.load_manifest(review_root) or {}).get("run_id")
