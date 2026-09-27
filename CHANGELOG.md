@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
+  COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
+  carried, so those three entries never derived a citation and dropping them changes no output.
+  A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
 - **One owner for the persisted retry budgets (#1767, ARC-655791509).** Five phase modules
   hand-copied the same read-bump-write over a counter file under `.panopticon/` in the reviewed
   tree, and the #1809 round consolidated only the READ -- `runio._load_state_json` refuses a
