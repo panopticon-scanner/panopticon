@@ -36,14 +36,24 @@ Chunk names reshuffle across runs.
 Commentary that must not be filed.
 """
 
+# Hostile variants, built by editing the doc above rather than by adding a
+# second fixture: a heading whose separator is not the em dash HEAD_RE
+# requires, and a horizontal rule inside a body with a FIXME still to come.
+HYPHEN_HEAD = "## FIXME-3 - Ledger key collides"
+EN_DASH_HEAD = "## FIXME-3 – Ledger key collides"
+HYPHEN_HEAD_DOC = FIXME_DOC.replace(
+    "---\n", "%s\n`bug`\n\nA third defect.\n\n---\n" % HYPHEN_HEAD)
+EN_DASH_HEAD_DOC = HYPHEN_HEAD_DOC.replace(HYPHEN_HEAD, EN_DASH_HEAD)
+INNER_RULE_DOC = FIXME_DOC.replace("Second paragraph.", "---\n\nSecond paragraph.")
+
 
 class TestParse(unittest.TestCase):
-    def _doc(self):
+    def _doc(self, text=FIXME_DOC):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         path = os.path.join(d, "fixmes.md")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(FIXME_DOC)
+            fh.write(text)
         return path
 
     def test_parses_sections_and_stops_at_trailing_rule(self):
@@ -55,6 +65,29 @@ class TestParse(unittest.TestCase):
         self.assertNotIn("`bug`", fixmes[0]["body"])
         self.assertIn("missing `depth`", fixmes[0]["body"])
         self.assertNotIn("Already fixed", " ".join(f["body"] for f in fixmes))
+
+    def test_refuses_a_heading_separator_that_is_not_an_em_dash(self):
+        # The absorbing case: HEAD_RE misses the heading, a section is open, so
+        # the heading used to become body text of the PREVIOUS FIXME -- one
+        # issue silently lost and another silently doubled, with no diagnostic.
+        for doc, head in ((HYPHEN_HEAD_DOC, HYPHEN_HEAD),
+                          (EN_DASH_HEAD_DOC, EN_DASH_HEAD)):
+            with self.subTest(head=head):
+                with self.assertRaises(ValueError) as caught:
+                    file_fixmes.parse(self._doc(doc))
+                message = str(caught.exception)
+                self.assertIn("FIXME-3", message)
+                self.assertIn(":%d:" % (doc.splitlines().index(head) + 1), message)
+                self.assertIn("—", message)  # the required separator is named
+
+    def test_refuses_a_horizontal_rule_inside_a_body(self):
+        # A rule with a FIXME still to come is inside a body, not the end of
+        # the list: closing the section there dropped the rest of that body.
+        with self.assertRaises(ValueError) as caught:
+            file_fixmes.parse(self._doc(INNER_RULE_DOC))
+        message = str(caught.exception)
+        self.assertIn("FIXME-1", message)
+        self.assertIn(":%d:" % (INNER_RULE_DOC.splitlines().index("---") + 1), message)
 
 
 class TestBodyProvenance(unittest.TestCase):

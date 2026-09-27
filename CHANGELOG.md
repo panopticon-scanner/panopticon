@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`file_fixmes.parse` refuses a heading or a rule it cannot parse (#1765, ARC-4143722514).**
+  `HEAD_RE` requires an em dash, so `## FIXME-3 - title` did not match it, and with a section open
+  the line was appended to the PREVIOUS FIXME's body -- one issue silently lost, another silently
+  doubled; a `---` inside a body closed the section and dropped the rest of it. Neither case said
+  anything, and these sections become GitHub issues out of a hand-written doc, so input the parser
+  could not read became wrong issues. A second regex, `HEAD_LIKE_RE` ("looks like a FIXME
+  heading"), now makes the disagreement loud: a line it matches while `HEAD_RE` does not raises
+  `ValueError` naming the line of the doc, its text, and the required `## FIXME-<n> — <title>`
+  form. A rule while a section is open raises only when a later line also looks like a heading,
+  which is what makes that rule INSIDE the body; the trailing rule that ends the list -- the
+  documented behaviour -- still stops the parse there and leaves the 'Already fixed' commentary
+  unfiled. A post-loop count (heading-like lines == sections returned) is unreachable after those
+  two and exists so a future parser edit cannot go back to losing or doubling a section in silence.
+  `main` parses before it loads the ledger or reads the `gh` environment, so a refusal precedes
+  every GitHub call, and no doc under `docs/` or `skill/docs/` mentions this script.
 - **`collect_usage` counts the input it drops, and the summary line says so (#1782,
   ARC-2134807886).** Three drops were silent: `_iter_records` returned on an `OSError` (an
   unreadable transcript yielded nothing at all, and `collect`'s `if not n: continue` then did not

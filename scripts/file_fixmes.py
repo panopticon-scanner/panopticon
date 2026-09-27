@@ -32,6 +32,9 @@ RUN_DATE = "2026-08-04"
 LEDGER = ".panopticon/filed-fixmes.json"
 
 HEAD_RE = re.compile(r"^## (FIXME-\d+) — (.+)$")
+# "Looks like a FIXME heading", which HEAD_RE must then agree with: a line this
+# matches while HEAD_RE does not is unparseable input, never body text.
+HEAD_LIKE_RE = re.compile(r"^##\s*FIXME-\d+\b")
 LABEL_RE = re.compile(r"`([^`]+)`")
 
 
@@ -41,6 +44,13 @@ def parse(path):
     Stops at the first horizontal rule that follows the last FIXME: the
     trailing 'Already fixed' / 'Still open' sections are commentary, not
     issues to file.
+
+    Raises ValueError on input it cannot parse, rather than absorbing it,
+    because these sections become GitHub issues. Two refusals: a line that
+    looks like a FIXME heading but does not match HEAD_RE (a hyphen or en dash
+    where the em dash belongs), and a horizontal rule while a section is open
+    with another heading-like line still to come, which is a rule inside that
+    body rather than the end of the list. Each names the line of the doc.
     """
     with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
@@ -59,15 +69,36 @@ def parse(path):
             cur = {"id": m.group(1), "title": m.group(2).strip(),
                    "labels": labels, "body": []}
             continue
+        if HEAD_LIKE_RE.match(line):
+            raise ValueError(
+                "%s:%d: cannot parse this FIXME heading: %r. A heading must "
+                "read '## FIXME-<n> — <title>', with an em dash."
+                % (path, i + 1, line))
         if cur is None:
             continue
         if line.strip() == "---":
+            # The rule ends the FIXME list only if no later line looks like
+            # another heading; if one does, this rule is inside the open body.
+            if any(HEAD_LIKE_RE.match(later) for later in lines[i + 1:]):
+                raise ValueError(
+                    "%s:%d: horizontal rule inside %s's body. A rule may only "
+                    "follow the LAST FIXME, where it ends the list."
+                    % (path, i + 1, cur["id"]))
             out.append(cur)
             cur = None
             continue
         cur["body"].append(line)
     if cur:
         out.append(cur)
+    # Unreachable after the two refusals above: every heading-like line either
+    # opened a section or raised. Kept as a guard on a future edit to this
+    # parser, so a lost or doubled section cannot reach the issue tracker.
+    heads = sum(1 for line in lines if HEAD_LIKE_RE.match(line))
+    if heads != len(out):
+        raise ValueError(
+            "%s: parsed %d FIXME section(s) from %d heading(s); refusing to "
+            "file from a doc this parser no longer agrees with."
+            % (path, len(out), heads))
     for f in out:
         # Drop the label line: the first non-blank body line that consists
         # entirely of backtick-quoted tokens separated by ", ".
