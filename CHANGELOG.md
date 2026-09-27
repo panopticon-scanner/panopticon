@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard reads comments, continuations and heredocs the way bash does (#1793;
+  COD-3418139920, COD-3636110933).** `shell_reader.statements()` settled all three in passes
+  that ran before any quote tracking, so a `#` line inside a multi-line string, a `<<WORD`
+  inside quotes, in a comment or at the tail of a `<<<`, and a backslash ending a comment or a
+  quoted heredoc line each hid a statement bash runs, and the guard reported the step clean.
+  `scripts/shell_lex.py` now reads them in one quote-aware forward pass: heredocs queue until
+  the newline, a body ends at the line bash compares, and a delimiter bash must parse to spell
+  (`<<$(...)`) stays text. The scanners after it now agree on `\"` inside "...", `$'...'` and
+  an apostrophe inside "...": misread, each hid what followed it. Every heredoc on a line is
+  read and filed under its descriptor, so the guard reads the script `bash -s <<'A' 3<<'B'`
+  runs (#2128).
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO

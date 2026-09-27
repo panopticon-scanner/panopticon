@@ -557,7 +557,9 @@ class TestDocumentedShellReading(unittest.TestCase):
                   "  -fsSL https://example.test/p -o /tmp/p # trailing comment\n"
                   "printf '%s' 'a|b;c' && echo \"d||e\"; echo done & echo final\n")
         parsed = shell_reader.statements(script)
-        self.assertEqual(['\n', '&&', ';', '&', ''],
+        # The newline ending the last line separates it like any other: the
+        # reader no longer re-joins the script's lines before reading them.
+        self.assertEqual(['\n', '&&', ';', '&', '\n'],
                          [statement.separator for statement in parsed])
         self.assertEqual([
             [['curl', '-fsSL', 'https://example.test/p', '-o', '/tmp/p']],
@@ -582,7 +584,7 @@ class TestDocumentedShellReading(unittest.TestCase):
         parsed = shell_reader.statements(
             "cat <<EOF\n$(printf expanded)\nEOF\n"
             "cat <<'EOF'\n$(printf literal)\nEOF\n")
-        self.assertEqual(['\n', ''], [statement.separator for statement in parsed])
+        self.assertEqual(['\n', '\n'], [statement.separator for statement in parsed])
         self.assertEqual([['cat'], ['cat']],
                          [statement.stages[0].argv for statement in parsed])
         self.assertEqual(['$(printf expanded)', '$(printf literal)'],
@@ -642,3 +644,176 @@ class TestDocumentedShellReading(unittest.TestCase):
                        'then nohup curl URL', 'do stdbuf -o L curl URL'):
             with self.subTest(source=source):
                 self.assertEqual(['curl', 'URL'], shell_reader.command(stage(source).argv))
+
+
+def argvs(script):
+    """Each statement of `script`, as its stages' argv lists."""
+    return [[part.argv for part in statement.stages]
+            for statement in shell_reader.statements(script)]
+
+
+class TestOneLexicalPass(unittest.TestCase):
+    """#1793 (COD-3418139920): comments, continuations and heredocs, read the
+    way bash reads them -- in one forward pass that knows the quote it is in.
+
+    `statements()` settled all three in line-oriented passes that ran BEFORE
+    any quote tracking: a `#` line inside a multi-line string was dropped, a
+    `<<WORD` inside quotes, a comment or a `<<<` swallowed the lines down to
+    `WORD`, and a backslash ending a comment or a quoted heredoc line joined
+    the next line into it. `tests/test_workflow_guard.py` holds the steps each
+    one hid from the guard; this is the reader's own half of the spec.
+    """
+
+    def test_quote_state_carries_across_lines(self):
+        for script in ('echo "a\n# b"; echo c\n', "echo 'a\n# b'; echo c\n"):
+            with self.subTest(script=script):
+                self.assertEqual([[['echo', 'a\n# b']], [['echo', 'c']]],
+                                 argvs(script))
+        # `$'...'` spans lines too. shlex has no ANSI-C grammar, so only the
+        # statement boundary is this module's to promise.
+        parsed = argvs("echo $'a\n# b'; echo c\n")
+        self.assertEqual(2, len(parsed), parsed)
+        self.assertEqual([['echo', 'c']], parsed[1])
+
+    def test_a_comment_starts_where_a_word_could_and_ends_at_the_newline(self):
+        # After a separator it is a comment; inside a word, `${#x}` and `$#`
+        # it is text; and a backslash ending one continues nothing.
+        self.assertEqual([[['echo', 'a']], [['echo', 'b']]],
+                         argvs("echo a;# c\necho b\n"))
+        self.assertEqual([[['echo', 'a#b', '${#x}', '$#']]],
+                         argvs("echo a#b ${#x} $#\n"))
+        self.assertEqual([[['echo', 'a']], [['echo', 'b']]],
+                         argvs("echo a # c \\\necho b\n"))
+        # A form feed is no blank to bash, and `${...}` holds no comment.
+        for script in ("echo a\x0c#b; echo c\n", "echo ${x:-a #b}; echo c\n"):
+            with self.subTest(script=script):
+                self.assertEqual([['echo', 'c']], argvs(script)[-1])
+
+    def test_a_continuation_folds_where_bash_folds_it(self):
+        # Unquoted, even mid-word, and inside "...": the pair is gone.
+        self.assertEqual([[['curl', 'URL']]], argvs("cu\\\nrl URL\n"))
+        self.assertEqual([[['echo', 'ab']]], argvs('echo "a\\\nb"\n'))
+        # Inside '...' it is two characters of the string.
+        self.assertEqual([[['echo', 'a\\\nb']]], argvs("echo 'a\\\nb'\n"))
+        # A quoted heredoc body is read verbatim, so its terminator survives;
+        # an unquoted one is folded first, as bash folds it.
+        quoted = shell_reader.statements("cat <<'EOF'\nx \\\nEOF\necho after\n")
+        self.assertEqual('x \\', quoted[0].stages[0].heredoc)
+        self.assertEqual(['echo', 'after'], quoted[1].stages[0].argv)
+        self.assertEqual('x y', stage("cat <<EOF\nx \\\ny\nEOF\n").heredoc)
+
+    def test_queued_heredocs_are_read_in_order_after_the_newline(self):
+        parsed = shell_reader.statements(
+            "cat <<A; cat <<B\na\nA\nb\nB\necho after\n")
+        self.assertEqual(['a', 'b', None], [s.stages[0].heredoc for s in parsed])
+        self.assertEqual(['echo', 'after'], parsed[2].stages[0].argv)
+        # The body starts after the NEWLINE that ends the command, and a
+        # string running over two lines moves that newline down.
+        parsed = shell_reader.statements('cat <<EOF; echo "x\ny"\nbody\nEOF\n')
+        self.assertEqual('body', parsed[0].stages[0].heredoc)
+        self.assertEqual(['echo', 'x\ny'], parsed[1].stages[0].argv)
+
+    def test_a_delimiter_is_its_whole_word_and_a_terminator_its_whole_line(self):
+        # The word after quote removal, quoted if any part of it was; a line
+        # that IS the word, tabs stripped only for `<<-`; and for an unquoted
+        # body the line as folded, so `E\` + `OF` ends it.
+        for script, body, expands in (
+                ("cat <<EOF-X\nbody\nEOF-X\n", "body", True),
+                ('cat <<E"O"F\nbody\nEOF\n', "body", False),
+                ("cat <<\\EOF\nbody\nEOF\n", "body", False),
+                ("cat <<EOF\n  EOF\nbody\nEOF\n", "  EOF\nbody", True),
+                ("cat <<-EOF\n\tbody\n\tEOF\n", "body", True),
+                ("cat <<EOF\nE\\\nOF\n", "", True),
+                ("cat <<'EOF'\nE\\\nOF\nEOF\n", "E\\\nOF", False)):
+            with self.subTest(script=script):
+                self.assertEqual((body, expands), stage(script).stdin_heredoc)
+
+    def test_what_bash_does_not_read_as_a_heredoc_swallows_nothing(self):
+        # No terminator below it, so the lines below stay code -- the reading
+        # that can only report more. A `<<<` here-string, an arithmetic shift
+        # and a `<<` inside backquotes (their text is read later, as its own
+        # script) are not heredocs at all.
+        for script in ("cat <<EOF\necho a\n",
+                       "cat <<<EOF\necho a\nEOF\n",
+                       "echo $((1<<EOF))\necho a\nEOF\n",
+                       "(( x = 1 << EOF ))\necho a\nEOF\n",
+                       "echo $[a[1]<<EOF]\necho a\nEOF]\n",
+                       "echo `cat <<EOF`\necho a\nEOF\n"):
+            with self.subTest(script=script):
+                self.assertIn([['echo', 'a']], argvs(script))
+
+    def test_a_delimiter_bash_parses_to_spell_is_no_heredoc(self):
+        # Bash spells `<<$(a b)` and `<<$'\t'` by parsing the word, so the
+        # operator stays text and the lines below are code: no body ends at a
+        # guessed spelling (`$`, `t`). That is not free -- a quote the body
+        # leaves open hides what follows its terminator, the residual
+        # `scripts/shell_lex.py` states.
+        for script in ("cat <<$(a b)\n$(a b)\necho a\n$\n",
+                       "cat <<$'\\t'\n\t\necho a\nt\n"):
+            with self.subTest(script=script):
+                self.assertIn([['echo', 'a']], argvs(script))
+        self.assertNotIn([['echo', 'a']],
+                         argvs("cat <<$(a b)\nit's\n$(a b)\necho a\n"))
+
+    def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
+        # #2128: a second heredoc on the line was read as `<` of a file named
+        # by its delimiter, which replaced descriptor 0 and dropped the body
+        # `bash -s` runs. In either order, stdin is the fd-0 body -- and so is
+        # the body `heredoc` quotes back to a checksum or a `cat > file`.
+        for script in ("bash -s <<'A' 3<<'B'\nscript\nA\ndata\nB\n",
+                       "bash -s 3<<'B' <<'A'\ndata\nB\nscript\nA\n"):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                self.assertEqual(['bash', '-s'], parsed.argv)
+                self.assertEqual(("script", False), parsed.stdin_heredoc)
+                self.assertEqual("script", parsed.heredoc)
+
+    def test_hostile_heredoc_shapes_read_in_linear_time(self):
+        # The old heredoc pass searched every line below each `<<` for its
+        # terminator, so N unterminated operators were N scans to the end of
+        # the script: measured on the parser as it was, 49 KB of `x <<Dk`
+        # lines took 0.84 s and 99 KB 2.73 s. Terminators are now looked up
+        # in an index built once -- including for a body that starts in the
+        # middle of a folded line, after a comment ending in a backslash.
+        for line in ("x <<D%d\n", "x <<D%d # \\\n"):
+            script = "".join(line % k for k in range(12000))
+            with self.subTest(line=line):
+                start = time.monotonic()
+                parsed = shell_reader.statements(script)
+                elapsed = time.monotonic() - start
+                self.assertEqual(12000, len(parsed))
+                self.assertLess(elapsed, 2.0, elapsed)
+
+
+class TestTheScannersAgreeOnQuotes(unittest.TestCase):
+    """#1793 (COD-3636110933): the quote rules every scanner after the lexer
+    shares -- `_lift_substitutions`, the `$(...)` matcher `shell_lex.closing`
+    and `_split`.
+
+    #1987 taught `_split` that `\\"` inside "..." is not a closing quote; the
+    matcher, then `_closing`, still ended the string there, so a nested
+    `"a\\")b"` closed its `$(...)` one paren early and the stray `"` hid every
+    statement after it.
+    `$'it\\'s'` is one word to bash, and an apostrophe inside "..." is text;
+    read as quotes, each hid the rest of the script the same way.
+    """
+
+    def test_an_escaped_quote_inside_a_substitution_string(self):
+        parsed = shell_reader.statements(
+            'echo "$(printf \'%s\' "a\\")b")"; echo next\n')
+        self.assertEqual(['printf \'%s\' "a\\")b"'], parsed[0].stages[0].substitutions)
+        self.assertEqual(['echo', 'next'], parsed[1].stages[0].argv)
+
+    def test_an_ansi_c_string_ends_at_its_unescaped_quote(self):
+        for script, inner in (("echo $'it\\'s' \"$(echo sub)\"; echo next\n",
+                               "echo sub"),
+                              ("x=$(echo $'it\\'s)'); echo next\n",
+                               "echo $'it\\'s)'")):
+            with self.subTest(script=script):
+                parsed = shell_reader.statements(script)
+                self.assertEqual([inner], parsed[0].stages[0].substitutions)
+                self.assertEqual(['echo', 'next'], parsed[1].stages[0].argv)
+
+    def test_an_apostrophe_inside_double_quotes_is_text(self):
+        parsed = stage('echo "it\'s" "$(echo sub)"\n')
+        self.assertEqual(['echo sub'], parsed.substitutions)

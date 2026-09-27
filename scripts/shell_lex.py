@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""What bash settles about a script's TEXT before it reads a command out of it.
+
+Split out of `scripts/shell_reader.py` (#1793, COD-3418139920), which settled
+it in three line-oriented passes that ran before any quote tracking: whole-line
+comments dropped, `\\`-newlines joined, then `<<WORD` found by a regex and the
+lines down to `WORD` swallowed. Each pass read text that bash reads as
+something else -- a `#` line inside a multi-line string, a `<<true` inside
+quotes, in a comment or at the tail of a `<<<`, a backslash ending a comment or
+a quoted heredoc line -- and each swallowed a statement bash then RUNS, so the
+guard reading the result reported the step clean. Bash decides all three in
+one forward pass, from the state it is in, and so does `lex`:
+
+    quoting        '...', "..." and $'...' (whose `\\'` does not end it), a
+                   backslash outside them, and `$(...)`, `${...}`, `$((...))`,
+                   `$[...]` and backquotes nested the way bash nests them
+    comments       a `#` that starts a word, up to the newline; a backslash
+                   inside one continues nothing
+    continuations  `\\`-newline folded away in code, inside "..." and in an
+                   unquoted heredoc body; never in '...' or $'...', a comment
+                   or a quoted heredoc body
+    heredocs       `<<`/`<<-` in code -- not the tail of `<<<`, not a shift in
+                   arithmetic, not inside backquotes (bash reads their text
+                   later, as a script of its own); the delimiters queue, and
+                   their bodies are read one after another from the next
+                   newline
+
+Three readings are not bash's. A `<<` with no terminator line below it is left
+as text rather than swallowing the rest of the script: bash runs nothing below
+it, so reading it as code can only report more. A delimiter bash has to PARSE
+to spell -- a `$(...)`, `${...}`, `$[...]` or backquote in the word, an escape
+`$'...'` decodes, an extglob pattern -- is left as text too, because ending a
+body at a guessed spelling swallows what bash runs; reading that body as code
+is not free either, since a quote it leaves open hides the code below its
+terminator. And a heredoc inside `$(...)` is lifted into the enclosing parse,
+so the text that substitution is re-read from holds a marker instead of the
+body -- a gap `scripts/workflow_guard.py` documents.
+
+Two places still part from bash, because its grammar decides them and this
+pass reads text: at the head of a command `a[1<<2]=x` is a subscript to bash
+and a heredoc operator here, and a `((` or `$((` that bash re-reads as nested
+parentheses (`((cmd) )`) is arithmetic here, so its comments and heredocs are
+text.
+
+Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
+the `$(...)` matcher `shell_reader` lifts substitutions with.
+"""
+import re
+from typing import Callable
+
+# bash's metacharacters: a word ends at any of them, and a `#` right after one
+# begins a comment.
+_BREAK = " \t\n;&|()<>"
+# The frames that read code: the script itself, and `$(...)`, `<(...)`,
+# `>(...)`. Only these hold comments and heredocs.
+_CODE = ("top", "(")
+# What each opener starts: its text, the frame it opens, the brackets it opens.
+# `$((` and `$[` are arithmetic, where `<<` is a shift; longest spellings first.
+_OPENERS = (("$((", "((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
+            ("$[", "[", 1), ("${", "{", 0), ("$'", "$'", 0), ('$"', '"', 0),
+            ("'", "'", 0), ('"', '"', 0), ("`", "`", 0))
+# The brackets a frame counts, and the character that ends each other frame.
+_PAIRS = {"(": "()", "((": "()", "[": "[]"}
+_CLOSE = {"'": "'", "$'": "'", '"': '"', "`": "`", "{": "}"}
+# A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
+_QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
+                     re.S)
+_DQ_ESCAPE = re.compile(r'\\([$`"\\])|\\\n')
+# What bash has to PARSE, not just unquote, to spell a delimiter: a `$(`,
+# `${`, `$[` or backquote in the word, or an escape `$'...'` decodes (`\x41`).
+_PARSED = re.compile(r"`|\$[({\[]")
+_ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
+
+
+def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
+    """`script` with its comments removed, its continuations folded, and each
+    heredoc -- operator, word and body -- replaced by the marker
+    `heredoc(body, expands, fd)` returns, spaced off as a word of its own."""
+    return _Lexer(script, heredoc).run()
+
+
+def closing(text: str, opening: int) -> int | None:
+    """Index just past the `)` that closes the group opening at `opening`.
+
+    Quotes are read as `shell_reader._split` reads them: a backslash takes the
+    next character everywhere but inside '...', so `\\"` does not end a "..."
+    (COD-3636110933 -- a nested `"a\\")b"` used to close its `$(...)` a paren
+    early), and `$'...'` ends only at a `'` no backslash takes.
+    """
+    depth, i, quote = 0, opening, ""
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            quote = "" if ch == quote[-1] else quote
+        elif text.startswith("$'", i):
+            quote, i = "$'", i + 1
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "()":
+            depth += 1 if ch == "(" else -1
+            if not depth:
+                return i + 1
+        i += 1
+    return None
+
+
+class _Frame:
+    """One level of nesting: code (the script, or a `$(...)`), a quote, a
+    `${...}`, arithmetic or backquotes. A paren or bracket frame counts the
+    ones still open; a code frame holds the heredocs waiting for its next
+    newline, each as (output slot, delimiter, quoted, `<<-`, descriptor)."""
+
+    def __init__(self, kind: str, depth: int = 0):
+        self.kind, self.depth = kind, depth
+        self.queue: list[tuple[int, str, bool, bool, str]] = []
+
+
+class _Lexer:
+    def __init__(self, text: str, heredoc: Callable[[str, bool, str], str]):
+        self.text, self.heredoc = text, heredoc
+        self.out: list[str] = []
+        self.frames = [_Frame("top")]
+        self.word = 0                   # where in `out` the current word began
+        self.lines: dict[bool, _Lines] = {}
+
+    def run(self) -> str:
+        text, out, frames = self.text, self.out, self.frames
+        i = 0
+        while i < len(text):
+            frame, ch = frames[-1], text[i]
+            if ch == "\\" and frame.kind != "'":
+                if text.startswith("\n", i + 1) and frame.kind != "$'":
+                    i += 2              # a continuation: gone, and the word goes on
+                    continue
+                out.append(text[i:i + 2])
+                i += 2
+            elif ch == _CLOSE.get(frame.kind):
+                frames.pop()
+                out.append(ch)
+                i += 1
+            elif frame.kind in ("'", "$'", "`"):
+                out.append(ch)
+                i += 1
+            else:
+                i = self.open(i, frame.kind) or self.step(i, frame)
+        # Queues still waiting here never met their newline: their operators
+        # stay in the output as written, which is the unterminated reading.
+        return "".join(out)
+
+    def open(self, i: int, kind: str) -> int | None:
+        """Past the opener at `i` -- its frame pushed -- if `kind` nests one."""
+        for opener, inner, depth in _OPENERS:
+            if (self.text.startswith(opener, i)
+                    and not (opener in ("<(", ">(") and kind not in _CODE)
+                    and not (opener[-1] in "'\"" and kind == '"')):
+                return self.push(i, opener, inner, depth)
+        return None
+
+    def push(self, i: int, opener: str, kind: str, depth: int) -> int:
+        self.out.append(opener)
+        self.frames.append(_Frame(kind, depth))
+        if kind in _CODE:
+            self.word = len(self.out)   # a `$(...)` starts at a word's start
+        return i + len(opener)
+
+    def step(self, i: int, frame: _Frame) -> int:
+        """Read the character at `i`, which opens nothing; the index after it."""
+        text, out = self.text, self.out
+        ch, start = text[i], len(out) == self.word
+        if frame.kind in _CODE:
+            if ch == "#" and start:     # a comment: gone, up to its newline
+                end = text.find("\n", i)
+                return len(text) if end < 0 else end
+            if text.startswith("((", i) and start:
+                return self.push(i, "((", "((", 2)     # an arithmetic command
+            if text.startswith("<<<", i):
+                out.append("<<<")
+                self.word = len(out)
+                return i + 3
+            if text.startswith("<<", i):
+                return self.operator(i, frame)
+        out.append(ch)
+        pair = _PAIRS.get(frame.kind, "")
+        if ch in pair:
+            frame.depth += 1 if ch == pair[0] else -1
+            if not frame.depth:
+                self.frames.pop()       # heredocs still queued in it stay text
+                return i + 1
+        if ch in _BREAK and frame.kind in _CODE:
+            self.word = len(out)
+            if ch == "\n" and frame.queue:
+                return self.bodies(frame, i + 1)
+        return i + 1
+
+    def operator(self, i: int, frame: _Frame) -> int:
+        """Queue the heredoc whose `<<` is at `i`; the index after its word.
+
+        The operator stays in the output as written until a body is found
+        for it -- with no terminator below, that is what it remains.
+        """
+        text, out = self.text, self.out
+        after = i + 3 if text.startswith("-", i + 2) else i + 2
+        word = _word(text, after)
+        if word is None:                # no word follows, or none `_word` spells
+            out.append(text[i:after])
+            self.word = len(out)
+            return after
+        delimiter, quoted, end = word
+        fd = "".join(out[self.word:])   # an IO number is a word of bare digits
+        if fd.isascii() and fd.isdigit():
+            del out[self.word:]
+        else:
+            fd = ""
+        out.append(fd + text[i:end])
+        frame.queue.append((len(out) - 1, delimiter, quoted, after > i + 2, fd or "0"))
+        self.word = len(out)
+        return end
+
+    def bodies(self, frame: _Frame, i: int) -> int:
+        """Read the heredocs `frame` queued, one after another from the line
+        starting at `i`; the index where its code resumes."""
+        for slot, delimiter, quoted, strip, fd in frame.queue:
+            expands = not quoted        # and folds `\`-newline, as bash reads it
+            if expands not in self.lines:
+                self.lines[expands] = _Lines(self.text, folded=expands)
+            found = self.lines[expands].body(i, delimiter, strip)
+            if found:
+                body, i = found
+                self.out[slot] = " %s " % self.heredoc(body, expands, fd)
+        frame.queue.clear()
+        return i
+
+
+def _word(text: str, i: int) -> tuple[str, bool, int] | None:
+    """(delimiter, quoted, end) for the heredoc word after an operator ending
+    at `i`: the word as bash compares lines with it -- quotes removed, quoted
+    if any part of it was. None when no word follows, a quote in it never
+    closes, or bash has to PARSE the word to spell it (`_PARSED`, or the `(`
+    of an extglob pattern after it)."""
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    start, quoted = i, False
+    parts: list[str] = []
+    while i < len(text) and text[i] not in _BREAK:
+        match = _QUOTED.match(text, i)
+        if _PARSED.match(text, i) or (match and _PARSED.search(match[3] or "")):
+            return None
+        if match:
+            single, ansi, double = match.groups()
+            if single is not None:
+                parts.append(single)
+            elif ansi is not None:      # the four escapes that are the character
+                if set(_ANSI_ESCAPE.findall(ansi)) - set("\\'\"?"):
+                    return None
+                parts.append(_ANSI_ESCAPE.sub(r"\1", ansi))
+            else:
+                parts.append(_DQ_ESCAPE.sub(lambda m: m[1] or "", double))
+            quoted, i = True, match.end()
+        elif text[i] in "'\"" or text.startswith(("$'", '$"'), i):
+            return None
+        elif text[i] == "\\":
+            if not text.startswith("\n", i + 1):
+                parts.append(text[i + 1:i + 2])
+                quoted = True
+            i += 2
+        else:
+            parts.append(text[i])
+            i += 1
+    if i == start or text[start] == "#" or text.startswith("(", i):
+        return None
+    return "".join(parts), quoted, i
+
+
+class _Lines:
+    """`text`'s lines the way bash compares a heredoc terminator with them.
+
+    A QUOTED delimiter's body is read verbatim, one physical line at a time;
+    an unquoted one has `\\`-newline folded first, so its lines are LOGICAL
+    ones -- `E\\` + `OF` ends it where `x \\` + `EOF` does not. `index` is what
+    keeps a `<<` with no terminator below it cheap: whether any later line
+    ends it is one lookup, where the pass this replaced scanned to the end of
+    the script once per operator, which is quadratic in the operators.
+    """
+
+    def __init__(self, text: str, folded: bool):
+        self.size = len(text)
+        self.starts = [0] + [match.end() for match in re.finditer("\n", text)]
+        self.number = {start: k for k, start in enumerate(self.starts)}
+        self.texts: list[str] = []      # this reading's lines
+        self.of: list[int] = []         # physical line -> the line it is part of
+        self.offset: list[int] = []     # physical line -> where it starts there
+        self.last: list[int] = []       # line -> its last physical line
+        self.keys: dict[bool, tuple[list[str], dict[str, int]]] = {}
+        self.leads: dict[int, int] = {}
+        physical = text.split("\n")
+        run: list[str] = []
+        length = 0
+        for k, line in enumerate(physical):
+            more = (folded and k + 1 < len(physical)
+                    and (len(line) - len(line.rstrip("\\"))) % 2 == 1)
+            self.of.append(len(self.texts))
+            self.offset.append(length)
+            run.append(line[:-1] if more else line)
+            length += len(run[-1])
+            if not more:
+                self.texts.append("".join(run))
+                self.last.append(k)
+                run, length = [], 0
+
+    def body(self, at: int, word: str, strip: bool) -> tuple[str, int] | None:
+        """(body, where code resumes) for a heredoc whose body starts at offset
+        `at`, or None when no line from there on ends it."""
+        k = self.number.get(at)
+        if k is None:                   # the script ended on the last terminator
+            return None
+        n, offset = self.of[k], self.offset[k]
+        text = self.texts[n]
+        # `<<-` strips leading tabs, but bash tries the line unstripped first,
+        # which is the only way a delimiter that starts with a tab can match.
+        raw = not strip or word.startswith("\t")
+        begin = len(text) - len(word)
+        if begin >= offset and text.endswith(word) and begin == (
+                offset if raw else self.lead(at, text, offset)):
+            end = n                     # a body can start mid-line after a `\`
+        else:
+            keys, last = self.index(not raw)
+            if last.get(word, -1) <= n:
+                return None
+            end = keys.index(word, n + 1)
+        lines = [text[offset:]] + self.texts[n + 1:end] if end > n else []
+        if strip:
+            lines = [line.lstrip("\t") for line in lines]
+        after = self.last[end] + 1
+        return "\n".join(lines), self.starts[after] if after < len(self.starts) else self.size
+
+    def lead(self, at: int, text: str, offset: int) -> int:
+        """Where the line starting at `at` begins once `<<-` strips its tabs --
+        counted once, however many operators queued on one line wait on it."""
+        if at not in self.leads:
+            self.leads[at] = len(text) - len(text[offset:].lstrip("\t"))
+        return self.leads[at]
+
+    def index(self, stripped: bool) -> tuple[list[str], dict[str, int]]:
+        """Every line as compared, and the last place each text occurs."""
+        if stripped not in self.keys:
+            keys = [line.lstrip("\t") for line in self.texts] if stripped else self.texts
+            self.keys[stripped] = keys, {key: n for n, key in enumerate(keys)}
+        return self.keys[stripped]
