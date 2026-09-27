@@ -10,8 +10,8 @@ evidence exposed.
 - **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
   #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
   a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
-  default `--gate-scope on-diff` every finding classifies off-diff, the gate's source set is empty,
-  and a change carrying active findings reported a green `PASS` on findings that were never gated.
+  default `--gate-scope on-diff` the gate's source set is not a measured diff, and a change
+  carrying active findings reported a green `PASS` on findings that were never gated.
   OWNER RULING 2026-09-27: refuse to certify. `summary.gate` now reads `INCONCLUSIVE` and
   `summary.coverage_note` names the zero-hunk map plus the remedy (regenerate the diff-hunks
   artifact; the driver's discovery phase writes it) -- or names the REJECTED payload instead, when

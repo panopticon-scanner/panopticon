@@ -340,6 +340,26 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertNotIn("look identical", gap)
         self.assertIn("regenerate the diff-hunks artifact", gap)
 
+    def test_dropped_ranges_name_that_cause_instead(self):
+        # The loader accepted the payload but dropped every range as malformed,
+        # so the map is empty for a KNOWN reason too: the disclosure says so on
+        # its own "malformed hunk range(s) dropped" line, and the report's note
+        # must not claim the ambiguity that line already resolved.
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1]]}}), 1, "on-diff")
+        self.assertIn("1 hunk range(s) were malformed and dropped", gap)
+        self.assertNotIn("look identical", gap)
+        self.assertNotIn("was rejected", gap)
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+
+    def test_the_count_is_qualified_as_the_active_set(self):
+        # The ruling's population is "active findings"; the clause says so, so a
+        # reader does not take the number for what the gate would have judged.
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {}}), 3, "on-diff")
+        self.assertIn("3 active finding(s) (counted before the gate's "
+                      "evidence and severity policy)", gap)
+
     def test_a_named_file_with_no_range_is_still_a_gap(self):
         # ranges == 0 is the condition, not files == 0: a map that names a file
         # and gives it no range scopes the gate by `diff_map.classify`'s

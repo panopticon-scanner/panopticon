@@ -161,14 +161,22 @@ def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
         return None
     # The same split `_disclose_load` makes, for the same reason: the
     # two-readings ambiguity holds only while the reason is UNKNOWN, and a
-    # payload already known broken must not send the operator off to compare it.
-    cause = ("an empty change and a broken artifact look identical from here"
-             if report.payload_malformed is None else
-             "the map is empty because the payload was rejected (%s), not "
-             "because the change was" % report.payload_malformed)
+    # payload already known broken -- rejected outright, or every range of it
+    # dropped as malformed -- must not send the operator off to compare it.
+    if report.payload_malformed is not None:
+        cause = ("the map is empty because the payload was rejected (%s), not "
+                 "because the change was" % report.payload_malformed)
+    elif report.ranges_dropped:
+        cause = ("the map is empty because its %d hunk range(s) were malformed "
+                 "and dropped, not because the change was" % report.ranges_dropped)
+    else:
+        cause = "an empty change and a broken artifact look identical from here"
+    # The count is the ACTIVE set, the ruling's population; it is qualified so
+    # a reader does not take it for the number the gate would have judged.
     return ("zero-hunk delta gate — the diff-hunks map resolved a base and "
             "carries no diff ranges, so the --gate-scope on-diff source set "
-            "for this run's %d active finding(s) is not a measured diff; "
+            "for this run's %d active finding(s) (counted before the gate's "
+            "evidence and severity policy) is not a measured diff; "
             "%s: regenerate the diff-hunks artifact (the "
             "driver's discovery phase writes it)" % (active_count, cause))
 
