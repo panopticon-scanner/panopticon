@@ -732,7 +732,9 @@ class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
 
     def test_a_non_bmp_description_emits_a_file_tomllib_can_parse(self):
         with tempfile.TemporaryDirectory() as d:
-            for path in self._emit(self.EMOJI, d):
+            paths = self._emit(self.EMOJI, d)
+            self.assertEqual(len(paths), len(dispatch.ROLE_FILES))
+            for path in paths:
                 with self.subTest(path=os.path.basename(path)):
                     with open(path, encoding="utf-8") as fh:
                         text = fh.read()
@@ -748,9 +750,19 @@ class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
             self.assertNotIsInstance(caught.exception, UnicodeEncodeError)
             self.assertEqual(os.listdir(d), [])
 
+    # The first keys every codex shell emits, in the order the policy states
+    # them: the re-emission oracle below walks the emitted file's own order,
+    # so a flattener that re-sorted keys would agree with itself -- this pin
+    # is what notices.
+    LEADING_KEYS = ["approval_policy", "sandbox_mode", "web_search",
+                    "check_for_update_on_startup", "history.persistence",
+                    "project_doc_max_bytes"]
+
     def test_the_ascii_roles_emit_what_the_old_flattener_emitted(self):
         with tempfile.TemporaryDirectory() as d:
-            for path in dispatch.emit_host_agents("codex", d):
+            paths = dispatch.emit_host_agents("codex", d)
+            self.assertEqual(len(paths), len(dispatch.ROLE_FILES))
+            for path in paths:
                 with self.subTest(path=os.path.basename(path)):
                     with open(path, encoding="utf-8") as fh:
                         text = fh.read()
@@ -759,6 +771,8 @@ class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
                     # comments are the launch header written before them.
                     emitted = [ln for ln in text.splitlines() if not ln.startswith("#")]
                     self.assertEqual(emitted, _legacy_toml_lines(parsed))
+                    self.assertEqual([ln.split(" = ")[0] for ln in emitted][:6],
+                                     self.LEADING_KEYS)
                     # Re-emitting the parsed document is only a faithful oracle
                     # if each value's TYPE survived the round trip, so pin one
                     # of every shape the policy carries.
@@ -766,6 +780,7 @@ class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
                     self.assertIs(parsed["check_for_update_on_startup"], False)
                     self.assertEqual(parsed["project_doc_max_bytes"], 0)
                     self.assertIsInstance(parsed["project_doc_max_bytes"], int)
+                    self.assertNotIsInstance(parsed["project_doc_max_bytes"], bool)
                     tools = parsed["mcp_servers"]["panopticon_scope"]["enabled_tools"]
                     self.assertTrue(tools and all(isinstance(t, str) for t in tools))
 

@@ -275,7 +275,9 @@ def emit_host_agents(host, out_dir):
             # character as a surrogate pair -- invalid in TOML, so one emoji in
             # a template description used to register a shell codex cannot
             # parse. Only the encoding moved: nested tables still flatten to
-            # dotted keys, and every ASCII policy emits the same bytes.
+            # dotted keys, and every ASCII policy emits the same bytes; a shape
+            # the encoder refuses (`None`, a non-finite float) now fails loud
+            # instead of writing TOML codex cannot parse.
             def emit_values(values, prefix=()):
                 for name, item in values.items():
                     dotted = prefix + (name,)
