@@ -14,10 +14,29 @@ WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "tools-image-health.y
 
 
 class TestImageFreshness(unittest.TestCase):
-    def _run(self, updated_at, max_age_days):
+    def _run(self, updated_at, max_age_days, image_name=None):
+        args = ["bash", SCRIPT, updated_at, str(max_age_days)]
+        if image_name is not None:
+            args.append(image_name)
         return subprocess.run(
-            ["bash", SCRIPT, updated_at, str(max_age_days)],
+            args,
             capture_output=True, text=True, timeout=30)   # #run7 TST-G3B: bound the shell-out
+
+    def test_production_utc_z_timestamps_and_optional_image_name(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for days, status, annotation in ((1, 0, "::notice::"), (10, 1, "::error::")):
+            stamp = (now - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for image in (None, "fixture-tools"):
+                with self.subTest(days=days, image=image):
+                    proc = self._run(stamp, 3, image)
+                    self.assertEqual(proc.returncode, status, proc.stdout + proc.stderr)
+                    name = image or "panopticon-tools"
+                    self.assertIn(name + ":latest last published " + stamp, proc.stdout)
+                    self.assertIn(annotation + name + ":latest is ", proc.stdout)
+                    self.assertIn("fresh" if days == 1 else "old", proc.stdout)
+                    self.assertNotIn("::warning::", proc.stdout)
+                    self.assertNotIn("::error::" if status == 0 else "::notice::", proc.stdout)
+                    self.assertEqual(proc.stderr, "")
 
     def test_fresh_image_emits_ok(self):
         recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
