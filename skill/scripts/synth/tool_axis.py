@@ -17,13 +17,13 @@ pairs are: layout rule 1 means every reference is a module attribute read at
 CALL time, never a name bound from a half-initialized sibling at import time.
 """
 from dataclasses import dataclass, field
-import json
 import os
 import sys
 
 import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
 from scripts.tools import EXECUTES_TARGET_BUILD
+from . import artifacts as artifacts_mod
 from . import coverage_io as coverage_io
 from . import plan as plan_mod
 from . import repair as repair_mod
@@ -99,11 +99,10 @@ class ToolAxis:
         # permissive scout-derived branch -- the carve-out F1 closed for regular
         # files, reachable again by leaving something that is not one. `lexists`
         # asks the question this branch means ("is there anything here"), and
-        # the open() below fails these with an OSError the reason names.
+        # the bounded reader rejects nonregular files and symlinks with a named reason.
         if os.path.lexists(tm_path):
             try:
-                with open(tm_path, encoding="utf-8") as fh:
-                    tm = json.load(fh)
+                tm = artifacts_mod.read_json(tm_path)
             except (OSError, ValueError) as exc:
                 manifest_invalid = "tools-manifest.json is unreadable: %s" % exc
             else:

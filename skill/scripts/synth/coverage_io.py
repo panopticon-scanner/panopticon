@@ -19,11 +19,11 @@ so target-written content is normalized to the pinned types at the boundary --
 here, at the read, with every change announced.
 """
 import glob
-import json
 import os
 import sys
 
 import scripts.groups_schema as groups_schema
+from . import artifacts as artifacts_mod
 
 # DAT-2808086775: a target-writable artifact gets a bounded read, the shape
 # `tools/pip_audit.py` already uses for pyproject.toml. A realistic record
@@ -120,32 +120,17 @@ def load_coverage_files(panopticon_dir=".panopticon"):
     the same run artifacts groups.json/scout-*.json are read as elsewhere, and
     each record is normalized by `normalized_cell` at the read.
 
-    DAT-2808086775: "never raise" was narrower than the catch. `json.load`
-    raises RecursionError (a RuntimeError, not a ValueError) on a deeply nested
-    document and MemoryError on a huge one, and both escaped this loop into
-    PlanInputs.load -- ending the run after every dispatch had been paid for.
-    The catch now covers both, and the READ itself is bounded: the file is
-    opened in binary mode and one `fh.read(_MAX_COVERAGE_BYTES + 1)` decides,
-    never `os.stat().st_size`. The declared size is not the size of the read --
-    a character device reports 0 and then reads forever, which is a symlink a
-    target repository can commit -- and a stat-then-open bound is a TOCTOU
-    besides. (A FIFO that no one is writing blocks at `open()`, which this
-    bound never reaches: #2082.) Each skip is announced, because
-    `normalized_cell` announces every repair and a file dropped whole is the
-    louder fact."""
+    The shared reader bounds bytes before decoding/parsing, refuses symlinks
+    and special files without blocking, and normalizes parser resource errors.
+    Keep the existing 1 MiB cap and skip/disclosure policy; changing missing-floor
+    certification is #2080.
+    """
     out = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
         name = os.path.basename(path)
         try:
-            with open(path, "rb") as fh:
-                body = fh.read(_MAX_COVERAGE_BYTES + 1)
-            if len(body) > _MAX_COVERAGE_BYTES:
-                print("synthesize: coverage: %s: over the %d-byte read limit "
-                      "(at least %d bytes); skipping it unparsed"
-                      % (name, _MAX_COVERAGE_BYTES, len(body)), file=sys.stderr)
-                continue
-            data = json.loads(body.decode("utf-8"))  # UnicodeDecodeError is a ValueError
-        except (OSError, ValueError, RecursionError, MemoryError) as exc:
+            data = artifacts_mod.read_json(path, limit=_MAX_COVERAGE_BYTES)
+        except (OSError, ValueError) as exc:
             # `str(exc) or type(exc).__name__`, not `exc or ...`: str(MemoryError())
             # is "" while the instance itself is TRUTHY, so the short form renders
             # "could not be read ()" -- a line an operator cannot act on.
