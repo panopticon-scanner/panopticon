@@ -22,6 +22,7 @@ import scripts.group_runner as group_runner
 import scripts.probes.common as probes_common
 import scripts.redact as redact
 import scripts.run_manifest as run_manifest
+from . import budget
 from . import coverage
 from . import requests
 from . import review
@@ -603,25 +604,12 @@ def rollback_markers(review_root, checkpoint, entries):
 
 
 def _give_back_attempts(path, keys):
-    """Decrement each of `keys` by one in the attempts document at `path`,
-    skipping what is absent or already zero; returns the keys changed. A
-    PRESENT but unreadable document refuses instead (#1809)."""
-    data = runio._load_state_json(path, "the cell retry budget")
-    cleared = []
-    for key in keys:
-        if key in cleared:
-            continue                      # one charge per cell, one give-back
-        try:
-            used = int(data.get(key, 0))
-        except (TypeError, ValueError):
-            continue
-        if used <= 0:
-            continue
-        data[key] = used - 1
-        cleared.append(key)
-    if cleared:
-        runio._write_json(path, data)
-    return cleared
+    """Refund one attempt to each DISTINCT key in the attempts document at
+    `path`; returns the keys changed. The arithmetic -- and the refusal a
+    document or a value it cannot read earns -- is `budget`'s (#1809/#1767).
+    This copy `continue`d past an unreadable value, which made a value the
+    target planted indistinguishable from a key nothing had ever charged."""
+    return budget.give_back(path, keys, review._ATTEMPTS_WHAT)
 
 
 def _parse_reply(text):
