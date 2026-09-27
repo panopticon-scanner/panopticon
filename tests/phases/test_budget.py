@@ -162,6 +162,11 @@ class TestTheArithmeticItself(BudgetCase):
         self.assertEqual(budget.give_back(path, ["Web/SEC"], self.WHAT), [])
         self.assertFalse(os.path.exists(path))
 
+    def test_bump_many_with_no_keys_writes_nothing(self):
+        path = self.path()
+        self.assertEqual(budget.bump_many(path, [], self.WHAT), {})
+        self.assertFalse(os.path.exists(path))
+
 
 class TestTheOwnerDoesNotBypassRunio(BudgetCase):
     """Both halves of the #1809 pair stay in force: the read refuses a present
@@ -213,9 +218,9 @@ class TestTheOwnerDoesNotBypassRunio(BudgetCase):
         self.assertIn("--reset", str(caught.exception))
 
 
-class TestTheFiveCallSitesAllRefuseAPlantedString(BudgetCase):
-    """The triage probe, kept. One row per budget: its own file name, its own
-    key scheme and its own `what` string -- all unchanged, because they are the
+class TestEveryCallSiteRefusesAPlantedString(BudgetCase):
+    """The triage probe, kept. One row per call site: the budget's own file
+    name, its own key scheme and its own `what` string -- all unchanged, because they are the
     on-disk contract a resumed run reads -- and ONE behaviour on a value that
     is not a count."""
 

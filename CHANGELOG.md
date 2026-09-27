@@ -7,7 +7,7 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **One owner for the five persisted retry budgets (#1767, ARC-655791509).** Five phase modules
+- **One owner for the persisted retry budgets (#1767, ARC-655791509).** Five phase modules
   hand-copied the same read-bump-write over a counter file under `.panopticon/` in the reviewed
   tree, and the #1809 round consolidated only the READ -- `runio._load_state_json` refuses a
   present-but-torn document -- so the arithmetic on top of it kept THREE answers to the same

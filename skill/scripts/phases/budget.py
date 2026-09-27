@@ -69,7 +69,9 @@ def bump_many(path, keys, what):
     counts one charge per dispatched ENTRY, so two entries for one cell are two
     attempts. (`give_back` is the asymmetric half -- see its own note.) The
     whole document is written back, so keys this call never named keep their
-    counts."""
+    counts. An empty batch charges nothing and writes nothing."""
+    if not keys:
+        return {}
     data = runio._load_state_json(path, what)
     charged = {}
     for key in keys:
@@ -91,9 +93,11 @@ def give_back(path, keys, what):
     made a planted value indistinguishable from an untouched key."""
     data = runio._load_state_json(path, what)
     cleared = []
+    seen = set()
     for key in keys:
-        if key in cleared:
+        if key in seen:
             continue
+        seen.add(key)
         used = _count_in(data, path, key, what)
         if used <= 0:
             continue
