@@ -102,12 +102,11 @@ class LegacySarifAdapter:
                 config = Path(cwd) / "gitleaks.toml"
                 config.write_bytes(b"[extend]\nuseDefault = true\n")
                 cmd.extend(("--config", str(config)))
-                # The source-root `.gitleaksignore` is NOT answered here, and
-                # this is the one place that says why: #1957's live test showed
-                # that an explicit empty ignore-path does not prevent the pinned
-                # binary's unconditional source-root ignore load (gitleaks
-                # v8.18.4, `cmd/root.go` L204-L224). So no flag here pretends to
-                # move that read. It stays #1924's open row.
+                # The host dispatcher handles the source-root `.gitleaksignore`:
+                # redteam mounts a scanner-owned empty file over a safe existing
+                # file. At v8.18.4 an explicit empty ignore-path does not stop
+                # the binary's unconditional source-root read (#1957), so this
+                # adapter must keep the source path and config behavior intact.
                 if security_mode == REDTEAM:
                     # An inline `gitleaks:allow` comment is in the target's
                     # SOURCE, not its config. `standard` is an operator scanning

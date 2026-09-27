@@ -199,9 +199,10 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
     is honoured on either check. Under `--security redteam` the reviewed tree is
     untrusted and the comment buys nothing.
 
-    The other kind, the source-root `.gitleaksignore`, is NOT this PR's and is
-    not this test's either: #1957 owns that measurement and #1924 owns the row.
-    What is pinned below is only what these launches carry.
+    The other kind, the source-root `.gitleaksignore`, is handled by the host
+    dispatcher's conditional redteam mount, separate from this adapter's argv.
+    #1957 measured why an ignore-path flag does not replace that mount.
+    These tests pin only the adapter's own launches.
     """
 
     def _launch(self, **kwargs):
@@ -212,9 +213,9 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
         return only(calls, "gitleaks launch")
 
     def test_no_ignore_path_flag_is_passed_in_either_mode(self):
-        # What this pins: our argv carries no `--gitleaks-ignore-path`, in
-        # either mode. WHY it carries none is #1957's measurement, and the row
-        # is #1924's (see `legacy_sarif.invoke`).
+        # At this pin, the explicit scanner config, scratch cwd and absence of
+        # an ignore-path override make the host's source-root overlay sufficient.
+        # This test pins the last part of that argv, not every possible read.
         for mode in ("standard", "redteam"):
             with self.subTest(mode=mode):
                 argv = self._launch(security_mode=mode)["argv"]

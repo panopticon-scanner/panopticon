@@ -24,6 +24,17 @@ evidence exposed.
   the README and GETTING-STARTED. One test was owed and is here: `evil.csproj` must hold exactly
   one target, hooked to `Build` and nothing else, or its `curl` fires on the networked
   fixtures-image builder.
+- **Gitleaks root ignore file follows the scan mode (#1924).** In `standard`, a
+  repository's regular `.gitleaksignore` is honoured. In `redteam`, an existing
+  regular file is covered by a scanner-owned empty file mounted read-only at
+  `/src/.gitleaksignore`; an absent file needs no mount. The staged file is 0644,
+  its private directory stays 0700, and the target is unchanged. A symlink,
+  other non-regular mountpoint, or staging failure leaves Gitleaks missing from
+  coverage while other scanners continue. A produced Gitleaks scan records
+  `ignore_files.gitleaks` as `honoured`, `neutralised`, or `absent` in the
+  manifest, separately from inline `suppression_comments`; the gate discloses
+  the same observed value. A scan that did not produce output makes no claim.
+
 - **The SEC floor's catalog now names the build/CI surfaces that execute code
   (#1838, SEC-71240568).** Makefiles, setup.py, Terraform, second-tier CI
   systems, MSBuild project files, and lockfiles were live misses -- a target
@@ -112,10 +123,9 @@ evidence exposed.
   which is not the same claim as
   `n/a`. Two residuals are disclosed there rather than guessed at on an argv -- gosec's `#nosec`
   and eslint-security's inline config, whose knobs were not verified at the pin, since a flag a
-  scanner rejects is a tool that exits non-zero and writes no SARIF. Two ignore FILES stay the
-  target's and stay #1924's rows rather than this one's: `.gitleaksignore` is unchanged here
-  (#1924, Codex's row; see #1957), and a `.semgrepignore` committed at the scan root narrows the
-  scan in both modes with no flag to disable it at the pin (tracked on #2055). Gitleaks'
+  scanner rejects is a tool that exits non-zero and writes no SARIF. A `.semgrepignore`
+  committed at the scan root still narrows the scan in both modes with no flag to disable
+  it at the pin (tracked on #2055). Gitleaks'
   allow-comment flag is appended by the adapter that builds its argv inside the container, so
   every adapter dispatch now names this run's mode as an explicit `--security <mode>` argv pair
   (not an environment variable, which a target's own hooks could set; an unrecognised token fails
