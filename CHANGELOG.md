@@ -7,6 +7,30 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The scrub funnel binds a deterministic repo root, and reconcile's comments go through it
+  (#1777 ARC-1735086130, #1780 ARC-163067013).** `sanitize._detect_repo_root` fell back to
+  `os.getcwd()` and nothing refused a degenerate root. Probed with an empty PATH at `/`, `scrub()`
+  deleted every `/` in the text it was handed (the literal `str.replace`), `re.escape("")` left the
+  second substitution an empty-match pattern, and `repo_relative` ate the leading slash. The mirror
+  is worse: a filer run from another checkout gets a prefix that strips nothing, so the operator's
+  absolute paths land in a public, permanent issue, which is the one thing that module exists to
+  prevent. Both detection branches now go through one normaliser that REFUSES a filesystem root, a
+  non-absolute root and a root that is not an existing directory, and returns a realpath'd prefix
+  (realpath normalises an operator-supplied LOGICAL root to the physical form locations carry;
+  measured here, `git rev-parse --show-toplevel` and `os.getcwd()` both report the physical path
+  already, so it is a no-op on the two detection branches and defence should a git report a logical
+  one). `scrub`/`repo_relative` take an explicit `root=` that REPLACES the detected root, normalised
+  and refused alike but with its own remedy, since a caller who passed a root cannot act on "pass
+  the root explicitly"; the cached detection stays the default, so no filer changes a call. That
+  determinism is what the second half needs. The module header claimed `scrub()` is the one point
+  every filer shares, but `reconcile_apply._comment_body` posted `action["comment"]` with only
+  `neutralize`'s markdown pass -- no path stripping, no redaction -- while the `reason` it
+  interpolates is built from report locations that `_source_records` proves can be absolute. The
+  comment is now scrubbed BEFORE the `<!-- panopticon-reconcile:KEY -->` marker is appended, so the
+  marker (keyed on the raw action, so no receipt is rebound) survives byte-for-byte and
+  `_comment_present`, which compares the FULL body on the resume path, reconciles against the
+  scrubbed body that was posted. A body that cannot be reproduced is still refused, but the refusal
+  now names the likely cause: a comment posted from a different repo root.
 - **The fixture runner's two containers launch under `run_tools`' container policy (#1767;
   ARC-3859414366).** `run_tools` owns that policy and its docstrings said so: cap-drop,
   no-new-privileges and the memory/CPU/pids ceilings "applied to every tool/adapter container".

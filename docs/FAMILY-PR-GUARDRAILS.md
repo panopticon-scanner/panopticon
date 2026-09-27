@@ -383,7 +383,7 @@ Repository:
 - Do not `git stash`, do not force-push a shared branch, do not rewrite
   history after a review has started.
 - Text that came out of a scan (findings, agent replies, run logs) goes
-  through `scripts/sanitize.py` (`scrub()` then `defang()`) before it is
+  through `scripts/sanitize.py` (`defang()` first, then `scrub()`) before it is
   pasted into an issue or a PR body.
 
 Machine:
