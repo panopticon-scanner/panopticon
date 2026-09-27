@@ -39,6 +39,7 @@ SCOPE_FILE = "read-scope.json"
 # must not spell it differently.
 LEDGER_FILE = "dispatch-ledger.jsonl"
 MODES = ("headless", "session")
+SETUP_NAMESPACE = "setup"
 # #1576 (OPS-2112448973): the ONE ceiling on how many host CLIs a batch runs
 # at once. `driver loop --concurrency` is a `_positive_int` with no upper
 # bound and `default_concurrency` is whatever a family declares, so nothing

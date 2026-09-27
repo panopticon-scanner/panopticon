@@ -1,9 +1,9 @@
 """Delta review: diff hunks and on-diff / pre-existing classification."""
 from dataclasses import dataclass
-import json
 import os
 import sys
 
+from . import artifacts as artifacts_mod
 import scripts.diff_map as diff_map
 
 
@@ -161,8 +161,7 @@ def load_diff_hunks_report(path):
     old name is unaffected; `from_args` takes this form and discloses the
     report (#1783)."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = artifacts_mod.read_json(path)
     except (OSError, ValueError):
         return {}, HunksLoad(payload_malformed=MALFORMED_UNREADABLE)
     if not isinstance(data, dict):
