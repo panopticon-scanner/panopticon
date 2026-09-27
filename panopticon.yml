@@ -299,8 +299,13 @@ groups:
     - tests/test_config_schema.py
     - tests/test_grouping_engine.py
     - tests/test_coverage_model.py
+    - tests/setup_helpers.py
+    - tests/test_setup_catalog.py
     - tests/test_setup_flow.py
+    - tests/test_setup_ingest.py
     - tests/test_setup_proposal.py
+    - tests/test_setup_readiness.py
+    - tests/test_setup_security.py
     - tests/test_tests_axis.py
     - tests/test_diff_map.py
     - tests/test_pr_worktree_integration.py
