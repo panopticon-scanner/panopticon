@@ -246,17 +246,25 @@ def _kimi_hooks_are_armed(sandbox, mode):
         home, scope_path, allowlist_path = kimi_snapshot._kimi_armed_home(sandbox)
         with open(os.path.join(home, "config.toml"), "rb") as fh:
             config = tomllib.load(fh)
-    # RuntimeError is `kimi_home._interpreter` refusing to arm hooks with an
-    # interpreter that cannot run them (ARC-1774133676). A probe reports: this
-    # runs inside `_establish_host_posture`, which no `try` wraps, so an escape
-    # would be a traceback in place of a state.
-    except (OSError, RuntimeError) as exc:
-        return None, common.failure_detail(
-            exc, "the per-run home could not be built")
+    # TOMLDecodeError is a ValueError, so it must be caught AHEAD of the
+    # widened tuple below (it subclasses one of its members) to keep reading
+    # as a refutation rather than "could not be measured".
     except tomllib.TOMLDecodeError as exc:
         return False, ("the config.toml the runner generates is not valid TOML "
                        "(%s), so the run would start with its guard hooks "
                        "unregistered" % exc)
+    # The same four exception types `kimi_snapshot._kimi_generated_disabled`
+    # catches around the identical writer, defined once as
+    # `kimi_snapshot._HOME_WRITER_EXCEPTIONS` so the two lists cannot drift
+    # apart again (COD-2149752625): RuntimeError is `kimi_home._interpreter`
+    # refusing to arm hooks with an interpreter that cannot run them
+    # (ARC-1774133676); ValueError is `build_merged_config`'s (M3/N5);
+    # TypeError is `dump_toml`'s (C2). A probe reports: this runs inside
+    # `_establish_host_posture`, which no `try` wraps, so an escape would be a
+    # traceback in place of a state.
+    except kimi_snapshot._HOME_WRITER_EXCEPTIONS as exc:
+        return None, common.failure_detail(
+            exc, "the per-run home could not be built")
     guard = os.path.abspath(kimi_guard_hook.__file__)
     hooks = [h for h in (config.get("hooks") or []) if isinstance(h, dict)]
     raw_tools = config.get("tools")
@@ -320,6 +328,7 @@ def _kimi_hooks_are_armed(sandbox, mode):
 def _kimi_home_arms_and_validates(runner=None):
     """(ok, detail): the generated per-run config arms both guards AND
     `kimi doctor` accepts it. `ok` None means nothing could be measured."""
+    import scripts.runners.base as runners_base
     runner = DEFAULT_RUNNER if runner is None else runner
     try:
         with tempfile.TemporaryDirectory() as sandbox:
@@ -329,7 +338,13 @@ def _kimi_home_arms_and_validates(runner=None):
             env = dict(os.environ, KIMI_CODE_HOME=os.path.join(sandbox, "kimi-home"))
             proc = runner(["kimi", "doctor"], capture_output=True, text=True,
                           timeout=60, env=env)
-    except OSError as exc:
+    except runners_base.LaunchRefused:  # I3: the suite's guard propagates --
+        raise                           # never reported as "doctor unknown"
+    except Exception as exc:  # noqa: BLE001 -- a probe reports, never raises
+        # COD-2149752625: a doctor that outlives its timeout raises
+        # `subprocess.TimeoutExpired` (a SubprocessError, not an OSError) and
+        # undecodable output raises `UnicodeDecodeError` (a ValueError) --
+        # neither was an OSError, so both used to escape as a traceback.
         return None, common.failure_detail(
             exc, "`kimi doctor` could not run over the per-run home")
     if proc.returncode != 0 or "OK config.toml" not in (proc.stdout or ""):
@@ -535,7 +550,18 @@ def probe_kimi_model_alias(host, configured=None):
     if not hosts.declares(host, hosts.MODEL_BINDING):
         return (hosts.UNKNOWN, None, "host %r claims no model binding" % host)
     if configured is None:
-        configured = kimi_runner.configured_models()
+        try:
+            configured = kimi_runner.configured_models()
+        except (OSError, ValueError) as exc:
+            # COD-2149752625: a malformed operator config.toml raises
+            # tomllib.TOMLDecodeError (a ValueError) and an unreadable one
+            # raises OSError (PermissionError) out of
+            # kimi_home._read_source_config; either means no [models] table
+            # is readable, same as the empty-table branch below.
+            return (hosts.REFUTED, KIMI_MODEL_ALIAS,
+                    "no [models] table is readable in the installed kimi "
+                    "config, so no entry model can bind: %s"
+                    % common.failure_detail(exc, "reading its config.toml"))
     if not configured:
         return (hosts.REFUTED, KIMI_MODEL_ALIAS,
                 "no [models] table is readable in the installed kimi config, "
