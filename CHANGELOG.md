@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
+  COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
+  carried, so those three entries never derived a citation and dropping them changes no output.
+  A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
