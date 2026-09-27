@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
 - **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
   `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
   finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published
