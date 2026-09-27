@@ -8,8 +8,11 @@ that synth/render.py had already run through redact_tree(). file_fixmes.py
 so a secret in either went to GitHub verbatim. These tests pin redaction to the
 chokepoint itself, so coverage no longer depends on which artifact a filer reads.
 """
-import unittest
+import contextlib
+import os
 import subprocess
+import tempfile
+import unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -94,6 +97,95 @@ class TestRepoRootFallback(unittest.TestCase):
                 self.assertEqual(sanitize._detect_repo_root(), "/fixture/work/")
                 run.assert_called_once_with(["git", "rev-parse", "--show-toplevel"],
                                             capture_output=True, text=True, timeout=10)
+
+
+class TestRepoRootBinding(unittest.TestCase):
+    """ARC-1735086130 (#1777): the root came from the ambient cwd and a degenerate
+    one was RETURNED rather than refused. With `git` failing and the cwd at `/`,
+    the probe got `scrub()` output with every `/` deleted (and an empty-match
+    second substitution); run from a different checkout, the prefix is wrong, so
+    scrub strips nothing and the operator's absolute paths reach a public issue.
+
+    `subprocess.run` is stubbed in every case here rather than trusting `git` to
+    be absent from PATH: a shim on the box would make these pass vacuously.
+    """
+
+    @contextlib.contextmanager
+    def _no_cache(self):
+        saved = sanitize._REPO_ROOT_CACHE
+        sanitize._REPO_ROOT_CACHE = None
+        try:
+            yield
+        finally:
+            sanitize._REPO_ROOT_CACHE = saved
+
+    def _git_fails(self):
+        return mock.patch.object(sanitize.subprocess, "run",
+                                 side_effect=OSError("git unavailable"))
+
+    def _git_reports(self, toplevel):
+        return mock.patch.object(sanitize.subprocess, "run",
+                                 return_value=SimpleNamespace(returncode=0,
+                                                              stdout=toplevel + "\n"))
+
+    def test_degenerate_cwd_is_refused_instead_of_deleting_every_slash(self):
+        text = "see /Users/me/repo/skill/scripts/driver.py:12 and http://x/y"
+        calls = (("_detect_repo_root", lambda: sanitize._detect_repo_root()),
+                 ("repo_root", lambda: sanitize.repo_root()),
+                 ("scrub", lambda: sanitize.scrub(text)),
+                 ("repo_relative", lambda: sanitize.repo_relative("/Users/me/repo/a.py")))
+        for name, call in calls:
+            with self.subTest(call=name), self._no_cache(), self._git_fails(), \
+                    mock.patch.object(sanitize.os, "getcwd", return_value="/"):
+                with self.assertRaises(RuntimeError) as caught:
+                    call()
+                self.assertIn("filesystem root", str(caught.exception))
+                # A refused detection must not be cached as a usable root.
+                self.assertIsNone(sanitize._REPO_ROOT_CACHE)
+
+    def test_git_reporting_the_filesystem_root_is_refused_as_well(self):
+        with self._no_cache(), self._git_reports("/"):
+            with self.assertRaises(RuntimeError):
+                sanitize.repo_root()
+
+    def test_explicit_root_binds_the_prefix_and_a_wrong_root_strips_nothing(self):
+        under_checkout = sanitize.repo_root() + "skill/scripts/driver.py"
+        text = "see %s:12" % under_checkout
+        with tempfile.TemporaryDirectory() as other:
+            self.assertEqual(sanitize.scrub(text, root=other), text)
+            self.assertEqual(sanitize.repo_relative(under_checkout, root=other),
+                             under_checkout)
+        self.assertEqual(sanitize.scrub(text, root=sanitize.repo_root()),
+                         "see skill/scripts/driver.py:12")
+        self.assertEqual(sanitize.repo_relative(under_checkout, root=sanitize.repo_root()),
+                         "skill/scripts/driver.py")
+
+    def test_both_detection_branches_and_an_explicit_root_are_realpathd(self):
+        """macOS route: `git rev-parse` reports the LOGICAL path, so a /tmp
+        checkout reported /tmp/... while a realpath'd location read
+        /private/tmp/... and the prefix matched nothing."""
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(os.path.realpath(d), "checkout")
+            os.mkdir(real)
+            logical = os.path.join(d, "logical")
+            os.symlink(real, logical)
+            self.assertNotEqual(logical, real)
+            location = os.path.join(real, "skill/scripts/driver.py")
+            self.assertEqual(sanitize.scrub("at " + location, root=logical),
+                             "at skill/scripts/driver.py")
+            with self._no_cache(), self._git_reports(logical):
+                self.assertEqual(sanitize.repo_root(), real + "/")
+            with self._no_cache(), self._git_fails(), \
+                    mock.patch.object(sanitize.os, "getcwd", return_value=logical):
+                self.assertEqual(sanitize.repo_root(), real + "/")
+
+    def test_a_degenerate_or_relative_explicit_root_is_refused(self):
+        for root in ("/", "", ".", "skill/scripts"):
+            with self.subTest(root=root):
+                with self.assertRaises(RuntimeError):
+                    sanitize.scrub("see /a/b.py", root=root)
+                with self.assertRaises(RuntimeError):
+                    sanitize.repo_relative("/a/b.py", root=root)
 
 
 class TestResidualAutolinks(unittest.TestCase):
