@@ -340,7 +340,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     remedy". Worse, the probes it reached read `~/.claude/agents`,
     `~/.codex/agents` and `.claude/settings.local.json`, so unit tests that
     omitted the argument were measuring the developer's home directory rather
-    than the code (#1599; `tests/test_setup_flow.py` now has an AST guard over
+    than the code (#1599; `tests/test_setup_security.py` has an AST guard over
     every call site).
 
     The parameter is kept optional rather than made required because the
@@ -446,7 +446,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
         except codex_host.LaunchRefused:
             # N-M3: the suite's no-live-launch guard, re-raised exactly as
             # probes.codex._codex_measure re-raises it. This path DOES reach a
-            # live Codex probe (it is why tests/test_setup_flow.py has to
+            # live Codex probe (it is why tests/test_setup_readiness.py has to
             # isolate them), and swallowing the refusal into a benign row
             # would put back the hole I-5 exists to close: a test that reached
             # a real `codex` and failed would read as "posture could not be
