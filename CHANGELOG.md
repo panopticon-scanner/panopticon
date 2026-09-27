@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The TST global floor now recognises the test-file suffix conventions discovery already
+  knows (#1770; run-14 ARC-3682668884).** `coverage_model._TEST_FILE_HINTS` gated the TST floor
+  on substring hints -- `.test.`, `/tests/`, `test_` -- and knew none of the SUFFIX conventions
+  `discovery.TEST_PATTERNS` has always matched: `AppTest.java`, `AccountTests.cs`,
+  `AuthTest.php`, `app_tests.py`. So a flat Java layout and every standard C# or PHP repo drew
+  no guaranteed TST cell, while the floor's own docstring promised the opposite -- that a
+  mis-reporting scout "cannot suppress a floor domain whose surface objectively exists". For
+  three languages it could. `applicable_global_floor`'s TST signal is now the UNION of
+  `discovery.is_test_file` and the hints: the hints stay, because they cover the plumbing the
+  naming rule misses (`conftest`, a `/tests/` corpus, `.feature`), and the union ends the drift
+  between two independent derivations of "is this a test file" -- a convention added to
+  `TEST_PATTERNS` floors TST from then on, and a parity meta-test fails if one arrives without
+  a fixture. The behavioural ratchet on this repo is nil: every group in the committed
+  `panopticon.yml` matrix, and both chunks of the residual sink, already had a TST floor cell.
 - **The adapter-integration lanes run as the user production scans run as (#1771, ARC-2930403871).**
   `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
   writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
