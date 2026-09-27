@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
+  `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
+  finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published
+  `report-schema.json` requires only `file` there and says in that `location`'s own description
+  (#1522) that a whole-file finding -- a missing header, a bad config -- is legitimate and must
+  not have a line number invented for it. The envelope is the stricter of the two AND the one
+  that governs emission: `phases/persist.py`'s `ROLE_SCHEMAS` maps the `review-cell` role to it,
+  `role_schema` hands its absolute path to the runner as the CLI's output schema, and
+  `ENVELOPE_SHAPES`/`RETRY_PROMPT_BLOCK` re-prompt a refused reply. So a legitimate whole-file
+  finding was either refused or re-emitted with a fabricated line, in a pipeline whose premise is
+  that evidence is not invented. Both `required` lists are now `["file"]`, and `line_start` keeps
+  `{"type": "integer", "minimum": 1}` so an invented `0` -- or a string -- still fails. Nothing
+  downstream needed changing: `synth/findings.py` already DROPS a `line_start` a finding does not
+  carry rather than filling one in, `synth/report.py` treats its absence as a warning and not an
+  error, and every other consumer reads it through `.get`. `skill/agents/domain-panel.md` now
+  tells the reviewer to omit `line_start` for a whole-file finding rather than invent one, and
+  the new `test_envelope_location_required_matches_report` pins each envelope `location`
+  `required` list to the report schema's -- #1602's "no schema/report parity test" sleeper is
+  exactly this gap.
 - **A malformed or empty diff-hunks payload is disclosed, not swallowed (#1783; ARC-2340795244).**
   `synth/delta.py`'s loader is total by design -- an unreadable or non-object `diff-hunks.json`
   yields `{}`, a non-object `hunks` becomes `{}`, and every range that is not a two-integer pair is
