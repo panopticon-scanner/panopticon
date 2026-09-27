@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
+  #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
+  a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
+  default `--gate-scope on-diff` every finding classifies off-diff, the gate's source set is empty,
+  and a change carrying active findings reported a green `PASS` on findings that were never gated.
+  OWNER RULING 2026-09-27: refuse to certify. `summary.gate` now reads `INCONCLUSIVE` and
+  `summary.coverage_note` names the zero-hunk map plus the remedy (regenerate the diff-hunks
+  artifact; the driver's discovery phase writes it) -- or names the REJECTED payload instead, when
+  that is why the map is empty, rather than sending the operator to compare a known-broken artifact
+  against itself. Two carve-outs are part of the ruling: an empty legitimate change with NO active
+  findings still passes, and falling back to the wider scope was REJECTED, because a benign empty
+  `--changes` run would then go red on pre-existing findings it did not introduce. `ranges == 0` is
+  the measure, not `files == 0`: a map that names a file and gives it no range scopes the gate by
+  `diff_map.classify`'s two FAIL-OPEN arms, which is not a measured diff either.
+  `delta.zero_hunk_gate_gap` is the one place that decides whether there is a gap, and `certify`'s
+  new `delta_zero_hunks` reason joins `gate_relevant_gap` -- so a real FAIL and an armed-but-OFF
+  gate are untouched, and `coverage_certified` is false either way. No new report key: the reason
+  rides the existing certification note, placed after the unreadable-manifest note (which names a
+  broken file) and before every other caveat, since an empty gate scope invalidates the gate
+  wholesale.
 - **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
   `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
   (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION

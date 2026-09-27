@@ -5,7 +5,12 @@ panel ran partial, a scout-requested tool produced no output, or an integrity ch
 undeclared or content-substituted findings file, which on the driver path is caught by the driver's
 own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
-NOT certified, distinct from a real `FAIL`. `summary.coverage_certified` and
+NOT certified, distinct from a real `FAIL`. A fourth cause (#2178): an ACTIVE delta review whose
+diff-hunks map resolved a base but carries ZERO diff ranges while active findings exist — the
+default `--gate-scope on-diff` then scoped the gate against something no diff measured, so it reads
+`INCONCLUSIVE` and `coverage_note` names the map and the remedy (regenerate the diff-hunks
+artifact — the driver's discovery phase writes it). An empty change with no active findings still
+passes, and the gate never falls back to the wider scope. `summary.coverage_certified` and
 `meta.coverage.divergence` carry the detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when
 an artifact it wrote fails its own published schema (next paragraph), `3` on an unreadable OCRDb
 bundle, `0` otherwise. Exit `2` is also argparse's usage-error code; a genuine INCONCLUSIVE run

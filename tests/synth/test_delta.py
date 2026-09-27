@@ -289,3 +289,90 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertTrue(err)
         for line in err.splitlines():
             self.assertLessEqual(line.count(path), 1, line)
+
+
+class TestZeroHunkGateGap(unittest.TestCase):
+    """#2178 (owner ruling 2026-09-27): the gate consequence of the shape #1783
+    only disclosed. A based artifact with no diff ranges leaves a `--gate-scope
+    on-diff` gate scoping against something that is not a measured diff, so a
+    run carrying active findings must not read PASS. The reason string this
+    function returns is what `certify` puts in `coverage_note`; None means
+    there is no gap, and every arm below is one of the four conditions."""
+
+    def _ctx(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                return delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+
+    def test_an_empty_map_with_active_findings_on_diff_is_a_gap(self):
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {}}), 2, "on-diff")
+        self.assertIsNotNone(gap)
+        self.assertIn("zero-hunk delta gate", gap)
+        self.assertIn("no diff ranges", gap)
+        self.assertIn("on-diff", gap)
+        self.assertIn("2 active finding(s)", gap)
+        # The remedy, in the disclosure's words: this artifact is written by a
+        # phase the operator can re-run, which is the whole point of naming it.
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+        self.assertIn("the driver's discovery phase writes it", gap)
+
+    def test_an_unrejected_empty_map_keeps_the_two_readings_clause(self):
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {}}), 1, "on-diff")
+        self.assertIn("look identical", gap)
+        self.assertNotIn("was rejected", gap)
+
+    def test_a_rejected_payload_names_that_cause_instead(self):
+        # Mirrors the disclosure's split (#1783): the reason the map is empty is
+        # KNOWN here, so the empty-change-or-broken-artifact ambiguity does not
+        # hold and saying it would send the operator to compare a known-broken
+        # artifact against itself.
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": 7}), 1, "on-diff")
+        self.assertIn("because the payload was rejected", gap)
+        self.assertIn(delta_mod.MALFORMED_HUNKS_NOT_OBJECT, gap)
+        self.assertNotIn("look identical", gap)
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+
+    def test_a_named_file_with_no_range_is_still_a_gap(self):
+        # ranges == 0 is the condition, not files == 0: a map that names a file
+        # and gives it no range scopes the gate by `diff_map.classify`'s
+        # FAIL-OPEN arms, which is not a measured diff either.
+        self.assertIsNotNone(delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": []}}), 1, "on-diff"))
+
+    def test_no_active_findings_is_no_gap(self):
+        # The owner's carve-out: an empty legitimate change still passes.
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {}}), 0, "on-diff"))
+
+    def test_the_wider_gate_scope_is_no_gap(self):
+        # Falling BACK to the wider scope was rejected; a run that ASKED for it
+        # gates on every active finding already, so nothing was scoped away.
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {}}), 2, "all"))
+
+    def test_a_populated_map_is_no_gap(self):
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}}), 2, "on-diff"))
+
+    def test_an_inactive_delta_is_no_gap(self):
+        # No base: the review degrades to the WIDER gate, which fails closed.
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(
+            self._ctx({"hunks": {}}), 2, "on-diff"))
+
+    def test_an_unmeasured_context_is_no_gap(self):
+        # A context built straight from a payload carries no load report, so
+        # nothing measured its ranges -- `_disclose_load` is silent there for
+        # the same reason. `from_args` is the only builder a run uses, so an
+        # active delta in production always carries a report.
+        ctx = delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}})
+        self.assertTrue(ctx.active)
+        self.assertIsNone(ctx.report)
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))

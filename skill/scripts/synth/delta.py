@@ -132,6 +132,47 @@ def _disclose_load(ctx, path):
               "from %s" % (report.ranges_dropped, path), file=sys.stderr)
 
 
+def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
+    """The certification reason when this run's GATE scoped against a hunk map
+    carrying no ranges, else None (#2178, owner ruling 2026-09-27).
+
+    `_disclose_load` above only PRINTS this shape; #1783 left what to do about
+    it open -- refuse to certify, or fall back to the wider scope. The ruling is
+    refuse: the run reads INCONCLUSIVE. Falling back was rejected, because a
+    benign empty `--changes` run would then go red on pre-existing findings it
+    did not introduce.
+
+    All four conditions are load-bearing. An INACTIVE delta degrades to the
+    WIDER gate, which fails closed, so nothing was scoped away. A run that ASKED
+    for `--gate-scope all` already gates on every active finding. An empty change
+    with no active findings is not a defect and still passes. And `ranges == 0`
+    is the measure, not `files == 0`: a map that names a file and gives it no
+    range scopes the gate by `diff_map.classify`'s two FAIL-OPEN arms, which is
+    not a measured diff either.
+
+    `ctx.report` None means nothing measured the read (a caller that built the
+    context from a payload it already held), so there is no `ranges` to trust and
+    this stays silent for the reason `_disclose_load` does. `from_args` is the
+    only builder a run uses, so an active delta in production always carries one.
+    """
+    report = ctx.report
+    if not (ctx.active and report is not None and report.ranges == 0
+            and active_count > 0 and gate_scope == "on-diff"):
+        return None
+    # The same split `_disclose_load` makes, for the same reason: the
+    # two-readings ambiguity holds only while the reason is UNKNOWN, and a
+    # payload already known broken must not send the operator off to compare it.
+    cause = ("an empty change and a broken artifact look identical from here"
+             if report.payload_malformed is None else
+             "the map is empty because the payload was rejected (%s), not "
+             "because the change was" % report.payload_malformed)
+    return ("zero-hunk delta gate — the diff-hunks map resolved a base and "
+            "carries no diff ranges, so the --gate-scope on-diff source set "
+            "for this run's %d active finding(s) is not a measured diff; "
+            "%s: regenerate the diff-hunks artifact (the "
+            "driver's discovery phase writes it)" % (active_count, cause))
+
+
 def count_hunks(hunks):
     """(files, ranges) over a loaded hunk map -- what a delta review is scoped
     to. One definition, so the loader's report and `meta.coverage.delta` cannot
