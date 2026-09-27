@@ -2077,6 +2077,38 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         with self.assertRaises(shell_lex.Unreadable):
             wg.job_defects([("step", script % self.PAYLOAD)])
 
+    def test_a_heredoc_its_substitution_closes_over_fails_closed(self):
+        # A `<<` in a `$(...)`, `<(...)` or `>(...)` that closes before the
+        # newline its body would follow. Bash 3.2 stops at the open quote below
+        # with a syntax error. 5.2 warns "command substitution: 1 unterminated
+        # here-document", reads the body from the lines below, and reads the
+        # payload after its terminator as code: it runs, unless the command
+        # holding the substitution fails first under `set -e`. The reader left
+        # the operator as text, so the quote hid that payload -- which main's
+        # line-by-line heredoc pass had lifted into view. It raises instead of
+        # modelling 5.2's recovery, so the guard accepts nothing.
+        for opening in ('echo "$(cat <<EOF)"', "echo $(cat <<EOF)", "x=$(cat <<EOF)",
+                        "cat <(cat <<EOF)", "echo >(cat <<EOF)", "echo ${x:-$(cat <<EOF)}",
+                        "echo $[ $(cat <<EOF) ]", "(( $(cat <<EOF) ))", "a[$(cat <<EOF)]=1",
+                        "echo $( (cat <<EOF) )", 'x=$(cat <<EOF; echo "a\nb")'):
+            with self.subTest(opening=opening):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+        # Backquotes are no such frame. Bash reads their text later, as a
+        # script of its own in which the heredoc has no body, and 5.2 runs
+        # nothing here: the open quote below is a syntax error. Read as before.
+        self.assertEqual([], wg.job_defects(
+            [("step", "echo `cat <<EOF`\nit's\nEOF\n%s\n" % self.PAYLOAD)]))
+
+    def test_a_body_inside_its_open_substitution_is_read_there(self):
+        # The fleet's form, where the body lines sit inside a `$(...)` still
+        # open, reads as it did: a body with an open quote is read as a body,
+        # and hides nothing that follows the substitution.
+        for opening in ("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"",
+                        "echo ${x:-$(cat <<EOF\nit's\nEOF\n)}", "cat <(cat <<EOF\nit's\nEOF\n)"):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n" % (opening, self.PAYLOAD))
+
     def test_a_delimiter_bash_parses_to_spell_swallows_nothing(self):
         # Bash spells these delimiters by PARSING the word -- a substitution,
         # an escape `$'...'` decodes, an extglob pattern -- and ends the body

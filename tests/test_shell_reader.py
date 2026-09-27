@@ -824,6 +824,15 @@ class TestOneLexicalPass(unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 1.0)
 
+    def test_a_heredoc_its_substitution_closes_over_raises(self):
+        # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
+        # closes from the lines below -- a recovery it warns about, and one
+        # 3.2 does not make. The reader raises there, as it does past the cap.
+        # A body on the lines inside a substitution still open is read there.
+        with self.assertRaises(shell_lex.Unreadable):
+            shell_reader.statements('echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n')
+        self.assertIn([['echo', 'a']], argvs("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"\necho a\n"))
+
 
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
     """#1793 (COD-3636110933): the quote rules every scanner after the lexer

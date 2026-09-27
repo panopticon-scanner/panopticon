@@ -50,6 +50,13 @@ no step it could not read, and its command line exits non-zero. An exception
 rather than a reading, because the reader has no channel yet for a step it
 cannot read, and raising one needs no line in the modules that call it.
 
+A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its
+body would follow -- `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash
+3.2 reads the lines below it as code; 5.2 warns, reads them as that body and
+runs what follows its terminator. Read as code, a quote in them hides what
+5.2 runs; read as a body, they hide what 3.2 runs. A body on the lines inside
+a substitution still open is read there, as any other.
+
 A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
 `]` however many lines on -- only where bash reads an assignment: at the head
 of a command, after assignments or (bash 5.2) nothing but redirections before
@@ -120,15 +127,17 @@ _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
 
 
 class Unreadable(Exception):
-    """The script nests `((` so deep that deciding each one, as bash does,
-    would read it more than `_REREAD` times over. Nothing catches it."""
+    """A script `lex` does not read: it nests `((` so deep that deciding each
+    one, as bash does, would read it more than `_REREAD` times over, or a
+    substitution closes over a heredoc. Nothing catches it."""
 
 
 def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     """`script` with its comments removed, its continuations folded, and each
     heredoc -- operator, word and body -- replaced by the marker
     `heredoc(body, expands, fd)` returns, spaced off as a word of its own.
-    Raises `Unreadable` rather than guess where bash's reading costs more."""
+    Raises `Unreadable` rather than guess, past the cap on reading `((`
+    again and at a heredoc its substitution closes over."""
     return _Lexer(script, heredoc).run()
 
 
@@ -267,7 +276,14 @@ class _Lexer:
                     return self.rewind(frame.undo, i + 1)
                 frame.undo = ()         # `))`: an arithmetic command
             if not frame.depth:
-                self.frames.pop()       # heredocs still queued in it stay text
+                if frame.queue:         # a substitution closing over a heredoc
+                    raise Unreadable("shell_lex: a heredoc inside a `$(...)`, `<(...)` or "
+                                     "`>(...)` that closes before the newline its body would "
+                                     "follow: bash 5.2 reads that body from the lines below "
+                                     "and runs what follows its terminator, bash 3.2 reads "
+                                     "those lines as code; not read, so nothing in it is "
+                                     "accepted")
+                self.frames.pop()
                 if frame.kind == "(":
                     vars(self).update(frame.saved)
                 elif frame.kind == "a[" and text.startswith(("=", "+="), i + 1):
