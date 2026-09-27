@@ -285,6 +285,29 @@ class TestRecoverLinkage(unittest.TestCase):
 
 
 class TestPlanActions(unittest.TestCase):
+    def test_non_mapping_diff_is_refused_before_action_planning(self):
+        for diff in (None, [], ["closed"], "diff", 1):
+            with self.subTest(diff=diff), mock.patch.object(
+                    reconcile_apply, "_cohort_actions") as cohort:
+                with self.assertRaisesRegex(ValueError, "^diff must be a dictionary$"):
+                    reconcile_apply.plan_actions(diff, {})
+                cohort.assert_not_called()
+
+    def test_non_integer_schema_is_refused_before_action_planning(self):
+        for version in (None, "2", 2.0, True, False, [], {}):
+            with self.subTest(version=version), mock.patch.object(
+                    reconcile_apply, "_cohort_actions") as cohort:
+                with self.assertRaisesRegex(ValueError, "^diff schema_version must be an integer$"):
+                    reconcile_apply.plan_actions({"schema_version": version}, {})
+                cohort.assert_not_called()
+
+    def test_integer_schema_and_legacy_missing_schema_plan_the_same_actions(self):
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        legacy = reconcile_apply.plan_actions(self._diff(), ledger)
+        current = reconcile_apply.plan_actions({**self._diff(), "schema_version": 2}, ledger)
+        self.assertEqual(current, legacy)
+        self.assertEqual([action["issue"] for action in current], [ledger["old1|F-1|a.py|finding"]])
+
     def _diff(self):
         return {
             "recurring": [{"fingerprint": "fp1",

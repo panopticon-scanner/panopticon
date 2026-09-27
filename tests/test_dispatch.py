@@ -3,7 +3,9 @@ import dataclasses
 import io
 import json
 import os
+import re
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -240,6 +242,46 @@ class TestRenderGoldens(unittest.TestCase):
 
 
 class TestRenderAdvisor(unittest.TestCase):
+    def test_invalid_queue_shapes_refuse_without_writing_any_prompts(self):
+        valid = {"run_id": "run-test", "entries": [
+            {"queue_id": "a1b2c3d4e5f60001", "finding": {"id": "F-1"}}]}
+        cases = [({"entries": valid["entries"]}, "has no run_id"),
+                 ({"run_id": "run-test"}, "has no entries list")]
+        cases.extend(({**valid, "run_id": value}, "has no run_id")
+                     for value in (None, "", 1, [], {}))
+        cases.extend(({**valid, "entries": value}, "has no entries list")
+                     for value in (None, "entries", 1, {}))
+        cases.append(({**valid, "entries": [{"finding": {}}]}, ": malformed entry None"))
+        cases.extend(({**valid, "entries": [{"queue_id": value, "finding": {}}]},
+                      ": malformed entry %r" % value) for value in (None, "", 0, False, [], {}))
+        cases.append(({**valid, "entries": [{"queue_id": "a1b2c3d4e5f60001"}]},
+                      ": malformed entry 'a1b2c3d4e5f60001'"))
+        cases.extend(({**valid, "entries": [{"queue_id": "a1b2c3d4e5f60001", "finding": value}]},
+                      ": malformed entry 'a1b2c3d4e5f60001'") for value in (None, [], "finding", 1))
+        for queue, reason in cases:
+            with self.subTest(queue=queue), tempfile.TemporaryDirectory() as directory:
+                qpath = os.path.join(directory, "queue.json")
+                outdir = os.path.join(directory, "prompts")
+                os.mkdir(outdir)
+                with open(qpath, "w", encoding="utf-8") as fh:
+                    json.dump(queue, fh)
+                with self.assertRaises(ValueError) as raised:
+                    dispatch.render_advisor_prompts(qpath, outdir)
+                separator = "" if reason.startswith(":") else " "
+                self.assertEqual(str(raised.exception), "verify queue " + qpath + separator + reason)
+                self.assertEqual(os.listdir(outdir), [])
+                with open(qpath, encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh), queue)
+        with tempfile.TemporaryDirectory() as directory:
+            qpath = os.path.join(directory, "queue.json")
+            outdir = os.path.join(directory, "prompts")
+            with open(qpath, "w", encoding="utf-8") as fh:
+                json.dump(valid, fh)
+            written = dispatch.render_advisor_prompts(qpath, outdir)
+            self.assertEqual(written, [os.path.join(outdir, "a1b2c3d4e5f60001.md")])
+            with open(written[0], encoding="utf-8") as fh:
+                self.assertIn("Verification run id: run-test", fh.read())
+
     # 16 hex chars: shape of evidence.finding_fingerprint's output (#443).
     # Hand-picked here (rather than computed) because this class tests
     # dispatch's rendering behavior in isolation from evidence -- the
@@ -680,6 +722,109 @@ class TestEmitHostAgents(unittest.TestCase):
         self.assertNotIn("model: opus", text)
 
 
+def _legacy_toml_lines(values, prefix=()):
+    """The pre-#1763 inline flattener, verbatim: `json.dumps` for every value
+    and its own copy of the bare-key regex.
+
+    Kept here as the oracle for the golden-equality guard below. For an ASCII
+    policy the shared encoder has to agree with it line for line, which is what
+    says this PR did not move the files any host already has registered.
+    """
+    out = []
+    for key, value in values.items():
+        dotted = prefix + (key,)
+        if isinstance(value, dict):
+            out.extend(_legacy_toml_lines(value, dotted))
+        else:
+            out.append("%s = %s" % (".".join(part if re.fullmatch(r"[A-Za-z0-9_-]+", part)
+                                             else json.dumps(part) for part in dotted),
+                                    json.dumps(value)))
+    return out
+
+
+class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
+    """ARC-981076646 (#1763): the codex branch flattened its policy with a
+    nested `emit_values` that encoded every value with a bare `json.dumps` and
+    re-implemented the bare-key regex inline, duplicating `toml_values` -- the
+    encoder the other host config writers (`codex_host`, `kimi_toml`) share.
+    `json.dumps`'s default ASCII mode emits a non-BMP character as a surrogate
+    pair, which is invalid in TOML, so one emoji in a template description
+    produced a registered shell codex itself cannot parse ("Escaped character
+    is not a Unicode scalar value"), and a lone surrogate went out escaped
+    rather than being refused. Every description in `skill/agents/` is ASCII
+    today, so the bug was one template edit away from firing.
+    """
+
+    EMOJI = "review \U0001F600 cell"
+    LONE_SURROGATE = "review \ud800 cell"
+
+    def _emit(self, description, out_dir):
+        """Emit the codex shells with every template description replaced."""
+        real = dispatch.load_template
+
+        def patched(role_file):
+            meta, body = real(role_file)
+            # load_template hands back cached, read-only objects: copy.
+            return dict(meta, description=description), body
+
+        with mock.patch.object(dispatch, "load_template", patched):
+            return dispatch.emit_host_agents("codex", out_dir)
+
+    def test_a_non_bmp_description_emits_a_file_tomllib_can_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = self._emit(self.EMOJI, d)
+            self.assertEqual(len(paths), len(dispatch.ROLE_FILES))
+            for path in paths:
+                with self.subTest(path=os.path.basename(path)):
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    self.assertEqual(tomllib.loads(text)["description"], self.EMOJI)
+
+    def test_a_lone_surrogate_description_is_refused_not_escaped(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._emit(self.LONE_SURROGATE, d)
+            self.assertIn("lone Unicode surrogate", str(caught.exception))
+            # The encoder refuses before anything reaches the disk; a
+            # UnicodeEncodeError here would mean the write choked instead.
+            self.assertNotIsInstance(caught.exception, UnicodeEncodeError)
+            self.assertEqual(os.listdir(d), [])
+
+    # The first keys every codex shell emits, in the order the policy states
+    # them: the re-emission oracle below walks the emitted file's own order,
+    # so a flattener that re-sorted keys would agree with itself -- this pin
+    # is what notices.
+    LEADING_KEYS = ["approval_policy", "sandbox_mode", "web_search",
+                    "check_for_update_on_startup", "history.persistence",
+                    "project_doc_max_bytes"]
+
+    def test_the_ascii_roles_emit_what_the_old_flattener_emitted(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = dispatch.emit_host_agents("codex", d)
+            self.assertEqual(len(paths), len(dispatch.ROLE_FILES))
+            for path in paths:
+                with self.subTest(path=os.path.basename(path)):
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    parsed = tomllib.loads(text)
+                    # Every value line is `dotted.key = value`; the only
+                    # comments are the launch header written before them.
+                    emitted = [ln for ln in text.splitlines() if not ln.startswith("#")]
+                    self.assertEqual(emitted, _legacy_toml_lines(parsed))
+                    keys = [ln.split(" = ")[0] for ln in emitted]
+                    self.assertEqual(keys[:len(self.LEADING_KEYS)], self.LEADING_KEYS)
+                    # Re-emitting the parsed document is only a faithful oracle
+                    # if each value's TYPE survived the round trip, so pin one
+                    # of every shape the policy carries.
+                    self.assertIsInstance(parsed["description"], str)
+                    self.assertIs(parsed["check_for_update_on_startup"], False)
+                    self.assertEqual(parsed["project_doc_max_bytes"], 0)
+                    self.assertIsInstance(parsed["project_doc_max_bytes"], int)
+                    self.assertNotIsInstance(parsed["project_doc_max_bytes"], bool)
+                    tools = parsed["mcp_servers"]["panopticon_scope"]["enabled_tools"]
+                    self.assertTrue(tools and all(isinstance(t, str) for t in tools))
+
+
 class TestSetupScanIsARegisteredShell(unittest.TestCase):
     """#1737 (AGT-B1D): the one dispatch that reads the WHOLE untrusted tree
     used to be the only role with no registered shell, so its tool grant was
@@ -887,4 +1032,3 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
                     detected = dispatch._detect_host()
                 self.assertEqual(expected, detected)
                 self.assertIn(detected, hosts.known_hosts())
-

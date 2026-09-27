@@ -705,22 +705,19 @@ def _read_allowlist(allowlist_path):
 
 # The dispatch families that write into a run folder, and the ONE artifact each
 # family's entry id declares. Spelled here rather than imported, for the reason
-# `_atomic_write_json` carries the os-flag form itself: this hook is executed as
-# its own subprocess by the host's PreToolUse command and has to import standing
-# alone, so it may not reach into the driver's packages.
-# tests/test_write_guard_hook.py pins every one of these against the phase builder
-# that owns it (`phases/review.py:334+354`, `phases/verify.py:57-64+262`,
-# `phases/verify_tools.py:149+212`, `phases/coverage.py:97+102`), so a rename on
-# either side fails a test instead of silently revoking a live grant.
+# `atomic_write_json` carries the os-flag form itself: this hook is its own
+# subprocess under the host's PreToolUse command and may not import the driver's
+# packages. tests/test_write_guard_hook.py pins each against the builder that owns
+# it -- `phases/review`, `phases/verify`, `phases/verify_tools`, `phases/coverage`
+# -- so a rename on either side fails a test rather than silently revoking a grant.
 RUNS_DIR = "runs"
 VERDICTS_DIR = "verdicts"
 _REVIEW_PREFIX = "review-"
 _TOOL_VERIFY_PREFIX = "verify-tool-"
 _VERIFY_PREFIX = "verify-"
 _SCOUT_PREFIX = "scout-"
-# A tool-finding advisor's queue id: `evidence.finding_fingerprint`'s 16-char
-# sha256 prefix, plus `build_verify_queue`'s `-<n>` collision suffix
-# (`evidence.py:243` and `:445`, the only producer of either).
+# A tool-finding advisor's queue id, produced only in `evidence`: a 16-char sha256
+# `finding_fingerprint` prefix plus `build_verify_queue`'s `-<n>` collision suffix.
 #
 # This GRAMMAR, not the prefix order, is what separates the two verify families
 # (#1831 fix round 2, NI-1). `verify-tool-<queue id>` and
@@ -952,7 +949,7 @@ def _merge_grants(*mappings):
     return out
 
 
-def _atomic_write_json(path, data, indent=None):
+def atomic_write_json(path, data, indent=None):
     """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
     planted at that temp name (I7).
 
@@ -985,6 +982,9 @@ def _atomic_write_json(path, data, indent=None):
     os.replace(tmp, path)
 
 
+_atomic_write_json = atomic_write_json   # the private spelling its own tests use
+
+
 def _write_hook_entry(settings_path, allowlist_path=None):
     settings = _load(settings_path)
     hooks = settings.setdefault("hooks", {})
@@ -992,7 +992,7 @@ def _write_hook_entry(settings_path, allowlist_path=None):
     pre = [h for h in hooks.get("PreToolUse", []) if not _is_our_entry(h)]
     pre.append(entry)
     hooks["PreToolUse"] = pre
-    _atomic_write_json(settings_path, settings, indent=2)
+    atomic_write_json(settings_path, settings, indent=2)
 
 
 def _remove_hook_entry(settings_path):
@@ -1005,7 +1005,7 @@ def _remove_hook_entry(settings_path):
         del hooks["PreToolUse"]
     if not hooks:
         settings.pop("hooks", None)
-    _atomic_write_json(settings_path, settings, indent=2)
+    atomic_write_json(settings_path, settings, indent=2)
 
 
 DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
@@ -1095,8 +1095,8 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
     # survives (the #11 property) without becoming writable by this batch's
     # reviewers -- which is exactly what a flat union made it.
-    _atomic_write_json(allowlist_path,
-                       allowlist_document(_merge_grants(carried, added)))
+    atomic_write_json(allowlist_path,
+                      allowlist_document(_merge_grants(carried, added)))
     _write_hook_entry(settings_path, allowlist_path)
     return added
 
@@ -1171,7 +1171,7 @@ def uninstall(settings_path=None, allowlist_path=None, *, plan=None,
             if kept:
                 remaining[eid] = kept
         if remaining:
-            _atomic_write_json(allowlist_path, allowlist_document(remaining))
+            atomic_write_json(allowlist_path, allowlist_document(remaining))
             return   # other fan-outs still armed -> keep the hook entry + file
     _remove_hook_entry(settings_path)
     try:

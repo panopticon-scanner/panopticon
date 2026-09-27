@@ -586,7 +586,7 @@ def refuse_unregistered_agent(entry, roles=None):
     finds two of them."""
     value = entry.get("agent") if isinstance(entry, dict) else None
     entry_id = entry.get("id") if isinstance(entry, dict) else None
-    shown = redact.redact(str(value)[:200])
+    shown = redact.redact_diagnostic(str(value), 200)
     if roles is None:
         return RunResult.failed(entry_id, UNREGISTERED_AGENT % shown)
     allowed = ", ".join(sorted(allowed_agent_names(roles))) or "none"
