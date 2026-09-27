@@ -1,8 +1,30 @@
 """Compute a group's effective panel set: floor forces ON, exclude forces OFF
-(loudly), the scout widens the undeclared middle. Pure. See spec §5.
+(loudly), the scout widens the undeclared middle. Pure -- every function here is
+a total function of its arguments -- though since #1770 importing this module
+also imports `discovery`, for the TST floor's naming rule, and that import
+touches `sys.path` as it always has. See spec §5.
 """
 
+from typing import TYPE_CHECKING
+
 import os
+
+# #1770 ARC-3682668884: the TST floor's test-file signal is the UNION of
+# discovery's naming rule and the local hints, so `discovery.TEST_PATTERNS` is a
+# dependency of this module rather than a second, drifting derivation of "is
+# this a test file". One-way: `discovery` does not import this module, and
+# nothing in its import closure does either. Same fallback shape as `discovery`
+# uses for its own siblings -- this module is imported both as
+# `scripts.coverage_model` (the driver's children, which get `skill/` on
+# PYTHONPATH) and flat by `setup_flow` / `grouping_engine` / `setup_proposal`,
+# and the flat mode has only `skill/scripts` on sys.path.
+if TYPE_CHECKING:
+    from scripts import discovery
+else:
+    try:
+        from scripts import discovery
+    except ModuleNotFoundError:
+        import discovery
 
 # #5.0-11: the universal-tier domains ride a GLOBAL floor — every group reviews
 # code/database/test/architecture regardless of its committed vertical floor.
@@ -32,6 +54,9 @@ NON_EXCLUDABLE = frozenset({"SEC"})
 _DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/models/",
                   "/model/", "schema", "entity", "entities", ".orm", "seed",
                   "repository", "database", "/db.")
+# These are HALF of the TST signal; `_has_test_surface` unions them with
+# discovery's naming rule. Do not add a naming convention here that belongs in
+# `discovery.TEST_PATTERNS` -- the union already picks that one up everywhere.
 _TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
                     "/tests/", "/test/", ".feature", "conftest", "test_")
 
@@ -149,6 +174,25 @@ def _any_hint(files, hints):
     return False
 
 
+def _has_test_surface(files):
+    """The TST floor's signal: `discovery.is_test_file` OR `_TEST_FILE_HINTS`.
+
+    Both halves are load-bearing (#1770 ARC-3682668884). Only discovery's
+    `TEST_PATTERNS` know the SUFFIX conventions -- `AppTest.java`,
+    `AccountTests.cs`, `AuthTest.php`, `app_tests.py` -- which no substring hint
+    matches, so before the union a flat Java layout and every standard C#/PHP
+    repo drew no guaranteed TST cell. Only the hints cover the plumbing the
+    naming rule misses: a `conftest`, a `/tests/` corpus, a `.feature` file.
+
+    The path is passed to `is_test_file` AS GIVEN, because those patterns are
+    anchored and case-SENSITIVE (`Test\\.java$`); `_any_hint` lowercases instead.
+    """
+    for f in files or ():
+        if discovery.is_test_file(str(f)):
+            return True
+    return _any_hint(files, _TEST_FILE_HINTS)
+
+
 def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     """Subset of `global_floor` whose review surface is objectively present for
     this group (#5.0-19, #1193). COD is universal; DAT/TST/ARC gate ONLY on
@@ -156,6 +200,10 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     here so a mis-reporting scout cannot suppress a floor domain whose surface
     objectively exists (files present), and a scout-requested domain that is not
     objectively surfaced is still available via scout_added in effective_panels.
+    The TST signal is the UNION of discovery's naming rule
+    (`discovery.is_test_file` / `TEST_PATTERNS`) and `_TEST_FILE_HINTS`, so the
+    two derivations of "is this a test file" cannot drift apart and leave the
+    guarantee above unkept for a whole language's convention (#1770).
     Pure; the return is always a subset of `global_floor`.
 
     - COD: any file that is not a recognized binary/media asset (#1489). COD was
@@ -164,7 +212,7 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
       Across 7 calibration runs those cells returned 0 findings in every
       instance, against a 2.71-5.83 corpus baseline.
     - DAT: any db/schema/model/migration/seed file.
-    - TST: any test-file signal.
+    - TST: any test-file signal, per `_has_test_surface`.
     - ARC: the group spans >= 2 distinct file directories (real cross-module
       structure).
     """
@@ -174,7 +222,7 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
         keep.add("COD")
     if "DAT" in global_floor and _any_hint(files, _DB_FILE_HINTS):
         keep.add("DAT")
-    if "TST" in global_floor and _any_hint(files, _TEST_FILE_HINTS):
+    if "TST" in global_floor and _has_test_surface(files):
         keep.add("TST")
     distinct_dirs = {os.path.dirname(str(f)) for f in files}
     if "ARC" in global_floor and len(distinct_dirs) >= 2:

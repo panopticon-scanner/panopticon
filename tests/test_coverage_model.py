@@ -1,7 +1,9 @@
 # tests/test_coverage_model.py
 import inspect
+import re
 
 import scripts.coverage_model as cov
+import scripts.discovery as discovery
 
 # The existing cases isolate the core (floor|scout)-exclude logic by passing
 # global_floor=set(); the global-floor injection is exercised separately below.
@@ -137,6 +139,77 @@ def test_applicable_floor_keeps_tst_on_all_test_file_hints():
         got = cov.applicable_global_floor([fname], {"surfaces": []})
         if "TST" not in got:   # #run7 TST-B2A: was a vacuous truthy-tuple assert
             raise AssertionError(f"Hint {hint} on {fname} failed to trigger TST")
+
+
+# --- ARC-3682668884 (#1770): the TST floor is discovery's naming rule UNION the
+# --- substring hints, so the two derivations cannot drift apart silently. ----
+
+# The six-language table from the #1770 triage. Three rows -- flat Java, C#, PHP
+# -- are the defect this pins: `discovery.is_test_file` called those files tests
+# all along, while the floor's substring hints knew none of the three SUFFIX
+# conventions, so a flat Java layout and every standard C#/PHP repo got no
+# guaranteed TST cell and a mis-reporting scout could suppress the domain.
+_TST_FLOOR_TABLE = (
+    ("java (Maven suffix convention)",
+     ["src/main/java/a/App.java", "src/test/java/a/AppTest.java"], True),
+    ("java (flat, suffix only)", ["a/App.java", "a/AppTest.java"], True),
+    ("csharp (suffix convention)", ["Svc/Account.cs", "Svc/AccountTests.cs"], True),
+    ("php (PHPUnit suffix)", ["src/Auth.php", "src/AuthTest.php"], True),
+    ("python (test_ prefix)", ["pkg/app.py", "pkg/test_app.py"], True),
+    ("js (.test.ts)", ["src/a.ts", "src/a.test.ts"], True),
+    ("no test surface at all", ["src/util.py"], False),
+)
+
+
+def test_tst_floor_covers_every_language_in_the_triage_table():
+    failures = []
+    for label, files, want in _TST_FLOOR_TABLE:
+        got = "TST" in cov.applicable_global_floor(files, {"surfaces": []})
+        if got != want:
+            failures.append(f"{label}: files={files} TST floor={got}, want {want}")
+    if failures:
+        raise AssertionError("\n".join(failures))
+
+
+# One representative path per `discovery.TEST_PATTERNS` entry. The two meta-tests
+# below assert both directions with it: every pattern is represented here, and
+# the floor accepts every representative -- so a TEST_PATTERNS entry added later
+# is covered automatically, or fails loudly asking for its representative.
+_DISCOVERY_TEST_FIXTURES = (
+    "app/models/user_spec.rb",
+    "lib/user_test.rb",
+    "pkg/handler_test.go",
+    "src/a.test.ts",
+    "src/a.spec.mjs",
+    "src/__tests__/a.py",
+    "pkg/test_app.py",
+    "pkg/app_tests.py",
+    "a/AppTest.java",
+    "Svc/AccountTests.cs",
+    "src/AuthTest.php",
+    "lib/app_test.exs",
+)
+
+
+def test_every_discovery_test_pattern_has_a_fixture():
+    orphans = [p for p in discovery.TEST_PATTERNS
+               if not any(re.search(p, f) for f in _DISCOVERY_TEST_FIXTURES)]
+    if orphans:
+        raise AssertionError(
+            "discovery.TEST_PATTERNS entries with no representative in "
+            "_DISCOVERY_TEST_FIXTURES -- add one so the parity meta-test below "
+            f"covers the new convention: {orphans!r}")
+
+
+def test_tst_floor_accepts_every_path_discovery_calls_a_test():
+    failures = []
+    for path in _DISCOVERY_TEST_FIXTURES:
+        if not discovery.is_test_file(path):
+            failures.append(f"{path}: fixture is not a discovery test file at all")
+        elif "TST" not in cov.applicable_global_floor([path], {"surfaces": []}):
+            failures.append(f"{path}: discovery calls it a test, the TST floor does not")
+    if failures:
+        raise AssertionError("\n".join(failures))
 
 
 def test_directory_hints_match_root_and_nested_database_paths():
