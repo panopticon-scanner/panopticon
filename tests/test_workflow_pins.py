@@ -1511,6 +1511,282 @@ class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
                     "not a workflow edit." % workflow)
 
 
+# --- ARC-2930403871 (#1771): both adapter lanes run as production's user ------
+# `Dockerfile.fixtures` ends on `USER root`, correctly, for its BUILD: it
+# installs language toolchains and writes build artifacts. Nothing dropped that
+# privilege at run time and this workflow passed no `--user`, so the ONE gate
+# where the adapters meet real tools and real fixtures exercised them as uid 0
+# while every production scan runs the tools image as `scanner`
+# (`Dockerfile:486` `useradd -m -u 1000 scanner`, `Dockerfile:506` `USER
+# scanner`). A root-only adapter regression -- the #1877 class, a tool refusing
+# its input under the real uid -- passed the only gate that could catch it.
+#
+# The posture has two halves and both are pinned. STATIC: every `docker run` of
+# the fixtures image carries `--user` naming production's user, read through the
+# workflow's own `env:` block so the pin follows the VALUE rather than the
+# spelling. RUNTIME: each job asks the CONTAINER what it is before it runs
+# anything else, which is the half that catches a `--user` docker could not
+# honour (an image whose passwd stopped carrying the user) -- otherwise that is
+# a green tick over probes run as root, which is the finding itself.
+#
+# By name rather than `1000:1000`: the Dockerfile states the uid and says
+# nothing about the gid, so the name is the only spelling that takes
+# production's own primary group instead of a guessed one. The uid is pinned all
+# the same -- it travels into the container as `EXPECTED_UID`, which is what the
+# assertion compares `id -u` against, so a uid change in `Dockerfile:486`
+# reddens this job rather than drifting past it.
+FIXTURES_IMAGE = "panopticon-fixtures:latest"
+EXPECTED_SCANNER_USER = "scanner"        # Dockerfile:506 `USER scanner`
+EXPECTED_SCANNER_UID = "1000"            # Dockerfile:486 `useradd -m -u 1000 scanner`
+UID_ASSERTION_ENV = "EXPECTED_UID"
+
+_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+
+
+def resolve_env(value, env):
+    """`$VAR` / `${VAR}` through a step's env; any other text unchanged.
+
+    The workflow writes `--user "$SCANNER_USER"` and keeps the value in the
+    job's `env:` block next to the `Dockerfile` line it comes from, so a reader
+    that stopped at the token would pin the spelling and never see the user.
+    """
+    match = _VAR.match(value or "")
+    if match is None:
+        return value
+    return env.get(match.group(1), value)
+
+
+def fixtures_runs(script):
+    """[(flags, argv, why unreadable)] for each run of the fixtures image.
+
+    `flags` is the part of the invocation docker reads -- everything before the
+    image operand -- because a `--user` written after it is an argument handed
+    to the container's own command and sets no uid at all.
+    """
+    found = []
+    for argv in docker_run_argvs(script):
+        index, why = docker_image_index(argv)
+        if why is not None:
+            found.append((None, argv, why))
+        elif argv[index] == FIXTURES_IMAGE:
+            found.append((argv[:index], argv, None))
+    return found
+
+
+def user_defect(script, env):
+    """Why a step's run of the fixtures image is not production's user, or None.
+
+    Silent about a step that runs no container: which steps must be asked is
+    `fixtures_runs`' answer, and the fleet test below guards that there is one.
+    """
+    for flags, _argv, why in fixtures_runs(script):
+        if why is not None:
+            return why
+        value = _flag_value(flags, ("--user", "-u"))
+        if value is None:
+            return ("this `docker run %s` carries no `--user` among its flags, "
+                    "so the adapter probes run as uid 0 while every production "
+                    "scan runs the tools image as %r (ARC-2930403871, #1771)"
+                    % (FIXTURES_IMAGE, EXPECTED_SCANNER_USER))
+        resolved = resolve_env(value, env)
+        if resolved.split(":")[0] not in (EXPECTED_SCANNER_USER,
+                                          EXPECTED_SCANNER_UID):
+            return ("this `docker run %s` runs as %r; production runs the tools "
+                    "image as %r, uid %s (`Dockerfile:486`, `Dockerfile:506`) "
+                    "-- a root-only adapter regression passes a harness that "
+                    "runs as root (ARC-2930403871, #1771)"
+                    % (FIXTURES_IMAGE, resolved, EXPECTED_SCANNER_USER,
+                       EXPECTED_SCANNER_UID))
+    return None
+
+
+def asserts_the_uid(script, env):
+    """True if this step asks the CONTAINER its uid and fails on a mismatch.
+
+    Not `--user` read a second time: this is the runtime half, and what makes
+    it an assertion rather than a log line is the failure arm. The uid it
+    compares against travels in as `EXPECTED_UID`, so the assertion is pinned
+    to the same `Dockerfile` value the flag is.
+    """
+    for flags, argv, why in fixtures_runs(script):
+        if why is not None:
+            continue
+        passed = dict(_DOCKER_ENV.findall(" ".join(flags))).get(UID_ASSERTION_ENV)
+        if resolve_env(passed, env) != EXPECTED_SCANNER_UID:
+            continue
+        command = " ".join(argv[len(flags):])
+        if "id -u" in command and "exit 1" in command:
+            return True
+    return False
+
+
+class TestTheScannerUserRule(unittest.TestCase):
+    """The static half, on scratch scripts -- both answers."""
+
+    ENV = {"SCANNER_USER": "scanner", "SCANNER_UID": "1000",
+           "SCANNER_HOME": "/home/scanner"}
+    SHIPPED = ('docker run --rm \\\n'
+               '  --user "$SCANNER_USER" \\\n'
+               '  -v "$PWD:/work:ro" -w /work \\\n'
+               '  -e HOME="$SCANNER_HOME" \\\n'
+               '  --entrypoint sh panopticon-fixtures:latest \\\n'
+               '  -c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"\n')
+
+    def test_the_shipped_shape_is_not_a_defect(self):
+        self.assertIsNone(user_defect(self.SHIPPED, self.ENV))
+
+    def test_dropping_the_flag_is_a_defect(self):
+        why = user_defect(
+            self.SHIPPED.replace('  --user "$SCANNER_USER" \\\n', ""), self.ENV)
+        self.assertIsNotNone(why, "a root run of the fixtures image passed")
+        self.assertIn("--user", why)
+
+    def test_running_as_root_is_a_defect(self):
+        for spelling in ("--user root", "--user 0:0", "-u 0", "--user=root"):
+            with self.subTest(spelling=spelling):
+                why = user_defect(
+                    self.SHIPPED.replace('--user "$SCANNER_USER"', spelling),
+                    self.ENV)
+                self.assertIsNotNone(why, "%s passed" % spelling)
+
+    def test_the_value_is_read_through_the_jobs_env_block(self):
+        # The pin follows the VALUE: an `env:` block that points the flag at
+        # root is the same defect as writing root on the command line, and a
+        # reader that stopped at `$SCANNER_USER` could not tell them apart.
+        why = user_defect(self.SHIPPED, dict(self.ENV, SCANNER_USER="root"))
+        self.assertIsNotNone(why, "the pin read the spelling, not the value")
+        self.assertIn("root", why)
+
+    def test_the_numeric_spelling_of_the_same_user_is_accepted(self):
+        for spelling in ("1000", "1000:1000"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNone(user_defect(
+                    self.SHIPPED.replace('"$SCANNER_USER"', spelling), self.ENV))
+
+    def test_a_flag_written_after_the_image_is_not_dockers(self):
+        # docker hands everything past the image to the container's command, so
+        # `--user` there sets no uid -- the same defect as its absence.
+        script = ('docker run --rm -v "$PWD:/work:ro" -w /work \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  --user scanner -c "python3 -m pytest tests/tools/"\n')
+        why = user_defect(script, self.ENV)
+        self.assertIsNotNone(why, "a --user past the image read as a uid")
+        self.assertIn("--user", why)
+
+    def test_another_images_run_is_not_this_rules_business(self):
+        self.assertIsNone(user_defect("docker run --rm alpine true\n", self.ENV))
+
+    def test_an_unknown_flag_is_refused_rather_than_guessed(self):
+        # Where the image starts decides which `--user` docker reads, so an
+        # unknown flag means UNREAD, not clean.
+        why = user_defect(
+            self.SHIPPED.replace("docker run --rm",
+                                 "docker run --rm --frobnicate 3"), self.ENV)
+        self.assertIsNotNone(why)
+        self.assertIn("--frobnicate", why)
+
+
+class TestTheUidAssertionRule(unittest.TestCase):
+    """The runtime half, on scratch scripts -- both answers."""
+
+    ENV = TestTheScannerUserRule.ENV
+    ASSERTION = ('docker run --rm \\\n'
+                 '  --user "$SCANNER_USER" \\\n'
+                 '  -e EXPECTED_UID="$SCANNER_UID" \\\n'
+                 '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                 '  -c \'if [ "$(id -u)" = "$EXPECTED_UID" ]; then echo ok; '
+                 'else echo "::error::not the scanner uid"; exit 1; fi\'\n')
+
+    def test_the_shipped_assertion_is_found(self):
+        self.assertTrue(asserts_the_uid(self.ASSERTION, self.ENV))
+
+    def test_an_assertion_with_no_failure_arm_is_a_log_line(self):
+        self.assertFalse(asserts_the_uid(
+            self.ASSERTION.replace("exit 1", "true"), self.ENV))
+
+    def test_an_assertion_that_never_asks_the_container_is_not_one(self):
+        self.assertFalse(asserts_the_uid(
+            self.ASSERTION.replace("id -u", "echo 1000"), self.ENV))
+
+    def test_the_uid_it_compares_against_must_be_the_pinned_one(self):
+        self.assertFalse(asserts_the_uid(self.ASSERTION,
+                                         dict(self.ENV, SCANNER_UID="0")))
+
+    def test_an_expected_uid_past_the_image_never_reaches_the_container(self):
+        script = ('docker run --rm --user scanner \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  -e EXPECTED_UID=1000 -c \'[ "$(id -u)" = 1000 ] || exit 1\'\n')
+        self.assertFalse(asserts_the_uid(script, self.ENV))
+
+    def test_the_pytest_step_is_not_mistaken_for_the_assertion(self):
+        self.assertFalse(asserts_the_uid(TestTheScannerUserRule.SHIPPED,
+                                         self.ENV))
+
+
+class TestBothAdapterLanesRunAsProductionsUser(unittest.TestCase):
+    """The fleet. Both jobs, because both run the fixtures image."""
+
+    def _rows(self, job):
+        doc = _adapter_doc()
+        return [(step.name, step.script,
+                 step_env(doc, job, step.name, step.script))
+                for step in _adapter_run_steps(job)]
+
+    def test_every_run_of_the_fixtures_image_names_the_scanner_user(self):
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                with self.subTest(job=job, step=name):
+                    why = user_defect(script, env)
+                    self.assertIsNone(why, "%s / %s: %s" % (job, name, why or ""))
+
+    def test_there_is_a_run_to_ask(self):
+        # Guards the guard: `user_defect` is silent about a step that runs no
+        # container, so the answer above only means something while both jobs
+        # actually run the fixtures image.
+        for job in EXPECTED_ADAPTER_JOBS:
+            with self.subTest(job=job):
+                self.assertTrue(
+                    [run for _name, script, _env in self._rows(job)
+                     for run in fixtures_runs(script)],
+                    "no `docker run %s` in %s / %s" % (FIXTURES_IMAGE,
+                                                       ADAPTER_WORKFLOW, job))
+
+    def test_the_rule_would_speak_if_a_lane_lost_the_flag(self):
+        # ...and that it is this workflow the rule is reading: the same steps,
+        # with the flag deleted, are defects.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                with self.subTest(job=job, step=name):
+                    stripped = re.sub(r"--user\s+\S+", "", script)
+                    self.assertIsNotNone(
+                        user_defect(stripped, env),
+                        "deleting `--user` from %s / %s left the lane passing; "
+                        "the pin reads something else" % (job, name))
+
+    def test_each_job_asserts_the_uid_before_it_runs_a_probe(self):
+        for job in EXPECTED_ADAPTER_JOBS:
+            rows = self._rows(job)
+            asserted = [i for i, (_n, script, env) in enumerate(rows)
+                        if asserts_the_uid(script, env)]
+            selected = [i for i, (_n, script, _e) in enumerate(rows)
+                        if pytest_argvs(script)]
+            with self.subTest(job=job):
+                self.assertTrue(
+                    asserted,
+                    "%s / %s runs the adapter probes without ever asking the "
+                    "container which uid it got. `--user` is the intent; `id "
+                    "-u` inside the container is the proof (ARC-2930403871, "
+                    "#1771)." % (ADAPTER_WORKFLOW, job))
+                self.assertTrue(selected, "no pytest step in %s" % job)
+                self.assertLess(
+                    asserted[0], selected[0],
+                    "%s / %s asserts its uid AFTER running the probes, so a "
+                    "root run reports its findings first" % (ADAPTER_WORKFLOW,
+                                                            job))
+
+
 class TestVerifiedPinFreshnessJobs(unittest.TestCase):
     def _defects(self, job, family):
         steps = job.get("steps", [])

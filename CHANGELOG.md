@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The adapter-integration lanes run as the user production scans run as (#1771, ARC-2930403871).**
+  `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
+  writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
+  adapters meet real tools and real fixtures proved them as uid 0 while every production scan runs
+  the tools image as `scanner` (`Dockerfile:486`, `:506`). A root-only adapter regression, the #1877
+  class, passed the only gate that could catch it. Both jobs now pass `--user scanner` with
+  production's `HOME`, and each asserts `id -u` inside the container before running a probe;
+  `Dockerfile.fixtures` says that build-time root is not a runtime posture and that the image is no
+  longer local-only. The .NET restore caches baked under root's HOME are the known follow-on.
 - **The seven residuals this SEC round re-found are written down where each is decided (#1831,
   #1836, #1838, #1839; run-14 SEC-3334394305, SEC-589720899, SEC-882922343, SEC-1915770944,
   SEC-136999130, SEC-3084426934, SEC-2589722723).** All seven are BY DESIGN and the sentences

@@ -357,7 +357,8 @@ def _strict_pytest_containers(script):
         if flag == "--rm":
             i += 1
             continue
-        if flag not in ("-v", "-w", "-e", "--entrypoint") or i + 1 == len(argv):
+        if flag not in ("-v", "-w", "-e", "-u", "--user",
+                        "--entrypoint") or i + 1 == len(argv):
             break
         options.setdefault(flag, []).append(argv[i + 1])
         i += 2
@@ -366,12 +367,23 @@ def _strict_pytest_containers(script):
     if _standalone_argv(argv[i + 2]) != [
             "python3", "-m", "pytest", "tests/tools/", "-q", "-rs", "-p", "no:cacheprovider"]:
         return []
+    # ARC-2930403871 (#1771): `--user` and the HOME that comes with it are part
+    # of the contract, not decoration. Without the flag this job proved the
+    # adapters as uid 0 while every production scan runs the tools image as
+    # `scanner`, so a root-only regression (the #1877 class) passed the only
+    # gate that could catch it. Read as the RAW token, like every other option
+    # here -- this module evaluates nothing -- so what is pinned is that the
+    # invocation takes its user from the job's `env:` block; that block's VALUE
+    # is pinned by `tests/test_workflow_pins.py` (`user_defect`), which resolves
+    # it against `Dockerfile:486`/`:506`.
     if (options.get("--entrypoint") == ["sh"]
             and options.get("-v") == ["$PWD:/work:ro"]
             and options.get("-w") == ["/work"]
+            and options.get("--user") == ["$SCANNER_USER"]
             and set(options.get("-e", [])) == {
                 "FIXTURE_ROOT=/opt/panopticon-fixtures",
-                "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1"}):
+                "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1",
+                "HOME=$SCANNER_HOME"}):
         return [argv]
     return []
 
@@ -453,7 +465,9 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
 
     @staticmethod
     def _pytest_script():
-        return ('docker run --rm -v "$PWD:/work:ro" -w /work '
+        return ('docker run --rm --user "$SCANNER_USER" '
+                  '-v "$PWD:/work:ro" -w /work '
+                  '-e HOME="$SCANNER_HOME" '
                   '-e FIXTURE_ROOT=/opt/panopticon-fixtures '
                   '-e PANOPTICON_REQUIRE_INTEGRATION=1 -e PYTHONDONTWRITEBYTECODE=1 '
                   '--entrypoint sh panopticon-fixtures:latest '
@@ -467,6 +481,9 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
                     script.replace("panopticon-fixtures:latest", "wrong-image"),
                     script.replace("python3 -m pytest", "echo pytest"),
                     script.replace("-e PANOPTICON_REQUIRE_INTEGRATION=1", ""),
+                    script.replace('--user "$SCANNER_USER" ', ""),
+                    script.replace('--user "$SCANNER_USER"', "--user root"),
+                    script.replace('-e HOME="$SCANNER_HOME" ', ""),
                     script.replace("-v ", "-e "),
                     script.replace("tests/tools/", "tests/tools/test_one.py"),
                     script.replace(" -q -rs", " -k integration -q -rs"),

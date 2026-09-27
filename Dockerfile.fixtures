@@ -6,8 +6,31 @@
 # hadolint ignore=DL3006,DL3007
 FROM panopticon-tools:latest
 
-# DL3002: this image intentionally runs as root because it installs language
-# toolchains and writes build artifacts during image build. It is for local test use only.
+# DL3002: root here is a BUILD-time decision. The layers below install a JDK,
+# clone three goat fixtures and run bundler, maven, cargo and dotnet against
+# them, all as this USER. It says nothing about who should RUN the image, and
+# this image is no longer local-only: `.github/workflows/adapter-integration.yml`
+# builds and runs it daily, and that is the ONLY gate where the adapters meet
+# real tools and real fixtures.
+#
+# The RUNTIME user is the caller's, and CI states it (ARC-2930403871, #1771):
+# both jobs there pass `--user scanner`, so the probes run as the user every
+# production scan runs as (`Dockerfile:486` `useradd -m -u 1000 scanner`,
+# `Dockerfile:506` `USER scanner`), and each asserts `id -u` inside the
+# container before running a probe. Without that, the harness proved the
+# adapters at a privilege production never has, and a root-only regression --
+# the #1877 class, a tool refusing its input under the real uid -- passed the
+# one gate that could catch it.
+#
+# A runtime `USER scanner` at the end of this file is NOT the cheap version of
+# that, which is why it is not here. The builds below run as root with root's
+# HOME, so their caches land under /root (mode 0700): the .NET restores in
+# particular leave `project.assets.json` naming absolute paths under
+# /root/.nuget/packages, which uid 1000 cannot read. Baking a default user in
+# would move that wall from an explicit flag onto every plain `docker run` of
+# this image, with nothing on the command line to explain it. Making the baked
+# caches world-readable (a NUGET_PACKAGES outside /root, or a+rX on the caches)
+# is the follow-on that lets this file drop privilege itself.
 # hadolint ignore=DL3002
 USER root
 
@@ -124,6 +147,8 @@ ENV PYTHONPATH=/opt/panopticon
 ENV FIXTURE_ROOT=/opt/panopticon-fixtures
 WORKDIR /opt/panopticon
 
-# The fixtures image runs as root because it installs language toolchains and
-# writes build artifacts during image build. It is intended for local test use only.
+# Build-time root, as the USER block at the top explains; the runtime user is
+# the caller's. This CMD is the local harness. CI overrides both the user and
+# the command (`--user scanner`, `--entrypoint sh ... pytest tests/tools/`), so
+# "for local test use only" is no longer true of this image and is not claimed.
 CMD ["python", "skill/scripts/run_fixture_tests.py"]

@@ -34,6 +34,37 @@ jobs:
       packages: read
     env:
       IMAGE: ghcr.io/${{ github.repository }}-tools:latest
+      # ARC-2930403871 (#1771). Production runs the tools image as the `scanner`
+      # user -- `Dockerfile:486` (`RUN useradd -m -u 1000 scanner`) and
+      # `Dockerfile:506` (`USER scanner`) -- and this job ran the SAME adapters
+      # against the SAME tools as uid 0, because `Dockerfile.fixtures` ends on
+      # `USER root` for its build and nothing dropped that privilege at run
+      # time. So the one gate where the adapters meet real tools and real
+      # fixtures proved them at a privilege production never has, and a
+      # root-only adapter regression -- the #1877 class, a tool refusing its
+      # input under the real uid -- passed the only gate that could catch it.
+      # The runtime user is the CALLER's to set: it is set here for every
+      # `docker run` of the fixtures image, and asserted inside the container
+      # before any probe runs.
+      #
+      # By NAME, not `1000:1000`: the Dockerfile states the uid and says
+      # nothing about the gid, so the name is the only spelling that takes
+      # production's own primary group rather than a guessed one. The uid is
+      # pinned all the same and travels in as `EXPECTED_UID`, so a uid change
+      # in `Dockerfile:486` reddens this job instead of drifting past it.
+      SCANNER_USER: scanner
+      SCANNER_UID: "1000"
+      # The HOME `USER scanner` gives production, pinned rather than left to
+      # docker's own passwd lookup under `--user`. Deliberately NOT an empty
+      # scratch dir: bundler-audit reads the REFRESHED ruby advisory DB from
+      # `$HOME/.local/share/ruby-advisory-db` (`Dockerfile:490-492`), so an
+      # empty HOME would silently fall back to the gem's stale vendored copy --
+      # a quieter version of the defect this flag exists to remove. It IS
+      # writable by uid 1000 (`Dockerfile:487` chowns it, and the build-time
+      # gate `skill/scripts/smoke_adapters.py` requires `$HOME` writable), and
+      # every adapter's own scratch is an `mkdtemp` under the container's
+      # world-writable /tmp, exactly as in production.
+      SCANNER_HOME: /home/scanner
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,6 +96,21 @@ jobs:
       - name: Build the fixtures image
         run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 
+      # The posture, asserted rather than assumed (ARC-2930403871). `--user` is
+      # the intent; `id -u` inside the container is the proof, and it runs
+      # BEFORE the probes so a lane that lost the flag -- or an image whose
+      # passwd stopped carrying the user -- is a red job rather than a green
+      # tick over probes run as root. `tests/test_workflow_pins.py` pins the
+      # flag from the file; this is the half a file cannot state.
+      - name: Assert the container runs as the scanner user
+        run: |
+          docker run --rm \
+            --user "$SCANNER_USER" \
+            -e HOME="$SCANNER_HOME" \
+            -e EXPECTED_UID="$SCANNER_UID" \
+            --entrypoint sh panopticon-fixtures:latest \
+            -c 'if [ "$(id -u)" = "$EXPECTED_UID" ]; then echo "adapter probes run as $(id -un):$(id -gn), uid $(id -u), HOME=$HOME"; else echo "::error::the fixtures image would run the adapter probes as uid $(id -u), not the scanner uid $EXPECTED_UID that every production scan runs as"; exit 1; fi'
+
       # The whole tests/tools/ tree, not a `*_integration.py` glob: the
       # railsgoat probe that caught the stale brakeman CWE map lives in
       # test_brakeman.py, so narrowing the selector would scope around exactly
@@ -72,7 +118,9 @@ jobs:
       - name: Run the adapter tests against real tools and fixtures
         run: |
           docker run --rm \
+            --user "$SCANNER_USER" \
             -v "$PWD:/work:ro" -w /work \
+            -e HOME="$SCANNER_HOME" \
             -e FIXTURE_ROOT=/opt/panopticon-fixtures \
             -e PANOPTICON_REQUIRE_INTEGRATION=1 \
             -e PYTHONDONTWRITEBYTECODE=1 \
@@ -128,6 +176,26 @@ jobs:
       packages: read
     env:
       IMAGE: ghcr.io/${{ github.repository }}-tools:latest
+      # The same runtime user as the `integration` job, whose `env:` block
+      # carries the reasoning (ARC-2930403871, #1771), and here for one more:
+      # this is the lane that runs an adapter on a HOSTILE project, so the
+      # privilege the hostile build executes with is part of the answer the job
+      # reports. Repeated per job rather than hoisted to the workflow: a job
+      # that runs the fixtures image without stating its runtime user is the
+      # defect, and that has to be visible where the job is read.
+      SCANNER_USER: scanner
+      SCANNER_UID: "1000"
+      # The HOME `USER scanner` gives production, pinned rather than left to
+      # docker's own passwd lookup under `--user`. Deliberately NOT an empty
+      # scratch dir: bundler-audit reads the REFRESHED ruby advisory DB from
+      # `$HOME/.local/share/ruby-advisory-db` (`Dockerfile:490-492`), so an
+      # empty HOME would silently fall back to the gem's stale vendored copy --
+      # a quieter version of the defect this flag exists to remove. It IS
+      # writable by uid 1000 (`Dockerfile:487` chowns it, and the build-time
+      # gate `skill/scripts/smoke_adapters.py` requires `$HOME` writable), and
+      # every adapter's own scratch is an `mkdtemp` under the container's
+      # world-writable /tmp, exactly as in production.
+      SCANNER_HOME: /home/scanner
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -163,6 +231,21 @@ jobs:
       - name: Build the fixtures image
         run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 
+      # The posture, asserted rather than assumed (ARC-2930403871). `--user` is
+      # the intent; `id -u` inside the container is the proof, and it runs
+      # BEFORE the probes so a lane that lost the flag -- or an image whose
+      # passwd stopped carrying the user -- is a red job rather than a green
+      # tick over probes run as root. `tests/test_workflow_pins.py` pins the
+      # flag from the file; this is the half a file cannot state.
+      - name: Assert the container runs as the scanner user
+        run: |
+          docker run --rm \
+            --user "$SCANNER_USER" \
+            -e HOME="$SCANNER_HOME" \
+            -e EXPECTED_UID="$SCANNER_UID" \
+            --entrypoint sh panopticon-fixtures:latest \
+            -c 'if [ "$(id -u)" = "$EXPECTED_UID" ]; then echo "adapter probes run as $(id -un):$(id -gn), uid $(id -u), HOME=$HOME"; else echo "::error::the fixtures image would run the adapter probes as uid $(id -u), not the scanner uid $EXPECTED_UID that every production scan runs as"; exit 1; fi'
+
       # Byte-for-byte the integration job's run line, plus `--network none`
       # and the opt-in, and narrowed to the one file that executes the hostile
       # build. Narrow ON PURPOSE here, unlike `integration`: this is the lane
@@ -172,7 +255,9 @@ jobs:
         run: |
           docker run --rm \
             --network none \
+            --user "$SCANNER_USER" \
             -v "$PWD:/work:ro" -w /work \
+            -e HOME="$SCANNER_HOME" \
             -e FIXTURE_ROOT=/opt/panopticon-fixtures \
             -e PANOPTICON_REQUIRE_INTEGRATION=1 \
             -e PANOPTICON_CONTAINMENT_PROBE=1 \
