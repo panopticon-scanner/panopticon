@@ -244,6 +244,47 @@ class TestChunkNameCollision(unittest.TestCase):
         self.assertEqual(gs.RESIDUAL_SINK, discovery.UNGROUPED_SINK)
 
 
+class TestCollidingIds(unittest.TestCase):
+    """`colliding_ids` is the id-only view of the same generator that drives
+    `_reserved_name_errors` (COD-2612640453): a consumer that only needs to
+    know WHICH ids collide, not the human-readable why, so setup's flat seed
+    can drop them without re-deriving the collision rules."""
+
+    def _parsed(self, groups):
+        return gs.parse_groups({"groups": groups})[0]
+
+    def test_names_the_later_case_twin(self):
+        parsed = self._parsed({"API": {"match": ["a"]}, "api": {"match": ["b"]}})
+        self.assertEqual(gs.colliding_ids(parsed), {"api"})
+
+    def test_names_the_chunk_twin_not_its_base(self):
+        parsed = self._parsed({
+            "API": {"match": ["app/api/**"]},
+            "API_1": {"match": ["legacy/**"]}})
+        self.assertEqual(gs.colliding_ids(parsed), {"API_1"})
+
+    def test_names_the_reserved_sink(self):
+        parsed = self._parsed({"Ungrouped": {"match": ["a/**"]}})
+        self.assertEqual(gs.colliding_ids(parsed), {"Ungrouped"})
+
+    def test_names_nothing_for_a_clean_set(self):
+        parsed = self._parsed({"API": {"match": ["a"]}, "Web": {"match": ["b"]}})
+        self.assertEqual(gs.colliding_ids(parsed), set())
+
+    def test_matches_reserved_name_errors_exactly_across_kinds(self):
+        # One set mixing all three kinds. A message can double up on one id
+        # (an authored Ungrouped_1 is both a chunk twin and a sink collision),
+        # so this checks the id SET the messages cite, not a 1:1 message count.
+        parsed = self._parsed({
+            "API": {"match": ["a"]}, "api": {"match": ["b"]},
+            "src": {"match": ["src/**"]}, "src_1": {"match": ["c"]},
+            "Ungrouped": {"match": ["d"]}})
+        errs = gs._reserved_name_errors(parsed)
+        cited = {msg.split(" ", 2)[1][:-1] for msg in errs}    # "group X: ..." -> X
+        self.assertEqual(cited, {"api", "src_1", "Ungrouped"})
+        self.assertEqual(gs.colliding_ids(parsed), cited)
+
+
 def test_exclude_paths_valid_and_absent():
     assert gs.parse_exclude_paths({"exclude_paths": ["tests/fixtures/**", "vendor/**"]}) == (["tests/fixtures/**", "vendor/**"], [])
     assert gs.parse_exclude_paths({}) == ([], [])

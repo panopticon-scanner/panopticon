@@ -365,20 +365,22 @@ def _parse_leaf(name, raw, errors):
     }
 
 
-def _reserved_name_errors(groups):
-    """Authored ids that collide with another id or a machine-minted name.
+def _reserved_name_conflicts(groups):
+    """Yield (id, message) for every authored id that collides with another
+    id or a machine-minted name -- a case twin, a chunk twin, or the reserved
+    residual-sink name. `_reserved_name_errors` and `colliding_ids` are both
+    thin views over this one generator, so the collision rules exist once.
 
     Operates on FLAT ids, which is what makes it scope-correct for free:
     `Product:API` chunks to `Product:API_1`, so an authored `Product:API_1`
     collides while a top-level `API_1` does not.
     """
-    errors = []
     by_key: dict[str, str] = {}
     for gid in sorted(groups):
         key = gid.casefold()
         earlier = by_key.get(key)
         if earlier is not None:
-            errors.append(
+            yield gid, (
                 f"group {gid}: collides with group {earlier} on "
                 f"case-insensitive findings artifacts -- rename one group")
         else:
@@ -388,7 +390,7 @@ def _reserved_name_errors(groups):
         base = m.group("base") if m else None
         owner = by_key.get(base.casefold()) if base is not None else None
         if owner is not None:
-            errors.append(
+            yield gid, (
                 f"group {gid}: collides with the chunk names of group {owner} "
                 f"(an oversize group splits into {owner}_1, {owner}_2, ...). Both "
                 f"would write findings-{gid}-<domain>.json and one would "
@@ -397,11 +399,21 @@ def _reserved_name_errors(groups):
         # A subgroup `Foo:Ungrouped` is namespaced and cannot collide.
         if ":" not in gid and RESIDUAL_SINK.casefold() in (
                 gid.casefold(), base.casefold() if base is not None else None):
-            errors.append(
+            yield gid, (
                 f"group {gid}: {RESIDUAL_SINK!r} and {RESIDUAL_SINK}_<n> are "
                 f"reserved for the unmatched-file sink; a group named this "
                 f"would share a findings file with it -- rename it")
-    return errors
+
+
+def _reserved_name_errors(groups):
+    """The messages `_reserved_name_conflicts` yields, id dropped."""
+    return [message for _gid, message in _reserved_name_conflicts(groups)]
+
+
+def colliding_ids(groups):
+    """The ids `_reserved_name_conflicts` yields, message dropped: every
+    authored id that collides with another id or a machine-minted name."""
+    return {gid for gid, _message in _reserved_name_conflicts(groups)}
 
 
 def parse_groups(doc):
