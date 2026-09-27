@@ -37,8 +37,10 @@ so the text that substitution is re-read from holds a marker instead of the
 body -- a gap `scripts/workflow_guard.py` documents.
 
 Two places still part from bash, because its grammar decides them and this
-pass reads text: at the head of a command `a[1<<2]=x` is a subscript to bash
-and a heredoc operator here, and a `((` or `$((` that bash re-reads as nested
+pass reads text. A name and `[` open an array subscript, which is arithmetic
+(`a[1<<2]=x`), up to its `]` or the end of its line wherever it stands -- bash
+opens one only at the head of a command, so `echo a[1<<X]` is a heredoc to
+bash and text here. And a `((` or `$((` that bash re-reads as nested
 parentheses (`((cmd) )`) is arithmetic here, so its comments and heredocs are
 text.
 
@@ -60,8 +62,10 @@ _OPENERS = (("$((", "((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
             ("$[", "[", 1), ("${", "{", 0), ("$'", "$'", 0), ('$"', '"', 0),
             ("'", "'", 0), ('"', '"', 0), ("`", "`", 0))
 # The brackets a frame counts, and the character that ends each other frame.
-_PAIRS = {"(": "()", "((": "()", "[": "[]"}
+# "a[" is the subscript of an array assignment, `a[1<<2]=x`: arithmetic too.
+_PAIRS = {"(": "()", "((": "()", "[": "[]", "a[": "[]"}
 _CLOSE = {"'": "'", "$'": "'", '"': '"', "`": "`", "{": "}"}
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
 _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
                      re.S)
@@ -124,6 +128,7 @@ class _Lexer:
         self.out: list[str] = []
         self.frames = [_Frame("top")]
         self.word = 0                   # where in `out` the current word began
+        self.named = -1                 # the last word whose first `[` was read
         self.lines: dict[bool, _Lines] = {}
 
     def run(self) -> str:
@@ -182,6 +187,13 @@ class _Lexer:
                 return i + 3
             if text.startswith("<<", i):
                 return self.operator(i, frame)
+            if ch == "[" and self.named != self.word:  # only a word's first `[`
+                self.named = self.word
+                if _NAME.fullmatch(text, i - (len(out) - self.word), i):
+                    return self.push(i, "[", "a[", 1)
+        elif ch == "\n" and frame.kind == "a[":
+            self.frames.pop()           # unclosed on its line: a word, read on
+            return i
         out.append(ch)
         pair = _PAIRS.get(frame.kind, "")
         if ch in pair:

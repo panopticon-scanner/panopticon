@@ -738,6 +738,7 @@ class TestOneLexicalPass(unittest.TestCase):
                        "echo $((1<<EOF))\necho a\nEOF\n",
                        "(( x = 1 << EOF ))\necho a\nEOF\n",
                        "echo $[a[1]<<EOF]\necho a\nEOF]\n",
+                       "a[1 << EOF]=x\necho a\nEOF]=x\n",
                        "echo `cat <<EOF`\necho a\nEOF\n"):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))

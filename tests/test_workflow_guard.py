@@ -1993,6 +1993,18 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
 
+    def test_an_array_subscript_is_arithmetic(self):
+        # At the head of a command -- after `x=1` or `then` as well -- bash
+        # reads `a[...]` as an arithmetic subscript, spaces and all, so its
+        # `<<` is a shift. The regex this replaced took `a[i << X ]=y` for a
+        # heredoc and let the decoy line below end it.
+        for opening, word in (("a[1<<2]=x", "2]=x"),
+                              ("a[i << X ]=y", "X"),
+                              ("x=1 a[1<<2]=y", "2]=y"),
+                              ("if true; then a[1<<2]=y; fi", "2]=y")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+
     def test_a_delimiter_bash_parses_to_spell_swallows_nothing(self):
         # Bash spells these delimiters by PARSING the word -- a substitution,
         # an escape `$'...'` decodes, an extglob pattern -- and ends the body
