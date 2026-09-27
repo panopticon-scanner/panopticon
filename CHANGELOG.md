@@ -11,6 +11,17 @@ evidence exposed.
   COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
   carried, so those three entries never derived a citation and dropping them changes no output.
   A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
+- **`ci.yml` states its token posture instead of inheriting one (#1784, ARC-3955973987).**
+  `tests/test_workflow_pins.py`'s `privilege_defect` asserts the posture the three `ci.yml` install
+  exemptions are written against -- unprivileged trigger, read-only token -- but it read an ABSENT
+  `permissions:` block as unprivileged, because a block that does not exist grants no `write` scope.
+  So "the default read-only token" in those exemptions meant the repository's `GITHUB_TOKEN`
+  setting: not in this tree, not reviewable in a PR, and one settings change away from a write token
+  that would keep four unpinned installs exempt. A job with no `permissions:` of its own and no
+  workflow-level block to inherit is now a defect naming that job; a block at either level satisfies
+  it, which is how `codeql.yml`, `nvd-cache.yml`, `security.yml` and `docker-publish.yml` already
+  stood. `ci.yml` and `docker-build-pr.yml`, the only two files that declared nothing, now carry a
+  top-level `permissions: contents: read` -- neither pushes, logs in to a registry, nor publishes.
 - **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
   #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
   a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
