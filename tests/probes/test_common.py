@@ -1,12 +1,14 @@
 """The host-agnostic probes: `scripts.probes.common` (#1627 split these out
 of tests/test_host_probes.py; the tests themselves are unchanged)."""
 import os
+import dataclasses
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
-from scripts import hosts
+from scripts import host_probes, hosts
+import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
 from tests.probes.helpers import _shell
 
@@ -412,6 +414,68 @@ class TestShadowShellScan(unittest.TestCase):
             state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("panopticon-scout.md", detail)
+
+
+class TestShadowShellScanBoundaries(unittest.TestCase):
+    def _assert_composed_policy(self, text, expected_shadow, host="claude"):
+        scope = ".codex/agents" if host == "codex" else ".claude/agents"
+        with tempfile.TemporaryDirectory() as target:
+            directory = os.path.join(target, scope)
+            os.makedirs(directory)
+            path = os.path.join(directory, "innocuous.toml" if host == "codex" else "innocuous.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            shadow, shadow_by, _ = probes_common.probe_shadow_shells(host, target)
+            discovery, discovery_by, detail = probes_common.probe_discovery_surface(host, target)
+            self.assertEqual(shadow, expected_shadow)
+            # A hit already disclosed by the shadow probe is deduplicated;
+            # otherwise discovery refuses the same open project-agent surface.
+            self.assertEqual(discovery, hosts.REFUTED if shadow == hosts.UNKNOWN else hosts.UNKNOWN)
+            if shadow == hosts.UNKNOWN:
+                self.assertIn(os.path.basename(path), detail)
+            self.assertEqual(hosts.resolve_state([hosts.PROVEN, shadow, discovery]), hosts.REFUTED)
+            # Run the real composition with an injected positive host proof;
+            # unrelated host probes are omitted so no live CLI is consulted.
+            row = hosts.spec(host)
+            probe_id = row.probes[hosts.TOOL_POLICY_ENFORCED]
+            policy_row = dataclasses.replace(row, probes={hosts.TOOL_POLICY_ENFORCED: probe_id})
+            module, name = ((codex_probes, "probe_codex_tool_policy") if host == "codex"
+                            else (probes_common, "probe_registered_shell_tools"))
+            with mock.patch.object(hosts, "spec", return_value=policy_row), mock.patch.object(
+                    module, name, return_value=(hosts.PROVEN, probe_id, "injected host proof")):
+                result = host_probes.run_probes(host, target, session_root=target)
+            policy = result["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+            self.assertEqual(policy["state"], hosts.REFUTED)
+            self.assertEqual(policy["by"], shadow_by if shadow == hosts.REFUTED else discovery_by)
+
+    def test_quoted_and_alternate_name_keys_keep_the_effective_policy_refuted(self):
+        for host, declaration, expected in (
+                ("claude", 'name: "panopticon-scout"', hosts.REFUTED),
+                ("claude", '"name": panopticon-scout', hosts.UNKNOWN),
+                ("claude", "'name': panopticon-scout", hosts.UNKNOWN),
+                ("claude", "NAME: panopticon-scout", hosts.REFUTED),
+                ("claude", "name_extra: panopticon-scout", hosts.REFUTED),
+                ("codex", 'name = "panopticon-scout"', hosts.REFUTED),
+                ("codex", '"name" = "panopticon-scout"', hosts.UNKNOWN)):
+            with self.subTest(host=host, declaration=declaration):
+                self._assert_composed_policy(declaration + "\n", expected, host)
+
+    def test_the_fortieth_line_is_scanned_and_the_forty_first_is_left_to_discovery(self):
+        for line, expected in ((40, hosts.REFUTED), (41, hosts.UNKNOWN)):
+            with self.subTest(line=line):
+                text = "---\n" + "# padding\n" * (line - 2) + "name: panopticon-scout\n---\n"
+                self.assertEqual(text.splitlines()[line - 1], "name: panopticon-scout")
+                self._assert_composed_policy(text, expected)
+
+    def test_the_shell_prefix_must_fit_within_4096_characters(self):
+        for end, expected in ((4096, hosts.REFUTED), (4097, hosts.UNKNOWN)):
+            # read(4096) is a character window, including for multibyte text.
+            for padding in ("x", "é"):
+                with self.subTest(end=end, padding=padding):
+                    prefix = "\nname: panopticon-"
+                    text = "#" + padding * (end - len(prefix) - 1) + prefix + "scout\n"
+                    self.assertEqual(text.index("panopticon-") + len("panopticon-"), end)
+                    self._assert_composed_policy(text, expected)
 
 
 class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
