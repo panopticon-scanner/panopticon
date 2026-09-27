@@ -11,6 +11,30 @@ evidence exposed.
   The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
   as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
   exposes `colliding_ids`, and the seed drops those names too.
+- **The category-to-CWE table holds only overrides the catalog can deliver (#1795;
+  COD-4238512708).** `config`, `logging` and `headers` named CWE ids `cwe-catalog.json` never
+  carried, so those three entries never derived a citation and dropping them changes no output.
+  A new test now pins every remaining entry in `CATEGORY_CWE_OVERRIDES` to the catalog.
+- **One owner for the persisted retry budgets (#1767, ARC-655791509).** Five phase modules
+  hand-copied the same read-bump-write over a counter file under `.panopticon/` in the reviewed
+  tree, and the #1809 round consolidated only the READ -- `runio._load_state_json` refuses a
+  present-but-torn document -- so the arithmetic on top of it kept THREE answers to the same
+  planted value. `coverage._bump_scout_attempts`, `discovery._bump_discovery_attempts` and
+  `verify._bump_verify_attempts` raised a bare `ValueError` out of `int()`, a message an operator
+  cannot act on where the read one line away would have named the file and `--reset`;
+  `review._record_attempts` RESET the cell's tally to 1, refunding every attempt the run really
+  spent, which is the one outcome #1809 says the ledger exists to prevent; and
+  `persist._give_back_attempts` silently `continue`d, which made a planted value
+  indistinguishable from a key nothing had ever charged. The new `phases/budget.py` owns the
+  arithmetic -- `count` / `bump` / `bump_many` / `give_back` -- and answers all three the same
+  way: a value that is not a non-negative `int` (`bool` excluded, since `isinstance(True, int)`
+  is True) is UNREADABLE exactly like a torn document, and refuses with the same actionable
+  shape, naming the file, the offending key and `--reset`. Never a reset, never a skip. Each
+  caller keeps its own file name, key scheme and description, because those are the on-disk
+  contract a RESUMED run reads back; reads still go through `runio._load_state_json` and writes
+  through `runio._write_json`, so the symlink refusal at an artifact path is not re-implemented
+  behind the new names. `review._cell_exhausted` was the sixth site and the quietest: an
+  unreadable value read as "not exhausted" made a spent cell dispatchable again, silently.
 - **`ci.yml` states its token posture instead of inheriting one (#1784, ARC-3955973987).**
   `tests/test_workflow_pins.py`'s `privilege_defect` asserts the posture the three `ci.yml` install
   exemptions are written against -- unprivileged trigger, read-only token -- but it read an ABSENT
