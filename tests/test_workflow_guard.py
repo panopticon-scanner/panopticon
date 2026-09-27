@@ -29,6 +29,7 @@ import os
 import tempfile
 import unittest
 
+import shell_lex
 import shell_reader
 import workflow_forms
 import workflow_guard as wg
@@ -2004,6 +2005,51 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                               ("if true; then a[1<<2]=y; fi", "2]=y")):
             with self.subTest(opening=opening):
                 self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+
+    def test_a_command_double_paren_is_read_as_bash_decides_it(self):
+        # Bash matches a command's `((` to the close of its first group --
+        # through quotes, escapes, backquotes and `$(...)`, not comments --
+        # and reads one character more: `)` makes it arithmetic, anything
+        # else two subshells, whose heredocs are real. Each opening below is
+        # two subshells to bash 5.2, which reads the open quote as a body and
+        # runs the payload (3.2 too, but for `function fn ((`, a syntax error
+        # there); the reader took each for arithmetic, where `<<` is a shift,
+        # and the quote hid the payload (M5).
+        for opening in ("((cat <<EOF) )", "(((: <<EOF) ) )", "((: <<EOF '))' ) )",
+                        '((: <<EOF "))" ) )', "((: <<EOF \\)) )",
+                        "((: `echo )` <<EOF) )", "((: $'\\')' <<EOF) )",
+                        "((: $[ ) ]<<EOF ) )", "((: $(echo ')') <<EOF) )",
+                        "fn() ((cat <<EOF) )", "function fn ((cat <<EOF) )"):
+            with self.subTest(opening=opening):
+                self.flagged("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))
+
+    def test_arithmetic_ends_at_the_parenthesis_bash_ends_it_at(self):
+        # `))` right after the first group -- past a `#`, a character to
+        # arithmetic, and a quoted `(` -- is an arithmetic command: `<<` is a
+        # shift, the lines below are code, and `y` ends no heredoc. And
+        # arithmetic counts the parentheses in a `${...}` as its own, so a
+        # `))` there ends `((...))` and `$((...))` alike and the heredoc after
+        # it is real: the reader read on to a later `))`, and the body's open
+        # quote hid the payload. Bash 5.2 runs each payload (3.2 refuses the
+        # `{ ((x${y:-))}` line as a syntax error, and runs nothing).
+        for script in ("((x=1<<y))\n%s\ny\n", "((i++ << y))\n%s\ny\n",
+                       "(( x > 3 << y ))\n%s\ny\n",
+                       "if (( a < b << y )); then :; fi\n%s\ny\n",
+                       "((\n x<<y \n))\n%s\ny\n", "((: # <<y))\n%s\ny\n",
+                       '((: $(echo "(") <<y))\n%s\ny\n',
+                       "{ ((x${y:-))} <<EOF\nit's\nEOF\n%s\n",
+                       "echo $((x${y:-))} <<EOF\nit's\nEOF\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+
+    def test_nesting_too_deep_to_decide_fails_closed(self):
+        # Each level of `((((` is read once more when bash's rule makes it a
+        # subshell. Past eight times the script's length of that, the reader
+        # raises instead of guessing: the guard accepts nothing, and its
+        # command line exits non-zero.
+        script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n%s\n"
+        with self.assertRaises(shell_lex.Unreadable):
+            wg.job_defects([("step", script % self.PAYLOAD)])
 
     def test_a_delimiter_bash_parses_to_spell_swallows_nothing(self):
         # Bash spells these delimiters by PARSING the word -- a substitution,

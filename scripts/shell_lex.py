@@ -36,13 +36,25 @@ terminator. And a heredoc inside `$(...)` is lifted into the enclosing parse,
 so the text that substitution is re-read from holds a marker instead of the
 body -- a gap `scripts/workflow_guard.py` documents.
 
-Two places still part from bash, because its grammar decides them and this
+A command's `((` is decided the way bash decides it. Its first group is read
+to its close -- through quotes, backquotes, escapes and `$(...)`, not
+comments, and through `${` and `$[` as characters, as arithmetic reads them --
+and the character after it settles the rest: `)` makes an arithmetic command;
+anything else, two subshells, read again from the first `(` as code, so the
+heredocs in them are real. (`$((...))` needs no such choice: bash reads its
+text as one pair of parentheses either way, and no heredoc in it takes a body
+from the lines below.) Reading a group again is what nesting costs -- `((((`
+N deep is read N times -- so `lex` stops at `_REREAD` times the script's
+length of it and raises `Unreadable`. Nothing catches that: the guard accepts
+no step it could not read, and its command line exits non-zero. An exception
+rather than a reading, because the reader has no channel yet for a step it
+cannot read, and raising one needs no line in the modules that call it.
+
+One place still parts from bash, because its grammar decides it and this
 pass reads text. A name and `[` open an array subscript, which is arithmetic
 (`a[1<<2]=x`), up to its `]` or the end of its line wherever it stands -- bash
 opens one only at the head of a command, so `echo a[1<<X]` is a heredoc to
-bash and text here. And a `((` or `$((` that bash re-reads as nested
-parentheses (`((cmd) )`) is arithmetic here, so its comments and heredocs are
-text.
+bash and text here.
 
 Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
 the `$(...)` matcher `shell_reader` lifts substitutions with.
@@ -58,13 +70,23 @@ _BREAK = " \t\n;&|()<>"
 _CODE = ("top", "(")
 # What each opener starts: its text, the frame it opens, the brackets it opens.
 # `$((` and `$[` are arithmetic, where `<<` is a shift; longest spellings first.
-_OPENERS = (("$((", "((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
+_OPENERS = (("$((", "$((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
             ("$[", "[", 1), ("${", "{", 0), ("$'", "$'", 0), ('$"', '"', 0),
             ("'", "'", 0), ('"', '"', 0), ("`", "`", 0))
 # The brackets a frame counts, and the character that ends each other frame.
-# "a[" is the subscript of an array assignment, `a[1<<2]=x`: arithmetic too.
-_PAIRS = {"(": "()", "((": "()", "[": "[]", "a[": "[]"}
+# "((" is a command's `((...))`; "a[" the subscript of an array assignment,
+# `a[1<<2]=x`: arithmetic too.
+_PAIRS = {"(": "()", "((": "()", "$((": "()", "[": "[]", "a[": "[]"}
 _CLOSE = {"'": "'", "$'": "'", '"': '"', "`": "`", "{": "}"}
+# The openers a frame reads as text: "..." every quote but the `"` that ends
+# it; bash's arithmetic -- `((...))` and `$[...]` -- the `${` and `$[` whose
+# brackets it counts as its own; and `$((...))`, a pair of parentheses bash
+# matches without parsing what they hold, every opener but a quote.
+_PLAIN = {'"': ("'", '"', "$'", '$"'), "((": ("${", "$["), "[": ("${", "$["),
+          "$((": ("$((", "$(", "$[", "${")}
+# How many times over the script a `((` decided as two subshells may be read
+# again before `lex` stops (`Unreadable`).
+_REREAD = 8
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
 _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
@@ -76,10 +98,16 @@ _PARSED = re.compile(r"`|\$[({\[]")
 _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
 
 
+class Unreadable(Exception):
+    """The script nests `((` so deep that deciding each one, as bash does,
+    would read it more than `_REREAD` times over. Nothing catches it."""
+
+
 def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     """`script` with its comments removed, its continuations folded, and each
     heredoc -- operator, word and body -- replaced by the marker
-    `heredoc(body, expands, fd)` returns, spaced off as a word of its own."""
+    `heredoc(body, expands, fd)` returns, spaced off as a word of its own.
+    Raises `Unreadable` rather than guess where bash's reading costs more."""
     return _Lexer(script, heredoc).run()
 
 
@@ -115,10 +143,12 @@ class _Frame:
     """One level of nesting: code (the script, or a `$(...)`), a quote, a
     `${...}`, arithmetic or backquotes. A paren or bracket frame counts the
     ones still open; a code frame holds the heredocs waiting for its next
-    newline, each as (output slot, delimiter, quoted, `<<-`, descriptor)."""
+    newline, each as (output slot, delimiter, quoted, `<<-`, descriptor). A
+    command's `((`, until its first group closes, holds the lexer's state
+    from before it (`undo`), to go back to if the group makes it subshells."""
 
-    def __init__(self, kind: str, depth: int = 0):
-        self.kind, self.depth = kind, depth
+    def __init__(self, kind: str, depth: int = 0, undo: tuple = ()):
+        self.kind, self.depth, self.undo = kind, depth, undo
         self.queue: list[tuple[int, str, bool, bool, str]] = []
 
 
@@ -130,6 +160,8 @@ class _Lexer:
         self.word = 0                   # where in `out` the current word began
         self.named = -1                 # the last word whose first `[` was read
         self.lines: dict[bool, _Lines] = {}
+        self.plain = -1                 # a `((` decided as two subshells
+        self.reread = 0                 # the characters read again for them
 
     def run(self) -> str:
         text, out, frames = self.text, self.out, self.frames
@@ -158,9 +190,8 @@ class _Lexer:
     def open(self, i: int, kind: str) -> int | None:
         """Past the opener at `i` -- its frame pushed -- if `kind` nests one."""
         for opener, inner, depth in _OPENERS:
-            if (self.text.startswith(opener, i)
-                    and not (opener in ("<(", ">(") and kind not in _CODE)
-                    and not (opener[-1] in "'\"" and kind == '"')):
+            if (self.text.startswith(opener, i) and opener not in _PLAIN.get(kind, ())
+                    and (kind in _CODE or opener not in ("<(", ">("))):
                 return self.push(i, opener, inner, depth)
         return None
 
@@ -179,8 +210,11 @@ class _Lexer:
             if ch == "#" and start:     # a comment: gone, up to its newline
                 end = text.find("\n", i)
                 return len(text) if end < 0 else end
-            if text.startswith("((", i) and start:
-                return self.push(i, "((", "((", 2)     # an arithmetic command
+            if text.startswith("((", i) and start and i != self.plain:
+                undo = (i, len(self.frames), len(out), self.word, self.named)
+                i = self.push(i, "((", "((", 2)
+                self.frames[-1].undo = undo
+                return i
             if text.startswith("<<<", i):
                 out.append("<<<")
                 self.word = len(out)
@@ -198,6 +232,10 @@ class _Lexer:
         pair = _PAIRS.get(frame.kind, "")
         if ch in pair:
             frame.depth += 1 if ch == pair[0] else -1
+            if frame.undo and frame.depth == 1:     # its first group closed
+                if not text.startswith(")", i + 1):
+                    return self.rewind(frame.undo, i + 1)
+                frame.undo = ()         # `))`: an arithmetic command
             if not frame.depth:
                 self.frames.pop()       # heredocs still queued in it stay text
                 return i + 1
@@ -206,6 +244,21 @@ class _Lexer:
             if ch == "\n" and frame.queue:
                 return self.bodies(frame, i + 1)
         return i + 1
+
+    def rewind(self, undo: tuple, i: int) -> int:
+        """Back to the command's `((` whose state `undo` holds, to read it as
+        the two subshells bash makes of it; the index it is at. The group was
+        read to `i` for nothing, so past `_REREAD` times the script's length
+        of such re-reading, `Unreadable` -- the cap on nesting them deep."""
+        at, frames, size, self.word, self.named = undo
+        self.reread += i - at
+        if self.reread > _REREAD * len(self.text):
+            raise Unreadable("shell_lex: this script nests `((` so deep that reading it "
+                             "the way bash does costs over %d times its length; "
+                             "not read, so nothing in it is accepted" % _REREAD)
+        del self.frames[frames:], self.out[size:]
+        self.plain = at
+        return at
 
     def operator(self, i: int, frame: _Frame) -> int:
         """Queue the heredoc whose `<<` is at `i`; the index after its word.

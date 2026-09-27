@@ -20,6 +20,7 @@ destination a step downloaded to.
 import time
 import unittest
 
+import shell_lex
 import shell_reader
 
 
@@ -784,6 +785,32 @@ class TestOneLexicalPass(unittest.TestCase):
                 elapsed = time.monotonic() - start
                 self.assertEqual(12000, len(parsed))
                 self.assertLess(elapsed, 2.0, elapsed)
+
+    def test_nested_double_parens_are_decided_in_bounded_time(self):
+        # A command's `((` is decided by reading its first group, and one bash
+        # makes two subshells is read again as code -- so `((((` nested is
+        # read once more per level. 3000 lines of six-deep subshells, each
+        # heredoc's open quote kept out of the code only by a real body, stay
+        # inside the cap and read in linear time.
+        script = "".join("((((((: <<E%d) ) ) ) ) )\nit's\nE%d\n" % (k, k)
+                         for k in range(3000))
+        start = time.monotonic()
+        parsed = shell_reader.statements(script)
+        elapsed = time.monotonic() - start
+        self.assertEqual(3000, len(parsed))
+        self.assertEqual({"it's"}, {s.stages[0].heredoc for s in parsed})
+        self.assertLess(elapsed, 2.0, elapsed)
+
+    def test_past_the_cap_the_reader_raises_instead_of_guessing(self):
+        # One group 3000 `(` deep is 3000 readings of the same text: past
+        # eight times the script, `shell_lex.Unreadable`, which nothing
+        # catches. It raises in well under a second; without the cap this
+        # read took about seven seconds, growing with the square of the depth.
+        script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n"
+        start = time.monotonic()
+        with self.assertRaises(shell_lex.Unreadable):
+            shell_reader.statements(script)
+        self.assertLess(time.monotonic() - start, 1.0)
 
 
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
