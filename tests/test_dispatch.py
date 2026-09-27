@@ -407,11 +407,12 @@ class TestRenderAdvisor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             queue = {"version": "4.0.0", "run_id": "run-test",
                      "cut_by_max_verify": 0, "entries": [None]}
-            qpath = os.path.join(tmp, "bad-entry.json")
-            with open(qpath, "w") as fh:
-                json.dump(queue, fh)
-            with self.assertRaises(ValueError):
+            # Under the run folder, so the refusal pinned is the entry
+            # shape, not the review root (#1767).
+            qpath = _write_queue(tmp, queue, name="bad-entry.json")
+            with self.assertRaises(ValueError) as raised:
                 dispatch.render_advisor_prompts(qpath, tmp)
+            self.assertIn("malformed entry (not an object)", str(raised.exception))
 
     def test_unsafe_queue_id_fails_fast(self):
         # queue_id is OUR artifact (built by evidence.build_verify_queue), but

@@ -463,7 +463,7 @@ def _verify_cell_of(entry):
     entry that ASKED for this bundle -- the same key `_stamp_matches` checks --
     and `review_root` off the artifact path it was told to write, the segment
     above its own `.panopticon` (`claim_scope.review_root_of_artifact_path`,
-    shared with the artifact-path guard). The verify phase reads only `run_id`
+    shared with the advisor renderer). The verify phase reads only `run_id`
     off the manifest, so that one key is the whole manifest a placement needs.
 
     None is fail-closed at both call sites: a bundle nobody can place is
