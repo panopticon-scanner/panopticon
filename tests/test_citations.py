@@ -395,6 +395,43 @@ class TestCitationQuality(unittest.TestCase):
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
 
 
+class TestCategoryCweOverridesPinnedToCatalog(unittest.TestCase):
+    """COD-4238512708: an override whose CWE id is missing from the catalog
+    can never be emitted by _derive_cwe_from_category, so it silently never
+    fires. These tests pin the table to the catalog it is checked against."""
+
+    def setUp(self):
+        self.catalog = cit.load_cwe_catalog()
+
+    def test_every_override_value_is_in_the_catalog(self):
+        for category, cwe_id in cit.CATEGORY_CWE_OVERRIDES.items():
+            self.assertIn(
+                cwe_id, self.catalog["cwe"],
+                "%s -> %s is not in the catalog, so it can never be derived" % (category, cwe_id),
+            )
+
+    def test_every_override_key_is_already_normalized(self):
+        # _derive_cwe_from_category looks up
+        # category.lower().replace(" ", "_").replace("-", "_"); a key stored
+        # in any other form could never be reached by that lookup.
+        for category in cit.CATEGORY_CWE_OVERRIDES:
+            self.assertEqual(category, category.lower().replace(" ", "_").replace("-", "_"))
+
+    def test_each_remaining_override_derives_its_own_cwe(self):
+        for category, cwe_id in cit.CATEGORY_CWE_OVERRIDES.items():
+            derived = cit._derive_cwe_from_category(category, self.catalog)
+            self.assertEqual(
+                derived,
+                {"id": cwe_id, "name": self.catalog["cwe"][cwe_id],
+                 "verified": False, "derived": True},
+            )
+
+    def test_dropped_entries_derive_nothing(self):
+        for category in ("config", "logging", "headers"):
+            self.assertNotIn(category, cit.CATEGORY_CWE_OVERRIDES)
+            self.assertIsNone(cit._derive_cwe_from_category(category, self.catalog))
+
+
 class TestEnrich(unittest.TestCase):
     def setUp(self):
         self.cat = cit.load_cwe_catalog()
