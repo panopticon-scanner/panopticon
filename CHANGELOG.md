@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
+  COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
+  shares its "before" boundary: no ASCII letter, digit or underscore immediately
+  precedes either, and no word character follows `GH-N`'s number. `http(s)://` links
+  unless an ASCII letter (not a digit or underscore) sits right before the scheme. Case
+  insensitivity no longer folds those ASCII checks, and the `GH-N` substitution keeps the
+  matched text's own letters, as the `http(s)://` one already did.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
