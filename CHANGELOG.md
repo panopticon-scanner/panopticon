@@ -23,6 +23,10 @@ evidence exposed.
   inside "...", `$'...'` and an apostrophe inside "...": misread, each hid what followed it.
   Every heredoc on a line is read and filed under its descriptor, so the guard reads the
   script `bash -s <<'A' 3<<'B'` runs (#2128).
+  A heredoc opened inside a `$(...)`, `<(...)` or `>(...)` that closes before the newline its
+  body would follow raises `shell_lex.Unreadable` too: bash 5.2 takes that body from the lines
+  below and runs what follows its terminator, which the guard does not model. Inside `$((...))`
+  a `$(...)` is read as the commands bash runs there.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
