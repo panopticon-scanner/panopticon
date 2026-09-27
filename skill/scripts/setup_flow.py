@@ -173,12 +173,12 @@ def _seed_groups_manifest(repo):
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
-    # #1108/#1481: keep only names the schema accepts without error -- drop
-    # invalid names, a case twin, a chunk twin, or the reserved Ungrouped sink.
+    # #1108/#1481: directory names are untrusted target content -- keep only names the
+    # schema accepts without error (no invalid name, case/chunk twin or Ungrouped sink).
     candidate = {t: {"match": ["%s/**" % t]} for t in tops}
     parsed, _errors = groups_schema.parse_groups({"groups": candidate})
-    valid = {name: {"match": candidate[name]["match"]} for name in parsed
-             if name not in groups_schema.colliding_ids(parsed)}
+    colliding = groups_schema.colliding_ids(parsed)
+    valid = {n: {"match": candidate[n]["match"]} for n in parsed if n not in colliding}
     text = sp.dump_config_yaml(valid)
     # #run7 COD-F1B: create atomically; O_EXCL closes the check-then-truncate
     # TOCTOU so a concurrent seed can never clobber a file that appeared after
