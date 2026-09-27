@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
+  COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
+  shares its "before" boundary: no ASCII letter, digit or underscore immediately
+  precedes either, and no word character follows `GH-N`'s number. `http(s)://` links
+  unless an ASCII letter (not a digit or underscore) sits right before the scheme. Case
+  insensitivity no longer folds those ASCII checks, and the `GH-N` substitution keeps the
+  matched text's own letters, as the `http(s)://` one already did.
 - **The Kimi probes report a hung doctor, a failing home writer and a malformed config (#1788;
   COD-2149752625).** Three posture probes on `--host kimi` let an exception escape where their
   siblings already turn it into a reported state: `_kimi_home_arms_and_validates` caught only
