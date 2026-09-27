@@ -22,24 +22,38 @@ FROM panopticon-tools:latest
 # the #1877 class, a tool refusing its input under the real uid -- passed the
 # one gate that could catch it.
 #
-# A runtime `USER scanner` at the end of this file is NOT the cheap version of
-# that, which is why it is not here. The builds below run as root with root's
-# HOME, so their caches land under /root (mode 0700): the .NET restores in
-# particular leave `project.assets.json` naming absolute paths under
-# /root/.nuget/packages, which uid 1000 cannot read. Baking a default user in
-# would move that wall from an explicit flag onto every plain `docker run` of
-# this image, with nothing on the command line to explain it. Making the baked
-# caches world-readable (a NUGET_PACKAGES outside /root, or a+rX on the caches)
-# is the follow-on that lets this file drop privilege itself.
+# What a non-root scan has to be able to READ is handled below rather than left
+# to the flag: `ENV NUGET_PACKAGES=/opt/nuget-packages` moves the .NET global
+# package folder out of root's 0700 HOME before the two restores write its
+# absolute path into `project.assets.json`, `chmod -R a+rX` on it afterwards
+# opens it, and `chown -R scanner:scanner /home/scanner/.cargo` hands
+# production's own cargo home back after this build fills it as root. What is
+# still root-only is /root/.m2 (WebGoat's maven repo) and /root/.dotnet (a
+# first-run sentinel): no scan reads either -- the jars a source-tree scan looks
+# at are copied into `WebGoat/target/dependency` by the block that says so, and
+# dotnet rewrites its sentinel under whatever HOME it is given -- and opening
+# /root in an image that runs a hostile MSBuild target is the wrong direction.
+#
+# A runtime `USER scanner` at the end of this file is therefore no longer
+# blocked by a cache, but it is still not here: it is a separate decision that
+# changes the LOCAL harness too (`skill/scripts/run_fixture_tests.py` passes no
+# `--user`, so it would silently switch posture), and nothing in this file can
+# prove the two remaining caches unread without running the image. The CI lanes
+# state the runtime user on the command line and assert it inside the container,
+# which is the version of this that fails loudly.
 # hadolint ignore=DL3002
 USER root
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # OpenJDK for WebGoat. Ruby, Node.js/npm, and .NET 8.0 are already provided
-# by the panopticon-tools base image. Distro packages are intentionally unpinned:
-# the fixtures image is for local validation, and pinning JDK versions breaks when
-# the Debian mirror rotates them off.
+# by the panopticon-tools base image. This one distro package is intentionally
+# unpinned, and NOT because the image is local-only -- it is not, CI runs it
+# daily (see the USER block above). The reason is rotation: Debian moves JDK
+# point releases off the mirror, so a pinned `openjdk-21-jdk-headless=...`
+# breaks the build on a mirror refresh rather than on anything real. What the
+# image validates AGAINST is pinned where it matters: the three fixture SHAs
+# below, `requirements-fixtures.txt` by hash, and the base image's own tools.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-21-jdk-headless \
@@ -98,6 +112,22 @@ RUN cd /opt/panopticon-fixtures/WebGoat \
          find target/dependency -name '*.jar' | sort | tail -n +$((WEBGOAT_JAR_CAP + 1)) | xargs -r rm -f; \
          echo "WebGoat jars kept: $(find target/dependency -name '*.jar' | wc -l)"; \
        fi
+# ARC-2930403871 (#1771): the NuGet global packages folder, OUT of root's home.
+# Both .NET restores below run as root (this image builds as root), and NuGet's
+# default global folder is `$HOME/.nuget/packages` -- /root/.nuget/packages
+# here, under a directory Debian ships as mode 0700. The restore writes the
+# resolved absolute path into each project's `obj/project.assets.json`, so a
+# scan running as `scanner` (uid 1000, which is how CI now runs this image and
+# how every production scan runs the tools image) could not read a single
+# package: roslyn-secguard would report an empty result, which is
+# indistinguishable from a clean one -- the #1655 defect the bake exists to
+# prevent, reappearing through the uid instead of through a skipped restore.
+#
+# Named here rather than fixed with a chmod on /root: this image runs the
+# hostile MSBuild fixture, so making root's home traversable is the wrong
+# direction. The ENV lives in the fixtures image only -- the tools image
+# production scans with is `FROM`-parent to this and does not carry it.
+ENV NUGET_PACKAGES=/opt/nuget-packages
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped")
 
@@ -106,6 +136,15 @@ RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
+# ...and give `scanner` its CARGO_HOME back (ARC-2930403871). `CARGO_HOME` is
+# inherited from the base image as /home/scanner/.cargo (`Dockerfile:505`),
+# which `Dockerfile:488-489` creates and chowns FOR scanner, so the build above
+# just filled production's own writable cargo home with root-owned registry
+# files. `cargo-audit --no-fetch` reads the lockfile and the a+rX advisory DB
+# and needs none of them, so this is the invariant rather than a live break --
+# and restoring it is one line, whereas pointing CARGO_HOME elsewhere would
+# move `advisory-db` out from under `cargo-audit` and degrade it silently.
+RUN chown -R scanner:scanner /home/scanner/.cargo
 
 # The hostile C# fixture (#1655). roslyn-secguard refuses a target with no NuGet
 # restore output (`project.assets.json`): a C# project that has not been restored
@@ -127,6 +166,16 @@ RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 # exact defect this line exists to remove. A failed restore fails the build.
 COPY tests/fixtures/hostile-csproj /opt/panopticon-fixtures/hostile-csproj
 RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj
+
+# Both restores are done: make what they cached readable to the user the scans
+# run as (ARC-2930403871). `a+rX` and not a chown, for the same reason the base
+# image uses it on `/opt/semgrep-rules`, `/opt/osv-db` and the advisory DBs
+# (`Dockerfile:403`, `:412`, `:421`, `:480`): the scan only READS packages.
+# `/opt/odc-data` is the counter-example the base image documents
+# (`Dockerfile:482-485`) -- dependency-check opens its H2 file read-write, so
+# that one is chowned. If NuGet turns out to need a write inside the global
+# folder, this line becomes the same chown.
+RUN chmod -R a+rX /opt/nuget-packages
 
 # Note: skill/scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
