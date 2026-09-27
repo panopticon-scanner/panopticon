@@ -136,27 +136,55 @@ groups:
   Orchestration:
     Phases:
       match:
-      - skill/scripts/driver.py
       - skill/scripts/phases/**
       - '!skill/scripts/phases/child.py'
       - '!skill/scripts/phases/verify_tools.py'
       - '!skill/scripts/phases/readiness_checks.py'
       - '!skill/scripts/phases/hard_links.py'
       - '!skill/scripts/phases/setup_ack.py'
-      - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       tests:
-      - tests/test_driver.py
-      - tests/test_driver_verify.py
-      - tests/test_driver_tool_verify.py
       - tests/phases/**
       - '!tests/phases/test_hard_links.py'
-      - tests/test_orchestrate.py
-      - tests/test_orchestrate_session.py
       - tests/test_agent_verdict_guard.py
       - tests/test_assets.py
       - tests/test_e2e.py
       - tests/test_tree_baseline.py
+      panels:
+      - ARC
+      - SEC
+      - OPS
+    Driver:
+      match:
+      - skill/scripts/driver.py
+      tests:
+      - tests/test_driver.py
+      - tests/test_driver_cli.py
+      - tests/test_driver_delta.py
+      - tests/test_driver_entry.py
+      - tests/test_driver_matrix.py
+      - tests/test_driver_verify.py
+      - tests/test_driver_tool_verify.py
+      - tests/driver_helpers.py
+      panels:
+      - ARC
+      - SEC
+      - OPS
+    Loop:
+      match:
+      - skill/scripts/orchestrate.py
+      tests:
+      - tests/test_orchestrate.py
+      - tests/test_orchestrate_batch.py
+      - tests/test_orchestrate_checkpoint.py
+      - tests/test_orchestrate_evidence.py
+      - tests/test_orchestrate_launch.py
+      - tests/test_orchestrate_outage.py
+      - tests/test_orchestrate_recovery.py
+      - tests/test_orchestrate_session.py
+      - tests/test_orchestrate_session_edges.py
+      - tests/test_orchestrate_usage.py
+      - tests/orchestrate_helpers.py
       panels:
       - ARC
       - SEC
