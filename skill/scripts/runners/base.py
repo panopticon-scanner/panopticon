@@ -345,7 +345,7 @@ class HostRunner(children.ChildProcesses):
            files down (`loop_batch.rolled_back` does that on the interrupt
            path, `_finish` otherwise -- both after this returns),
            because a child that outlived its guard would run unconfined --
-           the ordering `tests/runners/test_kimi.py` pins.
+           the ordering `tests/runners/test_kimi_home.py` pins.
         3. a BOUNDED wait on the workers that were holding those children
            (`INTERRUPT_GRACE`), instead of the unbounded join the `with`
            block used to perform.
