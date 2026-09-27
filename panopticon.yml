@@ -390,6 +390,7 @@ groups:
       match:
       - skill/scripts/reconcile.py
       - skill/scripts/evidence.py
+      - skill/scripts/evidence_sections.py
       - skill/scripts/citations.py
       - skill/scripts/ocrdb.py
       - skill/scripts/provenance.py
