@@ -54,6 +54,13 @@ USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 PHASES = ("scout", "review", "verify", "unattributed")
 
+# ARC-2134807886: the drops `sources` publishes, named ONCE. `collect` iterates
+# this to emit all three (that is what makes "always present" mechanical rather
+# than three string literals happening to agree), and `main` iterates it to read
+# them back out of the document it just built.
+DROP_COUNTERS = ("unreadable_transcripts", "undecodable_lines",
+                 "non_integer_usage_fields")
+
 # #1576 (run-13 OPS-2642264462): the most subagent transcripts one run's usage
 # is collected from. Past it the sorted remainder is NOT read -- the reported
 # total becomes a floor -- and the drop is disclosed on stderr and as
@@ -187,7 +194,23 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     return _cap_transcripts(sorted(out), info)
 
 
-def _iter_records(path):
+def _bump(info, key):
+    """Count one dropped input, when the caller asked for the accounting.
+
+    `info` is the same dict `_cap_transcripts` writes its truncation count to,
+    so every disclosure this module makes reaches `collect` by one route.
+    """
+    if info is not None:
+        info[key] = info.get(key, 0) + 1
+
+
+def _iter_records(path, info=None):
+    """Every JSON object in a transcript, counting into `info` what it drops.
+
+    A transcript is read once per call, so `info` is passed only by the pass
+    that accounts for the file (`scan` from `collect`); `classify_transcript`
+    re-reads the same file to read its first prompt and must not count it twice.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -197,12 +220,18 @@ def _iter_records(path):
                 try:
                     rec = json.loads(line)
                 except ValueError:
-                    continue          # a partially-flushed line is not fatal
+                    # A partially-flushed line is not fatal, but it is a record
+                    # this run's usage may have been on.
+                    _bump(info, "undecodable_lines")
+                    continue
                 # A transcript line is not guaranteed to be an object: task
                 # output files interleave bare scalars with records.
                 if isinstance(rec, dict):
                     yield rec
     except OSError:
+        # Nothing was read, or the read stopped part-way: the FILE is the unit,
+        # counted once here because this is the only place the failure is seen.
+        _bump(info, "unreadable_transcripts")
         return
 
 
@@ -210,11 +239,20 @@ def _zero():
     return dict.fromkeys(USAGE_FIELDS, 0)
 
 
-def _add(into, usage):
+def _add(into, usage, info=None):
+    """Sum the integer usage fields of `usage` into `into`.
+
+    An ABSENT field is not a drop -- absent stays absent. A field that is
+    PRESENT and not a whole number is, and it is counted into `info`: a `bool`
+    included, because `bool` is an `int` subclass and `"output_tokens": true`
+    would otherwise add one fabricated token.
+    """
     for f in USAGE_FIELDS:
         v = usage.get(f)
-        if isinstance(v, int):
+        if isinstance(v, int) and not isinstance(v, bool):
             into[f] += v
+        elif v is not None:
+            _bump(info, "non_integer_usage_fields")
 
 
 def dispatched_prompt(path):
@@ -260,8 +298,16 @@ def classify_transcript(path):
     return "unattributed"
 
 
-def scan(path, since=None, until=None):
+def scan(path, since=None, until=None, info=None):
     """(totals, record_count, models) for one transcript, within [since, until].
+
+    `info`, when a dict, collects what this transcript made the collector drop,
+    for the caller to publish beside the total it qualifies (ARC-2134807886).
+    The counters do NOT cover every loss, and the boundary is deliberate: a
+    record whose `usage` is present but is not a dict is skipped here uncounted
+    (follow-up #2171), an explicit `null` field reads as absent to `_add`'s
+    `.get`, and a non-integer field on a record outside [since, until] is
+    filtered out below before `_add` ever sees it.
 
     #1494: `until` bounds the END of the window. A floor alone is not enough when
     several runs share one session transcript -- re-collecting an earlier run after
@@ -272,7 +318,7 @@ def scan(path, since=None, until=None):
     totals = _zero()
     n = 0
     models: dict[str, int] = {}
-    for rec in _iter_records(path):
+    for rec in _iter_records(path, info):
         msg = rec.get("message")
         if not isinstance(msg, dict):
             continue
@@ -284,7 +330,7 @@ def scan(path, since=None, until=None):
             continue
         if until and ts > until:
             continue
-        _add(totals, usage)
+        _add(totals, usage, info)
         n += 1
         m = msg.get("model")
         if m:
@@ -309,14 +355,14 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
     by_phase_transcripts: dict[str, int] = {}
 
     if controller:
-        t, n, m = scan(controller, since, until)
+        t, n, m = scan(controller, since, until, info=found)
         _add(by_source["controller"], t)
         for k, v in m.items():
             models[k] = models.get(k, 0) + v
         controller_records = n
 
     for p in tasks:
-        t, n, m = scan(p, since, until)
+        t, n, m = scan(p, since, until, info=found)
         if not n:
             continue
         phase = classify_transcript(p)
@@ -378,6 +424,22 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
             # bound and `total` is a floor -- the one number that makes the
             # rest of this document honest when it does.
             "subagent_transcripts_truncated": found.get("transcripts_truncated", 0),
+            # ARC-2134807886, same contract for input that WAS reached and could
+            # not be used: a transcript that raised OSError (counted once, and
+            # not as a subagent transcript -- it contributed no record to sum).
+            #
+            # SCOPE, because it is not the same for all three. The two
+            # file-scoped ones -- `unreadable_transcripts` and
+            # `undecodable_lines` -- cover the WHOLE transcript read, not only
+            # this run's [since, until] window: a torn line is dropped before
+            # its timestamp can be read, and an OSError loses the file entire.
+            # So in a long-lived session (the world `later_run_started` exists
+            # for) either can be non-zero for a run whose own total is exact.
+            # `non_integer_usage_fields` is window-scoped: `_add` runs after the
+            # filters. A candidate that is not a regular file is not in any of
+            # them -- `find_task_transcripts` excludes it with `os.path.isfile`
+            # before a read is attempted, so it is filtered out, not counted.
+            **{k: found.get(k, 0) for k in DROP_COUNTERS},
         },
     }
 
@@ -529,6 +591,21 @@ def main(argv=None):
         print("collect-usage: no transcript found; writing nothing "
               "(meta.cost.tokens stays null)", file=sys.stderr)
         return 1
+
+    # A document without `sources` (an older or hand-built one) has nothing
+    # to disclose; the summary line is owed only when a counter is non-zero.
+    sources = doc.get("sources") or {}
+    dropped = [sources.get(k, 0) for k in DROP_COUNTERS]
+    if any(dropped):
+        # ARC-2134807886: one line, only when there is something to say. The
+        # counts are in the document either way, which is the half that always
+        # travels: this line is what a DIRECT run of the script shows, while
+        # under synthesize the child's stderr is captured (follow-up #2171).
+        print("collect-usage: dropped input -- %d unreadable transcript(s), %d "
+              "undecodable line(s), %d non-integer usage field(s); the first "
+              "two count across every transcript read, not only this run's "
+              "window, and the reported total is a FLOOR" % tuple(dropped),
+              file=sys.stderr)
 
     if args.dry_run:
         json.dump(doc, sys.stdout, indent=2)
