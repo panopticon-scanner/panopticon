@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The scrub funnel binds a deterministic repo root, and reconcile's comments go through it
+  (#1777 ARC-1735086130, #1780 ARC-163067013).** `sanitize._detect_repo_root` fell back to
+  `os.getcwd()` and nothing refused a degenerate root. Probed with an empty PATH at `/`, `scrub()`
+  deleted every `/` in the text it was handed -- `re.escape("")` makes the bare-root substitution
+  an empty-match pattern -- and `repo_relative` ate the leading slash. The realistic mirror is
+  worse: a filer run from another checkout gets a prefix that strips nothing, so the operator's
+  absolute paths land in a public, permanent issue, which is the one thing that module exists to
+  prevent. Both detection branches now go through one normaliser that REFUSES a filesystem root
+  and a non-absolute root and returns a realpath'd prefix (`git rev-parse` reports the LOGICAL
+  path, so a macOS /tmp checkout never matched a realpath'd location), and `scrub`/`repo_relative`
+  take an explicit `root=`, normalised and refused the same way, with the cached detection as the
+  default so no filer changes a call. That determinism is what the second half needs. The module
+  header claimed `scrub()` is the one point every filer shares, but
+  `reconcile_apply._comment_body` posted `action["comment"]` with only `neutralize`'s markdown pass
+  -- no path stripping, no redaction -- while the `reason` it interpolates is built from report
+  locations that `_source_records` proves can be absolute. The comment is now scrubbed BEFORE the
+  `<!-- panopticon-reconcile:KEY -->` marker is appended, so the marker (keyed on the raw action,
+  so no receipt is rebound) survives byte-for-byte and `_comment_present`, which compares the FULL
+  body on the resume path, reconciles against the scrubbed body that was posted.
 - **The CLI advisor renderer confines claim locations and pins the review root (#1767, run-14
   ARC-3314534783).** Advisor-prompt assembly existed twice. The driver's two advisor rounds rewrite
   an escaping `location.file` to a redaction marker and pin `Repo root: <review_root>` before

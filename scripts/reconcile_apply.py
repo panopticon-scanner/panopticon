@@ -543,11 +543,10 @@ def _load_progress(path, repo_slug):
 def _bind_progress(loaded, repo_slug, action_keys, reset):
     """Validate old binding before reset; prune history only at migration/reset."""
     plan_hash = _plan_hash(repo_slug, action_keys)
-    if loaded is not None and loaded["version"] == PROGRESS_VERSION:
-        if not reset:
-            if loaded["plan_hash"] != plan_hash:
-                raise ValueError("progress belongs to a changed/reordered plan; use --reset-progress")
-            return loaded
+    if loaded is not None and loaded["version"] == PROGRESS_VERSION and not reset:
+        if loaded["plan_hash"] != plan_hash:
+            raise ValueError("progress belongs to a changed/reordered plan; use --reset-progress")
+        return loaded
     acknowledgements = {}
     if loaded is not None and not reset:
         acknowledgements = {key: loaded["actions"][key] for key in action_keys
@@ -623,7 +622,8 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
 
 
 def _comment_body(action, repo):
-    return action["comment"] + "\n\n<!-- panopticon-reconcile:" + _action_key(action, repo) + " -->"
+    """The scrubbed comment, then the marker _comment_present matches verbatim."""
+    return file_issues.scrub(action["comment"]) + "\n\n<!-- panopticon-reconcile:" + _action_key(action, repo) + " -->"
 
 
 def _comment_present(runner, repo, number, body):
