@@ -294,7 +294,7 @@ class TestPlanActions(unittest.TestCase):
                 cohort.assert_not_called()
 
     def test_non_integer_schema_is_refused_before_action_planning(self):
-        for version in (None, "2", 2.0, [], {}):
+        for version in (None, "2", 2.0, True, False, [], {}):
             with self.subTest(version=version), mock.patch.object(
                     reconcile_apply, "_cohort_actions") as cohort:
                 with self.assertRaisesRegex(ValueError, "^diff schema_version must be an integer$"):
