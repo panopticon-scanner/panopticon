@@ -23,6 +23,27 @@ evidence exposed.
   cell: one whose PAYLOAD was rejected is still named without a cell
   (`malformed_findings_files`), and one that parses cleanly is surfaced by
   `unexpected_findings_files` wherever a dispatch plan exists.
+- **Setup's flat seed drops the group names a run would refuse (#1788; COD-2612640453).**
+  The vocabulary-absent fallback kept every name `parse_groups` returned, even one it only flags
+  as an error: a case twin, a chunk twin, or the reserved `Ungrouped` sink. `groups_schema` now
+  exposes `colliding_ids`, and the seed drops those names too.
+- **`defang` neutralises issue references and URLs in every form GitHub links (#1793;
+  COD-3436467706).** `GH-N` links in any letter case beside `/`, `-` or `.`, and `#N`
+  shares its "before" boundary: no ASCII letter, digit or underscore immediately
+  precedes either, and no word character follows `GH-N`'s number. `http(s)://` links
+  unless an ASCII letter (not a digit or underscore) sits right before the scheme. Case
+  insensitivity no longer folds those ASCII checks, and the `GH-N` substitution keeps the
+  matched text's own letters, as the `http(s)://` one already did.
+- **The Kimi probes report a hung doctor, a failing home writer and a malformed config (#1788;
+  COD-2149752625).** Three posture probes on `--host kimi` let an exception escape where their
+  siblings already turn it into a reported state: `_kimi_home_arms_and_validates` caught only
+  `OSError` around `kimi doctor`, so a doctor that outlives its timeout or writes output that
+  does not decode escaped as a traceback; `_kimi_hooks_are_armed` caught only
+  `(OSError, RuntimeError)` around the per-run home writer, so a `ValueError` or `TypeError` from
+  it escaped too; and `probe_kimi_model_alias` let a malformed or unreadable operator
+  `config.toml` escape the same way. All three now report instead of raising, and the writer's
+  exception tuple is defined once (`kimi_snapshot._HOME_WRITER_EXCEPTIONS`) so the two probes
+  that drive it cannot drift apart again.
 - **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
   `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
   naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
