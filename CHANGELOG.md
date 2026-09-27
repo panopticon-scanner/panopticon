@@ -22,6 +22,29 @@ evidence exposed.
   two and exists so a future parser edit cannot go back to losing or doubling a section in silence.
   `main` parses before it loads the ledger or reads the `gh` environment, so a refusal precedes
   every GitHub call, and no doc under `docs/` or `skill/docs/` mentions this script.
+- **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
+  `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
+  finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published
+  `report-schema.json` requires only `file` there and says in that `location`'s own description
+  (#1522) that a whole-file finding -- a missing header, a bad config -- is legitimate and must
+  not have a line number invented for it. The envelope is the stricter of the two AND the one
+  that governs emission: `phases/persist.py`'s `ROLE_SCHEMAS` maps the `review-cell` role to it,
+  `role_schema` hands it to the runner as the CLI's output schema, and
+  `ENVELOPE_SHAPES`/`RETRY_PROMPT_BLOCK` re-prompt a refused reply. So on a host whose CLI
+  enforces that schema (claude, codex) a legitimate whole-file finding was either refused or
+  re-emitted with a fabricated line, in a pipeline whose premise is that evidence is not
+  invented. Both `required` lists are now `["file"]`, and `line_start` keeps
+  `{"type": "integer", "minimum": 1}` so an invented `0` -- or a string -- still fails. Nothing
+  downstream needed changing: `synth/findings.py` already DROPS a `line_start` a finding does not
+  carry rather than filling one in, and every other consumer reads it through `.get`. Two
+  residuals are disclosed, not fixed, here (follow-up #2174): `synth/report.py` still WARNs
+  `missing location.file/line_start` on the now-sanctioned whole-file finding until that check
+  is split, and the envelope still requires `location` itself while the report schema does not,
+  so a locus-free catalog-gap finding is still refused. `skill/agents/domain-panel.md` now tells
+  the reviewer to omit `line_start`/`line_end` entirely (not `null`) for a whole-file finding
+  rather than invent one, and the new `test_envelope_location_required_matches_report` pins each
+  envelope `location` `required` set to the report schema's, extending #1602's parity guard
+  (`tests/test_schema_parity.py`, report vs schema) to the emission envelope.
 - **`collect_usage` counts the input it drops, and the summary line says so (#1782,
   ARC-2134807886).** Three drops were silent: `_iter_records` returned on an `OSError` (an
   unreadable transcript yielded nothing at all, and `collect`'s `if not n: continue` then did not
