@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 try:
@@ -467,7 +468,6 @@ class TestMissingJsonschemaContract(unittest.TestCase):
         probe = """
 import builtins
 import json
-import sys
 import unittest
 
 real_import = builtins.__import__
@@ -476,7 +476,6 @@ def block_jsonschema(name, *args, **kwargs):
         raise ImportError("isolated jsonschema absence probe")
     return real_import(name, *args, **kwargs)
 builtins.__import__ = block_jsonschema
-sys.path.insert(0, sys.argv[1])
 import tests.test_schemas
 
 names = (
@@ -485,7 +484,7 @@ names = (
     "TestSchemas.test_findings_envelope_rejects_domain_panel_without_required",
 )
 suite = unittest.TestSuite(
-    unittest.defaultTestLoader.loadTestsFromName("test_schemas." + name)
+    unittest.defaultTestLoader.loadTestsFromName("tests.test_schemas." + name)
     for name in names
 )
 result = unittest.TestResult()
@@ -497,23 +496,29 @@ print(json.dumps({
     "skipped": [(case.id(), reason) for case, reason in result.skipped],
 }))
 """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(repo_root, "pyproject.toml"), "rb") as stream:
+            roots = tomllib.load(stream)["tool"]["pytest"]["ini_options"]["pythonpath"]
         for strict in (False, True):
             with self.subTest(strict=strict):
                 env = dict(os.environ)
+                env["PYTHONPATH"] = os.pathsep.join(
+                    os.path.join(repo_root, root) for root in roots)
                 if strict:
                     env["PANOPTICON_REQUIRE_INTEGRATION"] = "1"
                 else:
                     env.pop("PANOPTICON_REQUIRE_INTEGRATION", None)
-                proc = subprocess.run(
-                    [sys.executable, "-c", probe, os.path.dirname(__file__)],
-                    env=env, capture_output=True, text=True, timeout=30,
-                )
+                with tempfile.TemporaryDirectory() as cwd:
+                    proc = subprocess.run(
+                        [sys.executable, "-c", probe], cwd=cwd,
+                        env=env, capture_output=True, text=True, timeout=30,
+                    )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 outcome = json.loads(proc.stdout)
                 self.assertEqual(outcome["run"], 3)
                 self.assertEqual(outcome["errors"], [])
                 validation_id = (
-                    "test_schemas.TestSchemas."
+                    "tests.test_schemas.TestSchemas."
                     "test_findings_envelope_rejects_domain_panel_without_required"
                 )
                 if strict:

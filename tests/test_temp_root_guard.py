@@ -16,7 +16,8 @@ def _child_import_roots():
     return os.pathsep.join(os.path.join(REPO_ROOT, root) for root in roots)
 
 
-def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True):
+def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True,
+                         forbid_home_allocation=False):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     if metadata == "directory":
@@ -55,13 +56,20 @@ def _run_startup_fixture(tmp_path, metadata, option, alias, unsafe=True):
         arguments.extend(["-c", str(config)])
     else:
         env["PYTEST_ADDOPTS"] = "--basetemp=" + shlex.quote(str(selected))
-    if option == "programmatic":
-        # No basetemp option is directly present in sys.argv or PYTEST_ADDOPTS.
+    if forbid_home_allocation:
+        # The import-time TMPDIR check must run before any plugin HOME setup.
+        # Parsed basetemp refusal is a later pytest_configure contract.
+        assert unsafe and option == "TMPDIR"
+        env.pop("PANOPTICON_TEST_HOME", None)
         prelude = ("import tempfile\n"
                    "def forbidden(*args, **kwargs):\n"
                    "    raise AssertionError('HOME allocation preceded temp-root refusal')\n"
-                   "tempfile.mkdtemp = forbidden\n") if unsafe else ""
+                   "tempfile.mkdtemp = forbidden\n")
         command = [sys.executable, "-c", prelude +
+                   "import pytest; raise SystemExit(pytest.main(%r))" % arguments]
+    elif option == "programmatic":
+        # No basetemp option is directly present in sys.argv or PYTEST_ADDOPTS.
+        command = [sys.executable, "-c",
                    "import pytest; raise SystemExit(pytest.main(%r))" % arguments]
     else:
         command = [sys.executable, "-m", "pytest", *arguments]
@@ -86,3 +94,14 @@ def test_external_temp_root_runs_real_conftest_and_sentinel(tmp_path, option):
     assert result.returncode == 0, result.stdout + result.stderr
     assert collected.read_text() == "collected"
     assert sentinel.read_text() == "ran"
+
+
+def test_unsafe_tmpdir_refusal_precedes_home_allocation(tmp_path):
+    result, collected, sentinel = _run_startup_fixture(
+        tmp_path, "directory", "TMPDIR", False, forbid_home_allocation=True)
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "Use an external temp directory" in output
+    assert "HOME allocation preceded temp-root refusal" not in output
+    assert not collected.exists()
+    assert not sentinel.exists()

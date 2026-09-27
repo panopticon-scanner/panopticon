@@ -60,6 +60,28 @@ def _tree_offenders(root):
             for lineno, text in _mutation_sites(path)]
 
 
+def _import_sites(path, local):
+    tree = ast.parse(path.read_text(), filename=str(path))
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = ["." * node.level + (node.module or "")]
+            if (node.level or node.module == "tests"
+                    or (node.module or "").startswith("tests.")):
+                names.extend(alias.name for alias in node.names
+                             if alias.name == "conftest")
+        else:
+            continue
+        for name in names:
+            if (name == "conftest" or name.endswith(".conftest")
+                    or name in local or name.startswith("tools.")
+                    or name == "tools"):
+                offenders.append((node.lineno, name))
+    return offenders
+
+
 class TestNoPerFileSysPath(unittest.TestCase):
     def test_helpers_import_without_plugin_or_allocations(self):
         code = '''import os, pathlib, sys, tempfile
@@ -143,17 +165,20 @@ raise SystemExit(pytest.main(["-c", str(root / "pyproject.toml"), "--collect-onl
         offenders = []
         local = {path.stem for path in ROOT.rglob("*.py") if path.stem != "__init__"}
         for path in ROOT.rglob("*.py"):
-            tree = ast.parse(path.read_text(), filename=str(path))
-            for node in ast.walk(tree):
-                names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
-                         else ["." * node.level + (node.module or "")]
-                         if isinstance(node, ast.ImportFrom) else [])
-                for name in names:
-                    if (name == "conftest" or name.endswith(".conftest")
-                            or name in local or name.startswith("tools.")
-                            or name == "tools"):
-                        offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}: {name}")
+            offenders.extend(f"{path.relative_to(ROOT)}:{line}: {name}"
+                             for line, name in _import_sites(path, local))
         self.assertEqual(offenders, [])
+
+    def test_import_detector_catches_conftest_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "test_planted.py"
+            for statement in ("import conftest", "import tests.conftest",
+                              "from tests import conftest",
+                              "from tests.tools import conftest as plugin",
+                              "from . import conftest"):
+                with self.subTest(statement=statement):
+                    path.write_text(statement + "\n")
+                    self.assertEqual(len(_import_sites(path, {"conftest"})), 1)
 
     def test_detector_catches_planted_mutations(self):
         mutations = ["sys.path = []", "sys.path: list = []", "del sys.path",
