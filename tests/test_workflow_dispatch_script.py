@@ -166,7 +166,7 @@ class TestAgentTypeVsModel(DispatchScriptTestCase):
                                 "replies": {"e1": "ok"}})
         self.assertIsNotNone(out["error"])
         self.assertIn("e1", out["error"])
-        self.assertIn("enforced", out["error"])
+        self.assertIn("marked enforced", out["error"])
         self.assertEqual([], out["calls"], "no agent should be dispatched")
 
     def test_an_empty_agent_string_on_an_enforced_entry_is_refused_too(self):
