@@ -376,6 +376,24 @@ def _strict_pytest_containers(script):
     return []
 
 
+def _strict_gitleaks_host_pytest(script):
+    """Credit only the selected host Docker regression with both controls.
+
+    The assignments must belong to the pytest command itself. A comment,
+    earlier export, container invocation, or extra shell stage is insufficient.
+    """
+    argv = _standalone_argv(script)
+    if argv == [
+            "PANOPTICON_GITLEAKS_HOST_DOCKER=1",
+            "PANOPTICON_REQUIRE_INTEGRATION=1",
+            "PANOPTICON_GITLEAKS_TEST_IMAGE=panopticon-tools:latest",
+            "python3", "-m", "pytest",
+            "tests/tools/test_legacy_sarif_integration.py::TestGitleaksRunToolsDocker",
+            "-q", "-rs", "-p", "no:cacheprovider"]:
+        return [argv]
+    return []
+
+
 def _pull_fails_closed(script):
     # Deliberately support the simple published if/then shape; no shell interpreter.
     lines = shell_reader.statements(script)
@@ -406,6 +424,32 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
     def test_strict_mode_mounts_image_and_whole_suite_are_on_the_same_invocation(self):
         runs = [argv for script in self.scripts for argv in _strict_pytest_containers(script)]
         self.assertEqual(len(runs), 1)
+
+    def test_host_gitleaks_regression_is_selected_opted_in_and_strict(self):
+        runs = [argv for script in self.scripts
+                for argv in _strict_gitleaks_host_pytest(script)]
+        self.assertEqual(len(runs), 1)
+
+    def test_host_gitleaks_guard_rejects_inert_or_weakened_commands(self):
+        script = ('PANOPTICON_GITLEAKS_HOST_DOCKER=1 '
+                  'PANOPTICON_REQUIRE_INTEGRATION=1 '
+                  'PANOPTICON_GITLEAKS_TEST_IMAGE=panopticon-tools:latest '
+                  'python3 -m pytest '
+                  'tests/tools/test_legacy_sarif_integration.py::TestGitleaksRunToolsDocker '
+                  '-q -rs -p no:cacheprovider')
+        self.assertEqual(len(_strict_gitleaks_host_pytest(script)), 1)
+        for bad in (
+                '# ' + script, "echo '" + script + "'",
+                'false && ' + script, script + ' &', script + ' | cat',
+                script.replace('PANOPTICON_GITLEAKS_HOST_DOCKER=1',
+                               'PANOPTICON_GITLEAKS_HOST_DOCKER=0'),
+                script.replace('PANOPTICON_REQUIRE_INTEGRATION=1',
+                               'PANOPTICON_REQUIRE_INTEGRATION=0'),
+                script.replace('::TestGitleaksRunToolsDocker', ''),
+                script.replace('python3 -m pytest', 'docker run image pytest'),
+                script.replace(' -q -rs', ' -k ignored -q -rs')):
+            with self.subTest(script=bad):
+                self.assertEqual(_strict_gitleaks_host_pytest(bad), [])
 
     @staticmethod
     def _pytest_script():

@@ -79,6 +79,26 @@ jobs:
             --entrypoint sh panopticon-fixtures:latest \
             -c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"
 
+      # The Gitleaks run_tools regression needs the host Docker daemon because
+      # run_tools itself launches containers. Reuse the pulled tools image;
+      # the test resolves this tag to an immutable ID before its first scan.
+      - name: Set up Python for host Docker regression
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install host test dependencies
+        run: |
+          python -m pip install --no-deps --require-hashes \
+            -r .github/requirements-gate.txt -r requirements-fixtures.txt
+
+      - name: Run Gitleaks production dispatch through host Docker
+        run: |
+          PANOPTICON_GITLEAKS_HOST_DOCKER=1 \
+          PANOPTICON_REQUIRE_INTEGRATION=1 \
+          PANOPTICON_GITLEAKS_TEST_IMAGE=panopticon-tools:latest \
+          python3 -m pytest tests/tools/test_legacy_sarif_integration.py::TestGitleaksRunToolsDocker -q -rs -p no:cacheprovider
+
   # #1655, owner ruling 2026-09-22: the hostile-build containment probe gets a
   # scheduled lane, and BOTH of its controls are set here together.
   #
