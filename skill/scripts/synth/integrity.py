@@ -5,13 +5,13 @@ import os
 import re
 import sys
 
-import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
 import scripts.findings_contract as findings_contract
 
 # Module-attribute access only (spec §3 rule 1): plan imports this module back,
 # and the pair is safe precisely because neither touches the other at import time.
+from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 from . import findings as findings_mod
 
@@ -72,8 +72,7 @@ def mislabeled_findings_files(paths):
             continue
         group, domain = exp
         try:
-            with open(p, encoding="utf-8") as fh:
-                data = evidence_mod.load_json_tolerant(fh.read())
+            data = artifacts_mod.read_json(p, tolerant=True, announce=True)
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
@@ -102,8 +101,7 @@ def malformed_findings_files(paths):
     out = []
     for p in paths or []:
         try:
-            with open(p, encoding="utf-8") as fh:
-                data = evidence_mod.load_json_tolerant(fh.read())
+            data = artifacts_mod.read_json(p, tolerant=True)
         except (OSError, ValueError) as e:
             out.append({"file": str(p), "cell": findings_contract.cell_of(p),
                         "defects": [{"index": None,
@@ -147,8 +145,7 @@ def cross_domain_findings(paths):
             continue
         _group, domain = exp
         try:
-            with open(p, encoding="utf-8") as fh:
-                data = evidence_mod.load_json_tolerant(fh.read())
+            data = artifacts_mod.read_json(p, tolerant=True, announce=True)
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
@@ -217,8 +214,7 @@ def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json"))
     are included so callers can surface them in ``meta.integrity`` (#680).
     Unreadable/malformed => {} (tolerant)."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = artifacts_mod.read_json(path, announce=True)
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict) or not data.get("acknowledged"):
@@ -237,9 +233,8 @@ def _owes_a_snapshot(run_dir):
     one fault.
     """
     try:
-        with open(os.path.join(run_dir, plan_mod.DRIVER_DISPATCH_PLAN),
-                  encoding="utf-8") as fh:
-            entries = json.load(fh)
+        entries = artifacts_mod.read_json(
+            os.path.join(run_dir, plan_mod.DRIVER_DISPATCH_PLAN), announce=True)
     except (OSError, ValueError):
         return False
     return isinstance(entries, list) and any(isinstance(e, dict) for e in entries)
@@ -255,11 +250,10 @@ def load_verify_queue(run_dir):
     (#1644 put it at its 700-line ceiling). Behaviour is unchanged.
     """
     path = os.path.join(run_dir, "verify-queue.json")
-    if not os.path.isfile(path):
+    if not os.path.lexists(path):
         return None, None
     try:
-        with open(path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
+        loaded = artifacts_mod.read_json(path)
     except (OSError, ValueError) as exc:
         return None, "cannot read verify queue: %s" % exc
     if isinstance(loaded, dict) and isinstance(loaded.get("entries"), list):
