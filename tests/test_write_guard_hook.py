@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1957,3 +1958,124 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
         self.assertEqual(wg.ENV_ENTRY_ID, rg.ENV_ENTRY_ID)
         self.assertEqual(wg.ENV_ENTRY_ID, kg.ENV_ENTRY_ID)
         self.assertEqual(wg.UNBOUND_ENTRY, kg.UNBOUND_ENTRY)
+
+
+class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
+    """One rule, four hand-written opens -- pinned against each other (#1767,
+    ARC-2812051140).
+
+    The duplication is decided: `safe_write` owns the `.panopticon` artifact
+    open and says why the guard hooks cannot call it (a hook subprocess has no
+    package on sys.path), and `runners/kimi_home._write_text` says why it
+    mirrors the flags rather than importing the hook it would otherwise have to
+    depend on. What was NOT decided anywhere is the flags themselves: four
+    copies of an `os.open` flag word, and nothing that fails when one of them
+    loses a bit. `O_NOFOLLOW` is the security property -- drop it from any one
+    of these and a symlink planted at that name is written THROUGH, the #run9
+    SEC-X0X harm each of them exists to refuse.
+
+    Measured, not read: the flags come back from the real `os.open` each writer
+    calls, so a flag word assembled somewhere else still answers here.
+
+    The two pairs are deliberately not one set, and that is pinned too. A
+    stage-and-rename writer creates a PRIVATE temp nobody may pre-exist
+    (`O_EXCL`, mode 0o600); an artifact writer opens the run's own readable
+    output in place (`O_TRUNC`/`O_APPEND`, no `O_EXCL` -- a report is rewritten
+    and a ledger appended to). Recorded so the difference stays a decision.
+    """
+
+    NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+    PRIVATE = stat.S_IRUSR | stat.S_IWUSR                                 # 0o600
+    ARTIFACT = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH  # owner rw, all read
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.root = d.name
+
+    def _opened(self, call):
+        """(flags, mode) of the ONE `os.open` `call` performs."""
+        seen = []
+        real = os.open
+
+        def recording(path, flags, mode=0o777, **kwargs):
+            seen.append((flags, mode))
+            return real(path, flags, mode, **kwargs)
+
+        with mock.patch("os.open", recording):
+            call()
+        self.assertEqual(len(seen), 1,
+                         "expected exactly one os.open, saw %d" % len(seen))
+        return seen[0]
+
+    def _stagers(self):
+        """The two stage-at-`<path>.tmp`-and-rename writers."""
+        import scripts.runners.kimi_home as kimi_home
+        return {
+            "write_guard_hook.atomic_write_json": self._opened(
+                lambda: wg.atomic_write_json(os.path.join(self.root, "allowlist.json"),
+                                             wg.allowlist_document({}))),
+            "runners/kimi_home._write_text": self._opened(
+                lambda: kimi_home._write_text(os.path.join(self.root, "config.toml"),
+                                              "model = 'x'\n")),
+        }
+
+    def _artifact_writers(self):
+        """`safe_write`'s two, which open the artifact ITSELF, not a temp."""
+        import scripts.safe_write as safe_write
+
+        def flags_of(opener, name):
+            handles = []
+            measured = self._opened(
+                lambda: handles.append(opener(os.path.join(self.root, name))))
+            handles[0].close()
+            return measured
+
+        return {
+            "safe_write.open_w_nofollow": flags_of(safe_write.open_w_nofollow, "r.html"),
+            "safe_write.open_a_nofollow": flags_of(safe_write.open_a_nofollow, "l.jsonl"),
+        }
+
+    def test_no_writer_will_follow_a_symlink_planted_at_its_name(self):
+        measured = dict(self._stagers(), **self._artifact_writers())
+        self.assertEqual(len(measured), 4)
+        for name, (flags, _mode) in sorted(measured.items()):
+            with self.subTest(writer=name):
+                self.assertEqual(flags & self.NOFOLLOW, self.NOFOLLOW)
+                self.assertTrue(flags & os.O_WRONLY)
+                self.assertTrue(flags & os.O_CREAT)
+
+    def test_the_two_stage_and_rename_writers_open_identically(self):
+        measured = self._stagers()
+        (one, two) = measured.values()
+        self.assertEqual(one, two, "the staging writers have drifted: %r" % (measured,))
+        expected = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self.NOFOLLOW
+        self.assertEqual(self.PRIVATE, 0o600)
+        for name, (flags, mode) in sorted(measured.items()):
+            with self.subTest(writer=name):
+                # O_EXCL refuses a stale regular leftover as well as the link,
+                # which is why each unlinks `<path>.tmp` first and then creates.
+                self.assertEqual(flags, expected)
+                self.assertEqual(mode, self.PRIVATE)
+
+    def test_the_artifact_writers_differ_only_in_the_two_decided_ways(self):
+        measured = self._artifact_writers()
+        base = os.O_WRONLY | os.O_CREAT | self.NOFOLLOW
+        self.assertEqual(measured["safe_write.open_w_nofollow"],
+                         (base | os.O_TRUNC, self.ARTIFACT))
+        self.assertEqual(measured["safe_write.open_a_nofollow"],
+                         (base | os.O_APPEND, self.ARTIFACT))
+        for name, (flags, _mode) in sorted(measured.items()):
+            with self.subTest(writer=name):
+                # No O_EXCL: the artifact legitimately already exists on a
+                # re-run, and the link at THAT name is refused by O_NOFOLLOW
+                # plus the unlink-and-retry these two carry.
+                self.assertFalse(flags & os.O_EXCL)
+
+    def test_the_private_name_is_the_public_one(self):
+        # ARC-2812051140's other residual: `runners/batch.py` reached into the
+        # hook's `_atomic_write_json`, the one arrangement no comment justified.
+        # The writer has a public name now; the underscore spelling stays as an
+        # alias, so this module's own tests and the prose that cites it keep
+        # naming the same object rather than a second writer.
+        self.assertIs(wg._atomic_write_json, wg.atomic_write_json)

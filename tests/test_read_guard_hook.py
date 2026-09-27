@@ -1272,3 +1272,106 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
                          "Never a crash, never a silent allow"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, doc)
+
+
+class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
+    """The read-scope adjudication is DUPLICATED into `kimi_guard_hook` and the
+    Codex broker, not shared -- and from here on the copies are pinned (#1767,
+    ARC-1784455652), the way `tests/test_write_guard_hook.py`'s
+    `TestBindingHelpersAreACopy` already pins the BINDING helpers.
+
+    The copy is the decision, not an accident: a guard hook is invoked by
+    absolute path, as its own process, with no package on sys.path, so it may
+    not import a sibling (R-P5-5). What the decision needs is enforcement, and
+    the read-scope half of it had none -- so one copy had already drifted in
+    LOGIC. `kimi_guard_hook._load_scope` looped over an inline literal of the
+    four scope keys while this module looped over `SCOPE_KEYS`, so a fifth key
+    added to the constant was honoured by Claude's hook and silently ignored by
+    Kimi's: the read guards would confine the same entry differently, which is
+    the one thing three copies of one rule may never do.
+
+    Compared with the DOCSTRINGS STRIPPED. Each copy explains itself to a reader
+    standing in ITS file, so prose is what a copy is allowed to differ in; code
+    is not.
+    """
+
+    # Every helper the read-scope decision is made of, in both hooks. `_readable`
+    # is the decision itself, the other six are what it is built from.
+    NAMES = ("_resolve_path", "_under", "_fold", "_readable", "_load_scope",
+             "_hard_link_reason", "_glob_pattern_climbs")
+    # The Codex broker is an in-process MCP server, not a hook: it shares the
+    # path arithmetic and the denial wording, and nothing else (it opens every
+    # file itself, so it has no directory-argument traversal to adjudicate and
+    # no `hard_linked` key to read -- tests/test_codex_read_tools.py owns that
+    # boundary). `_under` is the one piece of code all three run.
+    BROKER_NAMES = ("_under",)
+
+    def _functions(self, module, names):
+        """{name: ast.dump} for `names` in `module`, docstring stripped."""
+        import ast
+        with open(module.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), module.__file__)
+        out = {}
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef) or node.name not in names:
+                continue
+            first = node.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                node.body = node.body[1:]
+            out[node.name] = ast.dump(node)
+        return out
+
+    def test_every_read_scope_helper_is_ast_identical_in_both_hooks(self):
+        import scripts.kimi_guard_hook as kg
+        mine, theirs = self._functions(rg, self.NAMES), self._functions(kg, self.NAMES)
+        self.assertEqual(sorted(mine), sorted(self.NAMES))
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(theirs.get(name), mine[name],
+                                 "%s has drifted from read_guard_hook's copy" % name)
+
+    def test_the_brokers_path_arithmetic_is_the_hooks(self):
+        from scripts import codex_read_tools
+        mine = self._functions(rg, self.BROKER_NAMES)
+        theirs = self._functions(codex_read_tools, self.BROKER_NAMES)
+        self.assertEqual(sorted(mine), sorted(self.BROKER_NAMES))
+        for name in self.BROKER_NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(theirs.get(name), mine[name],
+                                 "%s has drifted from read_guard_hook's copy" % name)
+
+    def test_the_scope_keys_are_one_tuple_across_the_two_hooks(self):
+        # The constant is the drift's own lesson: a key added here must reach
+        # Kimi's loader too, and only a pin makes that true. The broker's
+        # `SCOPE_KEYS` is deliberately NOT in this pin -- it reads the same
+        # scope objects but has no `hard_linked` walk to refuse, which its own
+        # test states.
+        import scripts.kimi_guard_hook as kg
+        self.assertEqual(rg.SCOPE_KEYS, kg.SCOPE_KEYS)
+        self.assertIn("hard_linked", kg.SCOPE_KEYS)
+
+    def test_the_hard_link_denial_is_one_wording_in_all_three(self):
+        # Pinned from the broker's side too (its `_under`'s neighbours are that
+        # file's business); stated here because this class is where a reader
+        # comes to find the whole read-scope copy contract in one place.
+        import scripts.kimi_guard_hook as kg
+        from scripts import codex_read_tools
+        self.assertEqual(rg.HARD_LINK_DENIAL, kg.HARD_LINK_DENIAL)
+        self.assertEqual(rg.HARD_LINK_DENIAL, codex_read_tools.HARD_LINK_DENIAL)
+
+    def test_a_root_directory_grant_admits_only_the_root_in_all_three(self):
+        # The root edge is what `directory.rstrip(os.sep) or os.sep` is for:
+        # without the `or`, `directory` is "" and every absolute path starts
+        # with os.sep, so a `/` grant admits the whole filesystem. The hooks
+        # have always carried the `or`; the broker did not, and a copy that
+        # answers a grant differently is a confinement hole, not a nit.
+        import scripts.kimi_guard_hook as kg
+        from scripts import codex_read_tools
+        for under in (rg._under, kg._under, codex_read_tools._under):
+            with self.subTest(copy=under.__module__):
+                self.assertTrue(under(os.sep, os.sep))
+                self.assertFalse(under("/etc/passwd", os.sep))
+                self.assertTrue(under("/repo", "/repo"))
+                self.assertTrue(under("/repo/x", "/repo"))
+                self.assertFalse(under("/repo-other/x", "/repo"))

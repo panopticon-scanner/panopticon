@@ -81,6 +81,24 @@ def test_outside_paths_and_traversal_are_denied(tree, path):
     assert "private outside content" not in body(result)
 
 
+def test_a_root_directory_grant_admits_only_the_root_itself():
+    # ARC-1784455652/#1767: `_under` authorizes a directory grant by NAME, and
+    # its root edge was the one place this copy answered differently from the
+    # two hooks'. With `/` as the grant, `directory.rstrip(os.sep)` is "" and
+    # every absolute path starts with os.sep, so the broker read the whole
+    # filesystem through a grant the hooks read as the root directory ALONE
+    # (`directory.rstrip(os.sep) or os.sep`). A `/` grant is not the normal
+    # shape, but a copy that answers the same grant differently is a
+    # confinement hole rather than a nit -- which is why the three copies are
+    # now pinned AST-identical in tests/test_read_guard_hook.py.
+    assert read_tools._under(os.sep, os.sep)
+    assert not read_tools._under("/etc/passwd", os.sep)
+    # ...and the ordinary edges are unchanged.
+    assert read_tools._under("/source", "/source")
+    assert read_tools._under("/source/a.py", "/source")
+    assert not read_tools._under("/source-other/a.py", "/source")
+
+
 def test_empty_scope_denies_every_read(tree):
     result = read_tools.Reader({}, str(tree[0])).call("read_file", {"path": str(tree[2])})
     assert result["isError"] is True
