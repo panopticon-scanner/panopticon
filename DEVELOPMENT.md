@@ -658,8 +658,9 @@ with `npm install --package-lock-only --ignore-scripts`. The image installs it w
 placeholder is refused), and the pinned pip may not be older than the one the runner ships. An
 exempted workflow's **posture** is asserted rather than assumed: it may not run on
 `pull_request_target`, may not hold a `write` scope at workflow or job level, and may not leave a
-job's effective `permissions:` undeclared, which is why `ci.yml` and `docker-build-pr.yml` state
-`contents: read` at the top instead of inheriting the repository's `GITHUB_TOKEN` default (#1784).
+job's effective `permissions:` undeclared, which is why `ci.yml` states `contents: read` at the top
+instead of inheriting the repository's `GITHUB_TOKEN` default (#1784). `docker-build-pr.yml`, the
+only other workflow that declared nothing, now does the same, though no exemption holds it there.
 
 The third door is what a workflow **downloads and then runs**, and `scripts/workflow_guard.py`
 holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from

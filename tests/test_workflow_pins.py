@@ -389,8 +389,9 @@ def privilege_defect(doc):
     undeclared = []
     for name, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict):
-            grants.append(("job %s" % name, _write_scopes(job.get("permissions"))))
-            if workflow_block is None and job.get("permissions") is None:
+            block = job.get("permissions")   # one value, two questions below
+            grants.append(("job %s" % name, _write_scopes(block)))
+            if workflow_block is None and block is None:
                 undeclared.append(name)
     defects = ["%s holds %s" % (where, ", ".join(scopes))
                for where, scopes in grants if scopes]
@@ -742,6 +743,11 @@ class TestExemptionPosture(unittest.TestCase):
     def test_a_workflow_level_block_covers_every_job(self):
         self.assertIsNone(privilege_defect(
             dict(self.NO_BLOCK, permissions={"contents": "read"})))
+
+    def test_an_explicit_empty_block_is_declared_not_missing(self):
+        # `permissions: {}` grants nothing, a stronger statement than
+        # `contents: read`; only an ABSENT block reads as undeclared.
+        self.assertIsNone(privilege_defect(dict(self.NO_BLOCK, permissions={})))
 
     def test_a_job_level_block_on_every_job_is_enough(self):
         # `codeql.yml`, `nvd-cache.yml`, `security.yml` and `docker-publish.yml`
