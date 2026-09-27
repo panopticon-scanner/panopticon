@@ -25,10 +25,10 @@ evidence exposed.
   writer has a public `atomic_write_json` (the underscore spelling stays an alias, and a source
   pin keeps `runners/batch.py` off the private surface) so a package module no longer reaches into
   a hook script's private function, and a measured flags pin now holds the writers that spell the
-  no-follow open by hand -- the three guard hooks' stage-and-rename writers and `safe_write`'s
-  artifact pair -- with `O_NOFOLLOW` on every one, the three stagers identical at mode 0o600, and
-  the artifact pair differing only in the two ways that were decided.
-
+  no-follow open by hand -- the three stage-and-rename writers (the two guard hooks' and
+  `runners/kimi_home`'s) and `safe_write`'s artifact pair -- with `O_NOFOLLOW` on every one, the
+  three stagers identical at mode 0o600, and the artifact pair differing only in the two ways
+  that were decided.
 - **The TST global floor now recognises the test-file suffix conventions discovery already
   knows (#1770; run-14 ARC-3682668884).** `coverage_model._TEST_FILE_HINTS` gated the TST floor
   on substring hints -- `.test.`, `/tests/`, `test_` -- and knew none of the SUFFIX conventions

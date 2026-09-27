@@ -1964,10 +1964,10 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
     """One rule, hand-written per writer -- pinned against each other (#1767,
     ARC-2812051140).
 
-    The family this covers, named rather than counted: the guard hooks'
-    stage-and-rename writers (`write_guard_hook.atomic_write_json`,
-    `read_guard_hook._atomic_write_json`, `runners/kimi_home._write_text`) and
-    `safe_write`'s artifact pair. Not every no-follow create in the tree --
+    The family this covers, named rather than counted: the three
+    stage-and-rename writers -- the two guard hooks' (`write_guard_hook.atomic_write_json`,
+    `read_guard_hook._atomic_write_json`) and `runners/kimi_home._write_text` --
+    and `safe_write`'s artifact pair. Not every no-follow create in the tree --
     `setup_flow` and `diff_map` make files this way too, under their own rules.
 
     The duplication is decided: `safe_write` owns the `.panopticon` artifact
@@ -2113,6 +2113,9 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         self.assertEqual(
             self._private_hook_attributes(source, batch_mod.__file__), [],
             "runners/batch.py is reaching into the hook's private surface again")
+        # and not by any spelling: a `from`-import of the private name would
+        # evade the attribute walk above.
+        self.assertNotIn("_atomic_write_json", source)
 
     def test_the_private_name_is_the_public_one(self):
         # ARC-2812051140's other residual: `runners/batch.py` reached into the
