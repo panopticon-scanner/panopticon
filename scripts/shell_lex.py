@@ -41,14 +41,15 @@ to its close -- through quotes, backquotes, escapes and `$(...)`, not
 comments, and through `${` and `$[` as characters, as arithmetic reads them --
 and the character after it settles the rest: `)` makes an arithmetic command;
 anything else, two subshells, read again from the first `(` as code, so the
-heredocs in them are real. (`$((...))` needs no such choice: bash reads its
-text as one pair of parentheses either way, and no heredoc in it takes a body
-from the lines below.) Reading a group again is what nesting costs -- `((((`
-N deep is read N times -- so `lex` stops at `_REREAD` times the script's
-length of it and raises `Unreadable`. Nothing catches that: the guard accepts
-no step it could not read, and its command line exits non-zero. An exception
-rather than a reading, because the reader has no channel yet for a step it
-cannot read, and raising one needs no line in the modules that call it.
+heredocs in them are real. (`$((...))` needs no such choice: it is always
+arithmetic, read the same way. A `$(...)` in it, as in `((...))` and
+`$[...]`, is a command substitution, comments and heredocs and all.) Reading
+a group again is what nesting costs -- `((((` N deep is read N times -- so
+`lex` stops at `_REREAD` times the script's length of it and raises
+`Unreadable`. Nothing catches that: the guard accepts no step it could not
+read, and its command line exits non-zero. An exception rather than a
+reading, because the reader has no channel yet for a step it cannot read, and
+raising one needs no line in the modules that call it.
 
 A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its
 body would follow -- `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash
@@ -90,11 +91,11 @@ _OPENERS = (("$((", "$((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
 _PAIRS = {"(": "()", "((": "()", "$((": "()", "[": "[]", "a[": "[]"}
 _CLOSE = {"'": "'", "$'": "'", '"': '"', "`": "`", "{": "}"}
 # The openers a frame reads as text: "..." every quote but the `"` that ends
-# it; bash's arithmetic -- `((...))` and `$[...]` -- the `${` and `$[` whose
-# brackets it counts as its own; and `$((...))`, a pair of parentheses bash
-# matches without parsing what they hold, every opener but a quote.
+# it, and bash's arithmetic -- `((...))`, `$((...))` and `$[...]` -- the `${`
+# and `$[` whose brackets it counts as its own. A `$(` in arithmetic opens a
+# command substitution, as bash's arithmetic parse does (parse.y: P_ARITH).
 _PLAIN = {'"': ("'", '"', "$'", '$"'), "((": ("${", "$["), "[": ("${", "$["),
-          "$((": ("$((", "$(", "$[", "${")}
+          "$((": ("${", "$[")}
 # How many times over the script a `((` decided as two subshells may be read
 # again before `lex` stops (`Unreadable`).
 _REREAD = 8

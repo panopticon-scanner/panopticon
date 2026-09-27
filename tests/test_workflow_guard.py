@@ -2100,6 +2100,34 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         self.assertEqual([], wg.job_defects(
             [("step", "echo `cat <<EOF`\nit's\nEOF\n%s\n" % self.PAYLOAD)]))
 
+    def test_a_substitution_inside_arithmetic_is_code(self):
+        # In `$((...))`, as in `((...))` and `$[...]`, bash reads a `$(...)`
+        # as a command substitution: `#` starts a comment there, `<<` a
+        # heredoc, whose body is read inside it or fails closed as above. The
+        # reader read `$((...))` as one pair of parentheses, so a quote in
+        # that comment, or in that body, hid a payload bash 5.2 runs (and
+        # 3.2 runs the first).
+        for script in ("echo $(( $(: # ) ) '\n) ))\n%s\n'\n",
+                       "echo $(( $(cat <<EOF\nit's\nEOF\n) ))\n%s\n",
+                       "echo $(( $(: <<E\n)it's\nE\n) ))\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+        for opening in ("echo $(( $(cat <<EOF) ))", "echo $(( $(( $(cat <<EOF) )) ))"):
+            with self.subTest(opening=opening):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+        # Outside such a substitution `<<` is still a shift, and the line
+        # below that spells its right side ends nothing.
+        for opening, word in (("echo $(( 1<<2 ))", "2"), ("echo $(( a << b ))", "b"),
+                              ("echo $(( $(nproc) * 2 ))", "2"), ("echo $[1<<2]", "2]")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+        # Backquotes in arithmetic are text until bash runs them, as a
+        # script of its own in which the heredoc has no body: 5.2 runs
+        # nothing here, the open quote below being a syntax error.
+        self.assertEqual([], wg.job_defects(
+            [("step", "echo $(( `cat <<EOF` ))\nit's\nEOF\n%s\n" % self.PAYLOAD)]))
+
     def test_a_body_inside_its_open_substitution_is_read_there(self):
         # The fleet's form, where the body lines sit inside a `$(...)` still
         # open, reads as it did: a body with an open quote is read as a body,

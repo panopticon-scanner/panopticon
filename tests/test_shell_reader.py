@@ -833,6 +833,18 @@ class TestOneLexicalPass(unittest.TestCase):
             shell_reader.statements('echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n')
         self.assertIn([['echo', 'a']], argvs("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"\necho a\n"))
 
+    def test_a_substitution_inside_arithmetic_holds_commands(self):
+        # A `$(...)` inside `$((...))` holds commands, comments and heredocs
+        # included -- so the same rule applies there -- while outside one
+        # `<<` is a shift and the lines below stay code.
+        for script in ("echo $(( $(: # ) ) '\n) ))\necho a\n'\n",
+                       "echo $(( $(cat <<EOF\nit's\nEOF\n) ))\necho a\n",
+                       "echo $(( $(nproc) << 2 ))\necho a\n2\n"):
+            with self.subTest(script=script):
+                self.assertIn([['echo', 'a']], argvs(script))
+        with self.assertRaises(shell_lex.Unreadable):
+            shell_reader.statements("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n")
+
 
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
     """#1793 (COD-3636110933): the quote rules every scanner after the lexer
