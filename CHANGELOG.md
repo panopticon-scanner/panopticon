@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
+  limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
+  limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
+  writer, and turns JSON recursion/memory failures into the caller's normal unreadable-input
+  path. Strict metadata and tolerant agent-envelope parsing keep their existing formats.
+  Callers retain their shape checks, fallback values and invalid-artifact disclosures; an
+  unreadable manifest or verify queue cannot become an absent one. Parent-directory aliases
+  such as macOS `/var` remain supported. This supplies the shared reader requested by #2081
+  and #2082; changing the existing coverage-skip certification policy remains #2080.
 - **A whole-file finding no longer has to invent a line number (#1784; ARC-2002725967).**
   `skill/reference/findings-envelope-schema.json` required `location.line_start` on BOTH of its
   finding definitions (`legacyPanelFinding`, `domainRoleFinding`), while the published

@@ -16,6 +16,7 @@ import scripts.plan_contract as plan_contract
 import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
@@ -253,8 +254,7 @@ def main(argv=None):
     # fabricating a posture.
     _hc_path = os.path.join(run_dir, "host-capabilities.json")
     try:
-        with open(_hc_path, encoding="utf-8") as fh:
-            host_capabilities = json.load(fh)
+        host_capabilities = artifacts_mod.read_json(_hc_path, announce=True)
     except (OSError, ValueError):
         host_capabilities = {}          # absent or corrupt -> "nobody looked"
     if not isinstance(host_capabilities, dict):
