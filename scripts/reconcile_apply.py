@@ -384,7 +384,7 @@ def _cohort_actions(entries, cohort, close, comment_fn, ledger):
 def plan_actions(diff, ledger):
     if not isinstance(diff, dict):
         raise ValueError("diff must be a dictionary")
-    if "schema_version" in diff and not isinstance(diff.get("schema_version"), int):
+    if "schema_version" in diff and type(diff["schema_version"]) is not int:
         raise ValueError("diff schema_version must be an integer")
     if "fixed_or_gone" in diff:
         print("diff.json predates the closed/ambiguous split -- re-run reconcile.py diff",
