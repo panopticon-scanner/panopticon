@@ -7,6 +7,17 @@ import sys
 import scripts.diff_map as diff_map
 
 
+# The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
+# here because `meta.coverage.delta`'s published description enumerates these
+# exact strings, so a literal typed in a second place can drift from the
+# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach a report: the other two
+# leave the payload with no `base`, so the review is not a delta one and the
+# whole `meta.coverage.delta` block is null.
+MALFORMED_UNREADABLE = "unreadable"
+MALFORMED_NOT_OBJECT = "not an object"
+MALFORMED_HUNKS_NOT_OBJECT = "hunks not an object"
+
+
 @dataclass(frozen=True)
 class HunksLoad:
     """What reading a diff-hunks.json cost (#1783, ARC-2340795244).
@@ -88,20 +99,34 @@ def _disclose_load(ctx, path):
     if ctx.active and report.ranges == 0:
         # Zero ranges has two consequences, and which one this is depends on
         # whether the map names any file at all: `diff_map.classify` answers
-        # off-diff for a path the map does not carry, and fails OPEN for a
-        # lined finding in a path it carries with no range. Naming the wrong
-        # one would be a second quiet inaccuracy on top of the first.
+        # off-diff for a path the map does not carry, and fails OPEN on BOTH
+        # its arms for a path it carries with no range -- an unlined finding
+        # there never reaches the range loop, and a lined one falls through it.
+        # Naming the wrong one would be a second quiet inaccuracy on top of
+        # the first, and naming only one of the two fail-open arms was a third.
         shape = ("the map is empty, so every finding classifies off-diff and a "
                  "--gate-scope on-diff gate has nothing to fail on"
                  if not report.files else
-                 "the map names %d file(s) and not one range, so a lined "
-                 "finding in one of them fails OPEN to on-diff and every other "
-                 "finding classifies off-diff" % report.files)
+                 "the map names %d file(s) and not one range, so a finding in "
+                 "one of them fails OPEN to on-diff -- any finding without a "
+                 "line, and any lined one -- while findings elsewhere classify "
+                 "off-diff" % report.files)
+        # The two-readings warning holds only while the reason is unknown. A
+        # rejected payload was named on the line above, so the map is empty
+        # because of THAT, not because the change was: saying otherwise would
+        # send the operator to compare an artifact already known to be broken.
+        # The only rejection that reaches here is MALFORMED_HUNKS_NOT_OBJECT,
+        # since the other two leave no `base` and no active delta.
+        cause = ("An empty change and a broken artifact look identical from "
+                 "here: regenerate it (the driver's discovery phase writes it) "
+                 "and compare before trusting a green gate."
+                 if report.payload_malformed is None else
+                 "The map is empty because the payload was rejected (%s), not "
+                 "because the change was: regenerate it (the driver's "
+                 "discovery phase writes it)." % report.payload_malformed)
         print("synthesize: DELTA REVIEW WITH ZERO HUNKS -- %s resolved a base "
-              "but carries no diff ranges: %s. An empty change and a broken "
-              "artifact look identical from here: regenerate %s (the driver's "
-              "discovery phase writes it) and compare before trusting a green "
-              "gate." % (path, shape, path), file=sys.stderr)
+              "but carries no diff ranges: %s. %s"
+              % (path, shape, cause), file=sys.stderr)
     if report.ranges_dropped:
         print("synthesize: DELTA ARTIFACT: %d malformed hunk range(s) dropped "
               "from %s" % (report.ranges_dropped, path), file=sys.stderr)
@@ -121,7 +146,11 @@ def count_hunks(hunks):
 
 
 def load_diff_hunks(path):
-    """Load the orchestrator's diff-hunks.json; {} if absent/malformed."""
+    """Load the orchestrator's diff-hunks.json; {} if absent/malformed.
+
+    The compatibility name (#1783): it keeps the pre-report contract for
+    callers that only want the data, and `load_diff_hunks_report` is the one
+    to call -- it hands back the same data plus what reading it cost."""
     return load_diff_hunks_report(path)[0]
 
 
@@ -135,9 +164,9 @@ def load_diff_hunks_report(path):
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return {}, HunksLoad(payload_malformed="unreadable")
+        return {}, HunksLoad(payload_malformed=MALFORMED_UNREADABLE)
     if not isinstance(data, dict):
-        return {}, HunksLoad(payload_malformed="not an object")
+        return {}, HunksLoad(payload_malformed=MALFORMED_NOT_OBJECT)
 
     raw = data.get("hunks")
     malformed = None
@@ -145,7 +174,7 @@ def load_diff_hunks_report(path):
         # `discovery.write_diff_hunks` always emits a `hunks` object, empty
         # included, so an ABSENT key is as broken as a non-object one and
         # reads the same way here.
-        malformed = "hunks not an object"
+        malformed = MALFORMED_HUNKS_NOT_OBJECT
         raw = {}
     dropped = 0
     hunks = {}

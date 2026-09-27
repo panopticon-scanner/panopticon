@@ -249,15 +249,43 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertNotIn("ZERO HUNKS", err)
 
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
-        # `diff_map.classify` fails OPEN for a lined finding in a file the map
-        # NAMES but gives no range, so "zero ranges" has two consequences and
-        # the warning has to say which one this artifact bought.
+        # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
+        # NAMES but gives no range: an unlined finding there never reaches the
+        # range loop, and a lined one falls through it. So "zero ranges" has
+        # two consequences, the warning has to say which one this artifact
+        # bought, and it must not claim every OTHER finding is off-diff.
         _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": []}})
         self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
         self.assertIn("names 1 file(s)", err)
         self.assertIn("fails OPEN", err)
+        self.assertIn("any finding without a line, and any lined one", err)
+        self.assertIn("findings elsewhere classify off-diff", err)
+        self.assertNotIn("every other finding classifies off-diff", err)
 
     def test_an_empty_map_is_disclosed_as_matching_nothing(self):
         _, err, _ = self._from_args({"base": "main", "hunks": {}})
         self.assertIn("the map is empty", err)
         self.assertNotIn("fails OPEN", err)
+
+    def test_a_rejected_payload_is_not_called_indistinguishable(self):
+        # The reason is already on stderr one line up, so this artifact is
+        # known-broken: the empty-change-or-broken-artifact ambiguity does not
+        # hold, and the warning says what emptied the map instead.
+        _, err, _ = self._from_args({"base": "main", "hunks": 7})
+        self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
+        self.assertIn("because the payload was rejected", err)
+        self.assertIn("hunks not an object", err)
+        self.assertNotIn("look identical", err)
+
+    def test_an_unrejected_empty_map_keeps_the_ambiguity_clause(self):
+        # Nothing was rejected here, so the operator genuinely cannot tell the
+        # two apart from the report alone.
+        _, err, _ = self._from_args({"base": "main", "hunks": {}})
+        self.assertIn("look identical from here", err)
+        self.assertNotIn("was rejected", err)
+
+    def test_no_disclosure_line_names_the_artifact_path_twice(self):
+        _, err, path = self._from_args({"base": "main", "hunks": 7})
+        self.assertTrue(err)
+        for line in err.splitlines():
+            self.assertLessEqual(line.count(path), 1, line)

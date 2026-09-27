@@ -22,10 +22,11 @@ evidence exposed.
   empty change from a broken artifact, and a count of the ranges dropped. The warning distinguishes
   the two shapes zero ranges can take, because `diff_map.classify` fails OPEN for a lined finding
   in a file the map NAMES without a range. `meta.coverage.delta` carries the same four facts --
-  `hunks_files`, `hunks_ranges`, `ranges_dropped`, `payload_malformed` -- so the report says it
-  too, with `files_changed` left as the artifact's own claim beside the map actually classified
-  against. The gate's scoping RULE is untouched: this is disclosure, and what an empty on-diff gate
-  should DO is a policy call.
+  `hunks_files`, `hunks_ranges`, `ranges_dropped`, `payload_malformed` -- whenever the payload
+  resolved a `base`, with `files_changed` left as the artifact's own claim beside the map actually
+  classified against; a payload rejected outright leaves the review non-delta and that block null,
+  so there only stderr carries it. The gate's scoping RULE is untouched: this is disclosure, and
+  what an empty on-diff gate should DO is a policy call.
 - **`dispatch.js` refuses an entry marked enforced that names no registered shell (#1783,
   ARC-204863095).** The session-mode Workflow script validated each entry's `id`, `marker` and
   `prompt_file`, then branched on `e.enforced && e.agent` -- so an entry carrying `enforced: true`

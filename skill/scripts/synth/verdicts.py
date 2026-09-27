@@ -315,9 +315,8 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     # ACTIVE delta with `hunks_files: 0` matched no finding at all -- every one
     # classified off-diff, so under `--gate-scope on-diff` there was nothing
     # left for `--fail-on` to fail on. `ranges_dropped` / `payload_malformed`
-    # are the loader's
-    # tolerances, and are null when this context was not built from a file read
-    # (a direct caller: unmeasured, which is not the same as zero).
+    # are the loader's tolerances, and are null when this context was not built
+    # from a file read (a direct caller: unmeasured, not the same as zero).
     hunks_load = delta.report if delta_mode else None
     hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
                                  if delta_mode else (0, 0))

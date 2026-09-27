@@ -3549,7 +3549,9 @@ class TestDeltaGate(unittest.TestCase):
         off-diff and `--gate-scope on-diff` has an empty gate source -- a green
         gate over a change with findings. The scoping RULE is a policy call and
         is left alone here; what is pinned is that the run no longer passes in
-        silence."""
+        silence. #1783 leaves the policy open (refuse to certify vs fall back to
+        the wider scope) -- an owner call; when it is made, this pin must change
+        with it."""
         with tempfile.TemporaryDirectory() as d:
             hp = os.path.join(d, "diff-hunks.json")
             with open(hp, "w", encoding="utf-8") as fh:
