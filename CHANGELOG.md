@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One spelling of the read-scope keys, and the guard hooks' read-scope copies pinned (#1767;
+  ARC-1784455652, ARC-2812051140).** The read guards are three deliberate copies of one rule, and
+  each of the three runs with no package on sys.path -- the hooks because a hook is invoked by
+  absolute path, as its own process, the broker because it is launched `-I`. None of them can
+  import a sibling. But only the BINDING half of that copy was pinned, and the read-scope half had
+  already drifted in logic. `kimi_guard_hook._load_scope` looped over an inline literal of the
+  four scope keys while `read_guard_hook` looped over its `SCOPE_KEYS` constant, so a fifth key
+  added to the read guard would have been honoured by Claude's hook and silently ignored by
+  Kimi's: one entry, confined two ways. Kimi's loader now reads a `SCOPE_KEYS` of its own, and a
+  new parity class pins all seven read-scope helpers plus both constants AST-identical, docstrings
+  stripped (each copy explains itself where it stands; prose is what a copy may differ in, code is
+  not). That net also caught the one place the Codex broker's `_under` answered a grant
+  differently from the hooks': with `/` as a directory grant, `rstrip(os.sep)` left "" and every
+  absolute path was admitted, where the hooks' `or os.sep` reads a `/` grant as the root directory
+  ALONE. The broker takes the hooks' edge. Two residuals close with it: the write guard's atomic
+  writer has a public `atomic_write_json` (the underscore spelling stays an alias, and a source
+  pin keeps `runners/batch.py` off the private surface) so a package module no longer reaches into
+  a hook script's private function, and a measured flags pin now holds the writers that spell the
+  no-follow open by hand -- the three stage-and-rename writers (the two guard hooks' and
+  `runners/kimi_home`'s) and `safe_write`'s artifact pair -- with `O_NOFOLLOW` on every one, the
+  three stagers identical at mode 0o600, and the artifact pair differing only in the two ways
+  that were decided.
 - **The codex enforcement shells are encoded by the shared TOML encoder (#1763, run-14
   ARC-981076646).** `emit_host_agents`'s codex branch flattened its policy with a nested
   `emit_values` that spelled every value with a bare `json.dumps` and carried its own copy of the
