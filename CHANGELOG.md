@@ -18,6 +18,52 @@ evidence exposed.
   be an absolute path (it is 'rel/home'); unset it to use ~/.codex" -- by the runner and its shell
   loader, both codex probes, emission (exit 1, nothing written) and the readiness row. An explicit
   directory still wins, and importing `hosts` never raises.
+- **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
+  `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
+  `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived
+  `DEPENDENCY_CHECK_VERSION` -- and one of them `DEPENDENCY_CHECK_SHA256` -- with its own
+  `grep | head -1 | cut -d= -f2` and its own inline shape check. Both now call `python3
+  scripts/dockerfile_args.py read-arg <NAME>`. The shape checks MOVED there, they were not
+  dropped: the module is a closed map of ARG name to anchored pattern, it refuses a name with
+  no registered shape, and it exits 2 so `set -euo pipefail` still fails the step -- the
+  control nvd-cache.yml described as "constrain to expected shapes so a tampered ARG can't
+  inject downstream". The version shape is STRICTER than the grep it replaces, which also
+  accepted `10.0.3.` and `1..2`, and a value carrying a second `=` is now refused rather than
+  truncated to the part before it. `tests/test_dockerfile_args.py` covers the reader, both
+  callers, and the committed Dockerfile's own two pins.
+- **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
+  `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
+  (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
+  of three (`tool_reported`, `needs_more_info`, `unverified`), so five of the ten possible inputs
+  fell on one side of the word in the header and the other side in the tabs -- and the exclusion
+  form failed OPEN: a status added to `evidence.EVIDENCE_STATUSES` later would have joined the main
+  list silently. Both vocabularies are now closed sets in the new
+  `skill/scripts/evidence_sections.py`, which partitions `EVIDENCE_STATUSES` and raises at import if
+  it ever stops doing so, the way `score_gate.EVIDENCE_FACTOR` already did. They answer two
+  different questions, so neither is the other's complement: `VERIFIED_STATUSES` is the header's
+  WORD -- a second opinion agreed, which is why `backup_scope_limited` is not in it (#1638 P16) and
+  keeps its own disclosed segment -- and `UNVERIFIED_STATUSES` is the report's SPLIT, what the
+  collapsed "Unverified findings" section holds. `corroborated`, `rejected` and
+  `backup_scope_limited` are the named remainder that stays in the main severity tabs; `rejected`
+  cannot reach them anyway, because `synth/report.py` publishes `resolve_findings`'s `active` list
+  as `findings` and the rejected half goes to `discarded_claims` and its own section. **Nothing
+  moves for the eight known statuses**: both rules were run over each of them and agree, the
+  header's count is the same sum of the same two keys, and
+  `test_the_eight_known_statuses_do_not_move` pins that table. What changes is the tenth input -- a
+  finding whose `evidence.status` is unknown or missing now lands in the "Unverified findings"
+  section instead of the main list, disclosed rather than read as reviewed. The sets live in their
+  own module rather than in `evidence.py` because that module and `html_report.py` are both pinned
+  at their exact current size by the shrink-only ratchet in `tests/test_flat_module_ceiling.py`,
+  whose stated remedy for a module that needs room is a new module; `html_report.py` came down two
+  lines and its pin came down with it.
+- **Give the issue-ledger default one owner (#1821).** Reconciliation now obtains its default
+  ledger path from `file_issues.LEDGER`, matching the loader it already shares. Recovery writes
+  and the plan CLI keep the same default, and explicit ledger paths behave as before.
+- **Use one owner for runner and adapter vocabulary (#1821).** The loop, Codex preparation
+  and session instructions share the runner's setup namespace. Brakeman applicability uses the
+  same Rails markers as staging. The Semgrep smoke scan reads the production adapter command
+  when invoked and substitutes only its fixture target, so adapter flag changes reach the smoke
+  check automatically. Existing setup behavior, scanner arguments and security modes are retained.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO

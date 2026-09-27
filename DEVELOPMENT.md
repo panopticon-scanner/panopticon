@@ -460,6 +460,11 @@ installs. The tools image installs each `.gem` with `--ignore-dependencies` (#17
 is something this repo asserts rather than something RubyGems works out — and a release that
 requires a new gem would carry a perfectly good digest and still be wrong to pin.
 
+The two workflows that CONSUME the Dockerfile's dependency-check pins — `nvd-cache.yml` and
+`docker-publish.yml` — read them with `python3 scripts/dockerfile_args.py read-arg <NAME>`,
+which refuses a value that is not of its expected shape before it reaches an image tag or a
+download (#1774).
+
 ### Regenerating the pinned dependency hashes
 
 The three requirements files are what the repo's **privileged** builds install (#1641, #1734): the
