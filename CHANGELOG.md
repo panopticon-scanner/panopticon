@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A sentence-final file name reaches the backup's evidence closure (#1793; COD-148287761).**
+  `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
+  naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
+  another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
 - **Bound synthesis run metadata before JSON parsing (#1820, #1825).** A shared reader
   limits ordinary run artifacts to 16 MiB and keeps coverage records at their existing 1 MiB
   limit. It refuses final-component symlinks and nonregular files without waiting for a FIFO
