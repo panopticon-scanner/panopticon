@@ -3,7 +3,9 @@ import dataclasses
 import io
 import json
 import os
+import re
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -678,6 +680,94 @@ class TestEmitHostAgents(unittest.TestCase):
                 text = fh.read()
         self.assertIn("model: haiku", text)
         self.assertNotIn("model: opus", text)
+
+
+def _legacy_toml_lines(values, prefix=()):
+    """The pre-#1763 inline flattener, verbatim: `json.dumps` for every value
+    and its own copy of the bare-key regex.
+
+    Kept here as the oracle for the golden-equality guard below. For an ASCII
+    policy the shared encoder has to agree with it line for line, which is what
+    says this PR did not move the files any host already has registered.
+    """
+    out = []
+    for key, value in values.items():
+        dotted = prefix + (key,)
+        if isinstance(value, dict):
+            out.extend(_legacy_toml_lines(value, dotted))
+        else:
+            out.append("%s = %s" % (".".join(part if re.fullmatch(r"[A-Za-z0-9_-]+", part)
+                                             else json.dumps(part) for part in dotted),
+                                    json.dumps(value)))
+    return out
+
+
+class TestCodexShellsGoOutThroughTheSharedTomlEncoder(unittest.TestCase):
+    """ARC-981076646 (#1763): the codex branch flattened its policy with a
+    nested `emit_values` that encoded every value with a bare `json.dumps` and
+    re-implemented the bare-key regex inline, duplicating `toml_values` -- the
+    encoder the other host config writers (`codex_host`, `kimi_toml`) share.
+    `json.dumps`'s default ASCII mode emits a non-BMP character as a surrogate
+    pair, which is invalid in TOML, so one emoji in a template description
+    produced a registered shell codex itself cannot parse ("Escaped character
+    is not a Unicode scalar value"), and a lone surrogate went out escaped
+    rather than being refused. Every description in `skill/agents/` is ASCII
+    today, so the bug was one template edit away from firing.
+    """
+
+    EMOJI = "review \U0001F600 cell"
+    LONE_SURROGATE = "review \ud800 cell"
+
+    def _emit(self, description, out_dir):
+        """Emit the codex shells with every template description replaced."""
+        real = dispatch.load_template
+
+        def patched(role_file):
+            meta, body = real(role_file)
+            # load_template hands back cached, read-only objects: copy.
+            return dict(meta, description=description), body
+
+        with mock.patch.object(dispatch, "load_template", patched):
+            return dispatch.emit_host_agents("codex", out_dir)
+
+    def test_a_non_bmp_description_emits_a_file_tomllib_can_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            for path in self._emit(self.EMOJI, d):
+                with self.subTest(path=os.path.basename(path)):
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    self.assertEqual(tomllib.loads(text)["description"], self.EMOJI)
+
+    def test_a_lone_surrogate_description_is_refused_not_escaped(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._emit(self.LONE_SURROGATE, d)
+            self.assertIn("lone Unicode surrogate", str(caught.exception))
+            # The encoder refuses before anything reaches the disk; a
+            # UnicodeEncodeError here would mean the write choked instead.
+            self.assertNotIsInstance(caught.exception, UnicodeEncodeError)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_the_ascii_roles_emit_what_the_old_flattener_emitted(self):
+        with tempfile.TemporaryDirectory() as d:
+            for path in dispatch.emit_host_agents("codex", d):
+                with self.subTest(path=os.path.basename(path)):
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    parsed = tomllib.loads(text)
+                    # Every value line is `dotted.key = value`; the only
+                    # comments are the launch header written before them.
+                    emitted = [ln for ln in text.splitlines() if not ln.startswith("#")]
+                    self.assertEqual(emitted, _legacy_toml_lines(parsed))
+                    # Re-emitting the parsed document is only a faithful oracle
+                    # if each value's TYPE survived the round trip, so pin one
+                    # of every shape the policy carries.
+                    self.assertIsInstance(parsed["description"], str)
+                    self.assertIs(parsed["check_for_update_on_startup"], False)
+                    self.assertEqual(parsed["project_doc_max_bytes"], 0)
+                    self.assertIsInstance(parsed["project_doc_max_bytes"], int)
+                    tools = parsed["mcp_servers"]["panopticon_scope"]["enabled_tools"]
+                    self.assertTrue(tools and all(isinstance(t, str) for t in tools))
 
 
 class TestSetupScanIsARegisteredShell(unittest.TestCase):

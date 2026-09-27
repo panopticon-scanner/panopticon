@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
 import model_resolver
 
-from scripts import codex_read_tools, hosts
+from scripts import codex_read_tools, hosts, toml_values
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -268,15 +268,23 @@ def emit_host_agents(host, out_dir):
             lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
                      "# with a broker bound to this review entry's read scope."]
 
+            # ARC-981076646 (#1763): keys and values go out through
+            # `toml_values`, the encoder codex_host and kimi_toml already share,
+            # never a bare `json.dumps` plus a second copy of the bare-key
+            # regex. json.dumps defaults to ASCII mode, which spells a non-BMP
+            # character as a surrogate pair -- invalid in TOML, so one emoji in
+            # a template description used to register a shell codex cannot
+            # parse. Only the encoding moved: nested tables still flatten to
+            # dotted keys, and every ASCII policy emits the same bytes.
             def emit_values(values, prefix=()):
-                for key, value in values.items():
-                    dotted = prefix + (key,)
-                    if isinstance(value, dict):
-                        emit_values(value, dotted)
+                for name, item in values.items():
+                    dotted = prefix + (name,)
+                    if isinstance(item, dict):
+                        emit_values(item, dotted)
                     else:
-                        lines.append("%s = %s" % (".".join(part if re.fullmatch(r"[A-Za-z0-9_-]+", part)
-                                                                       else json.dumps(part) for part in dotted),
-                                                  json.dumps(value)))
+                        lines.append("%s = %s"
+                                     % (".".join(toml_values.key(part) for part in dotted),
+                                        toml_values.value(item, name)))
 
             emit_values(policy)
         else:

@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The codex enforcement shells are encoded by the shared TOML encoder (#1763, run-14
+  ARC-981076646).** `emit_host_agents`'s codex branch flattened its policy with a nested
+  `emit_values` that spelled every value with a bare `json.dumps` and carried its own copy of the
+  bare-key regex, duplicating `skill/scripts/toml_values.py` -- the encoder `codex_host` and
+  `kimi_toml` both already go out through. `json.dumps` defaults to ASCII mode, which writes a
+  non-BMP character as a surrogate pair, invalid in TOML: one emoji in a template `description`
+  registered a shell `tomllib`, and codex's own parser, refuses ("Escaped character is not a
+  Unicode scalar value"), and a lone surrogate went out escaped instead of refused. The three
+  inputs -- a template description, the codex charter, the resolved model -- are ASCII today, so
+  nothing had fired yet. Emission now calls `toml_values.key` / `toml_values.value`, the
+  flattener's nested-table-to-dotted-key shape is untouched, and a new test re-emits every ASCII
+  role's file through the old flattener and demands the same lines back.
 - **The adapter-integration lanes run as the user production scans run as (#1771, ARC-2930403871).**
   `Dockerfile.fixtures` ends on `USER root` -- right for its build, which installs toolchains and
   writes build artifacts -- and the daily workflow passed no `--user`, so the one gate where the
