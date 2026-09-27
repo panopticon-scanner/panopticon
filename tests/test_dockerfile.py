@@ -43,8 +43,15 @@ def _logical_lines(text):
     """[(lineno, joined)] with Dockerfile `\\`-continuations folded in, so a
     fetch and the pipe it feeds read as one string even when they are written as
     two lines. lineno is where the logical line STARTS."""
+    return _fold_numbered(enumerate(text.splitlines(), 1))
+
+
+def _fold_numbered(numbered):
+    """The fold behind `_logical_lines`, over (lineno, line) pairs -- so a caller
+    that has already dropped comment lines keeps the file's own numbers while
+    a `\\`-continuation still folds THROUGH the dropped line, as docker does."""
     out, start, buf = [], None, []
-    for n, line in enumerate(text.splitlines(), 1):
+    for n, line in numbered:
         if start is None:
             start = n
         stripped = line.rstrip()
@@ -658,18 +665,20 @@ NUGET_CACHE = "/opt/nuget-packages"
 def nuget_cache_defects(text):
     """Why a scan running as `scanner` could not read this image's .NET packages.
 
-    Comment CONTENT is dropped before continuations are folded, the way
+    Comment lines are dropped before continuations are folded, the way
     `test_dockerfile_closures.dockerfile_commands` does it and for the same
     reason: this file's prose quotes the very commands the rule reads, so a
-    reader that kept it would grade the explanation instead of the build. The
-    lines themselves stay, blanked, so every `lineno` below is the line a reader
-    of a red CI job will open -- in a file whose whole point is that position
-    matters, a number counted in a stripped copy points somewhere else.
+    reader that kept it would grade the explanation instead of the build. They
+    are dropped WITH their numbers carried (`_fold_numbered`), not blanked in
+    place: a blank line would end a `\\`-continuation that docker folds through
+    a comment, hiding the instruction after it -- and every `lineno` below must
+    stay the line a reader of a red CI job will open, in a file whose whole
+    point is that position matters.
     """
-    body = "\n".join("" if ln.lstrip().startswith("#") else ln
-                      for ln in text.splitlines())
+    numbered = [(n, ln) for n, ln in enumerate(text.splitlines(), 1)
+                if not ln.lstrip().startswith("#")]
     env, restores, opens = [], [], []
-    for order, (lineno, joined) in enumerate(_logical_lines(body)):
+    for order, (lineno, joined) in enumerate(_fold_numbered(numbered)):
         if joined.startswith("ENV") and "NUGET_PACKAGES=" in joined:
             env.append((order, lineno, joined))
         elif joined.startswith("RUN") and "dotnet restore" in joined:
@@ -863,6 +872,25 @@ class TestDockerfileFixtures(unittest.TestCase):
         self.assertNotEqual([], defects)
         self.assertTrue(any("opens" in d for d in defects), defects)
 
+
+
+    def test_a_comment_inside_a_continuation_does_not_hide_a_restore(self):
+        # R3-1: docker folds a `\\`-continuation THROUGH an interior comment
+        # line; a rule that blanked the comment in place ended the logical
+        # line there and lost the `dotnet restore` that followed, so moving the
+        # ENV below it went unreported. Real line numbers AND the fold.
+        text = ("ENV NUGET_PACKAGES=/opt/nuget-packages\n"
+                "RUN cd /opt/panopticon-fixtures/AspGoat && \\\n"
+                "    # the restore, behind a comment inside the continuation\n"
+                "    dotnet restore\n"
+                "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX "
+                "/opt/nuget-packages\n")
+        self.assertEqual([], nuget_cache_defects(text))
+        moved = text.replace("ENV NUGET_PACKAGES=/opt/nuget-packages\n", "", 1)
+        moved += "ENV NUGET_PACKAGES=/opt/nuget-packages\n"
+        defects = nuget_cache_defects(moved)
+        self.assertTrue(any("on line 5 comes AFTER 1 `dotnet restore`" in d
+                            for d in defects), defects)
 
 
 class TestDockerPublishWorkflow(unittest.TestCase):
