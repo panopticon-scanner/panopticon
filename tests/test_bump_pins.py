@@ -893,6 +893,33 @@ class TestRequirementsRewrite(unittest.TestCase):
 
 
 class TestRequirementsMain(unittest.TestCase):
+    def test_continued_extras_query_base_name_and_keep_non_pin_lines(self):
+        for continued, clause in (
+                ('demo[fast,\\\n    ssl]==1.2', 'demo[fast, ssl]==1.2'),
+                ('demo[fast,ssl]\\\n    ==1.2', 'demo[fast,ssl] ==1.2')):
+            with self.subTest(continued=continued):
+                import tempfile
+                marker = '; python_version >= "3.11"'
+                surrounding = '# before\n--extra-index-url \\\n    https://mirror.example/simple\n'
+                text = (surrounding + continued + marker
+                        + ' \\\n    --hash=sha256:old  # reason\n# after\n')
+                expected = (surrounding + clause + marker + ' \\\n'
+                            '    --hash=sha256:' + WHEEL_SHA + '  # reason\n# after\n')
+                self.assertEqual(bp.parse_requirements(text), [('demo', '1.2')])
+                with tempfile.TemporaryDirectory() as directory:
+                    path = os.path.join(directory, 'requirements.txt')
+                    with open(path, 'w', encoding='utf-8') as fh:
+                        fh.write(text)
+                    with mock.patch.object(bp, 'verified_pypi_hashes',
+                                           return_value=[WHEEL_SHA]) as fetch:
+                        self.assertEqual(bp.main(['requirements', '--file', path, '--write']), 0)
+                    fetch.assert_called_once_with('demo', '1.2')
+                    with open(path, encoding='utf-8') as fh:
+                        actual = fh.read()
+                self.assertEqual(actual, expected)
+                self.assertEqual(bp.rewrite_requirements(actual,
+                                                         {('demo', '1.2'): [WHEEL_SHA]}), actual)
+
     def test_extras_and_markers_query_the_base_distribution(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

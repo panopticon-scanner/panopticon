@@ -723,7 +723,7 @@ def run_tinyproxy(args) -> int:
 # recomputes it from the downloaded wheel, exactly as the rustup family does.
 
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[A-Za-z0-9._,\s-]+\])?"
-                  r"==(?P<version>[^\s;\\]+)")
+                  r"\s*==(?P<version>[^\s;\\]+)")
 _REQUIREMENT_PART = re.compile(
     r'''"[^"]*"|'[^']*'|(?P<comment>(?<!\S)\#.*$)|(?P<hash>(?<!\S)--hash(?:=|\s+)\S+)''')
 
@@ -860,9 +860,7 @@ def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) ->
     written = set()
     i = 0
     while i < len(lines):
-        stripped = lines[i].strip()
-        m = None if stripped.startswith("#") else _PIN.match(stripped)
-        if not m:
+        if not lines[i].strip():
             out.append(lines[i])
             i += 1
             continue
@@ -871,6 +869,10 @@ def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) ->
             i += 1
         i += 1
         joined = _logical_lines("\n".join(lines[start:i]))[0][1]
+        m = None if joined.startswith("#") else _PIN.match(joined)
+        if not m:
+            out.extend(lines[start:i])
+            continue
         clause, comment = _requirement_clause(joined)
         key = (m.group("name"), m.group("version"))
         digests = hashes.get(key)
