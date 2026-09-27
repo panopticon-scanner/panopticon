@@ -191,7 +191,11 @@ def build_report(inp):
         inp.findings, inp.delta, inp.run,
         gated_suppressed=inp.tools.gated_suppressed)
     reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved, run=inp.run)
-    graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+    # #2178: grading needs the delta context itself, not only the classified
+    # findings -- a zero-range hunk map leaves the on-diff gate scoping
+    # against something nobody measured, which is a certification fact.
+    graded = grading_mod.grade_report(inp.run, resolved, reconciled,
+                                      delta=inp.delta)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])
     return assemble(inp.run, resolved, reconciled, graded, cost)
