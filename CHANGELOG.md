@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share token usage vocabulary (#2201, #1821).** The dispatch ledger imports usage fields
+  and phases from the usage collector, keeping totals, checkpoint mapping, model attribution
+  and corrupt-row accounting unchanged.
 - **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
   `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
   (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
