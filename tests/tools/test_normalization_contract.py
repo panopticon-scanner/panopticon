@@ -26,7 +26,7 @@ import tempfile
 import types
 import unittest
 
-from _test_helpers import only, skip_or_fail
+from tests._test_helpers import only, skip_or_fail
 
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.synth.findings as findings_mod

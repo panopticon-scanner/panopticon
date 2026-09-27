@@ -6,7 +6,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-from conftest import REPO_ROOT
+from tests._test_helpers import REPO_ROOT
 
 PYPROJECT = os.path.join(REPO_ROOT, "pyproject.toml")
 

@@ -28,8 +28,8 @@ import os
 import tempfile
 import unittest
 
-from conftest import REPO_ROOT
-from test_layout import LINE_CEILING
+from tests._test_helpers import REPO_ROOT
+from tests.test_layout import LINE_CEILING
 
 # The surface: `*.py` directly under each of these, which is everything the
 # package ratchet does not reach -- the entry scripts (`driver.py`,

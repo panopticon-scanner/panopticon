@@ -28,7 +28,7 @@ from unittest import mock
 
 import scripts.runners.batch as batch_mod
 import scripts.write_guard_hook as write_guard_hook
-from _test_helpers import dead_pid
+from tests._test_helpers import dead_pid
 
 # getnode()'s documented random fallback: the multicast bit, set.
 RANDOM_NODE = 0x010203040506 | 0x010000000000

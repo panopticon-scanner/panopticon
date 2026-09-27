@@ -34,12 +34,12 @@ import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.repo_config as repo_config
 import scripts.runners.base as base
-from conftest import docker_probe_runner
+from tests._test_helpers import docker_probe_runner
 from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
-from _test_helpers import (all_proven_artifact as _all_proven_artifact,
+from tests._test_helpers import (all_proven_artifact as _all_proven_artifact,
                            write_guard_not_proven as _write_guard_not_proven)
-from test_orchestrate import FakeRunner, LoopCase
+from tests.test_orchestrate import FakeRunner, LoopCase
 
 
 def setUpModule():

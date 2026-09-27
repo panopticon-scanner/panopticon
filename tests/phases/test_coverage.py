@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage

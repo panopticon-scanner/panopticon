@@ -3,9 +3,9 @@ import os
 import re
 import unittest
 
-from conftest import SKILL_ROOT as ROOT, REPO_ROOT   # #run7 TST-G1B: shared path anchor
+from tests._test_helpers import SKILL_ROOT as ROOT, REPO_ROOT   # #run7 TST-G1B: shared path anchor
 import scripts.hosts as hosts
-from _test_helpers import skip_or_fail
+from tests._test_helpers import skip_or_fail
 
 # #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
 # #1637 P01: it lives INSIDE the skill now (the repo-root path is a symlink

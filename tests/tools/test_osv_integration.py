@@ -12,8 +12,8 @@ image warms fewer databases, the ecosystem that lost its DB fails here by name.
 import shutil
 import unittest
 
-from _test_helpers import assert_adapter_finds, skip_or_fail
-from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
+from tests._test_helpers import assert_adapter_finds, skip_or_fail
+from tests.tools.helpers import OK_SCAN_EXIT_CODES, in_tools_image
 
 # (fixture, the manifest that makes it applicable) -- named so a failure says
 # WHICH ecosystem lost coverage, not just "osv-scanner found nothing".

@@ -20,7 +20,7 @@ import scripts.phases.review as review
 import scripts.synth.findings as findings_mod
 import scripts.synthesize as syn
 import shutil
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests

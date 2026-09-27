@@ -3,12 +3,12 @@ import os
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first, only
+from tests._test_helpers import FakePopen, first, only
 import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy
 import scripts.tools.sarif_utils as su
 from scripts.tools import ADAPTERS
-from .conftest import assert_scratch_cwd, scratch_cwd_recorder
+from tests.tools.helpers import assert_scratch_cwd, scratch_cwd_recorder
 
 
 SARIF = {

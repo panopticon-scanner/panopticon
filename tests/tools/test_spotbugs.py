@@ -3,7 +3,7 @@ import io
 import os
 import unittest
 from pathlib import Path
-from _test_helpers import first, only
+from tests._test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 

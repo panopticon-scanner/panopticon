@@ -4,7 +4,7 @@ import tempfile
 import textwrap
 import unittest
 
-from discovery_test_helpers import orchestrator, setup_flow
+from tests.discovery_test_helpers import orchestrator, setup_flow
 
 
 class TestGroupsFormatReconciliation(unittest.TestCase):

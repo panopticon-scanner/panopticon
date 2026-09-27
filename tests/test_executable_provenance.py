@@ -16,7 +16,7 @@ import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.run_tools as run_tools
 import scripts.runners.base as runner_base
-from conftest import REAL_DOCKER_AVAILABLE
+from scripts.run_tools import docker_available as REAL_DOCKER_AVAILABLE
 
 
 def _program(path, body):

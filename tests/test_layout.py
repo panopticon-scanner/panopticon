@@ -46,7 +46,7 @@ import subprocess
 import sys
 import unittest
 
-from conftest import REPO_ROOT, SKILL_ROOT
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 TESTS = os.path.join(REPO_ROOT, "tests")

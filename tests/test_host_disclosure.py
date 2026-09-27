@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from _test_helpers import only
+from tests._test_helpers import only
 from scripts import host_disclosure, hosts
 import scripts.driver as driver
 import scripts.host_probes as host_probes
@@ -357,7 +357,7 @@ class TestTheInverseCarriesEqualWeight(unittest.TestCase):
         # Patched on the canonical `hosts.HOSTS` imported here. host_disclosure
         # now imports `hosts` via the repo's `try: from scripts import hosts /
         # except ImportError: import hosts` convention (model_resolver.py etc),
-        # so under pytest (conftest.py puts skill/ on sys.path) the try arm
+        # so under pytest (pyproject declares skill/ as an import root) the try arm
         # resolves and `host_disclosure.hosts is hosts` here is True -- one
         # module, one HOSTS dict. (Before that fix, host_disclosure.py's bare
         # `import hosts` created a second, non-identical module and patching

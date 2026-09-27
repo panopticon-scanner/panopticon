@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first, only
+from tests._test_helpers import FakePopen, first, only
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 

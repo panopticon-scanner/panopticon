@@ -9,11 +9,11 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import FakePopen, first, only
+from tests._test_helpers import FakePopen, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.tools.npm_audit as na
 import scripts.tools.base as base
-from .conftest import assert_scratch_cwd, scratch_cwd_recorder
+from tests.tools.helpers import assert_scratch_cwd, scratch_cwd_recorder
 
 
 @pytest.fixture(autouse=True)

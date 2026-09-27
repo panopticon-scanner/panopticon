@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first, only
+from tests._test_helpers import FakePopen, first, only
 import scripts.tools.osv_scanner as osv
 import scripts.tools.base as base
-from .conftest import assert_scratch_cwd, scratch_cwd_recorder
+from tests.tools.helpers import assert_scratch_cwd, scratch_cwd_recorder
 
 # Golden trimmed from a REAL `osv-scanner --format json --recursive` run
 # (2026-08-03, osv-scanner in the panopticon-tools image). The real shape nests

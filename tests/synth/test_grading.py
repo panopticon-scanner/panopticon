@@ -593,7 +593,7 @@ print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
     def _keys_under(self, seed):
         import subprocess
         import sys
-        from conftest import REPO_ROOT, SKILL_ROOT
+        from tests._test_helpers import REPO_ROOT, SKILL_ROOT
         env = dict(os.environ, PYTHONHASHSEED=str(seed))
         env["PYTHONPATH"] = os.pathsep.join(
             [SKILL_ROOT, os.path.join(SKILL_ROOT, "scripts"), REPO_ROOT])
@@ -622,7 +622,7 @@ print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
         # The pin was a test-side patch over a product-side quirk; leaving it
         # would keep the oracle green while the product stayed nondeterministic
         # for every other reader of the JSON.
-        from conftest import REPO_ROOT
+        from tests._test_helpers import REPO_ROOT
         with open(os.path.join(REPO_ROOT, "scripts", "replay_report.py"),
                   encoding="utf-8") as fh:
             hits = [ln.strip() for ln in fh if "PYTHONHASHSEED" in ln]

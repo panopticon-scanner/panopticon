@@ -12,7 +12,7 @@ import os
 import re
 import unittest
 
-from test_dockerfile import ROOT, _logical_lines, _read_dockerfile
+from tests.test_dockerfile import ROOT, _logical_lines, _read_dockerfile
 
 
 def dockerfile_commands(text):

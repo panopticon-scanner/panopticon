@@ -7,7 +7,7 @@ from unittest import mock
 
 from scripts import hosts
 from scripts import read_guard_hook
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.grouping_engine as grouping_engine
 import scripts.phases.review as review

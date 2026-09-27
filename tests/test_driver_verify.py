@@ -1,6 +1,6 @@
 import json, os, tempfile, unittest
 from unittest import mock
-from conftest import write_host_evidence
+from tests._test_helpers import write_host_evidence
 from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.review as review

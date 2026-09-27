@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
-from conftest import REPO_ROOT
+from tests._test_helpers import FakePopen, first
+from tests._test_helpers import REPO_ROOT
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
 from scripts.ingest_tools import ingest_dir_detailed

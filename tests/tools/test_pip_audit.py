@@ -14,8 +14,8 @@ from unittest import mock
 
 import pytest
 
-import _test_helpers as helpers
-from _test_helpers import FakePopen, fake_aws_key, first, only
+import tests._test_helpers as helpers
+from tests._test_helpers import FakePopen, fake_aws_key, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.run_tools as run_tools
 import scripts.tools.pip_audit as pa
