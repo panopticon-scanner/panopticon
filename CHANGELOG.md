@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One owner for the five persisted retry budgets (#1767, ARC-655791509).** Five phase modules
+  hand-copied the same read-bump-write over a counter file under `.panopticon/` in the reviewed
+  tree, and the #1809 round consolidated only the READ -- `runio._load_state_json` refuses a
+  present-but-torn document -- so the arithmetic on top of it kept THREE answers to the same
+  planted value. `coverage._bump_scout_attempts`, `discovery._bump_discovery_attempts` and
+  `verify._bump_verify_attempts` raised a bare `ValueError` out of `int()`, a message an operator
+  cannot act on where the read one line away would have named the file and `--reset`;
+  `review._record_attempts` RESET the cell's tally to 1, refunding every attempt the run really
+  spent, which is the one outcome #1809 says the ledger exists to prevent; and
+  `persist._give_back_attempts` silently `continue`d, which made a planted value
+  indistinguishable from a key nothing had ever charged. The new `phases/budget.py` owns the
+  arithmetic -- `count` / `bump` / `bump_many` / `give_back` -- and answers all three the same
+  way: a value that is not a non-negative `int` (`bool` excluded, since `isinstance(True, int)`
+  is True) is UNREADABLE exactly like a torn document, and refuses with the same actionable
+  shape, naming the file, the offending key and `--reset`. Never a reset, never a skip. Each
+  caller keeps its own file name, key scheme and description, because those are the on-disk
+  contract a RESUMED run reads back; reads still go through `runio._load_state_json` and writes
+  through `runio._write_json`, so the symlink refusal at an artifact path is not re-implemented
+  behind the new names. `review._cell_exhausted` was the sixth site and the quietest: an
+  unreadable value read as "not exhausted" made a spent cell dispatchable again, silently.
 - **A zero-hunk active delta gate reads INCONCLUSIVE, not PASS (#2178; refs #1783).**
   #1783 disclosed the shape on stderr and left the policy open. A diff-hunks artifact that resolves
   a base but carries no diff ranges keeps the delta ACTIVE while matching nothing, so under the
