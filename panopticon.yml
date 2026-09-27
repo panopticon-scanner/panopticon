@@ -63,6 +63,10 @@
 #     `phases/readiness_checks.py`, which sit here for the same reason, and
 #     beside the dispatch machinery (`dispatch.py`, `loop_batch.py`,
 #     `skill/agents/**`) whose registered shells are the thing it gates on.
+#   - 2026-09-27 (#1862): the report tests now occupy focused modules. Give
+#     report assembly, rendering and the synthesis entry point their own
+#     `Report` layer before the broader `Synth` patterns, keeping both leaves
+#     below the cap and their test inventories beside the code they cover.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -309,19 +313,25 @@ groups:
     - ARC
     - SEC
   Reporting:
-    Synth:
+    Report:
       match:
       - skill/scripts/synthesize.py
-      - skill/scripts/synth/**
+      - skill/scripts/synth/report.py
+      - skill/scripts/synth/render.py
       - scripts/replay_report.py
       tests:
+      - tests/synth/test_report*.py
       - tests/test_synthesize.py
+      - tests/test_replay_report.py
+      - tests/test_report_redaction_e2e.py
+    Synth:
+      match:
+      - skill/scripts/synth/**
+      tests:
       - tests/synth/**
       - tests/test_layout.py
       - tests/test_flat_module_ceiling.py
       - tests/test_no_per_file_sys_path.py
-      - tests/test_replay_report.py
-      - tests/test_report_redaction_e2e.py
       - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
       - tests/test_agent_findings_guard.py
