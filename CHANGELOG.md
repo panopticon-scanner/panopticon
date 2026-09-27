@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A Ctrl-C during a fresh run's first phase ends with the `interrupted:` status (#1805).**
+  `orchestrate.loop` called `_first_run`, and the resume seam's `_run`, before its own `try`, so
+  a Ctrl-C there escaped as a traceback and `_finish` never ran. Both calls now live inside the
+  same `try`, so the loop's existing handlers cover them; nothing before `_first_run` changed.
 - **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
   `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
   `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived
