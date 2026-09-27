@@ -11,6 +11,19 @@ evidence exposed.
   `evidence_scope._PATH_RE` vetoed a sentence-final `.` like any other path character, so a claim
   naming a file only at a sentence's end never reached the closure. A `.` now ends a name unless
   another path character follows, so `grading.py.bak` and `notafile.python` still yield nothing.
+- **One tested reader for the Dockerfile's dependency-check pins (#1774, ARC-261650949).**
+  `docker-publish.yml`'s "Resolve NVD data image digest (content-pin the cache)" step and
+  `nvd-cache.yml`'s "Read dependency-check version from the Dockerfile" step each re-derived
+  `DEPENDENCY_CHECK_VERSION` -- and one of them `DEPENDENCY_CHECK_SHA256` -- with its own
+  `grep | head -1 | cut -d= -f2` and its own inline shape check. Both now call `python3
+  scripts/dockerfile_args.py read-arg <NAME>`. The shape checks MOVED there, they were not
+  dropped: the module is a closed map of ARG name to anchored pattern, it refuses a name with
+  no registered shape, and it exits 2 so `set -euo pipefail` still fails the step -- the
+  control nvd-cache.yml described as "constrain to expected shapes so a tampered ARG can't
+  inject downstream". The version shape is STRICTER than the grep it replaces, which also
+  accepted `10.0.3.` and `1..2`, and a value carrying a second `=` is now refused rather than
+  truncated to the part before it. `tests/test_dockerfile_args.py` covers the reader, both
+  callers, and the committed Dockerfile's own two pins.
 - **One owner decides which evidence statuses count as verified (#1774; ARC-3073755386).**
   `html_report` derived it twice, differently. `_render_header` counted an INCLUSION of two statuses
   (`tool_confirmed` + `advisor_confirmed`) while `_render_findings` split the tabs on an EXCLUSION
