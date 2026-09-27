@@ -315,6 +315,7 @@ groups:
       - tests/test_synthesize.py
       - tests/synth/**
       - tests/test_layout.py
+      - tests/test_flat_module_ceiling.py
       - tests/test_no_per_file_sys_path.py
       - tests/test_replay_report.py
       - tests/test_report_redaction_e2e.py
