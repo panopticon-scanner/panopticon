@@ -281,11 +281,11 @@ class TestRenderAdvisor(unittest.TestCase):
                       ": malformed entry 'a1b2c3d4e5f60001'") for value in (None, [], "finding", 1))
         for queue, reason in cases:
             with self.subTest(queue=queue), tempfile.TemporaryDirectory() as directory:
-                qpath = os.path.join(directory, "queue.json")
+                # Under the run folder, so the shape refusal (not the review-root
+                # refusal, #1767) is the one the message pins.
+                qpath = _write_queue(directory, queue)
                 outdir = os.path.join(directory, "prompts")
                 os.mkdir(outdir)
-                with open(qpath, "w", encoding="utf-8") as fh:
-                    json.dump(queue, fh)
                 with self.assertRaises(ValueError) as raised:
                     dispatch.render_advisor_prompts(qpath, outdir)
                 separator = "" if reason.startswith(":") else " "
@@ -294,10 +294,8 @@ class TestRenderAdvisor(unittest.TestCase):
                 with open(qpath, encoding="utf-8") as fh:
                     self.assertEqual(json.load(fh), queue)
         with tempfile.TemporaryDirectory() as directory:
-            qpath = os.path.join(directory, "queue.json")
+            qpath = _write_queue(directory, valid)
             outdir = os.path.join(directory, "prompts")
-            with open(qpath, "w", encoding="utf-8") as fh:
-                json.dump(valid, fh)
             written = dispatch.render_advisor_prompts(qpath, outdir)
             self.assertEqual(written, [os.path.join(outdir, "a1b2c3d4e5f60001.md")])
             with open(written[0], encoding="utf-8") as fh:
