@@ -231,18 +231,18 @@ class Runner(base.HostRunner):
                 "the kimi guard hook is absent at %s; refusing to launch "
                 "reviewers whose read/write confinement would be unarmed"
                 % kimi_home_mod._GUARD)
-        # ARC-1774133676: the interpreter is this process's own (`sys.executable`,
-        # bound by kimi_home._interpreter), never a `python3` the CHILD's
-        # rewritten PATH resolves. Absoluteness is that binding's own check,
-        # raised from the `build_kimi_home` call below; what is checked here is
-        # that the path can actually be executed.
-        interpreter = sys.executable
-        if not interpreter or not (os.path.isfile(interpreter)
-                                   and os.access(interpreter, os.X_OK)):
+        # ARC-1774133676: the interpreter is this process's own, never a
+        # `python3` the CHILD's rewritten PATH resolves. R1-4: the check is
+        # `kimi_home._interpreter`'s, asked here so the answer is a reported
+        # `error` instead of a raise from inside the home build -- and asked of
+        # the function that ARMS it, so this cannot vet one value while the
+        # arming path validates another.
+        try:
+            kimi_home_mod._interpreter()
+        except RuntimeError as exc:
             raise RuntimeError(
-                "the kimi guard hook's interpreter is not an executable file "
-                "(%r); refusing to launch reviewers whose read/write "
-                "confinement would be unarmed" % interpreter)
+                "%s -- refusing to launch reviewers whose read/write "
+                "confinement would be unarmed" % exc) from exc
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.kimi_home = kimi_home_mod.build_kimi_home(

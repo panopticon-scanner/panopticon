@@ -170,7 +170,10 @@ class TestKimiPerRunConfigHookCommands(HookCommandCase):
             allowlist = os.path.join(d, "write-allowlist.json")
             stub = self.stub_interpreter(d, "py 3 'trusted' interpreter")
             commands = self._hook_commands(stub, scope, allowlist)
-            self.assertIn(shlex.quote(stub), commands[kimi_home.READ_MATCHER],
+            # `_interpreter` arms the path it validated, i.e. the realpath; the
+            # awkward characters are in the basename, which that leaves alone.
+            armed = os.path.realpath(stub)
+            self.assertIn(shlex.quote(armed), commands[kimi_home.READ_MATCHER],
                           "the interpreter path is not quoted in the command")
             argv = self.argv_through_real_shell(commands[kimi_home.READ_MATCHER], cwd=d)
             self.assertEqual([os.path.abspath(kimi_guard_hook.__file__), "read", scope],

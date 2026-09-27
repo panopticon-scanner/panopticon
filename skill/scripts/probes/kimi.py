@@ -246,7 +246,11 @@ def _kimi_hooks_are_armed(sandbox, mode):
         home, scope_path, allowlist_path = kimi_snapshot._kimi_armed_home(sandbox)
         with open(os.path.join(home, "config.toml"), "rb") as fh:
             config = tomllib.load(fh)
-    except OSError as exc:
+    # RuntimeError is `kimi_home._interpreter` refusing to arm hooks with an
+    # interpreter that cannot run them (ARC-1774133676). A probe reports: this
+    # runs inside `_establish_host_posture`, which no `try` wraps, so an escape
+    # would be a traceback in place of a state.
+    except (OSError, RuntimeError) as exc:
         return None, common.failure_detail(
             exc, "the per-run home could not be built")
     except tomllib.TOMLDecodeError as exc:

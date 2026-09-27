@@ -12,20 +12,22 @@ evidence exposed.
   word `python3`, and nothing resolved it: the CHILD looks that name up in its own PATH, and the
   launcher rewrites PATH -- `runners/children.py` sanitizes the startup environment and then sets it
   from `executable.resolve`, which drops every entry inside the review root. An operator whose
-  `python3` came from the reviewed repo's own `.venv/bin` therefore armed two hooks the child could
-  not start, and a Kimi hook that does not start fails OPEN: read and write confinement silently
-  unarmed -- the exact residual the runner's own C3 comment named while checking only the guard
-  SCRIPT. The interpreter is `sys.executable` now (this process, chosen by neither PATH nor the
-  target -- the binding `read_guard_hook` and `codex_host` already use), and an empty or relative
-  one is REFUSED rather than swapped back for a bare name. `KimiRunner.prepare` checks both halves
-  of that command before any child launches: the guard script is present, and the interpreter is a
-  file that can be executed. Pinned with PATH emptied, so no `python3` shim on the machine running
-  the suite can stand in for the name the child could not resolve, and with the interpreter path's
-  own quoting -- it is interpolated into a shell string too, and one under a directory with a space
-  in it is ordinary. What remains is stated where it was: a hook can still die for a reason no
-  pre-flight sees (script or interpreter replaced mid-run, an exec that fails under load, an
-  adjudication past the hook's 30-second timeout), so the shells' tool allowlists stay the primary
-  control.
+  `python3` came from the reviewed repo's own `.venv/bin` therefore armed two hooks with a name the
+  child resolves differently, or not at all, and a Kimi hook that does not start fails OPEN: read
+  and write confinement silently unarmed -- the exact residual the runner's own C3 comment named
+  while checking only the guard SCRIPT. The interpreter is `sys.executable` now (this process,
+  chosen by neither PATH nor the target -- the binding `read_guard_hook` and `codex_host` already
+  use), and an empty, relative or unrunnable one is REFUSED rather than swapped back for a bare
+  name. One function asks that whole question and returns the path it validated, so what was checked
+  is what the hooks are armed with; `KimiRunner.prepare` asks it, with the guard script's presence,
+  before any child launches, and the two probes that build the same home report the refusal instead
+  of ending posture establishment in a traceback. Pinned with PATH emptied, so no `python3` shim on
+  the machine running the suite can stand in for the name the child could not resolve, and with the
+  interpreter path's own quoting -- it is interpolated into a shell string too, and one under a
+  directory with a space in it is ordinary. What remains is stated where it was: a hook can still
+  die for a reason no pre-flight sees (script or interpreter replaced mid-run, an exec that fails
+  under load, an adjudication past the hook's 30-second timeout), so the shells' tool allowlists
+  stay the primary control.
 - **The scrub funnel binds a deterministic repo root, and reconcile's comments go through it
   (#1777 ARC-1735086130, #1780 ARC-163067013).** `sanitize._detect_repo_root` fell back to
   `os.getcwd()` and nothing refused a degenerate root. Probed with an empty PATH at `/`, `scrub()`

@@ -613,6 +613,21 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("guard script", detail)
 
+    def test_an_interpreter_the_home_refuses_is_reported_not_raised(self):
+        # ARC-1774133676: `kimi_home._interpreter` REFUSES an interpreter the
+        # hooks cannot be armed with, and this measurement builds the very home
+        # that arms it -- so the refusal arrives here as a RuntimeError, which
+        # was in no except list on this path. `run_probes` wraps no probe and
+        # `_establish_host_posture` is called unwrapped, so an escape is a
+        # traceback with no JSON status where a reported `unknown` belongs.
+        for mode in ("read", "write"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as sandbox:
+                with mock.patch.object(sys, "executable", ""):
+                    ok, detail = kimi_probes._kimi_hooks_are_armed(sandbox, mode)
+                self.assertIsNone(ok, detail)
+                self.assertIn("the per-run home could not be built", detail)
+                self.assertIn("interpreter", detail)
+
     def test_a_config_the_writer_corrupts_is_refuted(self):
         import scripts.kimi_toml as kimi_toml
         with mock.patch.object(kimi_toml, "dump_toml",
@@ -813,6 +828,21 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
                             "kimi", registration_dir=d, version="0.42")
                 self.assertEqual(hosts.REFUTED, state)
                 self.assertIn(str(boom), detail)
+
+    def test_an_interpreter_the_generated_config_refuses_is_reported(self):
+        # The other Kimi probe path that builds a home: ARC-1774133676's
+        # refusal is a RuntimeError raised from inside the writer this probe
+        # drives, and this module's contract is that a probe REPORTS. R2-4's
+        # reasoning applies unchanged -- our own writer failing is a refutation,
+        # never a `proven` with the reason tucked into the detail.
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(sys, "executable", ""):
+                state, _by, detail = kimi_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not be measured", detail)
+        self.assertIn("interpreter", detail)
 
     def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
         import scripts.runners.kimi_home as kimi_home
