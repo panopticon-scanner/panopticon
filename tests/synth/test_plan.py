@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.findings_contract as findings_contract
 import scripts.synthesize as syn
 import scripts.ingest_tools as ingest_tools
 import scripts.synth.findings as findings_mod
@@ -515,7 +516,15 @@ class TestOutOfScopeShapeTolerance(unittest.TestCase):
         """`body` written verbatim -- the shape a reviewer's RETURN channel
         actually produced, not what json.dumps would have produced."""
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            # A name the pipeline can produce: #1765 made one parser answer for
+            # every reader, and the retired 4.x spelling names no cell at all --
+            # this counter would skip the file before reading a row of it.
+            fp = os.path.join(d, "findings-g1-COD.json")
+            # Three of this class's six tests assert `(checked, count) == (0, 0)`,
+            # so a fixture name that stops naming a cell leaves them GREEN and
+            # vacuous -- the shape tolerance they exist for would never be
+            # exercised again, silently. Fail here instead.
+            self.assertIsNotNone(findings_contract.cell_of(fp), fp)
             with open(fp, "w", encoding="utf-8") as fh:
                 fh.write(body)
             with contextlib.redirect_stderr(io.StringIO()):

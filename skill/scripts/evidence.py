@@ -50,9 +50,9 @@ except ModuleNotFoundError:            # imported flat: see above
     validate_schema_mod = None
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-# Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER,
-# html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
-# and group_runner all derive from this one definition.
+# Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER
+# and html_report's _PANEL_ORDER derive from this one definition; no findings
+# FILENAME reader does any more (`findings_contract.cell_of` owns that, #1765).
 PANELS = ["code", "test", "security", "architecture", "database", "redteam"]
 # `backup_scope_limited` (#1638 P16, owner ruling D4): the PRIMARY advisor
 # confirmed this claim and the backup could not check it, because the files it
