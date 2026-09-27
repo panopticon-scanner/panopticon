@@ -976,7 +976,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   resolved a `base` (#1783): an ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
-  identical, so only regenerating the artifact tells them apart. A payload rejected outright
+  identical, so only regenerating the artifact tells them apart; with active findings that run
+  now reads `gate: INCONCLUSIVE` rather than PASS (#2178). A payload rejected outright
   (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
   `meta.coverage.delta` is null: there, only stderr carries it. It
   also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
