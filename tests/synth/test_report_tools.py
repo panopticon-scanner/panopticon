@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import unittest
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
@@ -13,7 +14,6 @@ import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
-from tests._test_helpers import SKILL_ROOT
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _make_finding, _agentic
 
 
@@ -331,8 +331,8 @@ class TestPanelsWithScannerContext(unittest.TestCase):
                              {"with": 0, "without": 0})
 
     def test_the_schema_declares_the_field(self):
-        with open(os.path.join(SKILL_ROOT, "reference",
-                               "report-schema.json"), encoding="utf-8") as fh:
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA), encoding="utf-8") as fh:
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("panels_with_scanner_context", block["properties"])
@@ -372,8 +372,8 @@ class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
         self.assertEqual(meta["tools"]["sanitized"], {"pip-audit": {}})
 
     def test_the_schema_declares_the_field(self):
-        with open(os.path.join(SKILL_ROOT, "reference",
-                               "report-schema.json"), encoding="utf-8") as fh:
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA), encoding="utf-8") as fh:
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("sanitized", block["properties"])
@@ -411,8 +411,8 @@ class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
         self.assertIs(self._meta()["tools"]["disabled_mid_run"], False)
 
     def test_the_schema_declares_it(self):
-        with open(os.path.join(SKILL_ROOT, "reference",
-                               "report-schema.json"), encoding="utf-8") as fh:
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA), encoding="utf-8") as fh:
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("disabled_mid_run", block["properties"])

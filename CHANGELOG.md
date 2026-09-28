@@ -31,6 +31,14 @@ evidence exposed.
   directory's README was reworded so it no longer needs one -- with today's three offending goldens
   (`bandit.raw`, `gitleaks.raw`, `trivy.raw`) in a shrink-only `PENDING` set that empties when
   #2313 re-captures them against a synthetic corpus (ARC-168995033).
+- **Separate Codex event parsing and usage accounting (#2299, #1826).** Completed turns,
+  messages and final results keep recovery ordering, partial usage and host-error precedence.
+- **Separate confined read-tool operations (#2298, #1826).** Read, list and search handlers
+  retain the common argument/refusal boundary, grant checks and bounded result disclosures.
+- **Reuse the published report schema location in tests (#2297, #1821).** Split-report,
+  parity and verdict-binding checks use the validator's reference directory and schema name.
+- **Derive the health explanation from grading weights (#2296, #1821).** The terminal
+  summary reads the canonical severity weights in display order, preserving its current wording.
 - **The workflow guard names the step it cannot read, and refuses a heredoc delimiter bash
   must parse (#1793).** A `shell_lex.Unreadable` escaped `main` as a traceback that named no
   step and hid every other step's defect (#2252); it is now that step's defect. A delimiter
