@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
+  CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
+  rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the
+  Dockerfile's `ARG DOTNETARIUM_SCS_VERSION` pin.
 - **Per-repo configuration moved to a root `panopticon.yml` (#1681).** BREAKING for an existing
   tree: the committed matrix lives at `<repo>/panopticon.yml` (or the read-only alias
   `.panopticon.yml`) under `version: 1` with `groups:`, `exclude_paths:` and `settings:` keys, and
