@@ -21,12 +21,14 @@ evidence exposed.
   longer be visible on the setup path and silent on the run path. `_committed_matrix` is
   `_matrix_catalog` un-flattened rather than a second pass over the authored bodies, which is #2189:
   a scalar `match: src/**` used to become six one-character globs, a name the schema had just
-  rejected came back anyway, and a non-mapping `groups:` or group body crashed `driver setup` with
-  an AttributeError and no JSON status. **Behaviour change:** a setup run over a config the schema
-  rejects now refuses with the named error and writes no draft (`config_refusal`), where it used to
-  merge against an empty matrix and tell the operator to move the result over their own file; a
-  `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:` come back
-  from the validated domain sets, so a draft renders them sorted rather than in authored order.
+  rejected came back anyway, and a non-mapping `groups:` value, a `match: [1]` or a `tests: [[a]]`
+  crashed `driver setup` with an AttributeError and no JSON status. **Behaviour change:** a setup
+  run over a config the schema rejects now refuses with the named error and writes no draft
+  (`config_refusal`), where it used to merge against the authored bodies exactly as written --
+  char-split globs, rejected names and all -- and tell the operator to move the result over their
+  own file; a `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:`
+  come back from the validated domain sets, so a draft -- and `migrate-config`'s own output --
+  renders them sorted rather than in authored order.
 - **Every integrity failure that sinks certification is named on the terminal summary (#1761;
   ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
   published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a

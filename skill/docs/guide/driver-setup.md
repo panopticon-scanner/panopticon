@@ -104,9 +104,10 @@ Setup writes a **draft**: read `.panopticon/setup-report.md`, review `panopticon
 to `panopticon.yml`, and commit it (setup never overwrites a committed file).
 
 **Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
-`python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (order preserved,
-`version: 1` added); commit the new file and delete the old one. A tree that still carries only the
-old file is refused by setup, readiness and every run with the same remedy.
+`python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (group order
+preserved — `panels:`/`exclude:` are domain sets and come out sorted — and `version: 1` added);
+commit the new file and delete the old one. A tree that still carries only the old file is refused
+by setup, readiness and every run with the same remedy.
 
 A repo with no capability vocabulary falls back to a flat top-dir seed + a readiness gate and
 completes without a checkpoint. `driver setup --reset` clears the setup artifacts (brief, spine,
@@ -119,14 +120,14 @@ under it (`docs/` == `docs/**`), and `!` re-excludes with last-match-wins in `ma
 committed `exclude_paths:` entry may not start with `!`; it is refused, not dropped). Character
 classes (`*.[ch]`, `file[0-9].txt`) are **not** supported — write each spelling as its own glob, or
 use `?` for a single character. One in a setup proposal fails the proposal outright; one in a
-committed `panopticon.yml` is reported to stderr like any other schema error (committed-file errors
-are disclosed, not blocking) and the pattern then matches nothing, loudly, instead of matching the
-wrong files (#1501). A WRITE is stricter than a run: `driver setup` refuses a config whose
-schema errors it would otherwise merge against, naming them and writing no draft, and a
-top-level `exclude_paths:` entry that fails to parse refuses on both paths. A document nothing
-can read at all — unparseable, no `version: 1`, a `.panopticon/groups.yml`-only tree, a refused
-symlink at the config path — is an error to every reader of it, and whatever the resolver has to
-say about one is printed on both paths (#2229).
+committed `panopticon.yml` is reported to stderr, and what happens next depends on the field. In
+`match:`/`tests:` it is a per-entry error that does not block a run: the pattern matches nothing,
+loudly, instead of matching the wrong files (#1501). In `exclude_paths:` it refuses the run
+outright — a pruning policy nobody could read must not read as "prune nothing". And ANY committed
+schema error refuses a `driver setup` write, naming it and writing no draft: that verb is about to
+propose a file over yours (#2229). A document nothing can read at all — unparseable, no
+`version: 1`, a `.panopticon/groups.yml`-only tree — is an error to every reader of it; a refused
+symlink at the config path is a disclosure every reader prints and a refusal on the setup path.
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC
