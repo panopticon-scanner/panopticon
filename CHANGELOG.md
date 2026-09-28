@@ -31,6 +31,13 @@ evidence exposed.
   directory's README was reworded so it no longer needs one -- with today's three offending goldens
   (`bandit.raw`, `gitleaks.raw`, `trivy.raw`) in a shrink-only `PENDING` set that empties when
   #2313 re-captures them against a synthetic corpus (ARC-168995033).
+- **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
+  Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
+  clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by
+  its own grammar and reports what it cannot settle, such as a `taskset -p` pid that may be 0.
+  Behind `xargs`, which appends words, a wrapper that runs nothing as written is reported too.
+  A download run as a wrapper, as in `curl -o flock …; ./flock 9`, counts as running it.
+  A `$` word behind a wrapper is reported even if it ends in a wrapper's name (`sudo "$PWD/env"`).
 - **Separate Codex event parsing and usage accounting (#2299, #1826).** Completed turns,
   messages and final results keep recovery ordering, partial usage and host-error precedence.
 - **Separate confined read-tool operations (#2298, #1826).** Read, list and search handlers
