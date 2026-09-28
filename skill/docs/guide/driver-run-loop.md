@@ -941,7 +941,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   the target root — probing `src/main/java`, `src/test/java`, `src`, then the root — and a Java
   finding is granted its own file instead of the whole group; when nothing matches it keeps the
   package path and marks `tool_evidence.path_resolution: unresolved`, so the fallback has a stated
-  cause (#1768). The grant is **recorded**, not just made: the prompt states it under "Evidence granted for this
+  cause (#1768).
+  The grant is **recorded**, not just made: the prompt states it under "Evidence granted for this
   check (bounded closure)", the same list is the entry's read scope (the read guard and the Codex
   broker admit nothing else), and the advisor copies it into each verdict as
   `evidence_scope: {granted, cap, truncated, entry_cap, entry_truncated, floor_count}`, and a prompt
