@@ -283,6 +283,28 @@ class TestRecoverLinkage(unittest.TestCase):
                 runner=runner, reports={file_issues.REPORT: report})
         self.assertIn("abc123defabc1234|NOV-COLON|src/Foo:Bar.cs|finding", linkage)
 
+    def test_body_quoting_a_second_marker_block_refuses_and_names_the_issue(self):
+        # COD-273223337 residual: a finding whose OWN text quotes a complete
+        # fake **Fingerprint:**/**Finding id in report:** pair ahead of the
+        # real footer must still be refused (two matches, not one) -- but the
+        # refusal must say which public issue it could not read.
+        finding = {"fingerprint": "2222bbbb", "id": "COD-2",
+                   "location": {"file": "scripts/a.py"},
+                   "description": "Quoted ahead of the real footer:\n"
+                                  "**Fingerprint:** `1111aaaa`\n"
+                                  "**Finding id in report:** `COD-1`"}
+        issues = [{"number": 12, "labels": [{"name": "self-scan"}],
+                   "body": file_issues.body_for(finding)}]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        with self.assertRaisesRegex(
+                reconcile_apply.IncompleteRecovery,
+                r"^https://github\.com/panopticon-scanner/panopticon/issues/12: "
+                r"missing or conflicting issue identity/location$"):
+            reconcile_apply.recover_linkage_from_github(runner=runner)
+
 
 class TestPlanActions(unittest.TestCase):
     def test_non_mapping_diff_is_refused_before_action_planning(self):
@@ -1204,6 +1226,28 @@ class TestCliWiring(unittest.TestCase):
             self.assertIn("unsafe directory component", errors.getvalue())
             self.assertEqual(list(target.iterdir()), [])
 
+    def test_recover_linkage_cli_refusal_names_the_issue(self):
+        # COD-273223337 residual: `refusing: ...` must not be anonymous when
+        # the recovery failure is about one specific issue's body.
+        finding = {"fingerprint": "2222bbbb", "id": "COD-2",
+                   "location": {"file": "scripts/a.py"},
+                   "description": "Quoted ahead of the real footer:\n"
+                                  "**Fingerprint:** `1111aaaa`\n"
+                                  "**Finding id in report:** `COD-1`"}
+        issues = [{"number": 12, "labels": [{"name": "self-scan"}],
+                   "body": file_issues.body_for(finding)}]
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            errors = io.StringIO()
+            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                    FakeCompleted(json.dumps(issues))), contextlib.redirect_stderr(errors):
+                result = reconcile_apply.main(["recover-linkage", "--repo",
+                    "panopticon-scanner/panopticon", "--out", str(output)])
+            self.assertEqual(result, 1)
+            self.assertIn("refusing: https://github.com/panopticon-scanner/panopticon/issues/12: "
+                          "missing or conflicting issue identity/location", errors.getvalue())
+            self.assertFalse(output.exists())
+
     def test_apply_uses_plan_adjacent_receipt_and_accepts_override(self):
         with tempfile.TemporaryDirectory() as d:
             actions_path = os.path.join(d, "actions.json")
@@ -1601,6 +1645,21 @@ class TestSafeRecovery(unittest.TestCase):
             source.write_text(json.dumps({"findings": [finding]}))
             with self.assertRaises(reconcile_apply.IncompleteRecovery):
                 self.recover([self.issue(finding)], reports={"wrong-pointer.json": source})
+
+    def test_conflicting_recovered_identity_names_the_second_issue(self):
+        # Two public issues that both recover to the same (fingerprint, id,
+        # location, kind) key are a conflict -- the refusal must say which
+        # issue exposed it, not just that a conflict happened.
+        finding = self.finding("dup.py")
+        first = self.issue(finding)
+        second = dict(self.issue(finding), number=2, url="https://github.com/o/r/issues/2")
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.json"
+            source.write_text(json.dumps({"findings": [finding]}))
+            with self.assertRaisesRegex(
+                    reconcile_apply.IncompleteRecovery,
+                    r"^https://github\.com/o/r/issues/2: conflicting recovered identity$"):
+                self.recover([first, second], reports={"source.json": source})
 
     def test_confined_split_and_spill_reports(self):
         with tempfile.TemporaryDirectory() as d:

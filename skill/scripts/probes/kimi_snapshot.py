@@ -109,19 +109,29 @@ def _kimi_armed_home(sandbox):
                                      real_home=fixture_home)
     return home, scope_path, allowlist_path
 
+# R2-4 / COD-2149752625: every exception type the per-run home writer this
+# drives (`_kimi_armed_home` -> `kimi_home.build_kimi_home`) can raise --
+# `build_merged_config` raises ValueError (M3/N5's own mechanism), `dump_toml`
+# raises TypeError (C2's), and `kimi_home._interpreter` raises RuntimeError
+# when the interpreter the hooks would be armed with is not one that can run
+# them (ARC-1774133676). Defined ONCE, here, and reused by
+# `probes/kimi.py::_kimi_hooks_are_armed`, which drives the same writer
+# through this same `_kimi_armed_home` -- so the two lists cannot drift apart
+# the way they did (COD-2149752625: that one caught only
+# `(OSError, RuntimeError)`, missing the last two).
+_HOME_WRITER_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
+
+
 def _kimi_generated_disabled():
     """(tools.disabled, where) read out of a config.toml the runner generates,
     or (None, why). The file is built and read inside a sandbox and nothing
     survives the call.
 
-    R2-4: the except list covers every type the writer it drives can raise --
-    `build_merged_config` raises ValueError (M3/N5's own mechanism), `dump_toml`
-    raises TypeError (C2's), and `kimi_home._interpreter` raises RuntimeError
-    when the interpreter the hooks would be armed with is not one that can run
-    them (ARC-1774133676) -- because `run_probes` wraps no probe lambda and
-    `_establish_host_posture` is called unwrapped, so an escape here would abort
-    posture establishment with a traceback. "A probe reports, never raises" is
-    this module's contract, not a tendency.
+    R2-4: the except list covers every type the writer it drives can raise
+    (`_HOME_WRITER_EXCEPTIONS`) -- because `run_probes` wraps no probe lambda
+    and `_establish_host_posture` is called unwrapped, so an escape here would
+    abort posture establishment with a traceback. "A probe reports, never
+    raises" is this module's contract, not a tendency.
     """
     try:
         with tempfile.TemporaryDirectory() as sandbox:
@@ -130,7 +140,7 @@ def _kimi_generated_disabled():
                 config = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         return None, "the generated config.toml is not valid TOML (%s)" % exc
-    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+    except _HOME_WRITER_EXCEPTIONS as exc:
         return None, common.failure_detail(
             exc, "the per-run config could not be generated")
     raw_tools = config.get("tools")

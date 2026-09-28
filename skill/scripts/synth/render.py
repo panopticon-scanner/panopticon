@@ -12,6 +12,7 @@ import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import grading as grading_mod
+from . import integrity as integrity_mod
 
 
 def _grade_text(summary):
@@ -336,21 +337,6 @@ def render_summary(report):
     cfg_line = _config_line(report["meta"].get("config"))
     if cfg_line:
         lines.insert(3, cfg_line)
-    integ = report["meta"].get("integrity") or {}
-    bad = integ.get("unexpected_findings_files") or []
-    if bad:
-        lines.insert(3, "**Integrity:** UNEXPECTED FILES — %s (not declared by the "
-                        "dispatch plan; run not certified)" % ", ".join(bad))
-    dupes = integ.get("duplicate_out_files") or []
-    if dupes:
-        lines.insert(3, "**Integrity:** DUPLICATE out_file — %s (two reviewers share "
-                        "a write target; one overwrote the other; run not certified)"
-                        % ", ".join(dupes))
-    mislabeled = integ.get("mislabeled_findings_files") or []
-    if mislabeled:
-        lines.insert(3, "**Integrity:** MISLABELED FILES — %s (the `_panopticon` cell "
-                        "stamp disagrees with the filename; possible mis-targeted "
-                        "write; run not certified)" % ", ".join(mislabeled))
     # 5.1 surface 3: a person reading the report must meet the host-capability
     # limitation without opening JSON -- the same reason tools_absent and
     # produced_noscan are surfaced in the body rather than buried in the
@@ -372,26 +358,25 @@ def render_summary(report):
     lines.insert(3, "**Host capabilities:** %s" % host_disclosure.headline(envelope))
     for gap in reversed(host_disclosure.lines(envelope) + host_disclosure.notes(envelope)):
         lines.insert(4, "  - %s" % gap)
-    xdom = integ.get("cross_domain_findings") or []
-    if xdom:
-        # Deliberately not an integrity failure and deliberately not gating:
-        # a reviewer filing outside its lane is a fact about the review, not
-        # about whether the artifacts on disk can be trusted (#calibration-4).
-        by: dict[tuple[str | None, str | None], int] = {}
-        for r in xdom:
-            if isinstance(r, dict):
-                by.setdefault((r.get("cell_domain"), r.get("finding_domain")), 0)
-                by[(r.get("cell_domain"), r.get("finding_domain"))] += 1
-        # Fix round 1: the domain is AGENT-authored -- `synth/integrity` only
-        # type-checks it -- and this line is read in a terminal, so it is the
-        # third field normalization does not own (with meta.target and the
-        # group name above, and the target's own config values).
-        pairs = ", ".join("%s→%s ×%d" % (tool_base.inert_text(a),
-                                         tool_base.inert_text(b), n)
-                          for (a, b), n in sorted(by.items()))
-        lines.insert(3, "**Note:** %d cross-domain finding(s) — %s. Reviewers filed "
-                        "outside their cell's domain; often a catalog gap (X0X). "
-                        "Does NOT affect certification." % (len(xdom), pairs))
+    # ARC-3284703909 (#1761): one loop over `integrity.INTEGRITY_KEYS`, which
+    # owns both which keys sink certification and the line each one prints. The
+    # three hand-written inserts this replaced named three of FOURTEEN sinking
+    # keys, so ten had no line of their own on this summary and nine of those
+    # were named nowhere on it at all -- it said the bare word "incomplete" for
+    # them, the hole #1644 closed for `tools_manifest_invalid` alone.
+    # A key renders on exactly the truthiness that sinks `integrity_ok`, so the
+    # summary and the gate cannot drift; the table's comment owns the order.
+    # `evidence_text` neutralizes and bounds its own return (#1829
+    # SEC-798292895), so this loop composes only the table's own sentences.
+    integ = report["meta"].get("integrity") or {}
+    for key, spec in integrity_mod.INTEGRITY_KEYS.items():
+        value = integ.get(key)
+        if not value or not spec.sentence:
+            continue
+        body = spec.sentence
+        if "%s" in body:
+            body = body % integrity_mod.evidence_text(key, value)
+        lines.insert(3, "**%s:** %s" % ("Integrity" if spec.sinks else "Note", body))
     delta = s.get("delta")
     if delta:
         on = delta.get("on_diff") or {}

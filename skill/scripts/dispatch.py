@@ -15,10 +15,25 @@ import os
 import re
 import sys
 
+# #5.0-01, the bootstrap driver.py carries and for the same reason: this module
+# is a documented entrypoint run by path (`python3 skill/scripts/dispatch.py
+# --emit-host-agents <host>`, the remedy several readiness messages print), so
+# the package roots are not on sys.path and the `from scripts import ...` lines
+# below would raise ModuleNotFoundError. Same two roots _child_env() puts on
+# PYTHONPATH for subprocesses. Idempotent under pytest, whose conftest already
+# provides them. `skill/` is the root every import here needs; the flat
+# `skill/scripts` root is kept because dropping a root from an entrypoint is
+# #1516's call. Two sites, and tests/test_module_identity.py pins that count:
+# a THIRD insert here fails its ceiling, and retiring one of these two fails the
+# companion staleness test until the count comes down with it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))         # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
-import model_resolver
+# #1766 (ARC-188610019): package-qualified, so `registration_model` runs on the
+# SAME model_resolver every other importer holds -- one profile cache, one patch
+# target. The `from scripts import ...` line just below already requires
+# `scripts` to resolve, and the bootstrap above guarantees it.
+from scripts import model_resolver
 
 from scripts import claim_scope, codex_read_tools, hosts, toml_values
 
@@ -196,6 +211,10 @@ def emit_host_agents(host, out_dir):
         registrable = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
         raise ValueError("emit-host-agents: host %r registers no shells (%s)"
                          % (host, "|".join(registrable)))
+    if not out_dir and row.registration_refusal:
+        # No directory given and the row's default refused (a relative
+        # CODEX_HOME): its reason, not os.makedirs(None)'s TypeError.
+        raise ValueError(row.registration_refusal)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for role, role_file in sorted(ROLE_FILES.items()):
@@ -467,11 +486,12 @@ def _detect_host():
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; otherwise the host's default. Unknown -> None."""
+    """Explicit dir wins; otherwise the host's default. Unknown -> None, and so
+    is a default the row refuses (`hosts.HostSpec.registration_refusal`)."""
     if agents_dir:
         return agents_dir
     row = hosts.spec(host)
-    return (row.registration_dir or None) if row else None
+    return (row.registration_dir or None) if row and not row.registration_refusal else None
 
 
 def _is_registered(reg_dir, role_file, host=None):

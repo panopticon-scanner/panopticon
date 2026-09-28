@@ -12,6 +12,9 @@ PATH shim and under an empty PATH, and never needs a host binary. The
 assertions are about a real process tree, not a mock: the defect this module
 exists for (a grandchild outliving the timeout) is invisible to a fake.
 """
+import ast
+import contextlib
+import io
 import os
 import signal
 import subprocess
@@ -24,6 +27,57 @@ from unittest import mock
 import scripts.procgroup as procgroup
 
 _POSIX = os.name == "posix"
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# #2199: the stand-in DRIVERS the SIGTERM tests signal. Each is a separate
+# interpreter, started in its own session, that runs its `main` the way
+# `driver.py`'s `__main__` block runs the real one; argv[1] is the child's
+# program and argv[2] the review root. One runs a phase child through the
+# real `_run_child`, the other a runner child through the seam's registering
+# `launch` from a batch worker, with the batch's wait in the main thread.
+_PHASE_DRIVER = """\
+import signal, sys
+import scripts.phases.child as child
+import scripts.procgroup as procgroup
+
+
+def main():
+    child._run_child([sys.executable, "-c", sys.argv[1]], sys.argv[2], "tools", timeout=60)
+    return 0
+
+
+signal.signal(signal.SIGTERM, signal.SIG_DFL)      # a driver started the usual way
+sys.exit(procgroup.sigterm_as_interrupt(main))
+"""
+
+_RUNNER_DRIVER = """\
+import signal, sys
+import scripts.procgroup as procgroup
+import scripts.runners.base as base
+
+
+class StandIn(base.HostRunner):
+    host = "stand-in"
+
+    def run_entry(self, entry, env):
+        return self.launch([sys.executable, "-c", sys.argv[1]], cwd=sys.argv[2], timeout=60)
+
+
+def main():
+    StandIn().run_batch([{"id": "e0"}], 1, lambda entry: {})
+    return 0
+
+
+signal.signal(signal.SIGTERM, signal.SIG_DFL)      # a driver started the usual way
+sys.exit(procgroup.sigterm_as_interrupt(main))
+"""
+
+# The child both stand-ins start: it forks a worker into its own group,
+# records both pids, and outsleeps every deadline here.
+_TREE_PIDS = ("import os, subprocess, sys, time\n"
+              "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+              "open(%r, 'w').write('%%d %%d' %% (os.getpid(), p.pid))\n"
+              "time.sleep(60)\n")
 
 
 def _alive(pid):
@@ -285,6 +339,231 @@ class TestEndGroupReachesTheWholeGroup(_GroupCase):
         self.assertTrue(_await_death(pid),
                         "end_group signalled the child only, not its group")
         proc.wait(timeout=5)
+
+
+class TestSigtermAsInterrupt(unittest.TestCase):
+    """#2199: the helper itself, in this process. Its handler is only ever
+    run by hand -- nothing is sent to the test runner -- and every case starts
+    from the default disposition a CLI starts with and puts back what it
+    found."""
+
+    def setUp(self):
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+    def test_main_runs_under_it_and_the_default_is_back_afterwards(self):
+        seen = []
+
+        def main():
+            seen.append(signal.getsignal(signal.SIGTERM))
+            return 3
+
+        self.assertEqual(3, procgroup.sigterm_as_interrupt(main))
+        self.assertTrue(callable(seen[0]), "main ran without the handler")
+        self.assertIs(signal.SIG_DFL, signal.getsignal(signal.SIGTERM),
+                      "the handler outlived the main it was installed for")
+
+    def test_the_first_sigterm_is_the_interrupt_and_every_later_one_is_absorbed(self):
+        later = []
+
+        def main():
+            handler = signal.getsignal(signal.SIGTERM)
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                handler(signal.SIGTERM, None)
+            self.assertIsInstance(caught.exception, procgroup.Terminated)
+            # Every later SIGTERM lands in the cleanup the first one started,
+            # and must not cut it short. Counted OUTSIDE `main`: a later one
+            # that raised would leave `main` as the same `Terminated`, and the
+            # exit status alone could not tell the two apart.
+            for _ in range(2):
+                later.append(handler(signal.SIGTERM, None))
+            raise caught.exception
+
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                status = procgroup.sigterm_as_interrupt(main)
+            except KeyboardInterrupt as exc:
+                # Failed HERE: a KeyboardInterrupt out of a test stops the
+                # whole pytest session rather than failing this one case.
+                self.fail("the SIGTERM escaped as %r instead of an exit status" % (exc,))
+        self.assertEqual([None, None], later, "a later SIGTERM raised instead of being absorbed")
+        self.assertEqual(128 + signal.SIGTERM, status)
+        self.assertEqual("driver: stopped by SIGTERM\n", err.getvalue())
+        self.assertIs(signal.SIG_DFL, signal.getsignal(signal.SIGTERM),
+                      "an interrupted main left the handler installed")
+
+    def test_a_real_ctrl_c_escapes_exactly_as_before(self):
+        # Only the SIGTERM is turned into an exit status. A KeyboardInterrupt
+        # itself is the operator's Ctrl-C and leaves the way it always did.
+        def main():
+            raise KeyboardInterrupt
+
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+             self.assertRaises(KeyboardInterrupt) as caught:
+            procgroup.sigterm_as_interrupt(main)
+        self.assertNotIsInstance(caught.exception, procgroup.Terminated)
+        self.assertEqual("", err.getvalue())
+        self.assertIs(signal.SIG_DFL, signal.getsignal(signal.SIGTERM))
+
+    def test_an_ignored_sigterm_is_left_ignored(self):
+        # Python's own rule for SIGINT: a parent that ignored the signal
+        # meant it.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        seen = []
+        procgroup.sigterm_as_interrupt(lambda: seen.append(signal.getsignal(signal.SIGTERM)))
+        self.assertEqual([signal.SIG_IGN], seen)
+        self.assertIs(signal.SIG_IGN, signal.getsignal(signal.SIGTERM))
+
+    def test_a_python_handler_already_there_is_left_in_place(self):
+        # Somebody else's: `main` runs bare, under THEIR handler, which is
+        # still the installed one afterwards. Installed and removed here, in
+        # the main thread; no signal is sent.
+        def theirs(signum, frame):
+            pass
+
+        before = signal.signal(signal.SIGTERM, theirs)
+        try:
+            seen = []
+
+            def main():
+                seen.append(signal.getsignal(signal.SIGTERM))
+                return 5
+
+            self.assertEqual(5, procgroup.sigterm_as_interrupt(main))
+            self.assertEqual([theirs], seen)
+            self.assertIs(theirs, signal.getsignal(signal.SIGTERM))
+        finally:
+            signal.signal(signal.SIGTERM, before)
+
+    def test_a_handler_installed_from_c_is_left_in_place(self):
+        # `signal.getsignal` reports a handler installed from C as None: not
+        # the default, so not ours to replace, and nothing is installed.
+        with mock.patch.object(procgroup.signal, "getsignal", return_value=None), \
+             mock.patch.object(procgroup.signal, "signal") as install:
+            self.assertEqual(7, procgroup.sigterm_as_interrupt(lambda: 7))
+        install.assert_not_called()
+
+
+class TestATerminatedDriverEndsItsChildren(_GroupCase):
+    """#2199 (COD-869076756; owner ruling 2026-09-27): a SIGTERM to the driver
+    -- a supervisor's stop, a CI cancel -- ends its children exactly as a
+    Ctrl-C does.
+
+    At the default disposition it ended the driver without one `except` or
+    `finally` running, and the phase child and the runner children lead
+    their own sessions, so the signal to the driver's group reached none of
+    them: they went on running with nobody left to end them. Neither
+    stand-in here handles the interrupt the way `orchestrate.loop` does, so
+    each one also shows how an unhandled SIGTERM leaves: one line on stderr
+    and exit status 143, the same on every supported Python.
+
+    The one signal these tests send goes to a stand-in driver's group, after
+    checking that the group is the stand-in's own session and not this
+    runner's.
+    """
+
+    def _stand_in(self, program, pidfile):
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(
+            [os.path.join(_REPO, "skill"), os.path.join(_REPO, "skill", "scripts"),
+             os.path.join(_REPO, "scripts"), _REPO]))
+        proc = subprocess.Popen(  # noqa: S603 - the interpreter, never a shell
+            [sys.executable, "-c", program, _TREE_PIDS % pidfile, self.root],
+            cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(self._stop, proc)
+        return proc
+
+    @staticmethod
+    def _stop(proc):
+        # `kill_group` signals a group only while the stand-in is unreaped and
+        # leads its own -- never this runner's (see `_pgid`).
+        procgroup.kill_group(proc, grace=1.0)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:            # noqa: BLE001 - cleanup, never a failure
+            pass
+
+    def _pids(self, proc, pidfile):
+        """(child, worker), once the child has recorded both: a bounded poll
+        that fails at once, with the stand-in's own words, if it died first."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                with open(pidfile, encoding="utf-8") as fh:
+                    pids = [int(pid) for pid in fh.read().split()]
+            except (OSError, ValueError):
+                pids = []
+            if len(pids) == 2:
+                self.addCleanup(self._end_tree, *pids)
+                return pids
+            if proc.poll() is not None:
+                self.fail("the stand-in died before its child started: %s"
+                          % proc.communicate()[1].strip())
+            time.sleep(0.05)
+        self.fail("the stand-in's child never recorded its pids")
+
+    @staticmethod
+    def _end_tree(child, worker):
+        """Cleanup for a tree the fix did not end. Both pids are in the
+        child's group, and each is signalled alone, only while it still is:
+        a pid that has died may since name somebody else's process."""
+        for pid in (worker, child):
+            try:
+                if os.getpgid(pid) == child != os.getpgid(0):
+                    os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def _terminate(self, proc):
+        pgid = os.getpgid(proc.pid)
+        self.assertEqual(proc.pid, pgid, "the stand-in does not lead its own group")
+        self.assertNotEqual(os.getpgid(0), pgid, "refusing to signal this runner's own group")
+        os.killpg(pgid, signal.SIGTERM)           # what a supervisor or a CI cancel sends
+        return proc.communicate(timeout=30)
+
+    def _assert_stopped_by_sigterm(self, proc, err):
+        self.assertEqual(128 + signal.SIGTERM, proc.returncode,
+                         "the SIGTERM did not end the stand-in through the interrupt path")
+        self.assertEqual("driver: stopped by SIGTERM\n", err)
+
+    def test_a_terminated_driver_ends_its_phase_childs_group(self):
+        pidfile = os.path.join(self.root, "tree.pid")
+        proc = self._stand_in(_PHASE_DRIVER, pidfile)
+        child, worker = self._pids(proc, pidfile)
+        _out, err = self._terminate(proc)
+        self._assert_stopped_by_sigterm(proc, err)
+        self.assertTrue(_await_death(worker), "the phase child's worker outlived the driver")
+        self.assertTrue(_await_death(child), "the phase child outlived the driver")
+
+    def test_a_terminated_driver_ends_its_registered_runner_children(self):
+        pidfile = os.path.join(self.root, "tree.pid")
+        proc = self._stand_in(_RUNNER_DRIVER, pidfile)
+        child, worker = self._pids(proc, pidfile)
+        _out, err = self._terminate(proc)
+        self._assert_stopped_by_sigterm(proc, err)
+        self.assertTrue(_await_death(worker), "the runner child's worker outlived the driver")
+        self.assertTrue(_await_death(child), "the runner child outlived the driver")
+
+
+class TestTheDriverCliRunsUnderIt(unittest.TestCase):
+    """The ruling covers every verb, so `main` runs under the helper where
+    `python3 skill/scripts/driver.py ...` starts -- and nowhere an import
+    reaches: the suite imports `driver` and keeps its default dispositions.
+    Read off the AST, not the text."""
+
+    def test_the_main_guard_runs_main_under_it_and_nothing_else_does(self):
+        path = os.path.join(_REPO, "skill", "scripts", "driver.py")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), path)
+        guards = [node for node in tree.body if isinstance(node, ast.If)
+                  and ast.unparse(node.test) == "__name__ == '__main__'"]
+        self.assertEqual(1, len(guards), "driver.py has no single __main__ guard")
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func).endswith("sigterm_as_interrupt")]
+        self.assertEqual(1, len(calls), "the driver installs it once, at its entry")
+        self.assertIn(calls[0], list(ast.walk(guards[0])),
+                      "installed outside the __main__ guard, i.e. at import time")
+        self.assertEqual(["main"], [ast.unparse(arg) for arg in calls[0].args])
 
 
 if __name__ == "__main__":

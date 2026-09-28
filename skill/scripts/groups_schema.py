@@ -365,20 +365,22 @@ def _parse_leaf(name, raw, errors):
     }
 
 
-def _reserved_name_errors(groups):
-    """Authored ids that collide with another id or a machine-minted name.
+def _reserved_name_conflicts(groups):
+    """Yield (id, message) for every authored id that collides with another
+    id or a machine-minted name -- a case twin, a chunk twin, or the reserved
+    residual-sink name. `_reserved_name_errors` and `colliding_ids` are both
+    thin views over this one generator, so the collision rules exist once.
 
     Operates on FLAT ids, which is what makes it scope-correct for free:
     `Product:API` chunks to `Product:API_1`, so an authored `Product:API_1`
     collides while a top-level `API_1` does not.
     """
-    errors = []
     by_key: dict[str, str] = {}
     for gid in sorted(groups):
         key = gid.casefold()
         earlier = by_key.get(key)
         if earlier is not None:
-            errors.append(
+            yield gid, (
                 f"group {gid}: collides with group {earlier} on "
                 f"case-insensitive findings artifacts -- rename one group")
         else:
@@ -388,7 +390,7 @@ def _reserved_name_errors(groups):
         base = m.group("base") if m else None
         owner = by_key.get(base.casefold()) if base is not None else None
         if owner is not None:
-            errors.append(
+            yield gid, (
                 f"group {gid}: collides with the chunk names of group {owner} "
                 f"(an oversize group splits into {owner}_1, {owner}_2, ...). Both "
                 f"would write findings-{gid}-<domain>.json and one would "
@@ -397,11 +399,95 @@ def _reserved_name_errors(groups):
         # A subgroup `Foo:Ungrouped` is namespaced and cannot collide.
         if ":" not in gid and RESIDUAL_SINK.casefold() in (
                 gid.casefold(), base.casefold() if base is not None else None):
-            errors.append(
+            yield gid, (
                 f"group {gid}: {RESIDUAL_SINK!r} and {RESIDUAL_SINK}_<n> are "
                 f"reserved for the unmatched-file sink; a group named this "
                 f"would share a findings file with it -- rename it")
-    return errors
+
+
+def _reserved_name_errors(groups):
+    """The messages `_reserved_name_conflicts` yields, id dropped."""
+    return [message for _gid, message in _reserved_name_conflicts(groups)]
+
+
+def colliding_ids(groups):
+    """The ids `_reserved_name_conflicts` yields, message dropped: every
+    authored id that collides with another id or a machine-minted name."""
+    return {gid for gid, _message in _reserved_name_conflicts(groups)}
+
+
+# The one wording for "this config still uses the 4.x list form", returned as a
+# disclosure so every reader prints the same line (#2229).
+LEGACY_LIST_NOTICE = ("legacy list form -- normalizing to mapping; "
+                      "re-run --setup to rewrite")
+
+
+def normalize_groups_mapping(raw):
+    """Return (mapping, errors, disclosures) for a committed `groups:` value.
+
+    The ONE normalizer (#2229, ARC-1814846877): five readers each carried a
+    copy of this, and one of them a different predicate entirely. A list
+    `groups: [{name: ..., ...}]` is the 4.x form (#run7 ARC-D2B) -- it becomes
+    a mapping keyed by `name`, entries that are not a named mapping are
+    dropped, and the caller gets `LEGACY_LIST_NOTICE` to print. An absent or
+    empty value is `{}` with nothing to say. Anything else that is not a
+    mapping is ONE named error rather than an AttributeError inside whichever
+    reader looked first (#2189: `groups: API`).
+    """
+    errors: list[str] = []
+    disclosures: list[str] = []
+    raw = raw or {}
+    if isinstance(raw, list):
+        disclosures.append(LEGACY_LIST_NOTICE)
+        raw = {g.get("name"): g for g in raw
+               if isinstance(g, dict) and g.get("name")}
+    if not isinstance(raw, dict):
+        errors.append("groups must be a mapping/object")
+        raw = {}
+    return raw, errors, disclosures
+
+
+def is_leaf_body(body):
+    """True iff an authored group body is a LEAF: it carries a RESERVED field
+    (match/tests/panels/exclude). The leaf-vs-parent rule lives here and
+    nowhere else (#2229 -- it had three homes). A None or non-mapping body is
+    a leaf for back-compat with the pre-subgroup schema, and an empty mapping
+    is one too: `parse_groups` refuses it as an empty definition rather than
+    reading it as a parent with no subgroups.
+    """
+    if not isinstance(body, dict) or not body:
+        return True
+    return bool(RESERVED & set(body))
+
+
+def committed_bodies(groups):
+    """A `parse_groups` result as the nested AUTHORED shape a never-clobber
+    reader merges against: `{name: {match, tests, panels, exclude}}` for a
+    top-level leaf and `{name: {"subgroups": {sub: leaf}}}` for a parent
+    (#1305), in the order the ids arrived.
+
+    The one un-flattener (#2229): `discovery._committed_matrix` and
+    `setup_flow.migrate_config` each had their own, and both re-read the
+    AUTHORED bodies after validating them -- which is how a scalar `match:`
+    reached a catalog character-split and a name the schema had just rejected
+    came back anyway (#2189). Built from the VALIDATED leaves instead, so
+    nothing here is a glob the schema refused. `panels`/`exclude` are the
+    parsed domain SETS, so they come back sorted rather than in authored
+    order; the authored file is never rewritten from this.
+    """
+    out: dict[str, dict] = {}
+    for gid, leaf in groups.items():
+        body = {"match": list(leaf.get("match") or []),
+                "tests": list(leaf.get("tests") or []),
+                "panels": sorted(leaf.get("floor") or ()),
+                "exclude": sorted(leaf.get("exclude") or ())}
+        parent = leaf.get("parent")
+        if parent and parent != gid:
+            subs = out.setdefault(parent, {"subgroups": {}})["subgroups"]
+            subs[gid[len(parent) + 1:]] = body
+        else:
+            out[gid] = body
+    return out
 
 
 def parse_groups(doc):
@@ -412,19 +498,12 @@ def parse_groups(doc):
     A top-level name whose body is a parent (keys are subgroup names, each a
     leaf) yields, for each subgroup `sub`, id "name:sub" with parent == name.
     """
-    groups, errors = {}, []
-    groups_dict = (doc or {}).get("groups") or {}
-    # #run7 ARC-D2B: accept the legacy list form `groups: [{name: ..., ...}]`.
-    # load_catalog and _committed_matrix already normalize it, but _matrix_catalog
-    # (the reader main() uses for --repo-scan grouping) went straight to
-    # parse_groups, so a list-valued config silently became {} here and EVERY
-    # committed group was dropped to Commons/._N. Normalize once in the owner.
-    if isinstance(groups_dict, list):
-        groups_dict = {g.get("name"): g for g in groups_dict
-                       if isinstance(g, dict) and g.get("name")}
-    if not isinstance(groups_dict, dict):
-        errors.append("groups must be a mapping/object")
-        groups_dict = {}
+    groups = {}
+    # The legacy-list disclosure is dropped here -- this function is pure and
+    # returns two values by contract. A reader that has a stderr to print it on
+    # calls `normalize_groups_mapping` itself and passes the mapping in.
+    groups_dict, errors, _disclosures = normalize_groups_mapping(
+        (doc or {}).get("groups"))
     for name, raw in groups_dict.items():
         if _invalid_name(name):
             errors.append(_name_error(name))
@@ -446,8 +525,9 @@ def parse_groups(doc):
 
         # None / non-dict bodies are coerced above to {} and, for back-compat
         # with the pre-subgroup schema, always parsed as a (defaults-only,
-        # erroring) leaf rather than as an empty parent.
-        if raw_was_none or raw_was_non_dict or (RESERVED & set(raw)):
+        # erroring) leaf rather than as an empty parent -- which is what
+        # `is_leaf_body` says about an empty mapping too.
+        if raw_was_none or raw_was_non_dict or is_leaf_body(raw):
             leaf = _parse_leaf(name, raw, errors)
             leaf["parent"] = name
             groups[name] = leaf
@@ -472,7 +552,7 @@ def parse_groups(doc):
                 errors.append(f"group {flat_id}: definition must not be empty")
                 continue
 
-            if not (RESERVED & set(sub_raw)):
+            if not is_leaf_body(sub_raw):
                 errors.append(f"group {flat_id}: subgroups cannot nest")
                 continue
 

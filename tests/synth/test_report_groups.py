@@ -132,16 +132,22 @@ class TestGroupParentRollup(unittest.TestCase):
 
     def test_load_findings_tags_group_from_filename(self):
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-mygroup-code.json")
+            p = os.path.join(d, "findings-mygroup-COD.json")
             with open(p, "w") as fh:
                 json.dump({"findings": [{"severity": "LOW", "panel": "code"}]}, fh)
             out = findings_mod.load_findings([p])
             self.assertEqual(out[0]["_group"], "mygroup")
 
-    def test_load_findings_tags_group_from_new_panel_filenames(self):
+    def test_load_findings_tags_group_and_keeps_the_payload_panel(self):
+        # The panel a reviewer declared survives ingest for every panel in the
+        # scale. This used to read the panel out of the 4.x
+        # `findings-<group>-<panel>.json` name as well; #1765 retired that
+        # spelling, so the cell name carries the DOMAIN and the panel comes from
+        # the payload alone.
         with tempfile.TemporaryDirectory() as d:
-            for panel in ["architecture", "database", "redteam"]:
-                p = os.path.join(d, "findings-mygroup-%s.json" % panel)
+            for panel, domain in (("architecture", "ARC"), ("database", "DAT"),
+                                  ("redteam", "SEC")):
+                p = os.path.join(d, "findings-mygroup-%s.json" % domain)
                 with open(p, "w") as fh:
                     json.dump({"findings": [{"severity": "LOW", "panel": panel}]}, fh)
                 out = findings_mod.load_findings([p])
@@ -150,8 +156,8 @@ class TestGroupParentRollup(unittest.TestCase):
 
     def test_load_findings_tags_group_from_domain_suffixed_filenames(self):
         # P4 review cells write findings-<group>-<domain>.json (groups_schema.DOMAINS,
-        # e.g. "SEC"), no panel_review/lens_sweep suffix -- GROUP_RE must parse this
-        # shape too, or _group tagging silently fails for every matrix cell.
+        # e.g. "SEC"), and `findings_contract.cell_of` must parse that shape or
+        # _group tagging silently fails for every matrix cell.
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-Auth-SEC.json")
             with open(p, "w") as fh:

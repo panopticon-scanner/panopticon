@@ -139,6 +139,15 @@ def _capabilities(envelope):
 
 
 def remedy(capability, host):
+    row = hosts.spec(host)
+    if row is not None and row.registration_refusal and capability in row.claims:
+        # #2214, a follow-up to #2232's COD-1638371699 fix: a relative
+        # CODEX_HOME makes `row.registration_refusal` non-empty, and every
+        # capability the row still CLAIMS is gated behind that same
+        # registration -- so the emit command below is not a remedy for it,
+        # it is the thing that refuses. Read the refusal from the row PR #2232
+        # already recorded it on, rather than re-deriving it here.
+        return row.registration_refusal
     override = _REMEDY_BY_HOST.get(host, {}).get(capability)
     text = override or _REMEDY.get(capability, "no remedy recorded for %s" % capability)
     return text % {"host": host or "this host"}
@@ -248,16 +257,29 @@ def lines(envelope):
     Stable because a reader diffs these across runs; `hosts.unproven` sorts for
     exactly that reason. One line per `unproven_rows` entry, in that order, so
     the two surfaces that consume this can be zipped rather than prefix-matched.
+
+    A remedy already printed earlier in THIS call is not repeated verbatim
+    (#2214): a host whose registration is refused answers every capability it
+    still claims with the SAME sentence (`remedy()`, above), and a paragraph
+    an operator already read is not a second disclosure -- it is the "mood"
+    5.1 rules out, reprinted. The line still names its own capability, host,
+    probe and a fix; the fix just points at the line that said it first,
+    instead of saying it again.
     """
     caps = _capabilities(envelope) or {}
     host = host_of(envelope)
     out = []
+    said_by: dict[str, str] = {}
     for capability, state in unproven_rows(envelope):
         row = caps.get(capability)
         row = row if isinstance(row, dict) else {}
+        fix = remedy(capability, host)
+        if fix in said_by:
+            fix = "see the %s line above" % said_by[fix]
+        else:
+            said_by[fix] = capability
         out.append("%s is %s on host %r -- %s. fix: %s"
-                   % (capability, state, host, _probe_clause(row, state),
-                      remedy(capability, host)))
+                   % (capability, state, host, _probe_clause(row, state), fix))
     return out
 
 
