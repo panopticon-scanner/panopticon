@@ -29,6 +29,30 @@ evidence exposed.
   dependency-check's jar basename recorded as a disclosed debt naming #2225 — a debt, not an
   allowlist: the shape rule still holds it, and a self-liquidating test drops the entry when the
   owner rules.
+- **No module is loaded twice, and the `sys.path` bootstrap gets a ceiling (#1766; ARC-188610019,
+  ARC-2452079063, ARC-3214704952, ARC-11100703).** A driver-shaped process built two module
+  objects from one file for NINE modules — `config_schema`, `coverage_model`, `diff_map`,
+  `discovery`, `grouping_engine`, `groups_schema`, `model_resolver`, `plan_contract` and
+  `repo_config` — each copy with its own module state and its own patch targets, so
+  `dispatch.registration_model` ran on a `model_resolver` whose profile cache
+  `mock.patch.object(scripts.model_resolver, …)` could not reach. `dispatch.py`,
+  `setup_flow.py` and `grouping_engine.py` now import those siblings from the package, which
+  retires four of the nine; the five that remain are the flat-import mode's own
+  (`discovery.py` and `setup_proposal.py` must still import with only `skill/scripts` on the
+  path) and are named, with their owner, in the new guard. `setup_flow.py`'s two CALL-time
+  `import dispatch` statements went with them: each minted a second `dispatch`, with its own
+  cached template loader, the first time a setup path ran. `synth/report.py`'s unreachable
+  `except ModuleNotFoundError: from _version import __version__` arm is gone.
+  `tests/test_module_identity.py` pins all four halves: the import-time census; a SHRINK-ONLY
+  per-module ceiling on the `sys.path` write sites under `skill/scripts/` and `scripts/`, so a
+  third insert inside an already-permitted module fails too, with each site reported against the
+  root it adds (the flat root mints a second name; the `skill/` root is what grants the package
+  one); the two `scripts` portions being name-disjoint; and no import fallback in a package
+  module, keyed on a handler that imports and accepting `ImportError` alongside
+  `ModuleNotFoundError`. A site that GOES AWAY fails a separate staleness test, not the ceiling —
+  removing a bootstrap is the guard working. `tests/test_phases_child.py` pins the child
+  PYTHONPATH contract by what a child can import rather than by the list of roots. Consolidation,
+  including the call-time class the census cannot see, continues in #1516.
 - **An interrupted or terminated driver ends its phase child and its runner children (#1805;
   COD-869076756).** A phase child (discovery, tools, synthesize) leads its own session, so the
   terminal's Ctrl-C never reached it, and `_run_child` ended its group only on a timeout: an

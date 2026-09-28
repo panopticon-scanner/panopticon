@@ -75,7 +75,13 @@ class TestSetupFlow(SetupFixtureBase):
     def test_readiness_checks_driver_roles_not_legacy(self):
         # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/
         # domain_advisor shells, NOT the retired panel_review/lens_sweep.
-        import dispatch
+        #
+        # #1766: the PACKAGE identity here and at the three sibling sites below.
+        # `setup_flow._check_host_shells` used to `import dispatch` flat, so a
+        # flat `mock.patch.object(dispatch, ...)` reached it; now it imports the
+        # package and only the package-qualified patch does. Both spellings
+        # resolve under pytest, and the flat one silently patched a copy.
+        import scripts.dispatch as dispatch
         d = _repo(self)
         with mock.patch.object(dispatch, "_is_registered", return_value=False):
             checks = setup_flow.readiness(
@@ -142,7 +148,7 @@ class TestSetupFlow(SetupFixtureBase):
         # from ROLE_FILES, so drift cannot happen and the trip is gone. Pinned
         # so a future "local copy" cannot quietly reintroduce the gap that
         # left `advisor` unchecked.
-        import dispatch
+        import scripts.dispatch as dispatch
         self.assertIs(probes_common.DRIVER_ROLES, setup_flow._driver_roles)
         self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), setup_flow._driver_roles)
 
@@ -172,7 +178,7 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         # codex` for real would otherwise make `ok` legitimately True and
         # the assertion below flaky-by-environment rather than a check on
         # the code.
-        import dispatch
+        import scripts.dispatch as dispatch
         with mock.patch.object(dispatch, "_is_registered", return_value=False):
             ok, detail = self._check("codex")["enforced-shells"]
         self.assertIsNot(ok, True,
@@ -185,7 +191,7 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         # _verified. That one proves the hardcoded True is gone; this one
         # proves a REAL True still arrives, so "derived from a check" is
         # demonstrated in both directions rather than asserted in a docstring.
-        import dispatch
+        import scripts.dispatch as dispatch
         with mock.patch.object(dispatch, "_is_registered", return_value=True):
             ok, detail = self._check("codex")["enforced-shells"]
         self.assertTrue(ok)

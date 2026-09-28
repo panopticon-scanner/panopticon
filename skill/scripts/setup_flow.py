@@ -20,12 +20,12 @@ import sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import plan_contract  # noqa: E402
-import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
-import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
-import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
-import repo_config  # noqa: E402  (#1681: the one place the config names live)
-import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
+from scripts import plan_contract  # noqa: E402
+from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
+from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
+from scripts import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
+from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
+from scripts import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
@@ -371,7 +371,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     offer -- the tests, and any future caller that runs outside a driver
     invocation.
     """
-    import dispatch  # noqa: E402
+    from scripts import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
     row = hosts.spec(resolved_host)
     checks: list[tuple[str, bool | None, str]] = []
@@ -945,7 +945,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
     names for it -- this brief is the only document telling that agent what it
     may call. Defaults to None (the neutral Claude vocabulary), so every
     existing caller is unchanged."""
-    import dispatch
+    from scripts import dispatch
     spine = spine or build_spine(repo)
     brief = dispatch.render_prompt("setup-scan.md", {
         "repo_spine": format_spine(spine),

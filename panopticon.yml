@@ -385,6 +385,7 @@ groups:
       - tests/test_layout.py
       - tests/test_flat_module_ceiling.py
       - tests/test_no_per_file_sys_path.py
+      - tests/test_module_identity.py
       - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
       - tests/test_agent_findings_guard.py
