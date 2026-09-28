@@ -15,6 +15,20 @@ evidence exposed.
   A `\`-newline before the word no longer reads as an empty delimiter, which hid the payload.
   A `<<`, `<<-` or `<<<` split by a `\`-newline reads as the one operator bash makes (#2291).
   The closing count says "N defect(s)" where it said "N unverified fetch-and-exec step(s)".
+- **SpotBugs findings cite the CWE SpotBugs or FindSecBugs assigns to the pattern (#1795;
+  COD-1501398192).** `_SPOTBUGS_CWE` was a hand-written table of seven bug patterns; one of
+  them, HARDCODED_KEY, named a pattern neither vendor has ever emitted, so a suppressed
+  hard-coded password never reached policy C's gate. The table is now the union of core
+  SpotBugs 4.8.6's and the FindSecBugs 1.13.0 plugin's own `findbugs.xml` mappings -- 145
+  patterns across both vendors; what neither maps stays uncited, on purpose.
+- **Keep score-gate imports from changing the search path (#2279, #1823).** Package and flat
+  imports retain evidence module identity without modifying `sys.path`. Direct file execution
+  remains supported, and the bootstrap allowance is removed from the import guard.
+- **Reuse the coverage string-list filter (#2278, #1822).** Coverage delegates list filtering
+  to the schema helper while still accepting a lone string. Manifest inputs remain list-only.
+- **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
+  row-count and name checks. Overlong tool identities are still dropped; suppression names are
+  still cut and colliding counts summed, with the same warnings and value checks.
 - **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
   table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
 - **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**

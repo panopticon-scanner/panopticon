@@ -98,6 +98,31 @@ def _bounded(rows, path, changes):
     return rows[:ROWS_MAX]
 
 
+def _named_rows(value, path, changes, *, cut_names=False):
+    """Sorted, bounded mapping rows with string names and disclosed repairs.
+
+    Tool identities are dropped if overlong. Suppression tallies opt into
+    cutting names and sum any resulting collisions in their caller.
+    """
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append((path, "dropped: not an object"))
+        value = {}
+    for name, row in _bounded(sorted(value.items(), key=lambda kv: str(kv[0])),
+                              path, changes):
+        if not isinstance(name, str):
+            changes.append(("%s[%r]" % (path, name), "dropped: name is not a string"))
+            continue
+        if len(name) > NAME_MAX:
+            label = "%s.%s..." % (path, name[:40])
+            if not cut_names:
+                changes.append((label, "dropped: name is longer than %d characters in" % NAME_MAX))
+                continue
+            changes.append((label, "cut a name to %d of %d characters in" % (NAME_MAX, len(name))))
+            name = name[:NAME_MAX - 1] + "\u2026"
+        yield name, row
+
+
 def _cut(text, path, changes):
     """`text` cut to `VALUE_MAX`, announced when it was actually cut.
 
@@ -240,21 +265,9 @@ def repair_tools_sanitized(value, warn=None):
     output; the bound at the read is the one that holds on the path the
     repairer was written for.
     """
-    changes = []
+    changes: list[tuple[str, str]] = []
     out = {}
-    if not isinstance(value, dict):
-        if value not in (None, {}):
-            changes.append(("sanitized", "dropped: not an object"))
-        value = {}
-    for name, row in _bounded(sorted(value.items(), key=lambda kv: str(kv[0])),
-                              "sanitized", changes):
-        if not isinstance(name, str):
-            changes.append(("sanitized[%r]" % (name,), "dropped: name is not a string"))
-            continue
-        if len(name) > NAME_MAX:
-            changes.append(("sanitized.%s..." % name[:40],
-                            "dropped: name is longer than %d characters in" % NAME_MAX))
-            continue
+    for name, row in _named_rows(value, "sanitized", changes):
         if not isinstance(row, dict):
             changes.append(("sanitized.%s" % name, "dropped: not an object"))
             continue
@@ -312,22 +325,9 @@ def repair_tools_network(value, warn=None):
     another's. Rows are taken sorted-first, so one manifest always yields one
     report.
     """
-    changes = []
+    changes: list[tuple[str, str]] = []
     out = {}
-    if not isinstance(value, dict):
-        if value not in (None, {}):
-            changes.append(("network", "dropped: not an object"))
-        value = {}
-    for name, posture in _bounded(
-            sorted(value.items(), key=lambda kv: str(kv[0])), "network", changes):
-        if not isinstance(name, str):
-            changes.append(("network[%r]" % (name,), "dropped: name is not a string"))
-            continue
-        if len(name) > NAME_MAX:
-            changes.append(("network.%s..." % name[:40],
-                            "dropped: name is longer than %d characters in"
-                            % NAME_MAX))
-            continue
+    for name, posture in _named_rows(value, "network", changes):
         if not isinstance(posture, str):
             changes.append(("network.%s" % name, "dropped: not a string"))
             continue
@@ -463,24 +463,9 @@ def repair_tools_suppressed(value, warn=None):
     absent from the report an operator reads. Colliding rows are SUMMED, so the
     total a reader adds up stays exact, and the marker says the name was cut.
     """
-    changes = []
+    changes: list[tuple[str, str]] = []
     out: dict[str, int] = {}
-    if not isinstance(value, dict):
-        if value not in (None, {}):
-            changes.append(("tools_suppressed", "dropped: not an object"))
-        value = {}
-    for name, count in _bounded(
-            sorted(value.items(), key=lambda kv: str(kv[0])),
-            "tools_suppressed", changes):
-        if not isinstance(name, str):
-            changes.append(("tools_suppressed[%r]" % (name,),
-                            "dropped: name is not a string"))
-            continue
-        if len(name) > NAME_MAX:
-            changes.append(("tools_suppressed.%s..." % name[:40],
-                            "cut a name to %d of %d characters in"
-                            % (NAME_MAX, len(name))))
-            name = name[:NAME_MAX - 1] + "\u2026"
+    for name, count in _named_rows(value, "tools_suppressed", changes, cut_names=True):
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             changes.append(("tools_suppressed.%s" % name,
                             "dropped: not a non-negative integer"))
