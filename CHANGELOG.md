@@ -28,6 +28,37 @@ evidence exposed.
   the eighth evidence status, and `synthesize.py`'s "stdlib-only" claim. Two of these are pinned:
   `readiness.GATING_ROWS` against the guide's gating sentence, and
   `evidence.EVIDENCE_STATUSES`/`GATE_ELIGIBLE_DEFAULT` against the evidence chapter.
+- **Parity pins for the mirrored tables, the fixture corpus and the goldens (#2234, #2235, #2236,
+  #2237).** Four LOW/MEDIUM findings, one shape: a definition kept in two places with nothing
+  comparing them. `sarif_utils`' hand-mirrored fixture corpus is pinned against `discovery`'s,
+  value for value and predicate against predicate, so the #434 tool/agentic parity is a test and
+  not a comment (ARC-1496429894). The four parallel legacy-SARIF tables -- `LEGACY_SARIF_TOOLS`,
+  `TOOL_CMD`, the registered `LegacySarifAdapter` rows and `sarif_utils.PREFIX` -- are asserted
+  EQUAL, as are the tool registry and the recommendable set, which closes the directions nobody
+  had pinned (ARC-3428598333, ARC-1125964489). `file_issues` derives its two label tables from
+  `evidence.SEV_ORDER`/`EVIDENCE_STATUSES` instead of hand-copying them, and now RAISES on an
+  unknown severity or evidence status: a ninth status used to be filed as `evidence:unverified`,
+  a label asserting the opposite of what happened (ARC-1576523829). `x0x_report` and
+  `strain_report` share one gap predicate and one roster clamp (`ocrdb.is_fallback_code`,
+  `ocrdb.clamp_domain`), so `is_fallback` is now CASE-INSENSITIVE and whitespace-stripped, and
+  strain's published `domain` can no longer leave the roster enum that its own schema declares
+  (ARC-101960059). A `domain` claim that is not a roster domain is still clamped to `ZZZ` and
+  disclosed, never reinterpreted as the domain before its first hyphen -- `clamp_domain` validates
+  a domain and `roster_domain` is the wrapper for a caller holding a code. `cross_domain` is
+  decided on the RAW claims (`ocrdb.domain_claim`), not the clamped ones: two codes claiming two
+  different off-roster domains are cross-domain strain, and comparing clamped values would publish
+  "same domain". And `tests/test_goldens_provenance.py` refuses any file under `tests/goldens/`
+  that names `/mnt/panopticon` or a `.worktrees/` path segment -- no per-file exemption; the
+  directory's README was reworded so it no longer needs one -- with today's three offending goldens
+  (`bandit.raw`, `gitleaks.raw`, `trivy.raw`) in a shrink-only `PENDING` set that empties when
+  #2313 re-captures them against a synthetic corpus (ARC-168995033).
+- **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
+  Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
+  clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by
+  its own grammar and reports what it cannot settle, such as a `taskset -p` pid that may be 0.
+  Behind `xargs`, which appends words, a wrapper that runs nothing as written is reported too.
+  A download run as a wrapper, as in `curl -o flock …; ./flock 9`, counts as running it.
+  A `$` word behind a wrapper is reported even if it ends in a wrapper's name (`sudo "$PWD/env"`).
 - **Separate Codex event parsing and usage accounting (#2299, #1826).** Completed turns,
   messages and final results keep recovery ordering, partial usage and host-error precedence.
 - **Separate confined read-tool operations (#2298, #1826).** Read, list and search handlers
