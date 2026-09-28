@@ -1325,6 +1325,29 @@ class TestGitListingFailureIsNamed(unittest.TestCase):
             self.assertEqual("", err.getvalue())
             self.assertNotIn("git_failure", info)
 
+    def test_a_worktree_whose_gitlink_dangles_is_disclosed_without_the_path(self):
+        # A `.git` entry IS present, so the operator asked to scan a worktree and
+        # got a raw walk -- but git's sentence for this one failure is
+        # `fatal: not a git repository: <gitdir>`, which the substring test
+        # cannot separate from a plain non-git directory. Disclosed in the
+        # module's own words: the target-authored path never reaches stderr.
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            with open(os.path.join(d, ".git"), "w", encoding="utf-8") as fh:
+                fh.write("gitdir: /nonexistent/elsewhere\n")
+            info, err = {}, io.StringIO()
+            with contextlib.redirect_stderr(err):
+                files = orchestrator.discover_repo_files(d, info=info)
+        disclosure = err.getvalue()
+        self.assertIn("does not read this tree as a repository", disclosure)
+        self.assertNotIn("/nonexistent/elsewhere", disclosure)
+        self.assertNotIn("fatal", disclosure)
+        self.assertIn("src/app.py", files)               # the walk still ran
+        self.assertEqual("walk", info["method"])
+        self.assertIn("does not read this tree as a repository",
+                      info.get("git_failure") or "")
+        self.assertNotIn("/nonexistent/elsewhere", info["git_failure"])
+
     def test_a_worktree_whose_git_fails_is_disclosed_and_still_walked(self):
         with tempfile.TemporaryDirectory() as d:
             touch(d, "src/app.py")

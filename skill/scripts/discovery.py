@@ -936,15 +936,15 @@ def _git_listed_files(repo, info=None):
     git surface was 528 — 94% gitignored runtime data, including encrypted
     user blobs).
 
-    None means "walk instead", and the two reasons for it are told apart
-    (ARC-1940929242): not being a git worktree is the ordinary case and says
-    nothing, while git FAILING on one is named on stderr and recorded as
-    ``info["git_failure"]`` for the discovery block -- the walk then reviews a
-    tree the target's .gitignore never scoped, the downgrade #500 made this the
-    surface to avoid, and it used to happen in silence. The scan still runs: a
-    fallback nobody can see is the defect, not the fallback. The except names
-    what `_git` raises; `ls-files` is on the probe's allowlist, so it never
-    preflights and never refuses (#2006 fix round 2, M7).
+    None means "walk instead", and the reasons are told apart (ARC-1940929242):
+    a tree with no ``.git`` entry is not a worktree -- the ordinary case, and it
+    says nothing -- while anything else is a FAILURE, named on stderr and
+    recorded as ``info["git_failure"]`` for the discovery block, because the walk
+    then reviews a tree the target's .gitignore never scoped: the downgrade #500
+    made this the surface to avoid, and it used to happen in silence. The scan
+    still runs, since a fallback nobody can see is the defect, not the fallback.
+    The except names what `_git` raises; `ls-files` is on the probe's allowlist,
+    so it never preflights and never refuses (#2006 fix round 2, M7).
     """
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
@@ -953,7 +953,10 @@ def _git_listed_files(repo, info=None):
         said = os.fsdecode(getattr(exc, "stderr", None) or b"").strip()
         detail = said.splitlines()[0] if said else "%s: %s" % (type(exc).__name__, exc)
         if "not a git repository" in detail:
-            return None                    # the ordinary non-git target
+            if not os.path.lexists(os.path.join(repo, ".git")):
+                return None                # no .git entry: not a worktree
+            # A `.git` git will not open; never echo git's text: it names the gitdir.
+            detail = "a .git entry is present but git does not read this tree as a repository"
         print("panopticon: the target's Git listing FAILED (%s); discovery falls back "
               "to a raw walk, which does NOT honour the target's .gitignore -- this "
               "run's surface may be far larger than the target's own" % detail, file=sys.stderr)
