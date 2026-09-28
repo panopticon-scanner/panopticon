@@ -45,12 +45,33 @@ class IntegrityKey:
 # the artifact an operator reads did not have them.
 #
 # ORDER IS RENDER ORDER, REVERSED: `render_summary` inserts every one of these
-# lines at the same index, so the LAST entry here renders topmost. The sinking
-# keys come first, in `integrity_section`'s own published key order -- which
-# keeps the three lines that rendered before this change in the order they
-# rendered in -- and the non-gating notes come after, so they stay above the
-# failures they are not.
+# lines at the same index, so the LAST entry here renders topmost. The
+# non-gating notes come FIRST and therefore render lowest: an aside about the
+# review must not outrank the verdict on the run, which is the same precedence
+# rule `render.py` states where it puts this whole cluster above the
+# host-capability disclosure. The sinking keys follow in `integrity_section`'s
+# own published key order, which keeps the three lines that rendered before
+# this change in the order they rendered in.
 INTEGRITY_KEYS: dict[str, IntegrityKey] = {
+    # --- reported, never gating (rendered BELOW the failures) -----------------
+    # #calibration-4: a reviewer filing outside its lane is a fact about the
+    # REVIEW, not about whether the artifacts on disk can be trusted. Its
+    # evidence slot carries the count and the domain pairs.
+    "cross_domain_findings": IntegrityKey(
+        False, "%s. Reviewers filed outside their cell's domain; often a "
+               "catalog gap (X0X). Does NOT affect certification."),
+    # Counters and disclosures with no line of their own: a planned file that
+    # never arrived is not evidence of tampering (`reconcile_findings_files`
+    # reports it and no gate reads it), and the rest are measurements --
+    # how many plans were seen, how many hashes were checked, whether an
+    # unenforced-write ack was recorded, whether it was stale, and what that
+    # ack said about Bash coverage.
+    "missing_planned_files": IntegrityKey(False),
+    "unenforced_acknowledged": IntegrityKey(False),
+    "ack_stale": IntegrityKey(False),
+    "content_hashes_checked": IntegrityKey(False),
+    "plans_seen": IntegrityKey(False),
+    "write_guard_covers_bash": IntegrityKey(False),
     # --- sinks `integrity_ok` -------------------------------------------------
     "unexpected_findings_files": IntegrityKey(
         True, "UNEXPECTED FILES — %s (not declared by the dispatch plan; run "
@@ -124,25 +145,6 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         True, "DELTA SCOPE INFLATED — %s (git driver(s) this scan emptied, so "
               "the diff that chose the reviewed files and the gate's scope "
               "compared raw bytes against a filtered blob; run not certified)"),
-    # --- reported, never gating ----------------------------------------------
-    # #calibration-4: a reviewer filing outside its lane is a fact about the
-    # REVIEW, not about whether the artifacts on disk can be trusted. Its
-    # evidence slot carries the count and the domain pairs.
-    "cross_domain_findings": IntegrityKey(
-        False, "%s. Reviewers filed outside their cell's domain; often a "
-               "catalog gap (X0X). Does NOT affect certification."),
-    # Counters and disclosures with no line of their own: a planned file that
-    # never arrived is not evidence of tampering (`reconcile_findings_files`
-    # reports it and no gate reads it), and the rest are measurements --
-    # how many plans were seen, how many hashes were checked, whether an
-    # unenforced-write ack was recorded, whether it was stale, and what that
-    # ack said about Bash coverage.
-    "missing_planned_files": IntegrityKey(False),
-    "unenforced_acknowledged": IntegrityKey(False),
-    "ack_stale": IntegrityKey(False),
-    "content_hashes_checked": IntegrityKey(False),
-    "plans_seen": IntegrityKey(False),
-    "write_guard_covers_bash": IntegrityKey(False),
 }
 
 

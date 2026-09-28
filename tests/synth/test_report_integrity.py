@@ -343,17 +343,20 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             return integrity_mod.integrity_section([], [], d, 0, 0, None)
 
-    def _inputs(self, key=None):
+    def _inputs(self, key=None, *also):
         """build_report inputs with `key` alone made truthy.
 
         `tools_manifest_invalid` and `delta_scope_suppressed_git_drivers` are
         driven through their OWN inputs: `reconcile` computes both over
         whatever section it was handed, so a value planted in the section
-        would be overwritten and the probe would prove nothing.
+        would be overwritten and the probe would prove nothing. `also` names
+        further keys to make truthy, for the ordering test below; only
+        section-settable keys belong there, for that same reason.
         """
         section = self._clean_section()
-        if key:
-            section[key] = self.TRUTHY[key]
+        for name in (key, *also):
+            if name:
+                section[name] = self.TRUTHY[name]
         delta_key = key == "delta_scope_suppressed_git_drivers"
         return report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
@@ -430,8 +433,9 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                     ["properties"])
         self.assertEqual(set(declared), set(integrity_mod.INTEGRITY_KEYS))
 
-    def _summary(self, key=None):
-        return render_mod.render_summary(report_mod.build_report(self._inputs(key)))
+    def _summary(self, key=None, *also):
+        return render_mod.render_summary(
+            report_mod.build_report(self._inputs(key, *also)))
 
     def test_every_sinking_key_is_named_on_the_summary(self):
         # The finding: `content_mismatched_files` -- the #493 R4 tamper check --
@@ -508,6 +512,16 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       "filed outside their cell's domain; often a catalog gap (X0X). "
                       "Does NOT affect certification.", md)
         self.assertNotIn("**Integrity:**", md)
+
+    def test_a_certification_failure_outranks_the_non_gating_note(self):
+        # Review finding 12: the `**Note:**` is an aside about the review and
+        # the `**Integrity:**` lines are the verdict on the run, so the module's
+        # own precedence rule ("an artifact-trust problem outranks a
+        # disclosure") puts the failures first. Both still sit above the
+        # host-capability disclosure, which is where this cluster landed.
+        md = self._summary("mislabeled_findings_files", "cross_domain_findings")
+        self.assertLess(md.index("**Integrity:**"), md.index("**Note:**"))
+        self.assertLess(md.index("**Note:**"), md.index("**Host capabilities:**"))
 
     def test_a_key_with_no_line_of_its_own_prints_neither(self):
         for key in sorted(self.REPORTED - {"cross_domain_findings"}):
