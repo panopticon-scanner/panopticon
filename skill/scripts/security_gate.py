@@ -284,11 +284,12 @@ def moved_identity(finding):
     the flag cannot be crossed (fix round 1, review finding 3).
 
     AND IT ONLY DROPS THE PATH FIELD, not the path wherever a tool wrote it into
-    its own MESSAGE -- which some do: gitleaks' message reads `generic-api-key
-    has detected secret for file /mnt/panopticon/.env.`, and trivy embeds its own
-    grade. Such a finding keys itself by its path, so a move of one still counts
-    as NEW. That direction fails safe, and it is the reason a relocated gitleaks
-    hit can still red a check this heading otherwise covers.
+    its own MESSAGE -- which gitleaks does: `generic-api-key has detected secret
+    for file /mnt/panopticon/.env.` keys itself by its path, so a move of one
+    still counts as NEW. That direction fails safe, and it is the reason a
+    relocated gitleaks hit can still red a check this heading otherwise covers.
+    (Trivy's message embeds its GRADE, not its path: a moved trivy finding pairs;
+    a re-graded one does not.)
     """
     tool, rule, _path, message = finding_identity(finding)
     return tool, rule, message
