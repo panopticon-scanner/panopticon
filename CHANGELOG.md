@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An empty `CODEX_HOME` means `~/.codex`; a relative one is refused (#1803; COD-1638371699).**
+  `hosts.py` fell back to `~/.codex` only when `CODEX_HOME` was unset, so an empty value made the
+  Codex registration directory `agents` and a relative one stayed relative, and every Codex consumer
+  resolved it against the working directory -- in the documented flow, the reviewed tree. Under an
+  empty value, a target shipping `agents/panopticon-*.toml` passed the runner's up-front check and
+  supplied every role's `developer_instructions`; the codex probes inspected those shells, readiness
+  called them registered, and `--emit-host-agents codex` wrote `agents/` into the working directory.
+  Owner ruling 2026-09-27: empty means unset, and a relative value is refused with "CODEX_HOME must
+  be an absolute path (it is 'rel/home'); unset it to use ~/.codex" -- by the runner and its shell
+  loader, both codex probes, emission (exit 1, nothing written) and the readiness row. An explicit
+  directory still wins, and importing `hosts` never raises.
 - **One parser for the `findings-<group>-<domain>` cell identity (#1765, ARC-3899903550).** Four
   modules read that name independently and disagreed at the edges: `findings_contract.cell_of` did
   not validate the domain, `synth/coverage_io.present_cells` and
