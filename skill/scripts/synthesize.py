@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Merge panopticon finding files into a validated CodeReviewReport with
-grades and a CI gate verdict. Stdlib-only.
+grades and a CI gate verdict.
+
+No third-party import at THIS level, but the run is not dependency-free: the
+normal completion path validates the report -- before the write, and again as
+re-read from disk -- and the sibling X0X artifact against their published
+schemas, and `synth/validate_schema.py` does that with `jsonschema` and fails
+CLOSED when the import does not resolve. See SKILL.md, Dependencies.
 """
 import argparse
 import json

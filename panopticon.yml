@@ -153,6 +153,7 @@ groups:
       - tests/test_run_fixture_tests.py
       - tests/test_run_tools_progress.py
       - tests/test_capture_goldens.py
+      - tests/test_goldens_provenance.py
       - tests/test_no_live_docker.py
       - tests/test_phase1_integration.py
       - tests/test_schemas.py
