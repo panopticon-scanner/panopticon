@@ -42,16 +42,22 @@ import json
 import os
 
 from scripts import safe_write
+# BY NAME, never `from scripts import scanner_config`: `write_manifest`'s
+# published `scanner_config=` keyword would shadow a module binding inside the
+# function body, so reaching a new constant that way needs a module ALIAS
+# (`scanner_config as _scanner_config`) rather than the bare import.
 from scripts.scanner_config import _SCANNER_CONFIG_POSTURE, _SUPPRESSION_POSTURE
 from scripts.tool_capture import MAX_TOOL_OUTPUT_BYTES, _REDACTED_CAPTURES
 from scripts.tools import egress
 
 # How deep the virtualenv walk that found `excluded_dirs` looked, published as
 # `depth_bound` so a reader knows the list is bounded rather than exhaustive. It
-# lives here because it is `write_manifest`'s `depth_bound` default and a default
-# is bound at `def` time, and `run_tools.find_virtualenvs` -- the walk that is
-# actually bounded by it, and its other reader -- binds it back. Venvs live near
-# the root, and that walk is paid on every scan.
+# lives HERE, and not with the walk, for the import direction: `run_tools` imports
+# this module and never the reverse, and `write_manifest`'s `depth_bound` default
+# is bound at `def` time, so the bound cannot be read back across the seam.
+# `run_tools.find_virtualenvs` -- the walk that is actually bounded by it, and its
+# other reader -- binds it back. Venvs live near the root, and that walk is paid
+# on every scan.
 VENV_MAX_DEPTH = 3
 
 

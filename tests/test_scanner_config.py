@@ -400,15 +400,23 @@ def _patch_sites(path, watched):
 
     What this does NOT see, stated so it is not over-trusted: an all-keyword
     `patch.object(target=rt, attribute="NAME")`, a non-literal attribute
-    (`setattr(rt, name_var, v)`) and a computed target string
-    (`patch("scripts.run_tools.%s" % name)`). For every moved FUNCTION the strong
-    half of the rule keeps the name off `run_tools` entirely, which makes two of
-    those three loud rather than silent: `patch.object` and `monkeypatch.setattr`
-    both refuse an attribute that does not exist and raise `AttributeError`. The
-    bare builtin `setattr` does not -- it CREATES a dead binding and the test
-    passes having changed nothing -- so an unseen spelling of that one is a real
-    residual, on a moved function as much as on a re-exported constant. Its
-    literal spelling is caught above; only the two forms named here escape.
+    (`monkeypatch.setattr(rt, name_var, v)` or the bare builtin
+    `setattr(rt, name_var, v)`) and a computed target string
+    (`patch("scripts.run_tools.%s" % name)`).
+
+    Aimed at a RE-EXPORTED CONSTANT, every one of those is silently ineffective:
+    the attribute EXISTS, so nothing refuses the patch and the moved code goes on
+    reading its own module's value. That is the residual this guard cannot close,
+    and it is why the allowlist is kept to constants nothing patches.
+
+    Aimed at a MOVED FUNCTION the strong half of the rule keeps the name off
+    `run_tools` entirely, and three of the four then fail loudly:
+    `patch.object`, `monkeypatch.setattr` and the string form all refuse an
+    attribute that does not exist and raise `AttributeError`. Only the bare
+    builtin `setattr` stays silent -- it CREATES the attribute, leaving a dead
+    binding with the test passing -- and only in its non-literal spelling, since
+    the literal one is in the offender corpus below. All four classifications
+    were measured against this tree, not reasoned about.
     """
     tree = _parse(path)
     aliases = _aliases_in(tree)
@@ -463,7 +471,7 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
 
     Derived from each module's own AST rather than from a list, because a list
     stops growing: part 2 (`tool_capture`) is covered by adding one row to
-    `_SPLITS`, and part 3 will be too.
+    `_SPLITS`, and part 3 (`tools_manifest`) was.
     """
 
     def test_the_allowlist_is_exactly_what_run_tools_re_exports(self):

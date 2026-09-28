@@ -167,14 +167,6 @@ class TestRunTools(unittest.TestCase):
         self.assertEqual(excluded, [])
         self.assertEqual(required, ["eslint-security"])
 
-    def test_manifest_records_excluded_scope(self):
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(
-                os.path.join(d, "m.json"), ["semgrep"], [],
-                excluded_scope=["eslint-security"])
-            self.assertEqual(payload["excluded_scope"], ["eslint-security"])
-            self.assertNotIn("eslint-security", payload["selected"])
-
     def test_eslint_applicable_files_drives_is_applicable(self):
         with tempfile.TemporaryDirectory() as d:
             ad = EslintSecurityAdapter()
@@ -598,38 +590,6 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual([v["path"] for v in rt.find_virtualenvs(d)],
                              ["build/env", "linked"])
 
-    def test_manifest_records_excluded_dirs_with_reasons(self):
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(
-                os.path.join(d, "m.json"), ["semgrep"], [],
-                excluded_dirs=[{"path": ".venv", "reason": "pyvenv.cfg"},
-                               {"path": "venv", "reason": "name"}])
-            # #1740: `skipped` defaults to True, the pre-#1740 meaning of
-            # this list, for a caller handing `find_virtualenvs` output in.
-            self.assertEqual(payload["excluded_dirs"],
-                             [{"path": ".venv", "reason": "pyvenv.cfg",
-                               "skipped": True},
-                              {"path": "venv", "reason": "name",
-                               "skipped": True}])
-            # F2: the list is what the SCAN was told to skip, found by a
-            # depth-bounded walk -- ingest prunes a superset, at any depth.
-            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
-            with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh), payload)
-
-    def test_manifest_records_the_exclude_globs_it_was_given(self):
-        # #1740 fix round 1: the committed `exclude_paths:` policy now reaches
-        # the scan, so the manifest says which globs this run was handed --
-        # beside `excluded_scope` (the adapters those globs disqualified) and
-        # `excluded_dirs` (the virtualenvs). Stated on every manifest, `[]`
-        # included: absence must not read as "nobody measured".
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [],
-                                        exclude_globs=["tests/fixtures/**"])
-            self.assertEqual(payload["exclude_globs"], ["tests/fixtures/**"])
-            bare = tm.write_manifest(os.path.join(d, "b.json"), ["semgrep"], [])
-            self.assertEqual(bare["exclude_globs"], [])
-
     def test_main_records_the_exclude_globs_it_was_passed(self):
         with tempfile.TemporaryDirectory() as d:
             manifest = os.path.join(d, "tools-manifest.json")
@@ -641,25 +601,6 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with open(manifest, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["exclude_globs"],
                                  ["tests/fixtures/**"])
-
-    def test_manifest_records_what_the_sanitizer_dropped(self):
-        # #1646 ruling 3: the audit was PARTIAL and the manifest says so.
-        block = {"pip-audit": {"source": "requirements.txt", "kept": 2,
-                               "dropped": [{"line": "-e .", "reason": "editable"}],
-                               "hashes_stripped": True}}
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(os.path.join(d, "m.json"), ["pip-audit"],
-                                        [], sanitized=block)
-            self.assertEqual(payload["sanitized"], block)
-            with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh)["sanitized"], block)
-
-    def test_manifest_sanitized_defaults_to_empty(self):
-        # Stated on every manifest, `{}` included: absence must not be readable
-        # as "nobody measured" -- the same rule `excluded_dirs` follows.
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
-            self.assertEqual(payload["sanitized"], {})
 
     def test_collect_sanitization_asks_only_the_adapters_that_answer(self):
         class _Quiet:
@@ -704,12 +645,6 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(written["sanitized"]["pip-audit"]["kept"], 1)
             self.assertEqual(written["sanitized"]["pip-audit"]["dropped"],
                              [{"line": "-e .", "reason": "editable"}])
-
-    def test_manifest_excluded_dirs_defaults_to_empty(self):
-        with tempfile.TemporaryDirectory() as d:
-            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
-            self.assertEqual(payload["excluded_dirs"], [])
-            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
 
     def test_main_records_the_detected_venvs_in_the_manifest(self):
         # Docker absent: selection is still faithful, and so is what it pruned.

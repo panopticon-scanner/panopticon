@@ -13,10 +13,17 @@ the PR's implementation notes, from the then-current main -- by any later change
 that legitimately alters a manifest key, a posture value or the JSON encoding;
 a difference produced by anything else is the change being wrong.
 
-Below the golden are the two classes that came out of `tests/test_run_tools_core.py`
-with the writer, bodies unchanged: the manifest's redaction claim and its
-suppression-comment posture. Both drive `run_tools()` to fill a ledger and then
-ask the manifest what it published, which is this module's subject.
+Below the golden is everything that came out of `tests/test_run_tools_core.py` with
+the writer, names and bodies unchanged: six self-contained scope-row tests
+gathered into one new class, then the two classes whose subject was already the
+manifest -- its redaction claim and its suppression-comment posture, both of which
+drive `run_tools()` to fill a ledger and then ask the manifest what it published.
+Three writer tests stayed behind on purpose, each because it also drives
+production code that did NOT move: `test_manifest_discloses_missing_selected_tools`
+and `test_manifest_selection_excludes_offline_policy_skips` are about
+`select_tools`/`filter_online` feeding the manifest, and
+`test_manifest_and_redacted_capture_keep_only_safe_parser_facts` is a
+capture+parse+ingest chain that ends at a manifest read.
 
 `skill/scripts/run_manifest.py` writes the OTHER manifest (the review run's) and
 has its own `write_manifest`; `tests/test_run_manifest.py` is its file.
@@ -755,6 +762,102 @@ class TestTheManifestBytesSurviveTheExtraction(unittest.TestCase):
 
     def test_the_golden_pins_every_case_and_no_stale_one(self):
         self.assertEqual(sorted(GOLDEN), sorted(_CASES))
+
+    def test_the_golden_can_mean_the_bytes_it_is_compared_to(self):
+        """The literal's own precondition, which the emitter checked and the tree
+        has to keep checking.
+
+        `json.dump` runs with `ensure_ascii=True`, so the moment a manifest value
+        carries a non-ASCII character -- a path under `excluded_dirs`, a
+        `sanitized` reason, a tool name -- the FILE gets `\\uXXXX` as six ASCII
+        bytes while a `\"\"\"...\"\"\"` literal decodes the same source to ONE
+        character, and the byte assertion above fails for a reason that has
+        nothing to do with the change under test. A Windows-style path does the
+        same with `\\\\`. Either case means the golden must move out of a Python
+        literal (or be escaped deliberately), and this says so at the point of
+        failure instead of leaving it to be diagnosed.
+        """
+        for case, text in sorted(GOLDEN.items()):
+            with self.subTest(case=case):
+                self.assertNotIn("\\", text,
+                                 "a backslash in the golden cannot survive the "
+                                 "round trip through a Python string literal")
+                self.assertTrue(text.isascii(),
+                                "json.dump escapes non-ASCII to \\uXXXX in the "
+                                "FILE; this literal holds the decoded character")
+
+
+class TestTheManifestPublishesItsScopeRows(unittest.TestCase):
+    """Six rows the manifest states on EVERY manifest -- the excluded scope, the
+    pruned virtualenv rows with their depth bound, the exclude globs and the
+    sanitizer disclosure -- each also at its empty value, because absence must
+    not be readable as "nobody measured"; they came out of
+    `tests/test_run_tools_core.py` with the writer, names and bodies unchanged."""
+
+    def test_manifest_records_excluded_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(
+                os.path.join(d, "m.json"), ["semgrep"], [],
+                excluded_scope=["eslint-security"])
+            self.assertEqual(payload["excluded_scope"], ["eslint-security"])
+            self.assertNotIn("eslint-security", payload["selected"])
+
+    def test_manifest_records_excluded_dirs_with_reasons(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(
+                os.path.join(d, "m.json"), ["semgrep"], [],
+                excluded_dirs=[{"path": ".venv", "reason": "pyvenv.cfg"},
+                               {"path": "venv", "reason": "name"}])
+            # #1740: `skipped` defaults to True, the pre-#1740 meaning of
+            # this list, for a caller handing `find_virtualenvs` output in.
+            self.assertEqual(payload["excluded_dirs"],
+                             [{"path": ".venv", "reason": "pyvenv.cfg",
+                               "skipped": True},
+                              {"path": "venv", "reason": "name",
+                               "skipped": True}])
+            # F2: the list is what the SCAN was told to skip, found by a
+            # depth-bounded walk -- ingest prunes a superset, at any depth.
+            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
+            with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), payload)
+
+    def test_manifest_records_the_exclude_globs_it_was_given(self):
+        # #1740 fix round 1: the committed `exclude_paths:` policy now reaches
+        # the scan, so the manifest says which globs this run was handed --
+        # beside `excluded_scope` (the adapters those globs disqualified) and
+        # `excluded_dirs` (the virtualenvs). Stated on every manifest, `[]`
+        # included: absence must not read as "nobody measured".
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [],
+                                        exclude_globs=["tests/fixtures/**"])
+            self.assertEqual(payload["exclude_globs"], ["tests/fixtures/**"])
+            bare = tm.write_manifest(os.path.join(d, "b.json"), ["semgrep"], [])
+            self.assertEqual(bare["exclude_globs"], [])
+
+    def test_manifest_records_what_the_sanitizer_dropped(self):
+        # #1646 ruling 3: the audit was PARTIAL and the manifest says so.
+        block = {"pip-audit": {"source": "requirements.txt", "kept": 2,
+                               "dropped": [{"line": "-e .", "reason": "editable"}],
+                               "hashes_stripped": True}}
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(os.path.join(d, "m.json"), ["pip-audit"],
+                                        [], sanitized=block)
+            self.assertEqual(payload["sanitized"], block)
+            with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["sanitized"], block)
+
+    def test_manifest_sanitized_defaults_to_empty(self):
+        # Stated on every manifest, `{}` included: absence must not be readable
+        # as "nobody measured" -- the same rule `excluded_dirs` follows.
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
+            self.assertEqual(payload["sanitized"], {})
+
+    def test_manifest_excluded_dirs_defaults_to_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
+            self.assertEqual(payload["excluded_dirs"], [])
+            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
 
 
 class TestTheManifestReportsTheRedactionPass(unittest.TestCase):

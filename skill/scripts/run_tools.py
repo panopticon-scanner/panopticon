@@ -30,10 +30,10 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # exclude tuples, `_working_dir_flags` and the dispatch loop spell `TARGET_MOUNT`
 # (`tests/test_code_scanning_reports.py` pins it against the report side), two of
 # the four ledgers the tools manifest reads back move with the block and are
-# cleared by `run_tools()` and popped by the dispatch loop, and the staged-config
-# constants are read by `tests/test_run_tools_core.py` and
-# `tests/test_run_tools_dispatch.py`. A ledger is the SAME dict object either way,
-# so `.clear()`/`.pop()` here and `[tool] = ...` there address one ledger.
+# cleared by `run_tools()`, and the staged-config constants are read by
+# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`. A ledger
+# is the SAME dict object either way, so `.clear()`/`.pop()` here and
+# `[tool] = ...` there address one ledger.
 #
 # CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved
 # must target `scanner_config`, where the moved code looks it up -- patching a
@@ -59,8 +59,8 @@ from scripts.scanner_config import (
     TRIVY_IGNOREFILE_NAME,        # noqa: F401
     TRIVY_IGNOREFILE_TEXT,        # noqa: F401
     TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # two of the manifest's four ledgers, cleared
-    _SUPPRESSION_POSTURE,         # by `run_tools()` and popped by the loop
+    _SCANNER_CONFIG_POSTURE,      # two of the manifest's four ledgers, both
+    _SUPPRESSION_POSTURE,         # cleared by `run_tools()`; only this one popped
 )
 
 # #1762 (ARC-2609514778, ARC-3243338950) part 2 of 3: the capture path -- one
