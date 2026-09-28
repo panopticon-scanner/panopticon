@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Separate confined read-tool operations (#2298, #1826).** Read, list and search handlers
+  retain the common argument/refusal boundary, grant checks and bounded result disclosures.
 - **Reuse the published report schema location in tests (#2297, #1821).** Split-report,
   parity and verdict-binding checks use the validator's reference directory and schema name.
 - **Derive the health explanation from grading weights (#2296, #1821).** The terminal
