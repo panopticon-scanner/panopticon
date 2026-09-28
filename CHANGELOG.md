@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Keep score-gate imports from changing the search path (#2279, #1823).** Package and flat
+  imports retain evidence module identity without modifying `sys.path`. Direct file execution
+  remains supported, and the bootstrap allowance is removed from the import guard.
 - **Reuse the coverage string-list filter (#2278, #1822).** Coverage delegates list filtering
   to the schema helper while still accepting a lone string. Manifest inputs remain list-only.
 - **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
