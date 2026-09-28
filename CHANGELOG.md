@@ -15,6 +15,55 @@ evidence exposed.
   A `\`-newline before the word no longer reads as an empty delimiter, which hid the payload.
   A `<<`, `<<-` or `<<<` split by a `\`-newline reads as the one operator bash makes (#2291).
   The closing count says "N defect(s)" where it said "N unverified fetch-and-exec step(s)".
+- **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
+  table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
+- **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**
+  The staged `bandit.ini`/`.trivyignore`, the suppression posture, the ignore overlays and
+  two of the four ledgers the manifest reads back move to `skill/scripts/scanner_config.py`
+  whole: `run_tools.py` goes from 2215 to 1774 lines and the new module is 518, under the
+  700-line ceiling. No argv, flag, path or message changed — `tests/test_scanner_config.py`
+  pins the docker argv of both staged tools, in both security modes, with and without the
+  target's own `.bandit`, against a golden captured before the move. `ToolAdapters` gains
+  an `Image` layer so the matrix can claim the new files without passing the 48-file cap.
+- **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
+  discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
+  `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
+  dot-path, so 73 of the 74 dot-leading globs `skill/data/commons_catalog.yml` claims --
+  `.circleci/**`, `.buildkite/**`, `.github/actions/**`, `.github/*.yml`, `.env*`, `.npmrc`,
+  `.eslintrc`, `.husky/**`, `.mvn/**`, `.goreleaser.yml`, `.panopticon.yml` and the rest -- named
+  files no group could ever receive, and so did the deterministic SEC floor's own `.circleci`,
+  `.buildkite/`, `.github/actions/`, `.travis.yml`, `.drone.yml`, `.pre-commit-config.yaml`,
+  `.devcontainer/`, `.env`, `.npmrc`, `.netrc`, `.pgpass` and `.htaccess` hints. A file discovery
+  never returns is never `Ungrouped` either, so nothing reported the gap: #1508 (top-level
+  `.github/*.yml`) and #1838 (the CI and secret-file floor) both rest on claims that could not
+  fire. Owner ruling 2026-09-27, allowlist widen in 5.2 (pruning the claims was rejected): one
+  policy in `skill/scripts/dot_paths.py` naming exactly the root dot-directories and dot-files
+  those two enumerations spell out, and nothing else -- `.git`, `.venv`, `.tox`, the tool caches,
+  `.panopticon/` and any unclaimed dot-path stay pruned, as does a dot-directory nested below the
+  root. Both paths now ask that one rule on the same segment: the git-listing filter tested each
+  ancestor DIRECTORY while the walk tested the whole FILE path, so every file directly under
+  `.github/` was reviewable surface on a git target and invisible on a non-git one -- against two
+  docstrings that said both methods shared one policy. The durable guard derives its samples from
+  the shipped catalog and the floor hints themselves and asserts both paths keep each one, so a
+  claim discovery cannot surface fails in the PR that adds it. `_git_listed_files` also swallowed a
+  bare `Exception` into `None`, and the caller then walked -- which stops honouring the target's
+  `.gitignore`, the surface policy #500 exists for; "not a git worktree" and "git failed on a
+  worktree" are now told apart, the failure is named on stderr and published as the discovery
+  block's `git_failure`, and the scan still runs. **Discovered file sets grow on every target**:
+  CI, config and secret-bearing files now reach a group, so group and cell counts move -- land this
+  before a run, not during one.
+- **Share synthesis test isolation (#2204, #1822, #1823).** Synthesis tests reuse the cwd
+  guard and one autouse isolation fixture at the same package and module scopes. Report tests
+  import mocks explicitly, preserving assertions and removing reliance on prior test imports.
+- **Share OCRDb report record helpers (#2203, #1822).** Gap and strain reports use one
+  occurrence builder and the catalog's raw domain-prefix helper. Missing-file handling, optional
+  strain run IDs, each caller's domain policy and flat imports retain their existing behavior.
+- **Derive SARIF levels from the adapter severity map (#2202, #1821).** SARIF retains its
+  four allowed level names while sharing their grades with tool normalization. Missing and
+  unknown levels, metadata precedence and secret grading keep their existing behavior.
+- **Share token usage vocabulary (#2201, #1821).** The dispatch ledger imports usage fields
+  and phases from the usage collector, keeping totals, checkpoint mapping, model attribution
+  and corrupt-row accounting unchanged.
 - **A refused `CODEX_HOME` is the remedy readiness and the setup acknowledgment show (#1803;
   COD-1638371699).** `host_disclosure.remedy` named `--emit-host-agents codex`, and
   `setup_ack._remedy_clause` named it or `driver loop --setup --host codex --mode headless`,

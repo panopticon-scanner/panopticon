@@ -44,6 +44,15 @@ else:
         from scripts import groups_schema
     except ModuleNotFoundError:
         import groups_schema               # noqa: E402
+# #1784/#1771: the ONE dot-path policy both discovery methods ask. Its own
+# module because this one is at its size ratchet. Same fallback shape as above.
+if TYPE_CHECKING:
+    from scripts import dot_paths
+else:
+    try:
+        from scripts import dot_paths
+    except ModuleNotFoundError:
+        import dot_paths                   # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
@@ -144,11 +153,6 @@ EXCLUDE_DIR_GLOBS = ("*.egg-info",)
 # outside a test parent is real code and is NOT a marker.
 FIXTURE_DIR_BASENAMES = frozenset({"testdata", "__fixtures__"})
 FIXTURE_PARENT_DIRS = frozenset({"tests", "test", "spec"})
-
-# Dot-dir subtrees that ARE reviewable and must survive the blanket dotdir skip.
-# Targeted on purpose: .github/workflows is a top-risk CI/CD surface. Do NOT
-# widen this to all dotdirs — that reintroduces .git / .venv noise.
-ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)
 
 TEST_PATTERNS = [
     r"_spec\.rb$",
@@ -747,13 +751,6 @@ def _is_excluded_dir(name):
         return True
     return any(fnmatch.fnmatch(name, g) for g in EXCLUDE_DIR_GLOBS)
 
-def _on_allowed_dotdir_path(rel):
-    """True if rel is (a prefix of / inside) an allowlisted dot-dir subtree."""
-    return any(
-        rel == allowed or allowed.startswith(rel + "/") or rel.startswith(allowed + "/")
-        for allowed in ALLOWED_DOTDIR_SUBTREES
-    )
-
 def _is_fixture_dir(rel):
     """True if a repo-relative dir path is a test-fixture corpus root (#434)."""
     parts = rel.split("/")
@@ -930,25 +927,41 @@ def _cap_discovered(files, info):
     return files[:DISCOVERED_FILES_MAX]
 
 
-def _git_listed_files(repo):
+def _git_listed_files(repo, info=None):
     """Repo-relative paths git considers reviewable surface, or None.
 
     ``git ls-files --cached --others --exclude-standard`` = tracked files plus
     intentional-but-uncommitted new files, minus everything the TARGET's own
     .gitignore excludes (#500: a raw walk swept 17,253 files on a repo whose
     git surface was 528 — 94% gitignored runtime data, including encrypted
-    user blobs). Returns None when repo isn't a git worktree or git fails,
-    so the caller can fall back to walking.
+    user blobs).
+
+    None means "walk instead", and the reasons are told apart (ARC-1940929242):
+    a tree with no ``.git`` entry is not a worktree -- the ordinary case, and it
+    says nothing -- while anything else is a FAILURE, named on stderr and
+    recorded as ``info["git_failure"]`` for the discovery block, because the walk
+    then reviews a tree the target's .gitignore never scoped: the downgrade #500
+    made this the surface to avoid, and it used to happen in silence. The scan
+    still runs, since a fallback nobody can see is the defect, not the fallback.
+    The except names what `_git` raises; `ls-files` is on the probe's allowlist,
+    so it never preflights and never refuses (#2006 fix round 2, M7).
     """
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
                           "--exclude-standard", "-z"], timeout=60, text=False)
-    except Exception:
-        # No `RepositoryRefused` arm: `ls-files` is on the probe's allowlist, so
-        # this call never preflights and never refuses (#2006 fix round 2, M7 --
-        # the arm that used to be here was dead code). If `ls-files` ever leaves
-        # that allowlist, add one: falling back to a raw walk on a tree we just
-        # refused would be a silent downgrade.
+    except (OSError, subprocess.SubprocessError) as exc:
+        said = os.fsdecode(getattr(exc, "stderr", None) or b"").strip()
+        detail = said.splitlines()[0] if said else "%s: %s" % (type(exc).__name__, exc)
+        if "not a git repository" in detail:
+            if not os.path.lexists(os.path.join(repo, ".git")):
+                return None                # no .git entry: not a worktree
+            # A `.git` git will not open; never echo git's text: it names the gitdir.
+            detail = "a .git entry is present but git does not read this tree as a repository"
+        print("panopticon: the target's Git listing FAILED (%s); discovery falls back "
+              "to a raw walk, which does NOT honour the target's .gitignore -- this "
+              "run's surface may be far larger than the target's own" % detail, file=sys.stderr)
+        if info is not None:
+            info["git_failure"] = detail
         return None
     return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
 
@@ -961,21 +974,21 @@ def _is_confined_regular(repo, rel):
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
     """Apply the discovery policy to a candidate path list.
 
-    Shared by both discovery methods so the git listing gets the same
-    treatment the walk gives: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every
-    ancestor segment (a repo that TRACKS node_modules still shouldn't review
-    it), the targeted dot-dir policy, the fixture-corpus pruning (#434,
-    recorded in ``pruned_fixtures`` for disclosure), and — git path only in
-    practice — dropping anything with a ``.git`` segment: a gitlink or
-    nested-repo artifact is never a reviewable file (#500 saw
-    ``design-system/.git`` leak into group lists). ``isfile`` is injected so
-    the pure filtering logic stays unit-testable; on the git path it also
-    drops gitlink directory entries and index entries deleted from disk.
+    Shared by both discovery methods so the git listing gets the same treatment
+    the walk gives: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every ancestor segment (a
+    repo that TRACKS node_modules still shouldn't review it), the one
+    ``dot_paths.allowed`` policy, the fixture-corpus pruning (#434, recorded in
+    ``pruned_fixtures`` for disclosure), and — git path only in practice —
+    dropping anything with a ``.git`` segment: a gitlink or nested-repo artifact is
+    never a reviewable file (#500 saw ``design-system/.git`` leak into group
+    lists). ``isfile`` is injected so the pure filtering logic stays unit-testable;
+    on the git path it also drops gitlink directory entries and index entries
+    deleted from disk.
     """
     out = []
     for rel in sorted(set(paths)):
         parts = rel.split("/")
-        if ".git" in parts:
+        if ".git" in parts or not dot_paths.allowed(rel):
             continue
         skip = False
         for j, seg in enumerate(parts[:-1]):
@@ -983,22 +996,12 @@ def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
             if _is_excluded_dir(seg):
                 skip = True
                 break
-            if seg.startswith(".") and not _on_allowed_dotdir_path(prefix):
-                skip = True
-                break
             if not include_fixtures and _is_fixture_dir(prefix):
                 if pruned_fixtures is not None and prefix not in pruned_fixtures:
                     pruned_fixtures.append(prefix)
                 skip = True
                 break
-        if skip:
-            continue
-        # Root-level dotfiles follow the walk's policy: excluded unless inside
-        # an allowlisted subtree.
-        if len(parts) == 1 and parts[0].startswith(".") \
-                and not _on_allowed_dotdir_path(rel):
-            continue
-        if not isfile(rel):
+        if skip or not isfile(rel):
             continue
         out.append(rel)
     return out
@@ -1009,21 +1012,19 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
 
     Git targets: the listing comes from ``git ls-files`` so the target's own
     .gitignore defines the surface (#500); non-git targets fall back to an
-    os.walk that prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS and skips
-    dot-directories EXCEPT the targeted ALLOWED_DOTDIR_SUBTREES
-    (e.g. .github/workflows). Both methods share ``_filter_reviewable``'s
-    policy; ``info`` (a dict, when supplied) records which ``method`` ran so
-    the artifact can disclose it.
+    os.walk that prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS and asks
+    ``dot_paths.allowed`` about every dot-path, exactly as the git filter does.
+    ``info`` (a dict, when supplied) records which ``method`` ran, and any
+    ``git_failure`` behind a fallback, so the artifact can disclose both.
 
     Unless ``include_fixtures`` (redteam), test-fixture corpus roots
-    (``_is_fixture_dir``) are pruned too; each pruned root is appended to
-    ``pruned_fixtures`` when a list is supplied so the caller can disclose
-    the exclusion rather than let it pass silently.
+    (``_is_fixture_dir``) are pruned too, each appended to ``pruned_fixtures``
+    when a list is supplied so the caller can disclose the exclusion.
 
     Both methods return at most ``DISCOVERED_FILES_MAX`` paths (#1576), with
     the count and any truncation recorded on ``info`` for the artifact.
     """
-    listed = _git_listed_files(repo)
+    listed = _git_listed_files(repo, info)
     if listed is not None:
         if info is not None:
             info["method"] = "git-ls-files"
@@ -1041,7 +1042,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
             if _is_excluded_dir(dn):
                 continue
             child = f"{rel_dir}/{dn}" if rel_dir else dn
-            if dn.startswith(".") and not _on_allowed_dotdir_path(child):
+            if not dot_paths.allowed(child, isdir=True):
                 continue
             if not include_fixtures and _is_fixture_dir(child):
                 if pruned_fixtures is not None:
@@ -1051,9 +1052,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
         dirnames[:] = kept
         for fn in filenames:
             rel = f"{rel_dir}/{fn}" if rel_dir else fn
-            top = rel.split("/", 1)[0]
-            # Files under a dot-dir top are surfaced only inside an allowlisted subtree.
-            if top.startswith(".") and not _on_allowed_dotdir_path(rel):
+            if not dot_paths.allowed(rel):
                 continue
             if _is_confined_regular(repo, rel):
                 out.append(rel)
@@ -1078,7 +1077,8 @@ def _discovery_block(info):
     """
     return {"method": info.get("method"),
             "files_seen": info.get("files_seen", 0),
-            "files_truncated": info.get("files_truncated", 0)}
+            "files_truncated": info.get("files_truncated", 0),
+            "git_failure": info.get("git_failure")}
 
 
 def _group_obj(name, files, security_mode, parent=None, chunk_of=None):

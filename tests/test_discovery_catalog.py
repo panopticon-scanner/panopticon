@@ -1,4 +1,5 @@
 """Catalog, glob semantics, group objects, and assign-by-catalog tests."""
+import contextlib
 import io
 import os
 import subprocess
@@ -7,10 +8,14 @@ import tempfile
 import unittest
 from unittest import mock
 
+import yaml
+
+import scripts.coverage_model as coverage_model
+import scripts.dot_paths as dot_paths
 import scripts.groups_schema as groups_schema
 
 from tests.discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
-                                    run_scan_helper)
+                                    run_scan_helper, git_cmd, init_repo)
 
 
 class TestGlobSemantics(unittest.TestCase):
@@ -1045,3 +1050,323 @@ class TestGithubTopLevelFilesAreClaimed(unittest.TestCase):
         self.assertIsNone(self._cat("labels.yml"))
         self.assertIsNone(self._cat("src/labels.yml"))
         self.assertIsNone(self._cat(".github/nested/dir/thing.yml"))
+
+
+def _yaml_strings(node):
+    """Every string in a parsed YAML document, keys included, at any depth."""
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        node = list(node.keys()) + list(node.values())
+    if isinstance(node, list):
+        return [found for value in node for found in _yaml_strings(value)]
+    return []
+
+
+def _sample_for(pattern):
+    """One concrete repo-relative path the gitignore-flavored `pattern` matches.
+
+    `**` becomes one ordinary segment (plus a leaf when the pattern ends there,
+    since `**` crosses segments), `*` and `?` become literals. Every sample is
+    asserted against `discovery._glob_to_re` before it is used, so a synthesizer
+    that stopped matching cannot quietly weaken the guard below.
+    """
+    parts = ["deep" if segment == "**" else
+             segment.replace("*", "x").replace("?", "y")
+             for segment in pattern.split("/")]
+    if pattern.endswith("/**") or pattern == "**":
+        parts.append("leaf.yml")
+    return "/".join(parts)
+
+
+def _kept_by_both(paths):
+    """(walk, git-listing filter) verdicts for one tree holding `paths`.
+
+    The tree is real and the listing is the same set, so the two branches of
+    `discover_repo_files` are compared on identical input -- the only way to
+    see them disagree (ARC-1940929242: they did, on `.github/*`).
+
+    The walk arm is asserted to have WALKED. `discover_repo_files` asks
+    `_git_listed_files` first, so if the temp tree were ever read as a git
+    worktree this helper would run the git path twice and every caller would
+    keep passing while comparing one path with itself -- a guard whose two
+    branches can quietly become one is the defect shape this PR fixes.
+    """
+    info = {}
+    with tempfile.TemporaryDirectory() as root:
+        for rel in sorted(paths):
+            full = os.path.join(root, *rel.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+        walked = set(orchestrator.discover_repo_files(root, info=info))
+    if info.get("method") != "walk":
+        raise AssertionError(
+            "the walk arm did not walk (method=%r): this comparison is the git "
+            "path against itself, and every parity assertion below is vacuous"
+            % info.get("method"))
+    listed = set(orchestrator._filter_reviewable(
+        sorted(paths), False, None, isfile=lambda rel: True))
+    return walked, listed
+
+
+class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
+    """#1784/#1771 (ARC-124841687 HIGH, ARC-1940929242): the shipped catalogs
+    and the deterministic SEC floor claimed dot-paths discovery threw away.
+
+    `.circleci/config.yml`, `.github/actions/**`, `.env`, `.npmrc`,
+    `.pre-commit-config.yaml` and 70 more were claimed by
+    `skill/data/commons_catalog.yml` or keyed the SEC floor, and the policy was
+    `(".github/workflows",)` plus a blanket skip of every other root dot-path.
+    A file discovery never returns is never `Ungrouped` either, so nothing
+    reported the gap -- #1508 and #1838 both rest on claims that could not fire.
+
+    Owner ruling 2026-09-27: WIDEN the allowlist (pruning the claims was
+    rejected). So both enumerations are read FROM the shipped files here: a
+    claim discovery cannot surface fails in the PR that adds it.
+    """
+
+    DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "skill", "data")
+
+    # The dot-leading SEC-floor hints that name a path at the repository ROOT,
+    # each with the canonical file that satisfies it. `_any_hint` matches a hint
+    # as a substring of "/" + path and is asserted on every row below, so a
+    # sample that stopped satisfying its hint cannot pass.
+    ROOT_HINT_FILES = {
+        ".buildkite/": ".buildkite/pipeline.yml",
+        ".circleci": ".circleci/config.yml",
+        ".devcontainer/": ".devcontainer/devcontainer.json",
+        ".dockerignore": ".dockerignore",
+        ".drone.yaml": ".drone.yaml",
+        ".drone.yml": ".drone.yml",
+        ".env": ".env",
+        ".github/actions/": ".github/actions/build/action.yml",
+        ".github/workflows/": ".github/workflows/ci.yml",
+        ".gitlab-ci": ".gitlab-ci.yml",
+        ".htaccess": ".htaccess",
+        ".netrc": ".netrc",
+        ".npmrc": ".npmrc",
+        ".pgpass": ".pgpass",
+        ".pre-commit-config.yaml": ".pre-commit-config.yaml",
+        ".travis.yaml": ".travis.yaml",
+        ".travis.yml": ".travis.yml",
+    }
+    # The rest mark an ORDINARY file's extension and need no dot-path at all
+    # (`src/key.pem`). The split is explicit and exhaustive so a new hint has to
+    # be classified rather than land silently unguarded.
+    EXTENSION_HINTS = frozenset({
+        ".asc", ".csproj", ".gemspec", ".jks", ".key", ".keystore", ".mk",
+        ".orm", ".p12", ".pem", ".pfx", ".prisma", ".sln", ".sql", ".tf",
+    })
+
+    def _catalog_dot_globs(self):
+        found = set()
+        for name in sorted(os.listdir(self.DATA_DIR)):
+            if not name.endswith(".yml"):
+                continue
+            with open(os.path.join(self.DATA_DIR, name), encoding="utf-8") as fh:
+                found.update(text for text in _yaml_strings(yaml.safe_load(fh))
+                             if text.startswith("."))
+        return sorted(found)
+
+    def _dot_floor_hints(self):
+        """Every dot-leading hint the deterministic SEC floor keys on."""
+        return sorted(hint for hint in coverage_model._SEC_FILE_HINTS
+                      if hint.startswith("."))
+
+    def test_every_allowlist_entry_is_named_by_a_catalog_glob_or_a_floor_hint(self):
+        """The REVERSE direction, and the ruling's "and no further" half.
+
+        Every other test here proves a claim REACHES a kept file; none proves
+        that an allowlist entry is claimed at all, so a widened entry -- the
+        drift direction that ends in "allow every dot-path" -- used to pass the
+        whole file. A `DIRS` entry must be a dot-path some glob or hint names or
+        reaches into; a `FILES` entry must be matched by a glob or BE a hint --
+        equal to it, or extending it past a dot (`.env.local` for `.env`), never a
+        bare substring (`.mkdocs.yml` must not ride on `.mk`); a stem must begin
+        one of them.
+        """
+        globs, hints = self._catalog_dot_globs(), self._dot_floor_hints()
+        claims = globs + hints
+        unjustified = []
+        for entry in sorted(dot_paths.DIRS):
+            if not any(c == entry or c.startswith(entry + "/") for c in claims):
+                unjustified.append("DIRS %s" % entry)
+        for entry in sorted(dot_paths.FILES):
+            if not (any(orchestrator._glob_to_re(c).match(entry) for c in globs)
+                    or any(entry == hint or entry.startswith(hint + ".")
+                           for hint in hints)):
+                unjustified.append("FILES %s" % entry)
+        for entry in dot_paths.FILE_STEMS:
+            if not any(c.startswith(entry) for c in claims):
+                unjustified.append("FILE_STEMS %s" % entry)
+        self.assertEqual([], unjustified,
+                         "%d dot-path allowlist entr(ies) no shipped catalog glob "
+                         "and no SEC-floor hint names -- the ruling widened to "
+                         "exactly what those two enumerations say and NO further, "
+                         "so either a catalog claims it or it comes out:\n  %s"
+                         % (len(unjustified), "\n  ".join(unjustified)))
+
+    def test_every_dot_leading_catalog_glob_reaches_a_file_both_paths_keep(self):
+        patterns = self._catalog_dot_globs()
+        self.assertGreater(len(patterns), 60,
+                           "the shipped-catalog enumeration collapsed: %s" % patterns)
+        samples = {}
+        for pattern in patterns:
+            sample = _sample_for(pattern)
+            self.assertTrue(orchestrator._glob_to_re(pattern).match(sample),
+                            "%r is not a sample of %r" % (sample, pattern))
+            samples[pattern] = sample
+        walked, listed = _kept_by_both(set(samples.values()))
+        unreachable = sorted("%s (claimed as %s) -- %s" % (
+            sample, pattern,
+            "dropped by both paths" if sample not in walked | listed else
+            "walk=%s git=%s" % (sample in walked, sample in listed))
+            for pattern, sample in samples.items()
+            if sample not in walked or sample not in listed)
+        self.assertEqual([], unreachable,
+                         "%d shipped catalog claim(s) discovery cannot surface -- "
+                         "a file it never returns is never Ungrouped either, so "
+                         "nothing else reports this:\n  %s"
+                         % (len(unreachable), "\n  ".join(unreachable)))
+
+    def test_the_dot_leading_sec_floor_hints_are_classified_exhaustively(self):
+        dotted = set(self._dot_floor_hints())
+        self.assertEqual(
+            dotted, set(self.ROOT_HINT_FILES) | self.EXTENSION_HINTS,
+            "a dot-leading SEC-floor hint is unclassified: say whether it names "
+            "a path at the repository root (and give the file that satisfies "
+            "it) or an ordinary file's extension")
+        self.assertEqual(set(), set(self.ROOT_HINT_FILES) & self.EXTENSION_HINTS)
+
+    def test_every_root_anchored_sec_floor_hint_reaches_a_file_both_paths_keep(self):
+        for hint, sample in self.ROOT_HINT_FILES.items():
+            self.assertTrue(coverage_model._any_hint([sample], (hint,)),
+                            "%r does not satisfy the floor hint %r" % (sample, hint))
+        walked, listed = _kept_by_both(set(self.ROOT_HINT_FILES.values()))
+        unreachable = sorted("%s (floor hint %s)" % (sample, hint)
+                             for hint, sample in self.ROOT_HINT_FILES.items()
+                             if sample not in walked or sample not in listed)
+        self.assertEqual([], unreachable,
+                         "the deterministic SEC floor keys on file(s) discovery "
+                         "never surfaces, so no group can draw SEC from them:\n  %s"
+                         % "\n  ".join(unreachable))
+
+    def test_every_extension_sec_floor_hint_rides_an_ordinary_file(self):
+        samples = {hint: "src/thing" + hint for hint in sorted(self.EXTENSION_HINTS)}
+        for hint, sample in samples.items():
+            self.assertTrue(coverage_model._any_hint([sample], (hint,)), hint)
+        walked, listed = _kept_by_both(set(samples.values()))
+        self.assertEqual(set(samples.values()), walked & listed)
+
+
+class TestBothDiscoveryPathsShareOneDotPolicy(unittest.TestCase):
+    """ARC-1940929242: `_filter_reviewable` tested each ancestor DIRECTORY and
+    the walk tested the WHOLE file path, so every file directly under
+    `.github/` was reviewable surface on a git target and invisible on a
+    non-git one -- while two docstrings said both methods shared one policy.
+    One tree, both branches, one asserted set.
+    """
+
+    KEPT = (
+        ".github/workflows/ci.yml",         # the 5.1 policy, unchanged
+        ".github/labels.yml",               # #1508's claim; git-only before
+        ".github/actions/a/action.yml",     # SEC floor hint; git-only before
+        ".circleci/config.yml",             # dropped by BOTH paths before
+        ".env", ".npmrc",                   # secret-bearing, floor hints
+        "config/.env",                      # nested dotfile: unchanged
+        "a/b/.npmrc",                       # nested dotfile: unchanged
+        "src/app.py",
+    )
+    PRUNED = (
+        ".git/HEAD",                        # VCS internals
+        ".venv/lib/x.py", ".tox/py/x.py",   # dependency / tool trees
+        ".mypy_cache/x.json", ".pytest_cache/x.json",
+        "node_modules/p/index.js",
+        ".DS_Store",                        # unclaimed root dotfile
+        ".eslintcache",                     # generated tool state, claimed by
+                                            # nothing: the `.mypy_cache` class
+        ".hidden/secret.py",                # unclaimed root dot-directory
+        ".panopticon/groups.json",          # this project's own run artifacts
+        "a/.hidden/x.py",                   # nested dot-directory: unchanged
+    )
+
+    def test_the_two_paths_return_exactly_the_same_set(self):
+        walked, listed = _kept_by_both(self.KEPT + self.PRUNED)
+        self.assertEqual(walked, listed,
+                         "the walk and the git listing disagree: walk-only %s, "
+                         "git-only %s" % (sorted(walked - listed),
+                                          sorted(listed - walked)))
+        self.assertEqual(set(self.KEPT), walked)
+
+    def test_the_noise_classes_stay_pruned_on_both_paths(self):
+        walked, listed = _kept_by_both(self.KEPT + self.PRUNED)
+        for rel in self.PRUNED:
+            with self.subTest(path=rel):
+                self.assertNotIn(rel, walked)
+                self.assertNotIn(rel, listed)
+
+
+class TestGitListingFailureIsNamed(unittest.TestCase):
+    """ARC-1940929242: `_git_listed_files` swallowed a bare `Exception` into
+    `None` and the caller then WALKED -- which stops honouring the target's own
+    .gitignore, the surface policy #500 exists for (a raw walk swept 17,253
+    files on a repo whose git surface was 528). "Not a git worktree" and "git
+    failed on a worktree" reached the caller as the same `None`, so a git
+    failure silently reviewed a different tree than the operator asked for.
+    The scan still runs -- the fallback is the point -- but it is named.
+    """
+
+    def test_a_plain_directory_is_not_a_worktree_and_says_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            info, err = {}, io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(orchestrator._git_listed_files(d, info))
+            self.assertEqual("", err.getvalue())
+            self.assertNotIn("git_failure", info)
+
+    def test_a_worktree_whose_gitlink_dangles_is_disclosed_without_the_path(self):
+        # A `.git` entry IS present, so the operator asked to scan a worktree and
+        # got a raw walk -- but git's sentence for this one failure is
+        # `fatal: not a git repository: <gitdir>`, which the substring test
+        # cannot separate from a plain non-git directory. Disclosed in the
+        # module's own words: the target-authored path never reaches stderr.
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            with open(os.path.join(d, ".git"), "w", encoding="utf-8") as fh:
+                fh.write("gitdir: /nonexistent/elsewhere\n")
+            info, err = {}, io.StringIO()
+            with contextlib.redirect_stderr(err):
+                files = orchestrator.discover_repo_files(d, info=info)
+        disclosure = err.getvalue()
+        self.assertIn("does not read this tree as a repository", disclosure)
+        self.assertNotIn("/nonexistent/elsewhere", disclosure)
+        self.assertNotIn("fatal", disclosure)
+        self.assertIn("src/app.py", files)               # the walk still ran
+        self.assertEqual("walk", info["method"])
+        self.assertIn("does not read this tree as a repository",
+                      info.get("git_failure") or "")
+        self.assertNotIn("/nonexistent/elsewhere", info["git_failure"])
+
+    def test_a_worktree_whose_git_fails_is_disclosed_and_still_walked(self):
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            init_repo(d)
+            git_cmd(d, "add", "-A")
+            git_cmd(d, "commit", "-qm", "init")
+            with open(os.path.join(d, ".git", "index"), "wb") as fh:
+                fh.write(b"not an index")     # a worktree whose git now fails
+            info, err = {}, io.StringIO()
+            with contextlib.redirect_stderr(err):
+                files = orchestrator.discover_repo_files(d, info=info)
+        disclosure = err.getvalue()
+        self.assertIn("git", disclosure.lower())
+        self.assertIn(".gitignore", disclosure)
+        self.assertIn("src/app.py", files)               # the walk still ran
+        self.assertEqual("walk", info["method"])
+        self.assertTrue(info.get("git_failure"), disclosure)
+        self.assertNotIn("not a git repository", info["git_failure"])
+        self.assertEqual(info["git_failure"],
+                         orchestrator._discovery_block(info)["git_failure"])

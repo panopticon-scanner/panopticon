@@ -56,8 +56,8 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
 
 
 class TestRepoScanDiscovery(unittest.TestCase):
-    """Discovery-gap regressions for --repo-scan: noise exclusion, targeted
-    dotdir inclusion (.github/workflows), and real test-file surfacing."""
+    """Discovery-gap regressions for --repo-scan: noise exclusion, the shipped
+    dot-path allowlist (#1784), and real test-file surfacing."""
 
     def _touch(self, root, rel, content=""):
         touch(root, rel, content)
@@ -129,9 +129,12 @@ class TestRepoScanDiscovery(unittest.TestCase):
                 "tests/__pycache__/test_foo.cpython-311.pyc", all_grouped
             )  # pycache artifact must not stand in for the source
 
-    def test_repo_scan_dotdir_inclusion_is_targeted(self):
-        # Regression guard: only .github/workflows is pulled in; other dotdirs
-        # (.git, non-workflow .github paths, arbitrary hidden dirs) stay noise.
+    def test_repo_scan_dotdir_inclusion_is_the_shipped_allowlist(self):
+        # #1784/#1771 (owner ruling 2026-09-27): the policy was
+        # `(".github/workflows",)` plus a blanket skip, and the shipped catalogs
+        # claim `.github/**` and 73 more dot-leading globs -- so the whole of an
+        # allowlisted dot-directory is surface now. What is NOT allowlisted
+        # still is not: .git, and an arbitrary hidden directory no catalog names.
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")
             self._touch(d, ".git/config")
@@ -140,12 +143,9 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, ".hidden/secret.py")
             out = run_scan(d)
             all_grouped = grouped(out)
-            for hidden in [
-                ".git/config",
-                ".github/CODEOWNERS",
-                ".github/ISSUE_TEMPLATE/bug.md",
-                ".hidden/secret.py",
-            ]:
+            for claimed in [".github/CODEOWNERS", ".github/ISSUE_TEMPLATE/bug.md"]:
+                self.assertIn(claimed, all_grouped, claimed)
+            for hidden in [".git/config", ".hidden/secret.py"]:
                 self.assertNotIn(hidden, all_grouped, hidden)
 
 

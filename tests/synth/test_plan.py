@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import scripts.findings_contract as findings_contract
+import scripts.plan_contract as plan_contract
 import scripts.synthesize as syn
 import scripts.ingest_tools as ingest_tools
 import scripts.synth.findings as findings_mod
@@ -220,34 +221,23 @@ class TestPresentCells(unittest.TestCase):
         self.assertEqual(coverage_io.present_cells(None), {})
 
 class TestToolPolicyMode(unittest.TestCase):
-    def _write_plan(self, d, flags):
-        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-        plan = [{"role": "panel_review", "enforced": f} for f in flags]
-        with open(os.path.join(d, ".panopticon", "dispatch-plan.json"), "w") as fh:
+    def _write_plan(self, run_dir, flags):
+        plan = [{"group": "g%d" % index, "domain": "COD", "enforced": flag,
+                 "out_file": os.path.join(run_dir, "findings-g%d-COD.json" % index)}
+                for index, flag in enumerate(flags)]
+        self.assertEqual(plan_contract.driver_plan_issues(plan), [])
+        with open(os.path.join(run_dir, plan_mod.DRIVER_DISPATCH_PLAN), "w",
+                  encoding="utf-8") as fh:
             json.dump(plan, fh)
 
-    def test_all_enforced(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write_plan(d, [True, True])
-            self.assertEqual(
-                plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "enforced"
-            )
-
-    def test_none_enforced(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write_plan(d, [False, False])
-            self.assertEqual(
-                plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "advisory"
-            )
-
-    def test_mixed(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write_plan(d, [True, False])
-            self.assertEqual(plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "mixed")
-
-    def test_no_plan_files_is_unknown(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "unknown")
+    def test_policy_modes(self):
+        cases = (([True, True], "enforced"), ([False, False], "advisory"),
+                 ([True, False], "mixed"), (None, "unknown"))
+        for flags, expected in cases:
+            with self.subTest(mode=expected), tempfile.TemporaryDirectory() as run_dir:
+                if flags is not None:
+                    self._write_plan(run_dir, flags)
+                self.assertEqual(plan_mod.derive_tool_policy_mode(run_dir), expected)
 
     def test_report_meta_carries_mode_and_new_version(self):
         f = _agentic()
@@ -286,32 +276,6 @@ class TestToolsRanFromDispositions(unittest.TestCase):
                          {"bandit", "gitleaks"})
         self.assertEqual(tool_axis_mod.tools_produced_from_dispositions(dispositions),
                          {"bandit", "gitleaks", "semgrep"})
-
-class TestToolPolicyModeUnknown(unittest.TestCase):
-    def _plan(self, d, entries):
-        import json as _json
-
-        with open(os.path.join(d, "dispatch-plan.json"), "w") as fh:
-            _json.dump(entries, fh)
-
-    def test_no_plan_is_unknown(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "unknown")
-
-    def test_plan_with_no_enforced_entries_is_advisory(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._plan(d, [{"role": "panel_review", "enforced": False}])
-            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "advisory")
-
-    def test_all_enforced_is_enforced(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._plan(d, [{"enforced": True}, {"enforced": True}])
-            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "enforced")
-
-    def test_some_enforced_is_mixed(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._plan(d, [{"enforced": True}, {"enforced": False}])
-            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "mixed")
 
 class TestDriverPlanReconcile(unittest.TestCase):
     """Reconcile must run over the plan the pipeline ACTUALLY writes, and must
@@ -652,9 +616,7 @@ class PlanLoadersTest(unittest.TestCase):
 
     def test_ingest_tool_findings_without_tools_dir_is_not_measured(self):
         with tempfile.TemporaryDirectory() as d:
-            cwd = os.getcwd()
-            try:
-                os.chdir(d)
+            with _chdir(d):
                 # no .panopticon/tools -> silent
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
@@ -676,8 +638,6 @@ class PlanLoadersTest(unittest.TestCase):
                 self.assertEqual(
                     plan_mod.ingest_tool_findings(_cli_args(tools_dir=os.path.join(d, "no")))[2],
                     None)
-            finally:
-                os.chdir(cwd)
 
     def test_ingest_tool_findings_with_an_empty_tools_dir_measures_nothing_ran(self):
         with tempfile.TemporaryDirectory() as d:
