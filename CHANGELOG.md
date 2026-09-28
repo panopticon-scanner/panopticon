@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reuse the published report schema location in tests (#2297, #1821).** Split-report,
+  parity and verdict-binding checks use the validator's reference directory and schema name.
 - **SpotBugs findings cite the CWE SpotBugs or FindSecBugs assigns to the pattern (#1795;
   COD-1501398192).** `_SPOTBUGS_CWE` was a hand-written table of seven bug patterns; one of
   them, HARDCODED_KEY, named a pattern neither vendor has ever emitted, so a suppressed
