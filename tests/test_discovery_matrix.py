@@ -727,6 +727,21 @@ class TestOneOwnerForTheCommittedConfig:
             reasons = setup_flow.config_refusal(repo)
             assert any(message in reason for reason in reasons), body
 
+    NOT_REFUSED = (
+        LEGACY_LIST_CONFIG,                                  # a disclosure, not a fault
+        "version: 1\ngroups: {}\n",                          # nothing committed yet
+        "version: 1\ngroups:\n  API:\n    match: ['src/**']\n  UI:\n    Web:\n"
+        "      match: ['ui/**']\n      panels: [SEC]\nexclude_paths: ['vendor/**']\n",
+    )
+
+    def test_config_refusal_does_not_refuse_what_the_schema_accepts(self, tmp_path, capsys):
+        # The widening is otherwise pinned by negative probes alone, and a
+        # refusal that fires on a good config costs the operator the verb.
+        for index, text in enumerate(self.NOT_REFUSED):
+            repo = _case_repo(tmp_path, "accepted%d" % index, text)
+            assert setup_flow.config_refusal(repo) == [], text
+            capsys.readouterr()
+
     NOT_ROUND_TRIPPED = (
         # (authored `groups:` block, the top-level id whose authored body does
         # not survive the read)
