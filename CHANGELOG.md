@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard names the step it cannot read, and refuses a heredoc delimiter bash
+  must parse (#1793).** A `shell_lex.Unreadable` escaped `main` as a traceback that named no
+  step and hid every other step's defect (#2252); it is now that step's defect. A delimiter
+  bash parses to spell (`<<$(...)`) was read as code, so a quote left open in its body hid the
+  payload after the terminator (#2224); the reader now refuses it, naming the word.
+  A `\`-newline before the word no longer reads as an empty delimiter, which hid the payload.
+  A `<<`, `<<-` or `<<<` split by a `\`-newline reads as the one operator bash makes (#2291).
+  The closing count says "N defect(s)" where it said "N unverified fetch-and-exec step(s)".
 - **SpotBugs findings cite the CWE SpotBugs or FindSecBugs assigns to the pattern (#1795;
   COD-1501398192).** `_SPOTBUGS_CWE` was a hand-written table of seven bug patterns; one of
   them, HARDCODED_KEY, named a pattern neither vendor has ever emitted, so a suppressed
