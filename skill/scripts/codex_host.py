@@ -100,6 +100,24 @@ def safety_config():
     }
 
 
+def _shell_dir(registration_dir):
+    """The directory the registered shells are read from: the caller's, else
+    the codex row's. An empty value is none given, as in the codex probes and
+    in emission: as a path it would name the cwd.
+
+    COD-1638371699: under a relative CODEX_HOME the row has no directory, only
+    `registration_refusal` (`hosts.codex_home`), and that sentence is raised
+    as this module's refusal, `ValueError`. Resolving the row's value against
+    the cwd would read the reviewed tree instead, in the documented flow.
+    """
+    if registration_dir:
+        return registration_dir
+    row = hosts.spec("codex")
+    if row.registration_refusal:
+        raise ValueError(row.registration_refusal)
+    return row.registration_dir
+
+
 def _shell(entry, registration_dir):
     agent = entry.get("agent")
     if not agent:
@@ -116,8 +134,7 @@ def _shell(entry, registration_dir):
         return safety_config()
     if not isinstance(agent, str) or not re.fullmatch(r"panopticon-[a-z0-9-]+", agent):
         raise ValueError("invalid Codex registered shell name")
-    directory = registration_dir if registration_dir is not None else hosts.spec("codex").registration_dir
-    path = Path(directory) / (agent + ".toml")
+    path = Path(_shell_dir(registration_dir)) / (agent + ".toml")
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
@@ -154,11 +171,11 @@ def require_registered_shells(registration_dir=None):
     unproven, which sets `entry["agent"] = None` for every entry -- the loop
     produced three failed launches per entry and an `error` naming the entry
     rather than the remedy. The runner calls this from `prepare`, so the
-    operator gets one refusal naming the command that fixes it.
+    operator gets one refusal naming the command that fixes it -- or, under a
+    relative CODEX_HOME, the variable that does (`_shell_dir`).
     """
     from scripts import dispatch
-    directory = (registration_dir if registration_dir is not None
-                 else hosts.spec("codex").registration_dir)
+    directory = _shell_dir(registration_dir)
     missing = sorted(
         dispatch.registered_agent_filename("codex", role_file)
         for role_file in dispatch.ROLE_FILES.values()

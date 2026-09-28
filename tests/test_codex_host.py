@@ -1,5 +1,6 @@
 """Policy/transport fixtures only: never run a host binary or open a socket."""
 import copy
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -523,10 +524,72 @@ def test_registered_shell_preflight_checks_every_role_and_sorted_missing_names(t
     assert ", ".join(filenames[:2]) in message
     assert codex_host.REGISTER_REMEDY in message
 
-    spec = SimpleNamespace(registration_dir=str(registered), shell_format="toml")
+    spec = SimpleNamespace(registration_dir=str(registered), registration_refusal="",
+                           shell_format="toml")
     monkeypatch.setattr(codex_host.hosts, "spec", lambda host: spec if host == "codex" else None)
     with pytest.raises(ValueError, match="2 registered shell"):
         codex_host.require_registered_shells()
+
+
+def _refused_codex_home(tmp_path, monkeypatch):
+    """The codex row as `CODEX_HOME=.` leaves it (COD-1638371699), in a cwd
+    that ships the reviewed tree's own shells under `agents/`.
+
+    The row's directory is patched to `./agents`, where that value pointed
+    before the fix, so a consumer that read the directory instead of the
+    refusal would find the planted shells and load them."""
+    from scripts import dispatch
+
+    planted = tmp_path / "agents"
+    dispatch.emit_host_agents("codex", str(planted))
+    monkeypatch.chdir(tmp_path)
+    _home, refusal = codex_host.hosts.codex_home(".")
+    monkeypatch.setitem(codex_host.hosts.HOSTS, "codex", dataclasses.replace(
+        codex_host.hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
+        registration_refusal=refusal))
+    return planted, refusal
+
+
+def test_a_relative_codex_home_is_refused_before_the_trees_shells_are_read(tmp_path, monkeypatch):
+    # The runner's up-front check and the per-launch shell load both used to
+    # resolve the row's relative directory against the cwd -- in the
+    # documented flow, the reviewed tree -- so a target shipping
+    # `agents/panopticon-*.toml` passed the check and supplied every role's
+    # developer_instructions.
+    _planted, refusal = _refused_codex_home(tmp_path, monkeypatch)
+    assert refusal.startswith("CODEX_HOME must be an absolute path")
+    with pytest.raises(ValueError) as preflight:
+        codex_host.require_registered_shells()
+    assert str(preflight.value) == refusal
+    with pytest.raises(ValueError) as launch:
+        codex_host._shell({"id": "review-entry", "agent": "panopticon-domain-panel"}, None)
+    assert str(launch.value) == refusal
+    # The shell-less unenforced setup scan reads no registration, so it still
+    # launches off the confined policy alone, as on a fresh machine.
+    assert codex_host._shell({"id": "setup-scan", "agent": None}, None) == codex_host.safety_config()
+
+
+def test_an_explicit_registration_dir_still_works_under_a_refused_codex_home(tmp_path, monkeypatch):
+    planted, _refusal = _refused_codex_home(tmp_path, monkeypatch)
+    assert codex_host.require_registered_shells(str(planted)) is None
+    shell = codex_host._shell({"id": "review-entry", "agent": "panopticon-domain-panel"}, str(planted))
+    assert shell["developer_instructions"]
+
+
+def test_an_empty_registration_dir_is_none_given_not_the_cwd(tmp_path, monkeypatch):
+    # An explicit `""` is what a caller handing on the refused row's own
+    # directory would pass. As a path it names the cwd itself, so the shells
+    # are planted there too: taken as a directory, `""` would load them.
+    from scripts import dispatch
+
+    _planted, refusal = _refused_codex_home(tmp_path, monkeypatch)
+    dispatch.emit_host_agents("codex", str(tmp_path))
+    with pytest.raises(ValueError) as preflight:
+        codex_host.require_registered_shells("")
+    assert str(preflight.value) == refusal
+    with pytest.raises(ValueError) as launch:
+        codex_host._shell({"id": "review-entry", "agent": "panopticon-domain-panel"}, "")
+    assert str(launch.value) == refusal
 
 
 @pytest.mark.parametrize("result,diagnostic", [

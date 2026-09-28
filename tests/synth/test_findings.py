@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import scripts.phases.runio as runio
 
+import scripts.findings_contract as findings_contract
 import scripts.synthesize as syn
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
@@ -690,40 +691,40 @@ class TestLoadFindingsProvenanceScrub(unittest.TestCase):
         self.assertNotIn("confirmed_by", prov)
         self.assertEqual(prov.get("model"), "m")   # non-verification provenance kept
 
-class TestGroupReMatchesDispatchNames(unittest.TestCase):
+class TestCellNameMatchesDispatchNames(unittest.TestCase):
     def test_matches_names_actually_produced_by_the_driver(self):
         # #run10: build_plan retired with the 4.x roles, so the producer of
-        # findings filenames is now the driver's review-cell path. GROUP_RE must
-        # still parse the group out of what the pipeline ACTUALLY writes -- that
-        # is the invariant this guards, independent of which module emits it.
+        # findings filenames is now the driver's review-cell path. The cell
+        # parser must still read the group out of what the pipeline ACTUALLY
+        # writes -- that is the invariant this guards, independent of which
+        # module emits it. #1765: one parser answers for every reader, so this
+        # pins `findings_contract.cell_of` where it used to pin GROUP_RE.
 
         for group, domain in (("changes_1", "SEC"), ("Auth", "COD"),
                               ("Ungrouped_1", "TST")):
             base = os.path.basename(
                 runio._pano("/repo", "findings-%s-%s.json" % (group, domain)))
-            m = findings_mod.GROUP_RE.match(base)
-            self.assertIsNotNone(m, base)
-            self.assertEqual(m.group(1), group, base)
+            self.assertEqual(findings_contract.cell_of(base), [group, domain], base)
 
-    def test_still_matches_legacy_2x_names(self):
-        m = findings_mod.GROUP_RE.match("findings-changes_1-security.json")
-        self.assertIsNotNone(m)
-        self.assertEqual(m.group(1), "changes_1")
-
-    def test_matches_p4_domain_suffixed_names(self):
-        # P4 review cells: findings-<group>-<domain>.json, domain from
-        # groups_schema.DOMAINS (e.g. "SEC"), no further panel_review/lens_sweep
-        # suffix. GROUP_RE's axis alternation must include the domain codes.
-        m = findings_mod.GROUP_RE.match("findings-Auth-SEC.json")
-        self.assertIsNotNone(m)
-        self.assertEqual(m.group(1), "Auth")
+    def test_the_retired_4x_spellings_name_no_cell(self):
+        # ARC-3899903550 (#1765): GROUP_RE also accepted the 4.x panel names and
+        # their `-panel_review` / `-lens_sweep-<lens>` suffixes, so ingest
+        # stamped a `_group` on files no 5.x reader could place -- the mislabel
+        # guard, the floor audit and the coverage cells all read them as nothing
+        # at all. The roles retired in #1441 and `plan_contract` now pins every
+        # reviewer out_file to `findings-<group>-<domain>.json`, so the
+        # alternation is gone and these names identify no cell anywhere.
+        for name in ("findings-changes_1-security.json",
+                     "findings-g1-code-panel_review.json",
+                     "findings-g1-code-lens_sweep-style.json"):
+            self.assertIsNone(findings_contract.cell_of(name), name)
 
     def test_mislabel_check_parses_what_the_driver_actually_writes(self):
         # The #937 mislabel control went silently inert because ITS filename
         # regex was never re-pointed when the review-cell spelling changed: it
         # returned "nothing wrong" for every file a 5.x run can produce, and
         # five green tests said otherwise. Pin it to the real producer, the same
-        # way the GROUP_RE guard above does, so a future rename fails loudly
+        # way the cell-name guard above does, so a future rename fails loudly
         # here instead of quietly disarming an integrity check.
 
         for group, domain in (("changes_1", "SEC"), ("Auth", "COD"),
