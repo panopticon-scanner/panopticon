@@ -53,9 +53,11 @@ _PRIORITY_TO_CONFIDENCE = {
 # the adapter's own comment claimed it stayed matchable.
 #
 # These are the source roots Maven and Gradle put sources under, in the order a
-# project holding more than one wants them read: main before test, then a bare
-# `src`, then the target root itself for a layout that is already repo-relative.
-_SOURCE_ROOTS = ("src/main/java", "src/test/java", "src", "")
+# project holding more than one wants them read: main before test, Java before
+# Kotlin (this adapter covers both -- #2188), then a bare `src`, then the target
+# root itself for a layout that is already repo-relative.
+_SOURCE_ROOTS = ("src/main/java", "src/test/java",
+                 "src/main/kotlin", "src/test/kotlin", "src", "")
 
 # The one disclosure value: this finding's `location.file` is NOT a repo path,
 # so the report can say why the delta gate and the read grant could not place

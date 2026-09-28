@@ -16,8 +16,9 @@ evidence exposed.
   `role="METHOD_CALLED"` one names the CALLEE's file, a JDK source in no repository. The
   `sourcepath` beside it is relative to the SOURCE root (`org/dummy/App.java`), never the repo, so
   on a Maven or Gradle layout it matched no diff hunk and no read grant while the adapter's own
-  comment claimed it stayed matchable; it is resolved against the target root by probing
-  `src/main/java`, `src/test/java`, `src` and the root itself, refusing an absolute or `..`
+  comment claimed it stayed matchable; it is resolved against the target root by probing the
+  conventional Maven/Gradle source roots — `src/main/java`, `src/test/java`, `src/main/kotlin`,
+  `src/test/kotlin`, `src`, then the root itself — refusing an absolute or `..`
   sourcepath outright and refusing to follow a symlink out of the tree
   (`claim_scope.confined_to_root`, not a fourth copy of it). When nothing resolves the package path
   is kept and the finding says why in `tool_evidence.path_resolution`, so an unplaceable location

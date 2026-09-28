@@ -375,14 +375,26 @@ class TestSourcePathResolvesAgainstTheTargetRoot(unittest.TestCase):
         self.assertEqual("src/main/java/" + self.SOURCEPATH, f["location"]["file"])
         self.assertNotIn("path_resolution", f["tool_evidence"])
 
+    # Review finding 4: the module is the "Java/Kotlin" adapter and #2188's own
+    # triage list asks for the Kotlin roots. The probe never looks at an
+    # extension, so these cases differ only in the layout they exercise.
+    KOTLIN_SOURCEPATH = "org/dummy/App.kt"
+
+    ROOT_CASES = (("src/main/java", SOURCEPATH),
+                  ("src/test/java", SOURCEPATH),
+                  ("src/main/kotlin", KOTLIN_SOURCEPATH),
+                  ("src/test/kotlin", KOTLIN_SOURCEPATH),
+                  ("src", SOURCEPATH),
+                  ("", SOURCEPATH))
+
     def test_every_conventional_source_root_is_probed(self):
-        for prefix in ("src/main/java", "src/test/java", "src", ""):
+        for prefix, sourcepath in self.ROOT_CASES:
             with self.subTest(source_root=prefix or "<target root>"):
-                relative = ("%s/%s" % (prefix, self.SOURCEPATH)) if prefix else self.SOURCEPATH
+                relative = ("%s/%s" % (prefix, sourcepath)) if prefix else sourcepath
                 with TemporaryDirectory() as root:
                     self._write(root, relative)
                     self._pin_root(root)
-                    f = self._parse_one(self.SOURCEPATH)
+                    f = self._parse_one(sourcepath)
                 self.assertEqual(relative, f["location"]["file"])
                 self.assertNotIn("path_resolution", f["tool_evidence"])
 
