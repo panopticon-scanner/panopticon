@@ -15,6 +15,7 @@ import scripts.diff_map as diff_map
 import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.run_tools as run_tools
+import scripts.tool_capture as tool_capture
 import scripts.runners.base as runner_base
 from scripts.run_tools import docker_available as REAL_DOCKER_AVAILABLE
 
@@ -535,7 +536,7 @@ class TestDockerBoundary(unittest.TestCase):
                 calls.append(list(cmd))
                 return Result()
 
-            run_tools._capture_run(
+            tool_capture._capture_run(
                 "tool", "semgrep", [other, "run", "--rm"],
                 os.path.join(parent, "out.sarif"), runner,
                 docker_context=context)

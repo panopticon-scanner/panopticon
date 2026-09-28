@@ -344,8 +344,8 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
         # does to it (`TestRawCaptureRedaction.EXPECTED_MASKS`) -- both sides of
         # the substitution, because the masked form is still a well-formed
         # credential URL and the rule is idempotent on it.
-        ("tests/test_run_tools_core.py", "https://username:password@"),
-        ("tests/test_run_tools_core.py", "https://username:[REDACTED]@"),
+        ("tests/test_tool_capture.py", "https://username:password@"),
+        ("tests/test_tool_capture.py", "https://username:[REDACTED]@"),
         # item 25d (#1623): the specimen that holds the loop's terminal
         # messages to this rule. The `paused` message quotes what the HOST
         # said, and the message whose whole purpose is to surface an auth
@@ -518,7 +518,7 @@ if __name__ == "__main__":
 class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
     """#1639 P11 round 3 NF2: the flat pass is what a NON-JSON capture gets
     (spotbugs' XML) and what a stderr excerpt gets, and its safety argument --
-    stated in `redact.py`, in `run_tools._redact_capture` and in PANOPTICON.md --
+    stated in `redact.py`, in `tool_capture._redact_capture` and in PANOPTICON.md
     is that a match cannot run out of one field and into the next, because every
     pattern is anchored to a character class that excludes `"`.
 

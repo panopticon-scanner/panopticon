@@ -80,6 +80,9 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/scripts/scanner_config.py` — the configuration the SCANNER owns, not the reviewed
   repository: the staged `bandit.ini`/`.trivyignore`, the `.gitleaksignore` overlay, the
   redteam inline-suppression knobs, and the posture the manifest publishes about them.
+- `skill/scripts/tool_capture.py` — one container run supervised: the wall-clock watchdog and
+  its `--cidfile` container kill, the byte cap and truncation marker, the exit-code
+  classification, the stderr annotators, the redaction choke point and the atomic write.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/

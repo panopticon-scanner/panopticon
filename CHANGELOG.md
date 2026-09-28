@@ -15,6 +15,19 @@ evidence exposed.
   pins the docker argv of both staged tools, in both security modes, with and without the
   target's own `.bandit`, against a golden captured before the move. `ToolAdapters` gains
   an `Image` layer so the matrix can claim the new files without passing the 48-file cap.
+- **The capture path leaves `run_tools.py` (#1762, ARC-2609514778, ARC-3243338950; part 2 of 3).**
+  One container run supervised, bounded, classified, redacted and persisted — `_capture_run` through
+  `_atomic_write`: the `threading.Timer` watchdog with the `--cidfile` kill that stops the container
+  and not just the CLI client, the concurrent stderr drain, the stdout spool under
+  `MAX_TOOL_OUTPUT_BYTES` with its truncation marker, the exit-code classification (timeout,
+  non-`(0, 1)`, empty-output fail-closed), the semgrep stderr annotator and the one redaction choke
+  point — moves to `skill/scripts/tool_capture.py` whole. `_stream_and_write` moved entire rather
+  than being split: the watchdog and the kill path are bound by the cidfile contract.
+  `run_tools.py` goes from 1774 to 1322 lines and the new module is 524, under the 700-line
+  ceiling. No argv, flag, path, byte, message or file format changed — `tests/test_tool_capture.py`
+  compares the bytes written, the rows returned and the lines printed for fifteen capture shapes
+  against a golden captured before the move, and the patch-rule guard now derives BOTH modules'
+  names, and the `run_tools` aliases each test file really binds, instead of a fixed list.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root

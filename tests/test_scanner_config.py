@@ -6,6 +6,11 @@ argv every tool pinned to a scanner-owned config is launched with, captured from
 the tree before the move and compared token for token after it. A pure
 extraction that changes one flag, one path or one flag's POSITION is not a pure
 extraction, and nothing else in the suite compares a whole argv.
+
+It also holds the patch-rule guard for the WHOLE split family (part 2 added
+`tool_capture` to `_SPLITS`): the rule is about what `run_tools` re-binds, so
+one derivation covers every module lifted out of it, and part 3 adds a row
+rather than a file.
 """
 import ast
 import contextlib
@@ -18,6 +23,7 @@ from unittest import mock
 
 import scripts.run_tools as rt
 import scripts.scanner_config as sc
+import scripts.tool_capture as tc
 
 from tests._test_helpers import REPO_ROOT
 from tests.run_tools_test_helpers import _FakeResult
@@ -257,24 +263,39 @@ class TestTheStagedConfigIsTheScannersOwn(unittest.TestCase):
 # are READ bindings: patching one reaches nothing either, so the walk further
 # down refuses that too.
 #
-# This list is asserted equal to what `run_tools`'s `from scripts.scanner_config
+# Each list is asserted equal to what `run_tools`'s `from scripts.<module>
 # import (...)` really binds, read with `ast`, so it cannot drift from the code
-# it describes. Everything else `scanner_config` defines is derived, not listed:
-# a symbol C2 or C3 adds is covered the moment it lands.
+# it describes. Everything else a split module defines is derived, not listed: a
+# symbol C3 adds is covered the moment it lands.
 RE_EXPORTED = frozenset({
     "BANDIT_DEFAULT_EXCLUDES", "BANDIT_SCANNER_EXCLUDES", "BANDIT_INI_NAME",
     "BANDIT_INI_TEXT", "CONFIG_TARGET_BANDIT", "SCANNER_CONFIG_MOUNT",
     "SCANNER_OWNED_CONFIG", "TRIVY_IGNOREFILE_NAME", "TRIVY_IGNOREFILE_TEXT",
     "TARGET_MOUNT", "_SCANNER_CONFIG_POSTURE", "_SUPPRESSION_POSTURE",
 })
+# #1762 part 2 (`tool_capture`): the watchdog's deadline and the spool's cap,
+# both still read on the dispatch side, plus the redaction ledger the manifest
+# writer reads back.
+RE_EXPORTED_TOOL_CAPTURE = frozenset({
+    "MAX_TOOL_OUTPUT_BYTES", "TOOL_TIMEOUT", "_REDACTED_CAPTURES",
+})
 _ROOT = pathlib.Path(REPO_ROOT)          # `_test_helpers` exports it as a str
 _RUN_TOOLS = _ROOT / "skill" / "scripts" / "run_tools.py"
 _SCANNER_CONFIG = _ROOT / "skill" / "scripts" / "scanner_config.py"
+_TOOL_CAPTURE = _ROOT / "skill" / "scripts" / "tool_capture.py"
 _TESTS = _ROOT / "tests"
-# `rt` is the alias every run_tools test binds; anything else is recognised by
-# its LAST segment, which covers `run_tools`, `scripts.run_tools` and
-# `rft.run_tools` (tests/test_run_fixture_tests.py reaches it through the module
-# it is testing).
+# One row per module `run_tools` has been split into (#1762): the module object,
+# the file its names are DERIVED from, and the allowlist of names `run_tools`
+# still re-binds out of it. C3 adds a row; nothing else here changes.
+_SPLITS = (
+    ("scanner_config", sc, _SCANNER_CONFIG, RE_EXPORTED),
+    ("tool_capture", tc, _TOOL_CAPTURE, RE_EXPORTED_TOOL_CAPTURE),
+)
+# The aliases the run_tools tests bind, as a FLOOR. The set actually used is
+# read from each file's own bindings as well, because a fixed list missed both
+# `tests/conftest.py`'s `_run_tools` and any `from scripts import run_tools as
+# X`; a module reached through another module (`rft.run_tools`,
+# tests/test_run_fixture_tests.py) is recognised by its last segment.
 _RUN_TOOLS_ALIASES = frozenset({"rt", "run_tools", "scripts.run_tools"})
 
 
@@ -294,20 +315,43 @@ def _dotted(node):
     return ".".join(reversed(parts))
 
 
-def _is_run_tools(dotted):
-    return dotted is not None and (dotted in _RUN_TOOLS_ALIASES
+def _names_run_tools(dotted, aliases):
+    return dotted is not None and (dotted in aliases
                                    or dotted.split(".")[-1] == "run_tools")
 
 
-def _defined_in_scanner_config(path=None):
-    """Every name `scanner_config` DEFINES at module level.
+def _aliases_in(tree):
+    """Every name *tree* binds to the `run_tools` MODULE, from its own imports
+    and assignments, on top of the conventional aliases."""
+    names = set(_RUN_TOOLS_ALIASES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[-1] == "run_tools":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "run_tools":
+                    names.add(alias.asname or alias.name)
+    for _ in range(3):        # `X = rt`, then `Y = X`: settle a short chain
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and _names_run_tools(_dotted(node.value), names)):
+                names.update(t.id for t in node.targets
+                             if isinstance(t, ast.Name))
+    return names
+
+
+def _defined_in(path):
+    """Every name the module at *path* DEFINES at module level.
 
     Read from the AST rather than `vars()` on purpose: `vars()` also holds what
-    the module imported (`REDTEAM`, `SECURITY_FLAG` from `tools.base`), and
-    `run_tools` binds those legitimately from their own owner.
+    the module imported (`REDTEAM` and `SECURITY_FLAG` from `tools.base`,
+    `redact` and `safe_write` in `tool_capture`), and `run_tools` binds those
+    legitimately from their own owner.
     """
     names = set()
-    for node in _parse(path or _SCANNER_CONFIG).body:
+    for node in _parse(path).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
@@ -317,33 +361,56 @@ def _defined_in_scanner_config(path=None):
     return names
 
 
-def _moved_functions(path=None):
-    """The module-level callables `scanner_config` defines, in source order."""
-    return [node.name for node in _parse(path or _SCANNER_CONFIG).body
+def _functions_in(path):
+    """The module-level callables the module at *path* defines, in source order."""
+    return [node.name for node in _parse(path).body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
 
 
-def _re_exported_by_run_tools(path=None):
-    """The names `run_tools` binds out of `scanner_config`, read with `ast`."""
+def _re_exported_by_run_tools(module, path=None):
+    """The names `run_tools` binds out of *module*, read with `ast`."""
     names = set()
     for node in ast.walk(_parse(path or _RUN_TOOLS)):
         if (isinstance(node, ast.ImportFrom) and node.module
-                and node.module.split(".")[-1] == "scanner_config"):
+                and node.module.split(".")[-1] == module):
             names.update(alias.asname or alias.name for alias in node.names)
     return names
 
 
 def _patch_sites(path, watched):
     """`(lineno, name)` for every patch in *path* that aims a *watched* name at
-    the `run_tools` module -- `patch.object(rt, "NAME")` in any spelling, and
-    the string form `patch("scripts.run_tools.NAME")`.
+    the `run_tools` module, in each spelling that reaches a module attribute:
+    `patch.object(rt, "NAME")`, `monkeypatch.setattr(rt, "NAME", v)`, the bare
+    builtin `setattr(rt, "NAME", v)`, and the string forms
+    `patch("scripts.run_tools.NAME")` / `setattr("scripts.run_tools.NAME", v)`.
 
     A patch of a MODULE attribute (`patch.object(rt.os, "lstat")`) is a
     different thing and stays legal: `rt.os` and `sc.os` are the same object, so
     it reaches the moved code too.
     """
+    tree = _parse(path)
+    aliases = _aliases_in(tree)
     out = []
-    for node in ast.walk(_parse(path)):
+
+    def by_attribute(node):
+        if len(node.args) < 2 or not _names_run_tools(_dotted(node.args[0]), aliases):
+            return
+        target = node.args[1]
+        if isinstance(target, ast.Constant) and target.value in watched:
+            out.append((node.lineno, target.value))
+
+    def by_string(node):
+        if not node.args:
+            return
+        target = node.args[0]
+        if not (isinstance(target, ast.Constant)
+                and isinstance(target.value, str)):
+            return
+        module, _sep, name = target.value.rpartition(".")
+        if name in watched and _names_run_tools(module, aliases):
+            out.append((node.lineno, name))
+
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = _dotted(node.func)
@@ -351,80 +418,84 @@ def _patch_sites(path, watched):
             continue
         parts = func.split(".")
         if parts[-1] == "object" and len(parts) >= 2 and parts[-2] == "patch":
-            if len(node.args) < 2 or not _is_run_tools(_dotted(node.args[0])):
-                continue
-            target = node.args[1]
-            if isinstance(target, ast.Constant) and target.value in watched:
-                out.append((node.lineno, target.value))
+            by_attribute(node)
+        elif parts[-1] == "setattr":
+            # `monkeypatch.setattr` takes either (target, name, value) or
+            # ("dotted.path.NAME", value); so does the builtin.
+            if node.args and isinstance(node.args[0], ast.Constant):
+                by_string(node)
+            else:
+                by_attribute(node)
         elif parts[-1] == "patch":
-            if not node.args:
-                continue
-            target = node.args[0]
-            if not (isinstance(target, ast.Constant)
-                    and isinstance(target.value, str)):
-                continue
-            module, _sep, name = target.value.rpartition(".")
-            if name in watched and _is_run_tools(module):
-                out.append((node.lineno, name))
+            by_string(node)
     return out
 
 
 class TestThePatchRuleIsOneRule(unittest.TestCase):
-    """#1762 part 1: `mock.patch` a moved name on `run_tools` and it reaches
-    nothing, because the moved code reads `scanner_config`'s globals -- the test
-    passes and the behaviour it claims to change is untouched. That is the one
-    failure mode a pure extraction can leave behind, and a green suite cannot
-    see it, so it is guarded from BOTH sides: no moved name gets a second
-    binding, and no test aims a patch at `run_tools` for a name that moved.
+    """#1762: `mock.patch` a moved name on `run_tools` and it reaches nothing,
+    because the moved code reads the module it moved INTO -- the test passes and
+    the behaviour it claims to change is untouched. That is the one failure mode
+    a pure extraction can leave behind, and a green suite cannot see it, so it is
+    guarded from BOTH sides: no moved name gets a second binding, and no test
+    aims a patch at `run_tools` for a name that moved.
 
-    Derived from the two modules' own ASTs rather than from a list, because a
-    list stops growing: C2 and C3 add symbols to this module, and the guard has
-    to cover them without being edited.
+    Derived from each module's own AST rather than from a list, because a list
+    stops growing: part 2 (`tool_capture`) is covered by adding one row to
+    `_SPLITS`, and part 3 will be too.
     """
 
     def test_the_allowlist_is_exactly_what_run_tools_re_exports(self):
-        # `RE_EXPORTED` is the exception list the re-export comment in
+        # Each `RE_EXPORTED*` is the exception list the re-export comment in
         # `run_tools` describes in prose. If the two disagree, one of them is
         # lying and every assertion below is measuring the wrong set.
-        self.assertEqual(sorted(RE_EXPORTED), sorted(_re_exported_by_run_tools()))
+        for module, _mod, _path, allowed in _SPLITS:
+            with self.subTest(module=module):
+                self.assertEqual(sorted(allowed),
+                                 sorted(_re_exported_by_run_tools(module)))
 
-    def test_every_re_exported_name_is_still_defined_in_scanner_config(self):
-        defined = _defined_in_scanner_config()
-        stale = sorted(RE_EXPORTED - defined)
-        self.assertEqual(stale, [], "re-exported name(s) `scanner_config` no "
-                                    "longer defines: %s" % ", ".join(stale))
+    def test_every_re_exported_name_is_still_defined_by_its_owner(self):
+        for module, _mod, path, allowed in _SPLITS:
+            stale = sorted(allowed - _defined_in(path))
+            with self.subTest(module=module):
+                self.assertEqual(stale, [], "re-exported name(s) `%s` no longer "
+                                            "defines: %s" % (module, ", ".join(stale)))
 
     def test_no_moved_function_is_bound_on_run_tools(self):
         # The strong half of the rule, and the one that needs no allowlist at
-        # all: a FUNCTION that moved is never re-exported, so `scanner_config`
-        # is unambiguously the place to patch it. `_scanner_owned_config` anchors
-        # the derivation against a file that stopped defining anything.
-        functions = _moved_functions()
-        self.assertIn("_scanner_owned_config", functions)
-        for name in functions:
-            with self.subTest(function=name):
-                self.assertNotIn(name, RE_EXPORTED,
-                                 "%s is re-exported; a moved function must be "
-                                 "patched on scanner_config only" % name)
-                self.assertTrue(hasattr(sc, name))
-                self.assertFalse(hasattr(rt, name),
-                                 "%s is bound on run_tools too; patching it "
-                                 "there would be silently ineffective" % name)
+        # all: a FUNCTION that moved is never re-exported, so its new module is
+        # unambiguously the place to patch it. The two anchors keep the
+        # derivation honest against a file that stopped defining anything.
+        for module, mod, path, allowed in _SPLITS:
+            functions = _functions_in(path)
+            self.assertIn({"scanner_config": "_scanner_owned_config",
+                           "tool_capture": "_stream_and_write"}[module], functions)
+            for name in functions:
+                with self.subTest(module=module, function=name):
+                    self.assertNotIn(name, allowed,
+                                     "%s is re-exported; a moved function must "
+                                     "be patched on %s only" % (name, module))
+                    self.assertTrue(hasattr(mod, name))
+                    self.assertFalse(hasattr(rt, name),
+                                     "%s is bound on run_tools too; patching it "
+                                     "there would be silently ineffective" % name)
 
-    def test_nothing_scanner_config_owns_is_bound_on_run_tools_unannounced(self):
-        for name in sorted(_defined_in_scanner_config() - RE_EXPORTED):
-            with self.subTest(name=name):
-                self.assertTrue(hasattr(sc, name), "%s left scanner_config" % name)
-                self.assertFalse(hasattr(rt, name),
-                                 "%s is bound on run_tools without being in the "
-                                 "re-export list; either add it there (with the "
-                                 "reason) or drop the binding" % name)
+    def test_nothing_a_split_module_owns_is_bound_on_run_tools_unannounced(self):
+        for module, mod, path, allowed in _SPLITS:
+            for name in sorted(_defined_in(path) - allowed):
+                with self.subTest(module=module, name=name):
+                    self.assertTrue(hasattr(mod, name), "%s left %s" % (name, module))
+                    self.assertFalse(hasattr(rt, name),
+                                     "%s is bound on run_tools without being in "
+                                     "the re-export list; either add it there "
+                                     "(with the reason) or drop the binding" % name)
 
     def test_no_test_patches_a_moved_name_through_run_tools(self):
         # The other side of the rule. A re-exported name is a READ binding, so
         # patching THAT on `run_tools` is just as ineffective as patching one
         # that was never bound -- both are refused here, anywhere under tests/.
-        watched = _defined_in_scanner_config() | RE_EXPORTED
+        watched = set()
+        for _module, _mod, path, allowed in _SPLITS:
+            watched |= _defined_in(path) | allowed
         offenders = []
         for path in sorted(_TESTS.rglob("*.py")):
             for lineno, name in _patch_sites(path, watched):
@@ -433,14 +504,25 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
         self.assertEqual(
             offenders, [],
             "%d patch(es) of a moved name aimed at run_tools:\n  %s\n"
-            "the moved code reads `scanner_config`'s globals, so this patch "
-            "passes while changing nothing -- target `scanner_config` instead"
+            "the moved code reads its OWN module's globals, so this patch passes "
+            "while changing nothing -- target the module it moved into instead"
             % (len(offenders), "\n  ".join(offenders)))
+
+    # Two conventional aliases, one unconventional one and the `_run_tools` that
+    # `tests/conftest.py` really binds: the planted file declares them so the
+    # walk has to RESOLVE them rather than recognise a spelling.
+    PLANTED_IMPORTS = ("import scripts.run_tools as rt\n"
+                       "import scripts.run_tools as _run_tools\n"
+                       "from scripts import run_tools\n"
+                       "from scripts import run_tools as weird\n"
+                       "import scripts.scanner_config as sc\n"
+                       "import scripts.tool_capture as tc\n")
 
     def test_the_patch_walk_catches_a_planted_offender(self):
         # Non-vacuity, on a synthetic file: the scan above asserts an EMPTY
         # list, which a detector that sees nothing also satisfies.
-        watched = {"SCANNER_OWNED_CONFIG", "_scanner_owned_config"}
+        watched = {"SCANNER_OWNED_CONFIG", "_scanner_owned_config",
+                   "MAX_TOOL_OUTPUT_BYTES", "_stream_and_write"}
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d) / "test_planted.py"
             for source in (
@@ -448,25 +530,51 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                     'patch.object(run_tools, "SCANNER_OWNED_CONFIG", {})',
                     'mock.patch.object(scripts.run_tools, "_scanner_owned_config")',
                     'mock.patch("scripts.run_tools.SCANNER_OWNED_CONFIG")',
-                    'patch("run_tools._scanner_owned_config")'):
+                    'patch("run_tools._scanner_owned_config")',
+                    # part 2's names, and the spellings a fixed alias list and a
+                    # patch-only walk both missed (C1 re-review nit 1).
+                    'mock.patch.object(rt, "MAX_TOOL_OUTPUT_BYTES", 1)',
+                    'mock.patch.object(rt, "_stream_and_write", None)',
+                    'monkeypatch.setattr(_run_tools, "SCANNER_OWNED_CONFIG", {})',
+                    'monkeypatch.setattr(weird, "_stream_and_write", None)',
+                    'monkeypatch.setattr("scripts.run_tools.MAX_TOOL_OUTPUT_BYTES", 1)',
+                    'setattr(rt, "_stream_and_write", None)'):
                 with self.subTest(source=source):
-                    path.write_text("x = %s\n" % source, encoding="utf-8")
+                    path.write_text(self.PLANTED_IMPORTS + "x = %s\n" % source,
+                                    encoding="utf-8")
                     self.assertTrue(_patch_sites(path, watched),
                                     "detector missed %s" % source)
             for source in (
                     # a MODULE attribute: the same object from both modules.
                     'mock.patch.object(rt.tempfile, "mkdtemp")',
                     # a name run_tools still owns.
-                    'mock.patch.object(rt, "MAX_TOOL_OUTPUT_BYTES", 1)',
-                    # the right target.
+                    'mock.patch.object(rt, "CONTAINER_PIDS_LIMIT", "")',
+                    'monkeypatch.setattr(_run_tools, "docker_available", None)',
+                    # the right targets.
                     'mock.patch.object(sc, "SCANNER_OWNED_CONFIG", {})',
+                    'mock.patch.object(tc, "MAX_TOOL_OUTPUT_BYTES", 1)',
                     'mock.patch("scripts.scanner_config.SCANNER_OWNED_CONFIG")',
+                    'monkeypatch.setattr(tc, "_stream_and_write", None)',
                     # not a patch at all.
                     'mock.patch.dict(os.environ, {"SCANNER_OWNED_CONFIG": "1"})'):
                 with self.subTest(source=source):
-                    path.write_text("x = %s\n" % source, encoding="utf-8")
+                    path.write_text(self.PLANTED_IMPORTS + "x = %s\n" % source,
+                                    encoding="utf-8")
                     self.assertEqual(_patch_sites(path, watched), [],
                                      "detector flagged %s" % source)
+
+    def test_the_alias_walk_reads_the_bindings_a_file_really_makes(self):
+        # `tests/conftest.py` is the file the fixed list missed: it binds
+        # `_run_tools` and patches through it with `monkeypatch.setattr`.
+        aliases = _aliases_in(_parse(_TESTS / "conftest.py"))
+        self.assertIn("_run_tools", aliases)
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "test_chain.py"
+            path.write_text("from scripts import run_tools as base\n"
+                            "mirror = base\n"
+                            "again = mirror\n", encoding="utf-8")
+            self.assertLessEqual({"base", "mirror", "again"},
+                                 _aliases_in(_parse(path)))
 
     def test_the_patch_walk_visits_the_whole_test_tree(self):
         # Including `tests/tools/`, which is where an adapter-side patch would
@@ -483,18 +591,21 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                 _patch_sites(broken, {"x"})
 
 
-class TestTheTwoModulesShareOneLedger(unittest.TestCase):
-    """`run_tools` binds two of the four ledgers `write_manifest` reads back
-    (`write_manifest`'s own `scanner_config=` keyword would shadow the module
-    inside it), so the whole claim rests on both names addressing ONE dict:
-    `run_tools()` clears it, the recorders here fill it, `write_manifest` reads
-    it back. Rebind either side and the manifest would publish an empty posture
-    with nothing failing."""
+class TestTheSplitModulesShareOneLedger(unittest.TestCase):
+    """`run_tools` binds three of the ledgers its extracted modules own -- two
+    of `write_manifest`'s four postures (`write_manifest`'s own
+    `scanner_config=` keyword would shadow the module inside it) and the
+    redaction set -- so the whole claim rests on each name addressing ONE
+    object: `run_tools()` clears it, the code that moved fills it,
+    `write_manifest` reads it back. Rebind either side and the manifest would
+    publish an empty posture with nothing failing."""
 
-    def test_the_posture_ledgers_are_the_same_object_in_both_modules(self):
-        for name in ("_SUPPRESSION_POSTURE", "_SCANNER_CONFIG_POSTURE"):
+    def test_the_ledgers_are_the_same_object_in_both_modules(self):
+        for owner, name in ((sc, "_SUPPRESSION_POSTURE"),
+                            (sc, "_SCANNER_CONFIG_POSTURE"),
+                            (tc, "_REDACTED_CAPTURES")):
             with self.subTest(ledger=name):
-                self.assertIs(getattr(rt, name), getattr(sc, name))
+                self.assertIs(getattr(rt, name), getattr(owner, name))
 
 
 if __name__ == "__main__":

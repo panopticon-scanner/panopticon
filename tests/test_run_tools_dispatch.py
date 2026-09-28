@@ -518,7 +518,7 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                     raise OSError("no scratch")
                 return original(*args, **kwargs)
 
-            with mock.patch.object(rt.tempfile, "mkdtemp", side_effect=fail_overlay):
+            with mock.patch.object(sc.tempfile, "mkdtemp", side_effect=fail_overlay):
                 seen, manifest = self._run(d, "redteam", tools=("gitleaks", "semgrep"))
             self.assertEqual(seen, [])
             self.assertEqual(manifest["missing"], ["gitleaks"])
