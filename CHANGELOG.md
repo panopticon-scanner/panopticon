@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A Ctrl-C during a fresh run's first phase ends with the `interrupted:` status (#1805).**
+  `orchestrate.loop` called `_first_run`, and the resume seam's `_run`, before its own `try`, so
+  a Ctrl-C there escaped as a traceback and `_finish` never ran. Both calls now live inside the
+  same `try`, so the loop's existing handlers cover them; nothing before `_first_run` changed.
 - **One owner reads the committed config; errors refuse and disclosures print on both paths (#2229,
   #2189; ARC-1814846877, epic #1761).** Five readers each normalized the legacy `groups:` list form
   themselves -- `groups_schema.parse_groups`, `discovery.load_catalog`, `_committed_matrix`,
