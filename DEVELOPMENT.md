@@ -334,9 +334,9 @@ characters, and matching consumes the whole path.
   one file under BOTH names builds two module objects from it, with two sets of module state and
   two patch targets, so package-qualified is the default and a flat import is a decision.
   `tests/test_layout.py` owns the flat mode (rule 2, and `FLAT_MODULES` for the modules that must
-  keep it); `tests/test_module_identity.py` gates the rest — the doubled-module census, the
-  enumerated `sys.path` bootstrap sites, and no import fallback in a package module. Retiring the
-  remaining flat imports is tracked in #1516.
+  keep it); `tests/test_module_identity.py` gates the rest — the import-time doubled-module census,
+  a shrink-only per-module ceiling on the `sys.path` bootstrap sites, and no import fallback in a
+  package module. Retiring the remaining flat imports is tracked in #1516.
 
 ## Running
 Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`

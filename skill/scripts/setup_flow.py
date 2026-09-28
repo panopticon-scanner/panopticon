@@ -371,7 +371,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     offer -- the tests, and any future caller that runs outside a driver
     invocation.
     """
-    import dispatch  # noqa: E402
+    from scripts import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
     row = hosts.spec(resolved_host)
     checks: list[tuple[str, bool | None, str]] = []
@@ -945,7 +945,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
     names for it -- this brief is the only document telling that agent what it
     may call. Defaults to None (the neutral Claude vocabulary), so every
     existing caller is unchanged."""
-    import dispatch
+    from scripts import dispatch
     spine = spine or build_spine(repo)
     brief = dispatch.render_prompt("setup-scan.md", {
         "repo_spine": format_spine(spine),

@@ -23,7 +23,9 @@ import sys
 # PYTHONPATH for subprocesses. Idempotent under pytest, whose conftest already
 # provides them. `skill/` is the root every import here needs; the flat
 # `skill/scripts` root is kept because dropping a root from an entrypoint is
-# #1516's call, and tests/test_module_identity.py gates the site either way.
+# #1516's call. Two sites, and tests/test_module_identity.py pins that count:
+# a THIRD insert here fails its ceiling, and retiring one of these two fails the
+# companion staleness test until the count comes down with it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))         # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))

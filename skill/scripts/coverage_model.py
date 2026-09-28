@@ -19,8 +19,8 @@ import os
 # call time, so neither order can see a half-initialised module. Same fallback
 # shape as `discovery` uses for its own siblings -- this module is imported both as
 # `scripts.coverage_model` (the driver's children, which get `skill/` on
-# PYTHONPATH) and flat by `setup_flow` / `grouping_engine` / `setup_proposal`,
-# and the flat mode has only `skill/scripts` on sys.path.
+# PYTHONPATH, and `setup_flow` / `grouping_engine` since #1766) and flat by
+# `setup_proposal`, and the flat mode has only `skill/scripts` on sys.path.
 if TYPE_CHECKING:
     from scripts import discovery
 else:
