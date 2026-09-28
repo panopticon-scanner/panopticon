@@ -443,7 +443,7 @@ class TestHomeLocation(unittest.TestCase):
                 order.append("terminated")
 
             def kill(self):                     # pragma: no cover - not reached
-                order.append("terminated")
+                order.append("child-killed")
 
             def wait(self, timeout=None):
                 return 0
