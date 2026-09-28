@@ -5,6 +5,8 @@ import contextlib
 import os
 import tempfile
 
+import pytest
+
 
 SPLIT_FILE_MAX_BYTES = 1000
 
@@ -18,6 +20,18 @@ def _chdir(path):
         yield
     finally:
         os.chdir(prev)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cwd_from_stale_panopticon(tmp_path, monkeypatch):
+    """Isolate cwd for tests at the package or module scope importing this fixture.
+
+    Cwd-relative run artifacts must come from each test, not a developer's live
+    .panopticon directory. Nested _chdir guards restore this temporary cwd;
+    reference-data paths remain relative to their source files.
+    """
+    monkeypatch.chdir(tmp_path)
+
 
 def _make_finding(**kw):
     base = {
