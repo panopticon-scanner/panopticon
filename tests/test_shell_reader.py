@@ -833,6 +833,32 @@ class TestOneLexicalPass(unittest.TestCase):
         self.assertEqual([[['cat']], [['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']]],
                          argvs(script))
 
+    def test_a_continuation_inside_the_operator_is_gone(self):
+        # #2291: bash folds a `\`-newline away before it reads an operator,
+        # so `<\` + newline + `<EOF` is `<<EOF`, `<<\` + newline + `-EOF` is
+        # `<<-EOF`, and `<\` + newline + `<<x` is the here-string `<<<x`.
+        # Read as two `<`, or as `<<` and the word `-EOF`, no body was found
+        # and the quote in `it's` hid the lines below; read as `<` and `<<`,
+        # the here-string's word ended a body that swallowed them.
+        for script, body in (("cat <\\\n<EOF\nit's\nEOF\necho a\n", ("it's", True)),
+                             ("cat 3<\\\n<EOF\nit's\nEOF\necho a\n", None),
+                             ("cat <<\\\n-EOF\n\tit's\n\tEOF\necho a\n", ("it's", True)),
+                             ("cat <\\\n<\\\n-'EOF'\n\tit's\n\tEOF\necho a\n", ("it's", False)),
+                             ("cat <\\\n<<x\necho a\nx\n", None)):
+            with self.subTest(script=script):
+                self.assertEqual(body, shell_reader.statements(script)[0].stages[0].stdin_heredoc)
+                self.assertIn([['echo', 'a']], argvs(script))
+        self.assertEqual("it's", stage("cat 3<\\\n<EOF\nit's\nEOF\n").heredoc)
+        # Only the operator folds, as before: `\` before a word quotes it,
+        # `<\` + newline + a word is a file on stdin, and a `\`-newline in
+        # '...' is the word's own, which no line ends -- nor does bash, which
+        # runs nothing below it.
+        self.assertEqual(("it's $x", False),
+                         stage("cat <<\\EOF\nit's $x\nEOF\n").stdin_heredoc)
+        self.assertEqual([[['cat']], [['echo', 'a']]], argvs("cat <\\\nf\necho a\n"))
+        self.assertIsNone(stage("cat <\\\nf\n").stdin_heredoc)
+        self.assertNotIn([['echo', 'a']], argvs("cat <<'E\\\nOF'\nit's\nEOF\necho a\n"))
+
     def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
         # #2128: a second heredoc on the line was read as `<` of a file named
         # by its delimiter, which replaced descriptor 0 and dropped the body

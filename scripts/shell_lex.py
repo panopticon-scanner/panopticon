@@ -126,6 +126,9 @@ _DQ_ESCAPE = re.compile(r'\\([$`"\\])|\\\n')
 # `${`, `$[` or backquote in the word, or an escape `$'...'` decodes (`\x41`).
 _PARSED = re.compile(r"`|\$[({\[]")
 _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
+# `<<`, `<<-` or `<<<` as bash reads it: past the `\`-newlines it folds away
+# first, which leave `<` + `\`-newline + `<EOF` the operator `<<` (#2291).
+_HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
 
 
 class Unreadable(Exception):
@@ -263,12 +266,13 @@ class _Lexer:
                 if self.unspelled[0] == len(self.frames):
                     self.refuse(i)
                 self.token(i)
-            if text.startswith("<<<", i):
+            here = _HERE.match(text, i) if ch == "<" else None
+            if here and here[1] == "<":         # a here-string
                 out.append("<<<")
                 self.word = len(out)
-                return i + 3
-            if text.startswith("<<", i):
-                return self.operator(i, frame)
+                return here.end()
+            if here:
+                return self.operator(i, frame, here.end(), here[1] == "-")
             if ch == "[" and self.named != self.word:  # only a word's first `[`
                 self.named = self.word
                 if start and self.compound or self.at != "argument" and _NAME.fullmatch(
@@ -351,8 +355,9 @@ class _Lexer:
             return "assigned"
         return "argument"
 
-    def operator(self, i: int, frame: _Frame) -> int:
-        """Queue the heredoc whose `<<` is at `i`; the index after its word.
+    def operator(self, i: int, frame: _Frame, after: int, strip: bool) -> int:
+        """Queue the heredoc whose `<<` -- `<<-` if `strip` -- is at `i` and
+        ends at `after`; the index after its word.
 
         The operator stays in the output as written until a body is found
         for it -- with no terminator below, that is what it remains. A word
@@ -360,7 +365,6 @@ class _Lexer:
         refused where it ends (`refuse`).
         """
         text, out = self.text, self.out
-        after = i + 3 if text.startswith("-", i + 2) else i + 2
         word = _word(text, after)
         if not isinstance(word, tuple):     # no word follows, or none `_word` spells
             if word is not None:
@@ -376,7 +380,7 @@ class _Lexer:
         else:
             fd = ""
         out.append(fd + text[i:end])
-        frame.queue.append((len(out) - 1, delimiter, quoted, after > i + 2, fd or "0"))
+        frame.queue.append((len(out) - 1, delimiter, quoted, strip, fd or "0"))
         self.word, self.at = len(out), self.stood(delimiter)
         return end
 

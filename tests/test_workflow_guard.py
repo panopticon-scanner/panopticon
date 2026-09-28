@@ -2039,6 +2039,20 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
 
+    def test_a_continuation_inside_the_operator_is_gone(self):
+        # #2291: to bash, `<\` + newline + `<EOF` is `<<EOF`, `<<\` + newline
+        # + `-EOF` is `<<-EOF`, and `<\` + newline + `<< x` is `<<< x`; bash
+        # 3.2 and 5.2 run the payload below each, which the guard read clean.
+        # A joined word bash parses is refused by name, as it is unsplit;
+        # `\` before a word and `<\` + newline + a file read as they did.
+        for script in ("cat <\\\n<EOF\nit's\nEOF\n%s\n", "cat 3<\\\n<EOF\nit's\nEOF\n%s\n",
+                       "cat <<\\\n-EOF\n\tit's\n\tEOF\n%s\n",
+                       "cat <\\\n<\\\n-EOF\n\tit's\n\tEOF\n%s\n", "cat <\\\n<< x\n%s\nx\n",
+                       "cat <<\\EOF\nit's $x\nEOF\n%s\n", "echo hi >f\ncat <\\\nf\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+        self.refused("cat <\\\n<$(x)\nit's\n$(x)\n%s\n" % self.PAYLOAD, "`$(x)`")
+
     def test_an_array_subscript_is_arithmetic(self):
         # Where bash 5.2 reads an assignment -- at the head of a command, after
         # `x=1`, `then`, `time -p`, a pipe, `function f {` or a leading
