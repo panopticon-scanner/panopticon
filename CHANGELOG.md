@@ -7,6 +7,33 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
+  discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
+  `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
+  dot-path, so 73 of the 74 dot-leading globs `skill/data/commons_catalog.yml` claims --
+  `.circleci/**`, `.buildkite/**`, `.github/actions/**`, `.github/*.yml`, `.env*`, `.npmrc`,
+  `.eslintrc*`, `.husky/**`, `.mvn/**`, `.goreleaser.yml`, `.panopticon.yml` and the rest -- named
+  files no group could ever receive, and so did the deterministic SEC floor's own `.circleci`,
+  `.buildkite/`, `.github/actions/`, `.travis.yml`, `.drone.yml`, `.pre-commit-config.yaml`,
+  `.devcontainer/`, `.env`, `.npmrc`, `.netrc`, `.pgpass` and `.htaccess` hints. A file discovery
+  never returns is never `Ungrouped` either, so nothing reported the gap: #1508 (top-level
+  `.github/*.yml`) and #1838 (the CI and secret-file floor) both rest on claims that could not
+  fire. Owner ruling 2026-09-27, allowlist widen in 5.2 (pruning the claims was rejected): one
+  policy in `skill/scripts/dot_paths.py` naming exactly the root dot-directories and dot-files
+  those two enumerations spell out, and nothing else -- `.git`, `.venv`, `.tox`, the tool caches,
+  `.panopticon/` and any unclaimed dot-path stay pruned, as does a dot-directory nested below the
+  root. Both paths now ask that one rule on the same segment: the git-listing filter tested each
+  ancestor DIRECTORY while the walk tested the whole FILE path, so every file directly under
+  `.github/` was reviewable surface on a git target and invisible on a non-git one -- against two
+  docstrings that said both methods shared one policy. The durable guard derives its samples from
+  the shipped catalog and the floor hints themselves and asserts both paths keep each one, so a
+  claim discovery cannot surface fails in the PR that adds it. `_git_listed_files` also swallowed a
+  bare `Exception` into `None`, and the caller then walked -- which stops honouring the target's
+  `.gitignore`, the surface policy #500 exists for; "not a git worktree" and "git failed on a
+  worktree" are now told apart, the failure is named on stderr and published as the discovery
+  block's `git_failure`, and the scan still runs. **Discovered file sets grow on every target**:
+  CI, config and secret-bearing files now reach a group, so group and cell counts move -- land this
+  before a run, not during one.
 - **Every integrity failure that sinks certification is named on the terminal summary (#1761;
   ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
   published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a

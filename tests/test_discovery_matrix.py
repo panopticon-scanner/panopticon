@@ -460,8 +460,9 @@ def test_collect_changed_files_default_branch_fallback(available, selected, refs
             return SimpleNamespace(stdout=b"")
         raise AssertionError("unexpected git argv: %r" % argv)
 
+    # No dot-path patch: `collect_changed_files` never asked that policy (the
+    # arm was vestigial), and #1784 moved it to `dot_paths.allowed` anyway.
     with patch("scripts.discovery._git", side_effect=git), \
-         patch("scripts.discovery._on_allowed_dotdir_path", return_value=True), \
          patch("os.path.isfile", return_value=True):
         assert discovery.collect_changed_files("/tmp/x", base=None) == ["file1.py"]
     actual_refs = [argv[2] for argv, _ in calls if argv[:2] == ["merge-base", "HEAD"]]

@@ -123,6 +123,17 @@ committed `panopticon.yml` is reported to stderr like any other schema error (co
 are disclosed, not blocking) and the pattern then matches nothing, loudly, instead of matching the
 wrong files (#1501).
 
+**What discovery hands the matrix.** On a git target the surface is `git ls-files --cached --others
+--exclude-standard`, so the target's own `.gitignore` scopes the review (#500); a non-git target is
+walked instead. Either way, build/dependency/cache directories are pruned by name
+(`node_modules`, `.venv`, `__pycache__`, …), and a path that starts with a dot is surface only when
+the shipped catalogs or the deterministic SEC floor name it: `.github/`, `.circleci/`,
+`.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed dot-directories, plus root
+dot-files such as `.env*`, `.npmrc`, `.travis.yml` and `.pre-commit-config.yaml`. `.git/` and
+tool state nothing claims stay out, and so does a dot-directory nested below the root. A claimed
+dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix has a
+gap — not that the file was skipped.
+
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC
 is non-excludable** (#1084) — `exclude: [SEC]` on a group is *overridden* so a target can't opt its

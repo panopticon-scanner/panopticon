@@ -67,6 +67,13 @@
 #     report assembly, rendering and the synthesis entry point their own
 #     `Report` layer before the broader `Synth` patterns, keeping both leaves
 #     below the cap and their test inventories beside the code they cover.
+#   - 2026-09-28 (#1784): `dot_paths.py` is claimed by `Orchestration:Core`,
+#     not `RepoProfiling`. Discovery's dot-path allowlist came out of
+#     `discovery.py` because that module is at its line ratchet, and
+#     `RepoProfiling` was already AT the 48 cap -- so, like `setup_ack.py`
+#     above, the new leaf is parked beside the other shared stdlib-only
+#     leaves (`claim_scope.py`, `safe_write.py`). The next module this
+#     subsystem grows needs a `RepoProfiling` layer, not another park.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -195,6 +202,7 @@ groups:
       match:
       - skill/scripts/dispatch.py
       - skill/scripts/claim_scope.py
+      - skill/scripts/dot_paths.py
       - skill/scripts/money.py
       - skill/scripts/ledger.py
       - skill/scripts/loop_batch.py
