@@ -11,6 +11,7 @@ from unittest import mock
 import yaml
 
 import scripts.coverage_model as coverage_model
+import scripts.dot_paths as dot_paths
 import scripts.groups_schema as groups_schema
 
 from tests.discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
@@ -1157,6 +1158,42 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                              if text.startswith("."))
         return sorted(found)
 
+    def _dot_floor_hints(self):
+        """Every dot-leading hint the deterministic SEC floor keys on."""
+        return sorted(hint for hint in coverage_model._SEC_FILE_HINTS
+                      if hint.startswith("."))
+
+    def test_every_allowlist_entry_is_named_by_a_catalog_glob_or_a_floor_hint(self):
+        """The REVERSE direction, and the ruling's "and no further" half.
+
+        Every other test here proves a claim REACHES a kept file; none proves
+        that an allowlist entry is claimed at all, so a widened entry -- the
+        drift direction that ends in "allow every dot-path" -- used to pass the
+        whole file. A `DIRS` entry must be a dot-path some glob or hint names or
+        reaches into; a `FILES` entry must be matched by a glob or CARRY a hint,
+        which is how the floor reads one (a substring of the path); a stem must
+        begin one of them.
+        """
+        globs, hints = self._catalog_dot_globs(), self._dot_floor_hints()
+        claims = globs + hints
+        unjustified = []
+        for entry in sorted(dot_paths.DIRS):
+            if not any(c == entry or c.startswith(entry + "/") for c in claims):
+                unjustified.append("DIRS %s" % entry)
+        for entry in sorted(dot_paths.FILES):
+            if not (any(orchestrator._glob_to_re(c).match(entry) for c in globs)
+                    or any(hint in entry for hint in hints)):
+                unjustified.append("FILES %s" % entry)
+        for entry in dot_paths.FILE_STEMS:
+            if not any(c.startswith(entry) for c in claims):
+                unjustified.append("FILE_STEMS %s" % entry)
+        self.assertEqual([], unjustified,
+                         "%d dot-path allowlist entr(ies) no shipped catalog glob "
+                         "and no SEC-floor hint names -- the ruling widened to "
+                         "exactly what those two enumerations say and NO further, "
+                         "so either a catalog claims it or it comes out:\n  %s"
+                         % (len(unjustified), "\n  ".join(unjustified)))
+
     def test_every_dot_leading_catalog_glob_reaches_a_file_both_paths_keep(self):
         patterns = self._catalog_dot_globs()
         self.assertGreater(len(patterns), 60,
@@ -1181,8 +1218,7 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                          % (len(unreachable), "\n  ".join(unreachable)))
 
     def test_the_dot_leading_sec_floor_hints_are_classified_exhaustively(self):
-        dotted = {hint for hint in coverage_model._SEC_FILE_HINTS
-                  if hint.startswith(".")}
+        dotted = set(self._dot_floor_hints())
         self.assertEqual(
             dotted, set(self.ROOT_HINT_FILES) | self.EXTENSION_HINTS,
             "a dot-leading SEC-floor hint is unclassified: say whether it names "

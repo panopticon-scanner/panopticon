@@ -23,10 +23,12 @@ stays pruned.
 
 The policy lives in its own module because `discovery.py` is at its size
 ratchet (`tests/test_flat_module_ceiling.py`), and the ratchet's answer to a
-module that needs more room is a split, never a raised pin. Both directions are
-pinned against the shipped files by `tests/test_discovery_catalog.py`: every
-dot-leading catalog glob and every dot-leading floor hint reaches a file BOTH
-methods keep, and nothing outside this allowlist does.
+module that needs more room is a split, never a raised pin. All three
+directions are pinned against the shipped files by
+`tests/test_discovery_catalog.py`: every dot-leading catalog glob and every
+dot-leading floor hint reaches a file BOTH methods keep, every entry BELOW is
+named by one of them (so a widened entry reddens, which is the drift that ends
+in "allow every dot-path"), and the noise classes are dropped by both methods.
 
 Stdlib plus `repo_config`, which owns the target config's own dot spelling --
 that name is never spelled here (`tests/test_repo_config_literals.py`).
