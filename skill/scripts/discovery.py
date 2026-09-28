@@ -1451,9 +1451,8 @@ def _committed_document(repo):
     -- RAISE. They used to be printed and then read as "nothing committed" by
     `_committed_matrix` and `_committed_exclude_paths` while `_matrix_catalog`
     refused the same document, so one reader merged a setup draft against an
-    empty matrix and dropped the operator's own `exclude_paths:`. The message
-    rides the exception, not a print, so the caller that turns it into a status
-    or a stderr line says it once."""
+    empty matrix and dropped the operator's `exclude_paths:`. The message rides
+    the exception, not a print: the caller that surfaces it says it once."""
     doc = repo_config.read_document(repo)
     _disclose_committed(doc.disclosures)
     if doc.errors:
@@ -1472,17 +1471,18 @@ def _committed_groups(repo):
 
 def _committed_matrix(repo):
     """Committed root config's `groups:` as serializable {name: body}: a leaf
-    body is {match, tests, panels, exclude}; a PARENT (keys are subgroup names,
-    #1305) is {"subgroups": {sub: leaf body}} so the structure survives the
-    additive merge instead of collapsing to an empty leaf (5.2). Empty when
-    none is committed (first run -> adopt-all).
+    is {match, tests, panels, exclude}, a PARENT (subgroup names as keys, #1305)
+    is {"subgroups": {sub: leaf}}, so the structure survives the additive merge
+    instead of collapsing to an empty leaf (5.2). Empty when none is committed
+    (first run -> adopt-all).
 
     `_matrix_catalog` un-flattened (#2229) -- one read, one validation, one
     owner -- never a second parse of the authored bodies. So a document this
     refuses is refused by every other reader, a `match:` the schema rejects is
     `[]` rather than the six one-character globs `list("src/**")` yielded
     (#2189), a name it rejects never comes back, and `panels:`/`exclude:` are
-    the parsed domain SETS: sorted, not authored order."""
+    the parsed domain SETS: sorted, not authored order. It feeds an ADDITIVE
+    merge, so `setup_flow.config_refusal` refuses what it cannot round trip."""
     return groups_schema.committed_bodies(_matrix_catalog(repo))
 
 def _matrix_catalog(repo):

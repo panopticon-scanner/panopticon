@@ -722,6 +722,30 @@ class TestOneOwnerForTheCommittedConfig:
             reasons = setup_flow.config_refusal(repo)
             assert any(message in reason for reason in reasons), body
 
+    NOT_ROUND_TRIPPED = (
+        # (authored `groups:` block, the top-level id whose authored body does
+        # not survive the read)
+        ("  UI:\n    Web: {}\n", "UI"),                                    # empty subgroup
+        ("  UI:\n    Web:\n      Deep:\n        match: ['a/**']\n", "UI"),  # nested subgroup
+        ("  bad name:\n    match: ['a/**']\n", "bad name"),                # rejected name
+        ("  API:\n    match: src/**\n", "API"),                            # scalar match
+    )
+
+    def test_what_committed_matrix_drops_setup_refuses(self, tmp_path, capsys):
+        # `_committed_matrix` feeds the ADDITIVE merge, so a group it drops reads
+        # as "nothing committed" to `merge_additive` -- a draft that discards the
+        # operator's own entry. The only thing between that and a write is
+        # `config_refusal`, and the two live in different modules with no test
+        # tying them together. Pin the coupling: whatever this read cannot round
+        # trip, setup refuses before it writes anything.
+        for index, (block, lost) in enumerate(self.NOT_ROUND_TRIPPED):
+            repo = _case_repo(tmp_path, "roundtrip%d" % index,
+                              "version: 1\ngroups:\n" + block)
+            authored = discovery.repo_config.read_document(repo).doc["groups"]
+            assert discovery._committed_matrix(repo).get(lost) != authored.get(lost), block
+            assert setup_flow.config_refusal(repo), block
+            capsys.readouterr()
+
     DECLARED = (
         ("version: 1\ngroups:\n  A:\n    match: ['a/**']\n", True),
         ("version: 1\ngroups: {}\n", False),
