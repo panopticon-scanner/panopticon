@@ -267,7 +267,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertEqual(
             upload["uses"],
             "github/codeql-action/upload-sarif@"
-            "b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+            "1c5b675653bb5c22dbe9b12b556ec555138e09fd",
         )
         self.assertNotIn("wait-for-processing", upload.get("with", {}))
         self.assertLess(steps.index(upload), steps.index(audit))
