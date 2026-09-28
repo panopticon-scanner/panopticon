@@ -134,10 +134,12 @@ symlink at the config path is a disclosure every reader prints and a refusal on 
 walked instead. Either way, build/dependency/cache directories are pruned by name
 (`node_modules`, `.venv`, `__pycache__`, …), and a path that starts with a dot is surface only when
 the shipped catalogs or the deterministic SEC floor name it — or name its config family, so a
-`.golangci.toml` rides in beside the `.golangci.yml` the catalog spells. Named: `.github/`,
-`.circleci/`, `.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed dot-directories, plus
-root dot-files such as `.env*`, `.npmrc`, `.travis.yml` and `.pre-commit-config.yaml`. `.git/` and
-generated tool state (`.eslintcache`) stay out, and so does a dot-directory nested below the root.
+`.golangci.toml` rides in beside the `.golangci.yml` the catalog spells. The `.eslint` family is
+the one exception: only the five spellings the catalog names ride in, so `.eslintrc.cjs` does not.
+Named: `.github/`, `.circleci/`, `.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed
+dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` and
+`.pre-commit-config.yaml`. `.git/` and generated tool state (`.eslintcache`) stay out, and so does a
+dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.
 

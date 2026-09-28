@@ -1182,9 +1182,10 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
         that an allowlist entry is claimed at all, so a widened entry -- the
         drift direction that ends in "allow every dot-path" -- used to pass the
         whole file. A `DIRS` entry must be a dot-path some glob or hint names or
-        reaches into; a `FILES` entry must be matched by a glob or CARRY a hint,
-        which is how the floor reads one (a substring of the path); a stem must
-        begin one of them.
+        reaches into; a `FILES` entry must be matched by a glob or BE a hint --
+        equal to it, or extending it past a dot (`.env.local` for `.env`), never a
+        bare substring (`.mkdocs.yml` must not ride on `.mk`); a stem must begin
+        one of them.
         """
         globs, hints = self._catalog_dot_globs(), self._dot_floor_hints()
         claims = globs + hints
@@ -1194,7 +1195,8 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                 unjustified.append("DIRS %s" % entry)
         for entry in sorted(dot_paths.FILES):
             if not (any(orchestrator._glob_to_re(c).match(entry) for c in globs)
-                    or any(hint in entry for hint in hints)):
+                    or any(entry == hint or entry.startswith(hint + ".")
+                           for hint in hints)):
                 unjustified.append("FILES %s" % entry)
         for entry in dot_paths.FILE_STEMS:
             if not any(c.startswith(entry) for c in claims):
