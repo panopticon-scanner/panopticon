@@ -82,6 +82,11 @@
 #     committed closures and the scripts that maintain their digests and pins,
 #     with the Docker/pin tests beside them. `Core` keeps the runner, the
 #     ingest, the adapters' dispatch entry and the gate.
+#   - 2026-09-28 (#2288): part 2 of that split claims `tool_capture.py` (the
+#     capture path: watchdog, byte cap, classification, redaction, atomic
+#     write) and `tests/test_tool_capture.py` on `Core`, beside `run_tools.py`
+#     -- one capture is one reviewer's question, and the tests that moved with
+#     the code have to be in the same cell's inventory.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -132,6 +137,7 @@ groups:
       match:
       - skill/scripts/run_tools.py
       - skill/scripts/scanner_config.py
+      - skill/scripts/tool_capture.py
       - skill/scripts/ingest_tools.py
       - skill/scripts/_run_adapter.py
       - skill/scripts/smoke_adapters.py
@@ -147,6 +153,7 @@ groups:
       - tests/test_run_tools_docker.py
       - tests/test_run_tools_languages.py
       - tests/test_scanner_config.py
+      - tests/test_tool_capture.py
       - tests/test_ingest_tools.py
       - tests/test_run_adapter.py
       - tests/test_smoke_adapters.py

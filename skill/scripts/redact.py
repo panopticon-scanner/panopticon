@@ -120,7 +120,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     # is written one double-quoted literal per line, and a `[^"]` bound (round 1
     # of this issue) silently stopped masking exactly that shape, publishing a
     # real key into report.json. Structure safety for a JSON capture comes from
-    # PARSING (run_tools._redact_capture) and for the report from the per-leaf
+    # PARSING (tool_capture._redact_capture) and for the report from the per-leaf
     # walk below -- never from this character class.
     (re.compile(
         r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[\s\S]){1,16384}?"

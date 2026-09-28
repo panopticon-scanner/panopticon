@@ -45,6 +45,7 @@ import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.phases.validate as validate_phase
 import scripts.run_tools as run_tools
+import scripts.tool_capture as tool_capture
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
 
@@ -131,7 +132,7 @@ class TestToolsManifest(_Planted):
 
 
 class TestToolCaptures(_Planted):
-    """`run_tools._atomic_write` is the choke point every SARIF capture goes
+    """`tool_capture._atomic_write` is the choke point every SARIF capture goes
     through. It stages with `mkstemp` -- unplantable leaf, which is why it was
     not in the first sweep -- but `dir=os.path.dirname(out_path)`, so a planted
     `.panopticon/tools` directory link carries EVERY capture out of the tree,
@@ -143,7 +144,7 @@ class TestToolCaptures(_Planted):
         os.makedirs(outside)
         os.symlink(outside, os.path.join(self.pano, "tools"))
         with self.assertRaises(ValueError):
-            run_tools._atomic_write(
+            tool_capture._atomic_write(
                 os.path.join(self.pano, "tools", "semgrep.sarif"), b"{}")
         self.assertEqual(os.listdir(outside), [])      # nothing escaped
 

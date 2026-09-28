@@ -895,7 +895,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   is what an operator copies into a CI artifact, and a secret scanner's output is a list of other
   people's credentials by construction, so every capture path — the buffered one, the streaming one
   and its over-cap truncation branch — passes its bytes through ONE choke point,
-  `run_tools._redact_capture`, immediately before the atomic write, with the same pattern set the
+  `tool_capture._redact_capture`, immediately before the atomic write, with the same pattern set the
   report is masked with, never a second copy. Structure survives because the capture is PARSED, not
   because the patterns are trusted to stay inside a string: a JSON capture — every one but spotbugs'
   XML — goes through `redact.redact_tree`, the per-string-leaf walk synthesis uses, so `ruleId`,

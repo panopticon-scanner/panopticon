@@ -43,7 +43,7 @@ def _child_env():
 # Hard bound per phase so a wedged discovery/synthesize or a hung tool runner
 # cannot block the whole (resumable, CI-automatable) driver indefinitely (#1094).
 # discovery/synthesize are fast; the tools phase is a generous backstop above
-# run_tools' own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
+# tool_capture's own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
 # harness, not a single slow scanner.
 _CHILD_TIMEOUTS = {"discovery": 600, "tools": 7200, "synthesize": 600}
 
