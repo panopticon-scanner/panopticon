@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 import shutil
@@ -54,8 +55,6 @@ FINDING = {
     ({}, False, ["self-scan", "severity:info", "evidence:unverified"]),
     ({"severity": "critical", "evidence": {"status": "tool_confirmed"}}, False,
      ["self-scan", "severity:critical", "evidence:tool-confirmed"]),
-    ({"severity": "UNKNOWN", "evidence": {"status": "unknown"}}, False,
-     ["self-scan", "severity:info", "evidence:unverified"]),
     ({"severity": "HIGH", "evidence": {"status": "advisor_confirmed"},
       "panel": "security"}, False,
      ["self-scan", "severity:high", "evidence:advisor-confirmed", "panel:security"]),
@@ -68,6 +67,47 @@ FINDING = {
 ])
 def test_labels_for_exact_order_and_cosmetic_rule(finding, rejected, expected):
     assert file_issues.labels_for(finding, rejected=rejected) == expected
+
+
+@pytest.mark.parametrize(("finding", "match"), [
+    ({"severity": "UNKNOWN"}, "unknown severity 'UNKNOWN': not in evidence.SEV_ORDER"),
+    ({"evidence": {"status": "unknown"}},
+     "unknown evidence status 'unknown': not in evidence.EVIDENCE_STATUSES"),
+    ({"evidence": {"status": "tool-reported"}},          # label spelling, not a status
+     "unknown evidence status 'tool-reported'"),
+])
+def test_labels_for_refuses_an_off_taxonomy_value(finding, match):
+    # #2235 (ARC-1576523829): both axes used to fall back -- an unlisted
+    # severity became `severity:info` and an unlisted status
+    # `evidence:unverified`, a label asserting the OPPOSITE of what happened.
+    # A ninth evidence status would have filed every finding carrying it as
+    # "unverified" with nothing objecting. The filer refuses instead, and names
+    # the value and the taxonomy that owns it.
+    with pytest.raises(ValueError, match=re.escape(match)):
+        file_issues.labels_for(finding)
+
+
+def test_the_refusal_bounds_and_escapes_a_report_authored_value():
+    # The value comes out of a report file, so it is agent-authored: the
+    # refusal must not be able to repaint a terminal from a traceback, and a
+    # truncated value must not read as a complete one.
+    hostile = "\x1b[2J" + "Q" * 300
+    with pytest.raises(ValueError) as caught:
+        file_issues.labels_for({"evidence": {"status": hostile}})
+    message = str(caught.value)
+    assert "\x1b" not in message                        # inert, %r-escaped
+    assert "\\x1b[2J" in message
+    assert "\u2026" in message                          # the cut is MARKED
+    assert len(message) < 160
+    assert len(message.splitlines()) == 1
+
+
+def test_the_two_label_tables_are_derived_from_the_canonical_taxonomy():
+    # The tables are no longer a hand-copy that could drift; they are the
+    # taxonomy, spelled the way `.github/labels.yml` spells it.
+    # `tests/test_label_catalog_parity.py` pins them against BOTH.
+    assert file_issues.SEV_LABEL["CRITICAL"] == "severity:critical"
+    assert file_issues.EV_LABEL["backup_scope_limited"] == "evidence:backup-scope-limited"
 
 
 def _split_finding(name, rejected=False):

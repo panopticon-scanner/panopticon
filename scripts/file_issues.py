@@ -39,6 +39,7 @@ _SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 if _SKILL not in sys.path:
     sys.path.insert(0, _SKILL)
 import scripts.reconcile as _reconcile  # noqa: E402
+import scripts.evidence as evidence  # noqa: E402
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
@@ -54,24 +55,43 @@ RUN_LABEL = "run 2"
 RUN_DATE = "2026-08-04"
 RUN_STATE_DOC = "docs/superpowers/2026-08-04-self-scan-run-state.md"
 
-SEV_LABEL = {"CRITICAL": "severity:critical", "HIGH": "severity:high",
-             "MEDIUM": "severity:medium", "LOW": "severity:low",
-             "INFO": "severity:info"}
-EV_LABEL = {"tool_reported": "evidence:tool-reported",
-            "tool_confirmed": "evidence:tool-confirmed",
-            "advisor_confirmed": "evidence:advisor-confirmed",
-            "corroborated": "evidence:corroborated",
-            "needs_more_info": "evidence:needs-more-info",
-            "unverified": "evidence:unverified",
-            "rejected": "evidence:rejected",
-            "backup_scope_limited": "evidence:backup-scope-limited"}
+# DERIVED from the canonical taxonomy, not copied from it (#2235,
+# ARC-1576523829): a hand-copy was a third place to update -- `evidence`,
+# `.github/labels.yml` and here -- and the only one nothing compared to the
+# others. `tests/test_label_catalog_parity.py` pins these two against BOTH, so
+# the expressions below also assert the catalog's exact spellings.
+SEV_LABEL = {s: "severity:" + s.lower() for s in evidence.SEV_ORDER}
+EV_LABEL = {s: "evidence:" + s.replace("_", "-") for s in evidence.EVIDENCE_STATUSES}
+_DIAG_MAX = 60           # bound on the report-authored value a refusal names
+
+
+def _label(table, value, axis, owner):
+    """``table[value]``, or a ValueError naming the value and its taxonomy.
+
+    Guessing is what this replaces: an unlisted severity used to become
+    `severity:info` and an unlisted status `evidence:unverified` -- a label
+    asserting the opposite of what happened, on a PUBLIC issue, with nothing
+    objecting. A ninth evidence status would have been filed that way.
+
+    Report values are agent-authored, so the refusal collapses the value to one
+    line, bounds it with a MARKED cut (a truncation must not read as a complete
+    value) and renders it with ``%r``, which makes a control character inert.
+    Naming the OWNER points the fix at the derivation above, not at a new
+    hand-written row here.
+    """
+    if value in table:
+        return table[value]
+    text = " ".join(str(value).split())
+    cut = (text[:_DIAG_MAX - 1] + "\u2026") if len(text) > _DIAG_MAX else text
+    raise ValueError("unknown %s %r: not in evidence.%s" % (axis, cut, owner))
 
 
 def labels_for(f, rejected=False):
     out = ["self-scan"]
-    out.append(SEV_LABEL.get(str(f.get("severity", "INFO")).upper(), "severity:info"))
+    out.append(_label(SEV_LABEL, str(f.get("severity", "INFO")).upper(),
+                      "severity", "SEV_ORDER"))
     status = (f.get("evidence") or {}).get("status", "unverified")
-    out.append(EV_LABEL.get(status, "evidence:unverified"))
+    out.append(_label(EV_LABEL, status, "evidence status", "EVIDENCE_STATUSES"))
     panel = f.get("panel")
     if panel:
         out.append("panel:%s" % panel)

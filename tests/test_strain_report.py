@@ -60,21 +60,75 @@ class TestSharedReportContracts(unittest.TestCase):
                     self.assertEqual(sr._occurrence(finding, "run-1"), with_run)
                     self.assertEqual(json.dumps(finding, sort_keys=True), before)
 
-    def test_domain_callers_keep_their_distinct_normalization_policies(self):
-        for code, raw, strain, gap in (
-            ("SEC-A1A", "SEC", "SEC", "SEC"),
-            ("sec-X0X", "sec", "SEC", "SEC"),
-            (" sec-X0X", " sec", "SEC", "ZZZ"),
-            ("SEC", None, "SEC", "SEC"),
-            ("-X0X", "", None, "ZZZ"),
-            (None, None, None, "ZZZ"),
-            (27, None, "27", "ZZZ"),
+    def test_the_two_emitters_answer_the_probe_table_identically(self):
+        # #2236 (ARC-101960059), the reproduction that filed it. The two
+        # emitters are companions over the same findings, and both halves
+        # disagreed: `x0x_report.is_fallback` matched `-X0X` case-SENSITIVELY
+        # while `strain_report._is_gap` upper-cased first, so `sec-x0x` was a
+        # catalog gap to one and an ordinary code to the other; and
+        # `x0x_report._domain` clamped an off-roster prefix to the `ZZZ`
+        # sentinel while `strain_report._domain` published it verbatim -- into a
+        # `domain` whose schema enum IS the roster, and into the `cross_domain`
+        # flag. Codes arrive verbatim from the reviewer with no case-fold
+        # upstream, so neither edge is hypothetical. One owner now
+        # (`ocrdb.is_fallback_code` / `ocrdb.roster_domain`), and this table is
+        # asserted EQUAL across the two modules rather than twice over.
+        for code, gap, domain in (
+            ("SEC-X0X", True, "SEC"),
+            ("sec-x0x", True, "SEC"),
+            ("Sec-X0x", True, "SEC"),
+            ("zzz-x0x", True, "ZZZ"),
+            ("sec-a1a", False, "SEC"),
+            ("XYZ-A1A", False, "ZZZ"),
+            ("NOTADOMAIN-A1A", False, "ZZZ"),
+        ):
+            with self.subTest(code=code), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(x0x.is_fallback(code), gap)
+                self.assertEqual(sr._is_gap(code), gap)
+                self.assertEqual(x0x._domain({"code": code}), domain)
+                self.assertEqual(sr._domain(code), domain)
+
+    def test_the_shared_domain_predicate_is_total_and_roster_pinned(self):
+        # The edges the probe table does not reach. `ocrdb.domain_of` is kept in
+        # the table as the RAW claim -- it says what a code claims, not whether
+        # the claim is a domain -- so the clamp is visible as the difference
+        # between the columns. Every clamped answer is `ocrdb.UNKNOWN_DOMAIN`,
+        # which is in both artifacts' `domain` enum; there is no third answer
+        # and no `None`, which is what lets the two emitters be compared at all.
+        for code, raw, domain in (
+            ("SEC-A1A", "SEC", "SEC"),
+            ("sec-X0X", "sec", "SEC"),
+            (" sec-X0X", " sec", "SEC"),      # stripped, then clamped if needed
+            ("SEC", None, "SEC"),             # prefix-only: no hyphen, still SEC
+            ("-X0X", "", "ZZZ"),
+            (None, None, "ZZZ"),
+            (27, None, "ZZZ"),
         ):
             with self.subTest(code=code), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(ocrdb.domain_of(code), raw)
-                self.assertEqual(sr._domain(code), strain)
-                self.assertEqual(x0x._domain({"code": code}), gap)
+                self.assertEqual(sr._domain(code), domain)
+                self.assertEqual(x0x._domain({"code": code}), domain)
+                self.assertTrue(ocrdb.is_domain(sr._domain(code)))
+                # x0x still prefers the finding's own `domain` field over the
+                # code prefix, and normalizes that through the same clamp.
                 self.assertEqual(x0x._domain({"code": code, "domain": "dat"}), "DAT")
+                self.assertEqual(x0x._domain({"code": code, "domain": "nope"}), "ZZZ")
+
+    def test_both_emitters_disclose_the_clamp_on_stderr(self):
+        # A clamp rewrites a published value, so neither emitter may do it
+        # silently -- and each line is bounded and `%r`-rendered, because the
+        # code is agent-authored (`x0x_report`'s line already was).
+        for module, call in ((x0x, lambda: x0x._domain({"id": "gap-1",
+                                                        "code": "BOG-A1A"})),
+                             (sr, lambda: sr._domain("BOG-A1A"))):
+            with self.subTest(module=module.__name__):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(call(), "ZZZ")
+                line = err.getvalue()
+                self.assertEqual(len(line.splitlines()), 1)
+                self.assertIn("'BOG'", line)
+                self.assertIn("not an OCRDb domain", line)
 
     def test_reports_remain_flat_importable_in_a_fresh_interpreter(self):
         scripts = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skill", "scripts")

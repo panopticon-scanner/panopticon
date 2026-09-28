@@ -37,8 +37,14 @@ _DIAG_MAX = 120          # bound on any agent-authored value in a diagnostic
 
 
 def is_fallback(code):
-    """True iff ``code`` is a ``<DOM>-X0X`` / ``ZZZ-X0X`` catalog-gap fallback."""
-    return bool(code) and str(code).endswith("-X0X")
+    """True iff ``code`` is a ``<DOM>-X0X`` / ``ZZZ-X0X`` catalog-gap fallback.
+
+    Case-INSENSITIVE, and shared with ``strain_report._is_gap`` (#2236,
+    ARC-101960059): this used to be a bare case-sensitive ``endswith``, so
+    ``sec-x0x`` was a gap to the strain emitter and an ordinary code here. See
+    ``ocrdb.is_fallback_code``.
+    """
+    return ocrdb.is_fallback_code(code)
 
 
 def _slug(text):
@@ -77,26 +83,38 @@ def _occurrence(finding):
 
 
 def _domain(finding):
+    """The finding's roster domain: its own ``domain`` field if it has one, else
+    the prefix of its ``code``.
+
+    The normalization is ``ocrdb.roster_domain``, shared with ``strain_report``
+    (#2236). Two properties that predate the sharing and still hold:
+
+    * #run7 COD-C2D — the value flows in verbatim from synthesize (no case-fold
+      upstream), so it is upper-cased, and "SEC" and "sec" cluster into ONE
+      candidate instead of splitting on the key (the title half is already
+      lowercased).
+    * #1639 P15 F1 — this value IS the published ``candidates[].domain`` and the
+      x0x schema pins it to the roster, so an off-roster prefix is clamped to the
+      ZZZ sentinel and disclosed. The prefix of an agent's ``code`` is not a
+      domain just because it looks like one. ``codes.py`` normally rewrites such
+      a code upstream; this is the same answer at this artifact's own boundary,
+      because the X0X schema is a SECOND published contract and the repair pass
+      reads only the first.
+    """
+    # The `or ZZZ` default is not a rejected claim: a finding with no `domain`
+    # and no `code` claims no domain, which IS the sentinel, so it reaches
+    # `roster_domain` already normalized and is not disclosed.
     dom = (finding.get("domain")
-           or (ocrdb.domain_prefix(str(finding.get("code", ""))) or "ZZZ"))
-    # #run7 COD-C2D: OCRDb domains/codes are uppercase by convention, but the
-    # value flows in verbatim from synthesize (no case-fold upstream). Fold it so
-    # "SEC" and "sec" cluster into ONE candidate instead of splitting on the key
-    # (the title half is already lowercased). Also normalizes the emitted
-    # candidate's `domain`, which reuses this value.
-    dom = str(dom).upper()
-    if not ocrdb.is_domain(dom):
-        # #1639 P15 F1: this value IS the published `candidates[].domain`, and
-        # the x0x schema pins it to the roster. The prefix of an agent's `code`
-        # is not a domain just because it looks like one. `codes.py` normally
-        # rewrites such a code to the ZZZ sentinel upstream; this is the same
-        # answer at the artifact's own boundary, because the X0X schema is a
-        # SECOND published contract and the repair pass reads only the first.
+           or (ocrdb.domain_prefix(str(finding.get("code", "")))
+               or ocrdb.UNKNOWN_DOMAIN))
+
+    def _disclose(claim):
         print("x0x: %r: domain %r is not an OCRDb domain; filing the candidate "
-              "under ZZZ" % (_one_line(finding.get("id")) or "?",
-                             _one_line(dom, 40)), file=sys.stderr)
-        return "ZZZ"
-    return dom
+              "under %s" % (_one_line(finding.get("id")) or "?",
+                            _one_line(claim, 40), ocrdb.UNKNOWN_DOMAIN),
+              file=sys.stderr)
+
+    return ocrdb.roster_domain(dom, disclose=_disclose)
 
 
 def _lead(cluster):

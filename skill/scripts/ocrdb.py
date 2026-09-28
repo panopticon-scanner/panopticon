@@ -159,6 +159,49 @@ def domain_of(code):
     return domain_prefix(code)
 
 
+# The domain half of UNKNOWN_DOMAIN_FALLBACK, derived rather than retyped so the
+# sentinel DOMAIN and the sentinel CODE cannot drift apart.
+UNKNOWN_DOMAIN = domain_prefix(UNKNOWN_DOMAIN_FALLBACK)
+_X0X_SUFFIX = "-X0X"
+
+
+def is_fallback_code(code):
+    """True iff `code` is a `<DOM>-X0X` catalog-gap fallback, in ANY case.
+
+    #2236 (ARC-101960059): `x0x_report.is_fallback` matched the suffix
+    case-SENSITIVELY and `strain_report._is_gap` upper-cased first, so `sec-x0x`
+    was a catalog gap to one emitter and an ordinary code to the other. Codes
+    arrive verbatim from the reviewer, with no case-fold upstream, so the split
+    was reachable. One predicate, case-insensitive like the rest of this
+    module's normalization.
+    """
+    return bool(code) and str(code).upper().endswith(_X0X_SUFFIX)
+
+
+def roster_domain(code, disclose=None):
+    """The roster domain `code` claims: its prefix, stripped and upper-cased,
+    CLAMPED to `UNKNOWN_DOMAIN` when that is not a roster domain (`is_domain`).
+
+    TOTAL by construction, so the answer is always inside the `domain` enum both
+    published gap artifacts pin -- x0x's `candidates[].domain` and strain's
+    `signals[].domain` -- whatever a reviewer wrote. #2236: `x0x_report` clamped
+    (#1639 P15 F1) and `strain_report` returned the prefix verbatim, which put an
+    off-roster string into strain's published `domain` and decided its
+    `cross_domain` flag.
+
+    `disclose`, when given, is called with the REJECTED claim as the clamp
+    fires: a clamp rewrites a published value, so it is never silent, and each
+    emitter owns the wording and the bounding of its own stderr line (the code
+    is agent-authored).
+    """
+    dom = domain_prefix(str(code)).strip().upper()
+    if is_domain(dom):
+        return dom
+    if disclose is not None:
+        disclose(dom)
+    return UNKNOWN_DOMAIN
+
+
 def validate_code(bundle, code):
     """True iff `code` is a real entry in the bundle. A synthetic '<DOM>-X0X'
     fallback code is NOT a real entry (returns False) — that is the catalog-gap

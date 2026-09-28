@@ -53,8 +53,6 @@ else:
 
 SCHEMA_VERSION = 1
 
-_X0X_SUFFIX = "-X0X"
-
 _DIAG_MAX = 120          # bound on an agent-authored title or id in a diagnostic
 _DIAG_CODE_MAX = 40      # ... and on a code, which is `DOM-A1A`-shaped
 
@@ -75,15 +73,27 @@ def _one_line(value, cap=_DIAG_MAX):
 
 
 def _is_gap(code):
-    return bool(code) and str(code).upper().endswith(_X0X_SUFFIX)
+    """True iff `code` is an `-X0X` catalog-gap fallback, in any case. Shared
+    with `x0x_report.is_fallback` (#2236): `ocrdb.is_fallback_code`."""
+    return ocrdb.is_fallback_code(code)
 
 
 def _domain(code):
-    """Domain prefix of an OCRDb code (`DAT-C1B` -> `DAT`), or None."""
-    if not code:
-        return None
-    head = ocrdb.domain_prefix(str(code)).strip().upper()
-    return head or None
+    """The roster domain of an OCRDb code (`DAT-C1B` -> `DAT`), clamped to the
+    `ZZZ` sentinel when the prefix is not a roster domain.
+
+    #2236 (ARC-101960059): this returned the prefix VERBATIM while
+    `x0x_report._domain` clamped, so an off-roster prefix reached the published
+    `signals[].domain` -- whose schema enum IS the roster -- and decided
+    `cross_domain`. Both emitters ask `ocrdb.roster_domain` now, so the same
+    finding cannot be classified two ways the day this emitter is wired in.
+    """
+    def _disclose(claim):
+        print("strain: domain %r is not an OCRDb domain; recording the signal "
+              "under %s" % (_one_line(claim, _DIAG_CODE_MAX),
+                            ocrdb.UNKNOWN_DOMAIN), file=sys.stderr)
+
+    return ocrdb.roster_domain(code, disclose=_disclose)
 
 
 def direction(code_filed, code_preferred):
@@ -148,18 +158,17 @@ def advisor_recode_signals(findings, run_id=None):
     out = []
     for (filed, preferred), pairs in clusters.items():
         lead = pairs[0][0]
+        dom = _domain(filed)
         sig = {
             "signal": "advisor_recode",
             "code_filed": filed,
             "code_preferred": preferred,
             "direction": direction(filed, preferred),
-            "cross_domain": _domain(filed) != _domain(preferred),
+            "domain": dom,
+            "cross_domain": dom != _domain(preferred),
             "recurrence": len(pairs),
             "occurrences": [o for _f, o in pairs],
         }
-        dom = _domain(filed)
-        if dom:
-            sig["domain"] = dom
         title = lead.get("short_title") or lead.get("title")
         if title:
             sig["summary"] = title
@@ -237,18 +246,17 @@ def cross_run_signals(runs, window=20):
     for (filed, preferred), pairs in clusters.items():
         lead = pairs[0][0]
         occurrences = [o for _f, occ in pairs for o in occ]
+        dom = _domain(filed)
         sig = {
             "signal": "cross_run_disagreement",
             "code_filed": filed,
             "code_preferred": preferred,
             "direction": direction(filed, preferred),
-            "cross_domain": _domain(filed) != _domain(preferred),
+            "domain": dom,
+            "cross_domain": dom != _domain(preferred),
             "recurrence": len(pairs),
             "occurrences": occurrences,
         }
-        dom = _domain(filed)
-        if dom:
-            sig["domain"] = dom
         title = lead.get("short_title") or lead.get("title")
         if title:
             sig["summary"] = title

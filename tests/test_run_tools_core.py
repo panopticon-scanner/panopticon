@@ -65,6 +65,27 @@ class TestRunTools(unittest.TestCase):
         unresolved = [t for t in rt.recommendable_tools() if t not in resolvable]
         self.assertEqual(unresolved, [], unresolved)
 
+    def test_the_registry_and_the_recommendable_set_are_the_same_set(self):
+        # #2235 (ARC-3428598333): the test above is the only direction anyone
+        # had pinned, and it is the harmless one -- an unresolvable name
+        # fail-closes. The reverse gap is the silent one: a tool that is
+        # registered and runnable but that nothing can ever select, because its
+        # name reached `ADAPTERS` and not `PHASE1_ADAPTERS`/`PHASE2_ADAPTERS`
+        # (the selection tables `recommendable_tools` unions). The two sets are
+        # equal today, so make that a decision rather than a coincidence: an
+        # adapter deliberately kept unselectable -- as the retired bare
+        # `eslint` was, by being removed from ADAPTERS -- must say so here.
+        from scripts.tools import ADAPTERS
+        from scripts.tools.legacy_sarif import TOOL_CMD
+        registry = set(TOOL_CMD) | set(ADAPTERS)
+        recommendable = set(rt.recommendable_tools())
+        self.assertEqual(
+            recommendable, registry,
+            "recommendable-only %r (no invocation: fail-closed, no diagnostic); "
+            "registry-only %r (runnable but unselectable -- add it to a PHASE "
+            "table or retire it from ADAPTERS)"
+            % (sorted(recommendable - registry), sorted(registry - recommendable)))
+
     def test_select_tools(self):
         tools = rt.select_tools(["python", "go"], has_deps=True)
         self.assertIn("semgrep", tools)
