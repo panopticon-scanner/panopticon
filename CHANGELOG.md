@@ -58,7 +58,7 @@ evidence exposed.
   `skill/scripts/tools_manifest.py` whole, and the two ledgers whose only reader is the writer (the
   network posture and the gitleaks ignore-file posture) move with it; `run_tools` binds them back,
   and still clears and fills both where the argv is built. `run_tools.py` goes from 1322 to 1136
-  lines and the new module is 259, under the 700-line ceiling. The pin STAYS in
+  lines and the new module is 265, under the 700-line ceiling. The pin STAYS in
   `tests/test_flat_module_ceiling.py`, lowered to 1136: all three extractions have now landed and
   the module is still over the ceiling, holding detection, virtualenv partitioning, selection, the
   docker argv and the CLI. No manifest key, value, order or byte changed, no argv and no message --
