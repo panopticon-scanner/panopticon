@@ -542,6 +542,68 @@ class TestADownloadNamedLikeAWrapper(unittest.TestCase):
         self.assertIsNone(wg.fetch_exec_defect("flock 9\n./flock 9\n"))
 
 
+class TestADownloadRunThroughAnExpandedPath(unittest.TestCase):
+    """#2310: `curl -o tool …; "$PWD/tool" 9` read clean, because a use is
+    bound to a download by its spelling and the fetch spelled it `tool`; bash
+    3.2 and 5.2 run the download through each spelling in the first test (a
+    `chmod +x tool` before the fetch survives it). A command word holding a
+    `$` or `$(...)` that ends in a download's basename is now running it."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def defect(self, run, dest="tool"):
+        return wg.fetch_exec_defect("curl -fsSL -o %s %s\n%s" % (dest, self.URL, run))
+
+    def test_a_command_word_ending_in_its_basename_is_running_it(self):
+        for run in ('"$PWD/tool" 9\n', '"${PWD}/tool" 9\n', "$PWD/tool 9\n",
+                    '"$PWD"/tool 9\n', '"$(pwd)/tool" 9\n', '"`pwd`/tool" 9\n',
+                    '"$(dirname "$PWD/x")/tool" 9\n', "x=1 $PWD/tool 9\n",
+                    'for i in 1; do "$PWD/tool" 9; done\n',
+                    'find . -name tool -exec "$PWD/tool" {} \\;\n'):
+            with self.subTest(run=run):
+                self.assertIn("-> tool and running it with nothing verifying",
+                              self.defect(run) or "")
+
+    def test_wherever_the_fetch_put_it(self):
+        # Bound by the basename: what `$PWD` expands to is not evaluated, so
+        # `d/tool` is read as run too -- which bash does not do from the
+        # checkout, and is the fail-closed side to be wrong on.
+        for dest, run in (("bin/tool", '"$PWD/bin/tool" 9\n'),
+                          ("/tmp/tool", '"$RUNNER_TEMP/tool" 9\n'),
+                          ("d/tool", '"$PWD/tool" 9\n')):
+            with self.subTest(dest=dest):
+                self.assertIn("running it", self.defect(run, dest) or "")
+
+    def test_as_a_wrapper_word_through_a_copy_and_behind_a_wrapper(self):
+        # `"$PWD/flock"` is read through as `flock`, but runs the download.
+        self.assertIn("running it", self.defect('"$PWD/flock" 9 true\n', "flock") or "")
+        self.assertIn("running it (as `alias`, copied from it earlier)",
+                      self.defect('cp tool alias\n"$PWD/alias" 9\n') or "")
+        # Refused behind `sudo` already; now it is the download's use as well.
+        why = wg.fetch_exec_defects("curl -fsSL -o tool %s\nsudo \"$PWD/tool\" 9\n" % self.URL)
+        self.assertEqual(2, len(why), why)
+        self.assertIn("dynamic command operand behind a wrapper", why[0])
+        self.assertIn("running it", why[1])
+
+    def test_a_check_before_it_clears_it_and_one_after_it_does_not(self):
+        self.assertIsNone(self.defect(self.CHECK % "tool" + '"$PWD/tool" 9\n'))
+        self.assertIn("only AFTER running it",
+                      self.defect('"$PWD/tool" 9\n' + self.CHECK % "tool") or "")
+
+    def test_a_check_still_binds_by_its_exact_spelling(self):
+        # Reported although bash checks the same file: read that loosely, a
+        # checksum of `$OTHER/tool` would clear a `./tool` it never read.
+        self.assertIn("no checksum in the job names tool",
+                      self.defect(self.CHECK % "$PWD/tool" + '"$PWD/tool" 9\n') or "")
+
+    def test_another_basename_or_a_static_path_is_not_the_download(self):
+        for run in ('"$PWD/other" 9\n', '"$PWD/tool.sh" 9\n', '"$PWD/tool/.." 9\n',
+                    "./bin/tool 9\n", "/usr/bin/tool 9\n"):
+            with self.subTest(run=run):
+                self.assertIsNone(self.defect(run))
+
+
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
     in a checkout holding a file called sh, before the command runs, which the
@@ -1384,6 +1446,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", 'DEST=/tmp/payload\n'
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
+
+    def test_a_use_spelled_another_way_off_the_command_word(self):
+        # #2310 closed a command word with a `$` ending in the download's
+        # basename (`TestADownloadRunThroughAnExpandedPath`); an operand, a
+        # word whose last part expands and a tilde still name nothing fetched.
+        fetch = ("get", "curl -sfL https://example.test/p -o payload\n")
+        for run in ('sh "$PWD/payload"\n', 'P=./payload\n"$P" 9\n', "~/payload 9\n"):
+            with self.subTest(run=run):
+                self.accepted(fetch, ("run", run))
+        self.flagged(fetch, ("run", '"$PWD/payload" 9\n'))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):

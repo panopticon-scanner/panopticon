@@ -76,7 +76,8 @@ that starts catching one fails there, and this list is edited with it.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, including its
-  own use, so that download goes unseen.
+  own use, so that download goes unseen. A COMMAND word with a `$` or `$(...)`
+  that ends in the download's basename is the exception: running it (#2310).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -181,7 +182,7 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, chmod_executable, chmod_targets,
-                            covers, described, in_container, names_file,
+                            covers, described, in_container, may_run, names_file,
                             parse_fetch, regions, same_file, scripts,
                             stdin_program, streamed_fetch, swallowed)
 
@@ -353,7 +354,6 @@ def fetches(script):
 
 # --- which statements check, and what they check -----------------------------
 
-
 def _has_check_flag(argv):
     for token in argv[1:]:
         if token in ("-c", "--check"):
@@ -497,7 +497,7 @@ def _uses(stmts, dest, after):
 
 
 def _use(statement, position, stage, argv, dest):
-    if any(same_file(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
+    if any(may_run(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
         return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
     if not argv:
         return None
@@ -516,7 +516,7 @@ def _use(statement, position, stage, argv, dest):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
-    if same_file(argv[0], dest):
+    if may_run(argv[0], dest):
         return "running it"
     if not mentions:
         return None

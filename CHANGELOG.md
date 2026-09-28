@@ -11,6 +11,7 @@ evidence exposed.
   `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
   `sh <<< '…'` is read as the script it hands `sh`; a here-string bash expands is reported (#2293).
   A brace or glob word where a command starts (`{sh,-c}`, `[s]h`) is reported, not read (#2294).
+  `"$PWD/tool"` and `"$(pwd)/tool"` are read as running a download called `tool` (#2310).
 - **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
   clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by

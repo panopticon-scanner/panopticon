@@ -14,11 +14,13 @@ Three questions live here, each one a shape a step writes down:
                                the single owner of bounded transfer parsing
     what an operand stands for `same_file`, `names_file` and `covers`: exactly,
                                by a glob, by the directory a recursive command
-                               walks; and `described`, for the operands handed
-                               over by `find -exec` or `xargs`. The guard binds
-                               a use to a download by NAME, and shell has
-                               several ways to designate a file without ever
-                               writing its name
+                               walks; `may_run`, a command word bash expands
+                               that ends in a download's basename (#2310); and
+                               `described`, for the operands handed over by
+                               `find -exec` or `xargs`. The guard binds a use
+                               to a download by NAME, and shell has several
+                               ways to designate a file without ever writing
+                               its name
     where a script hides       `scripts` finds the shell handed to `eval` or
                                `sh -c` as a STRING, which is the same act one
                                quote away from a substitution; `stdin_program`
@@ -41,6 +43,7 @@ import re
 
 import shell_reader
 from shell_reader import command, conditional, negated
+from shell_wrappers import dynamic
 
 
 # Compatibility bindings share the single fetch owner with existing callers.
@@ -91,6 +94,26 @@ def chmod_executable(argv):
 
 def same_file(token, path):
     return os.path.normpath(token) == os.path.normpath(path)
+
+
+def may_run(word, dest):
+    """Does running this COMMAND word run `dest`? By its spelling, or (#2310)
+    by its basename where bash expands the word first.
+
+    `"$PWD/tool"` and `"$(pwd)/tool"` run the `tool` a step just fetched, and
+    the guard does not evaluate the shell to learn where they point: so a
+    word `shell_wrappers.dynamic` calls dynamic -- a `$`, a `$(...)` or
+    backquotes, a `Rewritten` word -- that ends in the download's basename is
+    read as running it, wherever the fetch put it. Loose on the side that
+    RUNS only: a checksum still binds by its exact spelling (`names_file`), or
+    one of `$OTHER/tool` would clear a `./tool` it never read. A word whose
+    LAST part expands (`"$T"`) matches only a download whose basename is that
+    same text -- refusing it outright needs a command position the reader
+    does not have, where `case "$1" in` reads as the command `$1`.
+    """
+    return same_file(word, dest) or (
+        dynamic(word, shell_reader.has_substitution)
+        and os.path.basename(os.path.normpath(word)) == os.path.basename(os.path.normpath(dest)))
 
 
 def names_file(content, dest):
