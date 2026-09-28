@@ -75,6 +75,13 @@
 #     leaves (`claim_scope.py`, `safe_write.py`). The next module this
 #     subsystem grows needs a `RepoProfiling` layer, not another park; that
 #     layer split is tracked as #2273.
+#   - 2026-09-28 (#2233): `ToolAdapters:Core` was at 47 of the 48 cap, and the
+#     `run_tools.py` split owed under #1762 adds six files to it (a module and
+#     a test file per part, three parts). Third `ToolAdapters` layer `Image`
+#     added over the surface that separates cleanly: the tools image's
+#     committed closures and the scripts that maintain their digests and pins,
+#     with the Docker/pin tests beside them. `Core` keeps the runner, the
+#     ingest, the adapters' dispatch entry and the gate.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -96,26 +103,41 @@ groups:
       panels:
       - ARC
       - SEC
+    Image:
+      # #1734 / #2233: the tools image's committed closures, claimed beside the
+      # scripts that maintain their digests and pins and the tests that guard
+      # them. Its own layer since #2233, because `Core` was one file under the
+      # cap with the #1762 `run_tools.py` split still to land. The older Docker
+      # inputs (Dockerfile, Dockerfile.fixtures, requirements-fixtures.txt) are
+      # still unclaimed and reviewed as Ungrouped -- one decision, not this
+      # issue's, and `tests/test_matrix_coverage.py` does not cover that surface.
+      match:
+      - requirements-tools.txt
+      - tools-image/**
+      - scripts/bump_pins.py
+      - scripts/dockerfile_args.py
+      - scripts/pin_requirements.py
+      - scripts/open_pin_pr.py
+      tests:
+      - tests/test_dockerfile.py
+      - tests/test_dockerfile_closures.py
+      - tests/test_dockerfile_args.py
+      - tests/test_semgrep_rule_corrections.py
+      - tests/test_bump_pins.py
+      - tests/test_pin_pr.py
+      panels:
+      - ARC
+      - SEC
     Core:
       match:
       - skill/scripts/run_tools.py
+      - skill/scripts/scanner_config.py
       - skill/scripts/ingest_tools.py
       - skill/scripts/_run_adapter.py
       - skill/scripts/smoke_adapters.py
       - skill/scripts/run_fixture_tests.py
       - skill/scripts/capture_goldens.py
       - skill/scripts/security_gate.py
-      - scripts/bump_pins.py
-      - scripts/dockerfile_args.py
-      - scripts/pin_requirements.py
-      - scripts/open_pin_pr.py
-      # #1734: the tools image's committed closures, claimed beside the script
-      # that maintains their digests and the tests that guard them. The older
-      # Docker inputs (Dockerfile, Dockerfile.fixtures, requirements-fixtures.txt)
-      # are still unclaimed and reviewed as Ungrouped -- one decision, not this
-      # issue's, and `tests/test_matrix_coverage.py` does not cover this surface.
-      - requirements-tools.txt
-      - tools-image/**
       tests:
       - tests/run_tools_test_helpers.py
       - tests/test_run_tools_core.py
@@ -124,6 +146,7 @@ groups:
       - tests/test_run_tools_dispatch.py
       - tests/test_run_tools_docker.py
       - tests/test_run_tools_languages.py
+      - tests/test_scanner_config.py
       - tests/test_ingest_tools.py
       - tests/test_run_adapter.py
       - tests/test_smoke_adapters.py
@@ -134,12 +157,6 @@ groups:
       - tests/test_phase1_integration.py
       - tests/test_schemas.py
       - tests/test_security_gate.py
-      - tests/test_dockerfile.py
-      - tests/test_dockerfile_closures.py
-      - tests/test_semgrep_rule_corrections.py
-      - tests/test_bump_pins.py
-      - tests/test_dockerfile_args.py
-      - tests/test_pin_pr.py
       panels:
       - ARC
       - SEC
