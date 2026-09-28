@@ -96,16 +96,62 @@ def _safe_copytree(src, dst):
     return skipped
 
 
+# The version of DotnetariumSCS `_ROSLYN_CWE` below was generated from -- a
+# version bump that regenerates the table without updating this, or updates
+# this without regenerating the table, now fails a test instead of going
+# stale silently (#2325). Nothing at run time reads it; the provenance
+# comment below already names it.
+_TABLE_DOTNETARIUM_SCS_VERSION = "1.1.0"
+
+# Every CWE DotnetariumSCS 1.1.0 itself assigns to a rule (#2325,
+# COD-1750030735), from `DotnetariumSCS.Config.Messages.yml`, the resource
+# embedded in `DotnetariumSCS.dll` (sha256
+# c8613ceeffab1d1d7d9188183f7df97de226997425b4d28348a83014fdbaedc8) inside
+# the tool the Dockerfile installs (`ARG DOTNETARIUM_SCS_VERSION=1.1.0`),
+# measured against the pinned tools image on 2026-09-28. The assembly ships
+# 32 diagnostics: SCS0000, its own proof-of-run notice, carries no `cwe` and
+# stays uncited on purpose; the other 31 -- SCS0001-SCS0034 less the retired
+# SCS0014/SCS0020/SCS0025 -- each carry one. The SARIF this adapter reads
+# never carries a CWE: rule descriptors have `helpUri` and
+# `properties.category` only, and the scanner's `--cwe` flag decorates just
+# the console line, leaving the SARIF byte-identical (probed both ways
+# against the pinned image) -- so there is no SARIF-carried CWE to read and
+# no reason to pass the flag. The table this replaces named nine rules and
+# mis-cited SCS0026 (LDAP injection) as CWE-79, cross-site scripting's own
+# code -- XSS is SCS0029 -- and listed SCS0041, which this tool has never
+# shipped.
 _ROSLYN_CWE = {
     "SCS0001": "CWE-78",
     "SCS0002": "CWE-89",
+    "SCS0003": "CWE-643",
+    "SCS0004": "CWE-295",
+    "SCS0005": "CWE-338",
+    "SCS0006": "CWE-327",
     "SCS0007": "CWE-611",
+    "SCS0008": "CWE-614",
+    "SCS0009": "CWE-1004",
+    "SCS0010": "CWE-327",
+    "SCS0011": "CWE-611",
+    "SCS0012": "CWE-284",
+    "SCS0013": "CWE-327",
+    "SCS0015": "CWE-259",
     "SCS0016": "CWE-352",
+    "SCS0017": "CWE-554",
     "SCS0018": "CWE-22",
-    "SCS0026": "CWE-79",
+    "SCS0019": "CWE-524",
+    "SCS0021": "CWE-554",
+    "SCS0022": "CWE-554",
+    "SCS0023": "CWE-554",
+    "SCS0024": "CWE-554",
+    "SCS0026": "CWE-90",
     "SCS0027": "CWE-601",
     "SCS0028": "CWE-502",
-    "SCS0041": "CWE-22",
+    "SCS0029": "CWE-79",
+    "SCS0030": "CWE-554",
+    "SCS0031": "CWE-90",
+    "SCS0032": "CWE-521",
+    "SCS0033": "CWE-521",
+    "SCS0034": "CWE-521",
 }
 
 

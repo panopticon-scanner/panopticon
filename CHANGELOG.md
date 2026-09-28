@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
+  CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
+  rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the
+  Dockerfile's `ARG DOTNETARIUM_SCS_VERSION` pin.
 - **Parity pins for the mirrored tables, the fixture corpus and the goldens (#2234, #2235, #2236,
   #2237).** Four LOW/MEDIUM findings, one shape: a definition kept in two places with nothing
   comparing them. `sarif_utils`' hand-mirrored fixture corpus is pinned against `discovery`'s,
