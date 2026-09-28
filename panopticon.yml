@@ -73,7 +73,8 @@
 #     `RepoProfiling` was already AT the 48 cap -- so, like `setup_ack.py`
 #     above, the new leaf is parked beside the other shared stdlib-only
 #     leaves (`claim_scope.py`, `safe_write.py`). The next module this
-#     subsystem grows needs a `RepoProfiling` layer, not another park.
+#     subsystem grows needs a `RepoProfiling` layer, not another park; that
+#     layer split is tracked as #2273.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
