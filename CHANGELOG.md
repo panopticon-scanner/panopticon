@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A refused `CODEX_HOME` is the remedy readiness and the setup acknowledgment show (#1803;
+  COD-1638371699).** `host_disclosure.remedy` named `--emit-host-agents codex`, and
+  `setup_ack._remedy_clause` named it or `driver loop --setup --host codex --mode headless`,
+  even though the row's own `registration_refusal` meant that exact command would refuse with
+  the same message one step later. A refused `CODEX_HOME` reaches both surfaces as UNKNOWN,
+  never as REFUTED, so the acknowledgment yields to the refusal on every branch; both read it
+  off `hosts.HostSpec`, and `host_disclosure.lines` prints it once rather than once per
+  capability line. Every other host, and codex with no refusal, is unchanged.
 - **A SIGTERM the driver did not arm ends the Kimi runner's children before the home strip
   (#1805).** The stripper's SIG_DFL/C-installed branch restored the default disposition and
   re-raised the signal without ending the runner's registered children first, so a process whose
