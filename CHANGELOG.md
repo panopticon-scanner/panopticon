@@ -7,6 +7,76 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One owner reads the committed config; errors refuse and disclosures print on both paths (#2229,
+  #2189; ARC-1814846877, epic #1761).** Five readers each normalized the legacy `groups:` list form
+  themselves -- `groups_schema.parse_groups`, `discovery.load_catalog`, `_committed_matrix`,
+  `_declares_groups` (a DIFFERENT predicate: does any entry carry a name?) and
+  `setup_flow.migrate_config` -- three re-implemented the leaf-vs-parent rule, and the two
+  `_committed_exclude_paths` copies each printed the disclosure channel the other dropped, with
+  docstrings citing each other wrongly. `groups_schema` owns all of it now
+  (`normalize_groups_mapping`, `is_leaf_body`, `committed_bodies`) and every reader calls it.
+  Per the owner ruling (2026-09-27) a document with `doc.errors` -- unreadable, no `version: 1`, a
+  legacy-only tree -- RAISES on every reader instead of reading as "nothing committed" on some of
+  them, and every reader prints `doc.disclosures`, so a refused symlink at the config path can no
+  longer be visible on the setup path and silent on the run path. `_committed_matrix` is
+  `_matrix_catalog` un-flattened rather than a second pass over the authored bodies, which is #2189:
+  a scalar `match: src/**` used to become six one-character globs, a name the schema had just
+  rejected came back anyway, and a non-mapping `groups:` value, a `match: [1]` or a `tests: [[a]]`
+  crashed `driver setup` with an AttributeError and no JSON status. **Behaviour change:** a setup
+  run over a config the schema rejects now refuses with the named error and writes no draft
+  (`config_refusal`), where it used to merge against the authored bodies exactly as written --
+  char-split globs, rejected names and all -- and tell the operator to move the result over their
+  own file; a `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:`
+  come back from the validated domain sets, so a draft -- and `migrate-config`'s own output --
+  renders them sorted rather than in authored order.
+- **Every integrity failure that sinks certification is named on the terminal summary (#1761;
+  ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
+  published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a
+  hand-written `or` chain, and `render_summary` named four — one of which deliberately does not
+  gate. So ten of the fourteen sinking keys had no summary line of their own: nine were named
+  nowhere on it, and one (`delta_scope_suppressed_git_drivers`) only inside `coverage_note`. The
+  reasons went to stderr and the summary said the bare word `incomplete` — the hole #1644 closed
+  for `tools_manifest_invalid` alone. The ten: `content_mismatched_files` (the #493 R4 tamper
+  check — bytes that no longer match the fan-out snapshot), `content_snapshot_missing`,
+  `content_snapshot_unreadable`, `malformed_findings_files`, `empty_dispatch_plans`,
+  `invalid_dispatch_plans`, `invalid_verify_queue`, `dispatch_plan_missing`,
+  `dispatch_plan_mismatched` and `delta_scope_suppressed_git_drivers`. One `INTEGRITY_KEYS` table
+  in `synth/integrity` owns both facts: whether a truthy value sinks `integrity_ok`, and the
+  operator sentence the summary prints for it. `reconcile` reads it as a comprehension,
+  `render_summary` as one loop, so a key renders on exactly the truthiness that sinks the gate and
+  the summary cannot drift from it again; a certification failure now outranks the non-gating
+  cross-domain note, and the report schema's own property list is pinned to the table. The gate
+  itself is unchanged — the sinking set is pinned key-by-key against the chain it replaced.
+  `report.json` always carried the whole section; the HTML report is #2265.
+- **spotbugs and pip-audit emit a repo-relative `location.file`, and the contract says so (#1768,
+  #2188; ARC-284455831, ARC-2852754506).** SpotBugs nests a `SourceLine` inside the enclosing
+  `<Class>` and another inside each `<Method>` before emitting the bug's own as a DIRECT child, so
+  the `.//SourceLine` the adapter read was always the class's: on the pinned golden all three
+  findings landed on line 11 of a class spanning 11-75 instead of 65, 69 and 66. It reads the bug's
+  own now, falls back to the class's span only when the bug has none, and never a `<Method>`'s — a
+  `role="METHOD_CALLED"` one names the CALLEE's file, a JDK source in no repository. The
+  `sourcepath` beside it is relative to the SOURCE root (`org/dummy/App.java`), never the repo, so
+  on a Maven or Gradle layout it matched no diff hunk and no read grant while the adapter's own
+  comment claimed it stayed matchable; it is resolved against the target root by probing the
+  conventional Maven/Gradle source roots — `src/main/java`, `src/test/java`, `src/main/kotlin`,
+  `src/test/kotlin`, `src`, then the root itself — refusing an absolute or `..`
+  sourcepath outright and refusing to follow a symlink out of the tree
+  (`claim_scope.confined_to_root`, not a fourth copy of it). When nothing resolves the package path
+  is kept and the finding says why in `tool_evidence.path_resolution`, so an unplaceable location
+  has a stated cause. The `SourceLine start` that names the bug's line is read tolerantly with it:
+  the report schema gives `location.line_start` `minimum: 1`, and SpotBugs' own unknown-line
+  sentinel is `-1`, so one bug at an unknown line used to make a whole real Java report
+  schema-invalid — absent, `-1`, `0` and an unparseable value now all clamp to 1, the way an
+  unparseable rank already falls to MEDIUM rather than raising out of `parse` (which ingest reads as
+  "unparseable" and loses the whole document). pip-audit stored the ABSOLUTE host path of the
+  manifest it audited in its
+  ContextVar and `_located_at` returns what it holds — unreachable on the production path, where
+  invoke and parse run in different processes, and a scanner-host layout leak for any caller that
+  shares one; it records the repo-relative path now, which is npm-audit's shape already. The
+  normalization contract asserts a normalized relative `location.file` for EVERY adapter, with
+  dependency-check's jar basename recorded as a disclosed debt naming #2225 — a debt, not an
+  allowlist: the shape rule still holds it, and a self-liquidating test FAILS, saying to drop the
+  entry, the day that adapter stops emitting a bare jar name.
 - **No module is loaded twice, and the `sys.path` bootstrap gets a ceiling (#1766; ARC-188610019,
   ARC-2452079063, ARC-3214704952, ARC-11100703).** A driver-shaped process built two module
   objects from one file for NINE modules — `config_schema`, `coverage_model`, `diff_map`,
