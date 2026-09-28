@@ -314,6 +314,18 @@ class Runner(base.HostRunner):
             if callable(previous):
                 previous(signum, frame)       # chained, and no strip: `teardown` does it after
             elif previous == signal.SIG_DFL or previous is None:   # R3-4: None = C-installed
+                # #2219: no teardown is coming on this branch either, so the
+                # same bounded termination `iter_batch`'s interrupt path gets
+                # from `terminate_children` has to run HERE, before the strip
+                # -- otherwise a registered child, leading its own session
+                # (#1575), outlives the `os.kill` below and keeps running
+                # against a home whose guard hooks were just stripped.
+                try:
+                    self.terminate_children()
+                except Exception as exc:      # noqa: BLE001 -- still strip and die below
+                    print("%s: terminating this runner's children failed: %s: %s"
+                          % (self.host or "runner", type(exc).__name__, exc),
+                          file=sys.stderr, flush=True)
                 self._strip_on_exit()         # no teardown is coming
                 signal.signal(signum, signal.SIG_DFL)
                 os.kill(os.getpid(), signum)  # die as we would have
