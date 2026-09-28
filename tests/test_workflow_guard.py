@@ -500,6 +500,28 @@ class TestADownloadNamedLikeAWrapper(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn("running it", wg.fetch_exec_defect(script) or "")
 
+    def test_a_wrapper_word_naming_another_file_is_not_the_download(self):
+        # The same name is not the same file: `/usr/bin/env` is not ./env, and
+        # ./flock is not /tmp/flock.
+        for script in (f"curl -fsSL -o env {self.URL}\n/usr/bin/env FOO=1 make\n",
+                       f"curl -fsSL -o /tmp/flock {self.URL}\n./flock 9\n"):
+            with self.subTest(script=script):
+                self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_a_dynamic_path_to_a_download_behind_a_wrapper_is_reported(self):
+        # Main refused `$PWD/flock` behind `sudo`, as it refuses `sudo "$X"`:
+        # reading it as the `flock` wrapper by its last word read it clean.
+        script = f'curl -fsSL -o flock {self.URL}\nsudo "$PWD/flock" 9\n'
+        self.assertIn("dynamic command operand behind a wrapper",
+                      wg.fetch_exec_defect(script) or "")
+
+    def test_a_dynamic_word_behind_a_wrapper_is_unresolved_whatever_its_name(self):
+        argv = shell_reader.statements('sudo "$PWD/chrt" 10 make')[0].stages[0].argv
+        self.assertIn("dynamic command operand behind a wrapper",
+                      shell_reader.unresolved_wrapper(argv) or "")
+        self.assertIn("cannot read command behind wrapper",
+                      wg.fetch_exec_defect('sudo "$PWD/chrt" 10 make\n') or "")
+
     def test_a_download_under_any_other_name_is_running_it_as_before(self):
         script = f"touch tool && chmod +x tool && curl -fsSL -o tool {self.URL} && ./tool 9\n"
         self.assertIn("running it", wg.fetch_exec_defect(script) or "")

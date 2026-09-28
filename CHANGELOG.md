@@ -13,6 +13,7 @@ evidence exposed.
   its own grammar and reports what it cannot settle, such as a `taskset -p` pid that may be 0.
   Behind `xargs`, which appends words, a wrapper that runs nothing as written is reported too.
   A download run as a wrapper, as in `curl -o flock …; ./flock 9`, counts as running it.
+  A `$` word behind a wrapper is reported even if it ends in a wrapper's name (`sudo "$PWD/env"`).
 - **The workflow guard names the step it cannot read, and refuses a heredoc delimiter bash
   must parse (#1793).** A `shell_lex.Unreadable` escaped `main` as a traceback that named no
   step and hid every other step's defect (#2252); it is now that step's defect. A delimiter

@@ -576,9 +576,9 @@ def _command_result(argv):
             del argv[0:2]
             continue
         head = os.path.basename(argv[0])
+        if heads and (has_substitution(argv[0]) or "$" in argv[0]):
+            return argv, "has a dynamic command operand behind a wrapper", heads
         if head not in WRAPPERS:
-            if heads and (has_substitution(argv[0]) or "$" in argv[0]):
-                return argv, "has a dynamic command operand behind a wrapper", heads
             break
         heads.append(argv[0])
         if len(heads) > 16:
