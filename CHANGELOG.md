@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Derive SARIF levels from the adapter severity map (#2202, #1821).** SARIF retains its
+  four allowed level names while sharing their grades with tool normalization. Missing and
+  unknown levels, metadata precedence and secret grading keep their existing behavior.
 - **Share token usage vocabulary (#2201, #1821).** The dispatch ledger imports usage fields
   and phases from the usage collector, keeping totals, checkpoint mapping, model attribution
   and corrupt-row accounting unchanged.
