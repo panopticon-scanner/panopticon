@@ -8,6 +8,7 @@ from tests._test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
+import scripts.ingest_tools as it
 import scripts.tools.base as base
 import scripts.tools.spotbugs as sb
 
@@ -679,6 +680,109 @@ class TestOfflineLogPrefix(unittest.TestCase):
                 b"WARN generic<T> in log line\n" + self.XML, "g1")
         self.assertEqual(len(out), 1)
 
+
+class TestVendorCweTable(unittest.TestCase):
+    """#2275 (COD-1501398192): `_SPOTBUGS_CWE` is the union of both vendors'
+    own tables now, not seven hand-picked entries. Of those seven, only
+    HARDCODED_KEY named a pattern that does not exist; the other six
+    (including the two SQL_* entries, which are CORE SpotBugs patterns, not
+    FindSecBugs') were always real and are still in the table below. The real
+    credential names are HARD_CODE_PASSWORD/HARD_CODE_KEY (FindSecBugs) and
+    DMI_CONSTANT_DB_PASSWORD/DMI_EMPTY_DB_PASSWORD (core SpotBugs).
+    """
+
+    GOLDEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "goldens", "tool-raw", "spotbugs.raw")
+
+    def test_the_goldens_security_findings_cite_the_vendors_cwe(self):
+        # The golden's three findings: two FindSecBugs SECURITY patterns the
+        # plugin maps a CWE for, and one core SpotBugs pattern (category
+        # I18N) that core's own findbugs.xml lists with no cweid, so it stays
+        # uncited -- not a gap, the vendor's own answer. CRLF_INJECTION_LOGS
+        # is the one the base seven-entry table never named.
+        with open(self.GOLDEN, "rb") as fh:
+            raw = fh.read()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            findings = sb.SpotBugsAdapter().parse(raw, "g1")
+        by_title = {f["title"]: f for f in findings}
+        self.assertEqual(["CWE-78"], by_title["COMMAND_INJECTION"]["citations"]["cwe"])
+        self.assertEqual(["CWE-117"], by_title["CRLF_INJECTION_LOGS"]["citations"]["cwe"])
+        self.assertNotIn("citations", by_title["DM_DEFAULT_ENCODING"])
+
+    def test_credential_findings_cite_their_cwe_and_gate_when_suppressed(self):
+        # Both vendors map a credential-class pattern to CWE-259: FindSecBugs'
+        # HARD_CODE_PASSWORD and core SpotBugs' own DMI_CONSTANT_DB_PASSWORD.
+        # CWE-259 is an `ingest_tools.SECRET_CWES` member, so a suppressed
+        # finding of EITHER type must still gate under `--security redteam`
+        # (policy C) -- which the base table's dead HARDCODED_KEY entry,
+        # naming a pattern neither vendor emits, could never do for either.
+        for bug_type in ("HARD_CODE_PASSWORD", "DMI_CONSTANT_DB_PASSWORD"):
+            with self.subTest(bug_type=bug_type):
+                sample = ("""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="%s" rank="12" priority="2" category="SECURITY">
+    <Class classname="com.example.Config">
+      <SourceLine sourcepath="com/example/Config.java" start="9"/>
+    </Class>
+  </BugInstance>
+</BugCollection>
+""" % bug_type).encode()
+                finding = only(sb.SpotBugsAdapter().parse(sample, "g1"))
+                self.assertEqual(["CWE-259"], finding["citations"]["cwe"])
+                # rank 12 is MEDIUM (Troubling), not CRITICAL: the gate is
+                # reading the CWE here, not falling back to a severity this
+                # finding does not have.
+                self.assertEqual("MEDIUM", finding["severity"])
+                self.assertTrue(it.gates_when_suppressed(finding))
+
+    # Every type name in core SpotBugs 4.8.6's own findbugs.xml that carries a
+    # cweid (38: 9 SECURITY-category, including the two SQL_* entries and
+    # both DMI_*_DB_PASSWORD ones, plus 29 non-SECURITY, e.g. EI_EXPOSE_REP ->
+    # CWE-374) -- independent of `_SPOTBUGS_CWE` itself, so the count test
+    # below checks the table against a second source, not against itself.
+    _CORE_TYPES = frozenset({
+        "BC_IMPOSSIBLE_CAST", "BC_IMPOSSIBLE_DOWNCAST",
+        "BC_IMPOSSIBLE_DOWNCAST_OF_TOARRAY", "BC_IMPOSSIBLE_INSTANCEOF",
+        "BC_VACUOUS_INSTANCEOF", "BX_BOXING_IMMEDIATELY_UNBOXED_TO_PERFORM_COERCION",
+        "DC_DOUBLECHECK", "DC_PARTIALLY_CONSTRUCTED", "DMI_CONSTANT_DB_PASSWORD",
+        "DMI_EMPTY_DB_PASSWORD", "DM_EXIT", "EI_EXPOSE_BUF", "EI_EXPOSE_BUF2",
+        "EI_EXPOSE_REP", "EI_EXPOSE_REP2", "ESync_EMPTY_SYNC",
+        "FI_EXPLICIT_INVOCATION", "FI_PUBLIC_SHOULD_BE_PROTECTED",
+        "HRS_REQUEST_PARAMETER_TO_COOKIE", "HRS_REQUEST_PARAMETER_TO_HTTP_HEADER",
+        "IL_INFINITE_RECURSIVE_LOOP", "IP_PARAMETER_IS_DEAD_BUT_OVERWRITTEN",
+        "J2EE_STORE_OF_NON_SERIALIZABLE_OBJECT_INTO_SESSION", "LI_LAZY_INIT_STATIC",
+        "LI_LAZY_INIT_UPDATE_STATIC", "NP_SYNC_AND_NULL_CHECK_FIELD",
+        "PT_ABSOLUTE_PATH_TRAVERSAL", "PT_RELATIVE_PATH_TRAVERSAL",
+        "QBA_QUESTIONABLE_BOOLEAN_ASSIGNMENT", "REC_CATCH_EXCEPTION", "RU_INVOKE_RUN",
+        "RV_RETURN_VALUE_IGNORED_BAD_PRACTICE", "SF_DEAD_STORE_DUE_TO_SWITCH_FALLTHROUGH",
+        "SF_DEAD_STORE_DUE_TO_SWITCH_FALLTHROUGH_TO_THROW", "SF_SWITCH_FALLTHROUGH",
+        "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE",
+        "SQL_PREPARED_STATEMENT_GENERATED_FROM_NONCONSTANT_STRING",
+        "XSS_REQUEST_PARAMETER_TO_SEND_ERROR",
+    })
+
+    def test_the_table_is_the_union_of_both_vendors_145_mapped_entries(self):
+        # 38 core + 107 plugin = 145, asserted as the two subsets rather than
+        # one total, so a future version bump that grows one side shows which
+        # one moved instead of a single number silently drifting.
+        keys = set(sb._SPOTBUGS_CWE)
+        self.assertEqual(145, len(keys))
+        self.assertEqual(38, len(self._CORE_TYPES))
+        self.assertLessEqual(self._CORE_TYPES, keys, keys - self._CORE_TYPES)
+        self.assertEqual(107, len(keys - self._CORE_TYPES))
+        self.assertEqual({
+            "HARD_CODE_PASSWORD": "CWE-259",
+            "HARD_CODE_KEY": "CWE-321",
+            "COMMAND_INJECTION": "CWE-78",
+            "CRLF_INJECTION_LOGS": "CWE-117",
+            "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
+            "DMI_CONSTANT_DB_PASSWORD": "CWE-259",
+        }, {k: sb._SPOTBUGS_CWE[k] for k in
+            ("HARD_CODE_PASSWORD", "HARD_CODE_KEY", "COMMAND_INJECTION",
+             "CRLF_INJECTION_LOGS", "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE",
+             "DMI_CONSTANT_DB_PASSWORD")})
+        self.assertNotIn("HARDCODED_KEY", sb._SPOTBUGS_CWE)
 
 
 if __name__ == "__main__":
