@@ -68,14 +68,13 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     # The #493 R4 tamper check: the triage probe's own example of a sink that
     # reached the report as "incomplete".
     "content_mismatched_files": IntegrityKey(
-        True, "CONTENT CHANGED — %s (the bytes no longer hash to the fan-out "
-              "snapshot, so a findings file was substituted after its review; "
-              "run not certified)"),
+        True, "CONTENT CHANGED — %s (the bytes no longer match the fan-out "
+              "snapshot, or could not be re-read; run not certified)"),
     "content_snapshot_unreadable": IntegrityKey(
         True, "CONTENT SNAPSHOT UNREADABLE — the fan-out out-file-hashes.json "
-              "exists and cannot be parsed, so no findings file could be "
-              "verified against it (tamper, not an unmeasured run; run not "
-              "certified)"),
+              "exists and cannot be read as a non-empty object, so no findings "
+              "file could be verified against it (tamper, not an unmeasured "
+              "run; run not certified)"),
     "content_snapshot_missing": IntegrityKey(
         True, "CONTENT SNAPSHOT MISSING — this run's dispatch plan declares "
               "review cells, so a fan-out out-file-hashes.json was owed and "
@@ -84,13 +83,19 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         True, "EMPTY DISPATCH PLAN — %s plan file(s) declare no reviewer entry, "
               "so there is nothing to reconcile the ingested files against; run "
               "not certified"),
+    # Three reasons, and the third is a plan rejected on its NAME -- a stray
+    # `dispatch-plan-*.json` that may parse and may meet the cell contract. The
+    # filename alone cannot say which fired, so this key's rows render their
+    # reason too (`_row_evidence`).
     "invalid_dispatch_plans": IntegrityKey(
         True, "INVALID DISPATCH PLAN — %s (a plan file on disk that does not "
-              "parse or does not meet the review-cell contract; run not "
-              "certified)"),
+              "parse, does not meet the review-cell contract, or is not the "
+              "dispatch plan the driver writes; run not certified)"),
+    # UNUSABLE, not unreadable: one of `load_verify_queue`'s two reasons is a
+    # queue that read perfectly and has no `entries` list.
     "invalid_verify_queue": IntegrityKey(
-        True, "VERIFY QUEUE UNREADABLE — %s (the queue recording what the "
-              "advisor round was asked to verify could not be read; run not "
+        True, "VERIFY QUEUE UNUSABLE — %s (the queue recording what the advisor "
+              "round was asked to verify could not be read as a queue; run not "
               "certified)"),
     # SEC-377944137 (#1832): `plans_seen` was the only key that noticed a
     # deleted driver plan and it was not in the chain, so the `rm` that erased
@@ -141,6 +146,20 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
 }
 
 
+def _row_evidence(key, row):
+    """One row of a list-valued integrity key, as the summary names it.
+
+    The file, plus -- for `invalid_dispatch_plans` -- the loader's reason: that
+    key's three reasons include a plan rejected on its NAME, which a filename
+    alone cannot be told apart from one that does not parse.
+    """
+    if not isinstance(row, dict):
+        return str(row)
+    if key == "invalid_dispatch_plans":
+        return "%s (%s)" % (row.get("file"), row.get("reason"))
+    return str(row.get("file"))
+
+
 def evidence_text(key, value):
     """The text for the `%s` slot in `INTEGRITY_KEYS[key]`'s sentence: the
     files, reasons or count behind that key, in the shape `integrity_section`
@@ -156,8 +175,7 @@ def evidence_text(key, value):
         return "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
             "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items())))
     if isinstance(value, list):
-        return ", ".join(str(row.get("file") if isinstance(row, dict) else row)
-                         for row in value)
+        return ", ".join(_row_evidence(key, row) for row in value)
     return str(value)
 
 

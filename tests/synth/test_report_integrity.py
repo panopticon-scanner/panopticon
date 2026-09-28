@@ -322,8 +322,12 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "content_snapshot_unreadable": True,
         "content_snapshot_missing": True,
         "empty_dispatch_plans": 1,
-        "invalid_dispatch_plans": [{"file": "p.json",
-                                    "reason": "entry 0 is not an object"}],
+        # The loader's THIRD reason, the one a filename alone cannot be told
+        # apart from a plan that does not parse (review finding 8).
+        "invalid_dispatch_plans": [
+            {"file": "dispatch-plan-decoy.json",
+             "reason": "unrecognized dispatch-plan file (expected %s)"
+                       % plan_mod.DRIVER_DISPATCH_PLAN}],
         "invalid_verify_queue": "verify queue has no entries list",
         "plans_seen": 1,
         "dispatch_plan_missing": True,
@@ -454,10 +458,40 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       self._summary("mislabeled_findings_files"))
 
     def test_the_tamper_check_names_the_file_it_caught(self):
+        # Review finding 9: the measured fact is that the bytes no longer match
+        # the snapshot -- `verify_out_file_hashes` also lists a file whose read
+        # raised, and the module's own stderr line hedges ("substitution?").
         md = self._summary("content_mismatched_files")
         self.assertIn("**Integrity:** CONTENT CHANGED — c.json (the bytes no longer "
-                      "hash to the fan-out snapshot, so a findings file was "
-                      "substituted after its review; run not certified)", md)
+                      "match the fan-out snapshot, or could not be re-read; run "
+                      "not certified)", md)
+
+    def test_the_two_unusable_artifact_sentences_say_what_was_measured(self):
+        # Review findings 7 and 9. `verify_out_file_hashes` reports the snapshot
+        # unreadable when it parses but is not a non-empty dict, and
+        # `load_verify_queue` returns "verify queue has no entries list" for a
+        # queue that READ fine -- so neither may claim a failed read.
+        self.assertIn("**Integrity:** CONTENT SNAPSHOT UNREADABLE — the fan-out "
+                      "out-file-hashes.json exists and cannot be read as a "
+                      "non-empty object, so no findings file could be verified "
+                      "against it (tamper, not an unmeasured run; run not "
+                      "certified)", self._summary("content_snapshot_unreadable"))
+        self.assertIn("**Integrity:** VERIFY QUEUE UNUSABLE — verify queue has no "
+                      "entries list (the queue recording what the advisor round "
+                      "was asked to verify could not be read as a queue; run not "
+                      "certified)", self._summary("invalid_verify_queue"))
+
+    def test_an_invalid_dispatch_plan_names_the_loader_s_reason(self):
+        # Review finding 8: the three reasons include a plan rejected on its
+        # NAME, which may parse and may meet the cell contract. The file alone
+        # does not say which of the three fired, and it is the only key whose
+        # rows carry a reason the summary was dropping.
+        md = self._summary("invalid_dispatch_plans")
+        self.assertIn("**Integrity:** INVALID DISPATCH PLAN — dispatch-plan-decoy.json "
+                      "(unrecognized dispatch-plan file (expected %s)) (a plan file "
+                      "on disk that does not parse, does not meet the review-cell "
+                      "contract, or is not the dispatch plan the driver writes; run "
+                      "not certified)" % plan_mod.DRIVER_DISPATCH_PLAN, md)
 
     def test_a_sink_with_no_evidence_of_its_own_still_states_itself(self):
         # A bare flag has no files to name, so its sentence carries no slot and
