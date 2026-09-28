@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
+  row-count and name checks. Overlong tool identities are still dropped; suppression names are
+  still cut and colliding counts summed, with the same warnings and value checks.
 - **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
   table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
 - **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**
