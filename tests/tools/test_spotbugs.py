@@ -407,11 +407,21 @@ class TestSourcePathResolvesAgainstTheTargetRoot(unittest.TestCase):
     def test_a_symlinked_package_is_not_followed_out_of_the_root(self):
         # An in-tree symlink whose lexical path stays under the root but whose
         # target does not: the #run7 ARC-F2A shape, refused by realpath.
+        #
+        # The symlink points at `outside` ITSELF, so the probe path really does
+        # resolve to a readable file -- asserted below before the parse, which
+        # is what stops this test going vacuous. A link to `outside/dummy`
+        # would double the `dummy` segment, leave the probe path absent, and
+        # pass on `lexists` alone with the confinement check never called.
         with TemporaryDirectory() as outside, TemporaryDirectory() as root:
             self._write(outside, "dummy/insecure/framework/VulnerableTaskHolder.java")
             os.makedirs(os.path.join(root, "src", "main", "java"))
-            os.symlink(os.path.join(outside, "dummy"),
-                       os.path.join(root, "src", "main", "java", "org"))
+            os.symlink(outside, os.path.join(root, "src", "main", "java", "org"))
+            self.assertTrue(
+                os.path.isfile(os.path.join(root, "src", "main", "java",
+                                            *self.SOURCEPATH.split("/"))),
+                "the escaping path must resolve to a readable file, or this "
+                "test proves absence rather than refusal")
             self._pin_root(root)
             f = self._parse_one(self.SOURCEPATH)
         self.assertEqual(self.SOURCEPATH, f["location"]["file"])
