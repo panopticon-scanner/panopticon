@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**
+  The staged `bandit.ini`/`.trivyignore`, the suppression posture, the ignore overlays and
+  the two manifest ledgers move to `skill/scripts/scanner_config.py` whole: `run_tools.py`
+  goes from 2215 to 1775 lines and the new module is 515, under the 700-line ceiling. No
+  argv, flag, path or message changed — `tests/test_scanner_config.py` pins the docker argv
+  of both staged tools, in both security modes, with and without the target's own `.bandit`,
+  against a golden captured before the move. `ToolAdapters` gains an `Image` layer so the
+  matrix can claim the new files without passing the 48-file cap.
 - **Derive SARIF levels from the adapter severity map (#2202, #1821).** SARIF retains its
   four allowed level names while sharing their grades with tool normalization. Missing and
   unknown levels, metadata precedence and secret grading keep their existing behavior.
