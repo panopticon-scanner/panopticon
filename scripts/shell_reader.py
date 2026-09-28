@@ -28,6 +28,8 @@ from the guard until it was:
                     a command's exit status is allowed to matter
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
                     `do`) that stand in front of a command
+    patterns        `{sh,-c}` and `[s]h` are not expanded but marked: bash makes
+                    words of them, so no command they may start is resolved
 
 The first three are settled on the TEXT, before any command is read, in the
 one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793).
@@ -44,8 +46,8 @@ import re
 import secrets
 import shlex
 
-from shell_lex import closing, lex
-from shell_wrappers import WRAPPERS, dynamic, unwrap
+from shell_lex import MARK, closing, is_pattern, lex, patterned
+from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -94,6 +96,8 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
+# An assignment to an array element, `a[1]=x`: bash globs no assignment word.
+_SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
@@ -111,6 +115,10 @@ class _Token(str):
         return token
 
     markers: dict[str, tuple[str, object]]
+
+
+class _Expanded(_Token, Rewritten):
+    """A word holding lifted text that bash also expands as a pattern."""
 
 
 def _markers(text):
@@ -430,7 +438,7 @@ def input_alias_fd(word):
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value."""
     try:
-        tokens = shlex.split(text)
+        tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv, writes, reads = [], [], []
@@ -465,7 +473,9 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        word = context.token(context.restore_arithmetic(raw))
+        word = context.token(context.restore_arithmetic(raw.replace(MARK, "")))
+        if is_pattern(raw):             # bash expands it first (#2294)
+            word = _Expanded(word, word.markers) if isinstance(word, _Token) else Rewritten(word)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -553,8 +563,8 @@ def statements(script):
 
 def _command_result(argv):
     """Shared parse result for execution extraction and unread decisions: the
-    command, why a wrapper in front of it cannot be read (or None), and the
-    words read as wrappers, as written."""
+    command, why it or a wrapper in front of it cannot be read (or None), and
+    the words read as wrappers, as written."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -583,6 +593,9 @@ def _command_result(argv):
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
+        if isinstance(argv[0], Rewritten) and not _SUBSCRIPTED.match(argv[0]):
+            return argv, "`%s` is a pattern bash expands before anything runs" % readable(
+                argv[0]), heads
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -610,7 +623,8 @@ def command(argv):
 
 
 def unresolved_wrapper(argv):
-    """Why a wrapper at this command's head cannot be resolved, if any."""
+    """Why a wrapper at this command's head -- or, with none, a pattern bash
+    expands where the command starts (#2294) -- cannot be resolved, if any."""
     return _command_result(argv)[1]
 
 

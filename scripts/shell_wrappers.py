@@ -14,8 +14,8 @@ What a grammar cannot settle leaves the wrapper UNRESOLVED, with the reason
 than reading past it -- an option the table does not know (it may take a
 value, and then the command starts a word later than any guess), and an
 option or option value the shell expands (`$`, a substitution), which may be
-any number of words once it has, or that an `xargs -I` in front rewrites
-(`dynamic`).
+any number of words once it has, or that an `xargs -I` in front or a brace
+or pathname pattern rewrites (`dynamic`).
 
 The getopt-shaped wrappers share one reading of their options: short flags,
 short options taking a value, long flags, long options taking one. The five
@@ -84,7 +84,9 @@ class Rewritten(str):
     """A word the command is not handed as written. Behind `xargs -I R` or
     `--replace[=R]`, every word holding R is one: xargs puts a line of its
     input where R stands (#2307), and so it may be the command, an option
-    or an operand that decides where the command starts."""
+    or an operand that decides where the command starts. So is a word holding
+    a brace or pathname pattern bash expands first (`{sh,-c}`, `[s]h`), which
+    the reader marks (#2294)."""
 
 
 def dynamic(word, has_substitution):

@@ -229,10 +229,10 @@ def _walk(stmts, stream_exec=False):
     A fetch in a substitution is credited to the command that CONSUMES it --
     `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
     the downloaded bytes become behaviour. Two forms are unread, and both get
-    this module's standing answer: REPORTED, never accepted. A wrapper whose
-    command cannot be resolved (`shell_reader.unresolved_wrapper`), and a
-    heredoc handed to an interpreter as the PROGRAM it runs that cannot be
-    read as written (`_unread_stdin`).
+    this module's standing answer: REPORTED, never accepted. A command that
+    cannot be resolved -- behind a wrapper, or a pattern bash expands where it
+    starts (`shell_reader.unresolved_wrapper`) -- and a program handed to an
+    interpreter on stdin that cannot be read as written (`_unread_stdin`).
     """
     found, unread = [], []
     for index, statement in enumerate(stmts):
@@ -241,8 +241,7 @@ def _walk(stmts, stream_exec=False):
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
-                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:],
-                                    stage, piped_to)
+                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         stream = streamed_fetch(os.path.basename(argv[0]), argv[1:],
@@ -252,8 +251,9 @@ def _walk(stmts, stream_exec=False):
                     found.append((index, fetch))
             reason = shell_reader.unresolved_wrapper(stage.argv)
             if reason:
-                unread.append((index, "cannot read command behind wrapper: %s; "
-                               "the guard cannot determine what it runs" % reason))
+                behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
+                unread.append((index, "cannot read command%s: %s; the guard cannot "
+                               "determine what it runs" % (behind, reason)))
             reason = _unread_stdin(stage)
             if reason:
                 unread.append((index, reason))

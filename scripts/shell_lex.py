@@ -180,6 +180,48 @@ def closing(text: str, opening: int) -> int | None:
     return None
 
 
+# Put before each character of a brace or pathname pattern that no quote or
+# backslash covers (`patterned`): bash expands such a word into any number of
+# words before a command sees it (#2294), and a word split out of the text
+# after its quotes are gone still says so (`is_pattern`).
+MARK = "\ue000"             # a private-use character
+
+
+def patterned(text: str) -> str:
+    """`text` with `MARK` before each `*`, `?`, `[`, `{`, `}` and `,` outside
+    quotes, read as `closing` reads them -- but a `{` or `[` right after a `$`
+    no backslash takes, which opens `${...}` or `$[...]` instead."""
+    out, i, quote, dollar = [], 0, "", -2
+    while i < len(text):
+        ch = text[i]
+        size = 2 if ch == "\\" and quote != "'" or not quote and text.startswith("$'", i) else 1
+        if quote and size == 1 and ch == quote[-1]:
+            quote = ""
+        elif not quote and (ch in "'\"" or ch == "$" and size == 2):
+            quote = text[i:i + size]
+        elif not quote and ch in "*?[{}," and not (ch in "[{" and dollar == i - 1):
+            out.append(MARK)
+        dollar = i if not quote and ch == "$" else dollar
+        out.append(text[i:i + size])
+        i += size
+    return "".join(out)
+
+
+def is_pattern(word: str) -> bool:
+    """Whether a word `patterned` marked is one bash expands: a marked `*` or
+    `?`, a marked `[` with a `]` after it, or a marked `{` with a marked `}`
+    after it and a marked `,` or a `..` between. From the first `{` to the
+    last `}`, so a word it misreads is one bash may not expand, never the
+    other way round."""
+    if MARK + "*" in word or MARK + "?" in word:
+        return True
+    at = word.find(MARK + "[")
+    if at >= 0 and "]" in word[at:]:
+        return True
+    at, end = word.find(MARK + "{"), word.rfind(MARK + "}")
+    return 0 <= at < end and (MARK + "," in word[at:end] or ".." in word[at:end])
+
+
 class _Frame:
     """One level of nesting: code (the script, or a `$(...)`), a quote, a
     `${...}`, arithmetic or backquotes. A paren or bracket frame counts the

