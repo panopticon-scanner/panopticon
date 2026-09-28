@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import html
 import io
 import subprocess
@@ -752,3 +753,65 @@ class TestTheNoteIsNotACapability(unittest.TestCase):
         self.assertIn("1 of %d NOT PROVEN" % len(hosts.CAPABILITIES), head)
         self.assertIn("(model_binding)", head)
         self.assertEqual(1, len(host_disclosure.lines(envelope)))
+
+
+class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
+    """#2214 (COD-E2B epic #1803), a follow-up to #2198/#2232's
+    COD-1638371699 fix: a relative `CODEX_HOME` makes `hosts.codex_home`
+    refuse, and `hosts.HOSTS["codex"].registration_refusal` is where PR #2232
+    recorded that refusal. `_REMEDY`'s tool-policy text and
+    `_REMEDY_BY_HOST["codex"]`'s read-scope text both kept naming
+    `--emit-host-agents codex` regardless -- a command that refuses with the
+    same message one step later, so the first remedy an operator saw was
+    wrong.
+    """
+
+    REFUSAL = ("CODEX_HOME must be an absolute path (it is 'agents'); unset "
+              "it to use ~/.codex")
+
+    def _refused_codex(self):
+        return dataclasses.replace(hosts.spec("codex"),
+                                   registration_refusal=self.REFUSAL)
+
+    def test_codex_carries_no_refusal_in_this_test_run(self):
+        # The premise every "unchanged" assertion below relies on: nothing in
+        # this sandbox sets a relative CODEX_HOME, so the unpatched row is
+        # genuinely the "codex without a refusal" case the fix must not touch.
+        self.assertEqual("", hosts.spec("codex").registration_refusal)
+
+    def test_both_capabilities_codex_claims_name_the_refusal(self):
+        with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
+            for capability in sorted(hosts.spec("codex").claims):
+                with self.subTest(capability=capability):
+                    text = host_disclosure.remedy(capability, "codex")
+                    self.assertEqual(self.REFUSAL, text)
+                    self.assertNotIn("--emit-host-agents", text)
+
+    def test_a_capability_codex_does_not_claim_is_unaffected(self):
+        with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
+            text = host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "codex")
+        self.assertNotEqual(self.REFUSAL, text)
+        self.assertIn("Codex has no write guard", text)
+
+    def test_the_disclosure_prints_the_refusal_once_not_per_capability_line(self):
+        with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
+            out = host_disclosure.lines(envelope("codex"))
+        # Nothing is recorded for any capability, so `hosts.posture` reads all
+        # five as unknown -- `lines()` still owes one line per unproven
+        # capability (readiness zips this list against its own), so the count
+        # must stay five even though two of those lines now share one remedy.
+        self.assertEqual(len(hosts.CAPABILITIES), len(out))
+        joined = "\n".join(out)
+        self.assertEqual(1, joined.count(self.REFUSAL))
+        self.assertNotIn("--emit-host-agents", joined)
+        for line in out:
+            self.assertIn("fix:", line)
+
+    def test_codex_with_no_refusal_still_gets_the_emit_remedy(self):
+        text = host_disclosure.remedy(hosts.READ_SCOPE_CONFINED, "codex")
+        self.assertIn("--emit-host-agents codex", text)
+
+    def test_another_host_is_never_touched_by_codexs_refusal(self):
+        with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
+            text = host_disclosure.remedy(hosts.TOOL_POLICY_ENFORCED, "claude")
+        self.assertIn("--emit-host-agents claude", text)

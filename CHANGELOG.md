@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A refused `CODEX_HOME` is the remedy readiness and the setup acknowledgment show (#1803;
+  COD-1638371699).** `host_disclosure.remedy` and `setup_ack._remedy_clause` named
+  `--emit-host-agents codex` even though the row's own `registration_refusal` meant that exact
+  command would refuse with the same message one step later; both now read the refusal off
+  `hosts.HostSpec` instead, and `host_disclosure.lines` prints it once rather than once per
+  capability line so the two capabilities codex claims do not repeat the same paragraph. Every
+  other host, and codex with no refusal, is unchanged.
 - **An interrupted or terminated driver ends its phase child and its runner children (#1805;
   COD-869076756).** A phase child (discovery, tools, synthesize) leads its own session, so the
   terminal's Ctrl-C never reached it, and `_run_child` ended its group only on a timeout: an

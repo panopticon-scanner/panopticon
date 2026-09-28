@@ -1,6 +1,7 @@
 """Tests for scripts.phases.setup: the `driver setup` scan/ingest flow and its manifest.
 """
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -909,6 +910,33 @@ class TestTheRefusalNamesARemedyThatCanWork(unittest.TestCase):
         self.assertNotIn("driver loop --setup", message)
         self.assertIn("--allow-unenforced", message)
         self.assertIn("--host claude", message)
+
+    def test_a_registration_refusal_is_named_instead_of_the_emit_command(self):
+        # #2214 (COD-E2B epic #1803), a follow-up to #2198/#2232's
+        # COD-1638371699 fix: a relative CODEX_HOME makes the row's own
+        # `registration_refusal` non-empty (`hosts.codex_home`), and the emit
+        # command this REFUTED branch used to name refuses with that exact
+        # message one step later -- so the refusal is the only remedy left
+        # that can actually help.
+        refusal = ("CODEX_HOME must be an absolute path (it is 'agents'); "
+                  "unset it to use ~/.codex")
+        refused_codex = dataclasses.replace(hosts.spec("codex"),
+                                            registration_refusal=refusal)
+        with mock.patch.dict(hosts.HOSTS, {"codex": refused_codex}):
+            message = self._refuse(
+                self._repo(), "codex",
+                {"state": hosts.REFUTED, "by": "codex-effective-tools",
+                 "detail": "the reviewed tree ships .codex/agents"})
+        self.assertIn(refusal, message)
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_a_refuted_codex_with_no_refusal_still_gets_the_emit_remedy(self):
+        self.assertEqual("", hosts.spec("codex").registration_refusal)
+        message = self._refuse(self._repo(), "codex",
+                               {"state": hosts.REFUTED, "by": "codex-effective-tools",
+                                "detail": "the reviewed tree ships .codex/agents"})
+        self.assertIn("--emit-host-agents codex", message)
 
 
 class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):

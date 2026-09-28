@@ -131,7 +131,12 @@ def _remedy_clause(host, state):
     * REFUTED -- the host measured and said no. Every capability that gates
       here maps to a registration probe, so re-emitting is the fix for its
       ordinary cause, and the refusal quotes the probe's own detail for the
-      rest. Name the emit command.
+      rest. Name the emit command -- unless the row itself carries a
+      registration refusal (`hosts.HostSpec.registration_refusal`, #2214): a
+      relative CODEX_HOME refuses that exact emit command with the same
+      message (`hosts.codex_home`), so naming the refusal is the fix that
+      remains. Read it off the row PR #2232 already recorded it on, never
+      re-derived from the environment here.
     * UNKNOWN -- NOTHING measured it. No amount of registering changes what
       was never read, and naming the emit command there is the round-1
       Critical one host over: `driver setup --host codex` cannot reach PROVEN
@@ -158,6 +163,8 @@ def _remedy_clause(host, state):
     if row is None or not row.shell_format:
         return "Re"
     if state == hosts.REFUTED:
+        if row.registration_refusal:
+            return "%s -- re" % row.registration_refusal
         return "Run %s and re-run `driver setup`, or re" % (_EMIT_REMEDY % host)
     if runners_base.headless_available(host):
         return ("Nothing measured it here -- re-run as `%s`, the invocation "
