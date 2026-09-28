@@ -417,9 +417,10 @@ class TestSkillMd(unittest.TestCase):
         readiness failure a fresh checkout meets first.
 
         The names come from the code, not from a second list: `GATING_ROWS` is
-        what `phases/readiness._preflight` builds `failed` from. Either spelling
-        counts, because the table labels `tools-image` with a hyphen while the
-        `--json` document keys it `tools_image`.
+        what `phases/readiness.preflight` builds `failed` from, in the order
+        `failed` reports them. Either spelling counts, because the table labels
+        `tools-image` with a hyphen while the `--json` document keys it
+        `tools_image`.
         """
         import scripts.phases.readiness as readiness
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")

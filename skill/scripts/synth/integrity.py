@@ -375,9 +375,9 @@ def reconcile_findings_files(plan, ingested_paths):
     return unexpected, missing
 
 def _plan_hash(plan):
-    """Canonical plan-content hash -- the ONE implementation, with no twin to
-    keep in sync: the `dispatch.plan_content_hash` this once mirrored (#493 R2)
-    went with the 4.x DispatchPlan builder and no longer exists anywhere.
+    """The one implementation of the review plan's content hash, with no twin
+    to keep in sync: the `dispatch.plan_content_hash` this once mirrored
+    (#493 R2) went with the 4.x DispatchPlan builder and no longer exists.
 
     Every `plan_sha256` in the tree is this function's output. `phases/requests.py`
     and `phases/setup_ack.py` stamp it, `run_manifest.record_artifact_stamp`'s

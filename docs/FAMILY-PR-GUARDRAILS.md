@@ -43,10 +43,13 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   session_id, denials, error)`. It never raises: a crash is
   `RunResult.failed(entry_id, error)`. `denials` is a field the three families
   already fill from three DIFFERENT surfaces (#2241): Claude's
-  `permission_denials` verbatim, Codex's failed `mcp_tool_call` items, and
-  Kimi's nothing, because its envelope reports none. So say in your PR which
-  of your host's surfaces you put there, and do not read another family's
-  empty column as "no denials happened" -- it means "none reported".
+  `permission_denials` verbatim, Codex's failed `mcp_tool_call` items (its own
+  `panopticon_scope` read broker's, so read-scope refusals included), and
+  Kimi's nothing -- its runner reads no denial surface, so its column is silent
+  even though `kimi_guard_hook` does deny, and Kimi hooks fail OPEN when the
+  hook cannot start. So say in your PR which of your host's surfaces you put
+  there, and do not read another family's empty column as "no denials
+  happened" -- it means "none reported".
   The pool is inherited, in both its
   shapes: `iter_batch` yields `(entry, result, timing)` as each entry
   completes — the loop persists and ledgers it there and then (#1636) — and

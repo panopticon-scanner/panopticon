@@ -17,10 +17,11 @@ FROM ${NVD_DATA_REF} AS nvd-data
 # ONE STAGE, deliberately (owner ruling 2026-09-27, #1772). Every toolchain the
 # adapters need -- Python, Ruby, Node, Go, the JDK, Rust and the .NET SDK -- installs
 # into this single stage, so one upstream break fails the whole build and none of the
-# other toolchains' layers survive it. Accepted for 5.2: the base is digest-pinned
-# above, the image is published publicly and rebuilt nightly by docker-publish.yml,
-# and tools-image-health.yml turns red once :latest is more than MAX_AGE_DAYS stale,
-# so a break is visible within a day. The split is scheduled for 5.3 -- one stage per
+# other toolchains' layers survive it. Accepted for 5.2: the base image below is
+# digest-pinned, the image is published publicly and rebuilt nightly by
+# docker-publish.yml -- so the nightly publish itself goes red the same night, and
+# tools-image-health.yml turns red once :latest is more than MAX_AGE_DAYS (3) stale.
+# The split is scheduled for 5.3 -- one stage per
 # toolchain, still ONE published image, so a break in one toolchain cannot invalidate
 # the others' layers.
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a

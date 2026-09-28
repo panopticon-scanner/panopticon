@@ -346,8 +346,9 @@ characters, and matching consumes the whole path.
 - **One Dockerfile stage, and the split is 5.3's** (owner ruling 2026-09-27, #1772). Every
   toolchain the scanners need — Python, Ruby, Node, Go, the JDK, Rust, the .NET SDK — installs
   into the one `python:3.12-slim` stage, so an upstream break fails the whole build and no
-  toolchain's layers survive it. Accepted for 5.2, because the image is digest-pinned, published
-  publicly and rebuilt nightly, and `tools-image-health.yml` turns red if a break outlasts
+  toolchain's layers survive it. Accepted for 5.2, because the base image is digest-pinned, the
+  image is published publicly and rebuilt nightly, and `tools-image-health.yml` turns red if a
+  break outlasts
   `MAX_AGE_DAYS: 3`. 5.3's brief: one stage per toolchain, still ONE published image, so a break
   in one toolchain cannot invalidate the others' layers.
 

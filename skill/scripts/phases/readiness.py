@@ -270,7 +270,7 @@ HOST_SOURCE_NOTES = {
 }
 
 
-# The rows that GATE, in the order `_preflight` evaluates them -- and the ONE
+# The rows that GATE, in the order `failed` reports them -- and the ONE
 # place their names are written. Module level so a doc-vs-code pin can read
 # them: `tests/test_skill_md.py` asserts the guide's gating sentence names
 # every one of them, which is how #2245 found `dependencies` missing from it.

@@ -25,8 +25,8 @@ evidence exposed.
   workflow ordering claim, the packaging intent in `pyproject.toml`, `integrity._plan_hash`'s
   vanished twin, what `RunResult.denials` counts per host family, why the driver re-derives
   synthesize's verify queue, what else shares synthesize's exit `2`, the `dependencies` gating row,
-  the eighth evidence status, and `synthesize.py`'s "stdlib-only" claim. Two doc-vs-code pins keep
-  the last two honest: `readiness.GATING_ROWS` against the guide's gating sentence, and
+  the eighth evidence status, and `synthesize.py`'s "stdlib-only" claim. Two of these are pinned:
+  `readiness.GATING_ROWS` against the guide's gating sentence, and
   `evidence.EVIDENCE_STATUSES`/`GATE_ELIGIBLE_DEFAULT` against the evidence chapter.
 - **Separate Codex event parsing and usage accounting (#2299, #1826).** Completed turns,
   messages and final results keep recovery ordering, partial usage and host-error precedence.

@@ -52,10 +52,11 @@ Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 # The packaging intent, declared rather than left to auto-discovery (#2239):
 # this project ships NO importable modules. The skill directory and the tools
 # image are the delivery vehicles -- README tells an operator to install the
-# three runtime dependencies directly and the code runs from the checkout, and
-# every CI install is `pip install -e ".[dev]"`/`".[test]"` for the dev tooling
-# only. So an empty `py-modules` is the truthful answer, and a build that ever
-# needs to ship code has to say so here on purpose.
+# three runtime dependencies directly and the code runs from the checkout, every
+# CI install OF THIS PROJECT is `pip install -e ".[dev]"`/`".[test]"` for the
+# dev tooling, and nothing anywhere builds a wheel. So an empty `py-modules` is
+# the truthful answer, and a build that ever needs to ship code has to say so
+# here on purpose.
 py-modules = []
 
 [tool.pytest.ini_options]

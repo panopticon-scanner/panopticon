@@ -416,18 +416,24 @@ on Claude hooks, and always uses the return-persist path.
   `runs/<tag>/rejected/<entry-id>-<attempt>.json`, the launch's ledger row names it as
   `rejected_file`, and the entry's NEXT prompt carries the reason and a `prior_rejection` stamp so
   the retry is told what to fix. - **The loop ledgers** every launch in
-  `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials` —
-  what the host reported as blocked, which is NOT one measurement across families (#2241): on
-  `claude` it is the envelope's `permission_denials` verbatim, and an all-`[]` column beside replies
-  that carry findings is how an unarmed guard shows up; on `codex` it is the MCP tool calls the
-  stream marked failed (tool errors, not permission decisions); `kimi` reports none at all and
-  always writes `[]`. So an empty column means "none reported", not "none happened" — error, and on
-  a FAILED row `stderr`: the
+  `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials`,
+  `error`, and on a FAILED row `stderr`: the
   first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted
   again at the ledger, which is the one thing that appends to this file. A successful row carries no
   `stderr` key at all, so its shape is unchanged. Run 14 is why: 309 launches were ledgered as
   `claude -p printed no JSON envelope (exit 1)` — the symptom — while the diagnosis (`--json-schema
-  is not valid JSON: JSON Parse error: Unrecognized token '/'`) went to a stream nothing kept) and
+  is not valid JSON: JSON Parse error: Unrecognized token '/'`) went to a stream nothing kept). The
+  `denials` column is what the host reported as BLOCKED, and it is NOT one measurement across the
+  families (#2241): on `claude` it is the envelope's `permission_denials` verbatim; on `codex` it is
+  the failed `mcp_tool_call` items of panopticon's OWN `panopticon_scope` read broker — the one MCP
+  server a codex launch binds, and the launch is refused if it binds any other — so the column holds
+  that broker's read-scope refusals plus any other error it returns, a SUPERSET of permission
+  decisions and not something other than them; `kimi` always writes `[]` because its runner reads no
+  denial surface, so its column is silent even though `kimi_guard_hook` does deny — and Kimi hooks
+  fail OPEN when the hook cannot start, which is exactly the state a silent column cannot tell from
+  a quiet one. So an empty column means "none reported", not "none happened", and on `claude` or
+  `codex` an all-`[]` column beside replies that carry findings is the smell of a guard that never
+  armed. The loop also
   rewrites `runs/<tag>/usage.json` (`{"total", "by_phase", "corrupt_rows"}` — `corrupt_rows` counts
   the ledger lines whose cost could not be read as money, whose tokens are still counted because
   they were still spent) from it after every batch, so `meta.cost.tokens` is exact and host-supplied

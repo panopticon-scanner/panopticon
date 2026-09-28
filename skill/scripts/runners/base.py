@@ -96,12 +96,19 @@ class RunResult:
     denials: list            # what this host reported as BLOCKED -- and the families do not
                              # measure the same thing (#2241), so read an empty list as
                              # "none reported", never as "none happened". claude puts the
-                             # envelope's `permission_denials` here verbatim, which is why a
+                             # envelope's `permission_denials` here verbatim; codex puts the
+                             # failed `mcp_tool_call` items of panopticon's OWN
+                             # `panopticon_scope` read broker (`codex_host.safety_config`
+                             # declares that one server; `codex_host.validate_command`
+                             # refuses a launch binding any other), so read-scope refusals
+                             # plus any other error the broker returns -- a SUPERSET of
+                             # permission decisions, not something other than them; kimi
+                             # always passes `[]` because this runner reads no denial
+                             # surface, so its column is silent even though
+                             # `kimi_guard_hook` does deny -- and Kimi hooks fail OPEN when
+                             # the hook cannot start. On claude and codex alike, a
                              # ledger whose rows are all `[]` while the replies carry findings
-                             # reads as an unarmed guard THERE and nowhere else; codex puts the
-                             # `mcp_tool_call` items its stream marked failed, which are tool
-                             # errors and not permission decisions; kimi always passes `[]` --
-                             # its JSONL envelope reports none.
+                             # reads as a guard that never armed.
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
     host_error: object = None      # the HOST's own error surface (#1623): str | dict | None
                                    # -- the CLI's error line or the provider error object it
