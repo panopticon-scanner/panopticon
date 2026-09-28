@@ -1085,14 +1085,26 @@ def _kept_by_both(paths):
     The tree is real and the listing is the same set, so the two branches of
     `discover_repo_files` are compared on identical input -- the only way to
     see them disagree (ARC-1940929242: they did, on `.github/*`).
+
+    The walk arm is asserted to have WALKED. `discover_repo_files` asks
+    `_git_listed_files` first, so if the temp tree were ever read as a git
+    worktree this helper would run the git path twice and every caller would
+    keep passing while comparing one path with itself -- a guard whose two
+    branches can quietly become one is the defect shape this PR fixes.
     """
+    info = {}
     with tempfile.TemporaryDirectory() as root:
         for rel in sorted(paths):
             full = os.path.join(root, *rel.split("/"))
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8") as fh:
                 fh.write("x\n")
-        walked = set(orchestrator.discover_repo_files(root))
+        walked = set(orchestrator.discover_repo_files(root, info=info))
+    if info.get("method") != "walk":
+        raise AssertionError(
+            "the walk arm did not walk (method=%r): this comparison is the git "
+            "path against itself, and every parity assertion below is vacuous"
+            % info.get("method"))
     listed = set(orchestrator._filter_reviewable(
         sorted(paths), False, None, isfile=lambda rel: True))
     return walked, listed
