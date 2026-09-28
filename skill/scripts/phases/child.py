@@ -166,7 +166,11 @@ def _run_child(cmd, review_root, phase, timeout=None):
 
     #1576: a Popen with reader threads rather than `subprocess.run`, because the
     capture has to be BOUNDED and `capture_output=True` cannot be. #1575: in its
-    own session, so the timeout can reach the whole tree (`procgroup`).
+    own session, so the timeout can reach the whole tree (`procgroup`). #2199:
+    that session is out of the terminal's reach as well, so ANY exception while
+    the readers start or while the child is awaited -- a Ctrl-C, or a SIGTERM
+    the driver's CLI raises as one -- ends the tree the same way before it
+    propagates.
 
     A descendant that outlives the child (or escaped its process group) is
     deliberately LEFT once the readers' shared join grace expires: the child
@@ -186,13 +190,18 @@ def _run_child(cmd, review_root, phase, timeout=None):
     out = {"stdout": _Head(), "stderr": _Head()}
     readers = [threading.Thread(target=_capture, args=(pipe, out[key]), daemon=True)
                for key, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr))]
-    for reader in readers:
-        reader.start()
     try:
+        for reader in readers:
+            reader.start()
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         procgroup.kill_group(proc)     # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))
+    except BaseException:
+        # #2199: left alone, the child outlived the driver, and the join below
+        # spent its whole grace on the pipes that live child still held.
+        procgroup.kill_group(proc)
+        raise
     finally:
         # ONE deadline across both readers, and the readers are daemons.
         # `kill_group` ends everything that inherited the pipes, so EOF normally
@@ -200,9 +209,12 @@ def _run_child(cmd, review_root, phase, timeout=None):
         # outlived a child that exited on its own) must not be able to make the
         # driver wait `_READER_JOIN_GRACE` once per stream, which is the 10 s
         # stall R1-2 measured. Whatever each reader has kept by then is already
-        # published; the grace buys the tail, never the head.
+        # published; the grace buys the tail, never the head. Only a reader
+        # that STARTED is joined: an interrupt can land before a reader's
+        # `start` has run, and joining a thread that never started raises.
         deadline = time.monotonic() + _READER_JOIN_GRACE
         for reader in readers:
-            reader.join(timeout=max(0.0, deadline - time.monotonic()))
+            if reader.is_alive():
+                reader.join(timeout=max(0.0, deadline - time.monotonic()))
     return subprocess.CompletedProcess(cmd, proc.returncode,
                                        out["stdout"].text(), out["stderr"].text())

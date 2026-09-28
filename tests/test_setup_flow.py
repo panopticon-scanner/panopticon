@@ -70,6 +70,28 @@ def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     assert row[1] is False
     assert "migrate-config" in row[2]
 
+def test_readiness_names_a_refused_codex_home_not_the_emit_remedy(tmp_path, monkeypatch):
+    # COD-1638371699: the `enforced-shells` row resolved the codex row's
+    # relative directory against the cwd -- in the documented flow, the
+    # reviewed tree -- so a target shipping `agents/panopticon-*.toml` read as
+    # registered. The row here is the one `CODEX_HOME=.` leaves, its directory
+    # patched to `./agents` (where that value pointed before the fix). The
+    # `--emit-host-agents` remedy cannot help: emission refuses the same value.
+    import dataclasses
+
+    import scripts.dispatch as dispatch  # the package module `_check_host_shells` imports
+    dispatch.emit_host_agents("codex", str(tmp_path / "agents"))
+    monkeypatch.chdir(tmp_path)
+    hosts = setup_flow.hosts
+    _home, refusal = hosts.codex_home(".")
+    monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
+        hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
+        registration_refusal=refusal))
+    with mock.patch.object(setup_flow.host_probes, "run_probes", return_value={}):
+        rows = {name: (ok, detail) for name, ok, detail in
+                setup_flow._check_host_shells("codex", lambda *a, **k: None, str(tmp_path))}
+    assert rows["enforced-shells"] == (False, refusal)
+
 class TestSetupFlow(SetupFixtureBase):
     """Provisioning, seed, migration, and gitignore behavior."""
 
@@ -336,7 +358,9 @@ class TestSetupFlow(SetupFixtureBase):
 class TestSeedGroupsManifestInjection(unittest.TestCase):
     """#1108: hostile top-level directory names must not inject YAML structure
     into the seeded root config -- the seeder validates via the schema and
-    serializes with yaml.safe_dump instead of hand-formatting untrusted text."""
+    serializes with yaml.safe_dump instead of hand-formatting untrusted text.
+    #1481: that validation must also drop a name the schema only accepts WITH
+    an error -- a case twin, a chunk twin, or the reserved Ungrouped sink."""
 
     def test_injection_dir_names_are_dropped_and_file_parses(self):
         d = os.path.realpath(tempfile.mkdtemp())
@@ -377,6 +401,51 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
         self.assertFalse(created)
         with open(path, encoding="utf-8") as fh:
             self.assertIn("Winner", fh.read())   # existing config not clobbered
+
+    def test_collision_names_are_dropped_and_seeded_config_is_runnable(self):
+        # COD-2612640453: parse_groups ACCEPTS a colliding name -- it only
+        # reports it as an error -- so keeping "every name in parsed" kept a
+        # chunk twin (src/src_1) and the reserved Ungrouped sink too. A seed
+        # that writes either one reports success on a config the run path
+        # then refuses.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        for sub in ("lib", "src", "src_1", "Ungrouped"):
+            os.makedirs(os.path.join(d, sub))
+            with open(os.path.join(d, sub, "mod.py"), "w") as fh:
+                fh.write("x = 1\n")
+        path, created, names = setup_flow._seed_groups_manifest(d)
+        self.assertTrue(created)
+        self.assertEqual(names, ["lib", "src"])          # src_1, Ungrouped dropped
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh.read())
+        self.assertEqual(set(doc["groups"]), {"lib", "src"})
+        # The run path's own gate: a seeded config it would refuse must not
+        # be produced in the first place.
+        catalog = setup_flow.discovery._matrix_catalog(d)
+        self.assertEqual(set(catalog), {"lib", "src"})
+
+    def test_case_twin_drops_the_later_sorted_name(self):
+        # A case-insensitive dev filesystem cannot hold both Docs/ and docs/,
+        # so this exercises the case-twin path the way probe_d2_seed.py does:
+        # mock discover_repo_files rather than create the pair on disk.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, "docs"))
+        with open(os.path.join(d, "docs", "a.md"), "w") as fh:
+            fh.write("# x\n")
+        with mock.patch.object(setup_flow.discovery, "discover_repo_files",
+                                return_value=["Docs/a.md", "docs/b.md"]):
+            path, created, names = setup_flow._seed_groups_manifest(d)
+        self.assertTrue(created)
+        # _reserved_name_errors names the LATER id in sorted order ('docs'
+        # sorts after 'Docs') as the collision, so 'docs' is the one dropped.
+        self.assertEqual(names, ["Docs"])
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh.read())
+        self.assertEqual(set(doc["groups"]), {"Docs"})
+        catalog = setup_flow.discovery._matrix_catalog(d)
+        self.assertEqual(set(catalog), {"Docs"})
 
 class TestGlobFormBlanketIgnore(unittest.TestCase):
     """#1509: this repo's own .gitignore blanket-ignores the directory with the

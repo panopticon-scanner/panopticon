@@ -590,8 +590,9 @@ def test_surfaces_enum_is_the_scouts_thirteen():
 
 
 # #1770: `coverage_model` now carries a flat-import fallback for `discovery`,
-# and that arm is load-bearing -- `setup_flow`, `grouping_engine` and
-# `setup_proposal` import this module with only `skill/scripts` on sys.path,
+# and that arm is load-bearing -- `setup_proposal` imports this module with only
+# `skill/scripts` on sys.path (`setup_flow` and `grouping_engine` did too, until
+# #1766 moved them to the package),
 # and `discovery._capability_aliases` swallows an ImportError on that path and
 # returns `{}`, so a dropped arm would cost the standalone `--repo-scan` path
 # all of its capability aliases with a green suite. `tests/test_layout.py`'s

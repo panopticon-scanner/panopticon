@@ -274,18 +274,24 @@ class Runner(base.HostRunner):
 
     def _arm_crash_strippers(self):
         """Strip the secrets on the ways out that never reach `teardown` (R2-2):
-        `teardown` runs from orchestrate._finish, so a `kill`, an OOM kill or a
-        power loss leaves the home behind -- and since N2 removed reuse, no
-        later run adopts it. `atexit` covers a normal-ish exit and an unhandled
-        exception; SIGTERM goes on top, CHAINING to whatever was there -- safe
-        on this side of the drain because its chain ends in SIG_DFL, which ends
-        the process: nothing launches after it. SIGINT is deliberately NOT here
-        (R3-1, as amended by #1662): KeyboardInterrupt is already routed by
-        orchestrate.loop to teardown("error") AFTER `iter_batch` has cancelled
-        the queue and terminated what was running, and a handler would strip
-        BEFORE that -- the entries the interrupt catches mid-flight would
-        finish against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
-        can catch: that residual is in docs/guide/driver-run-loop.md."""
+        `teardown` runs from orchestrate._finish, so a death by signal, an OOM
+        kill or a power loss leaves the home behind -- and since N2 removed
+        reuse, no later run adopts it. `atexit` covers a normal-ish exit and an
+        unhandled exception; SIGTERM goes on top, CHAINING to whatever was
+        there, and what that is decides the order (#2199). A callable runs
+        FIRST and the strip is left to `teardown`: under the driver's CLI it is
+        `procgroup.sigterm_as_interrupt`'s handler, which raises the interrupt
+        a Ctrl-C raises, so stripping here would strip before the termination
+        -- the hazard below. SIG_DFL, or a handler installed from C, means the
+        process dies with no teardown at all: strip, then die as it would have,
+        and nothing launches after it. SIG_IGN means the run carries on, and
+        its home with it. SIGINT is deliberately NOT here (R3-1, as amended by
+        #1662): KeyboardInterrupt is already routed by orchestrate.loop to
+        teardown("error") AFTER `iter_batch` has cancelled the queue and
+        terminated what was running, and a handler would strip BEFORE that --
+        the entries the interrupt catches mid-flight would finish against a
+        home with no config.toml, i.e. no guard hooks. SIGKILL nobody can
+        catch: that residual is in docs/guide/driver-run-loop.md."""
         if self._crash_strip is not None:
             return
         self._crash_strip = self._strip_on_exit
@@ -304,11 +310,23 @@ class Runner(base.HostRunner):
 
     def _signal_stripper(self, previous):
         def callback(signum, frame):
-            self._strip_on_exit()
             previous = handler.previous       # R3-3: read live, a disarm may have relinked it
             if callable(previous):
-                previous(signum, frame)       # chained: the loop still sees it
+                previous(signum, frame)       # chained, and no strip: `teardown` does it after
             elif previous == signal.SIG_DFL or previous is None:   # R3-4: None = C-installed
+                # #2219: no teardown is coming on this branch either, so the
+                # same bounded termination `iter_batch`'s interrupt path gets
+                # from `terminate_children` has to run HERE, before the strip
+                # -- otherwise a registered child, leading its own session
+                # (#1575), outlives the `os.kill` below and keeps running
+                # against a home whose guard hooks were just stripped.
+                try:
+                    self.terminate_children()
+                except Exception as exc:      # noqa: BLE001 -- still strip and die below
+                    print("%s: terminating this runner's children failed: %s: %s"
+                          % (self.host or "runner", type(exc).__name__, exc),
+                          file=sys.stderr, flush=True)
+                self._strip_on_exit()         # no teardown is coming
                 signal.signal(signum, signal.SIG_DFL)
                 os.kill(os.getpid(), signum)  # die as we would have
         # Functions carry attributes at runtime; describe that callable contract

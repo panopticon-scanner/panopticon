@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import json
 import os
 from unittest import mock
@@ -128,6 +129,32 @@ def test_missing_shell_is_refuted_without_invoking_runtime(tmp_path):
     assert state == hosts.REFUTED
     assert "reviewer shell is missing" in detail
     inspector.assert_not_called()
+
+
+@pytest.mark.parametrize("probe,probe_id", [
+    (codex_probes.probe_codex_tool_policy, codex_probes.CODEX_EFFECTIVE_TOOLS),
+    (codex_probes.probe_codex_read_scope, codex_probes.CODEX_READ_SCOPE),
+])
+def test_a_relative_codex_home_is_reported_instead_of_measured(probe, probe_id, tmp_path, monkeypatch):
+    # COD-1638371699: the codex row as `CODEX_HOME=.` leaves it, in a cwd that
+    # ships the reviewed tree's own shells. The row's directory still points
+    # at them (`./agents`, as before the fix), so a probe that measured it
+    # instead of reporting the refusal would inspect the target's shells.
+    planted = tmp_path / "agents"
+    dispatch.emit_host_agents("codex", str(planted))
+    monkeypatch.chdir(tmp_path)
+    _home, refusal = hosts.codex_home(".")
+    monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
+        hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
+        registration_refusal=refusal))
+    with mock.patch("scripts.codex_host.inspect_surface", side_effect=AssertionError("no launch")) as inspector:
+        state, by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"))
+    assert (state, by) == (hosts.UNKNOWN, probe_id)
+    assert refusal in detail
+    inspector.assert_not_called()
+    # An explicit directory is still measured.
+    measured = codex_probes._codex_surfaces(str(planted), inspector=lambda *a, **k: surfaces()[0][1])
+    assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
 
 
 def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):

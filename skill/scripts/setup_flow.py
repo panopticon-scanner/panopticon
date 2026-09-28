@@ -20,12 +20,13 @@ import sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import plan_contract  # noqa: E402
-import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
-import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
-import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
-import repo_config  # noqa: E402  (#1681: the one place the config names live)
-import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
+from scripts import plan_contract  # noqa: E402
+from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
+from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
+from scripts import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
+from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
+from scripts import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
+from scripts import groups_schema  # noqa: E402  (#2229: the committed-config schema owner)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
@@ -168,17 +169,16 @@ def _seed_groups_manifest(repo):
     if committed is not None:
         names = list((discovery.load_catalog(repo) or {}).keys())
         return committed, False, names
-    import groups_schema  # noqa: E402
     import setup_proposal as sp  # noqa: E402
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
-    # #1108: a top-level directory name is untrusted target content -- build
-    # the document as a data structure, drop any name the schema rejects, and
-    # serialize via yaml.safe_dump inside the writer. Never hand-format.
+    # #1108/#1481: directory names are untrusted target content -- keep only names the
+    # schema accepts without error (no invalid name, case/chunk twin or Ungrouped sink).
     candidate = {t: {"match": ["%s/**" % t]} for t in tops}
     parsed, _errors = groups_schema.parse_groups({"groups": candidate})
-    valid = {name: {"match": candidate[name]["match"]} for name in parsed}
+    colliding = groups_schema.colliding_ids(parsed)
+    valid = {n: {"match": candidate[n]["match"]} for n in parsed if n not in colliding}
     text = sp.dump_config_yaml(valid)
     # #run7 COD-F1B: create atomically; O_EXCL closes the check-then-truncate
     # TOCTOU so a concurrent seed can never clobber a file that appeared after
@@ -371,7 +371,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     offer -- the tests, and any future caller that runs outside a driver
     invocation.
     """
-    import dispatch  # noqa: E402
+    from scripts import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
     row = hosts.spec(resolved_host)
     checks: list[tuple[str, bool | None, str]] = []
@@ -413,12 +413,12 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
                           if role in _driver_roles
                           and not dispatch._is_registered(reg_dir, rf, resolved_host)]
-        checks.append(("enforced-shells", not missing_shells,
-                       "ok" if not missing_shells else
+        checks.append(("enforced-shells", not (missing_shells or row.registration_refusal),
+                       row.registration_refusal or ("ok" if not missing_shells else
                        "unregistered reviewer shell(s): %s -- run python3 "
                        "skill/scripts/dispatch.py --emit-host-agents %s and start "
                        "a fresh session"
-                       % (", ".join(missing_shells), resolved_host)))
+                       % (", ".join(missing_shells), resolved_host))))
 
     # 5.1 surface 4: this is where an operator looks BEFORE a run to find out
     # what to fix, and the remedy is the reason the line exists at all. What
@@ -945,7 +945,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
     names for it -- this brief is the only document telling that agent what it
     may call. Defaults to None (the neutral Claude vocabulary), so every
     existing caller is unchanged."""
-    import dispatch
+    from scripts import dispatch
     spine = spine or build_spine(repo)
     brief = dispatch.render_prompt("setup-scan.md", {
         "repo_spine": format_spine(spine),
@@ -973,23 +973,34 @@ def config_refusal(repo):
 
     `driver run` fails loud on an authored-but-invalid root config; setup was
     the one path that proceeded. `discovery._committed_matrix` and
-    `_committed_exclude_paths` answer `{}`/`[]` for ANY unreadable document, so
-    ingest merged against an empty matrix, dropped the operator's
-    `exclude_paths:`, and the completion message told them to move a draft that
-    discards their own matrix over the real file.
+    `_committed_exclude_paths` answered `{}`/`[]` for ANY unreadable document,
+    so ingest merged against an empty matrix, dropped the operator's
+    `exclude_paths:`, and told them to move a draft that discards their own
+    matrix over the real file. Both raise now (#2229); this turns the refusal
+    into a named status before either runs.
 
     Refuses on the document's ERRORS (no `version: 1`, over-cap, unparseable,
     a legacy-only tree) and on the RESOLVER's own disclosures -- a refused
     symlink at either name resolves to no document with no error at all, and
     both names present is an ambiguity nothing should be written against.
 
+    And on the SCHEMA's errors, per the owner ruling 2026-09-27 (#2189): a
+    scalar `match:`, a non-mapping `groups:`, an invalid or reserved group name
+    used to reach the merge as a raw body -- character-split, crashing `driver
+    setup` with an AttributeError and no JSON status, or quietly proposing a
+    catalog over the operator's own. A run degrades per-entry; a WRITE cannot.
+
     The informational disclosures `read_document` adds on TOP of a readable
     document -- the retired JSON config, a legacy matrix file beside a valid
-    root config, unknown top-level keys -- are deliberately not
-    refusals: they are printed elsewhere, and a first run on a tree with no
-    config at all is the ordinary case, not a fault."""
+    root config, unknown top-level keys -- are deliberately not refusals: they
+    are printed elsewhere, and a first run on a tree with no config at all is
+    the ordinary case, not a fault."""
     doc = repo_config.read_document(repo)
     reasons = list(doc.errors) + list(repo_config.resolve(repo).disclosures)
+    if doc.doc is not None:
+        _groups, schema_errors = groups_schema.parse_groups(doc.doc)
+        _globs, exclude_errors = groups_schema.parse_exclude_paths(doc.doc)
+        reasons += schema_errors + exclude_errors
     if not reasons:
         return []
     return reasons + ["fix it or delete it; nothing was written"]
@@ -1019,7 +1030,6 @@ def migrate_config(repo):
     resolver merely DISCLOSED one (a refused symlink at either name resolves
     to no path, and overwriting it would destroy the operator's link).
     Returns (path, message)."""
-    import groups_schema  # noqa: E402
     import setup_proposal as sp  # noqa: E402
     res = repo_config.resolve(repo)
     if res.path is not None or res.disclosures:
@@ -1049,19 +1059,17 @@ def migrate_config(repo):
         raise ValueError("%s unreadable: %s" % (legacy, exc)) from exc
     if not isinstance(doc, dict):
         raise ValueError("%s must be a mapping" % legacy)
-    raw = doc.get("groups") or {}
-    if isinstance(raw, list):
-        raw = {g.get("name"): g for g in raw if isinstance(g, dict) and g.get("name")}
-    _, errors = groups_schema.parse_groups({"groups": raw})
+    # #2229: the owner normalizes, validates and shapes -- this verb had its own
+    # copy of all three, reaching across for `discovery._leaf_body`.
+    raw, errors, disclosures = groups_schema.normalize_groups_mapping(doc.get("groups"))
+    for line in disclosures:
+        print("%s: %s" % (repo_config.LEGACY_GROUPS_PATH, line), file=sys.stderr)
+    parsed, parse_errors = groups_schema.parse_groups({"groups": raw})
+    excludes, exclude_errors = groups_schema.parse_exclude_paths(doc)
+    errors += parse_errors + exclude_errors
     if errors:
         raise ValueError("%s: %s" % (legacy, "; ".join(errors)))
-    groups = {}
-    for name, body in raw.items():
-        if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
-            groups[name] = {"subgroups": {sub: discovery._leaf_body(sb) for sub, sb in body.items()}}
-        else:
-            groups[name] = discovery._leaf_body(body)
-    excludes, _ = groups_schema.parse_exclude_paths(doc)
+    groups = groups_schema.committed_bodies(parsed)
     path = os.path.join(repo, repo_config.CONFIG_NAMES[0])
     with runio._open_w_nofollow(path) as fh:
         fh.write(sp.dump_config_yaml(groups, exclude_paths=excludes))
@@ -1121,24 +1129,11 @@ def _committed_settings(repo):
 _MAX_PROPOSAL_BYTES = 1_048_576   # 1 MiB -- far above any legitimate proposal
 
 
-def _committed_exclude_paths(repo):
-    """The committed root config's top-level `exclude_paths`, [] when absent
-    or unusable (a corrupt committed file is disclosed elsewhere).
-
-    Read from the raw document rather than from committed_matrix, which returns
-    the `groups:` mapping alone (#1504).
-
-    Disclosures go to stderr the way `discovery._matrix_catalog` prints them
-    (I2): a refused symlink at the config path resolves to no document with NO
-    error, so an empty exclude list is otherwise the only trace of it."""
-    import groups_schema  # noqa: E402
-    doc = repo_config.read_document(repo)
-    for line in doc.disclosures:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
-    if doc.doc is None:
-        return []
-    globs, _errors = groups_schema.parse_exclude_paths(doc.doc)
-    return globs
+# #2229: ONE `_committed_exclude_paths`, in `discovery` -- the phase that owns
+# the read. This side's copy printed the resolver's disclosures and swallowed
+# both `doc.errors` and the `exclude_paths:` parse errors, while the discovery
+# copy printed the errors and never the disclosures.
+_committed_exclude_paths = discovery._committed_exclude_paths
 
 
 def _draft_settings(repo, max_per_group, max_groups):

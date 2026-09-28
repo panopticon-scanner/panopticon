@@ -22,7 +22,7 @@ import glob
 import os
 import sys
 
-import scripts.groups_schema as groups_schema
+import scripts.findings_contract as findings_contract
 from . import artifacts as artifacts_mod
 
 # DAT-2808086775: a target-writable artifact gets a bounded read, the shape
@@ -149,23 +149,18 @@ def present_cells(paths):
     Filename-only, deliberately: presence means synthesize was HANDED a
     findings file for that (group, domain) cell, independent of whether the
     reviewer found anything in it -- an empty findings-Auth-SEC.json still
-    proves the SEC floor cell for group Auth ran. Domain codes
-    (groups_schema.DOMAINS) are hyphen-free, so the domain is the LAST
-    hyphen-delimited token before `.json`; this can never collide with the
-    legacy panel-suffixed shape (findings-<group>-<panel>[-panel_review|
-    -lens_sweep-<lens>].json, see GROUP_RE) because panel tokens are lowercase
-    words and domain codes are upper-case 2-3 letter codes -- disjoint
-    alphabets by construction (groups_schema.DOMAINS vs. PANEL_ORDER).
+    proves the SEC floor cell for group Auth ran.
+
+    `findings_contract.cell_of` parses the name. This function used to
+    re-implement that parse, which is how a coverage cell and a defect
+    diagnostic came to disagree about which cell a file named
+    (ARC-3899903550, #1765).
     """
     out: dict[str, set[str]] = {}
     for p in paths or []:
-        base = os.path.basename(str(p))
-        if not (base.startswith("findings-") and base.endswith(".json")):
-            continue
-        stem = base[len("findings-"):-len(".json")]
-        group, sep, domain = stem.rpartition("-")
-        if sep and group and domain in groups_schema.DOMAINS:
-            out.setdefault(group, set()).add(domain)
+        cell = findings_contract.cell_of(p)
+        if cell:
+            out.setdefault(cell[0], set()).add(cell[1])
     return out
 
 

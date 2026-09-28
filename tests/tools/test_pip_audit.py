@@ -165,11 +165,14 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_parse_uses_actual_manifest_path(self):
         adapter = pa.PipAuditAdapter()
-        token = pa._manifest_path_cv.set("/tmp/fake/pyproject.toml")
+        # Repo-relative, which is what `invoke` stores (ARC-2852754506) -- a
+        # nested one, so this pins "the ContextVar's value" and not "the
+        # default that happens to be the same string".
+        token = pa._manifest_path_cv.set("packages/api/pyproject.toml")
         try:
             findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
             self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
+            self.assertEqual(findings[0]["location"]["file"], "packages/api/pyproject.toml")
         finally:
             pa._manifest_path_cv.reset(token)
 
@@ -230,10 +233,16 @@ class TestPipAuditAdapter(unittest.TestCase):
         # before parsing either result. Each target's invoke/parse pair runs in
         # its own copied execution context so the ContextVar set by invoke is
         # still the right one when parse is finally called.
+        # The two invocations audit DIFFERENT manifests, because what the
+        # ContextVar holds is repo-relative now (ARC-2852754506): two targets
+        # with the same manifest name would record the same string and the
+        # leak this test exists for would be invisible.
         adapter = pa.PipAuditAdapter()
+        manifests = {"/tmp/fake1": "requirements.txt",
+                     "/tmp/fake2": "requirements-dev.txt"}
 
         def fake_find_requirement(target: str) -> str:
-            return os.path.join(target, "requirements.txt")
+            return os.path.join(target, manifests[target])
 
         with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
             with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
@@ -244,8 +253,64 @@ class TestPipAuditAdapter(unittest.TestCase):
                 findings1 = ctx1.run(adapter.parse, raw1, "g1")
                 findings2 = ctx2.run(adapter.parse, raw2, "g2")
 
-        self.assertEqual(first(findings1)["location"]["file"], "/tmp/fake1/requirements.txt")
-        self.assertEqual(first(findings2)["location"]["file"], "/tmp/fake2/requirements.txt")
+        self.assertEqual(first(findings1)["location"]["file"], "requirements.txt")
+        self.assertEqual(first(findings2)["location"]["file"], "requirements-dev.txt")
+
+    def test_invoke_records_the_manifest_repo_relative(self):
+        # ARC-2852754506: `_manifest_path_cv` held the ABSOLUTE host path and
+        # `_located_at` returns what it holds, so an invoke+parse sharing a
+        # process published the scanner host's directory layout as
+        # `location.file` -- the leak `sanitization_report`'s own docstring
+        # refuses for the same value. Repo-relative AT THE WRITE, which is
+        # where the target root is in hand: `_located_at` runs on the route
+        # where `target_root_cv` is unset, so it has no root to relpath
+        # against. That is also npm-audit's shape ("target-relative (#1649)").
+        adapter = pa.PipAuditAdapter()
+        for manifest in ("requirements.txt", "requirements-dev.txt"):
+            with self.subTest(manifest=manifest):
+                target = self._target(manifest)
+                context = contextvars.copy_context()
+                with mock.patch.object(pa, "run_tool",
+                                       return_value=(PIP_AUDIT_SAMPLE, 0)):
+                    raw, _rc = context.run(adapter.invoke, target)
+                self.assertEqual(manifest, context.run(pa._manifest_path_cv.get))
+                located = only(context.run(adapter.parse, raw, "g1"))["location"]["file"]
+                self.assertEqual(manifest, located)
+                self.assertFalse(os.path.isabs(located))
+
+    def test_invoke_records_a_pyproject_target_repo_relative(self):
+        # The other `set` site: the PEP 621 branch joined the target onto the
+        # name it already knew was at the root.
+        target = self._target()
+        with open(os.path.join(target, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\nversion = "0"\n'
+                     'dependencies = ["requests==2.25.1"]\n')
+        adapter = pa.PipAuditAdapter()
+        context = contextvars.copy_context()
+        with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+            raw, _rc = context.run(adapter.invoke, target)
+        self.assertEqual("pyproject.toml", context.run(pa._manifest_path_cv.get))
+        self.assertEqual("pyproject.toml",
+                         only(context.run(adapter.parse, raw, "g1"))["location"]["file"])
+
+    def test_located_at_is_pass_through_and_the_invariant_lives_at_the_write(self):
+        # Review deviation 5. `_located_at` does NOT relativize what the
+        # ContextVar holds, and cannot: on the in-process route that reads this
+        # value `target_root_cv` is unset, so there is no root to relpath
+        # against. The repo-relative invariant is therefore established at the
+        # two `set` sites in `invoke` and nowhere else. Said in words here,
+        # because the edit to `test_parse_uses_actual_manifest_path` stopped
+        # pinning it incidentally -- so hardening the read later is a visible
+        # decision, and a future writer cannot assume the read will launder it.
+        adapter = pa.PipAuditAdapter()
+        absolute = os.path.join(os.sep, "host", "layout", "requirements.txt")
+        token = pa._manifest_path_cv.set(absolute)
+        try:
+            self.assertEqual(absolute, adapter._located_at())
+            located = only(adapter.parse(PIP_AUDIT_SAMPLE, "g1"))["location"]["file"]
+        finally:
+            pa._manifest_path_cv.reset(token)
+        self.assertEqual(absolute, located)
 
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
@@ -786,8 +851,12 @@ class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
             ctx = contextvars.copy_context()
             raw, _rc = ctx.run(pa.PipAuditAdapter().invoke, target)
             findings = ctx.run(pa.PipAuditAdapter().parse, raw, "g1")
-        self.assertEqual(first(findings)["location"]["file"],
-                         os.path.join(target, "requirements.txt"))
+        # Repo-RELATIVE since ARC-2852754506, and still the repo's OWN
+        # manifest rather than the generated file pip-audit was handed: the
+        # relative name resolves to a real file in the target.
+        located = first(findings)["location"]["file"]
+        self.assertEqual("requirements.txt", located)
+        self.assertTrue(os.path.isfile(os.path.join(target, located)))
 
     def test_pyproject_branch_is_sanitized_too_and_its_temp_file_removed(self):
         # `_deps_from_pyproject` is a STATIC read, but PEP 621 dependencies may

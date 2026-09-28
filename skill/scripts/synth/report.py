@@ -1,15 +1,14 @@
 """build_report: assemble and validate the CodeReviewReport."""
-from typing import TYPE_CHECKING
 import sys
 from dataclasses import dataclass, field
 
-if TYPE_CHECKING:
-    from scripts._version import __version__
-else:
-    try:
-        from scripts._version import __version__
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        from _version import __version__
+# #1766 (ARC-11100703): package-qualified, with no fallback arm. A module under
+# synth/ is reachable only as `scripts.synth.report`, so `scripts` has already
+# resolved before this line runs, and tests/test_layout.py rule 2 forbids the
+# flat package import that would be the only way to reach a fallback. The arm
+# that used to sit here was dead code wearing a mode's clothes;
+# tests/test_module_identity.py now pins that no package module grows another.
+from scripts._version import __version__
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
@@ -191,7 +190,11 @@ def build_report(inp):
         inp.findings, inp.delta, inp.run,
         gated_suppressed=inp.tools.gated_suppressed)
     reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved, run=inp.run)
-    graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+    # #2178: grading needs the delta context itself, not only the classified
+    # findings -- a zero-range hunk map leaves the on-diff gate scoping
+    # against something nobody measured, which is a certification fact.
+    graded = grading_mod.grade_report(inp.run, resolved, reconciled,
+                                      delta=inp.delta)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])
     return assemble(inp.run, resolved, reconciled, graded, cost)

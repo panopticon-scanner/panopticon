@@ -296,48 +296,48 @@ def loop(args):
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
         guards = Guards(mode, session_root=session_root)
-    status = _first_run(args, namespace, resolved)
-    # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on every invocation and
-    # the loop hands it the same `args` each iteration, so left set it cleared the run folder and
-    # re-minted the manifest on every `_run` below: the run restarted at its first checkpoint
-    # forever. Found twice, independently. By the Claude family PR's second real `driver loop
-    # --reset`, which re-launched the same three scouts ten times (30 identical ledger rows)
-    # before it was stopped; and by the kimi family PR, where the second call deleted the run
-    # folder the runner had just prepared (the kimi run's kimi-home/config.toml -- every child
-    # then failed "Model ... is not configured"; claude's host-settings.json is the same file in
-    # the same path), re-minted a fresh tag each time, and left the ledger, runner and guards
-    # writing to the first mint's folder while the manifest pointed at the last. `driver loop
-    # --reset` could never have worked headless; single `driver run --reset` calls never noticed
-    # because they invoke driver.run exactly once. From here on the loop resumes the run it just
-    # started, which is what every later iteration is for.
-    args.reset = False
-    if status.get("status") != "checkpoint":
-        return _finish(status, review_root, guards, ledger, namespace, mode, runner)
-    if mode == "session":
-        # I4: only now. This invocation has a live checkpoint of its own, so its pending set is
-        # the authority on what is still running. An entry now done falls away here; one still
-        # pending is re-armed below by this iteration's own `guards.arm(pending)`, computed from
-        # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
-        loop_batch.disarm_previous(guards, prev_req)
-    if _after_first_run(review_root):
-        status = _run(args, namespace, resolved)      # re-derive after the seam
-    iterations = 0
-    # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
-    # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
-    tally = outage.FailureTally(host, args)
     done, total = 0, 0        # this batch's progress, read by the handlers below
-    # #1662: what a Ctrl-C has to take back. Bound BEFORE the try, because the
-    # interrupt can land before the first batch ever opens one.
+    # #1662: what a Ctrl-C has to take back. Bound BEFORE the try -- which (#2200) now opens
+    # before `_first_run`, so the interrupt can land before the first batch ever opens one.
     batch = None
     pending = []
     handled: list[dict[str, Any]] = []
     req = {}
     try:
-        # M8: the pre-loop setup lives INSIDE the try. `loop` never raises (review round 1, item
-        # 3), but every line of it touches the filesystem -- resolving the run folder, writing
-        # host-settings.json, resolving the guard paths -- and an OSError (a read-only run folder,
-        # an unwritable settings path) escaped as a traceback rather than the reported `error`
-        # status every other failure here produces.
+        status = _first_run(args, namespace, resolved)
+        # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on every invocation
+        # and the loop hands it the same `args` each iteration, so left set it cleared the run
+        # folder and re-minted the manifest on every `_run` below: the run restarted at its first
+        # checkpoint forever. Found twice, independently. By the Claude family PR's second real
+        # `driver loop --reset`, which re-launched the same three scouts ten times (30 identical
+        # ledger rows) before it was stopped; and by the kimi family PR, where the second call
+        # deleted the run folder the runner had just prepared (the kimi run's kimi-home/config.toml
+        # -- every child then failed "Model ... is not configured"; claude's host-settings.json is
+        # the same file in the same path), re-minted a fresh tag each time, and left the ledger,
+        # runner and guards writing to the first mint's folder while the manifest pointed at the
+        # last. `driver loop --reset` could never have worked headless; single `driver run --reset`
+        # calls never noticed because they invoke driver.run exactly once. From here on the loop
+        # resumes the run it just started, which is what every later iteration is for.
+        args.reset = False
+        if status.get("status") != "checkpoint":
+            return _finish(status, review_root, guards, ledger, namespace, mode, runner)
+        if mode == "session":
+            # I4: only now. This invocation has a live checkpoint of its own, so its pending set is
+            # the authority on what is still running. An entry now done falls away here; one still
+            # pending is re-armed below by this iteration's own `guards.arm(pending)`, computed from
+            # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
+            loop_batch.disarm_previous(guards, prev_req)
+        if _after_first_run(review_root):
+            status = _run(args, namespace, resolved)      # re-derive after the seam
+        iterations = 0
+        # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
+        # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
+        tally = outage.FailureTally(host, args)
+        # M8: the pre-loop setup lives INSIDE the try, and so, since #2200, do `_first_run` and the
+        # resume seam's `_run` above. They touch the filesystem (the run folder, host-settings.json,
+        # the guard paths) or call `driver.run`/`run_setup_flow`, and a KeyboardInterrupt, or an
+        # OSError (a read-only run folder, an unwritable settings path), must reach the `except`
+        # clauses a mid-batch failure does. `loop` never raises (review round 1, item 3).
         #
         # Task 6 fix round 1, item 2: derived through persist.run_dir, which is
         # probes.common.headless_settings_path (namespace-aware), never a bare
