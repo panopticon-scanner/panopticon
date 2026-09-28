@@ -1,0 +1,274 @@
+"""#2227 (epic #1795): the wrappers the shell reader did not know.
+
+`shell_reader.command` strips what stands in front of a command only for the
+words in its closed wrapper table, and reads any other word as the command
+itself. So `setsid curl ... | sh`, `curl ... | chrt 10 sh` and the other forms
+below hid both the download and the interpreter from
+`scripts/workflow_guard.py`, which reported each step clean, while `nice -n 5`,
+`timeout 30` and `nohup` in the same two places were flagged.
+
+Each of the six is now read with the grammar its own source defines --
+util-linux 2.39.3 for `setsid`, `ionice`, `taskset`, `flock` and `chrt`, and
+expect 5.45.4's `unbuffer` script -- and what that grammar cannot settle stays
+an unresolved wrapper, which the guard reports: an option the table does not
+know, an expansion in the operand that decides where the command starts, a pid
+the program may read as "this process", a `spawn` switch where unbuffer's
+program belongs.
+"""
+import unittest
+
+import shell_reader
+import workflow_guard as guard
+
+URL = "https://example.test/tool"
+CHECK = "echo '" + "a" * 64 + "  tool' | sha256sum -c -"
+# The forms the triage measured clean on main, and the three controls it
+# measured flagged.
+TRIAGED = ("setsid", "setsid -f", "ionice -c3", "taskset -c 0", "taskset 0x1",
+           "flock /tmp/l", "chrt 10", "chrt -r 10", "unbuffer")
+CONTROLS = ("nice -n 5", "timeout 30", "nohup")
+# Help and version print and exit before anything runs.
+HELP = ("-h", "-V", "--help", "--version")
+
+
+def stage(script):
+    """The one stage of the one statement `script` parses to."""
+    stmts = shell_reader.statements(script)
+    assert len(stmts) == 1 and len(stmts[0].stages) == 1, stmts
+    return stmts[0].stages[0]
+
+
+class GrammarCase(unittest.TestCase):
+    def runs(self, expected, *forms):
+        for form in forms:
+            argv = stage(form).argv
+            with self.subTest(form=form):
+                self.assertEqual(expected, shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+
+    def runs_curl(self, *forms):
+        self.runs(["curl", URL], *(form + " curl " + URL for form in forms))
+
+    def runs_nothing(self, *forms):
+        self.runs([], *forms)
+
+    def unresolved(self, *forms):
+        """The wrapper itself is unread: it keeps its argv and says why."""
+        for form in forms:
+            argv = stage(form).argv
+            with self.subTest(form=form):
+                self.assertEqual(argv, shell_reader.command(argv))
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+    def reported(self, *scripts):
+        for script in scripts:
+            with self.subTest(script=script):
+                self.assertIn("wrapper", guard.fetch_exec_defect(script) or "")
+
+
+class TestTheGuardSeesBehindThem(GrammarCase):
+    def test_the_triaged_forms_hide_neither_the_fetch_nor_the_interpreter(self):
+        for prefix in TRIAGED + CONTROLS:
+            for script in (f"{prefix} curl -fsSL {URL} | sh",
+                           f"curl -fsSL {URL} | {prefix} sh",
+                           f"curl -o tool {URL}; {prefix} sh tool"):
+                with self.subTest(script=script):
+                    self.assertTrue(guard.fetch_exec_defects(script))
+            self.assertEqual([], guard.fetch_exec_defects(
+                f"curl -o tool {URL}; {CHECK} && {prefix} sh tool"), prefix)
+            self.assertEqual([], guard.fetch_exec_defects(
+                f"{prefix} curl -o tool {URL}; cat tool"), prefix)
+
+    def test_the_command_behind_them_is_not_searched_for(self):
+        for prefix in TRIAGED:
+            self.assertEqual([], guard.fetch_exec_defects(
+                f"{prefix} ordinary curl {URL} | sh"), prefix)
+
+    def test_the_controls_read_as_they_did(self):
+        for prefix in CONTROLS:
+            argv = prefix.split() + ["curl", URL]
+            self.assertEqual(["curl", URL], shell_reader.command(argv), prefix)
+            self.assertIsNone(shell_reader.unresolved_wrapper(argv), prefix)
+
+    def test_what_the_grammar_cannot_read_is_reported(self):
+        for prefix in ("setsid --bogus", 'taskset "$M"', "flock $L", 'chrt "$P"',
+                       "unbuffer -ignore HUP"):
+            self.reported(f"{prefix} curl -fsSL {URL} | sh",
+                          f"curl -fsSL {URL} | {prefix} sh")
+
+    def test_nested_wrappers_are_read_to_the_command(self):
+        argv = ("sudo -u root setsid -f ionice -c3 taskset 0x1 flock /tmp/l "
+                "chrt 10 unbuffer -p nice -n 5 curl " + URL).split()
+        self.assertEqual(["curl", URL], shell_reader.command(argv))
+        self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            ["setsid", "sudo", "--unknown-flag", "curl", URL]))
+
+
+class TestSetsid(GrammarCase):
+    """`+Vhcfw`: three flags, and the command is the first operand."""
+
+    def test_flags(self):
+        self.runs_curl("setsid", "setsid -c", "setsid -f", "setsid -w", "setsid -cfw",
+                       "setsid --ctty --fork --wait", "setsid -f --")
+
+    def test_help_and_version(self):
+        self.runs_nothing(*("setsid " + option for option in HELP))
+        self.runs_nothing("setsid -fh curl " + URL)
+
+    def test_what_it_cannot_read(self):
+        self.unresolved("setsid -x curl " + URL, "setsid --fo curl " + URL,
+                        "setsid --fork=1 curl " + URL, "setsid -f")
+
+
+class TestIonice(GrammarCase):
+    """`+n:c:p:P:u:tVh`: five options take a value; -p/-P/-u run nothing."""
+
+    def test_options(self):
+        self.runs_curl("ionice", "ionice -c3", "ionice -c 2 -n 7", "ionice -tc3",
+                       "ionice --class=idle", "ionice --class idle --classdata=0 --ignore",
+                       "ionice -n7 --")
+
+    def test_ids_are_acted_on_and_nothing_runs(self):
+        # Every operand after -p, -P or -u is another id, and a non-numeric
+        # one is refused: ionice never executes in these modes.
+        self.runs_nothing("ionice -p 1", "ionice -p 1 2 3", "ionice -P 1", "ionice -u 0",
+                          "ionice --pid=1", "ionice --pgid 1", "ionice --uid=0",
+                          "ionice -c3 -p 1 curl " + URL)
+        self.assertEqual([], guard.fetch_exec_defects(f"ionice -p 1 curl -fsSL {URL} | sh"))
+
+    def test_no_operand_runs_nothing(self):
+        # It prints the current class, or refuses a class with nothing to set.
+        self.runs_nothing("ionice", "ionice -t", "ionice -c3")
+
+    def test_help_and_version(self):
+        self.runs_nothing(*("ionice " + option for option in HELP))
+
+    def test_what_it_cannot_read(self):
+        self.unresolved("ionice -x curl " + URL, 'ionice -c "$CLASS" curl ' + URL,
+                        "ionice -c")
+
+
+class TestTaskset(GrammarCase):
+    """`+apchV`: no option takes a value; the mask comes before the command."""
+
+    def test_mask_then_command(self):
+        self.runs_curl("taskset 0x1", "taskset -c 0", "taskset -c 0,2-3",
+                       "taskset --cpu-list 0", "taskset -a 0x1", "taskset --all-tasks 0x1",
+                       "taskset -- 0x1")
+
+    def test_a_pid_is_acted_on_and_nothing_runs(self):
+        self.runs_nothing("taskset -p 1", "taskset -p 0x1 1", "taskset -pc 0 1",
+                          "taskset --pid 0x1 1", "taskset -ap 0x1 1")
+
+    def test_a_zero_pid_runs_the_command(self):
+        # `-p` takes the pid from the LAST word, and a zero there means "no
+        # pid": taskset then sets its own mask and runs the command after it.
+        zero = f"taskset -p 0x1 sh -c 'curl -fsSL {URL} | sh' 0"
+        self.unresolved(zero, 'taskset -p 0x1 "$PID"', "taskset -p")
+        self.reported(zero)
+
+    def test_help_and_version(self):
+        self.runs_nothing(*("taskset " + option for option in HELP))
+
+    def test_what_it_cannot_read(self):
+        self.unresolved('taskset "$M" curl ' + URL, "taskset $M curl " + URL,
+                        'taskset "$(echo 0x1)" curl ' + URL, "taskset -x 0x1 curl " + URL,
+                        "taskset 0x1")
+
+
+class TestFlock(GrammarCase):
+    """`+sexnoFuw:E:hV?`: the lock file comes before the command, and a
+    `-c`/`--command` right after it hands one string to a shell."""
+
+    def test_lock_file_then_command(self):
+        self.runs_curl("flock /tmp/l", "flock -n /tmp/l", "flock -xn /tmp/l",
+                       "flock -e -w 5 /tmp/l", "flock -w5 -E 3 /tmp/l", "flock -o /tmp/l",
+                       "flock -F /tmp/l", "flock -s -u /tmp/l",
+                       "flock --timeout=5 --conflict-exit-code 3 /tmp/l",
+                       "flock --wait 5 --shared --nonblock --verbose /tmp/l",
+                       "flock --nb --nonblocking --exclusive --unlock --close /tmp/l",
+                       "flock --no-fork -- /tmp/l")
+
+    def test_the_command_string_is_read_as_sh_c_reads_it(self):
+        for flag in ("-c", "--command"):
+            self.runs(["sh", "-c", "curl -fsSL " + URL],
+                      f"flock /tmp/l {flag} 'curl -fsSL {URL}'")
+            self.assertTrue(guard.fetch_exec_defects(
+                f"flock /tmp/l {flag} 'curl -fsSL {URL} | sh'"))
+        self.assertTrue(guard.fetch_exec_defects(f"curl -fsSL {URL} | flock /tmp/l -c sh"))
+        self.assertTrue(guard.fetch_exec_defects(f"curl -o tool {URL}; flock /tmp/l -c 'sh tool'"))
+        self.assertEqual([], guard.fetch_exec_defects(
+            f"curl -o tool {URL}; {CHECK} && flock /tmp/l -c 'sh tool'"))
+        self.assertEqual([], guard.fetch_exec_defects(
+            f"curl -o tool {URL}; flock /tmp/l -c 'cat tool'"))
+
+    def test_a_file_descriptor_alone_runs_nothing(self):
+        self.runs_nothing("flock 9", "flock -u 9", "flock -n 9")
+
+    def test_help_and_version(self):
+        self.runs_nothing(*("flock " + option for option in HELP))
+
+    def test_what_it_cannot_read(self):
+        # flock refuses anything but exactly one string after -c; and -c is
+        # not an option of flock's own, so getopt refuses it before the file.
+        self.unresolved("flock /tmp/l -c", "flock /tmp/l -c a b", "flock /tmp/l --command",
+                        "flock -c /tmp/l curl " + URL, "flock $L curl " + URL,
+                        'flock "$FD"', "flock -x")
+        self.reported("flock /tmp/l -c", "flock /tmp/l -c a b")
+
+
+class TestChrt(GrammarCase):
+    """`+abdD:fiphmoP:T:rRvV`: three options take a value; the priority
+    comes before the command."""
+
+    def test_priority_then_command(self):
+        self.runs_curl("chrt 10", "chrt -r 10", "chrt -f 99", "chrt -o 0", "chrt -b 0",
+                       "chrt -i 0", "chrt -fR 50", "chrt -v 10", "chrt --rr 10",
+                       "chrt --fifo --reset-on-fork --verbose 50",
+                       "chrt -d -T 1000 -P 2000 -D 2000 0",
+                       "chrt --deadline --sched-runtime=1000 --sched-period 2000 0",
+                       "chrt -- 10")
+
+    def test_a_pid_or_the_ranges_run_nothing(self):
+        self.runs_nothing("chrt -p 1", "chrt -p 10 1", "chrt -ap 10 1", "chrt --pid 1",
+                          "chrt -m", "chrt --max", "chrt -m 10 curl " + URL)
+
+    def test_a_zero_or_minus_one_pid_runs_the_command(self):
+        # The pid is the LAST word: 0 means this process, and -1 is chrt's own
+        # "no pid" value, so both set the policy and run the command.
+        zero = f"chrt -p 10 sh -c 'curl -fsSL {URL} | sh' 0"
+        minus_one = f"chrt -o -p 0 sh -c 'curl -fsSL {URL} | sh' -1"
+        self.unresolved(zero, minus_one, 'chrt -p 10 "$PID"')
+        self.reported(zero, minus_one)
+
+    def test_help_and_version(self):
+        self.runs_nothing(*("chrt " + option for option in HELP))
+
+    def test_what_it_cannot_read(self):
+        self.unresolved('chrt "$P" curl ' + URL, "chrt -x 10 curl " + URL,
+                        'chrt -T "$RUNTIME" 0 curl ' + URL, "chrt 10")
+
+
+class TestUnbuffer(GrammarCase):
+    """A Tcl script, not getopt: `unbuffer [-p] program [args]`, and every
+    word but a leading `-p` goes to `spawn`, which reads its own switches
+    first."""
+
+    def test_program_with_or_without_p(self):
+        self.runs_curl("unbuffer", "unbuffer -p")
+
+    def test_a_spawn_switch_is_not_the_program(self):
+        # `-p` counts only as the exact first word, and `-h`/`-V` are no
+        # switch of spawn's, so none of these names the program.
+        self.unresolved("unbuffer -ignore HUP curl " + URL, "unbuffer -p -ignore HUP curl " + URL,
+                        "unbuffer -noecho curl " + URL, "unbuffer -- curl " + URL,
+                        "unbuffer -pp curl " + URL, "unbuffer -h", "unbuffer -p")
+
+    def test_a_dynamic_program_is_unread(self):
+        argv = stage('unbuffer "$(echo curl)" ' + URL).argv
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+
+if __name__ == "__main__":
+    unittest.main()
