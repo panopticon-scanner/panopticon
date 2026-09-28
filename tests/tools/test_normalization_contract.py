@@ -121,6 +121,12 @@ def _strings(where, value):
 # (the goldens are captured BYTES, not trees, so "does this name a file in the
 # repo" has nothing to resolve against). Adding a name suppresses no assertion;
 # it publishes a debt and names the issue that owes the answer.
+#
+# Each entry also owes its OWN self-liquidating expiry test, pinning the shape
+# that makes it a debt, so the entry fails the day the adapter stops emitting it
+# (`test_the_dependency_check_debt_is_still_owed` is that test for the one entry
+# here). Without one a second entry would inherit the shape assertion below and
+# no expiry pin, and the register would quietly stop emptying itself.
 PATH_DEBT = {
     "dependency-check": "#2225: a vulnerable jar's basename; owner call pending",
 }

@@ -517,7 +517,9 @@ class PipAuditAdapter:
             # is what pip-audit sees; the repo path survives only as the
             # LOCATION findings are reported against, which reads no file.
             # `req` itself stays ABSOLUTE -- sanitize_requirements_file opens
-            # it -- and only what the report publishes is relativized.
+            # it -- and only what the report publishes is relativized. THIS is
+            # where the repo-relative invariant lives, at both `set` sites:
+            # `_located_at` returns what it is given (pinned by a test).
             _manifest_path_cv.set(os.path.relpath(req, target))
             kept = sanitize_requirements_file(req, target)["kept"]
         else:

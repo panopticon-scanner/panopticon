@@ -34,8 +34,8 @@ evidence exposed.
   shares one; it records the repo-relative path now, which is npm-audit's shape already. The
   normalization contract asserts a normalized relative `location.file` for EVERY adapter, with
   dependency-check's jar basename recorded as a disclosed debt naming #2225 — a debt, not an
-  allowlist: the shape rule still holds it, and a self-liquidating test drops the entry when the
-  owner rules.
+  allowlist: the shape rule still holds it, and a self-liquidating test FAILS, saying to drop the
+  entry, the day that adapter stops emitting a bare jar name.
 - **No module is loaded twice, and the `sys.path` bootstrap gets a ceiling (#1766; ARC-188610019,
   ARC-2452079063, ARC-3214704952, ARC-11100703).** A driver-shaped process built two module
   objects from one file for NINE modules — `config_schema`, `coverage_model`, `diff_map`,

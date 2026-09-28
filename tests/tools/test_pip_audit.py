@@ -293,6 +293,25 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual("pyproject.toml",
                          only(context.run(adapter.parse, raw, "g1"))["location"]["file"])
 
+    def test_located_at_is_pass_through_and_the_invariant_lives_at_the_write(self):
+        # Review deviation 5. `_located_at` does NOT relativize what the
+        # ContextVar holds, and cannot: on the in-process route that reads this
+        # value `target_root_cv` is unset, so there is no root to relpath
+        # against. The repo-relative invariant is therefore established at the
+        # two `set` sites in `invoke` and nowhere else. Said in words here,
+        # because the edit to `test_parse_uses_actual_manifest_path` stopped
+        # pinning it incidentally -- so hardening the read later is a visible
+        # decision, and a future writer cannot assume the read will launder it.
+        adapter = pa.PipAuditAdapter()
+        absolute = os.path.join(os.sep, "host", "layout", "requirements.txt")
+        token = pa._manifest_path_cv.set(absolute)
+        try:
+            self.assertEqual(absolute, adapter._located_at())
+            located = only(adapter.parse(PIP_AUDIT_SAMPLE, "g1"))["location"]["file"]
+        finally:
+            pa._manifest_path_cv.reset(token)
+        self.assertEqual(absolute, located)
+
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
             "dependencies": [
