@@ -445,6 +445,63 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertIn("no batch was in flight", status["message"])
         self.assertIn("`--reset`", status["message"])
 
+    def test_an_interrupt_during_first_run_ends_with_the_interrupted_status(self):
+        # #2200: `_first_run` used to be called BEFORE the try, so a Ctrl-C
+        # during a fresh run's first `driver.run` (readiness, discovery, the
+        # coverage scouts) escaped `loop` as a traceback instead of the
+        # `interrupted:` status every later Ctrl-C produces.
+        d, _ = self._repo()
+        runner = FakeRunner()
+        runner.torn_down = []
+        runner.teardown = runner.torn_down.append
+        with mock.patch.object(orchestrate, "_first_run", side_effect=KeyboardInterrupt), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual(loop_batch.INTERRUPTED_IDLE, status["message"])
+        # `_finish` still ran for this invocation: the runner was torn down
+        # for the terminal status, exactly as a mid-batch interrupt tears it
+        # down (the assertion the pre-existing rollback tests use).
+        self.assertEqual(["error"], runner.torn_down)
+
+    def test_an_interrupt_on_the_resume_seam_ends_with_the_interrupted_status(self):
+        # #2200: the same escape existed on the OTHER call before the try --
+        # the resume seam's `_run`, taken when `_after_first_run` says the
+        # first `driver.run` landed on a checkpoint coverage had already
+        # reached (see its own docstring for why that seam exists at all).
+        d, _ = self._repo()
+        runner = FakeRunner()
+        runner.torn_down = []
+        runner.teardown = runner.torn_down.append
+        with mock.patch.object(orchestrate, "_first_run",
+                               return_value={"status": "checkpoint"}), \
+                mock.patch.object(orchestrate, "_after_first_run", return_value=True), \
+                mock.patch.object(orchestrate, "_run", side_effect=KeyboardInterrupt), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual(loop_batch.INTERRUPTED_IDLE, status["message"])
+        self.assertEqual(["error"], runner.torn_down)
+
+    def test_an_exception_from_first_run_ends_with_the_error_status(self):
+        # #2200: the same call site, for the loop's OTHER promise -- `loop`
+        # never raises (review round 1, item 3). An Exception used to escape
+        # as a traceback too, where every other failure in `loop` becomes an
+        # `error` status.
+        d, _ = self._repo()
+        runner = FakeRunner()
+        runner.torn_down = []
+        runner.teardown = runner.torn_down.append
+        with mock.patch.object(orchestrate, "_first_run", side_effect=RuntimeError("boom")), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual("driver loop: RuntimeError: boom", status["message"])
+        self.assertEqual(["error"], runner.torn_down)
+
     def test_a_rejected_reply_from_the_interrupted_batch_is_rolled_back_too(self):
         # D10 ruling 5 keeps what a failed launch printed, and ruling 2 reads
         # it back into the next attempt's prompt -- but a rolled-back phase

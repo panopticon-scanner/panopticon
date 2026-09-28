@@ -34,6 +34,37 @@ evidence exposed.
   block's `git_failure`, and the scan still runs. **Discovered file sets grow on every target**:
   CI, config and secret-bearing files now reach a group, so group and cell counts move -- land this
   before a run, not during one.
+- **A SIGTERM the driver did not arm ends the Kimi runner's children before the home strip
+  (#1805).** The stripper's SIG_DFL/C-installed branch restored the default disposition and
+  re-raised the signal without ending the runner's registered children first, so a process whose
+  SIGTERM was never wired to the driver's own handler could die and leave them running against a
+  home whose guard hooks had just been stripped. It now calls `terminate_children` -- the same
+  bounded termination the interrupt path uses -- before the strip; the chained-predecessor branch
+  is unchanged.
+- **The workflow guard reads comments, continuations and heredocs the way bash does (#1793;
+  COD-3418139920, COD-3636110933).** `shell_reader.statements()` settled all three in passes
+  that ran before any quote tracking, so a `#` line inside a multi-line string, a `<<WORD`
+  inside quotes, in a comment or at the tail of a `<<<`, and a backslash ending a comment or a
+  quoted heredoc line each hid a statement bash runs, and the guard reported the step clean.
+  `scripts/shell_lex.py` now reads them in one quote-aware forward pass: heredocs queue until
+  the newline, a body ends at the line bash compares, and a delimiter bash must parse to spell
+  (`<<$(...)`) stays text. A command's `((` is arithmetic or two subshells, whose heredocs are
+  real, by the character after its first group, as bash decides it; nesting that would take
+  over eight re-readings of the script to decide raises `shell_lex.Unreadable` rather than
+  guess. An `a[...]` subscript, where `<<` is a shift, opens only where bash reads an
+  assignment -- across lines, and inside `a=(...)` -- so among a command's arguments
+  (`echo a[1<<X]`) `<<` is a heredoc. The scanners after the lexer now agree on `\"`
+  inside "...", `$'...'` and an apostrophe inside "...": misread, each hid what followed it.
+  Every heredoc on a line is read and filed under its descriptor, so the guard reads the
+  script `bash -s <<'A' 3<<'B'` runs (#2128).
+  A heredoc opened inside a `$(...)`, `<(...)` or `>(...)` that closes before the newline its
+  body would follow raises `shell_lex.Unreadable` too: bash 5.2 takes that body from the lines
+  below and runs what follows its terminator, which the guard does not model. Inside `$((...))`
+  a `$(...)` is read as the commands bash runs there.
+- **A Ctrl-C during a fresh run's first phase ends with the `interrupted:` status (#1805).**
+  `orchestrate.loop` called `_first_run`, and the resume seam's `_run`, before its own `try`, so
+  a Ctrl-C there escaped as a traceback and `_finish` never ran. Both calls now live inside the
+  same `try`, so the loop's existing handlers cover them; nothing before `_first_run` changed.
 - **One owner reads the committed config; errors refuse and disclosures print on both paths (#2229,
   #2189; ARC-1814846877, epic #1761).** Five readers each normalized the legacy `groups:` list form
   themselves -- `groups_schema.parse_groups`, `discovery.load_catalog`, `_committed_matrix`,
