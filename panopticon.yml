@@ -160,6 +160,7 @@ groups:
       - tests/test_run_fixture_tests.py
       - tests/test_run_tools_progress.py
       - tests/test_capture_goldens.py
+      - tests/test_goldens_provenance.py
       - tests/test_no_live_docker.py
       - tests/test_phase1_integration.py
       - tests/test_schemas.py
@@ -489,6 +490,7 @@ groups:
     - scripts/workflow_guard.py
     - scripts/shell_reader.py
     - scripts/shell_lex.py
+    - scripts/shell_wrappers.py
     - scripts/workflow_forms.py
     - scripts/workflow_fetch.py
     tests:
@@ -501,6 +503,7 @@ groups:
     - tests/test_workflow_pins.py
     - tests/test_workflow_guard.py
     - tests/test_shell_reader.py
+    - tests/test_shell_wrappers.py
     - tests/test_workflow_forms_regressions.py
     - tests/test_pyproject.py
     - tests/test_pyproject_metadata.py

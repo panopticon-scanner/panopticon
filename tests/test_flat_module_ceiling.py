@@ -44,8 +44,8 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # de4675d; measured with `wc -l`, which agrees with `splitlines()` on every
 # file here). An entry is a debt, not a permission: it may only go DOWN, and it
 # must disappear once the module is at or under LINE_CEILING, and it is lowered
-# to the new count whenever the module shrinks. Twenty modules, and the five
-# with a fix shape written down are the first ones owed:
+# to the new count whenever the module shrinks. Twenty modules when it landed,
+# and the five with a fix shape written down are the first ones owed:
 # `run_tools.py` (three extractions -- scanner config, capture, manifest --
 # ARC-2609514778), `setup_flow.py` (ARC-1181155147), `orchestrate.py`
 # (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
@@ -53,7 +53,6 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 829,
-    "scripts/shell_reader.py": 832,
     "scripts/triage.py": 792,
     "scripts/workflow_guard.py": 815,
     "skill/scripts/diff_map.py": 1215,
