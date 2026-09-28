@@ -203,6 +203,11 @@ def unwrap(argv, head, has_substitution):
     `has_substitution` is `shell_reader.has_substitution`: the reader imports
     this module, so it hands over its test for a lifted `$(...)` rather than
     this module importing it back.
+
+    The argv is read as written. Behind an `xargs`, which appends words to
+    it, `shell_reader._command_result` reports an answer of no command
+    instead: of the answers here, that is the only one appended words can
+    turn into a command.
     """
     if head == "unbuffer":
         return _unbuffer(argv[1:])

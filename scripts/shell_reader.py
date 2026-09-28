@@ -550,6 +550,10 @@ def _command_result(argv):
     """Shared parse result for execution extraction and unread decisions."""
     argv = list(argv)
     wrappers = 0
+    # `xargs` appends words from its input to the argv behind it, so the
+    # innermost wrapper read after one (`behind`, with its argv) was read from
+    # an argv that is not the one that runs (#2227).
+    appended, behind = False, None
     while argv:
         if _ASSIGNMENT.match(argv[0]) and not argv[0].startswith("-"):
             argv.pop(0)
@@ -580,7 +584,15 @@ def _command_result(argv):
         inner, reason = unwrap(argv, head, has_substitution)
         if reason:
             return argv, "`%s` %s" % (head, reason)
+        behind = (head, argv) if appended else None
+        appended = appended or head == "xargs"
         argv = inner
+    if behind and not argv:
+        # It runs nothing as written, but the appended words may be its
+        # command (`xargs ionice`, `xargs flock FILE`, `xargs env FOO=1`) or
+        # the last word it reads a pid from (`xargs taskset -p ...`).
+        head, argv = behind
+        return argv, "`%s` has no command as written, and xargs appends words to it" % head
     return argv, None
 
 
