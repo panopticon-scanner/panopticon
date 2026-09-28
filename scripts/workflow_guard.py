@@ -34,11 +34,11 @@ step B is one act split into two innocent halves, and a `sha256sum -c` in a
 later step is a real check of an earlier step's file. A step whose `shell:` is
 not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the
 same act in a grammar this module does not have, and so is a heredoc body
-handed to such an interpreter as its program (`python3 - <<'EOF'`).
+handed to such an interpreter as its program (`python3 - <<'EOF'`). So is a
+step the reader refuses to guess at (`shell_lex.Unreadable`), by its name.
 
-Stdlib only, so the test suite imports it with no dependency (`import
-workflow_guard` -- repo-root `scripts/` is on the path via tests/conftest.py).
-`main()` reads YAML and is the same rule for a human at a shell:
+Stdlib only, so the test suite imports it with no dependency. `main()` reads
+YAML and is the same rule for a human at a shell:
 
     python3 scripts/workflow_guard.py .github/workflows/*.yml
 
@@ -177,6 +177,7 @@ import os
 import re
 import sys
 
+import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, chmod_executable, chmod_targets,
@@ -504,7 +505,6 @@ def _uses(stmts, dest, after):
     return names, out
 
 
-
 def _use(statement, position, stage, argv, dest):
     if not argv:
         return None
@@ -705,20 +705,20 @@ def job_defects(steps):
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
+        if not why:
+            # Substitutions too: `_defects` reads them again with no step to name.
+            try:
+                here = read(step.script)
+                list(_unread_records(here))
+            except shell_lex.Unreadable as error:
+                why = "cannot read this step: %s; nothing in it is accepted" % error
         if why:
             found.append((step.name, why))
             continue
         # Per step, because each one is its own shell invocation: an `if`
         # left open at the end of step A must not make step B conditional.
-        here = read(step.script)
         branches = regions(here)
         for local, statement in enumerate(here):
-            # An `if:` step may not run. Its FETCH still counts -- folding it in
-            # can only report more -- but its CHECK counts only for a use that
-            # is skipped with it (`_binds`): a checksum that may not run cannot
-            # clear an execution that always does. A `continue-on-error` step
-            # DOES run, and its failure is discarded, so its check counts for
-            # nothing.
             when = (step.condition, branches.get(local))
             if any(when):
                 conditions[len(stmts)] = when
@@ -806,8 +806,8 @@ def main(argv=None, out=print):
     for line in defects:
         out(line)
     if defects:
-        out("%d unverified fetch-and-exec step(s); see scripts/workflow_guard.py"
-            % len(defects))
+        out("%d defect(s): unverified fetch-and-exec, or code the guard cannot read; "
+            "see scripts/workflow_guard.py" % len(defects))
     return 1 if defects else 0
 
 

