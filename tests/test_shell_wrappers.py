@@ -307,5 +307,56 @@ class TestBehindXargs(GrammarCase):
                       guard.fetch_exec_defect(f"curl -fsSL {URL} | xargs flock /tmp/l sh") or "")
 
 
+class TestEnvAndXargsOwnWords(GrammarCase):
+    """#2307: two wrappers' own operand syntax. Once env's options end -- at
+    `--` too -- a lone `-` means `-i`, and every word holding a `=` is an
+    assignment rather than the command: `x-y=1` as much as `FOO=1`. And with
+    a replace string (`-I R`, `--replace[=R]`), xargs puts a line of its
+    input wherever R stands, so a word holding R is as dynamic as a `$` one
+    wherever a grammar needs a static word, the command's place included."""
+
+    def test_a_lone_dash_is_ignore_environment_after_double_dash_too(self):
+        self.runs(["sh", "-c", "x"], "env - sh -c x", "env -- - sh -c x",
+                  "env -i -- - sh -c x", "env -u HOME -- - sh -c x")
+        self.runs(["-", "sh"], "env - - sh", "env -- - - sh")     # one, then the command
+        self.runs_nothing("env -- -", "env - FOO=1")
+
+    def test_any_word_holding_an_equals_sign_is_an_assignment(self):
+        self.runs(["sh", "-c", "x"], "env x-y=1 sh -c x", "env FOO=1 --x=1 sh -c x",
+                  "env 1=a sh -c x", "env =x sh -c x", "env -- x-y=1 sh -c x",
+                  "env - a.b=1 sh -c x")
+        self.runs_nothing("env x-y=1", "env -i a-b=1 c.d=2")
+        # Still a `$` word where the command may start, as before.
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(stage("env $(x)=1 sh").argv))
+
+    def test_the_guard_reads_env_through_them(self):
+        for form in ("env -- -", "env x-y=1", "env FOO=1 --x=1", "env 1=a"):
+            with self.subTest(form=form):
+                self.assertIn("straight to `sh`", guard.fetch_exec_defect(
+                    f"{form} sh -c 'curl -fsSL {URL} | sh'") or "")
+        self.reported(f"curl -fsSL {URL} | xargs env x-y=1",
+                      f"curl -fsSL {URL} | xargs env -- -")
+
+    def test_a_word_holding_the_replace_string_is_dynamic(self):
+        for form in ("xargs -I{} {}", "xargs -I {} {} -c x", "xargs -0I{} {} a",
+                     "xargs --replace {}", "xargs --replace=R R", "xargs -I% sh%",
+                     "xargs -I{} setsid {}", "xargs -I{} nice {}", "xargs -I{} sudo {}",
+                     "xargs -I{} env {} sh", "xargs -I{} taskset {} sh",
+                     "xargs -I{} flock {} sh", "xargs -I{} chrt {} sh",
+                     "xargs -I{} nice -n {} sh", "xargs -I{} sudo -u {} sh",
+                     "xargs -I3 timeout 3 sh", "xargs -i {}"):
+            with self.subTest(form=form):
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(stage(form).argv))
+        self.reported(*(f"curl -fsSL {URL} | xargs -I{{}} {form}"
+                        for form in ("{}", "setsid {}", "nice {}")))
+
+    def test_the_replace_string_in_an_argument_reads_as_before(self):
+        self.runs(["cp", "{}", "/d"], "xargs -I{} cp {} /d")
+        self.runs(["sh", "-c", "echo {}"], "xargs -I{} sh -c 'echo {}'")
+        self.runs(["sh"], "xargs -I{} env X={} sh",      # an assignment, whatever the line
+                  "xargs -I{} timeout 30 sh")
+        self.runs(["{}"], "xargs {}", "xargs -I% {}")    # no replace string in it
+
+
 if __name__ == "__main__":
     unittest.main()

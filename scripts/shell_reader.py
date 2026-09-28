@@ -45,7 +45,7 @@ import secrets
 import shlex
 
 from shell_lex import closing, lex
-from shell_wrappers import WRAPPERS, unwrap
+from shell_wrappers import WRAPPERS, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -576,7 +576,7 @@ def _command_result(argv):
             del argv[0:2]
             continue
         head = os.path.basename(argv[0])
-        if heads and (has_substitution(argv[0]) or "$" in argv[0]):
+        if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
         if head not in WRAPPERS:
             break

@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard closes eight LOW follow-ups from its 5.2 reviews (#1793).**
+  `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
 - **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
   clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by
