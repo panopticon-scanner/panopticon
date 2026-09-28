@@ -25,16 +25,18 @@ one forward pass, from the state it is in, and so does `lex`:
                    their bodies are read one after another from the next
                    newline
 
-Three readings are not bash's. A `<<` with no terminator line below it is left
+Two readings are not bash's. A `<<` with no terminator line below it is left
 as text rather than swallowing the rest of the script: bash runs nothing below
-it, so reading it as code can only report more. A delimiter bash has to PARSE
-to spell -- a `$(...)`, `${...}`, `$[...]` or backquote in the word, an escape
-`$'...'` decodes, an extglob pattern -- is left as text too, because ending a
-body at a guessed spelling swallows what bash runs; reading that body as code
-is not free either, since a quote it leaves open hides the code below its
-terminator. And a heredoc inside `$(...)` is lifted into the enclosing parse,
-so the text that substitution is re-read from holds a marker instead of the
-body -- a gap `scripts/workflow_guard.py` documents.
+it, so reading it as code can only report more. And a heredoc inside `$(...)`
+is lifted into the enclosing parse, so the text that substitution is re-read
+from holds a marker instead of the body -- a gap `scripts/workflow_guard.py`
+documents. A delimiter bash has to PARSE to spell -- a `$(...)`, `${...}`,
+`$[...]` or backquote in the word, an escape `$'...'` decodes, an extglob
+pattern -- has no reading short of bash's: a body ended at a guessed spelling
+swallows what bash runs, and a body read as code hides it behind a quote left
+open there (#2224). So `lex` reads it as a word and, at the metacharacter
+ending it, raises `Unreadable` naming it; a script that ends inside the word
+leaves no line below it for a body to hide.
 
 A command's `((` is decided the way bash decides it. Its first group is read
 to its close -- through quotes, backquotes, escapes and `$(...)`, not
@@ -46,10 +48,9 @@ arithmetic, read the same way. A `$(...)` in it, as in `((...))` and
 `$[...]`, is a command substitution, comments and heredocs and all.) Reading
 a group again is what nesting costs -- `((((` N deep is read N times -- so
 `lex` stops at `_REREAD` times the script's length of it and raises
-`Unreadable`. Nothing catches that: the guard accepts no step it could not
-read, and its command line exits non-zero. An exception rather than a
-reading, because the reader has no channel yet for a step it cannot read, and
-raising one needs no line in the modules that call it.
+`Unreadable`. An exception rather than a reading, because the reader has no
+channel for a step it cannot read: `workflow_guard.job_defects` catches it
+and reports that step by name, accepting nothing in it.
 
 A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its
 body would follow -- `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash
@@ -129,8 +130,9 @@ _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
 
 class Unreadable(Exception):
     """A script `lex` does not read: it nests `((` so deep that deciding each
-    one, as bash does, would read it more than `_REREAD` times over, or a
-    substitution closes over a heredoc. Nothing catches it."""
+    one, as bash does, would read it more than `_REREAD` times over, a
+    substitution closes over a heredoc, or a heredoc's delimiter is a word
+    bash parses to spell. `workflow_guard.job_defects` reports its step."""
 
 
 def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
@@ -138,7 +140,8 @@ def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     heredoc -- operator, word and body -- replaced by the marker
     `heredoc(body, expands, fd)` returns, spaced off as a word of its own.
     Raises `Unreadable` rather than guess, past the cap on reading `((`
-    again and at a heredoc its substitution closes over."""
+    again, at a heredoc its substitution closes over and at a delimiter bash
+    parses to spell."""
     return _Lexer(script, heredoc).run()
 
 
@@ -197,6 +200,7 @@ class _Lexer:
         self.lines: dict[bool, _Lines] = {}
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
+        self.unspelled = (0, 0)         # a heredoc word bash parses: frames, start
 
     def run(self) -> str:
         text, out, frames = self.text, self.out, self.frames
@@ -256,6 +260,8 @@ class _Lexer:
                 self.frames[-1].undo = undo
                 return i
             if ch in _BREAK:
+                if self.unspelled[0] == len(self.frames):
+                    self.refuse(i)
                 self.token(i)
             if text.startswith("<<<", i):
                 out.append("<<<")
@@ -278,12 +284,11 @@ class _Lexer:
                 frame.undo = ()         # `))`: an arithmetic command
             if not frame.depth:
                 if frame.queue:         # a substitution closing over a heredoc
-                    raise Unreadable("shell_lex: a heredoc inside a `$(...)`, `<(...)` or "
-                                     "`>(...)` that closes before the newline its body would "
-                                     "follow: bash 5.2 reads that body from the lines below "
-                                     "and runs what follows its terminator, bash 3.2 reads "
-                                     "those lines as code; not read, so nothing in it is "
-                                     "accepted")
+                    raise Unreadable("a heredoc inside a `$(...)`, `<(...)` or `>(...)` "
+                                     "that closes before the newline its body would follow: "
+                                     "bash 5.2 reads that body from the lines below and runs "
+                                     "what follows its terminator, bash 3.2 reads those "
+                                     "lines as code")
                 self.frames.pop()
                 if frame.kind == "(":
                     vars(self).update(frame.saved)
@@ -304,9 +309,8 @@ class _Lexer:
         at, frames, size, saved = undo
         self.reread += i - at
         if self.reread > _REREAD * len(self.text):
-            raise Unreadable("shell_lex: this script nests `((` so deep that reading it "
-                             "the way bash does costs over %d times its length; "
-                             "not read, so nothing in it is accepted" % _REREAD)
+            raise Unreadable("this script nests `((` so deep that reading it the way "
+                             "bash does costs over %d times its length" % _REREAD)
         del self.frames[frames:], self.out[size:]
         vars(self).update(saved)
         self.plain = at
@@ -351,12 +355,17 @@ class _Lexer:
         """Queue the heredoc whose `<<` is at `i`; the index after its word.
 
         The operator stays in the output as written until a body is found
-        for it -- with no terminator below, that is what it remains.
+        for it -- with no terminator below, that is what it remains. A word
+        bash parses to spell is read on as a word, never a subscript, and
+        refused where it ends (`refuse`).
         """
         text, out = self.text, self.out
         after = i + 3 if text.startswith("-", i + 2) else i + 2
         word = _word(text, after)
-        if word is None:                # no word follows, or none `_word` spells
+        if not isinstance(word, tuple):     # no word follows, or none `_word` spells
+            if word is not None:
+                after, self.unspelled = word, (len(self.frames), word)
+                self.at, self.compound = "argument", ""
             out.append(text[i:after])
             self.word = len(out)
             return after
@@ -370,6 +379,20 @@ class _Lexer:
         frame.queue.append((len(out) - 1, delimiter, quoted, after > i + 2, fd or "0"))
         self.word, self.at = len(out), self.stood(delimiter)
         return end
+
+    def refuse(self, i: int) -> None:
+        """Raise `Unreadable` at `i`, the metacharacter ending the heredoc
+        word `_word` would not spell, naming the word -- through the pattern
+        an extglob's `(` there opens."""
+        start, text = self.unspelled[1], self.text
+        end = (closing(text, i) or i) if text.startswith("(", i) else i
+        word = text[start:end]
+        if len(word) > 60 or "\n" in word:  # named by its start
+            word = word.partition("\n")[0][:57] + "..."
+        raise Unreadable("the heredoc delimiter `%s` is a word bash parses to spell: a "
+                         "guessed spelling would end its body at a decoy line, and a "
+                         "body read as code hides what follows its terminator behind "
+                         "a quote left open in it" % word)
 
     def bodies(self, frame: _Frame, i: int) -> int:
         """Read the heredocs `frame` queued, one after another from the line
@@ -386,12 +409,12 @@ class _Lexer:
         return i
 
 
-def _word(text: str, i: int) -> tuple[str, bool, int] | None:
+def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
     """(delimiter, quoted, end) for the heredoc word after an operator ending
     at `i`: the word as bash compares lines with it -- quotes removed, quoted
-    if any part of it was. None when no word follows, a quote in it never
-    closes, or bash has to PARSE the word to spell it (`_PARSED`, or the `(`
-    of an extglob pattern after it)."""
+    if any part of it was. None when no word follows or a quote in it never
+    closes. Where the word starts, when bash has to PARSE it to spell it
+    (`_PARSED`, or the `(` of an extglob pattern after it)."""
     while i < len(text) and text[i] in " \t":
         i += 1
     start, quoted = i, False
@@ -399,14 +422,14 @@ def _word(text: str, i: int) -> tuple[str, bool, int] | None:
     while i < len(text) and text[i] not in _BREAK:
         match = _QUOTED.match(text, i)
         if _PARSED.match(text, i) or (match and _PARSED.search(match[3] or "")):
-            return None
+            return start
         if match:
             single, ansi, double = match.groups()
             if single is not None:
                 parts.append(single)
             elif ansi is not None:      # the four escapes that are the character
                 if set(_ANSI_ESCAPE.findall(ansi)) - set("\\'\"?"):
-                    return None
+                    return start
                 parts.append(_ANSI_ESCAPE.sub(r"\1", ansi))
             else:
                 parts.append(_DQ_ESCAPE.sub(lambda m: m[1] or "", double))
@@ -421,9 +444,9 @@ def _word(text: str, i: int) -> tuple[str, bool, int] | None:
         else:
             parts.append(text[i])
             i += 1
-    if i == start or text[start] == "#" or text.startswith("(", i):
+    if i == start or text[start] == "#":
         return None
-    return "".join(parts), quoted, i
+    return start if text.startswith("(", i) else ("".join(parts), quoted, i)
 
 
 class _Lines:

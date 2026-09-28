@@ -781,18 +781,36 @@ class TestOneLexicalPass(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
 
-    def test_a_delimiter_bash_parses_to_spell_is_no_heredoc(self):
-        # Bash spells `<<$(a b)` and `<<$'\t'` by parsing the word, so the
-        # operator stays text and the lines below are code: no body ends at a
-        # guessed spelling (`$`, `t`). That is not free -- a quote the body
-        # leaves open hides what follows its terminator, the residual
-        # `scripts/shell_lex.py` states.
-        for script in ("cat <<$(a b)\n$(a b)\necho a\n$\n",
-                       "cat <<$'\\t'\n\t\necho a\nt\n"):
+    def test_a_delimiter_bash_parses_to_spell_is_refused(self):
+        # Bash spells `<<$(a b)` and `<<$'\t'` by parsing the word, and the
+        # reader parses no words: a body ended at a guessed spelling (`$`,
+        # `t`) swallows what bash runs, and a body read as code hides it
+        # behind a quote left open there (#2224). So the reader raises, and
+        # names the word as bash delimits it -- up to the metacharacter that
+        # ends it, past the brackets and quotes inside it.
+        for script, word in (("cat <<$(a b)\n$(a b)\necho a\n$\n", "$(a b)"),
+                             ("cat <<$'\\t'\n\t\necho a\nt\n", "$'\\t'"),
+                             ("cat <<${x y} >out\n${x y}\n", "${x y}"),
+                             ("cat <<$[1]; echo a\n$[1]\n", "$[1]"),
+                             ("cat <<`a b`|cat\n`a b`\n", "`a b`"),
+                             ("cat <<@(a b)\n@(a b)\n", "@(a b)"),
+                             ('cat <<"$(a b)"\n$(a b)\n', '"$(a b)"'),
+                             ("cat <<E$(a b)F\nE$(a b)F\n", "E$(a b)F"),
+                             ("cat <<-$(a b)\n\t$(a b)\n", "$(a b)"),
+                             ("cat 3<<$(a b)\n$(a b)\n", "$(a b)"),
+                             ("x=$(cat <<$(a b))\n", "$(a b)")):
+            with self.subTest(script=script):
+                with self.assertRaises(shell_lex.Unreadable) as raised:
+                    shell_reader.statements(script)
+                self.assertIn("`%s`" % word, str(raised.exception))
+        # A plain, quoted, `<<-` or numeric-fd delimiter is spelled and its
+        # body read, so the quote in it hides nothing below the terminator;
+        # and a `<<` with no word after it stays text, the lines below code.
+        for script in ("cat <<EOF\nit's\nEOF\necho a\n", "cat <<'$(a b)'\nit's\n$(a b)\necho a\n",
+                       "cat <<-EOF\n\tit's\n\tEOF\necho a\n", "cat 3<<EOF\nit's\nEOF\necho a\n",
+                       "cat <<\necho a\n"):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
-        self.assertNotIn([['echo', 'a']],
-                         argvs("cat <<$(a b)\nit's\n$(a b)\necho a\n"))
 
     def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
         # #2128: a second heredoc on the line was read as `<` of a file named
@@ -853,12 +871,13 @@ class TestOneLexicalPass(unittest.TestCase):
 
     def test_past_the_cap_the_reader_raises_instead_of_guessing(self):
         # One group 3000 `(` deep is 3000 readings of the same text: past
-        # eight times the script, `shell_lex.Unreadable`, which nothing
-        # catches. The pin is that it fails closed after bounded work: without
-        # the cap nothing raises, and the read took about seven seconds,
-        # growing with the square of the depth. It raises in under 0.1 s on a
-        # dev box; 10 s is no speed claim, only a guard against a catastrophe
-        # on CI's traced, shared runners, where the tests above ran 6-9x slower.
+        # eight times the script, `shell_lex.Unreadable`, which the guard
+        # reports as that step's refusal. The pin is that it fails closed
+        # after bounded work: without the cap nothing raises, and the read
+        # took about seven seconds, growing with the square of the depth. It
+        # raises in under 0.1 s on a dev box; 10 s is no speed claim, only a
+        # guard against a catastrophe on CI's traced, shared runners, where
+        # the tests above ran 6-9x slower.
         script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n"
         start = time.monotonic()
         with self.assertRaises(shell_lex.Unreadable):
