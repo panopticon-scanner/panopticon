@@ -141,6 +141,11 @@ def is_domain(name):
     return isinstance(name, str) and name in DOMAIN_TO_PANEL
 
 
+def domain_prefix(code: str) -> str:
+    """Raw text before the first hyphen; callers normalize and validate it."""
+    return code.split("-", 1)[0]
+
+
 def domain_of(code):
     """The domain prefix of a code ('SEC-A1A' -> 'SEC'), or None.
 
@@ -151,7 +156,7 @@ def domain_of(code):
     """
     if not isinstance(code, str) or "-" not in code:
         return None
-    return code.split("-", 1)[0]
+    return domain_prefix(code)
 
 
 def validate_code(bundle, code):

@@ -34,6 +34,15 @@ evidence exposed.
   block's `git_failure`, and the scan still runs. **Discovered file sets grow on every target**:
   CI, config and secret-bearing files now reach a group, so group and cell counts move -- land this
   before a run, not during one.
+- **Share synthesis test isolation (#2204, #1822, #1823).** Synthesis tests reuse the cwd
+  guard and one autouse isolation fixture at the same package and module scopes. Report tests
+  import mocks explicitly, preserving assertions and removing reliance on prior test imports.
+- **Share OCRDb report record helpers (#2203, #1822).** Gap and strain reports use one
+  occurrence builder and the catalog's raw domain-prefix helper. Missing-file handling, optional
+  strain run IDs, each caller's domain policy and flat imports retain their existing behavior.
+- **Derive SARIF levels from the adapter severity map (#2202, #1821).** SARIF retains its
+  four allowed level names while sharing their grades with tool normalization. Missing and
+  unknown levels, metadata precedence and secret grading keep their existing behavior.
 - **Share token usage vocabulary (#2201, #1821).** The dispatch ledger imports usage fields
   and phases from the usage collector, keeping totals, checkpoint mapping, model attribution
   and corrupt-row accounting unchanged.
