@@ -21,7 +21,7 @@ The host contract (5.2, plan 6):
   `usage.json` **as each entry completes**, not when the batch does (#1636): the entries in a
   checkpoint run concurrently and finish out of order, each one printing a
   `driver loop: <id> done (<ms> ms, <k>/<n>)` progress line on stderr as it lands, so a crash, a
-  `kill` or a compaction mid-batch keeps everything a batch that had already CLOSED had finished,
+  `kill -9` or a compaction mid-batch keeps everything a batch that had already CLOSED had finished,
   and re-running resumes from disk without repeating those; what the killed batch itself had in
   flight is taken back on the next run rather than left half-done (#1698, below). **Ctrl-C is
   deliberately not that** (#1662): it means complete stoppage, cancellation and rollback to the last
@@ -550,24 +550,28 @@ on Claude hooks, and always uses the return-persist path.
   cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
   clean run's status is unchanged for everything that already parses it. A budget file that is
   PRESENT but unreadable — a torn write — refuses instead, naming the file and `--reset`: read as
-  empty it would refund every attempt the run really spent (#1809). **A dispatch entry does not get
-  to describe itself** (#1720): the request travels through `.panopticon/dispatch-request.json`,
-  a file inside the reviewed tree, so an entry's `agent` must be one of the registered panopticon
-  shell names (`panopticon-scout`, `panopticon-domain-panel`, `panopticon-domain-advisor`,
-  `panopticon-advisor`, `panopticon-setup-scan` — and on kimi, where the name becomes a
-  `--agent-file=` path, that path must still resolve inside the registration directory), and an
-  entry's `enforced` flag must agree with the posture this run's own capability evidence proves. A
-  foreign, traversing or absent `agent` refuses the ENTRY — never a quiet fall-back to a bare,
-  unenforced launch; a disagreeing `enforced` flag refuses the whole RUN before the batch opens, so
-  nothing is launched and nothing is charged, and the remedy is `--reset` or a fresh readiness run
-  rather than a retry. The engine's own refusals (flag drift, posture drift, shadow shells,
-  unmediated Write) surface unchanged; Ctrl-C in headless mode cancels the queue, terminates any
-  child its runner registered a handle for (the terminal's own process-group SIGINT reaches the
-  rest), ledgers what it cut, disarms both guards, rolls the interrupted phase back to its
-  checkpoint, and exits `error` with a message beginning "interrupted:" — the next `driver loop`
-  re-runs that phase from scratch, and `--reset` discards the whole run instead. A `SIGKILL` or a
-  power loss reaches none of that teardown, so it leaves the batch's own record behind instead, and
-  the next `driver loop` rolls that batch back before it resumes (#1698, above).
+  empty it would refund every attempt the run really spent (#1809). One module owns every budget's
+  arithmetic, so a VALUE that is not a count refuses the same way, naming the offending key as well
+  as the file (#1767). **A dispatch entry does not get to describe itself** (#1720): the request
+  travels through `.panopticon/dispatch-request.json`, a file inside the reviewed tree, so an
+  entry's `agent` must be one of the registered panopticon shell names (`panopticon-scout`,
+  `panopticon-domain-panel`, `panopticon-domain-advisor`, `panopticon-advisor`,
+  `panopticon-setup-scan` — and on kimi, where the name becomes a `--agent-file=` path, that path
+  must still resolve inside the registration directory), and an entry's `enforced` flag must agree
+  with the posture this run's own capability evidence proves. A foreign, traversing or absent
+  `agent` refuses the ENTRY — never a quiet fall-back to a bare, unenforced launch; a disagreeing
+  `enforced` flag refuses the whole RUN before the batch opens, so nothing is launched and nothing
+  is charged, and the remedy is `--reset` or a fresh readiness run rather than a retry. The engine's
+  own refusals (flag drift, posture drift, shadow shells, unmediated Write) surface unchanged;
+  Ctrl-C in headless mode — or a SIGTERM, which the driver raises as the same interrupt (every later
+  SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
+  registered a handle for and the running phase child's whole process group (each leads its own
+  session, which the terminal's process-group SIGINT never reaches), ledgers what it cut, disarms
+  both guards, rolls the interrupted phase back to its checkpoint, and exits `error` with a message
+  beginning "interrupted:" — the next `driver loop` re-runs that phase from scratch, and `--reset`
+  discards the whole run instead. A `SIGKILL` or a power loss reaches none of that teardown, so it
+  leaves the batch's own record behind instead, and the next `driver loop` rolls that batch back
+  before it resumes (#1698, above).
 
 Phases run in order — `readiness` → `discovery` → `coverage` → `tools` → `review` → `verify` →
 `synthesize` → `validate`:
@@ -911,7 +915,16 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   entry is self-describing (`id` = `review-<group>-<domain>`). `verify`'s adversarial BACKUP round
   batches the same way (all pending backup cells in one `group: null` checkpoint, #20) but is
   sequenced AFTER primary completes; the per-finding TOOL round is likewise a separate checkpoint —
-  each round depends on the prior round's verdicts being complete. The BACKUP round is granted a
+  each round depends on the prior round's verdicts being complete. A TOOL round entry is scoped by
+  its finding's `location.file` ALONE — tool findings carry no group, so
+  `coverage.group_files_containing` looks the file up in the discovered groups: a repo-relative path
+  naming a real file grants the whole group that holds it, an ungrouped file grants only itself, and
+  a path that names nothing grants one non-existent file, which is a deny-all fence in practice.
+  That is what makes an adapter's `location.file` load-bearing rather than cosmetic — spotbugs
+  resolves its source-root `sourcepath` against the target root (probing `src/main/java`,
+  `src/test/java`, the two Kotlin roots, `src`, then the root itself) and records
+  `tool_evidence.path_resolution: unresolved` when it cannot, so a tool advisor that could open
+  nothing says why (#1768). The BACKUP round is granted a
   **bounded closure**, not the whole cell and not the claim file alone (#1638 P16): each scoped
   claim's `location.file`, every in-repo path that claim's own evidence names (`description`,
   `exploit_scenario`, `remediation`, `evidence.reasoning`, `references`) — a named path is resolved
@@ -976,7 +989,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   resolved a `base` (#1783): an ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
-  identical, so only regenerating the artifact tells them apart. A payload rejected outright
+  identical, so only regenerating the artifact tells them apart; with active findings that run
+  now reads `gate: INCONCLUSIVE` rather than PASS (#2178). A payload rejected outright
   (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
   `meta.coverage.delta` is null: there, only stderr carries it. It
   also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the

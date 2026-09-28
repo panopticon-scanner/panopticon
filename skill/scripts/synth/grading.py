@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 import stat
 
+from . import delta as delta_mod
 from . import findings as findings_mod
 
 
@@ -86,7 +87,8 @@ _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
-            delta_scope_suppressed_git_drivers=None, tools_file_partial=None):
+            delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
+            delta_zero_hunks=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -127,13 +129,23 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     `coverage_certified` on its own so a caller that passes only the reason
     cannot certify either. `None` on a full-repo run, where suppression costs
     provenance and nothing the findings depend on.
+
+    `delta_zero_hunks` (#2178, owner ruling 2026-09-27) is the REASON an ACTIVE
+    delta review's diff-hunks map carried no ranges while active findings existed
+    under `--gate-scope on-diff`: the gate scoped against something that is not a
+    measured diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
+    that decision and this is only its answer; None means no gap. Unlike the two
+    reasons above it is a ONE-channel fact -- nothing else in the report moves the
+    gate for it -- so it joins `gate_relevant_gap` directly (PASS -> INCONCLUSIVE,
+    FAIL and OFF untouched) and sinks `coverage_certified` through that, rather
+    than being named a second time in the expression.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
                          or bool(verdicts_unanswered) or bool(missing_floor)
-                         or bool(tools_network_excluded))
+                         or bool(tools_network_excluded) or bool(delta_zero_hunks))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -154,14 +166,24 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if tools_manifest_invalid:
         # First: it is the reason the tool axis reports nothing, so a note about
         # what the tool axis found would read as a smaller problem than it is.
-        # It is also the only channel that NAMES the file -- `integrity_ok`,
-        # which is what moves the gate, is a bare bool.
+        # It is also where the coverage AXIS names the reason -- `integrity_ok`,
+        # which is what moves the gate, is a bare bool. Since #1761 the terminal
+        # summary names it a second time, as an `**Integrity:**` line off
+        # `integrity.INTEGRITY_KEYS`; this note is what the HTML report and
+        # `summary.coverage_note` consumers still read.
         note = ("tools manifest unreadable — tool coverage could not be "
                 "computed: %s" % tools_manifest_invalid)
     elif any_incomplete and not gate_relevant_gap:
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
+    if delta_zero_hunks:
+        # Directly after the manifest note and before every other caveat: an
+        # empty gate scope invalidates the gate WHOLESALE, where a missing online
+        # scanner or a partial capture qualifies it. The manifest note still
+        # reads first -- it names a BROKEN FILE, and until that is fixed no
+        # coverage number in this report means anything.
+        note = "%s; %s" % (note, delta_zero_hunks) if note else delta_zero_hunks
     if tools_network_excluded:
         gap = "safe network unavailable — online scanner coverage missing: %s" % ", ".join(
             sorted(tools_network_excluded))
@@ -519,11 +541,14 @@ _GATE_ROLE_NOTE = {
 }
 
 
-def grade_report(run, resolved, reconciled):
+def grade_report(run, resolved, reconciled, delta=None):
     """The grading cluster (WS-0 S2): per-group panel grades, the health index,
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
-    from gate-eligible findings only."""
+    from gate-eligible findings only.
+
+    `delta` is the run's `DeltaContext` -- needed because the GATE's own scope
+    can be un-measured (#2178). None from a caller with no delta stage."""
     # #1701: under `--security redteam` a directory-NAME exclusion may keep a
     # tool finding out of the report BODY, but not out of the gate -- a payload
     # parked at `app/vendor/patched_auth.rb` passing a merge gate on the
@@ -576,6 +601,12 @@ def grade_report(run, resolved, reconciled):
     # disagree.
     health = health_stats(nonblank_loc(run.target, groups_meta), gate_eligible)
     overall = health_grade(health["score"])
+    # #2178: computed HERE, from the same delta context `resolve_findings`
+    # classified against, the same active list it partitioned, and this run's own
+    # `gate_scope` -- the three inputs the refusal is a statement about.
+    delta_zero_hunks = (delta_mod.zero_hunk_gate_gap(delta, len(resolved.active),
+                                                     run.gate_scope)
+                        if delta is not None else None)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,
@@ -586,7 +617,8 @@ def grade_report(run, resolved, reconciled):
                    tools_network_excluded=reconciled.tools_network_excluded,
                    delta_scope_suppressed_git_drivers=(
                        reconciled.delta_scope_suppressed_git_drivers),
-                   tools_file_partial=reconciled.coverage.get("tools_file_partial"))
+                   tools_file_partial=reconciled.coverage.get("tools_file_partial"),
+                   delta_zero_hunks=delta_zero_hunks)
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

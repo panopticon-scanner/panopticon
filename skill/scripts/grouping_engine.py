@@ -29,9 +29,22 @@ import math
 from typing import Any
 import re
 
-import coverage_model
-import discovery
-import repo_config
+# #1766 (ARC-188610019): package-qualified, so these are the SAME module objects
+# the rest of a driver-shaped process holds -- `scripts.discovery`'s compiled-glob
+# cache and disclosure ledger stay ONE cache and ONE ledger, which is the reason
+# that module already binds its own siblings package-qualified. Safe here without
+# a fallback arm: nothing imports this module flat (`setup_flow`, its last flat
+# importer, now imports the package too), so `scripts` has resolved before this
+# body runs, and tests/test_layout.py's FLAT_MODULES does not ask this module for
+# a flat mode.
+from scripts import coverage_model
+from scripts import discovery
+from scripts import repo_config
+# These two stay FLAT deliberately. Neither has a `scripts.*` copy in a
+# driver-shaped process -- `setup_proposal` is reached flat by
+# `discovery._capability_aliases` at call time and `tests_axis` by `discovery`
+# itself -- so qualifying them here would MINT a second identity rather than
+# retire one. Tracked with the rest of the residual in #1516.
 import setup_proposal
 import tests_axis
 

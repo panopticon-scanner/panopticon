@@ -35,7 +35,9 @@ no longer do: `review` reaches the tool round through `verify_tools`, which impo
 is safe only because of the module-attribute rule, and `tests/test_layout.py` rule 6 proves every
 module still imports standalone. Tests mirror the package in `tests/phases/test_<module>.py`, with
 `tests/test_driver.py` keeping the CLI contract; entry and integration tests live in
-`tests/test_driver_entry.py` and `tests/test_driver_*.py`.
+`tests/test_driver_entry.py` and `tests/test_driver_*.py`. `budget` owns the arithmetic on the
+persisted retry budgets — the `*-attempts.json` counters that bound the re-dispatch loops — so a
+value that is not a count refuses in exactly one place.
 
 `skill/scripts/host_probes.py` is the host-posture registry and nothing else: `PROBE_IDS`,
 `PROBE_CAPABILITY`, the id→runner table `run_probes` walks, and `capabilities_of`. The probes live

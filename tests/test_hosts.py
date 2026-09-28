@@ -4,7 +4,13 @@ The registry is data. Its tests are therefore about TOTALITY and about
 matching today's behavior exactly -- not about any host doing anything.
 """
 import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import scripts.driver as driver
 import scripts.orchestrate as orchestrate
@@ -519,6 +525,77 @@ class TestTheCliBinaryIsPinnedToTheRunner(unittest.TestCase):
                 cli = ""
             with self.subTest(host=host):
                 self.assertEqual(cli, hosts.spec(host).cli_binary)
+
+
+class TestCodexHomeIsNeverRelative(unittest.TestCase):
+    """COD-1638371699 (#1803): `$CODEX_HOME/agents` is where the Codex shells
+    are read from and where `--emit-host-agents codex` writes them, and in the
+    documented flow the driver runs from the root of the REVIEWED tree -- so
+    an empty or relative CODEX_HOME resolved into the target, which could ship
+    every role's shell.
+    Owner ruling 2026-09-27: empty means unset (`~/.codex`); a relative value
+    is refused, never used as a path.
+
+    `codex_home` is tested directly. `hosts` is never reloaded here -- it
+    loads under two module names -- so the one test of its IMPORT runs it in
+    a child interpreter instead.
+    """
+
+    HOME = "/home/operator"
+
+    def _resolve(self, value):
+        with mock.patch.dict(os.environ, {"HOME": self.HOME}):
+            return hosts.codex_home(value)
+
+    def test_unset_and_empty_both_mean_the_default(self):
+        for value in (None, ""):
+            with self.subTest(value=value):
+                self.assertEqual((self.HOME + "/.codex", ""), self._resolve(value))
+
+    def test_a_tilde_value_expands_and_is_used(self):
+        self.assertEqual((self.HOME + "/x", ""), self._resolve("~/x"))
+
+    def test_an_absolute_value_is_used_unchanged(self):
+        self.assertEqual(("/srv/codex-home", ""), self._resolve("/srv/codex-home"))
+
+    def test_a_relative_value_is_refused_and_names_the_fix(self):
+        self.assertEqual(("", "CODEX_HOME must be an absolute path (it is 'rel/home'); "
+                              "unset it to use ~/.codex"), self._resolve("rel/home"))
+        for value in (".codex", "agents", "."):
+            with self.subTest(value=value):
+                home, refusal = self._resolve(value)
+                self.assertEqual("", home)
+                self.assertIn("(it is %r)" % value, refusal)
+
+    def test_a_default_that_expands_relative_is_refused_too(self):
+        # A relative HOME: the default itself is not absolute. Refused like
+        # any other relative value, and the reason must not tell the operator
+        # to unset a variable that is already unset.
+        with mock.patch.dict(os.environ, {"HOME": "rel"}):
+            home, refusal = hosts.codex_home(None)
+        self.assertEqual("", home)
+        self.assertIn("'rel/.codex'", refusal)
+        self.assertIn("set CODEX_HOME to an absolute path", refusal)
+        self.assertNotIn("unset it", refusal)
+
+    def test_importing_hosts_never_raises_and_the_row_carries_the_answer(self):
+        skill = os.path.dirname(os.path.dirname(os.path.abspath(hosts.__file__)))
+        code = ("import json, scripts.hosts as h; row = h.spec('codex'); "
+                "print(json.dumps([row.registration_dir, row.registration_refusal, "
+                "h.spec('claude').registration_dir]))")
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as target:
+            claude_dir = os.path.join(home, ".claude", "agents")
+            for value, codex_dir, refusal in (
+                    ("", os.path.join(home, ".codex", "agents"), ""),
+                    ("rel/home", "", hosts.codex_home("rel/home")[1])):
+                with self.subTest(CODEX_HOME=value):
+                    env = dict(os.environ, CODEX_HOME=value, HOME=home, PYTHONPATH=skill,
+                               PYTHONDONTWRITEBYTECODE="1")
+                    child = subprocess.run([sys.executable, "-c", code], cwd=target, env=env,
+                                           capture_output=True, text=True, timeout=60)
+                    self.assertEqual(0, child.returncode, child.stderr)
+                    # The claude row is the control: CODEX_HOME does not move it.
+                    self.assertEqual([codex_dir, refusal, claude_dir], json.loads(child.stdout))
 
 
 if __name__ == "__main__":  # pragma: no cover

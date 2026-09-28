@@ -3,6 +3,7 @@ import os
 import sys
 
 import scripts.redact as redact
+from . import budget
 from . import child
 from . import engine
 from . import runio
@@ -83,12 +84,11 @@ def _bump_discovery_attempts(review_root):
     `driver._RESET_GLOBS` for the legacy flat sweep too). PRESENT but
     unreadable refuses rather than reading as empty (#1809): refunding the
     malformed round is what lets a deterministically-broken child re-run
-    without bound, which is the one thing this counter exists to stop."""
-    path = runio._pano(review_root, "discovery-attempts.json")
-    data = runio._load_state_json(path, "the discovery retry budget")
-    n = int(data.get("malformed", 0)) + 1
-    runio._write_json(path, {"malformed": n})
-    return n
+    without bound, which is the one thing this counter exists to stop. #1767
+    makes an unreadable VALUE refuse the same way, through `budget` -- this
+    module's own copy raised a bare ValueError out of `int()` instead."""
+    return budget.bump(runio._pano(review_root, "discovery-attempts.json"),
+                       "malformed", "the discovery retry budget")
 
 
 def discovery_done(review_root, manifest):

@@ -20,11 +20,10 @@ import scripts.money as money
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.runners.base as runners_base
+from scripts.collect_usage import PHASES, USAGE_FIELDS
 
 PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
                        "scan": "unattributed"}          # R-P6-9: collect_usage.PHASES keys
-USAGE_FIELDS = ("input_tokens", "output_tokens",
-                "cache_creation_input_tokens", "cache_read_input_tokens")
 MODEL_USAGE_FIELDS = {"inputTokens": "input_tokens", "outputTokens": "output_tokens",
                       "cacheCreationInputTokens": "cache_creation_input_tokens",
                       "cacheReadInputTokens": "cache_read_input_tokens"}
@@ -224,7 +223,7 @@ class Ledger:
         return money.sum_costs(self._rows())
 
     def usage_document(self):
-        by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
+        by_phase = {p: 0 for p in PHASES}
         by_field = {k: 0 for k in USAGE_FIELDS}
         by_model_tokens: dict[str, dict[str, int]] = {}
         by_model_costs: dict[str, Decimal] = {}
