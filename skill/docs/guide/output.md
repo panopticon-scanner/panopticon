@@ -18,7 +18,12 @@ checking whether the report exists. Consumers should key certification on `summa
 `INCONCLUSIVE` with a real grade still attached. When `meta.coverage.resume` shows pending work in
 either phase, the terminal summary also prints a `**Resume:**` line (fan-out/verify done vs. total)
 directly under the Grade/Gate line; a fully-complete or resume-absent run prints no such line, so a
-resumed run never reads as a fresh full scan.
+resumed run never reads as a fresh full scan. Every `meta.integrity` key that sinks certification
+is also NAMED on that summary, as an `**Integrity:**` line saying what the key measured and that
+the run is not certified (#1761): `synth/integrity.INTEGRITY_KEYS` is the one table both the gate
+and the renderer read, so no sinking key reaches the report as the bare word `incomplete`. The
+keys that report without gating — a cross-domain filing, the planned-file and hash counters, the
+unenforced-ack disclosure — print as a `**Note:**` or not at all.
 
 **Terminal completion, artifact validity and coverage certification are three different things
 (#1639 P15),** and the exit status names which one failed. *Terminal completion* is whether the run

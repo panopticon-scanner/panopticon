@@ -1,8 +1,11 @@
-"""Findings-file integrity: planned vs ingested files, labels, the unenforced ack."""
+"""Findings-file integrity: planned vs ingested files, labels, the unenforced
+ack, and `INTEGRITY_KEYS` -- the one table naming which of those facts sinks
+certification and what the report says when one does."""
 import hashlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 
 import scripts.group_runner as group_runner
 import scripts.findings_contract as findings_contract
@@ -12,6 +15,150 @@ import scripts.findings_contract as findings_contract
 from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 from . import findings as findings_mod
+
+
+@dataclass(frozen=True)
+class IntegrityKey:
+    """One `meta.integrity` key's two published facts.
+
+    `sinks` says whether a TRUTHY value sinks `integrity_ok`, the single bool
+    `tool_axis.reconcile` hands certification. `sentence` is the line
+    `render.render_summary` prints for that key: the body after its
+    `**Integrity:**` label (`**Note:**` where the key does not gate), with one
+    optional `%s` slot for the evidence the value itself carries. `None` means
+    the key is a counter or a disclosure with no line of its own.
+    """
+    sinks: bool
+    sentence: str | None = None
+
+
+# ARC-3284703909 (#1761): the certification-sinking rule, in ONE place.
+#
+# It used to live in three, with three memberships: `integrity_section` below
+# published ~20 keys, `tool_axis.reconcile` re-spelled 14 of them in a
+# hand-written `or` chain, and `render.render_summary` named four -- one of
+# which deliberately does not gate. So ten of the fourteen sinking keys had no
+# line of their own -- nine of them named nowhere on the summary, the tenth
+# (`delta_scope_suppressed_git_drivers`) only inside `coverage_note` -- and a
+# mailed report said the bare word "incomplete" instead. That is the exact hole
+# #1644 closed for `tools_manifest_invalid` alone. The reasons were on stderr;
+# the artifact an operator reads did not have them.
+#
+# ORDER IS RENDER ORDER, REVERSED: `render_summary` inserts every one of these
+# lines at the same index, so the LAST entry here renders topmost. The sinking
+# keys come first, in `integrity_section`'s own published key order -- which
+# keeps the three lines that rendered before this change in the order they
+# rendered in -- and the non-gating notes come after, so they stay above the
+# failures they are not.
+INTEGRITY_KEYS: dict[str, IntegrityKey] = {
+    # --- sinks `integrity_ok` -------------------------------------------------
+    "unexpected_findings_files": IntegrityKey(
+        True, "UNEXPECTED FILES — %s (not declared by the dispatch plan; run "
+              "not certified)"),
+    "malformed_findings_files": IntegrityKey(
+        True, "MALFORMED FILES — %s (violate the findings contract, so source "
+              "evidence was dropped from this report; run not certified)"),
+    "duplicate_out_files": IntegrityKey(
+        True, "DUPLICATE out_file — %s (two reviewers share a write target; one "
+              "overwrote the other; run not certified)"),
+    "mislabeled_findings_files": IntegrityKey(
+        True, "MISLABELED FILES — %s (the `_panopticon` cell stamp disagrees "
+              "with the filename; possible mis-targeted write; run not "
+              "certified)"),
+    # The #493 R4 tamper check: the triage probe's own example of a sink that
+    # reached the report as "incomplete".
+    "content_mismatched_files": IntegrityKey(
+        True, "CONTENT CHANGED — %s (the bytes no longer hash to the fan-out "
+              "snapshot, so a findings file was substituted after its review; "
+              "run not certified)"),
+    "content_snapshot_unreadable": IntegrityKey(
+        True, "CONTENT SNAPSHOT UNREADABLE — the fan-out out-file-hashes.json "
+              "exists and cannot be parsed, so no findings file could be "
+              "verified against it (tamper, not an unmeasured run; run not "
+              "certified)"),
+    "content_snapshot_missing": IntegrityKey(
+        True, "CONTENT SNAPSHOT MISSING — this run's dispatch plan declares "
+              "review cells, so a fan-out out-file-hashes.json was owed and "
+              "none is present (a deleted baseline; run not certified)"),
+    "empty_dispatch_plans": IntegrityKey(
+        True, "EMPTY DISPATCH PLAN — %s plan file(s) declare no reviewer entry, "
+              "so there is nothing to reconcile the ingested files against; run "
+              "not certified"),
+    "invalid_dispatch_plans": IntegrityKey(
+        True, "INVALID DISPATCH PLAN — %s (a plan file on disk that does not "
+              "parse or does not meet the review-cell contract; run not "
+              "certified)"),
+    "invalid_verify_queue": IntegrityKey(
+        True, "VERIFY QUEUE UNREADABLE — %s (the queue recording what the "
+              "advisor round was asked to verify could not be read; run not "
+              "certified)"),
+    # SEC-377944137 (#1832): `plans_seen` was the only key that noticed a
+    # deleted driver plan and it was not in the chain, so the `rm` that erased
+    # #1208's snapshot obligation certified a substitution the run had already
+    # detected.
+    "dispatch_plan_missing": IntegrityKey(
+        True, "DISPATCH PLAN MISSING — this run's driver dispatched review "
+              "cells and no dispatch-plan file is present, so every plan-keyed "
+              "check went quiet (deleted evidence; run not certified)"),
+    # ...and a plan that is PRESENT but is not the one this run wrote: a
+    # narrower plan declares fewer cells, so replacing it is a cheaper `rm`.
+    "dispatch_plan_mismatched": IntegrityKey(
+        True, "DISPATCH PLAN SUBSTITUTED — the plan on disk does not hash to "
+              "the content the run manifest stamped, so it is not the plan this "
+              "run wrote; run not certified"),
+    # #1644, and the one key that already had a name on the surface -- in
+    # `coverage_note`, not here. It keeps both: the note says what could not be
+    # measured, this says the run cannot be certified.
+    "tools_manifest_invalid": IntegrityKey(
+        True, "TOOLS MANIFEST UNREADABLE — %s (the runner's selected scanner "
+              "set is unknown, so tool coverage could not be computed; run not "
+              "certified)"),
+    # #2013 fix round 1: a delta whose scope was chosen by a suppressed
+    # comparison -- raw worktree bytes against a filtered index blob.
+    "delta_scope_suppressed_git_drivers": IntegrityKey(
+        True, "DELTA SCOPE INFLATED — %s (git driver(s) this scan emptied, so "
+              "the diff that chose the reviewed files and the gate's scope "
+              "compared raw bytes against a filtered blob; run not certified)"),
+    # --- reported, never gating ----------------------------------------------
+    # #calibration-4: a reviewer filing outside its lane is a fact about the
+    # REVIEW, not about whether the artifacts on disk can be trusted. Its
+    # evidence slot carries the count and the domain pairs.
+    "cross_domain_findings": IntegrityKey(
+        False, "%s. Reviewers filed outside their cell's domain; often a "
+               "catalog gap (X0X). Does NOT affect certification."),
+    # Counters and disclosures with no line of their own: a planned file that
+    # never arrived is not evidence of tampering (`reconcile_findings_files`
+    # reports it and no gate reads it), and the rest are measurements --
+    # how many plans were seen, how many hashes were checked, whether an
+    # unenforced-write ack was recorded, whether it was stale, and what that
+    # ack said about Bash coverage.
+    "missing_planned_files": IntegrityKey(False),
+    "unenforced_acknowledged": IntegrityKey(False),
+    "ack_stale": IntegrityKey(False),
+    "content_hashes_checked": IntegrityKey(False),
+    "plans_seen": IntegrityKey(False),
+    "write_guard_covers_bash": IntegrityKey(False),
+}
+
+
+def evidence_text(key, value):
+    """The text for the `%s` slot in `INTEGRITY_KEYS[key]`'s sentence: the
+    files, reasons or count behind that key, in the shape `integrity_section`
+    below publishes it. RAW -- `render.render_summary`, the one caller, is
+    where it is neutralized, at the point it prints (#1829 SEC-798292895).
+    """
+    if key == "cross_domain_findings":
+        by: dict[tuple, int] = {}
+        for row in value:
+            if isinstance(row, dict):
+                pair = (row.get("cell_domain"), row.get("finding_domain"))
+                by[pair] = by.get(pair, 0) + 1
+        return "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
+            "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items())))
+    if isinstance(value, list):
+        return ", ".join(str(row.get("file") if isinstance(row, dict) else row)
+                         for row in value)
+    return str(value)
 
 
 def duplicate_out_files(plan):

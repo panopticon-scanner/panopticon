@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Every integrity failure that sinks certification is named on the report (#1761;
+  ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
+  published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a
+  hand-written `or` chain, and `render_summary` named four — one of which deliberately does not
+  gate. So ten sinking keys reached a mailed `report.md` as the bare word `incomplete`, the hole
+  #1644 closed for `tools_manifest_invalid` alone: `content_mismatched_files` (the #493 R4 tamper
+  check — a findings file substituted after its review), `content_snapshot_missing`,
+  `content_snapshot_unreadable`, `malformed_findings_files`, `empty_dispatch_plans`,
+  `invalid_dispatch_plans`, `invalid_verify_queue`, `dispatch_plan_missing`,
+  `dispatch_plan_mismatched` and `delta_scope_suppressed_git_drivers` — the last of which was named
+  until now only inside `coverage_note`, and nine of which were named nowhere. One
+  `INTEGRITY_KEYS` table in `synth/integrity` owns both facts: whether a truthy value sinks
+  `integrity_ok`, and the operator sentence the summary prints for it. `reconcile` reads it as a
+  comprehension, `render_summary` as one loop, so a key renders on exactly the truthiness that
+  sinks the gate and the summary cannot drift from it again. The gate itself is unchanged — the
+  sinking set is pinned key-by-key against the chain it replaced.
 - **No module is loaded twice, and the `sys.path` bootstrap gets a ceiling (#1766; ARC-188610019,
   ARC-2452079063, ARC-3214704952, ARC-11100703).** A driver-shaped process built two module
   objects from one file for NINE modules — `config_schema`, `coverage_model`, `diff_map`,
