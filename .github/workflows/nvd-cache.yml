@@ -10,8 +10,14 @@ name: Refresh NVD data cache
 #
 # The tag is keyed to DEPENDENCY_CHECK_VERSION: the H2 database schema is version-
 # specific, so the dependency-check that PRODUCES the DB and the one that CONSUMES
-# it must match. On a version bump the cache is primed before the tools build
-# needs it (push trigger below); the daily run keeps the current version fresh.
+# it must match. Nothing ORDERS this workflow against the tools-image publish: both
+# fire on the same `Dockerfile` push, their concurrency groups differ, and neither
+# names the other in `needs:` or `workflow_run:` -- so on a version bump the publish
+# can reach its resolve step first, and the 04:00/06:00 cron offset below is a
+# convenience, not a guarantee. What IS guaranteed is that the race fails CLOSED:
+# docker-publish.yml resolves `dc-<version>` to a digest before it builds and, when
+# that tag does not exist yet, stops with an error naming this workflow as the
+# remedy. The daily run keeps the current version fresh.
 #
 # ToS: NVD/CVE data is US-government public domain; caching (one controlled keyed
 # sync/day) is the pattern NIST intends, and OWASP attribution already ships in the
