@@ -714,7 +714,8 @@ class TestRoslynGoldenParity(unittest.TestCase):
     def test_every_golden_rule_descriptor_is_a_table_key(self):
         with open(self.GOLDEN, "rb") as fh:
             data = json.load(fh)
-        rule_ids = [rule["id"] for rule in data["runs"][0]["tool"]["driver"]["rules"]]
+        rules = only(data["runs"])["tool"]["driver"]["rules"]
+        rule_ids = [rule["id"] for rule in rules]
         self.assertTrue(rule_ids)
         for rule_id in rule_ids:
             with self.subTest(rule_id=rule_id):

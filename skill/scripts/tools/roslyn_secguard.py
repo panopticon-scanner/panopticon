@@ -112,14 +112,14 @@ _TABLE_DOTNETARIUM_SCS_VERSION = "1.1.0"
 # 32 diagnostics: SCS0000, its own proof-of-run notice, carries no `cwe` and
 # stays uncited on purpose; the other 31 -- SCS0001-SCS0034 less the retired
 # SCS0014/SCS0020/SCS0025 -- each carry one. The SARIF this adapter reads
-# never carries a CWE: rule descriptors have `helpUri` and
-# `properties.category` only, and the scanner's `--cwe` flag decorates just
-# the console line, leaving the SARIF byte-identical (probed both ways
-# against the pinned image) -- so there is no SARIF-carried CWE to read and
-# no reason to pass the flag. The table this replaces named nine rules and
-# mis-cited SCS0026 (LDAP injection) as CWE-79, cross-site scripting's own
-# code -- XSS is SCS0029 -- and listed SCS0041, which this tool has never
-# shipped.
+# never carries a CWE: no field of a rule descriptor (`helpUri`, the two
+# descriptions, `properties.category`) names one, and the scanner's `--cwe`
+# flag decorates just the console line, leaving the SARIF byte-identical
+# (probed both ways against the pinned image) -- so there is no
+# SARIF-carried CWE to read and no reason to pass the flag. The table this
+# replaces named nine rules and mis-cited SCS0026 (LDAP injection) as
+# CWE-79, cross-site scripting's own code -- XSS is SCS0029 -- and listed
+# SCS0041, which this tool has never shipped.
 _ROSLYN_CWE = {
     "SCS0001": "CWE-78",
     "SCS0002": "CWE-89",
