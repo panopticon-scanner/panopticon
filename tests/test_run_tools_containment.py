@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import scripts.run_tools as rt
+import scripts.tools_manifest as tm
 import scripts.tools.egress as rt_egress
 
 from tests.run_tools_test_helpers import _DockerStub, _FakeResult, _Interrupted
@@ -327,7 +328,7 @@ class TestManifestNetworkPosture(unittest.TestCase):
                 written = rt.run_tools(d, tools, os.path.join(d, "out"),
                                        runner=stub, online=online,
                                        run_id="r1645")
-                return rt.write_manifest(os.path.join(d, "m.json"), tools,
+                return tm.write_manifest(os.path.join(d, "m.json"), tools,
                                          written)
 
     def test_an_offline_tool_is_recorded_as_having_no_network(self):
@@ -361,12 +362,12 @@ class TestManifestNetworkPosture(unittest.TestCase):
         # assert a posture nobody established.
         rt._NETWORK_POSTURE.clear()
         with tempfile.TemporaryDirectory() as d:
-            payload = rt.write_manifest(os.path.join(d, "m.json"),
+            payload = tm.write_manifest(os.path.join(d, "m.json"),
                                         ["semgrep"], [])
         self.assertEqual(payload["network"], {})
 
     def test_a_caller_may_state_a_posture_the_loop_did_not_observe(self):
         with tempfile.TemporaryDirectory() as d:
-            payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"],
+            payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"],
                                         [], network={"semgrep": "none"})
         self.assertEqual(payload["network"], {"semgrep": "none"})

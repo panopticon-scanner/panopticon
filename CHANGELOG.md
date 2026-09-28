@@ -44,6 +44,20 @@ evidence exposed.
   compares the bytes written, the rows returned and the lines printed for fifteen capture shapes
   against a golden captured before the move, and the patch-rule guard now derives BOTH modules'
   names, and the `run_tools` aliases each test file really binds, instead of a fixed list.
+- **The tools manifest leaves `run_tools.py` (#1762, ARC-2609514778; part 3 of 3).**
+  `tools-manifest.json`'s schema -- selected/produced/missing, the `excluded_dirs` rows, the run id
+  and scope, the eslint `file_coverage` read and the four posture ledgers it reads back -- moves to
+  `skill/scripts/tools_manifest.py` whole, and the two ledgers whose only reader is the writer (the
+  network posture and the gitleaks ignore-file posture) move with it; `run_tools` binds them back,
+  and still clears and fills both where the argv is built. `run_tools.py` goes from 1322 to 1136
+  lines and the new module is 259, under the 700-line ceiling. The pin STAYS in
+  `tests/test_flat_module_ceiling.py`, lowered to 1136: all three extractions have now landed and
+  the module is still over the ceiling, holding detection, virtualenv partitioning, selection, the
+  docker argv and the CLI. No manifest key, value, order or byte changed, no argv and no message --
+  `tests/test_tools_manifest.py` compares the exact bytes of seven manifests (both security modes,
+  `run_id` set and unset, the eslint coverage read, an adapter refused its egress, and the
+  docker-absent shape) against a golden captured before the move, and the patch-rule guard derives
+  all three modules' names from their own ASTs.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root

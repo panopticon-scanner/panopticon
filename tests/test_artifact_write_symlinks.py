@@ -44,8 +44,8 @@ import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.phases.validate as validate_phase
-import scripts.run_tools as run_tools
 import scripts.tool_capture as tool_capture
+import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
 
@@ -124,10 +124,10 @@ class TestEpssCache(_Planted):
 
 
 class TestToolsManifest(_Planted):
-    def test_run_tools_write_manifest_refuses_a_planted_link(self):
+    def test_write_manifest_refuses_a_planted_link(self):
         path = self.plant("runs", "tag", "tools-manifest.json")
         with self.assertRaises(ValueError):
-            run_tools.write_manifest(path, ["semgrep"], [])
+            tools_manifest.write_manifest(path, ["semgrep"], [])
         self.assert_victim_intact()
 
 

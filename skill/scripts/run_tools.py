@@ -6,7 +6,6 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
-import json
 import os
 import re
 import subprocess
@@ -19,9 +18,9 @@ from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
 from scripts import plan_contract
-from scripts import safe_write
 from scripts import scanner_config
 from scripts import tool_capture
+from scripts import tools_manifest
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -30,21 +29,21 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # reads them through `run_tools.<name>`: `_bandit_exclude_value` composes the two
 # exclude tuples, `_working_dir_flags` and the dispatch loop spell `TARGET_MOUNT`
 # (`tests/test_code_scanning_reports.py` pins it against the report side), two of
-# the four ledgers `write_manifest` reads back move with the block and are cleared
-# by `run_tools()` (`write_manifest`'s own `scanner_config=` keyword would shadow
-# the module inside it), and the staged-config constants are read by
-# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`. A ledger
-# is the SAME dict object either way, so `.clear()`/`.pop()` here and
-# `[tool] = ...` there address one ledger.
+# the four ledgers the tools manifest reads back move with the block and are
+# cleared by `run_tools()` and popped by the dispatch loop, and the staged-config
+# constants are read by `tests/test_run_tools_core.py` and
+# `tests/test_run_tools_dispatch.py`. A ledger is the SAME dict object either way,
+# so `.clear()`/`.pop()` here and `[tool] = ...` there address one ledger.
 #
 # CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved
 # must target `scanner_config`, where the moved code looks it up -- patching a
 # binding here reaches nothing, whether or not the name appears below. So no moved
 # FUNCTION is bound here: every call `run_tools` still makes is spelled
 # `scanner_config.<name>`, and the moved functions it no longer calls at all are
-# not re-bound either. The `tool_capture` block below obeys the same rule.
-# `tests/test_scanner_config.py::TestThePatchRuleIsOneRule` enforces both halves
-# from both modules' own ASTs, and holds the same list each block binds.
+# not re-bound either. The `tool_capture` and `tools_manifest` blocks below obey
+# the same rule. `tests/test_scanner_config.py::TestThePatchRuleIsOneRule`
+# enforces both halves from all three modules' own ASTs, and holds the same list
+# each block binds.
 #
 # `noqa: F401` marks the ones only a TEST reads through this module: ruff cannot
 # see a use from here, and an `__all__` would silence it by also narrowing a
@@ -60,8 +59,8 @@ from scripts.scanner_config import (
     TRIVY_IGNOREFILE_NAME,        # noqa: F401
     TRIVY_IGNOREFILE_TEXT,        # noqa: F401
     TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # the two that move, of write_manifest's four
-    _SUPPRESSION_POSTURE,
+    _SCANNER_CONFIG_POSTURE,      # two of the manifest's four ledgers, cleared
+    _SUPPRESSION_POSTURE,         # by `run_tools()` and popped by the loop
 )
 
 # #1762 (ARC-2609514778, ARC-3243338950) part 2 of 3: the capture path -- one
@@ -70,17 +69,34 @@ from scripts.scanner_config import (
 # under the same patch rule as the block above: `run_tools()` multiplies
 # `TOOL_TIMEOUT` into the egress session's ceiling and
 # `tests/test_run_tools_containment.py` reads it through this module;
-# `write_manifest` reads `MAX_TOOL_OUTPUT_BYTES` back for the eslint capture and
-# `ingest_tools` imports it from here as the shared cap; and
-# `_REDACTED_CAPTURES` is the ledger `run_tools()` clears, the dispatch loop
-# discards a withdrawn capture from and `write_manifest` reads back -- the SAME
-# set object either way, so `.clear()` here and `.add()` there address one
-# ledger. `_capture_run` is the one moved FUNCTION this module still calls, and
-# it is called `tool_capture._capture_run(...)`.
+# `ingest_tools` imports `MAX_TOOL_OUTPUT_BYTES` from here as the shared cap and
+# `tests/test_run_tools_core.py` and `tests/test_run_tools_languages.py` read it
+# through this module (part 3 took its one reader here, the manifest's eslint
+# capture read, with the writer); and `_REDACTED_CAPTURES` is the ledger
+# `run_tools()` clears and the dispatch loop discards a withdrawn capture from --
+# the SAME set object either way, so `.clear()` here and `.add()` there address
+# one ledger. `_capture_run` is the one moved FUNCTION this module still calls,
+# and it is called `tool_capture._capture_run(...)`.
 from scripts.tool_capture import (
-    MAX_TOOL_OUTPUT_BYTES,
+    MAX_TOOL_OUTPUT_BYTES,        # noqa: F401
     TOOL_TIMEOUT,
     _REDACTED_CAPTURES,
+)
+
+# #1762 (ARC-2609514778) part 3 of 3: the tools manifest -- `tools-manifest.json`'s
+# schema, its `excluded_dirs` row builder and the two posture ledgers whose only
+# reader is the writer -- moved to `tools_manifest` whole. Three names stay bound
+# HERE, all three READ bindings under the same patch rule as the blocks above:
+# `find_virtualenvs`' `max_depth` default is `VENV_MAX_DEPTH` and
+# `tests/test_run_tools_core.py` reads it through this module, and
+# `_NETWORK_POSTURE` and `_IGNORE_FILE_POSTURE` are cleared by `run_tools()` and
+# filled by the dispatch loop where the argv is built -- the SAME dict object
+# either way. `write_manifest` is the one moved FUNCTION this module still calls,
+# and `main` calls it `tools_manifest.write_manifest(...)`.
+from scripts.tools_manifest import (
+    VENV_MAX_DEPTH,
+    _IGNORE_FILE_POSTURE,
+    _NETWORK_POSTURE,
 )
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -274,11 +290,11 @@ def detect_languages(target):
 # are kept out of them rather than only having their findings dropped at ingest.
 # `pyvenv.cfg` is the marker every creator writes (venv, virtualenv, uv, pipenv,
 # in-project poetry); the conventional names are the fallback for a venv built
-# by something that wrote no marker. Depth-bounded: venvs live near the root,
-# and this walk is paid on every scan.
+# by something that wrote no marker. Depth-bounded by `VENV_MAX_DEPTH`, which is
+# bound above out of `tools_manifest` (the manifest publishes it as
+# `depth_bound`): venvs live near the root, and this walk is paid on every scan.
 VENV_MARKER = "pyvenv.cfg"
 VENV_DIR_NAMES = ("venv", ".venv")
-VENV_MAX_DEPTH = 3
 _VENV_WALK_PRUNE = {".git", "node_modules", "__pycache__"}
 
 # #1839 (run-14 SEC-1486247143): the marker alone is a CLAIM the reviewed
@@ -784,21 +800,6 @@ class _DockerContext:
         self.env = env
 
 
-# What egress each tool was granted this run, keyed by tool name (#1645). Same
-# construction and the same reason as `tool_capture._REDACTED_CAPTURES`:
-# `run_tools()` clears it and fills it WHERE THE ARGV IS BUILT, so the manifest
-# reports what the runner observed itself doing -- take the flags away and the
-# claim goes with them, rather than a `proxied:` string surviving as an
-# intention nothing enforces. Values are `"none"`, `"proxied:<allowlist>"` or
-# the fail-closed `"excluded:online egress unavailable"`
-# (scripts.tools.egress).
-_NETWORK_POSTURE: dict[str, str] = {}
-
-# Only a produced Gitleaks capture may carry this observation. Filled from the
-# mount kept alive during its launch, then filtered to produced in write_manifest.
-_IGNORE_FILE_POSTURE: dict[str, str] = {}
-
-
 def run_tools(target, tools, out_dir, image="panopticon-tools",
               runner=None, online=False, progress=None, venv_dirs=None,
               run_id=None, security_mode="standard"):
@@ -1037,195 +1038,6 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
     return written
 
 
-def _excluded_dir_row(d):
-    """One `excluded_dirs` row for the manifest.
-
-    #1740: `skipped` is the whole point of the row under redteam -- a name-only
-    venv is DETECTED and scanned anyway. True for a caller that passed
-    `find_virtualenvs` output directly, which is the pre-#1740 meaning of this
-    list. #1839: `note` is present only when the runner had a reason of its own
-    for scanning a directory it detected -- a marker with no environment under
-    it, or a name no exclusion pattern can express -- so an operator reading
-    `skipped: false` under `standard` is not left to guess which.
-    """
-    row = {"path": str(d["path"]), "reason": str(d["reason"]),
-           "skipped": bool(d.get("skipped", True))}
-    if d.get("note"):
-        row["note"] = str(d["note"])
-    return row
-
-
-def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
-                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None, exclude_globs=(), suppression_comments=None,
-                   scanner_config=None, ignore_files=None):
-    """Write the exact selected/produced scanner set for coverage gating.
-
-    `excluded_scope` names adapters that were applicable but whose entire
-    surface fell under the gate's --exclude globs; they are disclosed (never
-    required), and are kept out of `selected` so the missing-set invariant
-    holds.
-
-    `excluded_dirs` (#1638 P09) are the virtualenv directories this scan
-    DETECTED, as ``{"path", "reason", "skipped"[, "note"]}`` rows -- so a report can say
-    what was pruned and on what evidence (`pyvenv.cfg` or the conventional
-    name) rather than leaving a silent hole in the scanned surface. #1740:
-    `skipped` is what separates the two, because under `--security redteam` a
-    name-only directory is detected and scanned anyway; it defaults to True, so
-    a caller handing `find_virtualenvs` output straight in still publishes this
-    list's pre-#1740 meaning. `depth_bound` is how deep
-    the walk that found them looked: the list is what the SCANNERS were told to
-    skip, and ingest drops virtualenv findings at any depth, so a reader knows
-    the list is bounded rather than exhaustive. Additive: both fields are new in
-    this schema version and every consumer reads them optionally, so an older
-    manifest without them still loads.
-
-    `sanitized` (#1646) is what an adapter refused to hand its scanner, per
-    adapter: `{"pip-audit": {"source", "kept", "dropped": [{"line", "reason"}],
-    "hashes_stripped"}}`. pip-audit is now given a GENERATED requirements file
-    holding only bare PEP 508 lines, because resolving an editable/local/VCS/URL
-    requirement runs the reviewed repo's build backend -- so the dependency
-    audit can be PARTIAL, and this is where it says by how much and which lines.
-    Stated on every manifest, `{}` included, so its absence cannot be read as
-    "nothing was dropped" on a run that never measured.
-
-    `exclude_globs` (#1740 fix round 1) are the `--exclude` path globs this
-    scan was given -- the driver passes the repository's committed
-    `exclude_paths:`, CI passes its own. `excluded_scope` beside it names the
-    ADAPTERS those globs disqualified; this is the policy itself, so a reader
-    can tell "no adapter was excluded" from "no policy was applied". Stated on
-    every manifest, `[]` included, like `sanitized`.
-
-    `file_coverage` carries bounded scanner file facts derived from the exact
-    written capture. Partial source coverage leaves produced/missing unchanged;
-    ingestion independently derives the same facts for legacy raw arrays.
-
-    `redacted` (#1639 P11) says whether every capture this run wrote went
-    through the redaction choke point, read off the ledger
-    `tool_capture._redact_capture` keeps -- an observation, so replacing the
-    choke point with identity makes the claim go false rather than leaving a
-    stale `true` behind. The tools phase copies it into `tools-ran.json`.
-
-    `suppression_comments` (#1839) is what this run does with an inline
-    suppression comment in the target's own source, per tool: `"ignored"` where
-    the pinned scanner's knob for it was passed (`--security redteam`),
-    `"honoured"` where the comment stood -- `standard` is an operator scanning
-    their own repository, and where no knob exists at the pin it is a residual;
-    this repository's own CI (`security.yml` and the fork-PR
-    `security-fork.yml`) scans in `redteam`, so nothing target-authored is
-    honoured on either check -- and
-    `"n/a"` for a tool whose argv honours no such comment at all. A tool with no
-    row was not ASSESSED, which is deliberately not the same claim as `n/a`.
-    Defaults to the ledger `run_tools()` filled while building each argv -- an
-    observation, like `redacted` and `network`. For a FLAG-lever tool (bandit,
-    gitleaks) that observation is the argv itself, so taking the flag away makes
-    the claim change rather than leaving an intention behind; for an INGEST-lever
-    tool (`scanner_config.SUPPRESSION_INGEST_LEVER`, semgrep today) the argv
-    decides nothing and the row follows the run's mode, which is what does. This
-    row is about COMMENTS only. `ignore_files` separately records the source-root
-    `.gitleaksignore` observed at launch: `honoured` for a target file allowed
-    under standard, `neutralised` for the redteam empty-file mount, and
-    `absent` when no file exists. Only a produced Gitleaks scan gets a row.
-    An explicit map follows the same observation override pattern as
-    `suppression_comments`; it is still filtered to produced Gitleaks.
-
-    One row is true for a reason that is NOT on the argv, and this is the
-    schema of record, so it says so: semgrep's. At the pin the scanner reports
-    a `# nosemgrep`'d result whether or not `--disable-nosem` is passed, so the
-    row is RECORDED from the mode (fix round 2: reading it off the belt flag
-    would publish `honoured` for a redteam run the moment the belt came off)
-    and the INGEST enforces it --
-    `ingest_tools.ingest_dir_detailed` drops those results under `standard` and
-    publishes the count per tool as `suppressed_in_source`, which is where a
-    reader sees HOW MUCH a honoured comment cost. `run_tools` never sees that
-    number: this manifest is written before anything is ingested.
-
-    `scanner_config` (#1839) is which configuration file each pinned scanner ran
-    under: `"scanner-owned"` for a constant of ours staged in a scratch, and
-    `"target .bandit (its skips and tests)"` for the one case the owner ruling
-    of 2026-09-25 leaves with the operator -- a `.bandit` committed to the repository being scanned,
-    honoured under `standard` and never under `redteam`. Same construction as
-    `network` above: read off the argv the runner built.
-
-    `network` (#1645) is the egress each tool was given: `"none"` for the
-    `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY
-    adapter that ran behind this run's proxy, and `"excluded:online egress
-    unavailable"` for one that could not be given an egress path and was
-    therefore NOT run. "pip-audit: produced" has never said what that scanner
-    could reach while it ran, and this is where the answer goes. Defaults to
-    the ledger `run_tools()` filled while building each argv -- an observation,
-    like `redacted` -- and an explicit value is for a caller that did not run
-    the loop. The third posture also MOVES the adapter: it leaves `selected`
-    for `excluded_scope`, the shape the gate already reads as "applicable, not
-    required by scope, disclosed"; the network refusal independently prevents
-    coverage certification. An adapter left in both lists would read as a
-    required scanner that went missing (and `security_gate` rejects the
-    overlap outright).
-    """
-    network = {str(k): str(v) for k, v in
-               (_NETWORK_POSTURE if network is None else network).items()}
-    refused = sorted(t for t, posture in network.items()
-                     if posture.startswith(egress.EXCLUDED_PREFIX))
-    selected = [t for t in selected if t not in set(refused)]
-    excluded_scope = list(excluded_scope) + refused
-    selected = list(dict.fromkeys(str(tool) for tool in selected))
-    produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
-    observed_ignore_files = (_IGNORE_FILE_POSTURE if ignore_files is None
-                             else ignore_files)
-    file_coverage = {}
-    for capture_path in written:
-        if os.path.basename(capture_path) == "eslint-security.json":
-            from scripts.tools.eslint_security import file_coverage as eslint_coverage
-            try:
-                with open(capture_path, "rb") as capture:
-                    data = capture.read(MAX_TOOL_OUTPUT_BYTES + 1)
-                if len(data) <= MAX_TOOL_OUTPUT_BYTES:
-                    file_coverage["eslint-security"] = eslint_coverage(json.loads(data))
-            except (OSError, ValueError):
-                pass  # ingestion retains the whole-capture failure path
-    payload = {"schema_version": 1, "run_id": run_id,
-               "file_coverage": file_coverage,
-               "selected": selected, "produced": produced,
-               "missing": sorted(set(selected) - set(produced)),
-               # #1639 P11 F5: what the runner OBSERVED, not what it intends --
-               # every capture written this run passed
-               # `tool_capture._redact_capture`. False when nothing was written
-               # (there is nothing to vouch for) and false if any capture
-               # reached disk without the pass, so the phase can copy the
-               # answer into `tools-ran.json` instead of asserting another
-               # module's behaviour with a literal.
-               "redacted": bool(produced) and all(
-                   tool in _REDACTED_CAPTURES for tool in produced),
-               "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
-               "network": network,
-               "suppression_comments": {
-                   str(k): str(v) for k, v in
-                   (_SUPPRESSION_POSTURE if suppression_comments is None
-                    else suppression_comments).items()},
-               "ignore_files": {"gitleaks": observed_ignore_files["gitleaks"]}
-               if ("gitleaks" in produced
-                   and isinstance(observed_ignore_files.get("gitleaks"), str)
-                   and observed_ignore_files["gitleaks"] in
-                   ("honoured", "neutralised", "absent")) else {},
-               "scanner_config": {
-                   str(k): str(v) for k, v in
-                   (_SCANNER_CONFIG_POSTURE if scanner_config is None
-                    else scanner_config).items()},
-               "sanitized": dict(sanitized or {}),
-               "exclude_globs": [str(g) for g in exclude_globs or ()],
-               "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
-               "depth_bound": depth_bound}
-    # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
-    # inside the reviewed tree. Confine before the makedirs (a symlinked
-    # intermediate would be traversed by it) and never open through a link.
-    safe_write.confine_artifact_path(path)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with safe_write.open_w_nofollow(path) as fh:
-        json.dump(payload, fh, indent=2)
-        fh.write("\n")
-    return payload
-
-
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="panopticon tool runner")
@@ -1303,17 +1115,19 @@ def main(argv=None):
         # (COD-X0X #1406). The selection above is pure filesystem/logic and needs
         # no docker, so `effective` is a faithful record of what WOULD have run.
         if a.manifest:
-            write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
-                           run_id=a.run_id, excluded_dirs=venv_rows,
-                           sanitized=sanitized, exclude_globs=a.exclude)
+            tools_manifest.write_manifest(
+                a.manifest, effective, [], excluded_scope=excluded_scope,
+                run_id=a.run_id, excluded_dirs=venv_rows,
+                sanitized=sanitized, exclude_globs=a.exclude)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
                       run_id=a.run_id, security_mode=a.security_mode)
     if a.manifest:
-        write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
-                       run_id=a.run_id, excluded_dirs=venv_rows,
-                       sanitized=sanitized, exclude_globs=a.exclude)
+        tools_manifest.write_manifest(
+            a.manifest, effective, paths, excluded_scope=excluded_scope,
+            run_id=a.run_id, excluded_dirs=venv_rows,
+            sanitized=sanitized, exclude_globs=a.exclude)
     print("\n".join(paths))
     return 0
 

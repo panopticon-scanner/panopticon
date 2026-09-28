@@ -29,9 +29,11 @@ golden captured before the move.
 The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why the two ceilings live here -- `TOOL_TIMEOUT` is the watchdog's
 default and `MAX_TOOL_OUTPUT_BYTES` the spool's cap, both read on this side of
-the seam -- while the docker argv, the runner seam, the dispatch loop that
-calls `_capture_run` and the manifest writer stayed behind. `run_tools` binds
-both ceilings and the redaction ledger back for its own reads. Stdlib-only.
+the seam -- while the docker argv, the runner seam and the dispatch loop that
+calls `_capture_run` stayed behind (the manifest writer, which reads the cap and
+the redaction ledger back, is `tools_manifest`, part 3 of the same split).
+`run_tools` binds both ceilings and the redaction ledger back for its own reads
+and its importers'. Stdlib-only.
 """
 import json
 import os
