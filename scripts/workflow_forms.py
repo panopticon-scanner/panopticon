@@ -15,7 +15,9 @@ Three questions live here, each one a shape a step writes down:
     what an operand stands for `same_file`, `names_file` and `covers`: exactly,
                                by a glob, by the directory a recursive command
                                walks; `may_run`, a command word bash expands
-                               that ends in a download's basename (#2310); and
+                               that ends in a download's basename (#2310), or
+                               a bare name a download written into a directory
+                               on PATH answers to (#2308); and
                                `described`, for the operands handed over by
                                `find -exec` or `xargs`. The guard binds a use
                                to a download by NAME, and shell has several
@@ -96,9 +98,20 @@ def same_file(token, path):
     return os.path.normpath(token) == os.path.normpath(path)
 
 
+# `mv`/`cp` of a fetched file into one of these is what makes it runnable by
+# name for the rest of the job.
+BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
+            "/opt/bin", "/bin", "/sbin")
+# Where `may_run` looks a bare command name up (#2308): those, and the runner
+# user's `~/.local/bin` in the three spellings a step writes it. A directory
+# a step puts on PATH itself (`PATH=…`, `$GITHUB_PATH`) is not read.
+PATH_DIRS = BIN_DIRS + ("$HOME/.local/bin", "${HOME}/.local/bin", "~/.local/bin")
+
+
 def may_run(word, dest):
-    """Does running this COMMAND word run `dest`? By its spelling, or (#2310)
-    by its basename where bash expands the word first.
+    """Does running this COMMAND word run `dest`? By its spelling; by its
+    basename where bash expands the word first (#2310); by PATH, for a bare
+    name (#2308).
 
     `"$PWD/tool"` and `"$(pwd)/tool"` run the `tool` a step just fetched, and
     the guard does not evaluate the shell to learn where they point: so a
@@ -110,10 +123,18 @@ def may_run(word, dest):
     LAST part expands (`"$T"`) matches only a download whose basename is that
     same text -- refusing it outright needs a command position the reader
     does not have, where `case "$1" in` reads as the command `$1`.
+
+    A bare name (`tool`) is looked up on PATH, so it is read as running a
+    download written into one of `PATH_DIRS` under that name (`curl -o
+    /usr/local/bin/tool`), whether or not a builtin or an earlier directory
+    answers to it first. The run side only, again: a checksum of the bare
+    `tool` reads `./tool`, so it does not clear `/usr/local/bin/tool`.
     """
+    name = os.path.basename(os.path.normpath(dest))
     return same_file(word, dest) or (
         dynamic(word, shell_reader.has_substitution)
-        and os.path.basename(os.path.normpath(word)) == os.path.basename(os.path.normpath(dest)))
+        and os.path.basename(os.path.normpath(word)) == name) or (
+        word == name and os.path.dirname(os.path.normpath(dest)) in PATH_DIRS)
 
 
 def names_file(content, dest):

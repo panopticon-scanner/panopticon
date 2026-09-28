@@ -81,6 +81,10 @@ that starts catching one fails there, and this list is edited with it.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
+* a directory a step puts on PATH (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name
+  finds a download only in `workflow_forms.PATH_DIRS` (#2308), never there.
+  KEPT: the directory is a VALUE, of `PATH` or in a file Actions reads, which
+  is evaluating the shell again; no workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
   KEPT: it is the entry above wearing a checksum -- refusing it means
@@ -181,10 +185,10 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, chmod_executable, chmod_targets,
-                            covers, described, in_container, may_run, names_file,
-                            parse_fetch, regions, same_file, scripts,
-                            stdin_program, streamed_fetch, swallowed)
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
+                            chmod_executable, chmod_targets, covers, described,
+                            in_container, may_run, names_file, parse_fetch, regions,
+                            same_file, scripts, stdin_program, streamed_fetch, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -204,10 +208,6 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 # with a mode; `tar`/`unzip` write whatever the archive says.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
-# `mv`/`cp` of a fetched file into one of these is what makes it runnable by
-# name for the rest of the job.
-BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
-            "/opt/bin", "/bin", "/sbin")
 # An expected digest: a hex literal, or the variable a workflow pins one in
 # (`${HADOLINT_SHA256}`, `$SHA`). Naming a file is not checking it -- something
 # in the checked line has to BE the expectation -- and ANY expansion is not

@@ -604,6 +604,59 @@ class TestADownloadRunThroughAnExpandedPath(unittest.TestCase):
                 self.assertIsNone(self.defect(run))
 
 
+class TestADownloadWrittenIntoADirectoryOnPath(unittest.TestCase):
+    """#2308: `curl -o /usr/local/bin/tool …; tool --version` read clean: the
+    download is bound to its path, and `tool` is not that path, but bash finds
+    the file by looking the bare name up on PATH. A bare name that is the
+    basename of a download written into one of `workflow_forms.PATH_DIRS` is
+    now running it -- as the command or as a wrapper word, still read
+    through."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def defect(self, dest, run):
+        return wg.fetch_exec_defect("curl -fsSL -o %s %s\n%s" % (dest, self.URL, run))
+
+    def test_a_bare_name_runs_a_download_in_a_directory_on_path(self):
+        for dest in ("/usr/local/bin/tool", "/usr/bin/tool", "/bin/tool",
+                     "/usr/local/sbin/tool", '"$HOME/.local/bin/tool"',
+                     '"${HOME}/.local/bin/tool"', "~/.local/bin/tool",
+                     "/usr/local/bin/./tool"):
+            with self.subTest(dest=dest):
+                self.assertIn("running it with nothing verifying",
+                              self.defect(dest, "tool --version\n") or "")
+        script = "curl -fsSL --output-dir /usr/local/bin -O %s\ntool\n" % self.URL
+        self.assertIn("-> /usr/local/bin/tool and running it", wg.fetch_exec_defect(script) or "")
+
+    def test_behind_a_wrapper_and_as_one(self):
+        for dest, run in (("/usr/local/bin/tool", "sudo tool --version\n"),
+                          ("/usr/local/bin/tool", "env FOO=1 tool\n"),
+                          ("/usr/local/bin/flock", "flock 9 make\n"),
+                          ("/usr/local/bin/env", "env FOO=1 make\n")):
+            with self.subTest(dest=dest, run=run):
+                self.assertIn("running it", self.defect(dest, run) or "")
+        # Still read through: the command behind the wrapper word is `make`.
+        self.assertEqual(["make"], shell_reader.command(["flock", "9", "make"]))
+
+    def test_a_check_binds_by_the_path_and_not_by_the_bare_name(self):
+        self.assertIsNone(self.defect("/usr/local/bin/tool",
+                                      self.CHECK % "/usr/local/bin/tool" + "tool\n"))
+        # `sha256sum -c` of the bare `tool` reads ./tool: taking it for the
+        # download would clear bytes nothing checked.
+        self.assertIn("no checksum in the job names /usr/local/bin/tool",
+                      self.defect("/usr/local/bin/tool", self.CHECK % "tool" + "tool\n") or "")
+
+    def test_off_path_or_run_by_a_path_it_is_not_the_bare_name(self):
+        for dest, run in (("/tmp/tool", "tool\n"), ("bin/tool", "tool\n"),
+                          ("/opt/tool/bin/tool", "tool\n"),
+                          ("/usr/local/bin/tool", "./tool\n"),
+                          ("/usr/local/bin/tool", "tools\n"),
+                          ("/usr/local/bin/tool", "echo tool\n")):
+            with self.subTest(dest=dest, run=run):
+                self.assertIsNone(self.defect(dest, run))
+
+
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
     in a checkout holding a file called sh, before the command runs, which the
@@ -1422,7 +1475,8 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
 
 
 class TestTheGapsTheGuardDocuments(unittest.TestCase):
-    """#1697: the ten forms the module docstring ruled, each as a live step."""
+    """#1697: the ten forms the module docstring ruled, each as a live step,
+    and an eleventh ruled since (#2308)."""
 
     def accepted(self, *steps):
         """The job is clean -- this form goes unseen, and says so out loud."""
@@ -1852,6 +1906,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             wg.Step("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX, None, when),
             wg.Step("flip", 'echo "NEED=no" >> "$GITHUB_ENV"\n'),
             wg.Step("run", "chmod +x /tmp/p\n/tmp/p\n", None, when))
+
+    # 11. a directory a step puts on PATH itself (#2308, which closed the
+    # fixed directories: `TestADownloadWrittenIntoADirectoryOnPath`).
+    def test_a_directory_a_step_puts_on_path(self):
+        fetch = ("get", "curl -sfL https://example.test/p -o bin/payload\n")
+        self.accepted(fetch, ("path", 'echo "$PWD/bin" >> "$GITHUB_PATH"\n'),
+                      ("run", "payload --version\n"))
+        self.accepted(fetch, ("run", 'export PATH="$PWD/bin:$PATH"\npayload --version\n'))
+        self.flagged(("get", "curl -sfL https://example.test/p -o /usr/local/bin/payload\n"),
+                     ("run", "payload --version\n"))
 
 
 class TestRunSteps(unittest.TestCase):
