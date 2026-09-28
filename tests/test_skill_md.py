@@ -62,8 +62,12 @@ class TestSkillMd(unittest.TestCase):
                       "meta.integrity.tools_manifest_invalid",
                       "not computed from the scout's advisory list",
                       # Fix round 1 F1: the gate consequence is the half a
-                      # reader must not have to infer.
-                      "fails `integrity_ok` like every other entry",
+                      # reader must not have to infer. #1761 narrowed "every
+                      # other entry" to every other SINKING entry -- seven keys
+                      # in that section do not gate, and the sentence claimed
+                      # they did.
+                      "fails `integrity_ok` like every other SINKING entry",
+                      "`synth/integrity.INTEGRITY_KEYS` says which",
                       "INCONCLUSIVE",
                       "ABSENT manifest", "malformed FIELDS"]:
             self.assertIn(token, self.text, token)
