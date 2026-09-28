@@ -118,19 +118,28 @@ def _locate(*candidates: str) -> tuple[str, str | None]:
     `ingest_tools` parses on the host, so the tree is named around the parse or
     not at all (the CI gate parses captured bytes with no tree).
 
-    The candidates are the SourceLine's `sourcepath` and the `<Class
-    classname>` derivation, in that order, and the first USABLE one is
-    published: a refused sourcepath leaves the derivation, which is a second
-    field rather than the same one again.
+    RESOLUTION comes first, across ALL candidates: the bug's `sourcepath`, the
+    enclosing class's, then the `<Class classname>` derivation -- three separate
+    fields, not the same one three times. Only when none of them resolves is the
+    first SHAPE-LEGAL candidate published with the disclosure. Returning on the
+    first shape-legal one instead let a sourcepath that merely looks like a path
+    short-circuit a derivation that would have resolved; the preference order
+    still decides an unresolvable tie, and there `sourcepath` is the better
+    guess (an inner class derives `Holder$1.java`, which never exists).
+
+    Duplicates are collapsed rather than probed twice: on ordinary output all
+    three candidates are the same string.
     """
     root = target_root_cv.get()
-    for candidate in candidates:
-        relative = _repo_relative(candidate)
-        if relative is None:
-            continue
-        resolved = _resolve_under_root(root, relative) if root else None
-        return (resolved, None) if resolved else (relative, _UNRESOLVED)
-    return "", _UNRESOLVED
+    legal = list(dict.fromkeys(
+        relative for relative in (_repo_relative(c) for c in candidates)
+        if relative is not None))
+    if root:
+        for relative in legal:
+            resolved = _resolve_under_root(root, relative)
+            if resolved:
+                return resolved, None
+    return (legal[0], _UNRESOLVED) if legal else ("", _UNRESOLVED)
 
 
 def _line_start(start: str | None) -> int:
@@ -266,11 +275,17 @@ class SpotBugsAdapter:
             # pinned golden). A <Method>'s span is skipped for the same reason
             # and one more: a role="METHOD_CALLED" Method names the CALLEE's
             # file, which on that golden is a JDK source in no repository.
-            source = bug.find("SourceLine")
-            if source is None:
-                source = bug.find("Class/SourceLine")
+            own = bug.find("SourceLine")
+            class_line = bug.find("Class/SourceLine")
+            source = own if own is not None else class_line
             sourcepath = source.get("sourcepath", "") if source is not None else ""
             line = source.get("start") if source is not None else None
+            # A separate candidate, not a fallback on the ELEMENT: a direct-child
+            # SourceLine can carry `start` and no `sourcepath` at all, and
+            # discarding the class's sourcepath there traded a resolvable path
+            # for a derivation that, for an inner class, never exists.
+            class_sourcepath = (class_line.get("sourcepath", "")
+                                if class_line is not None else "")
             # #run7 COD-C3A: a bug with no usable SourceLine still gets a file,
             # derived from the BugInstance's <Class classname>
             # (com.example.App -> com/example/App.java), rather than an empty
@@ -282,7 +297,7 @@ class SpotBugsAdapter:
             cls = bug.find("Class")
             classname = cls.get("classname", "") if cls is not None else ""
             derived = (classname.replace(".", "/") + ".java") if classname else ""
-            file_path, unresolved = _locate(sourcepath, derived)
+            file_path, unresolved = _locate(sourcepath, class_sourcepath, derived)
             cwe = _SPOTBUGS_CWE.get(btype)
             out.append(make_finding(
                 self, n, group,

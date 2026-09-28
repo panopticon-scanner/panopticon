@@ -496,6 +496,53 @@ class TestSourcePathResolvesAgainstTheTargetRoot(unittest.TestCase):
         self.assertEqual(self.SOURCEPATH, f["location"]["file"])
         self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
 
+    def test_a_resolvable_candidate_beats_an_unresolvable_earlier_one(self):
+        # Review finding 6: the loop used to return on the first SHAPE-legal
+        # candidate, so a sourcepath that merely looks like a path
+        # short-circuited a classname derivation that would have RESOLVED. Every
+        # candidate is tried for resolution first; only when none resolves does
+        # the first shape-legal one get published unresolved.
+        with TemporaryDirectory() as root:
+            self._write(root, "src/main/java/com/example/App.java")
+            self._pin_root(root)
+            f = self._parse_one("wrong/place/Nope.java", classname="com.example.App")
+        self.assertEqual("src/main/java/com/example/App.java", f["location"]["file"])
+        self.assertNotIn("path_resolution", f["tool_evidence"])
+
+    def test_the_class_level_sourcepath_is_a_candidate_of_its_own(self):
+        # Review finding 7: the fallback was on the ELEMENT, so a direct-child
+        # SourceLine carrying `start` but no `sourcepath` discarded the class's
+        # sourcepath entirely and fell through to the classname derivation --
+        # which for an inner class derives `Holder$1.java`, a file that can
+        # never exist. The bug's own line is still the bug's own line.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="COMMAND_INJECTION" rank="12" priority="2">
+    <Class classname="org.dummy.Holder$1">
+      <SourceLine classname="org.dummy.Holder" start="11" end="75" sourcepath="org/dummy/Holder.java"/>
+    </Class>
+    <SourceLine start="65" end="65"/>
+  </BugInstance>
+</BugCollection>
+"""
+        with TemporaryDirectory() as root:
+            self._write(root, "src/main/java/org/dummy/Holder.java")
+            self._pin_root(root)
+            f = only(sb.SpotBugsAdapter().parse(sample, "g1"))
+        self.assertEqual("src/main/java/org/dummy/Holder.java", f["location"]["file"])
+        self.assertEqual(65, f["location"]["line_start"])
+        self.assertNotIn("path_resolution", f["tool_evidence"])
+
+    def test_the_first_shape_legal_candidate_is_published_when_none_resolves(self):
+        # The other half of the contract: with nothing to resolve against, the
+        # sourcepath is still preferred over the derivation (an inner class
+        # derives a path that never exists), and the disclosure says so.
+        with TemporaryDirectory() as root:
+            self._pin_root(root)
+            f = self._parse_one("wrong/place/Nope.java", classname="com.example.App")
+        self.assertEqual("wrong/place/Nope.java", f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
     def test_the_classname_fallback_resolves_the_same_way(self):
         # #run7 COD-C3A derived a path from <Class classname> so a SourceLine-less
         # finding stayed matchable. A package path is not a repo path, so the
