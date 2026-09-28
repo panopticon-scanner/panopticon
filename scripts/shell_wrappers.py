@@ -206,8 +206,8 @@ def unwrap(argv, head, has_substitution):
 
     The argv is read as written. Behind an `xargs`, which appends words to
     it, `shell_reader._command_result` reports an answer of no command
-    instead: of the answers here, that is the only one appended words can
-    turn into a command.
+    instead: of the answers that are not already reported, that is the only
+    one appended words can turn into a command.
     """
     if head == "unbuffer":
         return _unbuffer(argv[1:])

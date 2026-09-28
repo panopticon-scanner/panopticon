@@ -547,9 +547,11 @@ def statements(script):
 
 
 def _command_result(argv):
-    """Shared parse result for execution extraction and unread decisions."""
+    """Shared parse result for execution extraction and unread decisions: the
+    command, why a wrapper in front of it cannot be read (or None), and the
+    words read as wrappers, as written."""
     argv = list(argv)
-    wrappers = 0
+    heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
     # innermost wrapper read after one (`behind`, with its argv) was read from
     # an argv that is not the one that runs (#2227).
@@ -575,25 +577,26 @@ def _command_result(argv):
             continue
         head = os.path.basename(argv[0])
         if head not in WRAPPERS:
-            if wrappers and (has_substitution(argv[0]) or "$" in argv[0]):
-                return argv, "has a dynamic command operand behind a wrapper"
+            if heads and (has_substitution(argv[0]) or "$" in argv[0]):
+                return argv, "has a dynamic command operand behind a wrapper", heads
             break
-        wrappers += 1
-        if wrappers > 16:
-            return argv, "has too many nested wrappers"
+        heads.append(argv[0])
+        if len(heads) > 16:
+            return argv, "has too many nested wrappers", heads
         inner, reason = unwrap(argv, head, has_substitution)
         if reason:
-            return argv, "`%s` %s" % (head, reason)
+            return argv, "`%s` %s" % (head, reason), heads
         behind = (head, argv) if appended else None
         appended = appended or head == "xargs"
         argv = inner
+    reason = None
     if behind and not argv:
         # It runs nothing as written, but the appended words may be its
         # command (`xargs ionice`, `xargs flock FILE`, `xargs env FOO=1`) or
         # the last word it reads a pid from (`xargs taskset -p ...`).
         head, argv = behind
-        return argv, "`%s` has no command as written, and xargs appends words to it" % head
-    return argv, None
+        reason = "`%s` has no command as written, and xargs appends words to it" % head
+    return argv, reason, heads
 
 
 def command(argv):
@@ -604,6 +607,15 @@ def command(argv):
 def unresolved_wrapper(argv):
     """Why a wrapper at this command's head cannot be resolved, if any."""
     return _command_result(argv)[1]
+
+
+def wrapper_words(argv):
+    """The words read as wrappers in front of the command, as written.
+
+    A wrapper is known by its basename, so `./flock` is read as `flock` and
+    read through, though what runs is the file at ./flock (#2227).
+    """
+    return _command_result(argv)[2]
 
 
 
