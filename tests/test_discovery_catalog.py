@@ -1271,6 +1271,8 @@ class TestBothDiscoveryPathsShareOneDotPolicy(unittest.TestCase):
         ".mypy_cache/x.json", ".pytest_cache/x.json",
         "node_modules/p/index.js",
         ".DS_Store",                        # unclaimed root dotfile
+        ".eslintcache",                     # generated tool state, claimed by
+                                            # nothing: the `.mypy_cache` class
         ".hidden/secret.py",                # unclaimed root dot-directory
         ".panopticon/groups.json",          # this project's own run artifacts
         "a/.hidden/x.py",                   # nested dot-directory: unchanged
