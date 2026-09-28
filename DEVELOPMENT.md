@@ -206,13 +206,18 @@ characters, and matching consumes the whole path.
   stderr line naming what was wrong. It fails toward strictness in every
   direction and never toward silence.
 
-  **Two blind spots in the identity, both inherent to the ruling.** Replacement
+  **One blind spot in the identity, inherent to the ruling.** Replacement
   *inside one file is invisible*: five findings in a file that share one
   identity are matched five-for-five, so a diff deleting all five and adding
-  five fresh ones gates on nothing. And a *pure move reads as new*: renaming a
-  file turns every finding in it into a new one, because the path is part of
-  the identity. The first is the one an author controls; a full-tree review, not
-  this gate, is what catches it. **One residual to know about**: the tools image
+  five fresh ones gates on nothing. It is the one an author controls; a
+  full-tree review, not this gate, is what catches it.
+
+  **A MOVED finding is pre-existing (moved)** (#2309, ruling 2026-09-28): a head
+  finding the exact pass left as new pairs with ONE unmatched base finding of the
+  same tool, rule and message at a path that no longer carries it. A second copy
+  there, or one with no orphan left, is still new; moved rows print apart, never gate.
+
+  **One residual to know about**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep
   rule from `warning` to `error` promotes every standing occurrence at once —
   severity is not part of the identity, so those are disclosed as pre-existing

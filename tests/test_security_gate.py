@@ -1724,6 +1724,143 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         self.assertIn("0 GATED (CRITICAL/secret, #1578 policy C), "
                       "1 pre-existing, 1 disclosed only, --security redteam", out)
 
+    # --- #2309 owner ruling 2026-09-28: a MOVED finding is not a new one -----
+    #
+    # The shape that filed it (#2305, ARC C2): `_kill_container`'s `docker kill`
+    # call left `run_tools.py` for `tool_capture.py` byte for byte, proven by a
+    # pre-move golden, and the path-SENSITIVE identity called it a new HIGH --
+    # reddening the required check on a PR whose contract is "no behaviour
+    # change" -- while the base's own copy at the old path sat in the pool
+    # unmatched. That orphan IS the evidence: it pairs with the head occurrence,
+    # one for one, and the pair is reported as pre-existing (moved). Not as
+    # pre-existing, because the diff did touch this finding; not as new, because
+    # the base commit carries it. A move needs an orphan, and one orphan excuses
+    # one occurrence -- the multiset rule the exact pass already obeys.
+
+    def test_a_high_a_verbatim_extraction_moved_is_pre_existing_moved(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/tool_capture.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/run_tools.py"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "Ingested 1 non-excluded tool findings; "
+                                   "0 HIGH/CRITICAL new; "
+                                   "0 HIGH/CRITICAL pre-existing; "
+                                   "1 HIGH/CRITICAL moved")
+        # The heading sits immediately under the verdict: no row was new.
+        self.assertEqual(lines[1], "%s:" % gate.MOVED_HEADING)
+        self.assertIn("tool_capture.py:1", lines[2])
+        self.assertNotIn(gate.BASELINE_HEADING, out)
+
+    def test_a_move_beside_a_genuinely_new_copy_counts_one_of_each(self):
+        # The extraction landed the call in `tool_capture.py` and a second
+        # `docker kill` was added beside it. The base has one copy to pair, so
+        # the second occurrence gates.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/tool_capture.py", line=11),
+                _delta_result(uri="/src/skill/scripts/tool_capture.py", line=42))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/run_tools.py"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing; "
+                      "1 HIGH/CRITICAL moved", out)
+        self.assertIn(gate.MOVED_HEADING, out)
+
+    def test_a_new_occurrence_the_base_has_no_orphan_for_is_still_new(self):
+        # The old path has to STOP carrying the finding. Here it still does, so
+        # the exact pass spends the base's only copy and the occurrence at the
+        # other path has nothing left to pair with.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/run_tools.py"),
+                _delta_result(uri="/src/skill/scripts/tool_capture.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/run_tools.py"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new; 1 HIGH/CRITICAL pre-existing", out)
+        self.assertNotIn("HIGH/CRITICAL moved", out)
+        self.assertNotIn(gate.MOVED_HEADING, out)
+        self.assertIn("tool_capture.py:1", out)
+        self.assertIn(gate.BASELINE_HEADING, out)
+
+    def test_a_different_message_at_the_moved_path_is_new(self):
+        # The message is part of the pairing key, exactly as it is part of the
+        # exact identity: one rule fires in a moved function for reasons the
+        # line number used to tell apart, and the base's orphan excuses one of
+        # them and not the others.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/tool_capture.py",
+                              message="found subprocess function with $TAINTED"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/run_tools.py"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing", out)
+        self.assertNotIn("HIGH/CRITICAL moved", out)
+        self.assertNotIn(gate.MOVED_HEADING, out)
+
+    def test_the_strict_route_says_nothing_about_a_moved_finding(self):
+        # No baseline, no pool, no orphans: the historical line byte for byte,
+        # and not the word "moved" anywhere in the output.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/skill/scripts/tool_capture.py"))})
+            rc, out, _err = self._run(head)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.splitlines()[0],
+                         "Ingested 1 non-excluded tool findings; 1 HIGH/CRITICAL")
+        self.assertNotIn("moved", out)
+        self.assertNotIn(gate.MOVED_HEADING, out)
+
+    def test_a_suppressed_critical_that_moved_is_counted_as_excused(self):
+        # The three suppression counts still PARTITION the suppressed set with a
+        # third category in play. A suppressed CRITICAL the base commit carried
+        # at another vendored path is excused BY THE BASELINE, so it belongs to
+        # the pre-existing number; counting only the unmoved ones there would
+        # have promoted it into "disclosed only", which asserts policy C
+        # declined it -- the verdict-line-contradicts-itself defect #1578 and
+        # #1740 each spent a round removing.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv(
+                "app/vendor/nested/package-lock.json")})
+            base = self._capture(root, "base", {"osv-scanner": _critical_osv()})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1 HIGH/CRITICAL moved", out)
+        self.assertIn("0 GATED (CRITICAL/secret, #1578 policy C), "
+                      "1 pre-existing, 0 disclosed only", out)
+
+    def test_the_orphan_pool_is_a_multiset_and_head_order_survives(self):
+        # Read off `split_pre_existing` directly, because the claim is about the
+        # POOL and not about a verdict that happens to agree: two base copies
+        # excuse two moves and not a third, and each of the three lists comes
+        # back in head order so the printed rows read in the order the strict
+        # gate printed them.
+        def finding(path, line, rule="dangerous-subprocess-use-audit"):
+            return {"source": "tool:semgrep", "severity": "HIGH",
+                    "tool_evidence": {"rule_id": rule},
+                    "title": "found subprocess function with user input",
+                    "location": {"file": path, "line_start": line}}
+        baseline = [finding("skill/scripts/run_tools.py", 10),
+                    finding("skill/scripts/run_tools.py", 20),
+                    finding("skill/scripts/app.py", 30)]
+        head = [finding("skill/scripts/other.py", 1, rule="hooks-path-traversal"),
+                finding("skill/scripts/app.py", 2),
+                finding("skill/scripts/tool_capture.py", 3),
+                finding("skill/scripts/manifest.py", 4),
+                finding("skill/scripts/third.py", 5)]
+        new, pre_existing, moved = gate.split_pre_existing(head, baseline)
+        self.assertEqual([f["location"]["line_start"] for f in pre_existing], [2])
+        self.assertEqual([f["location"]["line_start"] for f in moved], [3, 4])
+        self.assertEqual([f["location"]["line_start"] for f in new], [1, 5])
+
 
 if __name__ == "__main__":
     unittest.main()

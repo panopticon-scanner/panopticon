@@ -39,6 +39,16 @@ SECURITY_MODES = ("standard", REDTEAM)
 BASELINE_HEADING = ("pre-existing (in the base commit's scan; governed by the "
                     "post-merge audit and GitHub dismissals)")
 
+# #2309 owner ruling 2026-09-28: the third category, and why it is printed
+# apart from the one above rather than folded into it. A HIGH that a verbatim
+# extraction MOVES from one module to another is pre-existing -- the base
+# commit carries it, at a path that no longer does -- but it is not the same
+# claim: the heading above says this commit's diff never touched the finding,
+# and this one says the diff touched it and moving it is ALL it did. Either way
+# it does not gate. See `split_pre_existing` for what pairs and what does not.
+MOVED_HEADING = ("pre-existing (moved: the same tool, rule and message left an "
+                 "unmatched base path -- an extraction, not a new occurrence)")
+
 
 def load_manifest(path):
     """Load and validate a run_tools selected/produced manifest."""
@@ -253,6 +263,25 @@ def finding_identity(finding):
             " ".join(str(finding.get("title") or "").split()))
 
 
+def moved_identity(finding):
+    """`finding_identity` with the PATH dropped: `(tool, rule id, message)`.
+
+    Derived from `finding_identity`'s own tuple rather than re-reading the
+    finding's fields, so the two keys cannot come to disagree about how a tool,
+    a rule or a message is read.
+
+    What a move-aware match IS: an ORPHAN-FOR-EACH pairing. The base commit
+    carried this tool/rule/message at a path the exact pass could not spend, so
+    ONE head occurrence of it elsewhere is that finding, relocated. What it is
+    NOT: set membership. A rule+message the base carries somewhere does not
+    excuse every later occurrence of it -- a second head copy has no orphan left
+    to pair with and is NEW, exactly as a second copy at the same path already
+    was. Nothing about severity, and nothing about lines, changes here.
+    """
+    tool, rule, _path, message = finding_identity(finding)
+    return tool, rule, message
+
+
 def disclose_file_coverage(dispositions, label):
     """Usable findings do not assert complete per-file scanner coverage."""
     for tool, disposition in dispositions.items():
@@ -333,7 +362,7 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
 
 
 def split_pre_existing(high, baseline):
-    """Split a gate population into `(new, pre_existing)` against *baseline*.
+    """Split a gate population into `(new, pre_existing, moved)` vs *baseline*.
 
     A MULTISET match, and that is the load-bearing word. Each baseline finding
     satisfies AT MOST ONE head finding, so a second `subprocess.run` added
@@ -343,8 +372,30 @@ def split_pre_existing(high, baseline):
     an unbounded number of copies of any finding the base commit happened to
     carry one of.
 
-    Head order is preserved in both lists, so the printed rows read in the same
-    order the strict gate printed them.
+    TWO PASSES, and the order of them is the whole proof. The first is the exact
+    one above, on the full path-keyed identity. The second is #2309's owner
+    ruling (2026-09-28): a finding the first pass left in `new` pairs with ONE
+    remaining base entry of the same `moved_identity` -- an ORPHAN -- and is
+    `moved`, pre-existing at a path that is not this one. A verbatim extraction
+    carrying a HIGH from one module to another is exactly that, and the
+    path-SENSITIVE identity alone counted it new while leaving the base's own
+    copy unmatched, reddening a required check on a diff that changed no
+    behaviour.
+
+    By construction an orphan's path NO LONGER CARRIES that finding at that
+    count: the exact pass ran first and spent every same-path match it could, so
+    whatever is left in the pool is a finding the head side does not have where
+    the base had it. That is the ruling's "at a path that no longer carries it",
+    and nothing below re-reads a path to check it.
+
+    The orphan pool is a `collections.Counter` over the entries the exact pass
+    did not consume, DECREMENTED as it pairs and never rebuilt: two base copies
+    excuse two moves and a third head copy is new, the same multiset rule the
+    first pass obeys. A `moved` finding never gates; `main` prints it under
+    `MOVED_HEADING` and counts it separately.
+
+    Head order is preserved in all three lists, so the printed rows read in the
+    same order the strict gate printed them.
     """
     pool = collections.Counter(finding_identity(f) for f in baseline)
     new, pre_existing = [], []
@@ -355,7 +406,24 @@ def split_pre_existing(high, baseline):
             pre_existing.append(finding)
         else:
             new.append(finding)
-    return new, pre_existing
+    # The leftovers, re-keyed path-free off the BASE findings themselves (never
+    # by taking `finding_identity`'s tuple apart a second time), spending what
+    # the exact pass left in `pool` so the orphan count is the unconsumed count.
+    orphans: collections.Counter = collections.Counter()
+    for finding in baseline:
+        key = finding_identity(finding)
+        if pool[key]:
+            pool[key] -= 1
+            orphans[moved_identity(finding)] += 1
+    still_new, moved = [], []
+    for finding in new:
+        key = moved_identity(finding)
+        if orphans[key]:
+            orphans[key] -= 1
+            moved.append(finding)
+        else:
+            still_new.append(finding)
+    return still_new, pre_existing, moved
 
 
 def _row(finding):
@@ -426,7 +494,7 @@ def main(argv=None):
     disclose_file_coverage(dispositions, "current")
     # No baseline named, or one that could not be read: `new` IS `high` and
     # every line below is the one this gate has always printed.
-    new, pre_existing, delta = high, [], False
+    new, pre_existing, moved, delta = high, [], [], False
     if args.baseline_dir:
         baseline, why_not = load_baseline(
             args.baseline_dir, args.baseline_manifest, args.exclude,
@@ -435,7 +503,7 @@ def main(argv=None):
             print("security-gate: baseline unusable, gating strictly on the "
                   "whole tree -- %s" % why_not, file=sys.stderr)
         else:
-            new, pre_existing = split_pre_existing(high, baseline)
+            new, pre_existing, moved = split_pre_existing(high, baseline)
             delta = True
     note = ""
     if suppressed:
@@ -461,9 +529,14 @@ def main(argv=None):
             # GATED counts `new`, the population that actually gates;
             # pre-existing counts the ones the baseline excused; disclosed-only
             # is what policy C declined, unchanged. The three partition
-            # `suppressed`, so nothing is counted twice or lost between them.
+            # `suppressed`, so nothing is counted twice or lost between them --
+            # which is why pre-existing counts the MOVED ones too (#2309). A
+            # suppressed CRITICAL that an extraction relocated is excused by the
+            # baseline exactly as an unmoved one is; leaving it out of this
+            # number would not make it gate, it would silently promote it into
+            # "disclosed only" and break the partition.
             gated = sum(1 for f in new if f.get("suppressed"))
-            excused = sum(1 for f in pre_existing if f.get("suppressed"))
+            excused = sum(1 for f in pre_existing + moved if f.get("suppressed"))
             verdict = (" -- %d GATED (CRITICAL/secret, #1578 policy C), "
                        "%d pre-existing, %d disclosed only, --security redteam"
                        % (gated, excused, len(suppressed) - gated - excused))
@@ -534,6 +607,13 @@ def main(argv=None):
     tally = ("%d HIGH/CRITICAL new; %d HIGH/CRITICAL pre-existing"
              % (len(new), len(pre_existing)) if delta
              else "%d HIGH/CRITICAL" % len(high))
+    if moved:
+        # #2309: a THIRD count, and only when there is one to report. `moved` is
+        # empty on the strict route by construction, and the delta line a run
+        # with nothing moved prints is the one it printed before this landed --
+        # the same conservatism the strict route gets, for the same reason: every
+        # other caller of this gate reads that line.
+        tally += "; %d HIGH/CRITICAL moved" % len(moved)
     print("Ingested %d non-excluded tool findings; %s%s"
           % (len(findings), tally, note))
     if failures:
@@ -543,9 +623,15 @@ def main(argv=None):
         return 2
     # The gating rows first and the excused ones last, under their heading:
     # the heading has to sit immediately above the list it speaks for, or a
-    # reader cannot tell where its scope ends.
+    # reader cannot tell where its scope ends. The moved ones sit BETWEEN them,
+    # in the order the two headings claim less and less about the diff: these
+    # rows the diff moved, those it never touched at all.
     for finding in new[:20]:
         print(_row(finding))
+    if moved:
+        print("%s:" % MOVED_HEADING)
+        for finding in moved[:20]:
+            print(_row(finding))
     if pre_existing:
         print("%s:" % BASELINE_HEADING)
         for finding in pre_existing[:20]:

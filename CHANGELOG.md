@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A HIGH a verbatim extraction MOVES is pre-existing (moved), not new (#2309).** The pre-merge
+  gate's delta pass keys on the path, so a refactor that relocated a `docker kill` call reddened the
+  required `scan` check on a diff that changed no behaviour (#2305). After the exact pass, a head
+  finding still counted new pairs with ONE unmatched base finding of the same tool, rule and message
+  at a path that no longer carries it, printed under `pre-existing (moved: …)`. One orphan excuses
+  one occurrence: a second copy, or any occurrence the base has no orphan left for, is still new and
+  still gates, and the strict route's verdict line is byte-identical.
 - **Per-repo configuration moved to a root `panopticon.yml` (#1681).** BREAKING for an existing
   tree: the committed matrix lives at `<repo>/panopticon.yml` (or the read-only alias
   `.panopticon.yml`) under `version: 1` with `groups:`, `exclude_paths:` and `settings:` keys, and
