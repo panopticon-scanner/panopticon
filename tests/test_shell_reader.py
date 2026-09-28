@@ -665,6 +665,27 @@ class TestOneLexicalPass(unittest.TestCase):
     one hid from the guard; this is the reader's own half of the spec.
     """
 
+    def assert_linear_growth(self, n, make, check):
+        """Read `make(n)` and `make(4 * n)`, `check(size, parsed)` each, and
+        require t(4n) <= 8 * t(n) + 0.25 s. Two sizes timed in one process
+        measure how the reader grows -- about 4x for a linear pass, 16x for a
+        quadratic one -- whatever the speed of the machine; the constant
+        absorbs timer noise when t(n) is small, and 15 s guards only against
+        a catastrophe. Bounds in seconds sized on a dev box fail on CI's
+        3.11-3.13 jobs: traced for coverage on shared runners, they run the
+        reader 6-9x slower."""
+        def read(size):
+            script = make(size)
+            start = time.monotonic()
+            parsed = shell_reader.statements(script)
+            elapsed = time.monotonic() - start
+            check(size, parsed)
+            return elapsed
+
+        small, large = read(n), read(4 * n)
+        self.assertLessEqual(large, 8 * small + 0.25, (small, large))
+        self.assertLess(large, 15.0, (small, large))
+
     def test_quote_state_carries_across_lines(self):
         for script in ('echo "a\n# b"; echo c\n', "echo 'a\n# b'; echo c\n"):
             with self.subTest(script=script):
@@ -773,18 +794,19 @@ class TestOneLexicalPass(unittest.TestCase):
     def test_hostile_heredoc_shapes_read_in_linear_time(self):
         # The old heredoc pass searched every line below each `<<` for its
         # terminator, so N unterminated operators were N scans to the end of
-        # the script: measured on the parser as it was, 49 KB of `x <<Dk`
-        # lines took 0.84 s and 99 KB 2.73 s. Terminators are now looked up
-        # in an index built once -- including for a body that starts in the
-        # middle of a folded line, after a comment ending in a backslash.
-        for line in ("x <<D%d\n", "x <<D%d # \\\n"):
-            script = "".join(line % k for k in range(12000))
+        # the script. Terminators are now looked up in an index built once --
+        # including for a body that starts in the middle of a folded line,
+        # after a comment ending in a backslash. Growth, not speed: a 2.0 s
+        # bound on 12000 operators failed on CI's 3.11-3.13 jobs (3.07 s and
+        # 3.34 s, against 0.5 s on a dev box), so each shape is read at 1500
+        # and 6000 operators. This reader grows about 4x. The old pass grows
+        # about 13x: the three blank lines after each operator lengthen every
+        # scan it made, and cost this reader little.
+        for line in ("x <<D%d\n\n\n\n", "x <<D%d # \\\n"):
             with self.subTest(line=line):
-                start = time.monotonic()
-                parsed = shell_reader.statements(script)
-                elapsed = time.monotonic() - start
-                self.assertEqual(12000, len(parsed))
-                self.assertLess(elapsed, 2.0, elapsed)
+                self.assert_linear_growth(
+                    1500, lambda size: "".join(line % k for k in range(size)),
+                    lambda size, parsed: self.assertEqual(size, len(parsed)))
 
     def test_a_subscript_opens_only_where_bash_reads_an_assignment(self):
         # Among `echo`'s arguments `<` ends the word `a[1` and `<<X]` is a
@@ -801,28 +823,31 @@ class TestOneLexicalPass(unittest.TestCase):
     def test_nested_double_parens_are_decided_in_bounded_time(self):
         # A command's `((` is decided by reading its first group, and one bash
         # makes two subshells is read again as code -- so `((((` nested is
-        # read once more per level. 2000 lines of six-deep subshells, each
+        # read once more per level. Lines of six-deep subshells, each
         # heredoc's open quote kept out of the code only by a real body, stay
-        # inside the cap and read in linear time.
-        script = "".join("((((((: <<E%d) ) ) ) ) )\nit's\nE%d\n" % (k, k)
-                         for k in range(2000))
-        start = time.monotonic()
-        parsed = shell_reader.statements(script)
-        elapsed = time.monotonic() - start
-        self.assertEqual(2000, len(parsed))
-        self.assertEqual({"it's"}, {s.stages[0].heredoc for s in parsed})
-        self.assertLess(elapsed, 2.0, elapsed)
+        # inside the cap and read in linear time. Growth, not speed: a 2.0 s
+        # bound on 2000 lines failed on CI's 3.11-3.13 jobs (5.94 s, against
+        # 0.6-0.7 s on a dev box), so 400 and 1600 lines are read and compared.
+        def check(size, parsed):
+            self.assertEqual(size, len(parsed))
+            self.assertEqual({"it's"}, {s.stages[0].heredoc for s in parsed})
+
+        self.assert_linear_growth(400, lambda size: "".join(
+            "((((((: <<E%d) ) ) ) ) )\nit's\nE%d\n" % (k, k) for k in range(size)), check)
 
     def test_past_the_cap_the_reader_raises_instead_of_guessing(self):
         # One group 3000 `(` deep is 3000 readings of the same text: past
         # eight times the script, `shell_lex.Unreadable`, which nothing
-        # catches. It raises in well under a second; without the cap this
-        # read took about seven seconds, growing with the square of the depth.
+        # catches. The pin is that it fails closed after bounded work: without
+        # the cap nothing raises, and the read took about seven seconds,
+        # growing with the square of the depth. It raises in under 0.1 s on a
+        # dev box; 10 s is no speed claim, only a guard against a catastrophe
+        # on CI's traced, shared runners, where the tests above ran 6-9x slower.
         script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n"
         start = time.monotonic()
         with self.assertRaises(shell_lex.Unreadable):
             shell_reader.statements(script)
-        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertLess(time.monotonic() - start, 10.0)
 
     def test_a_heredoc_its_substitution_closes_over_raises(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
