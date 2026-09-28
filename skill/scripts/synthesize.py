@@ -366,22 +366,8 @@ def main(argv=None):
                                   report.get("meta") or {}, args.run_id)
     x0x_stem = out[:-len(".json")] if out.endswith(".json") else out
     x0x_path = x0x_stem + "-x0x.json"
-    # #1735: `<report>-x0x.json.tmp` is the manifest's staging shape exactly --
-    # a fixed name beside a `.panopticon` artifact, in the reviewed tree.
-    x0x_tmp = x0x_path + ".tmp"
-    try:
-        with safe_write.open_w_nofollow(x0x_tmp) as fh:
-            json.dump(x0x, fh, indent=2, sort_keys=True)
-        os.replace(x0x_tmp, x0x_path)
-    finally:
-        # A refusal must not leave the planted link in the run folder for the
-        # next invocation to trip over -- the shape `discovery` already uses
-        # around its own staging write. `lexists` so a dangling link counts.
-        if os.path.lexists(x0x_tmp):
-            try:
-                os.remove(x0x_tmp)
-            except OSError:
-                pass
+    safe_write.publish_texts([
+        (x0x_path, x0x_path + ".tmp", json.dumps(x0x, indent=2, sort_keys=True))])
     x0x_line = "X0X artifact: %s (%d candidates)" % (x0x_path, len(x0x["candidates"]))
     # #1807 DAT-2501524861: a catalog-gap cluster with no file location cannot be
     # carried (every occurrence needs a file), so say so on the line that reports
