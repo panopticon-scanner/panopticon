@@ -56,7 +56,11 @@ NOISE_RULES = {"B101", "B404", "B110", "B112"}
 
 # Test-fixture corpus definition, kept in sync with orchestrator's
 # FIXTURE_DIR_BASENAMES / FIXTURE_PARENT_DIRS / _is_fixture_dir (#434). The
-# definition is mirrored here; update both places together.
+# definition is mirrored here because this module exists to break the cycle
+# back to `ingest_tools` and cannot reach `discovery`. Update both places
+# together -- `tests/tools/test_sarif_utils.py` is what fails if you do not
+# (#2234): it pins both frozensets against discovery's and both predicates
+# against each other.
 _FIXTURE_DIR_BASENAMES = frozenset({"testdata", "__fixtures__"})
 _FIXTURE_PARENT_DIRS = frozenset({"tests", "test", "spec"})
 

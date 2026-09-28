@@ -159,6 +159,76 @@ def domain_of(code):
     return domain_prefix(code)
 
 
+# The domain half of UNKNOWN_DOMAIN_FALLBACK, derived rather than retyped so the
+# sentinel DOMAIN and the sentinel CODE cannot drift apart.
+UNKNOWN_DOMAIN = domain_prefix(UNKNOWN_DOMAIN_FALLBACK)
+_X0X_SUFFIX = "-X0X"
+
+
+def is_fallback_code(code):
+    """True iff `code` is a `<DOM>-X0X` catalog-gap fallback, in ANY case.
+
+    #2236 (ARC-101960059): `x0x_report.is_fallback` matched the suffix
+    case-SENSITIVELY and `strain_report._is_gap` upper-cased first, so `sec-x0x`
+    was a catalog gap to one emitter and an ordinary code to the other. Codes
+    arrive verbatim from the reviewer, with no case-fold upstream, so the split
+    was reachable. One predicate, case-insensitive and whitespace-stripped like
+    `domain_claim` -- the owner's two halves must not disagree about the same
+    code, and `"SEC-X0X "` tolerated by one and not the other would file a
+    catalog gap as an ordinary SEC finding (fix round 1, finding 7).
+    """
+    return bool(code) and str(code).strip().upper().endswith(_X0X_SUFFIX)
+
+
+def domain_claim(value):
+    """`value` as a domain CLAIM: stripped and upper-cased, nothing else.
+
+    NOT validated -- `is_domain` is that question and `clamp_domain` is the
+    answer that is safe to publish. Normalizing without clamping is its own
+    need: two codes claiming two DIFFERENT off-roster domains are cross-domain
+    strain, and comparing their clamped values would read both as
+    `UNKNOWN_DOMAIN` and report "same domain" (fix round 1, finding 2). Case and
+    stray whitespace are not a disagreement, which is why the comparison is this
+    and not the raw `domain_of`.
+    """
+    return str(value).strip().upper()
+
+
+def clamp_domain(claim, disclose=None):
+    """The roster domain `claim` names, CLAMPED to `UNKNOWN_DOMAIN` when it is
+    not one (`is_domain`). Takes a DOMAIN, not a code.
+
+    TOTAL by construction, so the answer is always inside the `domain` enum both
+    published gap artifacts pin -- x0x's `candidates[].domain` and strain's
+    `signals[].domain` -- whatever a reviewer wrote. #2236: `x0x_report` clamped
+    (#1639 P15 F1) and `strain_report` returned the prefix verbatim, which put an
+    off-roster string into strain's published `domain` and decided its
+    `cross_domain` flag.
+
+    A caller holding a CODE wants `roster_domain`. Splitting the two questions is
+    fix round 1, finding 1: a caller that has already resolved a claim must not
+    have it re-split, or a hyphenated claim (`DAT-C1B`, `SEC-NOPE`) is silently
+    reinterpreted as the domain before its first hyphen instead of clamped --
+    and the disclosure disappears with it.
+
+    `disclose`, when given, is called with the REJECTED claim as the clamp
+    fires: a clamp rewrites a published value, so it is never silent, and each
+    emitter owns the wording and the bounding of its own stderr line (the claim
+    is agent-authored).
+    """
+    dom = domain_claim(claim)
+    if is_domain(dom):
+        return dom
+    if disclose is not None:
+        disclose(dom)
+    return UNKNOWN_DOMAIN
+
+
+def roster_domain(code, disclose=None):
+    """`clamp_domain` of a CODE's domain prefix (`DAT-C1B` -> `DAT`)."""
+    return clamp_domain(domain_prefix(str(code)), disclose)
+
+
 def validate_code(bundle, code):
     """True iff `code` is a real entry in the bundle. A synthetic '<DOM>-X0X'
     fallback code is NOT a real entry (returns False) — that is the catalog-gap

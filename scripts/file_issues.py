@@ -39,6 +39,7 @@ _SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 if _SKILL not in sys.path:
     sys.path.insert(0, _SKILL)
 import scripts.reconcile as _reconcile  # noqa: E402
+import scripts.evidence as evidence  # noqa: E402
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
@@ -54,24 +55,43 @@ RUN_LABEL = "run 2"
 RUN_DATE = "2026-08-04"
 RUN_STATE_DOC = "docs/superpowers/2026-08-04-self-scan-run-state.md"
 
-SEV_LABEL = {"CRITICAL": "severity:critical", "HIGH": "severity:high",
-             "MEDIUM": "severity:medium", "LOW": "severity:low",
-             "INFO": "severity:info"}
-EV_LABEL = {"tool_reported": "evidence:tool-reported",
-            "tool_confirmed": "evidence:tool-confirmed",
-            "advisor_confirmed": "evidence:advisor-confirmed",
-            "corroborated": "evidence:corroborated",
-            "needs_more_info": "evidence:needs-more-info",
-            "unverified": "evidence:unverified",
-            "rejected": "evidence:rejected",
-            "backup_scope_limited": "evidence:backup-scope-limited"}
+# DERIVED from the canonical taxonomy, not copied from it (#2235,
+# ARC-1576523829): a hand-copy was a third place to update -- `evidence`,
+# `.github/labels.yml` and here -- and the only one nothing compared to the
+# others. `tests/test_label_catalog_parity.py` pins these two against BOTH.
+SEV_LABEL = {s: "severity:" + s.lower() for s in evidence.SEV_ORDER}
+EV_LABEL = {s: "evidence:" + s.replace("_", "-") for s in evidence.EVIDENCE_STATUSES}
+_LABEL_DIAG_MAX = 60     # bound on the report-authored value a refusal names
+
+
+def _label(table, value, axis, owner):
+    """``table[value]``, or a ValueError naming the value and its taxonomy.
+
+    Guessing is what this replaces: an unlisted severity used to become
+    `severity:info` and an unlisted status `evidence:unverified` -- a label
+    asserting the opposite of what happened, on a PUBLIC issue, with nothing
+    objecting. Report values are agent-authored, so the refusal collapses the
+    value to one line, bounds it with a MARKED cut and renders it with ``%r``,
+    which makes a control character inert; naming the OWNER points the fix at the
+    derivation above, not at a new hand-written row here. `main` asks this of
+    every finding before the first `create`, so the answer is never N-1 issues in.
+    """
+    if value in table:
+        return table[value]
+    text = " ".join(str(value).split())
+    cut = text[:_LABEL_DIAG_MAX - 1] + "\u2026" if len(text) > _LABEL_DIAG_MAX else text
+    raise ValueError("unknown %s %r: not in evidence.%s" % (axis, cut, owner))
 
 
 def labels_for(f, rejected=False):
+    # `or`, not `.get(default)`: an explicit null means "not stated" and takes the
+    # absent-key default. `str(None)` would reach the table as 'NONE'/'None' and
+    # the refusal would name a value nobody wrote.
     out = ["self-scan"]
-    out.append(SEV_LABEL.get(str(f.get("severity", "INFO")).upper(), "severity:info"))
-    status = (f.get("evidence") or {}).get("status", "unverified")
-    out.append(EV_LABEL.get(status, "evidence:unverified"))
+    out.append(_label(SEV_LABEL, str(f.get("severity") or "INFO").upper(),
+                      "severity", "SEV_ORDER"))
+    status = (f.get("evidence") or {}).get("status") or "unverified"
+    out.append(_label(EV_LABEL, status, "evidence status", "EVIDENCE_STATUSES"))
     panel = f.get("panel")
     if panel:
         out.append("panel:%s" % panel)
@@ -647,6 +667,9 @@ def main():
 
     ledger = {} if a.dry_run else load_filing_ledger(LEDGER, a.repo)
     todo = [(f, rej) for f, rej in work if key_for(f, rej) not in ledger]
+    # No network, no ledger: the taxonomy check runs over the WHOLE batch here, so
+    # an off-taxonomy value aborts before a single public issue exists.
+    labels = [labels_for(f, rej) for f, rej in todo]
     skipped = len(work) - len(todo)
     print("filing %d issue(s)%s%s" % (
         len(todo), " (DRY RUN)" if a.dry_run else "",
@@ -654,12 +677,12 @@ def main():
 
     created = 0
     env = None if a.dry_run else triage.gh_env()  # read once per run, not per issue
-    for f, rej in todo:
+    for (f, rej), issue_labels in zip(todo, labels):
         body = body_for(f, rej, report=a.report, report_url=a.report_url,
                         run_label=a.run_label, run_date=a.run_date,
                         run_state_doc=a.run_state_doc)
         url = create(scrub(title_for(f)), scrub(body),
-                     labels_for(f, rej), a.dry_run, a.throttle, env=env, repo=a.repo,
+                     issue_labels, a.dry_run, a.throttle, env=env, repo=a.repo,
                      operation_id=key_for(f, rej), ledger_path=LEDGER, kind="finding")
         if url:
             record(ledger, key_for(f, rej), url)
