@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A HIGH a verbatim extraction MOVES is pre-existing (moved), not new (#2309).** The pre-merge
+  gate's delta pass keys on the path, so a refactor that relocated a `docker kill` call reddened the
+  required `scan` check on a diff that changed no behaviour (#2305). After the exact pass, a head
+  finding still counted new pairs with ONE unmatched base finding of the same tool, rule and message
+  — one the base carried one more copy of than the head has here — and prints under its own
+  `pre-existing (moved: …)` heading. One orphan excuses one occurrence: a second copy, or any
+  occurrence the base has no orphan left for, is still new and still gates, and the pairing never
+  crosses the suppression (a vendored orphan cannot excuse a first-party finding). What it
+  establishes is a COUNT, not a verified move; `DEVELOPMENT.md` says what that leaves invisible. The
+  strict route's verdict line is byte-identical.
+- **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
+  CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
+  rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the
+  Dockerfile's `ARG DOTNETARIUM_SCS_VERSION` pin.
 - **Per-repo configuration moved to a root `panopticon.yml` (#1681).** BREAKING for an existing
   tree: the committed matrix lives at `<repo>/panopticon.yml` (or the read-only alias
   `.panopticon.yml`) under `version: 1` with `groups:`, `exclude_paths:` and `settings:` keys, and

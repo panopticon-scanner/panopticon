@@ -209,13 +209,30 @@ characters, and matching consumes the whole path.
   stderr line naming what was wrong. It fails toward strictness in every
   direction and never toward silence.
 
-  **Two blind spots in the identity, both inherent to the ruling.** Replacement
-  *inside one file is invisible*: five findings in a file that share one
-  identity are matched five-for-five, so a diff deleting all five and adding
-  five fresh ones gates on nothing. And a *pure move reads as new*: renaming a
-  file turns every finding in it into a new one, because the path is part of
-  the identity. The first is the one an author controls; a full-tree review, not
-  this gate, is what catches it. **One residual to know about**: the tools image
+  **One blind spot in the identity, inherent to the ruling — and wider since
+  #2309.** Replacement *inside one file is invisible*: five findings in a file
+  that share one identity are matched five-for-five, so a diff deleting all five
+  and adding five fresh ones gates on nothing. Replacement *across two files* is
+  invisible too, whenever the base's copy leaves. What this gate promises is that
+  the COUNT of a (tool, rule, message) did not increase — not that no finding
+  appeared at a new place, and it cannot tell an extraction from a deletion plus
+  an unrelated addition of the same key. For lint-shaped adapters the message is
+  rule-generic, so one `B603` deleted anywhere excuses one `B603` added anywhere.
+  It is the blind spot an author controls; a full-tree review, not this gate, is
+  what catches it.
+
+  **A MOVED finding is pre-existing (moved)** (#2309, ruling 2026-09-28): a head
+  finding the exact pass left as new pairs with ONE unmatched base finding of the
+  same tool, rule and message — one the base carried one more copy of than the
+  head has here. A second copy, or one with no orphan left to pair with, is still
+  new. The pairing never crosses the suppression: a name-suppressed orphan cannot
+  excuse a first-party finding, nor the reverse. Moved rows print under their own
+  heading and never gate. An adapter that writes the path into its own message
+  (gitleaks) keys itself, so a move of such a finding still counts as new; trivy's
+  message embeds its grade instead, so a moved trivy finding pairs but a re-graded
+  one does not.
+
+  **One residual to know about**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep
   rule from `warning` to `error` promotes every standing occurrence at once —
   severity is not part of the identity, so those are disclosed as pre-existing

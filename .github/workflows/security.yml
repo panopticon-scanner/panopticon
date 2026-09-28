@@ -119,8 +119,12 @@ jobs:
       # The WALK still earns its keep, for the cases no status filter can
       # help with: an artifact that has expired, and a cancelled run that has
       # none. From the base commit, up to five first-parent ancestors. Walking
-      # further back only makes the gate stricter -- an older baseline means
-      # more findings read as new -- never looser.
+      # further back changes WHICH findings are excused, and since #2309 that is
+      # NOT monotone: an older baseline can carry a finding main has since
+      # REMOVED, and that leftover pairs as "moved" with a new head occurrence of
+      # the same tool, rule and message. The one monotone direction is the pool
+      # SHRINKING -- a baseline this gate rejects, or one whose own scan was
+      # partial -- which can only make the gate stricter.
       #
       # What main gets in exchange for no longer being gated on its own
       # standing set: that set is DISCLOSED under the pre-existing heading on
