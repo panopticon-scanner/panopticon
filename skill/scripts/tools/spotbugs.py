@@ -59,9 +59,7 @@ _PRIORITY_TO_CONFIDENCE = {
 _SOURCE_ROOTS = ("src/main/java", "src/test/java",
                  "src/main/kotlin", "src/test/kotlin", "src", "")
 
-# The one disclosure value: this finding's `location.file` is NOT a repo path,
-# so the report can say why the delta gate and the read grant could not place
-# it, rather than leaving a silently unmatchable location behind.
+# The one disclosure value: this finding's `location.file` is NOT a repo path.
 _UNRESOLVED = "unresolved"
 
 
@@ -86,13 +84,19 @@ def _repo_relative(candidate: str) -> str | None:
 def _resolve_under_root(root: str, relative: str) -> str | None:
     """`relative` as a repo-relative path to a real file, or None.
 
-    Probes `_SOURCE_ROOTS` in order and returns the FIRST that is a regular
-    file inside `root`. `lexists` first, because a DANGLING symlink is a path
-    entry that has to be judged rather than skipped as absent; then
-    `confined_to_root` -- the tree is hostile and `isfile` FOLLOWS symlinks, so
-    a committed `src/main/java/org -> /etc` would otherwise "resolve" and hand
-    the advisor a read outside the repo; then `isfile`, so a package DIRECTORY
-    of the same name is not mistaken for the source file.
+    Probes `_SOURCE_ROOTS` in order and returns the FIRST that is a regular file
+    inside `root`. The three predicates are `and`-ed in ONE expression, so their
+    order changes the evaluation cost and not the outcome. What each is for:
+
+    * `confined_to_root`, because `os.path.isfile` FOLLOWS symlinks. A committed
+      `src/main/java/org -> /etc` is a readable file by every other test here,
+      and resolving it would publish a `location.file` outside the reviewed tree
+      -- the channel #1096 and #run8 ARC-F2A exist for. It is the one predicate
+      nothing else covers, which is why it has a test of its own.
+    * `isfile`, which refuses a package DIRECTORY of the same name and a
+      dangling symlink (false for a broken link and an absent path alike).
+    * `lexists`, only as a cheap short-circuit keeping `realpath` off the miss
+      path -- on a typical tree five of the six roots miss.
 
     `scripts.claim_scope.confined_to_root` is the one implementation of that
     predicate (`phases/runio` and `phases/verify_tools` alias it; it is a
@@ -100,7 +104,7 @@ def _resolve_under_root(root: str, relative: str) -> str | None:
     not grow a fourth copy of a security check.
     """
     for prefix in _SOURCE_ROOTS:
-        probe = os.path.join(prefix, relative) if prefix else relative
+        probe = os.path.join(prefix, relative)      # join("", x) is x
         full = os.path.join(root, probe)
         if os.path.lexists(full) and confined_to_root(root, probe) \
                 and os.path.isfile(full):
@@ -129,6 +133,14 @@ def _locate(*candidates: str) -> tuple[str, str | None]:
 
     Duplicates are collapsed rather than probed twice: on ordinary output all
     three candidates are the same string.
+
+    A `<Method>`'s `SourceLine` is deliberately NOT a fourth candidate: a
+    `role="METHOD_CALLED"` Method names the CALLEE's file, which on the pinned
+    golden is a JDK source in no repository. The cost of leaving it out is
+    narrow -- a bug with no direct-child SourceLine but a class-level one still
+    gets the class's file AND its start line, so only a bug whose ONLY
+    SourceLine is a Method's falls to the classname derivation at line 1, a
+    shape the golden does not contain. Do not re-litigate without a real sample.
     """
     root = target_root_cv.get()
     legal = list(dict.fromkeys(
