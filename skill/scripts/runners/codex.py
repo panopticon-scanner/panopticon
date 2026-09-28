@@ -2,6 +2,8 @@
 import json
 import os
 import subprocess
+from dataclasses import dataclass, field
+from typing import Any
 
 from scripts import codex_host
 import scripts.runners.base as base
@@ -19,6 +21,102 @@ import scripts.runners.schema as schema_argv_rules
 # The attribute keeps its name and its place (LAUNCH_SEAMS, the AST walk in
 # tests/test_host_launch_guard.py); only its value changed.
 DEFAULT_RUNNER = None
+
+
+def _usage_fields(reported):
+    """Validate a completed turn before adding its disjoint token counts."""
+    if reported is None or reported == {}:
+        return {}
+    if not isinstance(reported, dict):
+        raise ValueError("usage is not an object")
+    values = {}
+    for name in ("input_tokens", "cached_input_tokens", "output_tokens"):
+        value = reported.get(name, 0)
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid %s" % name)
+        values[name] = value
+    cached = values["cached_input_tokens"]
+    if cached > values["input_tokens"]:
+        raise ValueError("cached tokens exceed total input")
+    return {"input_tokens": values["input_tokens"] - cached,
+            "cache_read_input_tokens": cached,
+            "output_tokens": values["output_tokens"],
+            "cache_creation_input_tokens": 0}
+
+
+@dataclass
+class _EnvelopeState:
+    """Measured fields and ordering needed to distinguish recovery from commentary."""
+
+    text: Any = ""
+    session_id: Any = None
+    error: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    denials: list[dict] = field(default_factory=list)
+    completed: bool = False
+    host_error: Any = None
+    text_seq: int = -1
+    error_seq: int = -1
+
+    def _completed_turn(self, event):
+        self.completed = True
+        if self.text and self.text_seq > self.error_seq:
+            # A final message AFTER the failure can recover it. Commentary
+            # before it cannot; a subsequent failure sets the error again.
+            self.error = self.host_error = None
+        for name, value in _usage_fields(event.get("usage")).items():
+            self.usage[name] = self.usage.get(name, 0) + value
+
+    def _completed_item(self, event, sequence):
+        item = event.get("item") or {}
+        if not isinstance(item, dict):
+            raise ValueError("item is not an object")
+        if item.get("type") == "agent_message":
+            self.text = item.get("text", "")
+            if not isinstance(self.text, str):
+                raise ValueError("agent message is not text")
+            self.text_seq = sequence
+        elif item.get("type") == "mcp_tool_call":
+            result = item.get("result") or {}
+            # Native exec can mark the item failed without MCP isError.
+            if (item.get("status") == "failed" or item.get("error")
+                    or (isinstance(result, dict) and result.get("isError"))):
+                self.denials.append(item)
+
+    def accept(self, event, sequence):
+        if not isinstance(event, dict):
+            raise ValueError("event is not an object")
+        kind = event.get("type")
+        if kind == "thread.started":
+            self.session_id = event.get("thread_id")
+        elif kind == "turn.completed":
+            self._completed_turn(event)
+        elif kind in ("turn.failed", "error"):
+            # Only the host's own failure event feeds outage classification.
+            self.host_error = event.get("error") or event.get("message") or kind
+            self.error = str(self.host_error)
+            self.error_seq = sequence
+        elif kind == "item.completed":
+            self._completed_item(event, sequence)
+
+    def finish(self, returncode):
+        if returncode:
+            self.error = self.error or "codex exited with status %s" % returncode
+        elif not self.completed:
+            self.error = self.error or "codex returned no turn.completed event"
+        elif not self.text:
+            self.error = self.error or "codex returned no final message"
+
+    def result(self, entry_id, stderr):
+        if self.host_error is None and self.error is not None and (stderr or "").strip():
+            # A refusal before exec emits JSONL can leave only host stderr.
+            self.host_error = stderr.strip()
+        return base.RunResult(
+            entry_id=entry_id, ok=self.error is None, text=self.text,
+            usage=self.usage, cost_usd=None, model=None,
+            session_id=self.session_id, denials=self.denials, error=self.error,
+            host_error=self.host_error,
+            stderr=base.stderr_head(stderr) if self.error is not None else None)
 
 
 class Runner(base.HostRunner):
@@ -80,104 +178,15 @@ class Runner(base.HostRunner):
         infer it from a pricing table. Likewise, don't invent a returned model
         identity from the model requested on argv.
         """
-        text, session_id, model, error = "", None, None, None
-        usage: dict[str, int] = {}
-        denials = []
-        completed = False
-        host_error = None          # #1623: only the host's own failure event fills this
-        # N-I3: WHEN each was last set, so a recovery can be told from
-        # commentary. Every agent_message overwrites `text`, and commentary
-        # legitimately precedes the final JSON, so "text is non-empty" does
-        # not mean "this turn produced its final message".
-        text_seq, error_seq = -1, -1
+        state = _EnvelopeState()
         try:
             for sequence, line in enumerate(stdout.splitlines()):
-                if not line.strip():
-                    continue
-                event = json.loads(line)
-                if not isinstance(event, dict):
-                    raise ValueError("event is not an object")
-                kind = event.get("type")
-                if kind == "thread.started":
-                    session_id = event.get("thread_id")
-                elif kind == "turn.completed":
-                    completed = True
-                    if text and text_seq > error_seq:
-                        # M-2: a `turn.failed`/`error` event the turn then
-                        # RECOVERED from is not a failed entry. Leaving it set
-                        # cost a retry and a strike against the three-launch
-                        # cap for a turn that produced its final message.
-                        # N-I3: only when the final message arrived AFTER the
-                        # failure. Commentary before it is not a recovery, and
-                        # a failure after this point still fails, because it
-                        # sets `error` again below.
-                        error = host_error = None
-                    reported = event.get("usage")
-                    if reported is None or reported == {}:
-                        continue
-                    if not isinstance(reported, dict):
-                        raise ValueError("usage is not an object")
-                    values = {}
-                    for field in ("input_tokens", "cached_input_tokens", "output_tokens"):
-                        value = reported.get(field, 0)
-                        if type(value) is not int or value < 0:
-                            raise ValueError("invalid %s" % field)
-                        values[field] = value
-                    cached = values["cached_input_tokens"]
-                    if cached > values["input_tokens"]:
-                        raise ValueError("cached tokens exceed total input")
-                    for field, value in {
-                        "input_tokens": values["input_tokens"] - cached,
-                        "cache_read_input_tokens": cached,
-                        "output_tokens": values["output_tokens"],
-                        "cache_creation_input_tokens": 0,
-                    }.items():
-                        usage[field] = usage.get(field, 0) + value
-                elif kind in ("turn.failed", "error"):
-                    # #1623: THIS is the host talking -- the harness's own
-                    # failure event, not an agent_message -- so it is the one
-                    # thing on this stream the outage classifier may read.
-                    host_error = event.get("error") or event.get("message") or kind
-                    error = str(host_error)
-                    error_seq = sequence
-                elif kind == "item.completed":
-                    item = event.get("item") or {}
-                    if not isinstance(item, dict):
-                        raise ValueError("item is not an object")
-                    if item.get("type") == "agent_message":
-                        # Commentary may precede the final JSON object.
-                        text = item.get("text", "")
-                        if not isinstance(text, str):
-                            raise ValueError("agent message is not text")
-                        text_seq = sequence
-                    elif item.get("type") == "mcp_tool_call":
-                        result = item.get("result") or {}
-                        # Native exec omits MCP isError from the result and
-                        # marks the completed item's status failed instead.
-                        if (item.get("status") == "failed" or item.get("error")
-                                or (isinstance(result, dict) and result.get("isError"))):
-                            denials.append(item)
-            if returncode:
-                error = error or "codex exited with status %s" % returncode
-            elif not completed:
-                error = error or "codex returned no turn.completed event"
-            elif not text:
-                error = error or "codex returned no final message"
+                if line.strip():
+                    state.accept(json.loads(line), sequence)
+            state.finish(returncode)
         except (TypeError, ValueError) as exc:
-            error = "invalid Codex JSONL: %s" % exc
-        if host_error is None and error is not None and (stderr or "").strip():
-            # The outage shape #1623 names for this family: the rate limit is
-            # refused before `exec` prints a single JSONL event, so the only
-            # thing the host said is on stderr.
-            host_error = stderr.strip()
-        return base.RunResult(entry_id=entry_id, ok=error is None, text=text,
-                         usage=usage, cost_usd=None, model=model,
-                         session_id=session_id, denials=denials, error=error,
-                         host_error=host_error,
-                         # #1732: the same stream, kept as a FIELD as well. It
-                         # reaches the classifier only through `host_error`
-                         # above, whose rules are unchanged.
-                         stderr=base.stderr_head(stderr) if error is not None else None)
+            state.error = "invalid Codex JSONL: %s" % exc
+        return state.result(entry_id, stderr)
 
     def run_entry(self, entry, env):
         entry_id = entry.get("id", "") if isinstance(entry, dict) else ""

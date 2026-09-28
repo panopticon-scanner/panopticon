@@ -3,11 +3,11 @@
 import os
 import json
 import unittest
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
-from tests._test_helpers import SKILL_ROOT
 from tests.synth.helpers import DEFAULT_TIMESTAMP
 
 
@@ -252,7 +252,8 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         self.assertIn("app/resolver.py:42", text)
 
     def test_schema_defines_integration_finding_items(self):
-        ref = os.path.join(SKILL_ROOT, "reference", "report-schema.json")
+        ref = os.path.join(validate_schema_mod.REFERENCE_DIR,
+                           validate_schema_mod.REPORT_SCHEMA)
         with open(ref, encoding="utf-8") as fh:
             schema = json.load(fh)
         items = schema["properties"]["cross_panel"]["properties"]["integration_findings"]["items"]

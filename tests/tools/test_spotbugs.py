@@ -1,10 +1,11 @@
 import contextlib
 import io
 import os
+import re
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from tests._test_helpers import first, only
+from tests._test_helpers import REPO_ROOT, first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
@@ -783,6 +784,42 @@ class TestVendorCweTable(unittest.TestCase):
              "CRLF_INJECTION_LOGS", "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE",
              "DMI_CONSTANT_DB_PASSWORD")})
         self.assertNotIn("HARDCODED_KEY", sb._SPOTBUGS_CWE)
+
+
+class TestVendorVersionsMatchTheDockerfilePins(unittest.TestCase):
+    """#2285 (COD-C3B): `_SPOTBUGS_CWE`'s provenance comment names the two
+    vendor versions it was generated from, but nothing asserted they still
+    match the Dockerfile's own `ARG SPOTBUGS_VERSION`/`ARG
+    FINDSECBUGS_VERSION` pins -- the same failure mode #2275 removed from the
+    table itself (a bump that forgets to regenerate it going stale silently),
+    reappearing one level up.
+    """
+
+    def test_the_constants_match_the_dockerfiles_arg_pins(self):
+        with open(os.path.join(REPO_ROOT, "Dockerfile"), encoding="utf-8") as fh:
+            dockerfile = fh.read()
+        spotbugs_arg = re.search(r"ARG SPOTBUGS_VERSION=(\S+)", dockerfile)
+        findsecbugs_arg = re.search(r"ARG FINDSECBUGS_VERSION=(\S+)", dockerfile)
+        self.assertIsNotNone(spotbugs_arg, "no ARG SPOTBUGS_VERSION in Dockerfile")
+        self.assertIsNotNone(findsecbugs_arg, "no ARG FINDSECBUGS_VERSION in Dockerfile")
+        self.assertEqual(
+            (spotbugs_arg.group(1), findsecbugs_arg.group(1)),
+            (sb._TABLE_SPOTBUGS_VERSION, sb._TABLE_FINDSECBUGS_VERSION),
+            "Dockerfile's SPOTBUGS_VERSION/FINDSECBUGS_VERSION no longer match "
+            "the versions _SPOTBUGS_CWE was generated from -- regenerate "
+            "_SPOTBUGS_CWE from both jars' findbugs.xml and update "
+            "_TABLE_SPOTBUGS_VERSION/_TABLE_FINDSECBUGS_VERSION in spotbugs.py")
+
+    def test_the_provenance_comment_still_names_both_constants(self):
+        # Read the module SOURCE and keep only comment lines: the two
+        # constants' own assignment lines also contain these strings, and
+        # checking the unfiltered file would pass even if the surrounding
+        # prose never mentioned them, so the comment could still drift from
+        # the constants unnoticed.
+        with open(sb.__file__, encoding="utf-8") as fh:
+            comments = "".join(line for line in fh if line.lstrip().startswith("#"))
+        self.assertIn(sb._TABLE_SPOTBUGS_VERSION, comments)
+        self.assertIn(sb._TABLE_FINDSECBUGS_VERSION, comments)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import re
 import pytest
 import yaml
 
+import file_issues
 import scripts.evidence as evidence
 
 
@@ -118,3 +119,20 @@ def test_panel_labels_match_panels():
     labels = {_normalize(n.split(":", 1)[1]) for n in _axis_names("panel")}
     canonical = {_normalize(s) for s in evidence.PANELS}
     assert labels == canonical, f"panel drift: labels={labels} canonical={canonical}"
+
+
+def test_file_issues_severity_table_matches_the_taxonomy_and_the_catalog():
+    # #2235 (ARC-1576523829): the third copy. The tests above pin `labels.yml`
+    # to `evidence`; `scripts/file_issues.py` held a hand-written third table
+    # that nothing compared to either, so the labels actually POSTED could drift
+    # from both while every test here stayed green.
+    assert set(file_issues.SEV_LABEL) == set(evidence.SEV_ORDER)
+    assert set(file_issues.SEV_LABEL.values()) == _axis_names("severity")
+
+
+def test_file_issues_evidence_table_matches_the_taxonomy_and_the_catalog():
+    # Same pin on the evidence axis, which is the one with a behavioural edge:
+    # a status the table did not carry used to be filed as `evidence:unverified`
+    # (see `tests/test_file_issues.py`).
+    assert set(file_issues.EV_LABEL) == set(evidence.EVIDENCE_STATUSES)
+    assert set(file_issues.EV_LABEL.values()) == _axis_names("evidence")

@@ -33,7 +33,6 @@ import os
 import tempfile
 import unittest
 
-from tests._test_helpers import REPO_ROOT
 import scripts.hosts as hosts
 import scripts.tools_manifest as tools_manifest
 import scripts.synth.plan as plan_mod
@@ -41,7 +40,7 @@ import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
 
-SCHEMA_PATH = os.path.join(REPO_ROOT, "skill", "reference", "report-schema.json")
+SCHEMA_PATH = os.path.join(validate_schema_mod.REFERENCE_DIR, validate_schema_mod.REPORT_SCHEMA)
 
 # Small enough that the fixture's handful of findings splits into parts and
 # spills `discarded_claims` to its sibling -- the two producers that write
