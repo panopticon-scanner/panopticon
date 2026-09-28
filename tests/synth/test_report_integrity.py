@@ -13,6 +13,7 @@ import scripts.synth.integrity as integrity_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
 import scripts.synth.tool_axis as tool_axis_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.verdicts as verdicts_mod
 from tests.synth.helpers import _chdir
 
@@ -405,6 +406,25 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                          published | self.RECONCILE_ADDS)
         self.assertEqual(set(self.TRUTHY), published | self.RECONCILE_ADDS)
         self.assertEqual(self.SINKING | self.REPORTED, set(self.TRUTHY))
+
+    def test_the_table_is_the_schema_s_integrity_property_list(self):
+        # The FOURTH spelling of this key set: `report-schema.json` enumerates
+        # `meta.integrity`'s properties and nothing tied it to the other three,
+        # so the next key added to the table could still ship with a schema that
+        # does not describe it -- the drift class this PR exists to close, one
+        # file over. Resolved through the same two constants `validate_schema`
+        # itself uses, so a moved reference directory cannot make this vacuous.
+        #
+        # A static property list is also the enumeration a CONDITIONAL branch in
+        # `integrity_section` cannot dodge, which the fixture-run check above
+        # (two runs, the ack path being today's only condition) can.
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        declared = (schema["properties"]["meta"]["properties"]["integrity"]
+                    ["properties"])
+        self.assertEqual(set(declared), set(integrity_mod.INTEGRITY_KEYS))
 
     def _summary(self, key=None):
         return render_mod.render_summary(report_mod.build_report(self._inputs(key)))
