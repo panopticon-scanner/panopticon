@@ -21,7 +21,7 @@ The host contract (5.2, plan 6):
   `usage.json` **as each entry completes**, not when the batch does (#1636): the entries in a
   checkpoint run concurrently and finish out of order, each one printing a
   `driver loop: <id> done (<ms> ms, <k>/<n>)` progress line on stderr as it lands, so a crash, a
-  `kill` or a compaction mid-batch keeps everything a batch that had already CLOSED had finished,
+  `kill -9` or a compaction mid-batch keeps everything a batch that had already CLOSED had finished,
   and re-running resumes from disk without repeating those; what the killed batch itself had in
   flight is taken back on the next run rather than left half-done (#1698, below). **Ctrl-C is
   deliberately not that** (#1662): it means complete stoppage, cancellation and rollback to the last
@@ -563,9 +563,11 @@ on Claude hooks, and always uses the return-persist path.
   `enforced` flag refuses the whole RUN before the batch opens, so nothing is launched and nothing
   is charged, and the remedy is `--reset` or a fresh readiness run rather than a retry. The engine's
   own refusals (flag drift, posture drift, shadow shells, unmediated Write) surface unchanged;
-  Ctrl-C in headless mode cancels the queue, terminates any child its runner registered a handle for
-  (the terminal's own process-group SIGINT reaches the rest), ledgers what it cut, disarms both
-  guards, rolls the interrupted phase back to its checkpoint, and exits `error` with a message
+  Ctrl-C in headless mode — or a SIGTERM, which the driver raises as the same interrupt (every later
+  SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
+  registered a handle for and the running phase child's whole process group (each leads its own
+  session, which the terminal's process-group SIGINT never reaches), ledgers what it cut, disarms
+  both guards, rolls the interrupted phase back to its checkpoint, and exits `error` with a message
   beginning "interrupted:" — the next `driver loop` re-runs that phase from scratch, and `--reset`
   discards the whole run instead. A `SIGKILL` or a power loss reaches none of that teardown, so it
   leaves the batch's own record behind instead, and the next `driver loop` rolls that batch back
