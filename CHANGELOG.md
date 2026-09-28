@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Separate reconciliation decisions (#2317, #1826).** Indexing, recurring matches and close
+  checks retain coverage guards, reason text, collision disclosure and output ordering.
 - **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
   clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by

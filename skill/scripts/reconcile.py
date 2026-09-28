@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -261,6 +262,99 @@ def _guard_reason(close_guard, run3_review_type):
     return REVIEW_TYPE_UNDECLARED % (run3_review_type,)
 
 
+@dataclass(frozen=True)
+class _RunIndex:
+    """Identity lookups and per-kind activity used by the diff decisions."""
+    by_fingerprint: dict
+    by_coarse_key: dict
+    files: set
+    activity: dict
+
+    @classmethod
+    def build(cls, records):
+        by_coarse_key = defaultdict(list)
+        activity: dict[tuple[str, str], dict[str, int]] = {}
+        for record in records:
+            key = record["coarse_key"]
+            by_coarse_key[key].append(record)
+            counts = activity.setdefault((key[0], key[1]), {})
+            counts[record["kind"]] = counts.get(record["kind"], 0) + 1
+        return cls(_group_by_fingerprint(records), by_coarse_key,
+                   {key[0] for key in by_coarse_key if key[0]}, activity)
+
+
+def _select_close_guard(previous, current, reviewed_files, review_type):
+    """Whole-run trust failures take precedence over per-record decisions.
+
+    Files come from normalized coarse keys so path spelling cannot mimic drift.
+    A record on a file never substitutes for the report's coverage declaration.
+    """
+    if not previous.by_fingerprint:
+        return None
+    if not current.by_fingerprint:
+        return "empty_run3"
+    if not (previous.files & current.files):
+        return "no_file_overlap"
+    if reviewed_files is None:
+        return "run3_files_unstated"
+    if review_type != "repo":
+        return "run3_not_repo_wide"
+    return None
+
+
+def _recurring_entry(fp, recs, current):
+    """Exact records plus all coarse siblings, unioned by object identity.
+
+    `new` omits coarse siblings, so omitting them here would lose records.
+    Both indexes hold the original dicts; equal-but-distinct records stay visible.
+    """
+    ck = recs[0]["coarse_key"]
+    exact = fp in current.by_fingerprint
+    if not exact and ck not in current.by_coarse_key:
+        return None
+    exact_side = current.by_fingerprint[fp] if exact else []
+    seen = {id(record) for record in exact_side}
+    run3_side = exact_side + [record for record in current.by_coarse_key.get(ck, ())
+                              if id(record) not in seen]
+    return {"fingerprint": fp, "coarse_key": list(ck),
+            "match_tier": "exact" if exact else "coarse", "run2": _by_id(recs),
+            "run3": _by_id(run3_side),
+            "kind_changed": {r["kind"] for r in recs} != {r["kind"] for r in run3_side}}
+
+
+def _close_refusal(recs, current, claimed, close_guard, guard_reason):
+    """Return (reason, basis), or None when all close checks pass.
+
+    Safe-direction order: whole-run guard, ambiguous identity, missing file,
+    active file/panel, then missing coverage. Activity includes rejected claims
+    and is reported before missing coverage under the same key.
+    """
+    file_, panel_ = recs[0]["coarse_key"][:2]
+    if close_guard:
+        return guard_reason, "scope"
+    if len({r["coarse_key"] for r in recs}) > 1:
+        return "degenerate group spans multiple coarse keys", "identity"
+    if not file_:
+        return "no file recorded -- (file,panel)-clear cannot corroborate a fix", "identity"
+    if (file_, panel_) in current.activity:
+        counts = current.activity[(file_, panel_)]
+        parts = []
+        if counts.get("finding"):
+            parts.append("%d finding(s)" % counts["finding"])
+        if counts.get("rejected"):
+            parts.append("%d rejected claim(s)" % counts["rejected"])
+        return ("%s still active on %s (%s in run3)" %
+                (panel_ or "(no panel)", file_, ", ".join(parts))), "active"
+    if file_ not in claimed:
+        if file_ in current.files:
+            return ("run3 produced records on %s but its report does not list "
+                    "it among the files it reviewed (groups[].files) -- "
+                    "refusing to corroborate a close" % file_), "scope"
+        return ("%s was not reviewed in run3 -- absence of findings is "
+                "not a fix" % file_), "scope"
+    return None
+
+
 def build_diff(run2_records, run3_records, run2_path, run3_path,
                run3_reviewed_files=None, run3_review_type=None):
     """Partition cross-run identities into recurring / closed / ambiguous / new.
@@ -311,137 +405,37 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     surfaced, never silently merged. Every cohort and record list is sorted, so
     re-running on the same inputs yields a byte-identical diff.
     """
-    g2 = _group_by_fingerprint(run2_records)
-    g3 = _group_by_fingerprint(run3_records)
-    fps2, fps3 = set(g2), set(g3)
-    ck2 = {r["coarse_key"] for r in run2_records}
-    ck3 = {r["coarse_key"] for r in run3_records}
-    g3_by_ck = defaultdict(list)
-    for r in run3_records:
-        g3_by_ck[r["coarse_key"]].append(r)
-
-    # (file, panel) still active in run3 -- the close corroboration. Counted
-    # per kind (F5): a rejected claim on that (file, panel) blocks a close the
-    # same as a live finding does (safe direction), but the reason string must
-    # not call a rejected claim a "finding".
-    active3 = {(ck[0], ck[1]) for ck in ck3}
-    active3_counts: dict[tuple[str, str], dict[str, int]] = {}
-    for r in run3_records:
-        file_panel = (r["coarse_key"][0], r["coarse_key"][1])
-        counts = active3_counts.setdefault(file_panel, {})
-        counts[r["kind"]] = counts.get(r["kind"], 0) + 1
-
-    # F2: refuse to corroborate ANY close when corroboration can't be trusted
-    # for the whole run -- see close_guard in the docstring.
-    # coarse_key[0] (not the raw location_file) so a trivial "./"-prefix or
-    # backslash difference between runs -- already normalized away for coarse
-    # matching -- doesn't spuriously trip the drift guard.
-    files2 = {r["coarse_key"][0] for r in run2_records if r["coarse_key"][0]}
-    files3 = {r["coarse_key"][0] for r in run3_records if r["coarse_key"][0]}
-    # #1807: the ONLY thing that can license a close is run3's own claim to have
-    # reviewed the file (groups[].files). A record on the file is weaker evidence
-    # than it looks: it proves some scanner or cell read that path, not that the
-    # panel whose silence is being read as a fix ever opened it -- coarse_key[1]
-    # is "code" for any finding carrying an OCRDb code (evidence.reconcile_key)
-    # and "security" for every tool finding, so "has a record" and "has a record
-    # under the key being corroborated" are different sets. files3 therefore only
-    # sharpens the WORDING of a refusal (a file with records but absent from
-    # groups[].files is a report-side bug worth naming), never grants one.
-    # set() so any iterable of paths works, including a list from a caller; a
-    # bare str would silently become a bag of characters, so it is refused.
+    previous = _RunIndex.build(run2_records)
+    current = _RunIndex.build(run3_records)
     if isinstance(run3_reviewed_files, str):
         raise TypeError("run3_reviewed_files must be an iterable of paths, not a str")
     claimed3 = set(run3_reviewed_files or ())
-
-    close_guard = None
-    if run2_records and not run3_records:
-        close_guard = "empty_run3"
-    elif run2_records and run3_records:
-        if not (files2 & files3):
-            close_guard = "no_file_overlap"
-        elif run3_reviewed_files is None:
-            # #1807: no groups[].files anywhere in run3's report. Fail CLOSED --
-            # without a coverage claim, "0 findings on that file" is unreadable.
-            close_guard = "run3_files_unstated"
-        elif run3_review_type != "repo":
-            close_guard = "run3_not_repo_wide"
+    close_guard = _select_close_guard(previous, current, run3_reviewed_files, run3_review_type)
     guard_reason = _guard_reason(close_guard, run3_review_type)
 
     recurring, closed, ambiguous = [], [], []
-    for fp in sorted(fps2):
-        recs = g2[fp]
-        ck = recs[0]["coarse_key"]  # one coarse key per fingerprint-group
-        exact = fp in fps3
-        coarse = ck in ck3
-        if exact or coarse:
-            # The run3 side carries the exact-fingerprint records PLUS every
-            # coarse-key sibling (#954): `new` suppresses a run3 fingerprint
-            # whose coarse key was seen in run2, so an exact entry that
-            # ignored siblings would drop them from every cohort — the
-            # exact-tier mirror of the coarse-tier vanishing bug (F4). Union
-            # by object identity: both indexes hold the same record dicts.
-            exact_side = g3[fp] if exact else []
-            seen = {id(r) for r in exact_side}
-            run3_side = exact_side + [r for r in g3_by_ck[ck]
-                                      if id(r) not in seen]
-            kinds2 = {r["kind"] for r in recs}
-            kinds3 = {r["kind"] for r in run3_side}
-            recurring.append({"fingerprint": fp, "coarse_key": list(ck),
-                              "match_tier": "exact" if exact else "coarse",
-                              "run2": _by_id(recs),
-                              "run3": _by_id(run3_side),
-                              "kind_changed": kinds2 != kinds3})
+    for fp, recs in sorted(previous.by_fingerprint.items()):
+        recurrence = _recurring_entry(fp, recs, current)
+        if recurrence is not None:
+            recurring.append(recurrence)
             continue
-
-        file_, panel_ = ck[0], ck[1]
-        fdisp, pdisp = file_ or "(no file)", panel_ or "(no panel)"
-        # Decision order (safe direction first, #914 final-review ordering
-        # note): (a) close_guard active; (b) degenerate multi-coarse-key
-        # group; (c) no file recorded; (d) (file,panel) still active; (e) run3
-        # does not claim to have reviewed that file (#1807); only then (f)
-        # closed. (d) before (e) so a run3 record under the very key being
-        # corroborated is reported as such, not as unreviewed coverage.
-        if close_guard:
-            reason, basis = guard_reason, "scope"
-        elif len({r["coarse_key"] for r in recs}) > 1:
-            reason, basis = "degenerate group spans multiple coarse keys", "identity"
-        elif not file_:
-            reason, basis = ("no file recorded -- (file,panel)-clear "
-                             "cannot corroborate a fix"), "identity"
-        elif (file_, panel_) in active3:
-            counts = active3_counts[(file_, panel_)]
-            parts = []
-            if counts.get("finding"):
-                parts.append("%d finding(s)" % counts["finding"])
-            if counts.get("rejected"):
-                parts.append("%d rejected claim(s)" % counts["rejected"])
-            reason = "%s still active on %s (%s in run3)" % (pdisp, fdisp,
-                                                             ", ".join(parts))
-            basis = "active"
-        elif file_ not in claimed3:
-            if file_ in files3:
-                reason = ("run3 produced records on %s but its report does not list "
-                          "it among the files it reviewed (groups[].files) -- "
-                          "refusing to corroborate a close" % file_)
-            else:
-                reason = ("%s was not reviewed in run3 -- absence of findings is "
-                          "not a fix" % file_)
-            basis = "scope"
-        else:
-            closed.append({"fingerprint": fp, "coarse_key": list(ck),
-                           "reason": "(file,panel) clear: 0 findings in %s on %s in run3"
-                           % (pdisp, fdisp),
-                           "run2": _by_id(recs)})
-            continue
-        ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
-                          "reason": reason, "basis": basis, "run2": _by_id(recs)})
-
-    new = []
-    for fp in sorted(fps3 - fps2):
-        recs = g3[fp]
         ck = recs[0]["coarse_key"]
-        if ck not in ck2:  # a run3 fp whose coarse key matched run2 IS that recurrence
-            new.append({"fingerprint": fp, "coarse_key": list(ck), "run3": _by_id(recs)})
+        entry = {"fingerprint": fp, "coarse_key": list(ck)}
+        refusal = _close_refusal(recs, current, claimed3, close_guard, guard_reason)
+        if refusal is not None:
+            entry.update(reason=refusal[0], basis=refusal[1])
+            entry["run2"] = _by_id(recs)
+            ambiguous.append(entry)
+        else:
+            entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3" % (
+                ck[1] or "(no panel)", ck[0] or "(no file)")
+            entry["run2"] = _by_id(recs)
+            closed.append(entry)
+
+    g2, g3 = previous.by_fingerprint, current.by_fingerprint
+    new = [{"fingerprint": fp, "coarse_key": list(g3[fp][0]["coarse_key"]),
+            "run3": _by_id(g3[fp])} for fp in sorted(set(g3) - set(g2))
+           if g3[fp][0]["coarse_key"] not in previous.by_coarse_key]
 
     degenerate = sorted(_degenerate(g2, "run2") + _degenerate(g3, "run3"),
                         key=lambda d: (d["fingerprint"], d["run"]))
