@@ -166,8 +166,11 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if tools_manifest_invalid:
         # First: it is the reason the tool axis reports nothing, so a note about
         # what the tool axis found would read as a smaller problem than it is.
-        # It is also the only channel that NAMES the file -- `integrity_ok`,
-        # which is what moves the gate, is a bare bool.
+        # It is also where the coverage AXIS names the reason -- `integrity_ok`,
+        # which is what moves the gate, is a bare bool. Since #1761 the terminal
+        # summary names it a second time, as an `**Integrity:**` line off
+        # `integrity.INTEGRITY_KEYS`; this note is what the HTML report and
+        # `summary.coverage_note` consumers still read.
         note = ("tools manifest unreadable — tool coverage could not be "
                 "computed: %s" % tools_manifest_invalid)
     elif any_incomplete and not gate_relevant_gap:

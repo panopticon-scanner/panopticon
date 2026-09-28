@@ -915,7 +915,16 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   entry is self-describing (`id` = `review-<group>-<domain>`). `verify`'s adversarial BACKUP round
   batches the same way (all pending backup cells in one `group: null` checkpoint, #20) but is
   sequenced AFTER primary completes; the per-finding TOOL round is likewise a separate checkpoint —
-  each round depends on the prior round's verdicts being complete. The BACKUP round is granted a
+  each round depends on the prior round's verdicts being complete. A TOOL round entry is scoped by
+  its finding's `location.file` ALONE — tool findings carry no group, so
+  `coverage.group_files_containing` looks the file up in the discovered groups: a repo-relative path
+  naming a real file grants the whole group that holds it, an ungrouped file grants only itself, and
+  a path that names nothing grants one non-existent file, which is a deny-all fence in practice.
+  That is what makes an adapter's `location.file` load-bearing rather than cosmetic — spotbugs
+  resolves its source-root `sourcepath` against the target root (probing `src/main/java`,
+  `src/test/java`, the two Kotlin roots, `src`, then the root itself) and records
+  `tool_evidence.path_resolution: unresolved` when it cannot, so a tool advisor that could open
+  nothing says why (#1768). The BACKUP round is granted a
   **bounded closure**, not the whole cell and not the claim file alone (#1638 P16): each scoped
   claim's `location.file`, every in-repo path that claim's own evidence names (`description`,
   `exploit_scenario`, `remediation`, `evidence.reasoning`, `references`) — a named path is resolved
