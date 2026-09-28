@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Derive the health explanation from grading weights (#2296, #1821).** The terminal
+  summary reads the canonical severity weights in display order, preserving its current wording.
 - **SpotBugs findings cite the CWE SpotBugs or FindSecBugs assigns to the pattern (#1795;
   COD-1501398192).** `_SPOTBUGS_CWE` was a hand-written table of seven bug patterns; one of
   them, HARDCODED_KEY, named a pattern neither vendor has ever emitted, so a suppressed
