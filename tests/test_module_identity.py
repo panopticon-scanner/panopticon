@@ -577,7 +577,7 @@ class BootstrapCeilingTest(unittest.TestCase):
                 "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
                 "sys.path.insert(0, os.path.dirname(os.path.dirname(\n"
                 "    os.path.abspath(__file__))))\n"
-                "sys.path.insert(0, '/tmp/rogue')\n",           # nosec B108
+                "sys.path.insert(0, '/tmp/rogue')\n",
             "skill/scripts/driver.py":
                 "import os\nimport sys\n"
                 "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
