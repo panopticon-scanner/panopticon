@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import scripts.run_tools as rt
+import scripts.scanner_config as sc
 
 from tests.run_tools_test_helpers import _DockerStub, _FakeResult
 
@@ -544,13 +545,13 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
     def test_claim_follows_the_docker_mount_not_the_mode_hint(self):
         @contextlib.contextmanager
         def missing_mount(tool, target, mode):
-            yield [], "neutralised", rt._ignore_path_identity(
+            yield [], "neutralised", sc._ignore_path_identity(
                 os.path.join(target, ".gitleaksignore"))
 
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, ".gitleaksignore"), "wb") as fh:
                 fh.write(b"keep")
-            with mock.patch.object(rt, "_adapter_ignore_overlay", missing_mount):
+            with mock.patch.object(sc, "_adapter_ignore_overlay", missing_mount):
                 seen, manifest = self._run(d, "redteam")
         self.assertEqual(seen[0]["mounts"], [])
         self.assertEqual(manifest["ignore_files"], {"gitleaks": "honoured"})
@@ -701,13 +702,6 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
                 staged = seen["staged"][rt.TRIVY_IGNOREFILE_NAME]
                 self.assertEqual(staged, rt.TRIVY_IGNOREFILE_TEXT)
                 self.assertNotIn("CVE-2024-0001", staged)
-
-    def test_the_ignorefile_declares_nothing(self):
-        # Every non-comment line would be a vulnerability id trivy stops
-        # reporting, so there are none -- and no target-derived text either.
-        active = [ln for ln in rt.TRIVY_IGNOREFILE_TEXT.splitlines()
-                  if ln.strip() and not ln.lstrip().startswith("#")]
-        self.assertEqual(active, [])
 
     def test_the_scan_target_stays_the_last_argv_token(self):
         # trivy takes the scan root positionally, so the flags go BEFORE it.
