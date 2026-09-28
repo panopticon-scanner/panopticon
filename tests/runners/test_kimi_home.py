@@ -368,26 +368,82 @@ class TestHomeLocation(unittest.TestCase):
             self.assertTrue(os.path.isfile(wire))       # the transcripts survive
             r._strip_on_exit()                          # idempotent
 
-    def test_the_signal_handler_strips_then_chains_to_the_previous_one(self):
+    def test_a_callable_predecessor_runs_first_and_teardown_strips_after_it(self):
+        # #2199: the driver's CLI raises a SIGTERM as the interrupt a Ctrl-C
+        # raises (`procgroup.sigterm_as_interrupt`), and that handler is what
+        # this wrapper chains to. Stripping BEFORE calling it -- the old order
+        # -- sent the interrupt into `iter_batch` with config.toml, the only
+        # place this host's guard hooks are registered, already gone from
+        # under the entries still in flight: R3-1's hazard, reached by SIGTERM.
+        # The predecessor runs first, the home is left alone, and
+        # teardown("error") strips it once the children are gone.
         seen = []
+        r = kimi_runner.Runner("kimi")
+
+        def interrupt(signum, frame):
+            seen.append(os.path.isfile(os.path.join(r.kimi_home, "config.toml")))
+            raise KeyboardInterrupt                 # what the driver's handler raises
+
         previous = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGTERM, lambda signum, frame: seen.append(signum))
+        signal.signal(signal.SIGTERM, interrupt)
         self.addCleanup(signal.signal, signal.SIGTERM, previous)
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
-                r = kimi_runner.Runner("kimi")
                 r.prepare(os.path.join(d, "run"), review_root=d)
             home = r.kimi_home
             self.addCleanup(shutil.rmtree, home, True)
             installed = signal.getsignal(signal.SIGTERM)
-            self.assertNotEqual(installed, previous)
-            installed(signal.SIGTERM, None)             # no real signal is sent
-            self.assertEqual([signal.SIGTERM], seen)    # chained
+            self.assertIsNot(interrupt, installed)
+            with self.assertRaises(KeyboardInterrupt):
+                installed(signal.SIGTERM, None)     # no real signal is sent
+            self.assertEqual([True], seen, "the predecessor ran after the strip")
+            self.assertTrue(os.path.isfile(os.path.join(home, "config.toml")),
+                            "the signal stripped the home before the termination")
+            with contextlib.redirect_stderr(io.StringIO()):
+                r.teardown("error")                 # the loop's path, after the termination
             self.assertFalse(os.path.exists(os.path.join(home, "config.toml")))
-            r.teardown("complete")
             # the run is over: the handlers come back off, so a suite that
             # prepares many runners does not stack wrappers on SIGTERM.
             self.assertIsNone(r._crash_strip)
+
+    def test_a_default_predecessor_strips_before_the_process_dies(self):
+        # SIG_DFL next in the chain: this SIGTERM ends the process and no
+        # teardown is coming, so the strip happens first -- before the default
+        # is restored and the signal re-raised. Both of those calls are
+        # replaced: nothing is sent to the test process.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(shutil.rmtree, r.kimi_home, True)
+            self.addCleanup(r._disarm_crash_strippers)
+            config = os.path.join(r.kimi_home, "config.toml")
+            at_death = []
+            handler = r._signal_stripper(signal.SIG_DFL)
+            with mock.patch.object(signal, "signal") as install, \
+                 mock.patch.object(os, "kill",
+                                   side_effect=lambda *_a: at_death.append(os.path.isfile(config))) as kill:
+                handler(signal.SIGTERM, None)
+            install.assert_called_once_with(signal.SIGTERM, signal.SIG_DFL)
+            kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+            self.assertEqual([False], at_death, "the process died holding its secrets")
+
+    def test_an_ignored_sigterm_leaves_the_run_and_its_home_alone(self):
+        # SIG_IGN next in the chain: the run carries on, so its home must too
+        # -- a strip here would un-guard every entry still running or to come.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(shutil.rmtree, r.kimi_home, True)
+            self.addCleanup(r._disarm_crash_strippers)
+            handler = r._signal_stripper(signal.SIG_IGN)
+            with mock.patch.object(signal, "signal") as install, \
+                 mock.patch.object(os, "kill") as kill:
+                handler(signal.SIGTERM, None)
+            install.assert_not_called()
+            kill.assert_not_called()
+            self.assertTrue(os.path.isfile(os.path.join(r.kimi_home, "config.toml")))
 
     def test_an_interrupt_mid_batch_terminates_before_the_guards_come_down(self):
         # R3-1, as amended by #1662. A Ctrl-C raises KeyboardInterrupt in the

@@ -28,7 +28,7 @@ import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
-from scripts import hosts  # noqa: E402
+from scripts import hosts, procgroup  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.money as money  # noqa: E402
@@ -1235,4 +1235,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(procgroup.sigterm_as_interrupt(main))  # #2199: every verb; never at import

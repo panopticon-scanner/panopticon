@@ -11,6 +11,7 @@ import os
 import sys
 
 import scripts.evidence as evidence_mod
+import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
 import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
@@ -144,8 +145,8 @@ def out_of_scope_findings(findings_paths, plan):
 
     Reviewers are prompted to stay inside their assignment, but that fence is
     prompt-advisory -- this is the report-side disclosure. Only findings files
-    whose name matches GROUP_RE and whose group has a plan entry are checked;
-    tool findings and unplanned groups are out of this check's reach.
+    that name a review cell (`findings_contract.cell_of`) whose group has a plan
+    entry are checked; tool findings and unplanned groups are out of reach here.
     Returns {"checked": N, "count": N, "examples": [...]} or None when no
     plan/group could be checked.
     """
@@ -159,10 +160,10 @@ def out_of_scope_findings(findings_paths, plan):
     checked = count = 0
     examples: list[dict[str, Any]] = []
     for path in findings_paths or []:
-        m = findings_mod.GROUP_RE.match(os.path.basename(str(path)))
-        if not m or m.group(1) not in group_files:
+        cell = findings_contract.cell_of(path)
+        if not cell or cell[0] not in group_files:
             continue
-        allowed = group_files[m.group(1)]
+        allowed = group_files[cell[0]]
         # DAT-1553408299: this is the SECOND read of files the canonical loader
         # (findings.load_findings_detailed) has already read, and it used to
         # agree with that loader about neither the PARSE nor the SHAPE: strict
@@ -196,7 +197,7 @@ def out_of_scope_findings(findings_paths, plan):
             if fpath not in allowed:
                 count += 1
                 if len(examples) < 10:
-                    examples.append({"group": m.group(1), "file": fpath})
+                    examples.append({"group": cell[0], "file": fpath})
     return {"checked": checked, "count": count, "examples": examples}
 
 def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):

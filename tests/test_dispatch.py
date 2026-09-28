@@ -1163,6 +1163,43 @@ class TestAgentsDirIsHonoured(unittest.TestCase):
             self.assertEqual([], os.listdir(agents))
 
 
+class TestARelativeCodexHomeRefusesEmission(unittest.TestCase):
+    """COD-1638371699: with no directory of its own, `--emit-host-agents
+    codex` wrote to `$CODEX_HOME/agents`, and a relative CODEX_HOME put that
+    under whatever directory it was run from. Owner ruling 2026-09-27:
+    refused, with the reason; an explicit directory still wins.
+
+    The row is the one `CODEX_HOME=.` leaves, with its directory patched to
+    `./agents` (where that value pointed before the fix), so an emission that
+    ignored the refusal would write into the cwd rather than fail.
+    """
+
+    def setUp(self):
+        self.cwd = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(contextlib.chdir(self.cwd))
+        _home, self.refusal = hosts.codex_home(".")
+        refused = dataclasses.replace(hosts.HOSTS["codex"],
+                                      registration_dir=os.path.join(".", "agents"),
+                                      registration_refusal=self.refusal)
+        self.enterContext(mock.patch.dict(hosts.HOSTS, {"codex": refused}))
+
+    def test_emission_with_no_directory_refuses_and_writes_nothing(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = dispatch.main(["--emit-host-agents", "codex"])
+        self.assertEqual(1, rc)
+        self.assertEqual("dispatch: %s\n" % self.refusal, err.getvalue())
+        self.assertEqual([], os.listdir(self.cwd))
+
+    def test_an_explicit_directory_still_emits(self):
+        for flag in ("--out", "--agents-dir"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as d, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, dispatch.main(["--emit-host-agents", "codex", flag, d]))
+                self.assertTrue(os.listdir(d))
+        self.assertEqual([], os.listdir(self.cwd))
+
+
 class TestDispatchReadsTheHostRegistry(unittest.TestCase):
     """#1344 F2: dispatch stops carrying its own idea of which hosts exist."""
 
