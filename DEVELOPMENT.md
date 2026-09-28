@@ -224,8 +224,8 @@ characters, and matching consumes the whole path.
   head has here. A second copy, or one with no orphan left to pair with, is still
   new. The pairing never crosses the suppression: a name-suppressed orphan cannot
   excuse a first-party finding, nor the reverse. Moved rows print under their own
-  heading and never gate. An adapter that writes the path into its own message
-  (gitleaks, trivy) keys itself, so a move of one of those still counts as new.
+  heading and never gate. An adapter whose message carries the path (gitleaks) or
+  its own grade (trivy) keys itself, so a move of such a finding still counts as new.
 
   **One residual to know about**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep
