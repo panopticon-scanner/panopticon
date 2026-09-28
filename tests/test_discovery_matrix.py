@@ -710,15 +710,20 @@ class TestOneOwnerForTheCommittedConfig:
         # that stops setup before a byte is written.
         for index, (body, message) in enumerate(self.PROBES_2189):
             repo = _case_repo(tmp_path, "probe%d" % index, "version: 1\n" + body)
-            seen = []
             for reader in (discovery.load_catalog, discovery._committed_matrix,
-                           discovery._matrix_catalog, discovery._declares_groups):
+                           discovery._matrix_catalog):
+                said = ""
                 try:
                     reader(repo)
                 except ValueError as exc:
-                    seen.append(str(exc))
-            err = capsys.readouterr().err
-            assert message in err or any(message in s for s in seen), body
+                    said = str(exc)          # a named refusal is an answer too
+                said += capsys.readouterr().err
+                assert message in said, (reader.__name__, body)
+            # The predicate names nothing itself, but it must not traceback and
+            # must say the config DECLARES something -- that is what turns this
+            # document into the loud COD-B1A refusal on a run.
+            assert discovery._declares_groups(repo) is True, body
+            capsys.readouterr()
             reasons = setup_flow.config_refusal(repo)
             assert any(message in reason for reason in reasons), body
 
