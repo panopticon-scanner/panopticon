@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reuse the published report schema location in tests (#2297, #1821).** Split-report,
+  parity and verdict-binding checks use the validator's reference directory and schema name.
 - **Derive the health explanation from grading weights (#2296, #1821).** The terminal
   summary reads the canonical severity weights in display order, preserving its current wording.
 - **The workflow guard names the step it cannot read, and refuses a heredoc delimiter bash

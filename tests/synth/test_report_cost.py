@@ -4,11 +4,11 @@ import os
 import json
 import tempfile
 import unittest
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
-from tests._test_helpers import SKILL_ROOT
 
 
 class TestCostLedger(unittest.TestCase):
@@ -106,7 +106,8 @@ class TestCostLedger(unittest.TestCase):
         import json
 
         with open(
-            os.path.join(SKILL_ROOT, "reference", "report-schema.json"),
+            os.path.join(validate_schema_mod.REFERENCE_DIR,
+                         validate_schema_mod.REPORT_SCHEMA),
             encoding="utf-8",
         ) as fh:
             schema = json.load(fh)
