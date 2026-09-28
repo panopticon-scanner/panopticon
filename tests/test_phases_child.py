@@ -7,6 +7,7 @@ at 48/48 -- and a cell's test inventory is built from the claiming group's
 `tests:` axis, so the tests have to sit where that group can claim them (#1638
 P13).
 """
+import _thread
 import errno
 import io
 import os
@@ -14,6 +15,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -391,6 +393,142 @@ class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
     # fallback, the grace constant) moved to tests/test_procgroup.py with the
     # function itself (#1575). What stays here is what this module promises:
     # a phase TIMEOUT leaves no descendant running.
+
+
+class TestAnInterruptReachesTheWholeProcessTree(_ChildCase):
+    """#2199 (COD-869076756): the child's own session (#1575) is out of the
+    terminal's reach, and `_run_child` ended its group only on a TIMEOUT.
+
+    So a Ctrl-C went straight past a live child: the reader join waited out
+    `_READER_JOIN_GRACE` on pipes the child still held, and then the driver
+    left it running -- still writing into the run folder. Any exception while
+    its readers start or while it is awaited now ends the group first, and the
+    readers see EOF at once.
+
+    The interrupt is `_thread.interrupt_main`: this process's own SIGINT
+    handler, run in the main thread, with no signal sent to anything. A
+    helper thread fires it only once the main thread is inside the child's
+    wait and the child's worker is up -- a fixed delay could land it inside
+    `Popen`, before there is a group to end.
+    """
+
+    _TREE = ("import subprocess, sys, time\n"
+             "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+             "open(%r, 'w').write(str(p.pid))\n"
+             "time.sleep(60)\n")
+
+    @staticmethod
+    def _worker(pidfile, seconds=10.0):
+        """The worker's pid once the child has written it: a bounded poll."""
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                with open(pidfile, encoding="utf-8") as fh:
+                    return int(fh.read())
+            except (OSError, ValueError):
+                if time.monotonic() >= deadline:
+                    return None
+                time.sleep(0.02)
+
+    @staticmethod
+    def _gone(pid, seconds=3.0):
+        deadline = time.monotonic() + seconds
+        while TestATimeoutReachesTheWholeProcessTree._alive(pid):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def _end_tree(self, proc, real_wait, pidfile):
+        """Cleanup for a run the fix did not stop: the child's group -- checked
+        to be the child's OWN session first, never this runner's -- then its
+        worker, then the reap."""
+        try:
+            if proc.poll() is None and os.getpgid(proc.pid) == proc.pid == os.getsid(proc.pid):
+                os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        pid = self._worker(pidfile, seconds=0)
+        try:
+            if pid is not None and os.getpgid(pid) == proc.pid:
+                os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            real_wait(timeout=5)
+        except Exception:  # noqa: BLE001 - cleanup must not mask an assertion
+            pass
+
+    def test_a_ctrl_c_ends_the_group_and_does_not_wait_out_the_join(self):
+        if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+            # A suite started with SIGINT ignored (a background job) gives
+            # `interrupt_main` nothing to run: lend it Python's own handler.
+            self.addCleanup(signal.signal, signal.SIGINT, signal.getsignal(signal.SIGINT))
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+        pidfile = os.path.join(self.root, "worker.pid")
+        state = {"proc": None, "fired": None}
+        waiting = threading.Event()
+        real_popen = child.subprocess.Popen
+
+        def launch(cmd, **kw):
+            proc = state["proc"] = real_popen(cmd, **kw)
+            real_wait = proc.wait
+            self.addCleanup(self._end_tree, proc, real_wait, pidfile)
+
+            def wait(timeout=None):
+                waiting.set()
+                return real_wait(timeout=timeout)
+
+            proc.wait = wait
+            return proc
+
+        def interrupt_once_running():
+            # Both waits are bounded, so a fixture that never comes up fails
+            # the assertions below instead of interrupting anything later.
+            if waiting.wait(10) and self._worker(pidfile) is not None:
+                state["fired"] = time.monotonic()
+                _thread.interrupt_main()
+
+        helper = threading.Thread(target=interrupt_once_running, daemon=True)
+        helper.start()
+        with mock.patch.object(child.subprocess, "Popen", side_effect=launch), \
+             self.assertRaises(KeyboardInterrupt):
+            self._child(self._TREE % pidfile, timeout=30)
+        returned = time.monotonic()
+        helper.join(10)
+        self.assertIsNotNone(state["fired"], "the child never came up to be interrupted")
+        self.assertIsNotNone(state["proc"].returncode, "the interrupt left the child running")
+        self.assertTrue(self._gone(self._worker(pidfile)),
+                        "the interrupt left the child's worker running")
+        self.assertLess(returned - state["fired"], child._READER_JOIN_GRACE / 2,
+                        "the interrupt waited out the reader join on a live child")
+
+    def test_an_interrupt_while_the_readers_start_ends_the_group_too(self):
+        # The window between the spawn and the wait: the two reader threads
+        # are started in it, and an interrupt landing there escaped before
+        # the guarded `try` with the child left running. Raised from the first
+        # reader's `start`, where a Ctrl-C in that window would surface.
+        state = {"proc": None}
+        real_popen = child.subprocess.Popen
+
+        def launch(cmd, **kw):
+            proc = state["proc"] = real_popen(cmd, **kw)
+            self.addCleanup(self._end_tree, proc, proc.wait,
+                            os.path.join(self.root, "no-worker.pid"))
+            # No reader ever ran to close the pipes: this test does.
+            self.addCleanup(proc.stdout.close)
+            self.addCleanup(proc.stderr.close)
+            return proc
+
+        class InterruptedStart(threading.Thread):
+            def start(self):
+                raise KeyboardInterrupt
+
+        with mock.patch.object(child.subprocess, "Popen", side_effect=launch), \
+             mock.patch.object(child.threading, "Thread", InterruptedStart), \
+             self.assertRaises(KeyboardInterrupt):
+            self._child("import time\ntime.sleep(60)\n", timeout=30)
+        self.assertIsNotNone(state["proc"].returncode, "the interrupt left the child running")
 
 
 class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):

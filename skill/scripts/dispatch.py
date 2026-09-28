@@ -211,6 +211,10 @@ def emit_host_agents(host, out_dir):
         registrable = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
         raise ValueError("emit-host-agents: host %r registers no shells (%s)"
                          % (host, "|".join(registrable)))
+    if not out_dir and row.registration_refusal:
+        # No directory given and the row's default refused (a relative
+        # CODEX_HOME): its reason, not os.makedirs(None)'s TypeError.
+        raise ValueError(row.registration_refusal)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for role, role_file in sorted(ROLE_FILES.items()):
@@ -482,11 +486,12 @@ def _detect_host():
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; otherwise the host's default. Unknown -> None."""
+    """Explicit dir wins; otherwise the host's default. Unknown -> None, and so
+    is a default the row refuses (`hosts.HostSpec.registration_refusal`)."""
     if agents_dir:
         return agents_dir
     row = hosts.spec(host)
-    return (row.registration_dir or None) if row else None
+    return (row.registration_dir or None) if row and not row.registration_refusal else None
 
 
 def _is_registered(reg_dir, role_file, host=None):

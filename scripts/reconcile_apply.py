@@ -74,7 +74,6 @@ ISSUE_REPO_URL = f"https://github.com/{file_issues.REPO_SLUG}/issues/%s"
 
 FP_RE = re.compile(r"\*\*Fingerprint:\*\* `([0-9a-f]+)`")
 ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
-LOC_RE = re.compile(r"\*\*Location:\*\* `([^`]+?)(?::\d+)?`")
 
 
 class IncompleteRecovery(RuntimeError):
@@ -158,25 +157,25 @@ _ARTIFACT_RE = re.compile(r"^\*\*Report artifact:\*\* \[(.*?)\]\(", re.MULTILINE
 _LOCATION_RE = re.compile(r"^\*\*Location:\*\* `([^`]+)`$", re.MULTILINE)
 
 
-def _recovered_key(body, rejected, sources):
+def _recovered_key(body, rejected, sources, url):
     captures = [pattern.findall(body) for pattern in (FP_RE, ID_RE, _LOCATION_RE)]
     if any(len(values) != 1 for values in captures):
-        raise IncompleteRecovery("missing or conflicting issue identity/location")
+        raise IncompleteRecovery("%s: missing or conflicting issue identity/location" % url)
     fp, finding_id, presented = (values[0] for values in captures)
     pointers = _ARTIFACT_RE.findall(body)
     if len(pointers) > 1:
-        raise IncompleteRecovery("conflicting report artifact pointers")
+        raise IncompleteRecovery("%s: conflicting report artifact pointers" % url)
     records = sources.get(pointers[0]) if pointers else None
     if records is None:
         # Even plain text can hide deleted controls or scrubbed root literals.
         # Only the authoritative artifact can establish the original identity.
-        raise IncompleteRecovery("every recovered issue requires an authoritative matching source report")
+        raise IncompleteRecovery("%s: every recovered issue requires an authoritative matching source report" % url)
     record = records.get((fp, finding_id, rejected))
     if record is None:
-        raise IncompleteRecovery("issue identity missing from source report")
+        raise IncompleteRecovery("%s: issue identity missing from source report" % url)
     expected = _LOCATION_RE.findall(file_issues.scrub(file_issues.body_for(record, rejected)))
     if expected != [presented]:
-        raise IncompleteRecovery("source report location conflicts with issue presentation")
+        raise IncompleteRecovery("%s: source report location conflicts with issue presentation" % url)
     return file_issues.key_for(record, rejected)
 
 
@@ -210,9 +209,9 @@ def recover_linkage_from_github(label="self-scan", runner=None, *,
             if issue.get("url", url) != url or url in seen_urls:
                 raise IncompleteRecovery("conflicting issue URL or repository")
             rejected = any(label["name"] == "false-positive" for label in issue["labels"])
-            key = _recovered_key(issue["body"], rejected, sources)
+            key = _recovered_key(issue["body"], rejected, sources, url)
             if key in linkage:
-                raise IncompleteRecovery("conflicting recovered identity")
+                raise IncompleteRecovery("%s: conflicting recovered identity" % url)
             linkage[key] = url
             seen_urls.add(url)
         return linkage

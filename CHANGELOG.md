@@ -31,6 +31,35 @@ evidence exposed.
   removing a bootstrap is the guard working. `tests/test_phases_child.py` pins the child
   PYTHONPATH contract by what a child can import rather than by the list of roots. Consolidation,
   including the call-time class the census cannot see, continues in #1516.
+- **An interrupted or terminated driver ends its phase child and its runner children (#1805;
+  COD-869076756).** A phase child (discovery, tools, synthesize) leads its own session, so the
+  terminal's Ctrl-C never reached it, and `_run_child` ended its group only on a timeout: an
+  interrupt waited out the 5 s reader join, then left the child running and writing into the run
+  folder. A SIGTERM (a supervisor's stop, a CI cancel) killed the driver outright and left the
+  phase child and every registered runner child running. `_run_child` now ends the group on any
+  exception while its readers start or while it waits, and by the owner's ruling a SIGTERM takes
+  the Ctrl-C path: the CLI runs `main` under `procgroup.sigterm_as_interrupt`, which raises it as
+  the same interrupt and absorbs every later one until `main` returns; a SIGTERM that nothing
+  handles prints `driver: stopped by SIGTERM` and exits 143 on every supported Python. The Kimi
+  runner's SIGTERM secret-stripper now lets that interrupt run first and leaves the strip to
+  `teardown`, after the children its `config.toml` guards are gone; it still strips before a
+  default-disposition SIGTERM ends the process, and at an ignored one it no longer strips a run
+  that carries on with entries still in flight (`teardown` or `atexit` strips it later).
+- **A refused ledger recovery names the issue it could not read (#1805; COD-273223337).**
+  Recovering the filed-issues ledger from GitHub refused the whole batch, anonymously, when a
+  quoted marker block in one issue's own text tripped the check; `refusing:` now prefixes that
+  issue's URL, and the exactly-once marker, source-report and location rules stay unchanged.
+- **An empty `CODEX_HOME` means `~/.codex`; a relative one is refused (#1803; COD-1638371699).**
+  `hosts.py` fell back to `~/.codex` only when `CODEX_HOME` was unset, so an empty value made the
+  Codex registration directory `agents` and a relative one stayed relative, and every Codex consumer
+  resolved it against the working directory -- in the documented flow, the reviewed tree. Under an
+  empty value, a target shipping `agents/panopticon-*.toml` passed the runner's up-front check and
+  supplied every role's `developer_instructions`; the codex probes inspected those shells, readiness
+  called them registered, and `--emit-host-agents codex` wrote `agents/` into the working directory.
+  Owner ruling 2026-09-27: empty means unset, and a relative value is refused with "CODEX_HOME must
+  be an absolute path (it is 'rel/home'); unset it to use ~/.codex" -- by the runner and its shell
+  loader, both codex probes, emission (exit 1, nothing written) and the readiness row. An explicit
+  directory still wins, and importing `hosts` never raises.
 - **One parser for the `findings-<group>-<domain>` cell identity (#1765, ARC-3899903550).** Four
   modules read that name independently and disagreed at the edges: `findings_contract.cell_of` did
   not validate the domain, `synth/coverage_io.present_cells` and

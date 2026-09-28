@@ -331,9 +331,9 @@ def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
     and what was running has been terminated. What is left, in this order:
 
     * this batch's grants come down FIRST, before a single artifact is deleted.
-      A child that outlived the termination (no shipped family holds a handle
-      on its children, so "terminated" means the terminal's process-group
-      SIGINT) would otherwise re-create the very file the rollback had handed
+      A child that outlived the termination (SIGTERM, then SIGKILL, to each
+      REGISTERED child's group: a launch under way, or an escaped descendant,
+      runs on) would otherwise re-create the very file the rollback had handed
       back, and the resume would read that cell as done and never dispatch it
       again -- the one outcome the rollback exists to prevent. The guard is
       fail-closed the moment its allowlist is unlinked, so disarming first
