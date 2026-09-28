@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share token usage vocabulary (#2201, #1821).** The dispatch ledger imports usage fields
+  and phases from the usage collector, keeping totals, checkpoint mapping, model attribution
+  and corrupt-row accounting unchanged.
 - **A refused `CODEX_HOME` is the remedy readiness and the setup acknowledgment show (#1803;
   COD-1638371699).** `host_disclosure.remedy` named `--emit-host-agents codex`, and
   `setup_ack._remedy_clause` named it or `driver loop --setup --host codex --mode headless`,
