@@ -32,21 +32,20 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # to `scanner_config` whole. These names stay bound HERE because something still
 # reads them through `run_tools.<name>`: `_bandit_exclude_value` composes the two
 # exclude tuples, `_working_dir_flags` and the dispatch loop spell `TARGET_MOUNT`
-# (`tests/test_code_scanning_reports.py` pins it against the report side), the two
-# posture ledgers are cleared by `run_tools()` and read back by `write_manifest`
-# (whose own `scanner_config=` keyword would shadow the module inside it), and the
-# staged-config constants are read by `tests/test_run_tools_core.py` and
-# `tests/test_run_tools_dispatch.py`. A ledger is the SAME dict object either way,
-# so `.clear()`/`.pop()` here and `[tool] = ...` there address one ledger.
+# (`tests/test_code_scanning_reports.py` pins it against the report side), two of
+# the four ledgers `write_manifest` reads back move with the block and are cleared
+# by `run_tools()` (`write_manifest`'s own `scanner_config=` keyword would shadow
+# the module inside it), and the staged-config constants are read by
+# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`. A ledger
+# is the SAME dict object either way, so `.clear()`/`.pop()` here and
+# `[tool] = ...` there address one ledger.
 #
-# These are READ bindings. A `mock.patch` of a moved name must target
-# `scanner_config`, where the moved code looks it up -- patching an alias here
-# would be silently ineffective, which is why `SUPPRESSION_COMMENTS`,
-# `_ignore_path_identity` and `_adapter_ignore_overlay` are deliberately NOT bound
-# here and their call sites below are qualified. `_with_suppression_flags` is the
-# one moved FUNCTION still bound here: nothing inside `scanner_config` calls it, so
-# the dispatch loop below is its only call site and a patch of this name reaches
-# it (`tests/tools/test_legacy_sarif.py` names it as the dispatcher's).
+# CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved
+# must target `scanner_config`, where the moved code looks it up -- patching a
+# binding here reaches nothing, whether or not the name appears below. So no moved
+# FUNCTION is bound here and all twelve are called `scanner_config.<name>`;
+# `tests/test_scanner_config.py::TestThePatchRuleIsOneRule` enforces both halves
+# from the two modules' own ASTs, and holds the same list this block binds.
 #
 # `noqa: F401` marks the ones only a TEST reads through this module: ruff cannot
 # see a use from here, and an `__all__` would silence it by also narrowing a
@@ -62,9 +61,8 @@ from scripts.scanner_config import (
     TRIVY_IGNOREFILE_NAME,        # noqa: F401
     TRIVY_IGNOREFILE_TEXT,        # noqa: F401
     TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # the two ledgers `write_manifest` reads back
+    _SCANNER_CONFIG_POSTURE,      # the two that move, of write_manifest's four
     _SUPPRESSION_POSTURE,
-    _with_suppression_flags,      # the dispatch loop's one moved-function call
 )
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -1371,7 +1369,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # #1839: under redteam, stop honouring the suppression COMMENTS in
             # the target's own source. No-op under standard, where they are
             # honoured and `suppression_comments` says so.
-            cmd = _with_suppression_flags(tool, cmd, security_mode)
+            cmd = scanner_config._with_suppression_flags(
+                tool, cmd, security_mode)
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             # #1839 / #run7: bandit's ini and trivy's ignorefile are the
             # SCANNER's, constants staged in a scratch this target never
@@ -1574,9 +1573,9 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     observation, like `redacted` and `network`. For a FLAG-lever tool (bandit,
     gitleaks) that observation is the argv itself, so taking the flag away makes
     the claim change rather than leaving an intention behind; for an INGEST-lever
-    tool (`SUPPRESSION_INGEST_LEVER`, semgrep today) the argv decides nothing and
-    the row follows the run's mode, which is what does. This row is about
-    COMMENTS only. `ignore_files` separately records the source-root
+    tool (`scanner_config.SUPPRESSION_INGEST_LEVER`, semgrep today) the argv
+    decides nothing and the row follows the run's mode, which is what does. This
+    row is about COMMENTS only. `ignore_files` separately records the source-root
     `.gitleaksignore` observed at launch: `honoured` for a target file allowed
     under standard, `neutralised` for the redteam empty-file mount, and
     `absent` when no file exists. Only a produced Gitleaks scan gets a row.

@@ -5,9 +5,11 @@ Three claims in three shapes. The configuration files this runner STAGES for a
 scanner instead of letting the reviewed repository choose them (bandit's
 `--ini`, trivy's `--ignorefile`); the ignore FILE it overlays out of the way
 (gitleaks' `.gitleaksignore`); and the inline suppression COMMENT knobs it
-passes under `--security redteam`. With them travel the two ledgers
+passes under `--security redteam`. With them travel two of the four ledgers
 `run_tools.write_manifest` reads back, so `tools-manifest.json` reports what the
-runner OBSERVED itself doing rather than restating an intention.
+runner OBSERVED itself doing rather than restating an intention (the other two,
+the network posture and the gitleaks ignore-file posture, stayed with the
+dispatch loop that fills them).
 
 Separate from `run_tools` because it is a POLICY surface, and it grew like one:
 #1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
@@ -34,8 +36,9 @@ from scripts.tools.base import REDTEAM, SECURITY_FLAG
 
 # Where the target is mounted inside every scanner container. One name, so the
 # `-v` mount and the `-w` working directory cannot come to disagree about which
-# path the two mount-cwd scanners are pointed at. (`_with_venv_excludes` and bandit's `--ini`
-# pin still spell it literally; both are outside #1877's scope.)
+# path the two mount-cwd scanners are pointed at. (`run_tools._with_venv_excludes`
+# and bandit's `--ini` pin still spell it literally; both are outside #1877's
+# scope.)
 TARGET_MOUNT = "/src"
 
 # bandit's own parser default for --exclude, restated because bandit PREFERS a
@@ -64,8 +67,8 @@ BANDIT_INI_NAME = "bandit.ini"
 TRIVY_IGNOREFILE_NAME = ".trivyignore"
 # The target's OWN bandit ini as bandit sees it, honoured under `standard` only
 # (owner ruling of 2026-09-25 on #1924; see `_scanner_owned_config`). Spelled
-# literally, like `_with_venv_excludes`' `/src` prefixes, because it is a pinned
-# argv token, not a mount this module composes from `TARGET_MOUNT` above.
+# literally, like `run_tools._with_venv_excludes`' `/src` prefixes, because it is
+# a pinned argv token, not a mount this module composes from `TARGET_MOUNT` above.
 TARGET_BANDIT_INI = "/src/.bandit"
 
 # The SCANNER-OWNED `--ini`, in full and for every run. A CONSTANT (review round

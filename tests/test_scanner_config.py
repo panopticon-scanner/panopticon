@@ -7,9 +7,11 @@ the tree before the move and compared token for token after it. A pure
 extraction that changes one flag, one path or one flag's POSITION is not a pure
 extraction, and nothing else in the suite compares a whole argv.
 """
+import ast
 import contextlib
 import io
 import os
+import pathlib
 import tempfile
 import unittest
 from unittest import mock
@@ -17,6 +19,7 @@ from unittest import mock
 import scripts.run_tools as rt
 import scripts.scanner_config as sc
 
+from tests._test_helpers import REPO_ROOT
 from tests.run_tools_test_helpers import _FakeResult
 
 # Four tokens on the argv are host-specific and cannot be pinned: the docker
@@ -247,33 +250,251 @@ class TestTheStagedConfigIsTheScannersOwn(unittest.TestCase):
         self.assertEqual(active, [])
 
 
+# ONE rule for the whole split: a name `scanner_config` owns is patched THERE,
+# because that is where the moved code looks it up. The names below are the
+# EXCEPTION the rule needs -- the ones `run_tools` still binds, because code that
+# stayed behind reads them or a test reads them through `run_tools.<name>`. They
+# are READ bindings: patching one reaches nothing either, so the walk further
+# down refuses that too.
+#
+# This list is asserted equal to what `run_tools`'s `from scripts.scanner_config
+# import (...)` really binds, read with `ast`, so it cannot drift from the code
+# it describes. Everything else `scanner_config` defines is derived, not listed:
+# a symbol C2 or C3 adds is covered the moment it lands.
+RE_EXPORTED = frozenset({
+    "BANDIT_DEFAULT_EXCLUDES", "BANDIT_SCANNER_EXCLUDES", "BANDIT_INI_NAME",
+    "BANDIT_INI_TEXT", "CONFIG_TARGET_BANDIT", "SCANNER_CONFIG_MOUNT",
+    "SCANNER_OWNED_CONFIG", "TRIVY_IGNOREFILE_NAME", "TRIVY_IGNOREFILE_TEXT",
+    "TARGET_MOUNT", "_SCANNER_CONFIG_POSTURE", "_SUPPRESSION_POSTURE",
+})
+_ROOT = pathlib.Path(REPO_ROOT)          # `_test_helpers` exports it as a str
+_RUN_TOOLS = _ROOT / "skill" / "scripts" / "run_tools.py"
+_SCANNER_CONFIG = _ROOT / "skill" / "scripts" / "scanner_config.py"
+_TESTS = _ROOT / "tests"
+# `rt` is the alias every run_tools test binds; anything else is recognised by
+# its LAST segment, which covers `run_tools`, `scripts.run_tools` and
+# `rft.run_tools` (tests/test_run_fixture_tests.py reaches it through the module
+# it is testing).
+_RUN_TOOLS_ALIASES = frozenset({"rt", "run_tools", "scripts.run_tools"})
+
+
+def _parse(path):
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _dotted(node):
+    """`a.b.c` as a string, or None for an expression that is not a name path."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _is_run_tools(dotted):
+    return dotted is not None and (dotted in _RUN_TOOLS_ALIASES
+                                   or dotted.split(".")[-1] == "run_tools")
+
+
+def _defined_in_scanner_config(path=None):
+    """Every name `scanner_config` DEFINES at module level.
+
+    Read from the AST rather than `vars()` on purpose: `vars()` also holds what
+    the module imported (`REDTEAM`, `SECURITY_FLAG` from `tools.base`), and
+    `run_tools` binds those legitimately from their own owner.
+    """
+    names = set()
+    for node in _parse(path or _SCANNER_CONFIG).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _moved_functions(path=None):
+    """The module-level callables `scanner_config` defines, in source order."""
+    return [node.name for node in _parse(path or _SCANNER_CONFIG).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _re_exported_by_run_tools(path=None):
+    """The names `run_tools` binds out of `scanner_config`, read with `ast`."""
+    names = set()
+    for node in ast.walk(_parse(path or _RUN_TOOLS)):
+        if (isinstance(node, ast.ImportFrom) and node.module
+                and node.module.split(".")[-1] == "scanner_config"):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _patch_sites(path, watched):
+    """`(lineno, name)` for every patch in *path* that aims a *watched* name at
+    the `run_tools` module -- `patch.object(rt, "NAME")` in any spelling, and
+    the string form `patch("scripts.run_tools.NAME")`.
+
+    A patch of a MODULE attribute (`patch.object(rt.os, "lstat")`) is a
+    different thing and stays legal: `rt.os` and `sc.os` are the same object, so
+    it reaches the moved code too.
+    """
+    out = []
+    for node in ast.walk(_parse(path)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = _dotted(node.func)
+        if func is None:
+            continue
+        parts = func.split(".")
+        if parts[-1] == "object" and len(parts) >= 2 and parts[-2] == "patch":
+            if len(node.args) < 2 or not _is_run_tools(_dotted(node.args[0])):
+                continue
+            target = node.args[1]
+            if isinstance(target, ast.Constant) and target.value in watched:
+                out.append((node.lineno, target.value))
+        elif parts[-1] == "patch":
+            if not node.args:
+                continue
+            target = node.args[0]
+            if not (isinstance(target, ast.Constant)
+                    and isinstance(target.value, str)):
+                continue
+            module, _sep, name = target.value.rpartition(".")
+            if name in watched and _is_run_tools(module):
+                out.append((node.lineno, name))
+    return out
+
+
+class TestThePatchRuleIsOneRule(unittest.TestCase):
+    """#1762 part 1: `mock.patch` a moved name on `run_tools` and it reaches
+    nothing, because the moved code reads `scanner_config`'s globals -- the test
+    passes and the behaviour it claims to change is untouched. That is the one
+    failure mode a pure extraction can leave behind, and a green suite cannot
+    see it, so it is guarded from BOTH sides: no moved name gets a second
+    binding, and no test aims a patch at `run_tools` for a name that moved.
+
+    Derived from the two modules' own ASTs rather than from a list, because a
+    list stops growing: C2 and C3 add symbols to this module, and the guard has
+    to cover them without being edited.
+    """
+
+    def test_the_allowlist_is_exactly_what_run_tools_re_exports(self):
+        # `RE_EXPORTED` is the exception list the re-export comment in
+        # `run_tools` describes in prose. If the two disagree, one of them is
+        # lying and every assertion below is measuring the wrong set.
+        self.assertEqual(sorted(RE_EXPORTED), sorted(_re_exported_by_run_tools()))
+
+    def test_every_re_exported_name_is_still_defined_in_scanner_config(self):
+        defined = _defined_in_scanner_config()
+        stale = sorted(RE_EXPORTED - defined)
+        self.assertEqual(stale, [], "re-exported name(s) `scanner_config` no "
+                                    "longer defines: %s" % ", ".join(stale))
+
+    def test_no_moved_function_is_bound_on_run_tools(self):
+        # The strong half of the rule, and the one that needs no allowlist at
+        # all: a FUNCTION that moved is never re-exported, so `scanner_config`
+        # is unambiguously the place to patch it. `_scanner_owned_config` anchors
+        # the derivation against a file that stopped defining anything.
+        functions = _moved_functions()
+        self.assertIn("_scanner_owned_config", functions)
+        for name in functions:
+            with self.subTest(function=name):
+                self.assertNotIn(name, RE_EXPORTED,
+                                 "%s is re-exported; a moved function must be "
+                                 "patched on scanner_config only" % name)
+                self.assertTrue(hasattr(sc, name))
+                self.assertFalse(hasattr(rt, name),
+                                 "%s is bound on run_tools too; patching it "
+                                 "there would be silently ineffective" % name)
+
+    def test_nothing_scanner_config_owns_is_bound_on_run_tools_unannounced(self):
+        for name in sorted(_defined_in_scanner_config() - RE_EXPORTED):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(sc, name), "%s left scanner_config" % name)
+                self.assertFalse(hasattr(rt, name),
+                                 "%s is bound on run_tools without being in the "
+                                 "re-export list; either add it there (with the "
+                                 "reason) or drop the binding" % name)
+
+    def test_no_test_patches_a_moved_name_through_run_tools(self):
+        # The other side of the rule. A re-exported name is a READ binding, so
+        # patching THAT on `run_tools` is just as ineffective as patching one
+        # that was never bound -- both are refused here, anywhere under tests/.
+        watched = _defined_in_scanner_config() | RE_EXPORTED
+        offenders = []
+        for path in sorted(_TESTS.rglob("*.py")):
+            for lineno, name in _patch_sites(path, watched):
+                offenders.append("%s:%d  patches run_tools.%s"
+                                 % (path.relative_to(_ROOT), lineno, name))
+        self.assertEqual(
+            offenders, [],
+            "%d patch(es) of a moved name aimed at run_tools:\n  %s\n"
+            "the moved code reads `scanner_config`'s globals, so this patch "
+            "passes while changing nothing -- target `scanner_config` instead"
+            % (len(offenders), "\n  ".join(offenders)))
+
+    def test_the_patch_walk_catches_a_planted_offender(self):
+        # Non-vacuity, on a synthetic file: the scan above asserts an EMPTY
+        # list, which a detector that sees nothing also satisfies.
+        watched = {"SCANNER_OWNED_CONFIG", "_scanner_owned_config"}
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "test_planted.py"
+            for source in (
+                    'mock.patch.object(rt, "SCANNER_OWNED_CONFIG", {})',
+                    'patch.object(run_tools, "SCANNER_OWNED_CONFIG", {})',
+                    'mock.patch.object(scripts.run_tools, "_scanner_owned_config")',
+                    'mock.patch("scripts.run_tools.SCANNER_OWNED_CONFIG")',
+                    'patch("run_tools._scanner_owned_config")'):
+                with self.subTest(source=source):
+                    path.write_text("x = %s\n" % source, encoding="utf-8")
+                    self.assertTrue(_patch_sites(path, watched),
+                                    "detector missed %s" % source)
+            for source in (
+                    # a MODULE attribute: the same object from both modules.
+                    'mock.patch.object(rt.tempfile, "mkdtemp")',
+                    # a name run_tools still owns.
+                    'mock.patch.object(rt, "MAX_TOOL_OUTPUT_BYTES", 1)',
+                    # the right target.
+                    'mock.patch.object(sc, "SCANNER_OWNED_CONFIG", {})',
+                    'mock.patch("scripts.scanner_config.SCANNER_OWNED_CONFIG")',
+                    # not a patch at all.
+                    'mock.patch.dict(os.environ, {"SCANNER_OWNED_CONFIG": "1"})'):
+                with self.subTest(source=source):
+                    path.write_text("x = %s\n" % source, encoding="utf-8")
+                    self.assertEqual(_patch_sites(path, watched), [],
+                                     "detector flagged %s" % source)
+
+    def test_the_patch_walk_visits_the_whole_test_tree(self):
+        # Including `tests/tools/`, which is where an adapter-side patch would
+        # land, and which the brief's pytest set does not otherwise reach.
+        visited = sorted(_TESTS.rglob("*.py"))
+        self.assertGreater(len(visited), 150, "the test-tree walk collapsed")
+        self.assertIn(_TESTS / "tools" / "test_legacy_sarif.py", visited)
+        # and it really parses them: a file that does not parse must not be
+        # skipped silently.
+        with tempfile.TemporaryDirectory() as d:
+            broken = pathlib.Path(d) / "test_broken.py"
+            broken.write_text("def t(:\n", encoding="utf-8")
+            with self.assertRaises(SyntaxError):
+                _patch_sites(broken, {"x"})
+
+
 class TestTheTwoModulesShareOneLedger(unittest.TestCase):
-    """`run_tools` binds the two posture ledgers by name (`write_manifest`'s own
-    `scanner_config=` keyword would shadow the module inside it), so the whole
-    claim rests on both names addressing ONE dict: `run_tools()` clears it, the
-    recorders here fill it, `write_manifest` reads it back. Rebind either side
-    and the manifest would publish an empty posture with nothing failing."""
+    """`run_tools` binds two of the four ledgers `write_manifest` reads back
+    (`write_manifest`'s own `scanner_config=` keyword would shadow the module
+    inside it), so the whole claim rests on both names addressing ONE dict:
+    `run_tools()` clears it, the recorders here fill it, `write_manifest` reads
+    it back. Rebind either side and the manifest would publish an empty posture
+    with nothing failing."""
 
     def test_the_posture_ledgers_are_the_same_object_in_both_modules(self):
         for name in ("_SUPPRESSION_POSTURE", "_SCANNER_CONFIG_POSTURE"):
             with self.subTest(ledger=name):
                 self.assertIs(getattr(rt, name), getattr(sc, name))
-
-    def test_a_moved_name_a_test_may_patch_is_not_also_bound_on_run_tools(self):
-        # A second binding is a patch target that reaches nothing: the moved code
-        # looks these up in `scanner_config`, so an alias here would let
-        # `mock.patch.object(run_tools, ...)` pass while changing no behaviour.
-        for name in ("SUPPRESSION_COMMENTS", "_adapter_ignore_overlay",
-                     "_ignore_path_identity", "_scanner_owned_config",
-                     "_record_suppression_posture", "_record_scanner_config",
-                     "_suppression_flag_on", "_adapter_security_mode",
-                     "_staged_scanner_file", "_gitleaks_ignore_overlay",
-                     "_insert_flags", "_without_skip_list"):
-            with self.subTest(name=name):
-                self.assertTrue(hasattr(sc, name), "%s left scanner_config" % name)
-                self.assertFalse(hasattr(rt, name),
-                                 "%s is bound on run_tools too; patching it "
-                                 "there would be silently ineffective" % name)
 
 
 if __name__ == "__main__":
