@@ -21,7 +21,13 @@ evidence exposed.
   sourcepath outright and refusing to follow a symlink out of the tree
   (`claim_scope.confined_to_root`, not a fourth copy of it). When nothing resolves the package path
   is kept and the finding says why in `tool_evidence.path_resolution`, so an unplaceable location
-  has a stated cause. pip-audit stored the ABSOLUTE host path of the manifest it audited in its
+  has a stated cause. The `SourceLine start` that names the bug's line is read tolerantly with it:
+  the report schema gives `location.line_start` `minimum: 1`, and SpotBugs' own unknown-line
+  sentinel is `-1`, so one bug at an unknown line used to make a whole real Java report
+  schema-invalid — absent, `-1`, `0` and an unparseable value now all clamp to 1, the way an
+  unparseable rank already falls to MEDIUM rather than raising out of `parse` (which ingest reads as
+  "unparseable" and loses the whole document). pip-audit stored the ABSOLUTE host path of the
+  manifest it audited in its
   ContextVar and `_located_at` returns what it holds — unreachable on the production path, where
   invoke and parse run in different processes, and a scanner-host layout leak for any caller that
   shares one; it records the repo-relative path now, which is npm-audit's shape already. The

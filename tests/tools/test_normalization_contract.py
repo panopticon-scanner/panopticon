@@ -226,8 +226,11 @@ class TestNormalizationContract(unittest.TestCase):
             % (name, loc["file"], shape))
         self.assertIsInstance(loc.get("line_start"), int,
                               "%s: location.line_start is not an int" % name)
-        self.assertGreaterEqual(loc["line_start"], 0,
-                                "%s: negative line_start" % name)
+        # `>= 1`, not `>= 0`: the report schema's own `minimum` for this field
+        # (review finding 3 -- a `0` passed a `>= 0` assertion and then failed
+        # the validator, which is the check that actually gates a run).
+        self.assertGreaterEqual(loc["line_start"], 1,
+                                "%s: line_start below the schema's minimum" % name)
 
         # Text fields carry untrusted tool/target content and are sanitized on
         # the way in; they must at least be strings by the time they land.

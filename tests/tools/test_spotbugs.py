@@ -281,6 +281,53 @@ class TestTheBugsOwnSourceLine(unittest.TestCase):
             [(f["title"], f["location"]["line_start"]) for f in findings])
 
 
+class TestTheStartLineIsAlwaysSchemaLegal(unittest.TestCase):
+    """Review finding 3: `report-schema.json` gives `location.line_start`
+    `minimum: 1`, and the normalization contract's `TestFindingsSurviveIntoAReport`
+    proves tool findings really are validated against it -- so ONE unusable
+    `SourceLine start` must not invalidate the whole report.
+
+    `-1` is not a hostile value: it is SpotBugs' own `SourceLineAnnotation`
+    sentinel for an unknown line, which a class compiled without line-number
+    debug info (or a synthetic location) produces. `0` slips past a `>= 0`
+    assertion and fails the schema the same way. `abc` used to raise
+    `ValueError` out of `parse`, and `ingest_tools`' tolerant `except Exception`
+    turns that into "unparseable" and loses the ENTIRE spotbugs document.
+    """
+
+    @staticmethod
+    def _report(start):
+        attribute = "" if start is None else ' start="%s"' % start
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<BugCollection version="4.8.6">'
+                '<BugInstance type="COMMAND_INJECTION" rank="12" priority="2">'
+                '<Class classname="org.dummy.Holder"/>'
+                '<SourceLine classname="org.dummy.Holder"'
+                ' sourcepath="org/dummy/Holder.java"%s/>'
+                '</BugInstance></BugCollection>' % attribute).encode()
+
+    def _line_start(self, start):
+        finding = only(sb.SpotBugsAdapter().parse(self._report(start), "g1"))
+        return finding["location"]["line_start"]
+
+    def test_spotbugs_own_unknown_line_sentinel_clamps_to_one(self):
+        self.assertEqual(1, self._line_start("-1"))
+
+    def test_a_zero_start_clamps_to_one(self):
+        self.assertEqual(1, self._line_start("0"))
+
+    def test_an_unparseable_start_clamps_to_one_instead_of_raising(self):
+        # The whole-document loss is the cost of raising here, so this must not
+        # be an `assertRaises`.
+        self.assertEqual(1, self._line_start("abc"))
+
+    def test_an_absent_start_is_one(self):
+        self.assertEqual(1, self._line_start(None))
+
+    def test_a_real_start_is_untouched(self):
+        self.assertEqual(65, self._line_start("65"))
+
+
 class TestSourcePathResolvesAgainstTheTargetRoot(unittest.TestCase):
     """ARC-284455831: `sourcepath` is SOURCE-ROOT relative, not repo-relative.
 

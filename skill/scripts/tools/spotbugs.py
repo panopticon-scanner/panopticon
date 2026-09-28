@@ -131,6 +131,29 @@ def _locate(*candidates: str) -> tuple[str, str | None]:
     return "", _UNRESOLVED
 
 
+def _line_start(start: str | None) -> int:
+    """A `SourceLine start` as a line number the report schema accepts.
+
+    `report-schema.json` gives `location.line_start` `minimum: 1` and the
+    normalization contract validates tool findings against it, so ONE unusable
+    value must not invalidate the whole report. SpotBugs' own
+    `SourceLineAnnotation` writes -1 for an unknown line -- a class compiled
+    without line-number debug info, or a synthetic location -- and the
+    attribute is target-authored, so anything at all can appear in it. Absent,
+    empty, `-1`, `0` and `abc` all clamp to 1, the way `_rank_to_severity`
+    already treats an unparseable rank: raising here instead would come out of
+    `parse`, and `ingest_tools`' tolerant `except Exception` reads that as
+    "unparseable" and loses the ENTIRE spotbugs document.
+    """
+    if start is None:
+        return 1
+    try:
+        line = int(start)
+    except (TypeError, ValueError):
+        return 1
+    return line if line >= 1 else 1
+
+
 def _rank_to_severity(rank: str | None) -> str:
     """Map a SpotBugs bug rank (1=scariest .. 20=of concern) to our severity
     scale. An absent or unparseable rank falls to the neutral middle bucket
@@ -265,7 +288,7 @@ class SpotBugsAdapter:
                 severity=severity,
                 confidence=confidence,
                 category="jvm_security",
-                location={"file": file_path, "line_start": int(line) if line else 1},
+                location={"file": file_path, "line_start": _line_start(line)},
                 description=f"SpotBugs/FindSecBugs detected issue type {btype}.",
                 impact="Potential security flaw in JVM bytecode.",
                 remediation="Review the FindSecBugs documentation for this bug type and refactor.",
