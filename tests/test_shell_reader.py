@@ -17,6 +17,7 @@ This file is the parser's own spec: a redirect whose target begins with `&`
 delivers to file descriptor 1 -- the only one `parse_fetch` may treat as the
 destination a step downloaded to.
 """
+import gc
 import time
 import unittest
 
@@ -669,20 +670,35 @@ class TestOneLexicalPass(unittest.TestCase):
         """Read `make(n)` and `make(4 * n)`, `check(size, parsed)` each, and
         require t(4n) <= 8 * t(n) + 0.25 s. Two sizes timed in one process
         measure how the reader grows -- about 4x for a linear pass, 16x for a
-        quadratic one -- whatever the speed of the machine; the constant
-        absorbs timer noise when t(n) is small, and 15 s guards only against
-        a catastrophe. Bounds in seconds sized on a dev box fail on CI's
-        3.11-3.13 jobs: traced for coverage on shared runners, they run the
-        reader 6-9x slower."""
+        quadratic one -- whatever the speed of the machine. Bounds in seconds
+        sized on a dev box fail on CI's 3.11-3.13 jobs: traced for coverage on
+        shared runners, they run the reader 6-9x slower.
+
+        A ratio of wall-clock times still inflates when the process is
+        descheduled during a read (9.1x and 11.3x in 16 runs on a box at
+        load 45), so each read is timed in this process's CPU time, with
+        the garbage collector off as `timeit` turns it off, and a miss is
+        measured once more and judged on the lesser of each size's two times:
+        a quadratic reader misses twice, a spike does not. The constant
+        absorbs timer noise when t(n) is small; 15 s of CPU guards only
+        against a catastrophe."""
         def read(size):
             script = make(size)
-            start = time.monotonic()
-            parsed = shell_reader.statements(script)
-            elapsed = time.monotonic() - start
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                parsed = shell_reader.statements(script)
+                elapsed = time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
             check(size, parsed)
             return elapsed
 
         small, large = read(n), read(4 * n)
+        if large > 8 * small + 0.25:
+            small, large = min(small, read(n)), min(large, read(4 * n))
         self.assertLessEqual(large, 8 * small + 0.25, (small, large))
         self.assertLess(large, 15.0, (small, large))
 
