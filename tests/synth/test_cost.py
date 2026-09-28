@@ -6,6 +6,8 @@ import os
 import json
 import tempfile
 import unittest
+
+from tests.synth.helpers import _chdir
 from unittest import mock
 
 import scripts.synthesize as syn
@@ -158,7 +160,6 @@ class TestCostLedgerDriver(unittest.TestCase):
         # exercise: cwd-relative .panopticon + --verdicts-dir threading. A
         # driver-shaped .panopticon must yield the review + verify rows in
         # meta.cost, and drop the legacy lumped advisor row.
-        prev = os.getcwd()
         with tempfile.TemporaryDirectory() as d:
             pano = os.path.join(d, ".panopticon")
             vdir = os.path.join(pano, "verdicts")
@@ -202,8 +203,7 @@ class TestCostLedgerDriver(unittest.TestCase):
             with open(os.path.join(vdir, "ab12cd34ef560000.json"), "w", encoding="utf-8") as fh:
                 json.dump({"verdicts": []}, fh)
             out = os.path.join(pano, "report.json")
-            try:
-                os.chdir(d)
+            with _chdir(d):
                 with (
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(io.StringIO()),
@@ -212,8 +212,6 @@ class TestCostLedgerDriver(unittest.TestCase):
                         ["--target", "t", "--out", out, "--verdicts-dir", ".panopticon/verdicts"]
                         + fpaths
                     )
-            finally:
-                os.chdir(prev)
             with open(out, encoding="utf-8") as fh:
                 cost = json.load(fh)["meta"]["cost"]["dispatches"]
             by = {(r["phase"], r["role"]): r["count"] for r in cost}

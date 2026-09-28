@@ -24,25 +24,10 @@ import scripts.evidence as evidence_mod
 
 import pytest
 
-from tests.synth.helpers import _chdir, _agentic
-
-
-@pytest.fixture(autouse=True)
-def _isolate_cwd_from_stale_panopticon(tmp_path, monkeypatch):
-    """Run every test in this module from an isolated cwd.
-
-    Many tests call ``synthesize.main()`` without ``--run-dir``/``--groups``, so
-    run_dir falls back to a cwd-relative ``.panopticon``. In a developer's real
-    checkout that directory can hold a stale pre-5.1 flat ``tools-manifest.json``
-    (no ``schema_version``), which synthesize's #17 guard correctly rejects with
-    a loud ``sys.exit`` -- turning a stray local artifact into ~9 spurious test
-    failures. Isolating the cwd makes the suite read only what each test writes
-    (and stops the handful of relative-path tests from littering the repo root).
-    Tests that manage their own cwd (``prev = os.getcwd()`` + restore) are
-    unaffected -- they simply save/restore this tmp cwd; reference-data reads are
-    ``__file__``-relative, so they don't depend on cwd.
-    """
-    monkeypatch.chdir(tmp_path)
+from tests.synth.helpers import (
+    _chdir, _agentic,
+    _isolate_cwd_from_stale_panopticon as _isolate_cwd_from_stale_panopticon,
+)
 
 
 class TestPipelineCitations(unittest.TestCase):
@@ -316,7 +301,7 @@ class TestHtmlOut(unittest.TestCase):
                     },
                     fh,
                 )
-            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
                 rc = syn.main(["--compare", missing, valid, "--html-out", out])
             self.assertNotEqual(rc, 0)
             self.assertIn("cannot read", captured.getvalue())
@@ -353,7 +338,7 @@ class TestHtmlOut(unittest.TestCase):
                 )
             with open(invalid, "w") as fh:
                 fh.write("not json")
-            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
                 rc = syn.main(["--compare", invalid, valid, "--html-out", out])
             self.assertNotEqual(rc, 0)
             self.assertIn("invalid JSON", captured.getvalue())
@@ -694,9 +679,7 @@ class TestMainExitAndScout(unittest.TestCase):
             findings = os.path.join(pan, "findings-g1-code-panel_review.json")
             with open(findings, "w") as fh:
                 _json.dump({"findings": []}, fh)
-            cwd = os.getcwd()
-            try:
-                os.chdir(d)
+            with _chdir(d):
                 rc = syn.main(
                     [
                         "--target",
@@ -708,8 +691,6 @@ class TestMainExitAndScout(unittest.TestCase):
                         findings,
                     ]
                 )
-            finally:
-                os.chdir(cwd)
             self.assertEqual(rc, 2)  # INCONCLUSIVE -> exit 2
             with open(os.path.join(pan, "report.json")) as fh:
                 rep = _json.load(fh)

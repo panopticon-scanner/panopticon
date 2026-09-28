@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
@@ -337,7 +338,7 @@ class TestOcrdbValidation(unittest.TestCase):
         self.assertIsNotNone(report["meta"]["coverage"]["ocrdb"])
 
     def test_build_report_bundle_absent_is_null_and_safe(self):
-        with unittest.mock.patch("scripts.ocrdb.load_bundle", return_value=None):
+        with mock.patch("scripts.ocrdb.load_bundle", return_value=None):
             report = report_mod.build_report(report_mod.ReportInputs(
                 run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
                 findings=findings_mod.FindingSet(

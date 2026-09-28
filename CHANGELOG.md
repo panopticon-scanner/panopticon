@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share synthesis test isolation (#2204, #1822, #1823).** Synthesis tests reuse the cwd
+  guard and one autouse isolation fixture at the same package and module scopes. Report tests
+  import mocks explicitly, preserving assertions and removing reliance on prior test imports.
 - **Share OCRDb report record helpers (#2203, #1822).** Gap and strain reports use one
   occurrence builder and the catalog's raw domain-prefix helper. Missing-file handling, optional
   strain run IDs, each caller's domain policy and flat imports retain their existing behavior.
