@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
+  table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
 - **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**
   The staged `bandit.ini`/`.trivyignore`, the suppression posture, the ignore overlays and
   two of the four ledgers the manifest reads back move to `skill/scripts/scanner_config.py`
