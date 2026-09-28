@@ -1,12 +1,38 @@
 """Health letter grade boundaries and report contracts."""
 
 import unittest
+from unittest import mock
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+import scripts.synth.render as render_mod
 import scripts.evidence as evidence_mod
 from tests.synth.helpers import _target_with_files, _agentic
+
+
+class TestHealthWeightExplanation(unittest.TestCase):
+    def test_explanation_tracks_the_weights_used_to_compute_health(self):
+        weights = {"INFO": 0, "LOW": 2, "MEDIUM": 7, "HIGH": 31, "CRITICAL": 151}
+        with mock.patch.object(grading_mod, "HEALTH_WEIGHTS", weights):
+            health = grading_mod.health_stats(200, [
+                _agentic(sev="HIGH", location={"file": "a.py", "line_start": 1,
+                                              "line_end": 3})])
+            self.assertEqual(health["weighted_defect"], 93)
+            self.assertEqual(health["weights"]["high"], 31)
+            self.assertIn(
+                "weights: CRITICAL x151, HIGH x31, MEDIUM x7, LOW x2, INFO x0",
+                render_mod._render_health(health))
+
+    def test_default_explanation_retains_its_wording(self):
+        health = grading_mod.health_stats(1000, [_agentic(sev="HIGH")])
+        self.assertEqual(
+            render_mod._render_health(health),
+            "**Health:** 97.56 / 100 — 1,000 clean LoC against 25 weighted "
+            "defect; HIGHER IS BETTER, 100 = no gate-eligible weighted defect "
+            "(weights: CRITICAL x125, HIGH x25, MEDIUM x5, LOW x1, INFO x0, "
+            "each x lines spanned). Gate-eligible findings only; never affects "
+            "the gate.")
 
 
 class TestHealthLetterGrade(unittest.TestCase):
