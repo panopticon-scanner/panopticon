@@ -21,7 +21,7 @@ directly under the Grade/Gate line; a fully-complete or resume-absent run prints
 resumed run never reads as a fresh full scan. Every `meta.integrity` key that sinks certification
 is also NAMED on that summary, as an `**Integrity:**` line saying what the key measured and that
 the run is not certified (#1761): `synth/integrity.INTEGRITY_KEYS` is the one table both the gate
-and the renderer read, so no sinking key reaches the report as the bare word `incomplete`. The
+and the renderer read, so no sinking key reaches that summary as the bare word `incomplete`. The
 keys that report without gating — a cross-domain filing, the planned-file and hash counters, the
 unenforced-ack disclosure — print as a `**Note:**` or not at all.
 
@@ -60,7 +60,8 @@ that EXISTS and cannot be read (unreadable, not JSON, not an object) leaves the 
 set unknown, so `tools_absent` is not computed from the scout's advisory list — that fallback
 silently drops every scanner the runner selected and the scout never asked for — and the run reports
 `meta.integrity.tools_manifest_invalid` with the reason, which fails `integrity_ok` like every other
-entry in that section (so the gate goes INCONCLUSIVE) and sets `summary.coverage_certified: false`
+SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do; seven of the
+twenty-one do not), so the gate goes INCONCLUSIVE, and sets `summary.coverage_certified: false`
 with a `coverage_note` saying *tools manifest unreadable*. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest (a

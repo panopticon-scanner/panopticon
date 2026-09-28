@@ -361,9 +361,9 @@ def render_summary(report):
     # ARC-3284703909 (#1761): one loop over `integrity.INTEGRITY_KEYS`, which
     # owns both which keys sink certification and the line each one prints. The
     # three hand-written inserts this replaced named three of FOURTEEN sinking
-    # keys, so ten had no line of their own and nine of those were named nowhere
-    # at all -- the bare word "incomplete" is what a mailed report said for them,
-    # the hole #1644 closed for `tools_manifest_invalid` alone.
+    # keys, so ten had no line of their own on this summary and nine of those
+    # were named nowhere on it at all -- it said the bare word "incomplete" for
+    # them, the hole #1644 closed for `tools_manifest_invalid` alone.
     # A key renders on exactly the truthiness that sinks `integrity_ok`, so the
     # summary and the gate cannot drift; the table's comment owns the order.
     # `evidence_text` neutralizes and bounds its own return (#1829

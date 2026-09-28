@@ -11,8 +11,10 @@ import scripts.group_runner as group_runner
 import scripts.findings_contract as findings_contract
 import scripts.tools.base as tool_base
 
-# Module-attribute access only (spec §3 rule 1): plan imports this module back,
-# and the pair is safe precisely because neither touches the other at import time.
+# Module-attribute access only (spec §3 rule 1): the package's cycle through
+# this module is `integrity -> plan -> tool_axis -> integrity`, with
+# `render -> integrity` alongside it, and every edge is safe precisely because
+# none of them touches a sibling at import time -- only at call time.
 from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 from . import findings as findings_mod
@@ -39,11 +41,13 @@ class IntegrityKey:
 # published ~20 keys, `tool_axis.reconcile` re-spelled 14 of them in a
 # hand-written `or` chain, and `render.render_summary` named four -- one of
 # which deliberately does not gate. So ten of the fourteen sinking keys had no
-# line of their own -- nine of them named nowhere on the summary, the tenth
-# (`delta_scope_suppressed_git_drivers`) only inside `coverage_note` -- and a
-# mailed report said the bare word "incomplete" instead. That is the exact hole
-# #1644 closed for `tools_manifest_invalid` alone. The reasons were on stderr;
-# the artifact an operator reads did not have them.
+# line of their own on the TERMINAL SUMMARY `render_summary` prints -- nine of
+# them named nowhere on it, the tenth (`delta_scope_suppressed_git_drivers`)
+# only inside `coverage_note` -- and it said the bare word "incomplete" instead.
+# That is the exact hole #1644 closed for `tools_manifest_invalid` alone. The
+# reasons went to stderr; the summary an operator reads did not have them.
+# (`report.json` carries the whole section, and the HTML report still names no
+# sinking key -- #2265.)
 #
 # ORDER IS RENDER ORDER, REVERSED: `render_summary` inserts every one of these
 # lines at the same index, so the LAST entry here renders topmost. The
@@ -88,7 +92,7 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
               "with the filename; possible mis-targeted write; run not "
               "certified)"),
     # The #493 R4 tamper check: the triage probe's own example of a sink that
-    # reached the report as "incomplete".
+    # reached the terminal summary as "incomplete".
     "content_mismatched_files": IntegrityKey(
         True, "CONTENT CHANGED — %s (the bytes no longer match the fan-out "
               "snapshot, or could not be re-read; run not certified)"),
