@@ -2,6 +2,7 @@ import contextlib
 import dataclasses
 import html
 import io
+import os
 import subprocess
 import unittest
 from unittest import mock
@@ -11,6 +12,7 @@ from scripts import host_disclosure, hosts
 import scripts.driver as driver
 import scripts.host_probes as host_probes
 import scripts.html_report as html_report
+import scripts.probes.codex as codex_probes
 import scripts.setup_flow as setup_flow
 import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
@@ -810,6 +812,49 @@ class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
     def test_codex_with_no_refusal_still_gets_the_emit_remedy(self):
         text = host_disclosure.remedy(hosts.READ_SCOPE_CONFINED, "codex")
         self.assertIn("--emit-host-agents codex", text)
+
+    def test_the_live_headless_probe_names_the_refusal_and_the_disclosure_keeps_it(self):
+        # Fix round 1's controller ruling, requirement 3: the disclosure's
+        # evidence comes from whichever probe run actually wrote
+        # host-capabilities.json, and for codex the only invocation that ever
+        # ATTEMPTS the registration-bound measurement is headless
+        # (`driver loop --mode headless`, settings_path not None) -- a
+        # different derivation from setup's session-mode short-circuit
+        # exercised in tests/phases/test_setup.py's live-path test. THIS
+        # derivation reaches `probes.codex._codex_surfaces`, which raises
+        # `row.registration_refusal` (#2232), caught by `_codex_measure`'s
+        # generic `except Exception` into UNKNOWN with a detail that DOES
+        # embed the refusal text. `remedy()` still names the row's refusal
+        # directly rather than the probe's wrapped detail, so the disclosure
+        # line and the raw probe detail agree on the same sentence rather
+        # than the operator getting one paraphrase from each.
+        with mock.patch.dict(os.environ, {"CODEX_HOME": "agents"}):
+            registration_dir, refusal = hosts.codex_home(os.environ.get("CODEX_HOME"))
+        self.assertEqual("", registration_dir)
+        refused_codex = dataclasses.replace(hosts.spec("codex"), registration_dir="",
+                                            registration_refusal=refusal)
+        with mock.patch.dict(hosts.HOSTS, {"codex": refused_codex}):
+            # The REAL probe. `registration_dir=None` and a non-None
+            # `settings_path` reach the exact line in `_codex_surfaces` that
+            # raises before any tempdir or subprocess exists, so nothing
+            # launches.
+            state, by, detail = codex_probes.probe_codex_tool_policy(
+                "codex", registration_dir=None, settings_path="sentinel-settings-path")
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertIn(refusal, detail)
+            # read_scope_confined pinned PROVEN so this fixture isolates the
+            # ONE line under test from the cross-capability dedup that
+            # test_the_disclosure_prints_the_refusal_once_not_per_capability_line
+            # above already covers on its own.
+            env = envelope("codex", **{
+                hosts.TOOL_POLICY_ENFORCED: (state, by, detail),
+                hosts.READ_SCOPE_CONFINED: (hosts.PROVEN, "codex-read-scope",
+                                            "fixture: proven for isolation")})
+            out = host_disclosure.lines(env)
+        line = only([ln for ln in out if hosts.TOOL_POLICY_ENFORCED in ln],
+                    "tool-policy line")
+        self.assertIn(refusal, line)
+        self.assertNotIn("--emit-host-agents", line)
 
     def test_another_host_is_never_touched_by_codexs_refusal(self):
         with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):

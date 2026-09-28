@@ -931,12 +931,79 @@ class TestTheRefusalNamesARemedyThatCanWork(unittest.TestCase):
         self.assertNotIn("--emit-host-agents", message)
         self.assertIn("--allow-unenforced", message)
 
+    def test_an_unknown_registration_refusal_is_named_instead_of_the_measure_command(self):
+        # Fix round 1's twin gap, on the OTHER branch a refused CODEX_HOME
+        # reaches: UNKNOWN + headless_available named `driver loop --setup
+        # --host codex --mode headless`, an invocation that hits the same
+        # refusal the moment it probes (proved live below), so it is exactly
+        # as impotent a remedy as the emit command was.
+        refusal = ("CODEX_HOME must be an absolute path (it is 'agents'); "
+                  "unset it to use ~/.codex")
+        refused_codex = dataclasses.replace(hosts.spec("codex"),
+                                            registration_refusal=refusal)
+        with mock.patch.dict(hosts.HOSTS, {"codex": refused_codex}):
+            message = self._refuse(
+                self._repo(), "codex",
+                {"state": hosts.UNKNOWN, "by": "codex-effective-tools",
+                 "detail": "Codex confinement is measured for driver loop "
+                           "--mode headless only; a parent session may "
+                           "override native child-agent permissions"})
+        self.assertIn(refusal, message)
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertNotIn("driver loop --setup --host codex --mode headless", message)
+        self.assertIn("--allow-unenforced", message)
+
     def test_a_refuted_codex_with_no_refusal_still_gets_the_emit_remedy(self):
         self.assertEqual("", hosts.spec("codex").registration_refusal)
         message = self._refuse(self._repo(), "codex",
                                {"state": hosts.REFUTED, "by": "codex-effective-tools",
                                 "detail": "the reviewed tree ships .codex/agents"})
         self.assertIn("--emit-host-agents codex", message)
+
+    def test_an_unknown_codex_with_no_refusal_still_gets_the_measure_remedy(self):
+        self.assertEqual("", hosts.spec("codex").registration_refusal)
+        message = self._refuse(
+            self._repo(), "codex",
+            {"state": hosts.UNKNOWN, "by": "codex-effective-tools",
+             "detail": "Codex confinement is measured for driver loop --mode "
+                       "headless only; a parent session may override native "
+                       "child-agent permissions"})
+        self.assertIn("driver loop --setup --host codex --mode headless", message)
+
+    def test_the_live_setup_probe_is_blind_to_codex_home_but_the_remedy_is_not(self):
+        # Requirement 1's finding, proved rather than assumed. `driver setup`
+        # always hands codex's tool-policy probe `settings_path=None`
+        # (`_codex_unmeasurable_row`, above, established this for the
+        # ordinary case), so `_codex_measure` returns UNKNOWN itself before
+        # `_codex_surfaces` -- the function #2232 made raise
+        # `row.registration_refusal` -- ever runs. The row the REAL probe
+        # produces under a refused CODEX_HOME is therefore BYTE-IDENTICAL to
+        # the row it produces when CODEX_HOME is perfectly fine: UNKNOWN,
+        # naming only "--mode headless", never CODEX_HOME. `_remedy_clause`
+        # still has to name the refusal, because it reads
+        # `row.registration_refusal` directly rather than trusting a detail
+        # that -- on this exact call shape -- never mentions it.
+        with mock.patch.dict(os.environ, {"CODEX_HOME": "agents"}):
+            registration_dir, refusal = hosts.codex_home(os.environ.get("CODEX_HOME"))
+        self.assertEqual("", registration_dir)
+        self.assertIn("CODEX_HOME must be an absolute path", refusal)
+        refused_codex = dataclasses.replace(hosts.spec("codex"), registration_dir="",
+                                            registration_refusal=refusal)
+        with mock.patch.dict(hosts.HOSTS, {"codex": refused_codex}):
+            # The REAL probe, called exactly as `driver setup` calls it.
+            # Nothing launches: this call shape returns before
+            # `_codex_surfaces` (the only place anything would) is reached.
+            state, by, detail = codex_probes.probe_codex_tool_policy(
+                "codex", registration_dir=None, settings_path=None)
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertIn("--mode headless", detail)
+            self.assertNotIn("CODEX_HOME", detail)
+            message = self._refuse(self._repo(), "codex",
+                                   {"state": state, "by": by, "detail": detail})
+        self.assertIn(refusal, message)
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertNotIn("driver loop --setup --host codex --mode headless", message)
+        self.assertIn("--allow-unenforced", message)
 
 
 class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
