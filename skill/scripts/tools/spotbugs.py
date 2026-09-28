@@ -8,7 +8,10 @@ try:
 except ImportError:
     import xml.etree.ElementTree as ET  # nosec B405
 
-from .base import as_list, make_finding, omit_none, run_tool, scratch_cwd
+from scripts.claim_scope import confined_to_root
+
+from .base import (as_list, make_finding, omit_none, run_tool, scratch_cwd,
+                   target_root_cv)
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -39,6 +42,93 @@ _PRIORITY_TO_CONFIDENCE = {
     "2": "LIKELY",    # SpotBugs normal confidence
     "3": "POSSIBLE",  # SpotBugs low confidence
 }
+
+
+# SpotBugs reports a `sourcepath` relative to the SOURCE ROOT it compiled --
+# `org/dummy/App.java`, the package path -- never a repo path. Everything
+# downstream resolves `location.file` against the REPO root instead: the
+# delta/`--pr` gate matches it to diff hunks, `evidence_scope` grants the
+# advisor its read off it, and every exclude glob matches against it. So on a
+# standard JVM layout the package path placed NOTHING (ARC-284455831), while
+# the adapter's own comment claimed it stayed matchable.
+#
+# These are the source roots Maven and Gradle put sources under, in the order a
+# project holding more than one wants them read: main before test, then a bare
+# `src`, then the target root itself for a layout that is already repo-relative.
+_SOURCE_ROOTS = ("src/main/java", "src/test/java", "src", "")
+
+# The one disclosure value: this finding's `location.file` is NOT a repo path,
+# so the report can say why the delta gate and the read grant could not place
+# it, rather than leaving a silently unmatchable location behind.
+_UNRESOLVED = "unresolved"
+
+
+def _repo_relative(candidate: str) -> str | None:
+    """`candidate` as a normalized relative path, or None if it is not one.
+
+    Both candidates -- a `SourceLine`'s `sourcepath` and the `<Class
+    classname>` derivation -- come from the TARGET's own bytecode debug info,
+    so both are target-controlled on a redteam scan, and `location.file` is
+    what steers the advisor's read grant (#1096). An absolute path, a `..`
+    escape and a backslash-separated path are refused HERE rather than
+    published and confined downstream.
+    """
+    if not candidate or os.path.isabs(candidate) or "\\" in candidate:
+        return None
+    clean = os.path.normpath(candidate)
+    if clean in (os.curdir, os.pardir) or clean.startswith(os.pardir + os.sep):
+        return None
+    return clean
+
+
+def _resolve_under_root(root: str, relative: str) -> str | None:
+    """`relative` as a repo-relative path to a real file, or None.
+
+    Probes `_SOURCE_ROOTS` in order and returns the FIRST that is a regular
+    file inside `root`. `lexists` first, because a DANGLING symlink is a path
+    entry that has to be judged rather than skipped as absent; then
+    `confined_to_root` -- the tree is hostile and `isfile` FOLLOWS symlinks, so
+    a committed `src/main/java/org -> /etc` would otherwise "resolve" and hand
+    the advisor a read outside the repo; then `isfile`, so a package DIRECTORY
+    of the same name is not mistaken for the source file.
+
+    `scripts.claim_scope.confined_to_root` is the one implementation of that
+    predicate (`phases/runio` and `phases/verify_tools` alias it; it is a
+    stdlib-only leaf precisely so every side can reach it) -- this adapter must
+    not grow a fourth copy of a security check.
+    """
+    for prefix in _SOURCE_ROOTS:
+        probe = os.path.join(prefix, relative) if prefix else relative
+        full = os.path.join(root, probe)
+        if os.path.lexists(full) and confined_to_root(root, probe) \
+                and os.path.isfile(full):
+            return probe
+    return None
+
+
+def _locate(*candidates: str) -> tuple[str, str | None]:
+    """(`location.file`, the `path_resolution` disclosure or None).
+
+    The repo path this finding is about when the tree is in reach and holds it,
+    and otherwise the package path with the reason it places nothing. The
+    target root reaches `parse` through `base.target_root_cv`, the way
+    pip-audit's `_located_at` takes it: `invoke` ran in the tools container and
+    `ingest_tools` parses on the host, so the tree is named around the parse or
+    not at all (the CI gate parses captured bytes with no tree).
+
+    The candidates are the SourceLine's `sourcepath` and the `<Class
+    classname>` derivation, in that order, and the first USABLE one is
+    published: a refused sourcepath leaves the derivation, which is a second
+    field rather than the same one again.
+    """
+    root = target_root_cv.get()
+    for candidate in candidates:
+        relative = _repo_relative(candidate)
+        if relative is None:
+            continue
+        resolved = _resolve_under_root(root, relative) if root else None
+        return (resolved, None) if resolved else (relative, _UNRESOLVED)
+    return "", _UNRESOLVED
 
 
 def _rank_to_severity(rank: str | None) -> str:
@@ -143,22 +233,31 @@ class SpotBugsAdapter:
             btype = bug.get("type", "")
             severity = _rank_to_severity(bug.get("rank"))
             confidence = _PRIORITY_TO_CONFIDENCE.get(bug.get("priority", ""), "POSSIBLE")
-            source = bug.find(".//SourceLine")
+            # #2188: the bug's OWN SourceLine, which SpotBugs emits as a
+            # DIRECT child. `.//SourceLine` returned the first in document
+            # order -- always the enclosing <Class>'s, whose start is the
+            # class's first line -- so every finding in a class landed tens of
+            # lines from the code it is about (65, 69 and 66 read as 11 on the
+            # pinned golden). A <Method>'s span is skipped for the same reason
+            # and one more: a role="METHOD_CALLED" Method names the CALLEE's
+            # file, which on that golden is a JDK source in no repository.
+            source = bug.find("SourceLine")
+            if source is None:
+                source = bug.find("Class/SourceLine")
             sourcepath = source.get("sourcepath", "") if source is not None else ""
-            if sourcepath:
-                file_path = sourcepath
-                line = source.get("start")
-            else:
-                # #run7 COD-C3A: no <SourceLine> -> derive the file from the
-                # BugInstance's <Class classname> (com.example.App ->
-                # com/example/App.java) so a real finding stays matchable by the
-                # delta/--pr gate instead of carrying an empty, unscopable
-                # location.file. (We KEEP the finding -- #1196 -- unlike the
-                # SCS/#476 drop policy, which discarded compiler-diagnostic noise.)
-                cls = bug.find(".//Class")
-                classname = cls.get("classname", "") if cls is not None else ""
-                file_path = (classname.replace(".", "/") + ".java") if classname else ""
-                line = 1
+            line = source.get("start") if source is not None else None
+            # #run7 COD-C3A: a bug with no usable SourceLine still gets a file,
+            # derived from the BugInstance's <Class classname>
+            # (com.example.App -> com/example/App.java), rather than an empty
+            # location.file. (We KEEP the finding -- #1196 -- unlike the
+            # SCS/#476 drop policy, which discarded compiler-diagnostic noise.)
+            # It is a package path like the sourcepath, so it is matchable by
+            # the delta/--pr gate only once `_locate` has resolved it against
+            # the tree -- and the finding says so when it could not be.
+            cls = bug.find("Class")
+            classname = cls.get("classname", "") if cls is not None else ""
+            derived = (classname.replace(".", "/") + ".java") if classname else ""
+            file_path, unresolved = _locate(sourcepath, derived)
             cwe = _SPOTBUGS_CWE.get(btype)
             out.append(make_finding(
                 self, n, group,
@@ -171,7 +270,8 @@ class SpotBugsAdapter:
                 impact="Potential security flaw in JVM bytecode.",
                 remediation="Review the FindSecBugs documentation for this bug type and refactor.",
                 citations={"cwe": as_list(cwe)},
-                tool_evidence=omit_none({"rule_id": btype}),
+                tool_evidence=omit_none({"rule_id": btype,
+                                         "path_resolution": unresolved}),
             ))
             n += 1
         return out

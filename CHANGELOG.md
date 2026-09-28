@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **spotbugs and pip-audit emit a repo-relative `location.file`, and the contract says so (#1768,
+  #2188; ARC-284455831, ARC-2852754506).** SpotBugs nests a `SourceLine` inside the enclosing
+  `<Class>` and another inside each `<Method>` before emitting the bug's own as a DIRECT child, so
+  the `.//SourceLine` the adapter read was always the class's: on the pinned golden all three
+  findings landed on line 11 of a class spanning 11-75 instead of 65, 69 and 66. It reads the bug's
+  own now, falls back to the class's span only when the bug has none, and never a `<Method>`'s — a
+  `role="METHOD_CALLED"` one names the CALLEE's file, a JDK source in no repository. The
+  `sourcepath` beside it is relative to the SOURCE root (`org/dummy/App.java`), never the repo, so
+  on a Maven or Gradle layout it matched no diff hunk and no read grant while the adapter's own
+  comment claimed it stayed matchable; it is resolved against the target root by probing
+  `src/main/java`, `src/test/java`, `src` and the root itself, refusing an absolute or `..`
+  sourcepath outright and refusing to follow a symlink out of the tree
+  (`claim_scope.confined_to_root`, not a fourth copy of it). When nothing resolves the package path
+  is kept and the finding says why in `tool_evidence.path_resolution`, so an unplaceable location
+  has a stated cause. pip-audit stored the ABSOLUTE host path of the manifest it audited in its
+  ContextVar and `_located_at` returns what it holds — unreachable on the production path, where
+  invoke and parse run in different processes, and a scanner-host layout leak for any caller that
+  shares one; it records the repo-relative path now, which is npm-audit's shape already. The
+  normalization contract asserts a normalized relative `location.file` for EVERY adapter, with
+  dependency-check's jar basename recorded as a disclosed debt naming #2225 — a debt, not an
+  allowlist: the shape rule still holds it, and a self-liquidating test drops the entry when the
+  owner rules.
 - **One parser for the `findings-<group>-<domain>` cell identity (#1765, ARC-3899903550).** Four
   modules read that name independently and disagreed at the edges: `findings_contract.cell_of` did
   not validate the domain, `synth/coverage_io.present_cells` and

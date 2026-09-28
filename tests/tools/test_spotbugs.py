@@ -3,10 +3,12 @@ import io
 import os
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from tests._test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
+import scripts.tools.base as base
 import scripts.tools.spotbugs as sb
 
 SPOTBUGS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -192,6 +194,257 @@ class TestSpotBugsAdapter(unittest.TestCase):
         # silently swallowed (#1196).
         with self.assertRaises(ParseError):
             sb.SpotBugsAdapter().parse(b"<not-xml", "g1")
+
+
+class TestTheBugsOwnSourceLine(unittest.TestCase):
+    """#2188: a BugInstance's line is its OWN <SourceLine>, not its class's.
+
+    SpotBugs nests a <SourceLine> inside the enclosing <Class> (the class's
+    whole span, so its `start` is the class's first line) and another inside
+    each <Method>, then emits the bug's own as a DIRECT child. `.//SourceLine`
+    returns the first in DOCUMENT order, which is always the class's -- so on
+    the pinned golden all three findings landed on line 11 of a class that
+    spans 11-75, about 54 lines from the code each is about.
+    """
+
+    GOLDEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "goldens", "tool-raw", "spotbugs.raw")
+
+    # The golden's shape, trimmed: class span, method span, then the bug's own.
+    NESTED = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="COMMAND_INJECTION" rank="12" priority="2">
+    <Class classname="org.dummy.Holder">
+      <SourceLine classname="org.dummy.Holder" start="11" end="75" sourcepath="org/dummy/Holder.java"/>
+    </Class>
+    <Method classname="org.dummy.Holder" name="readObject">
+      <SourceLine classname="org.dummy.Holder" start="46" end="75" sourcepath="org/dummy/Holder.java"/>
+    </Method>
+    <SourceLine classname="org.dummy.Holder" start="65" end="65" sourcepath="org/dummy/Holder.java"/>
+  </BugInstance>
+</BugCollection>
+"""
+
+    def test_the_bugs_own_source_line_beats_the_class_and_method_spans(self):
+        f = only(sb.SpotBugsAdapter().parse(self.NESTED, "g1"))
+        self.assertEqual(65, f["location"]["line_start"])
+        self.assertEqual("org/dummy/Holder.java", f["location"]["file"])
+
+    def test_a_bug_with_only_a_class_source_line_falls_back_to_it(self):
+        # The class's span is still better than nothing: it names the file and
+        # the class's first line, which is what SpotBugs itself offers here.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="COMMAND_INJECTION" rank="12" priority="2">
+    <Class classname="org.dummy.Holder">
+      <SourceLine classname="org.dummy.Holder" start="11" end="75" sourcepath="org/dummy/Holder.java"/>
+    </Class>
+  </BugInstance>
+</BugCollection>
+"""
+        f = only(sb.SpotBugsAdapter().parse(sample, "g1"))
+        self.assertEqual(11, f["location"]["line_start"])
+        self.assertEqual("org/dummy/Holder.java", f["location"]["file"])
+
+    def test_a_called_methods_source_line_is_never_the_bugs(self):
+        # DM_DEFAULT_ENCODING in the golden carries a <Method role="METHOD_CALLED">
+        # for java.io.InputStreamReader, whose SourceLine names a JDK file that
+        # is in no repository at all. Only the bug's own direct child counts.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="DM_DEFAULT_ENCODING" rank="19" priority="1">
+    <Class classname="org.dummy.Holder">
+      <SourceLine classname="org.dummy.Holder" start="11" end="75" sourcepath="org/dummy/Holder.java"/>
+    </Class>
+    <Method classname="java.io.InputStreamReader" name="&lt;init&gt;" role="METHOD_CALLED">
+      <SourceLine classname="java.io.InputStreamReader" start="88" end="91" sourcepath="java/io/InputStreamReader.java"/>
+    </Method>
+    <SourceLine classname="org.dummy.Holder" start="66" end="66" sourcepath="org/dummy/Holder.java"/>
+  </BugInstance>
+</BugCollection>
+"""
+        f = only(sb.SpotBugsAdapter().parse(sample, "g1"))
+        self.assertEqual("org/dummy/Holder.java", f["location"]["file"])
+        self.assertEqual(66, f["location"]["line_start"])
+
+    def test_the_goldens_three_findings_land_on_their_own_lines(self):
+        # Real captured output, so this is the claim that actually matters:
+        # 65, 69 and 66 are what the three BugInstances' own SourceLines say.
+        with open(self.GOLDEN, "rb") as fh:
+            raw = fh.read()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            findings = sb.SpotBugsAdapter().parse(raw, "g1")
+        self.assertEqual(
+            [("COMMAND_INJECTION", 65), ("CRLF_INJECTION_LOGS", 69),
+             ("DM_DEFAULT_ENCODING", 66)],
+            [(f["title"], f["location"]["line_start"]) for f in findings])
+
+
+class TestSourcePathResolvesAgainstTheTargetRoot(unittest.TestCase):
+    """ARC-284455831: `sourcepath` is SOURCE-ROOT relative, not repo-relative.
+
+    SpotBugs reports `org/dummy/.../VulnerableTaskHolder.java` -- the package
+    path -- while the file in a Maven or Gradle layout is at
+    `src/main/java/org/dummy/.../VulnerableTaskHolder.java`. The delta/`--pr`
+    gate and the advisor's read grant both resolve `location.file` against the
+    repo root, so the package path places nothing. The target root reaches
+    `parse` through `base.target_root_cv`, the way pip-audit's `_located_at`
+    takes it.
+    """
+
+    SOURCEPATH = "org/dummy/insecure/framework/VulnerableTaskHolder.java"
+
+    @staticmethod
+    def _report(sourcepath, classname="org.dummy.insecure.framework.VulnerableTaskHolder"):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<BugCollection version="4.8.6">'
+                '<BugInstance type="COMMAND_INJECTION" rank="12" priority="2">'
+                '<Class classname="%s"/>'
+                '<SourceLine classname="%s" start="65" end="65" sourcepath="%s"/>'
+                '</BugInstance></BugCollection>'
+                % (classname, classname, sourcepath)).encode()
+
+    def _pin_root(self, root):
+        token = base.target_root_cv.set(root)
+        self.addCleanup(base.target_root_cv.reset, token)
+
+    @staticmethod
+    def _write(root, *relatives):
+        for relative in relatives:
+            full = os.path.join(root, *relative.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write("// source\n")
+
+    def _parse_one(self, sourcepath, **kwargs):
+        return only(sb.SpotBugsAdapter().parse(self._report(sourcepath, **kwargs), "g1"))
+
+    def test_a_maven_source_root_makes_the_location_repo_relative(self):
+        with TemporaryDirectory() as root:
+            self._write(root, "src/main/java/" + self.SOURCEPATH)
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual("src/main/java/" + self.SOURCEPATH, f["location"]["file"])
+        self.assertNotIn("path_resolution", f["tool_evidence"])
+
+    def test_every_conventional_source_root_is_probed(self):
+        for prefix in ("src/main/java", "src/test/java", "src", ""):
+            with self.subTest(source_root=prefix or "<target root>"):
+                relative = ("%s/%s" % (prefix, self.SOURCEPATH)) if prefix else self.SOURCEPATH
+                with TemporaryDirectory() as root:
+                    self._write(root, relative)
+                    self._pin_root(root)
+                    f = self._parse_one(self.SOURCEPATH)
+                self.assertEqual(relative, f["location"]["file"])
+                self.assertNotIn("path_resolution", f["tool_evidence"])
+
+    def test_the_first_matching_source_root_wins(self):
+        # A project with both trees: main is the one SpotBugs analyzed, and
+        # probing in a fixed order is what keeps the answer deterministic.
+        with TemporaryDirectory() as root:
+            self._write(root, "src/test/java/" + self.SOURCEPATH,
+                        "src/main/java/" + self.SOURCEPATH)
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual("src/main/java/" + self.SOURCEPATH, f["location"]["file"])
+
+    def test_a_directory_of_the_same_name_is_not_a_match(self):
+        # `isfile`, not `exists`: a package directory that happens to share the
+        # name would otherwise "resolve" to something no diff hunk can hold.
+        with TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "src", "main", "java",
+                                     *self.SOURCEPATH.split("/")))
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual(self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_an_unmatched_sourcepath_is_kept_and_disclosed(self):
+        with TemporaryDirectory() as root:
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual(self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_no_target_root_keeps_the_sourcepath_and_discloses(self):
+        # The CI gate parses captured bytes with no tree in reach; the finding
+        # must still be emitted, and must say why it cannot be placed.
+        f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual(self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_a_resolved_path_carries_no_disclosure(self):
+        with TemporaryDirectory() as root:
+            self._write(root, "src/" + self.SOURCEPATH)
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual("src/" + self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual({"rule_id": "COMMAND_INJECTION"}, f["tool_evidence"])
+
+    def test_a_hostile_sourcepath_never_escapes_the_root(self):
+        # `sourcepath` comes from the TARGET's own bytecode debug info, and
+        # `location.file` steers the advisor's read grant (#1096), so an
+        # escaping path is refused outright rather than published.
+        hostile = ("../../../../../../etc/passwd", "/etc/passwd",
+                   "src/../../outside.java")
+        for sourcepath in hostile:
+            with self.subTest(sourcepath=sourcepath):
+                with TemporaryDirectory() as root:
+                    self._pin_root(root)
+                    f = self._parse_one(sourcepath, classname="")
+                self.assertEqual("", f["location"]["file"])
+                self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_a_hostile_sourcepath_still_leaves_the_classname_fallback(self):
+        with TemporaryDirectory() as root:
+            self._pin_root(root)
+            f = self._parse_one("/etc/passwd")
+        self.assertEqual("org/dummy/insecure/framework/VulnerableTaskHolder.java",
+                         f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_a_symlinked_package_is_not_followed_out_of_the_root(self):
+        # An in-tree symlink whose lexical path stays under the root but whose
+        # target does not: the #run7 ARC-F2A shape, refused by realpath.
+        with TemporaryDirectory() as outside, TemporaryDirectory() as root:
+            self._write(outside, "dummy/insecure/framework/VulnerableTaskHolder.java")
+            os.makedirs(os.path.join(root, "src", "main", "java"))
+            os.symlink(os.path.join(outside, "dummy"),
+                       os.path.join(root, "src", "main", "java", "org"))
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual(self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_a_dangling_symlink_is_not_a_match(self):
+        with TemporaryDirectory() as root:
+            full = os.path.join(root, "src", "main", "java", *self.SOURCEPATH.split("/"))
+            os.makedirs(os.path.dirname(full))
+            os.symlink(os.path.join(root, "gone.java"), full)
+            self._pin_root(root)
+            f = self._parse_one(self.SOURCEPATH)
+        self.assertEqual(self.SOURCEPATH, f["location"]["file"])
+        self.assertEqual("unresolved", f["tool_evidence"]["path_resolution"])
+
+    def test_the_classname_fallback_resolves_the_same_way(self):
+        # #run7 COD-C3A derived a path from <Class classname> so a SourceLine-less
+        # finding stayed matchable. A package path is not a repo path, so the
+        # derivation only delivers that once it has been resolved too.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6">
+  <BugInstance type="COMMAND_INJECTION" priority="1">
+    <Class classname="com.example.App"/>
+  </BugInstance>
+</BugCollection>
+"""
+        with TemporaryDirectory() as root:
+            self._write(root, "src/main/java/com/example/App.java")
+            self._pin_root(root)
+            f = only(sb.SpotBugsAdapter().parse(sample, "g1"))
+        self.assertEqual("src/main/java/com/example/App.java", f["location"]["file"])
+        self.assertEqual(1, f["location"]["line_start"])
+        self.assertNotIn("path_resolution", f["tool_evidence"])
 
 
 class TestHardenedXmlParser(unittest.TestCase):

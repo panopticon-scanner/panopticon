@@ -102,6 +102,49 @@ def _strings(where, value):
             yield from _strings("%s[%d]" % (where, index), val)
 
 
+# #2226 (ARC-284455831, ARC-2852754506): `location.file` is a REPO path.
+#
+# Everything downstream resolves it against the repo ROOT -- the delta/`--pr`
+# gate matches it to `diff-hunks.json`, `evidence_scope` grants the advisor its
+# read off it, `grading` attributes findings to groups by it, and every exclude
+# glob matches against it. A path that is absolute, escapes the root, or is
+# merely relative to something ELSE (spotbugs' source root) matches none of
+# them however real the file is.
+#
+# Adapters whose path is shape-legal and still names nothing in the reviewed
+# repository are recorded below as a DISCLOSED DEBT -- not an allowlist.
+# Nothing here is exempt from the rule: an entry says the path passes the shape
+# and still fails its PURPOSE, which is the half no test at this layer can see
+# (the goldens are captured BYTES, not trees, so "does this name a file in the
+# repo" has nothing to resolve against). Adding a name suppresses no assertion;
+# it publishes a debt and names the issue that owes the answer.
+PATH_DEBT = {
+    "dependency-check": "#2225: a vulnerable jar's basename; owner call pending",
+}
+
+
+def _path_shape_error(path):
+    """Why `path` is not a repo-relative `location.file`, or None.
+
+    Every consumer joins it onto a root or compares it to a path that was
+    produced that way, so the same string has to be the only spelling of the
+    file: `./a.py`, `a/../b.py` and `src//app.py` name real files and match
+    nothing.
+    """
+    if os.path.isabs(path):
+        return "absolute"
+    if "\\" in path:
+        return "backslash-separated"
+    parts = path.split("/")
+    if os.pardir in parts:
+        return "carries a '..' segment"
+    if os.curdir in parts:
+        return "carries a '.' segment"
+    if path != os.path.normpath(path):
+        return "not normalized (normpath says %r)" % os.path.normpath(path)
+    return None
+
+
 def golden_path(name):
     return os.path.join(GOLDEN_DIR, "%s.raw" % name)
 
@@ -174,6 +217,13 @@ class TestNormalizationContract(unittest.TestCase):
         loc = f["location"]
         self.assertIsInstance(loc, dict, "%s: location is not an object" % name)
         self.assertTrue(loc.get("file"), "%s: location.file is empty" % name)
+        # ...and a repo-relative one: see PATH_DEBT above for the half of this
+        # a bytes-only contract cannot check, and which adapter still owes it.
+        shape = _path_shape_error(loc["file"])
+        self.assertIsNone(
+            shape, "%s: location.file %r is %s -- the delta gate, the advisor's "
+            "read grant and every exclude glob resolve it against the repo root"
+            % (name, loc["file"], shape))
         self.assertIsInstance(loc.get("line_start"), int,
                               "%s: location.line_start is not an int" % name)
         self.assertGreaterEqual(loc["line_start"], 0,
@@ -223,6 +273,80 @@ class TestNormalizationContract(unittest.TestCase):
                         len(text), bound,
                         "%s: %s is %d chars -- unbounded target text"
                         % (name, where, len(text)))
+
+
+class TestLocationFileIsARepoPath(unittest.TestCase):
+    """#2226: `location.file` is a REPO path, and the shape rule that says so.
+
+    The contract above asserted only that it was non-empty, and two adapters
+    drifted under that: spotbugs emitted the source-root-relative package path
+    (`org/dummy/App.java`, ARC-284455831) and pip-audit recorded an absolute
+    host path on its in-process route (ARC-2852754506). Neither is visible to a
+    bytes-only contract -- the goldens carry no tree, so an unresolved package
+    path reads exactly like a resolved one, and the ContextVar pip-audit leaked
+    through is unset here. Those two are pinned where they CAN be seen, in
+    tests/tools/test_spotbugs.py and tests/tools/test_pip_audit.py.
+
+    The rule here is the floor underneath them, and this class is the guard on
+    it: it passes on every adapter today, so a green run has to mean "the rule
+    was applied", not "the rule never fires" -- the discipline
+    `test_the_validator_would_have_caught_a_bad_finding` already uses.
+    """
+
+    BAD = ("/src/app.py", "../outside.py", "./app.py", "a/../b.py",
+           "src\\app.py", "src//app.py", "src/app.py/", "src/./app.py")
+
+    # Real names that must keep passing: `TestLegitimatePathsSurviveByteForByte`
+    # already pins that the builders do not REWRITE these, and a shape rule
+    # that rejected them would refuse findings about real files.
+    GOOD = ("requirements.txt", "angus-activation-2.0.1.jar",
+            "src/main/java/org/dummy/App.java", "src/a  b.py",
+            "Screen Shot.png", "doc/\xa0nbsp.py", "a　b.py")
+
+    def test_the_shape_rule_rejects_what_the_delta_gate_cannot_place(self):
+        for path in self.BAD:
+            with self.subTest(path=path):
+                self.assertIsNotNone(_path_shape_error(path),
+                                     "%r is not a repo-relative path" % path)
+
+    def test_the_shape_rule_accepts_a_real_repo_path(self):
+        for path in self.GOOD:
+            with self.subTest(path=path):
+                self.assertIsNone(_path_shape_error(path))
+
+    def test_every_disclosed_debt_names_a_registered_adapter(self):
+        # The register may not outlive the adapters it is about.
+        self.assertEqual(
+            [], sorted(n for n in PATH_DEBT if n not in ADAPTERS),
+            "PATH_DEBT names an adapter that is not registered")
+
+    def test_a_disclosed_debt_still_satisfies_the_shape_rule(self):
+        # An entry is a debt, not an exemption. dependency-check's jar basename
+        # is a perfectly legal relative path that resolves to nothing, and the
+        # shape rule holds it exactly as it holds every other adapter.
+        for name in sorted(PATH_DEBT):
+            if not os.path.isfile(golden_path(name)):
+                continue
+            with self.subTest(adapter=name):
+                with open(golden_path(name), "rb") as fh:
+                    findings = ADAPTERS[name].parse(fh.read(), "Probe")
+                self.assertTrue(findings)
+                for f in findings:
+                    self.assertIsNone(_path_shape_error(f["location"]["file"]))
+
+    def test_the_dependency_check_debt_is_still_owed(self):
+        # Self-liquidating, the way the size ratchet's PENDING entries are:
+        # when #2225 is ruled and the adapter emits the declaring manifest
+        # instead, this fails and takes the PATH_DEBT entry with it.
+        with open(golden_path("dependency-check"), "rb") as fh:
+            findings = ADAPTERS["dependency-check"].parse(fh.read(), "Probe")
+        self.assertTrue(findings)
+        files = sorted({f["location"]["file"] for f in findings})
+        self.assertEqual(
+            files, [f for f in files
+                    if not os.path.dirname(f) and f.endswith(".jar")],
+            "dependency-check emits something other than a bare jar name now -- "
+            "if #2225 is answered, drop its PATH_DEBT entry with this test")
 
 
 class TestHostileToolTextIsInert(unittest.TestCase):

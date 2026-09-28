@@ -14,6 +14,9 @@ import scripts.redact as redact
 from .base import (cve_ids, make_finding, normalize_severity, omit_none,
                    parse_json_bytes, run_tool, scratch_cwd, target_root_cv)
 
+# The manifest THIS invocation audited, TARGET-RELATIVE (ARC-2852754506, and
+# npm_audit's shape already): `location.file`'s shape everywhere downstream, and
+# an absolute one publishes the host layout `sanitization_report` already refuses.
 _manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "pip_audit_manifest_path", default=None)
 
@@ -513,7 +516,9 @@ class PipAuditAdapter:
             # resolve runs the target's build backend. The sanitizer's output
             # is what pip-audit sees; the repo path survives only as the
             # LOCATION findings are reported against, which reads no file.
-            _manifest_path_cv.set(req)
+            # `req` itself stays ABSOLUTE -- sanitize_requirements_file opens
+            # it -- and only what the report publishes is relativized.
+            _manifest_path_cv.set(os.path.relpath(req, target))
             kept = sanitize_requirements_file(req, target)["kept"]
         else:
             # Never pass the project directory positionally: resolving a
@@ -528,7 +533,7 @@ class PipAuditAdapter:
                       "skipping (osv-scanner covers this target)" % target,
                       file=sys.stderr)
                 return b'{"dependencies": [], "fixes": []}', 0
-            _manifest_path_cv.set(os.path.join(target, "pyproject.toml"))
+            _manifest_path_cv.set("pyproject.toml")   # at the root by definition
             # The PEP 621 read is static, but `[project.dependencies]` may
             # itself hold `name @ git+https://...` -- the same build-backend
             # door through a second file. Both branches write a GENERATED file
@@ -613,10 +618,10 @@ class PipAuditAdapter:
         `docker run ... _run_adapter.py`, which only invokes, and `ingest_tools`
         parses the captured bytes back on the host. `invoke`'s own choice is
         used when the two share a process; otherwise the same choice is made
-        again from the target root ingest names around its parse -- and
-        repo-RELATIVE there, which is the shape `location.file` carries
-        everywhere downstream (the fixture prune and every exclude glob match
-        against it).
+        again from the target root ingest names around its parse. BOTH are
+        repo-relative (ARC-2852754506 made the first one so), which is the
+        shape `location.file` carries everywhere downstream (the fixture prune
+        and every exclude glob match against it).
         """
         chosen = _manifest_path_cv.get()
         if chosen:
