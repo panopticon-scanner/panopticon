@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reuse the coverage string-list filter (#2278, #1822).** Coverage delegates list filtering
+  to the schema helper while still accepting a lone string. Manifest inputs remain list-only.
 - **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
   row-count and name checks. Overlong tool identities are still dropped; suppression names are
   still cut and colliding counts summed, with the same warnings and value checks.
