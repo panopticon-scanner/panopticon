@@ -2029,8 +2029,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # `E\` + `OF` ends it; and the body starts after the newline that ends
         # the command, which a string running over two lines moves down. A
         # `\`-newline and a blank before the word are both gone to bash; read
-        # as an empty word, which no line below matched, they left `it's` to
-        # be read as code, and its quote hid the payload.
+        # as an empty word, they let the first empty line end the body -- here
+        # the empty end after the script's last newline, past the payload.
         for script in ("cat <<EOF-X\nbody\nEOF-X\n%s\nEOF\n",
                        "cat <<EOF\n  EOF\nit's\nEOF\n%s\n",
                        "cat <<EOF\nE\\\nOF\n%s\nEOF\n",
