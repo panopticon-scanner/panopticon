@@ -47,10 +47,13 @@ _PRIORITY_TO_CONFIDENCE = {
 # SpotBugs reports a `sourcepath` relative to the SOURCE ROOT it compiled --
 # `org/dummy/App.java`, the package path -- never a repo path. Everything
 # downstream resolves `location.file` against the REPO root instead: the
-# delta/`--pr` gate matches it to diff hunks, `evidence_scope` grants the
-# advisor its read off it, and every exclude glob matches against it. So on a
-# standard JVM layout the package path placed NOTHING (ARC-284455831), while
-# the adapter's own comment claimed it stayed matchable.
+# delta/`--pr` gate matches it to diff hunks, the tool-verify round scopes its
+# advisor with `phases/coverage.group_files_containing` (a tool finding carries
+# no group, so its FILE is what finds the cell), `grading` attributes findings
+# to groups by it, and every exclude glob matches against it. So on a standard
+# JVM layout the package path placed NOTHING (ARC-284455831) -- it scoped that
+# advisor to one file that does not exist -- while the adapter's own comment
+# claimed it stayed matchable.
 #
 # These are the source roots Maven and Gradle put sources under, in the order a
 # project holding more than one wants them read: main before test, Java before

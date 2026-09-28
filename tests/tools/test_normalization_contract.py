@@ -105,9 +105,12 @@ def _strings(where, value):
 # #2226 (ARC-284455831, ARC-2852754506): `location.file` is a REPO path.
 #
 # Everything downstream resolves it against the repo ROOT -- the delta/`--pr`
-# gate matches it to `diff-hunks.json`, `evidence_scope` grants the advisor its
-# read off it, `grading` attributes findings to groups by it, and every exclude
-# glob matches against it. A path that is absolute, escapes the root, or is
+# gate matches it to `diff-hunks.json`, the tool-verify round scopes its advisor
+# with `phases/coverage.group_files_containing` (a tool finding carries no group,
+# so its FILE is what finds the cell), `grading` attributes findings to groups by
+# it, and every exclude glob matches against it. (`evidence_scope`'s bounded
+# closure is the BACKUP round over panel claims, and no adapter finding reaches
+# it.) A path that is absolute, escapes the root, or is
 # merely relative to something ELSE (spotbugs' source root) matches none of
 # them however real the file is.
 #
