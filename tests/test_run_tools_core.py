@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import scripts.run_tools as rt
+import scripts.scanner_config as sc
 from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
 
 from tests._test_helpers import REPO_ROOT
@@ -1243,24 +1244,6 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
                 self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
                                  ["--exclude=%s" % rt._bandit_exclude_value([])])
 
-    def test_the_ini_holds_exactly_one_key_and_no_target_text(self):
-        lines = [ln for ln in rt.BANDIT_INI_TEXT.splitlines() if ln.strip()]
-        self.assertEqual(lines[0], "[bandit]")
-        self.assertEqual(len([ln for ln in lines if "=" in ln]), 1)
-        self.assertEqual(len(lines), 2)
-        value = lines[1].split("=", 1)[1]
-        for owned in rt.BANDIT_SCANNER_EXCLUDES:
-            self.assertIn(owned, [e.strip() for e in value.split(",")])
-
-    def test_no_scanner_owned_exclude_entry_can_split_or_inject(self):
-        # A future entry with a comma would inject a second exclusion; one with
-        # a newline would inject a second ini KEY. Neither is a target input --
-        # which is exactly why it has to be pinned here rather than validated at
-        # runtime on data nobody can supply.
-        for entry in tuple(rt.BANDIT_DEFAULT_EXCLUDES) + tuple(rt.BANDIT_SCANNER_EXCLUDES):
-            for char in (",", "\n", "\r", "="):
-                self.assertNotIn(char, entry, entry)
-
     def test_bandit_always_carries_the_scanner_owned_exclusions(self):
         # bandit's ini is fail-OPEN on arrival: `parse_ini_file` catches a parse
         # failure, warns, and bandit runs on CLI args alone. So the CLI carries
@@ -1403,13 +1386,13 @@ class TestInlineSuppressionIsNeutralisedUnderRedteamOnly(unittest.TestCase):
         # gosec honours `// #nosec` and its own knob was NOT verified against
         # the pinned image in this round, so the residual is DISCLOSED on the
         # manifest instead of guessed at on the argv.
-        self.assertIsNone(rt.SUPPRESSION_COMMENTS["gosec"][1])
+        self.assertIsNone(sc.SUPPRESSION_COMMENTS["gosec"][1])
         argv = self._argv("gosec", "redteam")
         self.assertEqual(argv[-len(rt.TOOL_CMD["gosec"]):],
                          list(rt.TOOL_CMD["gosec"]))
 
     def test_every_named_knob_is_a_flag_and_every_tool_is_one_we_run(self):
-        for tool, (comment, flag) in rt.SUPPRESSION_COMMENTS.items():
+        for tool, (comment, flag) in sc.SUPPRESSION_COMMENTS.items():
             with self.subTest(tool=tool):
                 self.assertIn(tool, rt.recommendable_tools(),
                               "%s is not a tool this runner can select" % tool)
@@ -1880,7 +1863,7 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             payload = self._manifest(d, tools=["brakeman"])
         self.assertNotIn("brakeman", payload["suppression_comments"])
-        self.assertNotIn("brakeman", rt.SUPPRESSION_COMMENTS)
+        self.assertNotIn("brakeman", sc.SUPPRESSION_COMMENTS)
 
     def test_the_claim_follows_the_argv_and_not_the_intent(self):
         # The coupling, the same way the redaction claim is coupled -- for a
@@ -1888,10 +1871,10 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
         # table the redteam argv carries no `--ignore-nosec`, bandit really does
         # honour a `# nosec`, and the manifest says `honoured` instead of
         # repeating the mode back.
-        table = dict(rt.SUPPRESSION_COMMENTS)
+        table = dict(sc.SUPPRESSION_COMMENTS)
         table["bandit"] = ("# nosec", None)
         with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+                mock.patch.object(sc, "SUPPRESSION_COMMENTS", table):
             payload = self._manifest(d, tools=["bandit"],
                                      security_mode="redteam")
         self.assertEqual(payload["suppression_comments"],
@@ -1905,11 +1888,11 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
         # off the argv publishes a FALSE COVERAGE CLAIM the moment the belt comes
         # off: `honoured` on a redteam run whose ingest ignores every such
         # comment. The row follows what actually governs -- the mode.
-        table = dict(rt.SUPPRESSION_COMMENTS)
+        table = dict(sc.SUPPRESSION_COMMENTS)
         table["semgrep"] = ("# nosemgrep", None)   # the belt taken off
         for mode, expected in (("redteam", "ignored"), ("standard", "honoured")):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d, \
-                    mock.patch.object(rt, "SUPPRESSION_COMMENTS", table):
+                    mock.patch.object(sc, "SUPPRESSION_COMMENTS", table):
                 payload = self._manifest(d, tools=["semgrep"],
                                          security_mode=mode)
             self.assertEqual(payload["suppression_comments"],

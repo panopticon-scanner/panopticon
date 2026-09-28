@@ -24,6 +24,7 @@ import sys
 
 import scripts.findings_contract as findings_contract
 from . import artifacts as artifacts_mod
+from . import validate_schema as schema_mod
 
 # DAT-2808086775: a target-writable artifact gets a bounded read, the shape
 # `tools/pip_audit.py` already uses for pyproject.toml. A realistic record
@@ -74,9 +75,7 @@ def _strings(value):
     it was meant to be; [] for anything else."""
     if isinstance(value, str):
         return [value]
-    if isinstance(value, list):
-        return [x for x in value if isinstance(x, str)]
-    return []
+    return schema_mod.string_list(value)
 
 
 def normalized_cell(cell, path=None, warn=None):

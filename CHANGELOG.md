@@ -10,6 +10,21 @@ evidence exposed.
 - **Keep score-gate imports from changing the search path (#2279, #1823).** Package and flat
   imports retain evidence module identity without modifying `sys.path`. Direct file execution
   remains supported, and the bootstrap allowance is removed from the import guard.
+- **Reuse the coverage string-list filter (#2278, #1822).** Coverage delegates list filtering
+  to the schema helper while still accepting a lone string. Manifest inputs remain list-only.
+- **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
+  row-count and name checks. Overlong tool identities are still dropped; suppression names are
+  still cut and colliding counts summed, with the same warnings and value checks.
+- **Use current tool-policy test fixtures (#2276, #1820).** One driver-plan fixture and case
+  table cover enforced, advisory, mixed and unknown modes, retaining the report metadata check.
+- **The scanner-owned config leaves `run_tools.py` (#1762, ARC-2609514778; part 1 of 3).**
+  The staged `bandit.ini`/`.trivyignore`, the suppression posture, the ignore overlays and
+  two of the four ledgers the manifest reads back move to `skill/scripts/scanner_config.py`
+  whole: `run_tools.py` goes from 2215 to 1774 lines and the new module is 518, under the
+  700-line ceiling. No argv, flag, path or message changed — `tests/test_scanner_config.py`
+  pins the docker argv of both staged tools, in both security modes, with and without the
+  target's own `.bandit`, against a golden captured before the move. `ToolAdapters` gains
+  an `Image` layer so the matrix can claim the new files without passing the 48-file cap.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
