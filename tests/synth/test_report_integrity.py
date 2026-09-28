@@ -513,6 +513,21 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       "Does NOT affect certification.", md)
         self.assertNotIn("**Integrity:**", md)
 
+    def test_evidence_text_neutralizes_its_own_output(self):
+        # Review finding 6: `tools.base.inert_text`'s own docstring states the
+        # rule -- fixing untrusted text at the producer is what lets every
+        # renderer inherit it instead of each one remembering. This evidence is
+        # a findings filename out of the scanned repository's own artifact
+        # directory, so a second caller that forgot the wrap would print a
+        # target-authored escape sequence straight to an operator's terminal.
+        self.assertEqual(
+            integrity_mod.evidence_text("unexpected_findings_files",
+                                        ["a\x1b[2Kb.json"]),
+            r"a\x1b[2Kb.json")
+        self.assertEqual(
+            integrity_mod.evidence_text("invalid_verify_queue", "q\x07"),
+            r"q\x07")
+
     def test_a_certification_failure_outranks_the_non_gating_note(self):
         # Review finding 12: the `**Note:**` is an aside about the review and
         # the `**Integrity:**` lines are the verdict on the run, so the module's

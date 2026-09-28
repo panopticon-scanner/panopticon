@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import scripts.group_runner as group_runner
 import scripts.findings_contract as findings_contract
+import scripts.tools.base as tool_base
 
 # Module-attribute access only (spec §3 rule 1): plan imports this module back,
 # and the pair is safe precisely because neither touches the other at import time.
@@ -165,8 +166,13 @@ def _row_evidence(key, row):
 def evidence_text(key, value):
     """The text for the `%s` slot in `INTEGRITY_KEYS[key]`'s sentence: the
     files, reasons or count behind that key, in the shape `integrity_section`
-    below publishes it. RAW -- `render.render_summary`, the one caller, is
-    where it is neutralized, at the point it prints (#1829 SEC-798292895).
+    below publishes it.
+
+    Neutralized HERE, not at the renderer (#1829 SEC-798292895): a findings
+    filename comes off the scanned repository's own artifact directory and a
+    cross-domain row carries an agent-authored domain, and `inert_text`'s rule
+    is that fixing such text at the producer is what lets every renderer
+    inherit it instead of each one remembering. It also bounds the slot.
     """
     if key == "cross_domain_findings":
         by: dict[tuple, int] = {}
@@ -174,11 +180,13 @@ def evidence_text(key, value):
             if isinstance(row, dict):
                 pair = (row.get("cell_domain"), row.get("finding_domain"))
                 by[pair] = by.get(pair, 0) + 1
-        return "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
+        text = "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
             "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items())))
-    if isinstance(value, list):
-        return ", ".join(_row_evidence(key, row) for row in value)
-    return str(value)
+    elif isinstance(value, list):
+        text = ", ".join(_row_evidence(key, row) for row in value)
+    else:
+        text = str(value)
+    return tool_base.inert_text(text)
 
 
 def duplicate_out_files(plan):

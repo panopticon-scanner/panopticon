@@ -366,10 +366,8 @@ def render_summary(report):
     # the hole #1644 closed for `tools_manifest_invalid` alone.
     # A key renders on exactly the truthiness that sinks `integrity_ok`, so the
     # summary and the gate cannot drift; the table's comment owns the order.
-    # Every slot is neutralized at this one point (#1829 SEC-798292895): the
-    # evidence is findings filenames out of the scanned repository's own
-    # artifact directory and, for the cross-domain note, an agent-authored
-    # domain -- two more fields the normalization boundary does not own.
+    # `evidence_text` neutralizes and bounds its own return (#1829
+    # SEC-798292895), so this loop composes only the table's own sentences.
     integ = report["meta"].get("integrity") or {}
     for key, spec in integrity_mod.INTEGRITY_KEYS.items():
         value = integ.get(key)
@@ -377,8 +375,7 @@ def render_summary(report):
             continue
         body = spec.sentence
         if "%s" in body:
-            body = body % tool_base.inert_text(
-                integrity_mod.evidence_text(key, value))
+            body = body % integrity_mod.evidence_text(key, value)
         lines.insert(3, "**%s:** %s" % ("Integrity" if spec.sinks else "Note", body))
     delta = s.get("delta")
     if delta:
