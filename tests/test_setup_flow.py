@@ -79,7 +79,7 @@ def test_readiness_names_a_refused_codex_home_not_the_emit_remedy(tmp_path, monk
     # `--emit-host-agents` remedy cannot help: emission refuses the same value.
     import dataclasses
 
-    import dispatch  # the module `_check_host_shells` imports
+    import scripts.dispatch as dispatch  # the package module `_check_host_shells` imports
     dispatch.emit_host_agents("codex", str(tmp_path / "agents"))
     monkeypatch.chdir(tmp_path)
     hosts = setup_flow.hosts

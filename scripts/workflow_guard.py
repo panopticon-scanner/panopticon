@@ -152,10 +152,7 @@ that starts catching one fails there, and this list is edited with it.
   `docker exec -i c sh <<'EOF'`), whose argv this walk reads as the transport's;
   and, as everywhere in this module, an interpreter under a name its tables do
   not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
-  program's basename. A SECOND heredoc on the same command line
-  (`bash -s <<'A' 3<<'B'`) is a reader limitation, not a ruling: the lifter
-  takes one body per line, so the stdin body is dropped rather than read --
-  tracked as a follow-up from #1839.
+  program's basename.
   A heredoc the step WRITES to a file and then runs
   (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business at all: the
   script is text in the repo under review, which is the `sed -i` entry's

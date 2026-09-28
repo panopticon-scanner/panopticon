@@ -25,6 +25,7 @@ import scripts.ingest_tools as ingest_tools
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import artifacts as artifacts_mod
 from . import coverage_io as coverage_io
+from . import integrity as integrity_mod
 from . import plan as plan_mod
 from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
@@ -434,41 +435,18 @@ def reconcile(plan, tools, resolved, run=None):
     integrity["delta_scope_suppressed_git_drivers"] = delta_scope_suppressed
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
-    integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
-                                     or integrity.get("duplicate_out_files")
-                                     or integrity.get("mislabeled_findings_files")
-                                     or integrity.get("content_mismatched_files")
-                                     or integrity.get("content_snapshot_unreadable")
-                                     or integrity.get("content_snapshot_missing")
-                                     or integrity.get("malformed_findings_files")
-                                     or integrity.get("empty_dispatch_plans")
-                                     # SEC-377944137 (#1832): the driver
-                                     # recorded a review dispatch and no plan
-                                     # file is on disk. `plans_seen` was the
-                                     # only key that noticed a deleted plan,
-                                     # and it was not in this list -- so the
-                                     # `rm` that erased #1208's snapshot
-                                     # obligation certified a substitution the
-                                     # run had already detected.
-                                     or integrity.get("dispatch_plan_missing")
-                                     # ...and a plan that is PRESENT but is not
-                                     # the one this run wrote: a narrower plan
-                                     # declares fewer cells, so replacing it is
-                                     # a cheaper `rm`.
-                                     or integrity.get("dispatch_plan_mismatched")
-                                     or integrity.get("invalid_dispatch_plans")
-                                     or integrity.get("invalid_verify_queue")
-                                     # Fix round 1 F1: an unreadable manifest
-                                     # is an integrity failure like the rest of
-                                     # this list, so it forces INCONCLUSIVE.
-                                     # Exempting it made corrupting one byte of
-                                     # a target-writable file the cheapest way
-                                     # to turn an INCONCLUSIVE gate into PASS.
-                                     or integrity.get("tools_manifest_invalid")
-                                     # #2013 fix round 1: a delta whose scope was
-                                     # chosen by a suppressed comparison.
-                                     or integrity.get(
-                                         "delta_scope_suppressed_git_drivers"))
+    # ARC-3284703909 (#1761): membership is `integrity.INTEGRITY_KEYS`, which
+    # also owns the sentence `render.render_summary` prints for each key. The
+    # 14-term `or` chain this replaced was the second spelling of a set the
+    # section already published and the report named four of, so ten keys sank
+    # certification with nothing on the summary but the word "incomplete" --
+    # every reason each key's own comment gave now lives beside its sentence.
+    #
+    # `scope_ok` stays a term of its own: findings citing files outside their
+    # group's assigned lane (#441) is a PLAN fact, not a key of this section.
+    integrity_ok = scope_ok and not any(
+        integrity.get(key) for key, spec in integrity_mod.INTEGRITY_KEYS.items()
+        if spec.sinks)
     # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
     # cells, alongside the requested-absent-TOOL check above. `coverages` is
     # the raw list of coverage-<group>.json dicts the caller read (main()

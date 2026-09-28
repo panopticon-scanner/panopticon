@@ -98,6 +98,22 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
         self.assertEqual("return_json", entry["delivery"])
 
+    def test_a_legacy_list_config_is_disclosed_and_setup_still_proceeds(self):
+        # #2229: `config_refusal` refuses the SCHEMA's errors now, so the other
+        # half has to be pinned too -- the legacy list form is a DISCLOSURE, not
+        # a fault, and a setup over it must still reach the scan checkpoint with
+        # the notice printed rather than answering `status: error`.
+        d = self._registered_repo()
+        with open(os.path.join(d, repo_config.CONFIG_NAMES[0]), "w") as fh:
+            fh.write("version: 1\ngroups:\n  - name: Auth\n    match: ['src/**']\n")
+        args = driver.build_parser().parse_args(["setup", d])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = setup.run_setup_flow(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        self.assertEqual("scan", status["checkpoint"])
+        self.assertIn("legacy list form -- normalizing to mapping", err.getvalue())
+
     def test_setup_refuses_a_shell_less_scan_without_the_operators_ack(self):
         # #1737 brief case (b). The one dispatch that reads the whole untrusted
         # tree now passes the acknowledgement every other unenforced dispatch
