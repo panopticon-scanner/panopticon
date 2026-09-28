@@ -83,6 +83,10 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/scripts/tool_capture.py` — one container run supervised: the wall-clock watchdog and
   its `--cidfile` container kill, the byte cap and truncation marker, the exit-code
   classification, the stderr annotators, the redaction choke point and the atomic write.
+- `skill/scripts/tools_manifest.py` — the one writer of `tools-manifest.json`: selected/produced/
+  missing, the excluded scope and globs, the pruned virtualenv rows and depth bound, the eslint
+  file-coverage read, and the network and ignore-file posture ledgers. Not `run_manifest.py`,
+  which writes the review RUN's manifest and has a `write_manifest` of its own.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/

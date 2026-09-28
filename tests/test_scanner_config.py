@@ -8,9 +8,9 @@ extraction that changes one flag, one path or one flag's POSITION is not a pure
 extraction, and nothing else in the suite compares a whole argv.
 
 It also holds the patch-rule guard for the WHOLE split family (part 2 added
-`tool_capture` to `_SPLITS`): the rule is about what `run_tools` re-binds, so
-one derivation covers every module lifted out of it, and part 3 adds a row
-rather than a file.
+`tool_capture` to `_SPLITS` and part 3 `tools_manifest`): the rule is about what
+`run_tools` re-binds, so one derivation covers every module lifted out of it, and
+each part added a row rather than a file.
 """
 import ast
 import contextlib
@@ -24,6 +24,7 @@ from unittest import mock
 import scripts.run_tools as rt
 import scripts.scanner_config as sc
 import scripts.tool_capture as tc
+import scripts.tools_manifest as tm
 
 from tests._test_helpers import REPO_ROOT
 from tests.run_tools_test_helpers import _FakeResult
@@ -279,17 +280,26 @@ RE_EXPORTED = frozenset({
 RE_EXPORTED_TOOL_CAPTURE = frozenset({
     "MAX_TOOL_OUTPUT_BYTES", "TOOL_TIMEOUT", "_REDACTED_CAPTURES",
 })
+# #1762 part 3 (`tools_manifest`): the walk bound the manifest publishes as
+# `depth_bound` and is `write_manifest`'s def-time default, plus the two posture
+# ledgers `run_tools` clears and fills where the argv is built.
+RE_EXPORTED_TOOLS_MANIFEST = frozenset({
+    "VENV_MAX_DEPTH", "_IGNORE_FILE_POSTURE", "_NETWORK_POSTURE",
+})
 _ROOT = pathlib.Path(REPO_ROOT)          # `_test_helpers` exports it as a str
 _RUN_TOOLS = _ROOT / "skill" / "scripts" / "run_tools.py"
 _SCANNER_CONFIG = _ROOT / "skill" / "scripts" / "scanner_config.py"
 _TOOL_CAPTURE = _ROOT / "skill" / "scripts" / "tool_capture.py"
+_TOOLS_MANIFEST = _ROOT / "skill" / "scripts" / "tools_manifest.py"
 _TESTS = _ROOT / "tests"
 # One row per module `run_tools` has been split into (#1762): the module object,
 # the file its names are DERIVED from, and the allowlist of names `run_tools`
-# still re-binds out of it. C3 adds a row; nothing else here changes.
+# still re-binds out of it. All three parts have landed; a fourth split would
+# add a row and nothing else here.
 _SPLITS = (
     ("scanner_config", sc, _SCANNER_CONFIG, RE_EXPORTED),
     ("tool_capture", tc, _TOOL_CAPTURE, RE_EXPORTED_TOOL_CAPTURE),
+    ("tools_manifest", tm, _TOOLS_MANIFEST, RE_EXPORTED_TOOLS_MANIFEST),
 )
 # The aliases the run_tools tests bind, as a FLOOR. The set actually used is
 # read from each file's own bindings as well, because a fixed list missed both
@@ -390,11 +400,23 @@ def _patch_sites(path, watched):
 
     What this does NOT see, stated so it is not over-trusted: an all-keyword
     `patch.object(target=rt, attribute="NAME")`, a non-literal attribute
-    (`setattr(rt, name_var, v)`) and a computed target string
-    (`patch("scripts.run_tools.%s" % name)`). The blast radius is only the
-    RE-EXPORTED constants: for every moved FUNCTION the strong half of the rule
-    keeps the name off `run_tools` entirely, so a patch in any of those
-    spellings raises `AttributeError` -- loud, not silently ineffective.
+    (`monkeypatch.setattr(rt, name_var, v)` or the bare builtin
+    `setattr(rt, name_var, v)`) and a computed target string
+    (`patch("scripts.run_tools.%s" % name)`).
+
+    Aimed at a RE-EXPORTED CONSTANT, every one of those is silently ineffective:
+    the attribute EXISTS, so nothing refuses the patch and the moved code goes on
+    reading its own module's value. That is the residual this guard cannot close,
+    and it is why the allowlist is kept to constants nothing patches.
+
+    Aimed at a MOVED FUNCTION the strong half of the rule keeps the name off
+    `run_tools` entirely, and three of the four then fail loudly:
+    `patch.object`, `monkeypatch.setattr` and the string form all refuse an
+    attribute that does not exist and raise `AttributeError`. Only the bare
+    builtin `setattr` stays silent -- it CREATES the attribute, leaving a dead
+    binding with the test passing -- and only in its non-literal spelling, since
+    the literal one is in the offender corpus below. All four classifications
+    were measured against this tree, not reasoned about.
     """
     tree = _parse(path)
     aliases = _aliases_in(tree)
@@ -449,7 +471,7 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
 
     Derived from each module's own AST rather than from a list, because a list
     stops growing: part 2 (`tool_capture`) is covered by adding one row to
-    `_SPLITS`, and part 3 will be too.
+    `_SPLITS`, and part 3 (`tools_manifest`) was.
     """
 
     def test_the_allowlist_is_exactly_what_run_tools_re_exports(self):
@@ -476,7 +498,8 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
         for module, mod, path, allowed in _SPLITS:
             functions = _functions_in(path)
             self.assertIn({"scanner_config": "_scanner_owned_config",
-                           "tool_capture": "_stream_and_write"}[module], functions)
+                           "tool_capture": "_stream_and_write",
+                           "tools_manifest": "write_manifest"}[module], functions)
             for name in functions:
                 with self.subTest(module=module, function=name):
                     self.assertNotIn(name, allowed,
@@ -524,13 +547,15 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                        "from scripts import run_tools\n"
                        "from scripts import run_tools as weird\n"
                        "import scripts.scanner_config as sc\n"
-                       "import scripts.tool_capture as tc\n")
+                       "import scripts.tool_capture as tc\n"
+                       "import scripts.tools_manifest as tm\n")
 
     def test_the_patch_walk_catches_a_planted_offender(self):
         # Non-vacuity, on a synthetic file: the scan above asserts an EMPTY
         # list, which a detector that sees nothing also satisfies.
         watched = {"SCANNER_OWNED_CONFIG", "_scanner_owned_config",
-                   "MAX_TOOL_OUTPUT_BYTES", "_stream_and_write"}
+                   "MAX_TOOL_OUTPUT_BYTES", "_stream_and_write",
+                   "_NETWORK_POSTURE", "write_manifest"}
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d) / "test_planted.py"
             for source in (
@@ -546,7 +571,11 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                     'monkeypatch.setattr(_run_tools, "SCANNER_OWNED_CONFIG", {})',
                     'monkeypatch.setattr(weird, "_stream_and_write", None)',
                     'monkeypatch.setattr("scripts.run_tools.MAX_TOOL_OUTPUT_BYTES", 1)',
-                    'setattr(rt, "_stream_and_write", None)'):
+                    'setattr(rt, "_stream_and_write", None)',
+                    # part 3's names: the ledger the manifest reads back, and
+                    # the writer itself.
+                    'mock.patch.object(rt, "_NETWORK_POSTURE", {})',
+                    'monkeypatch.setattr(rt, "write_manifest", None)'):
                 with self.subTest(source=source):
                     path.write_text(self.PLANTED_IMPORTS + "x = %s\n" % source,
                                     encoding="utf-8")
@@ -566,6 +595,7 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                     'mock.patch.object(tc, "MAX_TOOL_OUTPUT_BYTES", 1)',
                     'mock.patch("scripts.scanner_config.SCANNER_OWNED_CONFIG")',
                     'monkeypatch.setattr(tc, "_stream_and_write", None)',
+                    'mock.patch.object(tm, "write_manifest", None)',
                     # not a patch at all.
                     'mock.patch.dict(os.environ, {"SCANNER_OWNED_CONFIG": "1"})'):
                 with self.subTest(source=source):
@@ -606,18 +636,23 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
 
 
 class TestTheSplitModulesShareOneLedger(unittest.TestCase):
-    """`run_tools` binds three of the ledgers its extracted modules own -- two
-    of `write_manifest`'s four postures (`write_manifest`'s own
-    `scanner_config=` keyword would shadow the module inside it) and the
-    redaction set -- so the whole claim rests on each name addressing ONE
-    object: `run_tools()` clears it, the code that moved fills it,
-    `write_manifest` reads it back. Rebind either side and the manifest would
-    publish an empty posture with nothing failing."""
+    """`run_tools` binds every ledger its extracted modules own -- all four of
+    the manifest's postures and the redaction set -- so the whole claim rests on
+    each name addressing ONE object: `run_tools()` clears it, the code that
+    moved (or the loop that stayed) fills it, `write_manifest` reads it back.
+    Rebind either side and the manifest would publish an empty posture with
+    nothing failing.
+
+    Part 3 is why the count is five rather than three: the network and
+    ignore-file postures moved to `tools_manifest` beside their only reader, and
+    `run_tools` still clears both and fills them where the argv is built."""
 
     def test_the_ledgers_are_the_same_object_in_both_modules(self):
         for owner, name in ((sc, "_SUPPRESSION_POSTURE"),
                             (sc, "_SCANNER_CONFIG_POSTURE"),
-                            (tc, "_REDACTED_CAPTURES")):
+                            (tc, "_REDACTED_CAPTURES"),
+                            (tm, "_NETWORK_POSTURE"),
+                            (tm, "_IGNORE_FILE_POSTURE")):
             with self.subTest(ledger=name):
                 self.assertIs(getattr(rt, name), getattr(owner, name))
 
