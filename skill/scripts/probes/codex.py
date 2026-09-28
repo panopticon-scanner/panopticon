@@ -40,7 +40,13 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
     """
     from scripts import codex_host
     inspector = inspector or codex_host.inspect_surface
-    directory = registration_dir or hosts.spec("codex").registration_dir
+    row = hosts.spec("codex")
+    if not registration_dir and row.registration_refusal:
+        # COD-1638371699: a relative CODEX_HOME names no directory to measure
+        # (`hosts.codex_home`). Raised, never resolved against the cwd, and
+        # `_codex_measure` reports it as it does any failed measurement.
+        raise ValueError(row.registration_refusal)
+    directory = registration_dir or row.registration_dir
     with tempfile.TemporaryDirectory(prefix="panopticon-codex-probe-") as temporary:
         root = os.path.realpath(temporary)
         cell = os.path.join(root, "in-scope")

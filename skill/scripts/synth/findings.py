@@ -13,7 +13,6 @@ import sys
 import scripts.citations as citations
 import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
-import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 import scripts.tools.base as tool_base
 from . import validate_schema as validate_schema_mod
@@ -303,13 +302,15 @@ def load_findings_detailed(paths):
         if not os.path.isfile(path):
             print("MISSING: %s" % path, file=sys.stderr)
             continue
+        # One answer per path: the diagnostics below and the `_group` stamp are
+        # keyed by the same cell, so nothing here can read as two cells.
+        cell = findings_contract.cell_of(path)
         try:
             with open(path, encoding="utf-8") as fh:
                 data = evidence_mod.load_json_tolerant(fh.read())
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("PARSE ERROR %s: %s" % (path, e), file=sys.stderr)
-            diagnostics.append({"file": str(path),
-                                "cell": findings_contract.cell_of(path),
+            diagnostics.append({"file": str(path), "cell": cell,
                                 "defects": [{"index": None,
                                              "reason": "parse error: %s" % e}]})
             continue
@@ -319,16 +320,14 @@ def load_findings_detailed(paths):
                 print("synthesize: dropped %s in %s (%s)"
                       % ("finding %d" % d["index"] if d["index"] is not None
                          else "the payload", path, d["reason"]), file=sys.stderr)
-            diagnostics.append({"file": str(path),
-                                "cell": findings_contract.cell_of(path),
+            diagnostics.append({"file": str(path), "cell": cell,
                                 "defects": defects})
         if not isinstance(data, dict):
             continue
         findings = data.get("findings", [])
         if not isinstance(findings, list):
             continue
-        m = GROUP_RE.match(os.path.basename(path))
-        group = m.group(1) if m else None
+        group = cell[0] if cell else None
         for f in findings:
             if not isinstance(f, dict):
                 continue
@@ -364,18 +363,6 @@ def _present(findings, sev):
 HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 ID_RE = re.compile(r"\A[A-Z]{2,8}-\d{3,}\Z")  # {2,8}: real agents emit e.g. STRUCT-001
-
-# Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
-# [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes
-# (findings-<group>-<domain>.json, no further suffix -- see present_cells, which
-# parses the same P4 shape independently off groups_schema.DOMAINS to avoid
-# drift). Keyed off groups_schema.DOMAINS, not a hardcoded literal, so a future
-# roster change (P6+) only has to update one place.
-_AXES = list(PANEL_ORDER) + sorted(groups_schema.DOMAINS)
-
-GROUP_RE = re.compile(
-    r"^findings-(.+)-(?:%s)"
-    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(_AXES))
 
 # #487: committed planning-doc trees (specs, plans, ADRs) are prose, not
 # code -- code-oriented findings against them are noise. Path-scoped,
