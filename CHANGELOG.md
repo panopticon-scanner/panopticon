@@ -34,6 +34,28 @@ evidence exposed.
   block's `git_failure`, and the scan still runs. **Discovered file sets grow on every target**:
   CI, config and secret-bearing files now reach a group, so group and cell counts move -- land this
   before a run, not during one.
+- **One owner reads the committed config; errors refuse and disclosures print on both paths (#2229,
+  #2189; ARC-1814846877, epic #1761).** Five readers each normalized the legacy `groups:` list form
+  themselves -- `groups_schema.parse_groups`, `discovery.load_catalog`, `_committed_matrix`,
+  `_declares_groups` (a DIFFERENT predicate: does any entry carry a name?) and
+  `setup_flow.migrate_config` -- three re-implemented the leaf-vs-parent rule, and the two
+  `_committed_exclude_paths` copies each printed the disclosure channel the other dropped, with
+  docstrings citing each other wrongly. `groups_schema` owns all of it now
+  (`normalize_groups_mapping`, `is_leaf_body`, `committed_bodies`) and every reader calls it.
+  Per the owner ruling (2026-09-27) a document with `doc.errors` -- unreadable, no `version: 1`, a
+  legacy-only tree -- RAISES on every reader instead of reading as "nothing committed" on some of
+  them, and every reader prints `doc.disclosures`, so a refused symlink at the config path can no
+  longer be visible on the setup path and silent on the run path. `_committed_matrix` is
+  `_matrix_catalog` un-flattened rather than a second pass over the authored bodies, which is #2189:
+  a scalar `match: src/**` used to become six one-character globs, a name the schema had just
+  rejected came back anyway, and a non-mapping `groups:` value, a `match: [1]` or a `tests: [[a]]`
+  crashed `driver setup` with an AttributeError and no JSON status. **Behaviour change:** a setup
+  run over a config the schema rejects now refuses with the named error and writes no draft
+  (`config_refusal`), where it used to merge against the authored bodies exactly as written --
+  char-split globs, rejected names and all -- and tell the operator to move the result over their
+  own file; a `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:`
+  come back from the validated domain sets, so a draft -- and `migrate-config`'s own output --
+  renders them sorted rather than in authored order.
 - **Every integrity failure that sinks certification is named on the terminal summary (#1761;
   ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
   published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a
