@@ -320,15 +320,19 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
 
     The rule is run over every text file in the repo's own listing -- the same
     `discovery.discover_repo_files` the review and `driver readiness` use -- and
-    every match must be a known credential-URL specimen. Two are: an advisory
-    in a captured pip-audit golden quoting `https://username:password@proxy:8080`
-    as the shape it is about, and the test that pins pip-audit's own
-    producer-side userinfo mask. Neither is an identifier anything depends on,
-    and both are precisely what the rule is for.
+    every match must be a known credential-URL specimen. The oldest two are: an
+    advisory in a captured pip-audit golden quoting
+    `https://username:password@proxy:8080` as the shape it is about, and the test
+    that pins pip-audit's own producer-side userinfo mask. Neither is an
+    identifier anything depends on, and both are precisely what the rule is for.
 
-    RE-MEASURED after item 24 R1-5 widened the rule (empty user, JSON-escaped
-    separator): 404 tracked text files, 5 matches, 4 distinct, the same four
-    below -- widening the shape added no new match anywhere in the tree.
+    RE-MEASURED whenever a specimen moves or is added, with this class's own
+    `_matches` over `discover_repo_files`. Item 24 R1-5 widened the rule (empty
+    user, JSON-escaped separator) and added no new match anywhere in the tree.
+    At #1762 part 2: 552 text files read out of a 556-file listing, 10 matches
+    over 6 files, 9 distinct values -- exactly the pairs below (the two
+    `https://username:password@` sites share one value, which is why the pair
+    count is one higher than the distinct count).
 
     FALSE POSITIVES: zero. That is the number this class exists to hold at zero
     -- a new match on a git SHA, a path, a fingerprint or a URL without
@@ -518,7 +522,7 @@ if __name__ == "__main__":
 class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
     """#1639 P11 round 3 NF2: the flat pass is what a NON-JSON capture gets
     (spotbugs' XML) and what a stderr excerpt gets, and its safety argument --
-    stated in `redact.py`, in `tool_capture._redact_capture` and in PANOPTICON.md
+    stated in `redact.py`, in `tool_capture._redact_capture` and in PANOPTICON.md --
     is that a match cannot run out of one field and into the next, because every
     pattern is anchored to a character class that excludes `"`.
 

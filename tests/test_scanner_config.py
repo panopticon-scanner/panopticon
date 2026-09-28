@@ -387,6 +387,14 @@ def _patch_sites(path, watched):
     A patch of a MODULE attribute (`patch.object(rt.os, "lstat")`) is a
     different thing and stays legal: `rt.os` and `sc.os` are the same object, so
     it reaches the moved code too.
+
+    What this does NOT see, stated so it is not over-trusted: an all-keyword
+    `patch.object(target=rt, attribute="NAME")`, a non-literal attribute
+    (`setattr(rt, name_var, v)`) and a computed target string
+    (`patch("scripts.run_tools.%s" % name)`). The blast radius is only the
+    RE-EXPORTED constants: for every moved FUNCTION the strong half of the rule
+    keeps the name off `run_tools` entirely, so a patch in any of those
+    spellings raises `AttributeError` -- loud, not silently ineffective.
     """
     tree = _parse(path)
     aliases = _aliases_in(tree)
@@ -546,7 +554,10 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                                     "detector missed %s" % source)
             for source in (
                     # a MODULE attribute: the same object from both modules.
-                    'mock.patch.object(rt.tempfile, "mkdtemp")',
+                    # `rt.os`, not `rt.tempfile` -- part 2 took `tempfile` out of
+                    # `run_tools`, so that spelling can no longer appear in a
+                    # working test and would document nothing.
+                    'mock.patch.object(rt.os, "lstat")',
                     # a name run_tools still owns.
                     'mock.patch.object(rt, "CONTAINER_PIDS_LIMIT", "")',
                     'monkeypatch.setattr(_run_tools, "docker_available", None)',
@@ -579,8 +590,11 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
     def test_the_patch_walk_visits_the_whole_test_tree(self):
         # Including `tests/tools/`, which is where an adapter-side patch would
         # land, and which the brief's pytest set does not otherwise reach.
+        # 289 files today, 180 of them at the top level: a floor under 180
+        # would still be cleared by a walk that stopped recursing, which is the
+        # collapse this guards against.
         visited = sorted(_TESTS.rglob("*.py"))
-        self.assertGreater(len(visited), 150, "the test-tree walk collapsed")
+        self.assertGreater(len(visited), 250, "the test-tree walk collapsed")
         self.assertIn(_TESTS / "tools" / "test_legacy_sarif.py", visited)
         # and it really parses them: a file that does not parse must not be
         # skipped silently.

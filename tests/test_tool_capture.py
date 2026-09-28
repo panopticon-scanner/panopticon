@@ -126,6 +126,12 @@ _CASES = {
         ("gosec", 0, b"  \n", b"", None, "completed"),
 }
 _WATCHDOG = "watchdog-timeout-kills-the-container"
+# The watchdog case's two handshakes, recorded for the test body to assert
+# rather than compared against the golden (the golden stays the same three keys
+# every other case has). It is the one case with a wall-clock dependency, and a
+# stall in the timer thread on a loaded runner would otherwise surface as an
+# opaque dict mismatch instead of "the container kill never happened".
+_HANDSHAKE: dict[str, bool] = {}
 
 
 def _capture_cases():
@@ -169,6 +175,10 @@ def _watchdog_case():
     second, so reading the ledger straight after the return would race the
     timer thread. Nothing about the code under test changes -- `wait()` is
     already called only after the stream ends.
+
+    Both waits are bounded at 5s and both return False rather than raising, so
+    the two flags are published in `_HANDSHAKE` for the test to assert: a stall
+    has to read as a stall and not as a golden mismatch.
     """
     released = threading.Event()
     reaped = threading.Event()
@@ -217,6 +227,7 @@ def _watchdog_case():
                                        timeout=0.3, docker_bin=docker,
                                        cidfile=cidfile,
                                        docker_env={"PATH": d})
+    _HANDSHAKE.update(released=released.is_set(), reaped=reaped.is_set())
     return {"returned": [] if out is None else [os.path.basename(out)],
             "written": None, "stderr": err.getvalue(), "killed": killed}
 
@@ -350,7 +361,19 @@ class TestTheCapturePathIsUnchangedByTheMove(unittest.TestCase):
     def test_every_case_lands_exactly_the_golden_bytes(self):
         for label in _capture_cases():
             with self.subTest(case=label):
-                self.assertEqual(_capture_case(label), GOLDEN[label])
+                row = _capture_case(label)
+                if label == _WATCHDOG:
+                    # Before the dict comparison, so a wall-clock stall names
+                    # itself instead of arriving as a missing `killed` row.
+                    self.assertTrue(
+                        _HANDSHAKE["released"],
+                        "the watchdog never killed the client: the blocking "
+                        "read was released by the 5s bound, not by kill()")
+                    self.assertTrue(
+                        _HANDSHAKE["reaped"],
+                        "the container kill never happened: `wait()` returned "
+                        "on its 5s bound with the cidfile kill unrecorded")
+                self.assertEqual(row, GOLDEN[label])
 
     def test_the_golden_covers_the_whole_matrix_and_every_branch(self):
         self.assertEqual(sorted(GOLDEN), sorted(_capture_cases()))

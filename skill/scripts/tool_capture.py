@@ -10,7 +10,7 @@ fail-closed); the per-tool annotation read off a stderr that exists only while
 the child runs; the ONE redaction choke point every capture goes through; and
 the atomic write.
 
-`_stream_and_write` is 150 lines and stays ONE function (#1762,
+`_stream_and_write` is 152 lines and stays ONE function (#1762,
 ARC-3243338950). The watchdog and `_kill_container` are bound together by the
 cidfile contract -- the timer fires, the client is killed so the blocking read
 unblocks at EOF, and the container that client launched is stopped through the
