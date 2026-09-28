@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share OCRDb report record helpers (#2203, #1822).** Gap and strain reports use one
+  occurrence builder and the catalog's raw domain-prefix helper. Missing-file handling, optional
+  strain run IDs, each caller's domain policy and flat imports retain their existing behavior.
 - **Derive SARIF levels from the adapter severity map (#2202, #1821).** SARIF retains its
   four allowed level names while sharing their grades with tool normalization. Missing and
   unknown levels, metadata precedence and secret grading keep their existing behavior.

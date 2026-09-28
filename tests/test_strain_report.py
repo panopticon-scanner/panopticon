@@ -9,9 +9,13 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import unittest
 
+from scripts import ocrdb
 from scripts import strain_report as sr
+from scripts import x0x_report as x0x
 
 _SCHEMA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "reference", "strain-report-schema.json")
@@ -29,6 +33,63 @@ def _finding(fid="SEC-1", code="DAT-C1B", advisor=None, file="app.py",
     if prov:
         f["provenance"] = prov
     return f
+
+
+class TestSharedReportContracts(unittest.TestCase):
+    def test_occurrences_preserve_optional_fields_and_strain_run_id(self):
+        for location, expected in (
+            ({}, None),
+            ({"file": ""}, None),
+            ({"file": "a.py"}, {"file": "a.py"}),
+            ({"file": "a.py", "line_start": 0, "line_end": None},
+             {"file": "a.py", "line_start": 0}),
+            ({"file": "a.py", "line_start": 2, "line_end": 4},
+             {"file": "a.py", "line_start": 2, "line_end": 4}),
+        ):
+            for fid in (None, "", "finding-1"):
+                with self.subTest(location=location, fid=fid):
+                    finding = {"id": fid, "location": location}
+                    before = json.dumps(finding, sort_keys=True)
+                    occurrence = dict(expected) if expected is not None else None
+                    if occurrence is not None and fid:
+                        occurrence["finding_id"] = fid
+                    self.assertEqual(x0x._occurrence(finding), occurrence)
+                    self.assertEqual(sr._occurrence(finding), occurrence)
+                    self.assertEqual(sr._occurrence(finding, ""), occurrence)
+                    with_run = dict(occurrence, run_id="run-1") if occurrence else None
+                    self.assertEqual(sr._occurrence(finding, "run-1"), with_run)
+                    self.assertEqual(json.dumps(finding, sort_keys=True), before)
+
+    def test_domain_callers_keep_their_distinct_normalization_policies(self):
+        for code, raw, strain, gap in (
+            ("SEC-A1A", "SEC", "SEC", "SEC"),
+            ("sec-X0X", "sec", "SEC", "SEC"),
+            (" sec-X0X", " sec", "SEC", "ZZZ"),
+            ("SEC", None, "SEC", "SEC"),
+            ("-X0X", "", None, "ZZZ"),
+            (None, None, None, "ZZZ"),
+            (27, None, "27", "ZZZ"),
+        ):
+            with self.subTest(code=code), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(ocrdb.domain_of(code), raw)
+                self.assertEqual(sr._domain(code), strain)
+                self.assertEqual(x0x._domain({"code": code}), gap)
+                self.assertEqual(x0x._domain({"code": code, "domain": "dat"}), "DAT")
+
+    def test_reports_remain_flat_importable_in_a_fresh_interpreter(self):
+        scripts = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skill", "scripts")
+        code = """import json, sys
+sys.path.insert(0, sys.argv[1])
+import ocrdb, strain_report, x0x_report
+finding = {'id': 'f', 'location': {'file': 'a.py'}}
+print(json.dumps([ocrdb.domain_of('SEC-A1A'),
+                  strain_report._occurrence(finding, 'r'), x0x_report._occurrence(finding)]))
+"""
+        proc = subprocess.run([sys.executable, "-I", "-c", code, scripts],
+                              capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(json.loads(proc.stdout), ["SEC",
+            {"file": "a.py", "finding_id": "f", "run_id": "r"},
+            {"file": "a.py", "finding_id": "f"}])
 
 
 class TestDirection(unittest.TestCase):
