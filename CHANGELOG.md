@@ -27,6 +27,25 @@ evidence exposed.
   merge against an empty matrix and tell the operator to move the result over their own file; a
   `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:` come back
   from the validated domain sets, so a draft renders them sorted rather than in authored order.
+- **Every integrity failure that sinks certification is named on the terminal summary (#1761;
+  ARC-3284703909).** The rule lived in three places with three memberships: `synth/integrity`
+  published ~20 `meta.integrity` keys, `tool_axis.reconcile` re-spelled fourteen of them in a
+  hand-written `or` chain, and `render_summary` named four — one of which deliberately does not
+  gate. So ten of the fourteen sinking keys had no summary line of their own: nine were named
+  nowhere on it, and one (`delta_scope_suppressed_git_drivers`) only inside `coverage_note`. The
+  reasons went to stderr and the summary said the bare word `incomplete` — the hole #1644 closed
+  for `tools_manifest_invalid` alone. The ten: `content_mismatched_files` (the #493 R4 tamper
+  check — bytes that no longer match the fan-out snapshot), `content_snapshot_missing`,
+  `content_snapshot_unreadable`, `malformed_findings_files`, `empty_dispatch_plans`,
+  `invalid_dispatch_plans`, `invalid_verify_queue`, `dispatch_plan_missing`,
+  `dispatch_plan_mismatched` and `delta_scope_suppressed_git_drivers`. One `INTEGRITY_KEYS` table
+  in `synth/integrity` owns both facts: whether a truthy value sinks `integrity_ok`, and the
+  operator sentence the summary prints for it. `reconcile` reads it as a comprehension,
+  `render_summary` as one loop, so a key renders on exactly the truthiness that sinks the gate and
+  the summary cannot drift from it again; a certification failure now outranks the non-gating
+  cross-domain note, and the report schema's own property list is pinned to the table. The gate
+  itself is unchanged — the sinking set is pinned key-by-key against the chain it replaced.
+  `report.json` always carried the whole section; the HTML report is #2265.
 - **spotbugs and pip-audit emit a repo-relative `location.file`, and the contract says so (#1768,
   #2188; ARC-284455831, ARC-2852754506).** SpotBugs nests a `SourceLine` inside the enclosing
   `<Class>` and another inside each `<Method>` before emitting the bug's own as a DIRECT child, so
