@@ -2288,11 +2288,11 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         self.flagged("cat <<EOF\nit's\nEOF\n%s\n" % self.PAYLOAD)
 
     def test_a_text_the_guard_reads_again_is_refused_by_its_step(self):
-        # After every step is read, `_defects` reads the text of each
-        # substitution as a script of its own: a backquote's text, a `$(...)`
-        # in an expanding heredoc body, and a `$( ...)` holding a `((` nest
-        # that the whole step is long enough to read under the cap and the
-        # substitution alone is not. Each raised there, past the step's own
+        # The guard reads the text of each substitution as a script of its
+        # own: a backquote's text, a `$(...)` in an expanding heredoc body,
+        # and a `$( ...)` holding a `((` nest that the whole step is long
+        # enough to read under the cap and the substitution alone is not.
+        # Each raised when `_defects` read it again, past the step's own
         # read, as a traceback naming no step.
         for script, cause in (("echo `echo $(cat <<EOF)`\n", "closes before"),
                               ('cat <<EOF\n$(echo "$(cat <<X)"\n)\nEOF\n', "closes before"),
@@ -2302,11 +2302,13 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.refused(script, cause)
 
     def test_the_job_reads_again_only_what_its_steps_read(self):
-        # `job_defects` catches those per step because its walk -- `read`,
-        # then `_unread_records` -- parses every text `_defects` parses again
-        # job-wide, down the same substitutions. A text only `_defects` parsed
-        # would raise past that catch again. A marker's prefix is minted per
-        # parse, so texts are compared without it.
+        # `job_defects` catches those per step because each step's walk --
+        # `read`, then `_walk` -- is the one read of every text, substitutions
+        # included, and `_defects` is handed that walk's records instead of
+        # reading them again (#2287): a text only `_defects` parsed would
+        # raise past the catch. So the job reads nothing again, and each text
+        # once. A marker's prefix is minted per parse, so texts are compared
+        # without it.
         parsed = []
         job = [False]
         statements, defects = wg.statements, wg._defects
@@ -2322,8 +2324,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             finally:
                 job[0] = False
 
-        # Each text is written in one step only: no other step's walk can
-        # parse it in that step's place.
+        # Each text is written once, in one step only: no other step's walk
+        # can parse it in that step's place.
         steps =[("nested", "echo $(echo $(echo `echo $(true)`))\n"),
                  ("body", 'cat <<EOF\n$(printf "$(id)" `pwd`)\nEOF\n'),
                  ("strings", "eval \"$(echo $(date))\"\nx=$(sh -c 'echo $(uname)')\n"),
@@ -2333,10 +2335,10 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 mock.patch.object(wg, "_defects", marked):
             found = wg.job_defects(steps)
         self.assertFalse([why for _name, why in found if why.startswith("cannot read this")])
-        per_step = {text for inside, text in parsed if not inside}
-        in_job = {text for inside, text in parsed if inside}
-        self.assertTrue(in_job)
-        self.assertLessEqual(in_job, per_step, in_job - per_step)
+        per_step = [text for inside, text in parsed if not inside]
+        self.assertEqual([], [text for inside, text in parsed if inside])
+        self.assertTrue(per_step)
+        self.assertEqual(sorted(set(per_step)), sorted(per_step))
 
     def test_an_escaped_quote_inside_a_substitution_string(self):
         # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at

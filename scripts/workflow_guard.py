@@ -218,9 +218,23 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _fetch_records(stmts, stream_exec=False):
-    """[(statement index, Fetch)] for every download in the script."""
-    found = []
+def _walk(stmts, stream_exec=False):
+    """([(statement index, Fetch)], [(statement index, why it is unread)]).
+
+    Every download in the script, and every command this module cannot read,
+    asked of each stage in ONE walk -- the one read of each command
+    substitution as a script of its own, so a caller that walks inside a
+    catch (`job_defects`) has read every text anything here reads.
+
+    A fetch in a substitution is credited to the command that CONSUMES it --
+    `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
+    the downloaded bytes become behaviour. Two forms are unread, and both get
+    this module's standing answer: REPORTED, never accepted. A wrapper whose
+    command cannot be resolved (`shell_reader.unresolved_wrapper`), and a
+    heredoc handed to an interpreter as the PROGRAM it runs that cannot be
+    read as written (`_unread_stdin`).
+    """
+    found, unread = [], []
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
             argv = command(stage.argv)
@@ -236,31 +250,27 @@ def _fetch_records(stmts, stream_exec=False):
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
                                            else fetch)
                     found.append((index, fetch))
-            found.extend((index, f) for f in _substituted(argv, stage, stream_exec))
-    return found
-
-
-def _unread_records(stmts):
-    """[(statement index, reason)] even when no fetch can be extracted.
-
-    Two forms arrive here and both get the same answer, which is this module's
-    standing requirement: REPORTED, never accepted. A wrapper whose command
-    cannot be resolved (`shell_reader.unresolved_wrapper`), and a heredoc handed
-    to an interpreter as the PROGRAM it runs that cannot be read as written
-    (`_unread_stdin`).
-    """
-    for index, statement in enumerate(stmts):
-        for stage in statement.stages:
             reason = shell_reader.unresolved_wrapper(stage.argv)
             if reason:
-                yield index, ("cannot read command behind wrapper: %s; "
-                              "the guard cannot determine what it runs" % reason)
+                unread.append((index, "cannot read command behind wrapper: %s; "
+                               "the guard cannot determine what it runs" % reason))
             reason = _unread_stdin(stage)
             if reason:
-                yield index, reason
+                unread.append((index, reason))
+            consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
+            executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             for inner in stage.substitutions:
-                for _inner_index, nested in _unread_records(statements(inner)):
-                    yield index, nested
+                fetched, nested = _walk(statements(inner), stream_exec)
+                unread.extend((index, why) for _index, why in nested)
+                found.extend((index, fetch._replace(piped_to=consumer)
+                              if executes or fetch.piped_to is None else fetch)
+                             for _index, fetch in fetched)
+    return found, unread
+
+
+def _fetch_records(stmts, stream_exec=False):
+    """[(statement index, Fetch)] for every download in the script."""
+    return _walk(stmts, stream_exec)[0]
 
 
 def _unread_stdin(stage):
@@ -295,23 +305,6 @@ def _unread_stdin(stage):
                 "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
                 % (name, name))
     return None
-
-
-def _substituted(argv, stage, stream_exec=False):
-    """Every fetch inside this stage's command substitutions, credited to the
-    command that CONSUMES it -- `eval`, `sh -c`, `bash <(...)` -- because that
-    is what decides whether the downloaded bytes become behaviour."""
-    consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
-    executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
-    found = []
-    for inner in stage.substitutions:
-        for _index, fetch in _fetch_records(statements(inner), stream_exec):
-            if fetch is None:
-                continue
-            if executes or fetch.piped_to is None:
-                fetch = fetch._replace(piped_to=consumer)
-            found.append(fetch)
-    return found
 
 
 def _flattened(stmts):
@@ -642,7 +635,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, soft=()):
+def _defects(stmts, conditions=None, soft=(), walked=None):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the PAIR that decides whether it
@@ -650,12 +643,14 @@ def _defects(stmts, conditions=None, soft=()):
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
     `soft` holds the indexes whose step carries `continue-on-error: true`,
-    whose checks clear nothing at all.
+    whose checks clear nothing at all. `walked` is `_walk`'s answer for
+    `stmts`, which `job_defects` has from each step's own read.
     """
     checks = _checks(stmts, soft)
     conditions = conditions or {}
-    found = list(_unread_records(stmts))
-    for index, fetch in _fetch_records(stmts, stream_exec=True):
+    fetched, unread = walked or _walk(stmts, stream_exec=True)
+    found = list(unread)
+    for index, fetch in fetched:
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:
             found.append((index, why))
@@ -702,19 +697,21 @@ def job_defects(steps):
     conditions = {}
     soft = set()
     found = []
+    fetched, unread = [], []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
         if not why:
-            # Substitutions too: `_defects` reads them again with no step to name.
-            try:
+            try:                    # the one read of every text, substitutions too
                 here = read(step.script)
-                list(_unread_records(here))
+                walked = _walk(here, stream_exec=True)
             except shell_lex.Unreadable as error:
                 why = "cannot read this step: %s; nothing in it is accepted" % error
         if why:
             found.append((step.name, why))
             continue
+        fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
+        unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
         # Per step, because each one is its own shell invocation: an `if`
         # left open at the end of step A must not make step B conditional.
         branches = regions(here)
@@ -727,7 +724,7 @@ def job_defects(steps):
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions, soft))
+                 for index, why in _defects(stmts, conditions, soft, (fetched, unread)))
     return found
 
 

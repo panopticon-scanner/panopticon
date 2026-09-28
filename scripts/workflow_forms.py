@@ -296,8 +296,8 @@ def scripts(argv):
     """The shell scripts this command is handed as a string, in order.
 
     A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and `_substituted` already credits what is
-    inside it.
+    in the parse it came from, and the guard's `_walk` already credits what
+    is inside it.
     """
     if not argv:
         return []
