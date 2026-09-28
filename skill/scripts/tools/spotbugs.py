@@ -13,14 +13,188 @@ from scripts.claim_scope import confined_to_root
 from .base import (as_list, make_finding, omit_none, run_tool, scratch_cwd,
                    target_root_cv)
 
+# Every CWE core SpotBugs 4.8.6 or FindSecBugs 1.13.0 itself assigns to a bug
+# pattern (#2275, COD-1501398192), from each vendor's own `findbugs.xml`, on
+# 2026-09-28. Two sources, no category filter (a vendor maps a CWE to a
+# non-SECURITY pattern too -- core's EI_EXPOSE_REP -> CWE-374 is one -- and
+# the adapter already cited regardless of category):
+#   * core SpotBugs 4.8.6: `findbugs.xml` at the root of `spotbugs.jar`,
+#     itself inside the release tarball the Dockerfile pins
+#     (SPOTBUGS_VERSION=4.8.6; tarball sha256, its SPOTBUGS_SHA256, is
+#     b9d4d25e53cd4202b2dc19c549c0ff54f8a72fc76a71a8c40dee94422c67ebea); the
+#     jar's OWN sha256, measured against the pinned tools image rather than
+#     pinned by name in the Dockerfile, is
+#     69fde8787971a26b2372d416015d806bf7df4f847f7121bd5eeef239324cf180. 38 of
+#     its 497 patterns carry a cweid.
+#   * the FindSecBugs 1.13.0 plugin: `findbugs.xml` inside
+#     `findsecbugs-plugin.jar`, sha256
+#     c239763a8c327b5fb653a34dece6398578bf435b9a32c212bb8e1abe701368a5 --
+#     matching the Dockerfile's FINDSECBUGS_SHA256 pin directly. 107 of its
+#     144 patterns carry a cweid.
+# 145 entries total (38 + 107; the two vendors' type names do not overlap).
+# Patterns neither vendor maps stay uncited on purpose -- each vendor's own
+# answer, not a gap this table should paper over: core's own findbugs.xml
+# lists the golden's DM_DEFAULT_ENCODING that way, and also
+# XSS_REQUEST_PARAMETER_TO_SERVLET_WRITER; the plugin does the same for
+# HTTP_PARAMETER_POLLUTION, the SERVLET_*/*_ENDPOINT families, COOKIE_USAGE
+# and the rest of its 37. This replaces a hand-written seven-entry table.
+# Six of those seven were always real -- COMMAND_INJECTION,
+# PATH_TRAVERSAL_IN, WEAK_TRUST_MANAGER, WEAK_HOSTNAME_VERIFIER and both
+# SQL_* entries, which are core's patterns, not the plugin's -- and only
+# HARDCODED_KEY named one neither vendor has ever emitted, so SpotBugs fed
+# nothing to policy C's credential clause (ingest_tools.gates_when_suppressed)
+# through that one dead entry. Regenerated with a throwaway script, not
+# checked in: unzip BOTH `spotbugs.jar`'s and `findsecbugs-plugin.jar`'s
+# `findbugs.xml` and take every <BugPattern> with a `cweid` from each.
+# Reading `cweid` from the tool's own `-xml:withMessages` output at run time,
+# instead of a table baked in here, is a later route (it needs a real-image
+# round and a golden refresh, out of scope for this fix).
 _SPOTBUGS_CWE = {
+    "ANDROID_BROADCAST": "CWE-276",
+    "ANDROID_EXTERNAL_FILE_ACCESS": "CWE-276",
+    "ANDROID_GEOLOCATION": "CWE-359",
+    "ANDROID_WEB_VIEW_JAVASCRIPT": "CWE-79",
+    "ANDROID_WEB_VIEW_JAVASCRIPT_INTERFACE": "CWE-285",
+    "ANDROID_WORLD_WRITABLE": "CWE-276",
+    "BAD_HEXA_CONVERSION": "CWE-704",
+    "BC_IMPOSSIBLE_CAST": "CWE-570",
+    "BC_IMPOSSIBLE_DOWNCAST": "CWE-570",
+    "BC_IMPOSSIBLE_DOWNCAST_OF_TOARRAY": "CWE-570",
+    "BC_IMPOSSIBLE_INSTANCEOF": "CWE-570",
+    "BC_VACUOUS_INSTANCEOF": "CWE-571",
+    "BLOWFISH_KEY_SIZE": "CWE-326",
+    "BX_BOXING_IMMEDIATELY_UNBOXED_TO_PERFORM_COERCION": "CWE-192",
+    "CIPHER_INTEGRITY": "CWE-353",
+    "COMMAND_INJECTION": "CWE-78",
+    "COOKIE_PERSISTENT": "CWE-539",
+    "CRLF_INJECTION_LOGS": "CWE-117",
+    "CUSTOM_INJECTION": "CWE-74",
+    "CUSTOM_MESSAGE_DIGEST": "CWE-327",
+    "DANGEROUS_PERMISSION_COMBINATION": "CWE-732",
+    "DC_DOUBLECHECK": "CWE-609",
+    "DC_PARTIALLY_CONSTRUCTED": "CWE-609",
+    "DESERIALIZATION_GADGET": "CWE-502",
+    "DES_USAGE": "CWE-327",
+    "DMI_CONSTANT_DB_PASSWORD": "CWE-259",
+    "DMI_EMPTY_DB_PASSWORD": "CWE-259",
+    "DM_EXIT": "CWE-382",
+    "ECB_MODE": "CWE-327",
+    "EI_EXPOSE_BUF": "CWE-374",
+    "EI_EXPOSE_BUF2": "CWE-374",
+    "EI_EXPOSE_REP": "CWE-374",
+    "EI_EXPOSE_REP2": "CWE-374",
+    "EL_INJECTION": "CWE-94",
+    "ENTITY_LEAK": "CWE-212",
+    "ENTITY_MASS_ASSIGNMENT": "CWE-915",
+    "ESync_EMPTY_SYNC": "CWE-585",
+    "EXTERNAL_CONFIG_CONTROL": "CWE-15",
+    "FI_EXPLICIT_INVOCATION": "CWE-586",
+    "FI_PUBLIC_SHOULD_BE_PROTECTED": "CWE-583",
+    "GROOVY_SHELL": "CWE-94",
+    "HARD_CODE_KEY": "CWE-321",
+    "HARD_CODE_PASSWORD": "CWE-259",
+    "HAZELCAST_SYMMETRIC_ENCRYPTION": "CWE-327",
+    "HRS_REQUEST_PARAMETER_TO_COOKIE": "CWE-113",
+    "HRS_REQUEST_PARAMETER_TO_HTTP_HEADER": "CWE-113",
+    "HTTPONLY_COOKIE": "CWE-1004",
+    "HTTP_RESPONSE_SPLITTING": "CWE-113",
+    "IL_INFINITE_RECURSIVE_LOOP": "CWE-674",
+    "IMPROPER_UNICODE": "CWE-176",
+    "INFORMATION_EXPOSURE_THROUGH_AN_ERROR_MESSAGE": "CWE-209",
+    "INSECURE_COOKIE": "CWE-614",
+    "IP_PARAMETER_IS_DEAD_BUT_OVERWRITTEN": "CWE-563",
+    "J2EE_STORE_OF_NON_SERIALIZABLE_OBJECT_INTO_SESSION": "CWE-579",
+    "JACKSON_UNSAFE_DESERIALIZATION": "CWE-502",
+    "JSP_INCLUDE": "CWE-98",
+    "JSP_JSTL_OUT": "CWE-79",
+    "JSP_SPRING_EVAL": "CWE-917",
+    "JSP_XSLT": "CWE-94",
+    "LDAP_ENTRY_POISONING": "CWE-90",
+    "LDAP_INJECTION": "CWE-90",
+    "LI_LAZY_INIT_STATIC": "CWE-543",
+    "LI_LAZY_INIT_UPDATE_STATIC": "CWE-543",
+    "MALICIOUS_XSLT": "CWE-94",
+    "MODIFICATION_AFTER_VALIDATION": "CWE-176",
+    "NORMALIZATION_AFTER_VALIDATION": "CWE-176",
+    "NP_SYNC_AND_NULL_CHECK_FIELD": "CWE-585",
+    "NULL_CIPHER": "CWE-327",
+    "OBJECT_DESERIALIZATION": "CWE-502",
+    "OGNL_INJECTION": "CWE-94",
+    "PADDING_ORACLE": "CWE-326",
+    "PATH_TRAVERSAL_IN": "CWE-22",
+    "PATH_TRAVERSAL_OUT": "CWE-22",
+    "PLAY_UNVALIDATED_REDIRECT": "CWE-601",
+    "PREDICTABLE_RANDOM": "CWE-330",
+    "PREDICTABLE_RANDOM_SCALA": "CWE-330",
+    "PT_ABSOLUTE_PATH_TRAVERSAL": "CWE-36",
+    "PT_RELATIVE_PATH_TRAVERSAL": "CWE-23",
+    "QBA_QUESTIONABLE_BOOLEAN_ASSIGNMENT": "CWE-481",
+    "REC_CATCH_EXCEPTION": "CWE-396",
+    "REDOS": "CWE-400",
+    "RSA_KEY_SIZE": "CWE-326",
+    "RSA_NO_PADDING": "CWE-780",
+    "RU_INVOKE_RUN": "CWE-572",
+    "RV_RETURN_VALUE_IGNORED_BAD_PRACTICE": "CWE-253",
+    "SCALA_COMMAND_INJECTION": "CWE-78",
+    "SCALA_PATH_TRAVERSAL_IN": "CWE-22",
+    "SCALA_PLAY_SSRF": "CWE-918",
+    "SCALA_SENSITIVE_DATA_EXPOSURE": "CWE-200",
+    "SCALA_SQL_INJECTION_ANORM": "CWE-89",
+    "SCALA_SQL_INJECTION_SLICK": "CWE-89",
+    "SCALA_XSS_MVC_API": "CWE-79",
+    "SCALA_XSS_TWIRL": "CWE-79",
+    "SCRIPT_ENGINE_INJECTION": "CWE-94",
+    "SEAM_LOG_INJECTION": "CWE-94",
+    "SF_DEAD_STORE_DUE_TO_SWITCH_FALLTHROUGH": "CWE-484",
+    "SF_DEAD_STORE_DUE_TO_SWITCH_FALLTHROUGH_TO_THROW": "CWE-484",
+    "SF_SWITCH_FALLTHROUGH": "CWE-484",
+    "SPEL_INJECTION": "CWE-94",
+    "SPRING_CSRF_PROTECTION_DISABLED": "CWE-352",
+    "SPRING_CSRF_UNRESTRICTED_REQUEST_MAPPING": "CWE-352",
+    "SPRING_UNVALIDATED_REDIRECT": "CWE-601",
+    "SQL_INJECTION": "CWE-564",
+    "SQL_INJECTION_ANDROID": "CWE-89",
+    "SQL_INJECTION_HIBERNATE": "CWE-564",
+    "SQL_INJECTION_JDBC": "CWE-89",
+    "SQL_INJECTION_JDO": "CWE-89",
+    "SQL_INJECTION_JPA": "CWE-89",
+    "SQL_INJECTION_SPRING_JDBC": "CWE-89",
+    "SQL_INJECTION_TURBINE": "CWE-564",
+    "SQL_INJECTION_VERTX": "CWE-564",
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
     "SQL_PREPARED_STATEMENT_GENERATED_FROM_NONCONSTANT_STRING": "CWE-89",
-    "COMMAND_INJECTION": "CWE-78",
-    "PATH_TRAVERSAL_IN": "CWE-22",
-    "WEAK_TRUST_MANAGER": "CWE-295",
+    "STATIC_IV": "CWE-329",
+    "STRUTS_FORM_VALIDATION": "CWE-106",
+    "TDES_USAGE": "CWE-326",
+    "TEMPLATE_INJECTION_FREEMARKER": "CWE-94",
+    "TEMPLATE_INJECTION_PEBBLE": "CWE-94",
+    "TEMPLATE_INJECTION_VELOCITY": "CWE-94",
+    "TRUST_BOUNDARY_VIOLATION": "CWE-501",
+    "UNENCRYPTED_SERVER_SOCKET": "CWE-319",
+    "UNENCRYPTED_SOCKET": "CWE-319",
+    "UNSAFE_HASH_EQUALS": "CWE-203",
+    "UNVALIDATED_REDIRECT": "CWE-601",
+    "URLCONNECTION_SSRF_FD": "CWE-918",
     "WEAK_HOSTNAME_VERIFIER": "CWE-295",
-    "HARDCODED_KEY": "CWE-798",
+    "WEAK_MESSAGE_DIGEST_MD5": "CWE-328",
+    "WEAK_MESSAGE_DIGEST_SHA1": "CWE-328",
+    "WEAK_TRUST_MANAGER": "CWE-295",
+    "WICKET_XSS1": "CWE-79",
+    "XML_DECODER": "CWE-502",
+    "XPATH_INJECTION": "CWE-643",
+    "XSS_JSP_PRINT": "CWE-79",
+    "XSS_REQUEST_PARAMETER_TO_SEND_ERROR": "CWE-81",
+    "XSS_REQUEST_WRAPPER": "CWE-79",
+    "XSS_SERVLET": "CWE-79",
+    "XXE_DOCUMENT": "CWE-611",
+    "XXE_DTD_TRANSFORM_FACTORY": "CWE-611",
+    "XXE_SAXPARSER": "CWE-611",
+    "XXE_SCHEMA_FACTORY": "CWE-611",
+    "XXE_VALIDATOR": "CWE-611",
+    "XXE_XMLREADER": "CWE-611",
+    "XXE_XMLSTREAMREADER": "CWE-611",
+    "XXE_XPATH": "CWE-611",
+    "XXE_XSLT_TRANSFORM_FACTORY": "CWE-611",
 }
 
 # SpotBugs/FindSecBugs exposes TWO orthogonal signals that this adapter used to

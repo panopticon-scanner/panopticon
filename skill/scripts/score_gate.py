@@ -6,10 +6,6 @@ docs/superpowers/specs/2026-08-14-panopticon-5.0-domain-panel-matrix-design.md Â
 """
 from typing import TYPE_CHECKING
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # PACKAGE first, flat fallback -- the order host_disclosure.py and
 # model_resolver.py already use, and the one tests/test_layout.py rule 2
 # explains: skill/scripts is on sys.path as well as its parent, so a flat-first

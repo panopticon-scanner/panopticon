@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **SpotBugs findings cite the CWE SpotBugs or FindSecBugs assigns to the pattern (#1795;
+  COD-1501398192).** `_SPOTBUGS_CWE` was a hand-written table of seven bug patterns; one of
+  them, HARDCODED_KEY, named a pattern neither vendor has ever emitted, so a suppressed
+  hard-coded password never reached policy C's gate. The table is now the union of core
+  SpotBugs 4.8.6's and the FindSecBugs 1.13.0 plugin's own `findbugs.xml` mappings -- 145
+  patterns across both vendors; what neither maps stays uncited, on purpose.
+- **Keep score-gate imports from changing the search path (#2279, #1823).** Package and flat
+  imports retain evidence module identity without modifying `sys.path`. Direct file execution
+  remains supported, and the bootstrap allowance is removed from the import guard.
 - **Reuse the coverage string-list filter (#2278, #1822).** Coverage delegates list filtering
   to the schema helper while still accepting a lone string. Manifest inputs remain list-only.
 - **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
