@@ -26,6 +26,7 @@ from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + s
 from scripts import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
 from scripts import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
+from scripts import groups_schema  # noqa: E402  (#2229: the committed-config schema owner)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
@@ -168,7 +169,6 @@ def _seed_groups_manifest(repo):
     if committed is not None:
         names = list((discovery.load_catalog(repo) or {}).keys())
         return committed, False, names
-    import groups_schema  # noqa: E402
     import setup_proposal as sp  # noqa: E402
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
@@ -995,15 +995,12 @@ def config_refusal(repo):
     root config, unknown top-level keys -- are deliberately not refusals: they
     are printed elsewhere, and a first run on a tree with no config at all is
     the ordinary case, not a fault."""
-    import groups_schema  # noqa: E402
     doc = repo_config.read_document(repo)
     reasons = list(doc.errors) + list(repo_config.resolve(repo).disclosures)
     if doc.doc is not None:
-        raw, group_errors, _disclosures = groups_schema.normalize_groups_mapping(
-            doc.doc.get("groups"))
-        _groups, parse_errors = groups_schema.parse_groups({"groups": raw})
+        _groups, schema_errors = groups_schema.parse_groups(doc.doc)
         _globs, exclude_errors = groups_schema.parse_exclude_paths(doc.doc)
-        reasons += group_errors + parse_errors + exclude_errors
+        reasons += schema_errors + exclude_errors
     if not reasons:
         return []
     return reasons + ["fix it or delete it; nothing was written"]
@@ -1033,7 +1030,6 @@ def migrate_config(repo):
     resolver merely DISCLOSED one (a refused symlink at either name resolves
     to no path, and overwriting it would destroy the operator's link).
     Returns (path, message)."""
-    import groups_schema  # noqa: E402
     import setup_proposal as sp  # noqa: E402
     res = repo_config.resolve(repo)
     if res.path is not None or res.disclosures:
