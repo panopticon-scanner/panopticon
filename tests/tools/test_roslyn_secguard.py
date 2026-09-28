@@ -163,6 +163,20 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(by_rule["SCS0026"], "MEDIUM")
         self.assertEqual(by_rule["SCS0018"], "LOW")
 
+    def test_v1_path_attribution_matches_the_location_parser_fallback(self):
+        sample = json.loads(ROSLYN_SAMPLE_V1)
+        results = only(sample["runs"])["results"]
+        only(only(results)["locations"])["physicalLocation"] = {}
+        adapter = rs.RoslynSecGuardAdapter()
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(facts["parsed_files"], 1)
+        results.append({**only(results), "ruleId": None})
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (0, 1))
+        self.assertEqual(facts["unlocated_records"], 0)
+
     def test_parse_defaults_missing_level_to_warning_severity(self):
         # ROSLYN_SAMPLE has no "level" key at all; SARIF's own default for an
         # unspecified level is "warning".

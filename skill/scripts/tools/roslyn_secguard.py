@@ -398,7 +398,7 @@ class RoslynSecGuardAdapter:
             return None
         location = locations[0]
         physical = location.get("physicalLocation")
-        artifact = (physical.get("artifactLocation") if isinstance(physical, dict)
+        artifact = (physical.get("artifactLocation") if isinstance(physical, dict) and physical
                     else location.get("resultFile"))
         return artifact.get("uri") if isinstance(artifact, dict) else None
 
@@ -466,7 +466,7 @@ class RoslynSecGuardAdapter:
                     # values. One bad result must not discard usable siblings.
                     coverage.malformed(result_record, "invalid_result", path)
                     continue
-                coverage.seen(path)
+                coverage.seen(location.get("file"))
                 out.append(finding)
                 n += 1
         return out, coverage.finish(self.name)
