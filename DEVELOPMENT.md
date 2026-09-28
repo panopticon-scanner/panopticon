@@ -327,6 +327,16 @@ characters, and matching consumes the whole path.
   the disclosure axis that makes a truncated run visible in the artifact instead of silently
   biased toward "no findings"; it only *produces* the signal — refuse-to-grade-on-divergence and
   panel reorder are SP-B policy, not SP-A.
+- **Two import modes, one module object per file.** Neither `scripts/` nor `skill/scripts/` has an
+  `__init__.py`: they are two portions of the `scripts` namespace package, reached with `skill/` on
+  the path (`from scripts import x`, what `phases/child._child_env` gives every child), while
+  `skill/scripts/` is on the path too so an entry script run by path can `import x` flat. Importing
+  one file under BOTH names builds two module objects from it, with two sets of module state and
+  two patch targets, so package-qualified is the default and a flat import is a decision.
+  `tests/test_layout.py` owns the flat mode (rule 2, and `FLAT_MODULES` for the modules that must
+  keep it); `tests/test_module_identity.py` gates the rest — the import-time doubled-module
+  census, a shrink-only per-module ceiling on the `sys.path` bootstrap sites, and no import
+  fallback in a package module. Retiring the remaining flat imports is tracked in #1516.
 
 ## Running
 Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`
@@ -459,6 +469,11 @@ The `gems` family also refuses to pin a release whose RUNTIME closure has grown 
 installs. The tools image installs each `.gem` with `--ignore-dependencies` (#1734), so the closure
 is something this repo asserts rather than something RubyGems works out — and a release that
 requires a new gem would carry a perfectly good digest and still be wrong to pin.
+
+The two workflows that CONSUME the Dockerfile's dependency-check pins — `nvd-cache.yml` and
+`docker-publish.yml` — read them with `python3 scripts/dockerfile_args.py read-arg <NAME>`,
+which refuses a value that is not of its expected shape before it reaches an image tag or a
+download (#1774).
 
 ### Regenerating the pinned dependency hashes
 
@@ -650,7 +665,12 @@ with `npm install --package-lock-only --ignore-scripts`. The image installs it w
 `tests/test_workflow_pins.py` holds the rule: every `pip install` in `.github/workflows/*.yml` and
 `Dockerfile*` either installs from a `--require-hashes` file or is on that module's
 `EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
-placeholder is refused), and the pinned pip may not be older than the one the runner ships.
+placeholder is refused), and the pinned pip may not be older than the one the runner ships. An
+exempted workflow's **posture** is asserted rather than assumed: it may not run on
+`pull_request_target`, may not hold a `write` scope at workflow or job level, and may not leave a
+job's effective `permissions:` undeclared, which is why `ci.yml` states `contents: read` at the top
+instead of inheriting the repository's `GITHUB_TOKEN` default (#1784). `docker-build-pr.yml`, the
+only other workflow that declared nothing, now does the same, though no exemption holds it there.
 
 The third door is what a workflow **downloads and then runs**, and `scripts/workflow_guard.py`
 holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from

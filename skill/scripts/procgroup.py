@@ -23,13 +23,18 @@ thing:
   on any of them. What an interrupt wants: `HostRunner.terminate_children`
   bounds a Ctrl-C by ONE shared grace window, not one window per child.
 
-Nothing here raises. Every one of these calls is made on a path that is
-already handling a failure -- a deadline that passed, an operator who pressed
-Ctrl-C -- and an exception out of the kill would replace a bounded stop with
-a traceback.
+Nothing in that kill path raises. Every one of these calls is made on a path
+that is already handling a failure -- a deadline that passed, an operator who
+pressed Ctrl-C -- and an exception out of the kill would replace a bounded
+stop with a traceback.
+
+And one way INTO that path, for the signal that used to skip it (#2199):
+`sigterm_as_interrupt(main)` runs the driver's CLI with a SIGTERM raised as
+the interrupt a Ctrl-C raises, so a supervisor's stop reaches the same kills.
 """
 import os
 import signal
+import sys
 
 # How long a group is given to exit on SIGTERM before SIGKILL. Short on
 # purpose: the deadline that brought us here has already passed. Moved
@@ -156,3 +161,68 @@ def kill_group(proc, grace=KILL_GRACE):
         if reaped(proc, grace):
             return True
     return reaped(proc, grace)
+
+
+class Terminated(KeyboardInterrupt):
+    """A SIGTERM, raised as the interrupt a Ctrl-C raises (#2199).
+
+    A subclass, so every handler that routes a Ctrl-C routes this unchanged:
+    `_run_child`'s group kill, `iter_batch`'s `terminate_children`,
+    `orchestrate.loop`'s rollback and teardown. Its own type, so that
+    `sigterm_as_interrupt` can tell it from a real Ctrl-C when it escapes.
+    """
+
+
+def sigterm_as_interrupt(main):
+    """Run `main()` with a SIGTERM raising `Terminated` in the main thread,
+    and return what `main` returns (#2199).
+
+    At the default disposition a SIGTERM -- a supervisor's stop, a CI
+    cancel, a plain `kill` -- ended the driver without running one `except`
+    or `finally`. The phase child and the runner children lead their own
+    sessions, so no signal to the driver's group reached them, and they were
+    left running. Raised as the interrupt instead, a SIGTERM takes the path a
+    Ctrl-C takes, and that path ends them first.
+
+    Only the FIRST SIGTERM raises. Every later one is absorbed until `main`
+    returns: the kills that path is waiting on escalate to SIGKILL only after
+    `reaped`, which catches `Exception` and not an interrupt, so a second
+    raise would cut them short and leave a child that ignores SIGTERM
+    running. SIGKILL still stops the driver outright, and a Ctrl-C still
+    raises every time. Once `main` returns, the disposition it replaced is
+    back, so a SIGTERM during the interpreter's own exit does what it always
+    did.
+
+    A `Terminated` that escapes `main` stops here, with one line on stderr --
+    `driver: stopped by SIGTERM` -- and 143 (128 + SIGTERM) as the status.
+    Left to the interpreter it would not leave the same way on every
+    supported Python: an escaping KeyboardInterrupt SUBCLASS exits 1 with a
+    traceback before 3.14 and dies by SIGINT from 3.14 on. Where
+    `orchestrate.loop` catches the interrupt, it still rolls back and
+    returns its own status; this is for the interrupts nothing caught. A
+    real Ctrl-C -- `KeyboardInterrupt` itself -- is not caught here and
+    escapes exactly as before.
+
+    Installed only over the DEFAULT disposition, Python's own rule for
+    SIGINT: a parent that set SIGTERM to be ignored meant it, and a handler
+    already there is somebody else's. `driver.py` calls this from its
+    `__main__` block and never at import, because the suite imports the
+    driver and must keep its default dispositions.
+    """
+    if signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
+        return main()
+    raised: list[int] = []
+
+    def interrupt(signum, frame):
+        if not raised:
+            raised.append(signum)
+            raise Terminated("SIGTERM")
+
+    previous = signal.signal(signal.SIGTERM, interrupt)
+    try:
+        return main()
+    except Terminated:
+        print("driver: stopped by SIGTERM", file=sys.stderr, flush=True)
+        return 128 + signal.SIGTERM
+    finally:
+        signal.signal(signal.SIGTERM, previous)

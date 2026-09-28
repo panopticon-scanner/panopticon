@@ -10,10 +10,10 @@ import re
 import sys
 
 from scripts.provenance import tool_provenance
-from .base import cvss_bucket, inert_text, new_finding_id
+from .base import SEV_MAP, cvss_bucket, inert_text, new_finding_id
 
 
-LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
+LEVEL_TO_SEV = {level: SEV_MAP[level] for level in ("error", "warning", "note", "none")}
 SEVERITY_LABELS = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM",
                    "MODERATE": "MEDIUM", "LOW": "LOW"}
 SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}

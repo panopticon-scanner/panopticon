@@ -177,6 +177,81 @@ class TestADeltaScopedRunCannotCertifyOverSuppressedGitDrivers(unittest.TestCase
                       r["coverage_note"])
 
 
+class TestAZeroHunkDeltaGateCannotReadPass(unittest.TestCase):
+    """#2178 (owner ruling 2026-09-27): `delta_zero_hunks` is the REASON an
+    active delta review's diff-hunks map carried no ranges while active findings
+    existed under on-diff scoping. Same shape as every other gap in this
+    function -- it joins `gate_relevant_gap`, so a PASS becomes INCONCLUSIVE and
+    a FAIL or an OFF is untouched -- and it is the channel that NAMES the cause
+    in `coverage_note`. `delta.zero_hunk_gate_gap` is the one place that decides
+    whether there is a gap at all; certify only consumes the answer.
+    """
+
+    REASON = ("zero-hunk delta gate — the diff-hunks map resolved a base and "
+              "carries no diff ranges")
+
+    def _crit(self):
+        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+
+    def test_none_is_the_no_gap_value_and_certifies(self):
+        r = grading_mod.certify("A", [], "high", set(), [], delta_zero_hunks=None)
+        self.assertEqual(r["gate"], "PASS")
+        self.assertTrue(r["coverage_certified"])
+        self.assertIsNone(r["coverage_note"])
+
+    def test_the_reason_turns_a_pass_into_inconclusive_and_writes_the_note(self):
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                delta_zero_hunks=self.REASON)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn(self.REASON, r["coverage_note"])
+
+    def test_a_confirmed_fail_still_fails(self):
+        # A zero-range map can still yield a non-empty on-diff set through
+        # `diff_map.classify`'s fail-open arms, so FAIL is reachable here -- and
+        # a real FAIL is never softened into INCONCLUSIVE.
+        r = grading_mod.certify("F", self._crit(), "high", set(), [],
+                                delta_zero_hunks=self.REASON)
+        self.assertEqual(r["gate"], "FAIL")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn(self.REASON, r["coverage_note"])
+
+    def test_off_is_preserved(self):
+        r = grading_mod.certify("A", [], None, set(), [],
+                                delta_zero_hunks=self.REASON)
+        self.assertEqual(r["gate"], "OFF")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_it_composes_with_the_manifest_note_and_follows_it(self):
+        # Precedence: the manifest note names a BROKEN FILE the operator has to
+        # fix before any coverage number means anything, so it stays first.
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
+                                tools_manifest_invalid="unreadable: x",
+                                delta_zero_hunks=self.REASON)
+        note = r["coverage_note"]
+        self.assertIn("tools manifest unreadable", note)
+        self.assertIn(self.REASON, note)
+        self.assertLess(note.index("tools manifest unreadable"),
+                        note.index(self.REASON))
+
+    def test_it_precedes_the_other_composed_caveats(self):
+        # An empty gate scope invalidates the gate wholesale; a missing online
+        # scanner or a partial capture qualifies it. The bigger fact reads first.
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_network_excluded=["osv-scanner"],
+                                delta_zero_hunks=self.REASON)
+        note = r["coverage_note"]
+        self.assertLess(note.index(self.REASON), note.index("safe network unavailable"))
+
+    def test_it_silences_the_gate_certified_note(self):
+        # `gate certified; grade provisional` is false once the gate is not
+        # certified, and this gap is a gate-relevant one.
+        r = grading_mod.certify("B", [], "high", {"test"}, [],
+                                delta_zero_hunks=self.REASON)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertNotIn("gate certified", r["coverage_note"])
+
+
 class TestHealthScore(unittest.TestCase):
     """#1146: secondary health index = the share of reviewed LoC NOT under
     severity-weighted defect footprint, on a 0-100 scale, reported ALONGSIDE the

@@ -29,6 +29,9 @@ from the guard until it was:
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
                     `do`) that stand in front of a command
 
+The first three are settled on the TEXT, before any command is read, in the
+one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793).
+
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
 back for a human reading an error message.
@@ -39,6 +42,8 @@ import re
 import secrets
 import shlex
 import signal
+
+from shell_lex import closing, lex
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -53,7 +58,8 @@ import signal
 # `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
 # Parse-local subshell markers leave argv alone; counts retain their boundaries
 # for the checksum handler without exposing marker tokens as commands.
-# `heredoc` is the body a caller may quote back (a `sha256sum -c` sums list);
+# `heredoc` is the body a caller may quote back (a `sha256sum -c` sums list;
+# of several, the one descriptor 0 reads if any -- `cat` and `-c` read stdin);
 # `stdin_heredoc` is the body descriptor 0 FINALLY reads, with the flag that
 # says whether it expanded -- `(body, expands)` or None. The two are different
 # questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
@@ -90,8 +96,6 @@ _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
-_HEREDOC_OP = re.compile(
-    r"(?P<fd>(?<!\w)[0-9]+)?<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
 
 
 class _Token(str):
@@ -177,59 +181,6 @@ def join_continuations(script):
     return re.sub(r"\\\n\s*", " ", script)
 
 
-def _lift_heredocs(text, context):
-    """Replace each heredoc with a token belonging to this parse context.
-
-    `sha256sum -c <<EOF ... EOF` is one of the two ways a step writes down what
-    it expects, so the body has to reach the checker rather than being parsed
-    as a dozen stray statements.
-    """
-    lines, out, i = text.splitlines(), [], 0
-    while i < len(lines):
-        line = lines[i]
-        m = _HEREDOC_OP.search(line)
-        if not m:
-            out.append(line)
-            i += 1
-            continue
-        word, body, j = m.group("word"), [], i + 1
-        while j < len(lines) and lines[j].strip() != word:
-            body.append(lines[j])
-            j += 1
-        if j >= len(lines):
-            # No terminator: this `<<` is text inside a string, not a heredoc
-            # (`echo "shift << 2"`). Swallowing the rest of the script as a
-            # body would hide every statement after it.
-            out.append(line)
-            i += 1
-            continue
-        marker = context.new("heredoc", ("\n".join(body), not m.group("q"),
-                                         m.group("fd") or "0"))
-        out.append("%s %s %s" % (line[:m.start()], marker, line[m.end():]))
-        i = j + 1
-    return "\n".join(out)
-
-
-def _closing(text, opening):
-    """Index just past the `)` that closes the group opening at `opening`."""
-    depth, i, quote = 0, opening, None
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if not depth:
-                return i + 1
-        i += 1
-    return None
-
-
 def _lift_substitutions(text, context, arithmetic_body=False):
     """(text with parse-local substitution tokens, inner shell texts).
 
@@ -241,19 +192,21 @@ def _lift_substitutions(text, context, arithmetic_body=False):
     inners, out, i, quote = [], [], 0, None
     while i < len(text):
         ch = text[i]
-        if quote == "'":                        # single quotes suppress all of it
-            out.append(ch)
+        if quote in ("'", "$'"):                # single quotes suppress all of it
+            step = 2 if ch == "\\" and quote == "$'" else 1
+            out.append(text[i:i + step])
             quote = None if ch == "'" else quote
-            i += 1
+            i += step
             continue
         if ch == "\\" and i + 1 < len(text):
             out.append(text[i:i + 2])
             i += 2
             continue
-        if ch in "'\"":
-            quote = None if quote == ch else ch
-            out.append(ch)
-            i += 1
+        if (ch == '"' or not quote) and (ch in "'\"" or text.startswith("$'", i)):
+            opener = text[i:i + 2] if ch == "$" else ch   # an apostrophe in "..." is text
+            quote = None if quote == ch else opener
+            out.append(opener)
+            i += len(opener)
             continue
         if ch == "`":
             end = text.find("`", i + 1)
@@ -270,7 +223,7 @@ def _lift_substitutions(text, context, arithmetic_body=False):
             i += 3
             continue
         if text.startswith("$((", i):
-            end = _closing(text, i + 1)
+            end = closing(text, i + 1)
             if end and text[end - 2:end] == "))":
                 body, nested = _lift_substitutions(
                     text[i + 3:end - 2], context, arithmetic_body=True)
@@ -280,7 +233,7 @@ def _lift_substitutions(text, context, arithmetic_body=False):
                 continue
         opening = _SUBST_OPEN.match(text, i)
         if opening:
-            end = _closing(text, opening.end() - 1)
+            end = closing(text, opening.end() - 1)
             inner = text[opening.end():end - 1] if end else ""
             if end and not inner.startswith("("):   # `$((...))` is arithmetic
                 inners.append(inner)
@@ -301,7 +254,7 @@ def _split(text, context):
     statements = []
     stages = []
     buf: list[str] = []
-    quote, at_token_start, i, n = None, True, 0, len(text)
+    quote, i, n = None, 0, len(text)
     cases: list[str] = []
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
@@ -335,27 +288,23 @@ def _split(text, context):
         ch = text[i]
         if quote:
             buf.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < n:
+            if ch == "\\" and quote != "'" and i + 1 < n:   # "..." and $'...'
                 buf.append(text[i + 1])
                 i += 2
                 continue
-            if ch == quote:
+            if ch == quote[-1]:
                 quote = None
             i += 1
             continue
-        if ch in "'\"":
-            quote, at_token_start = ch, False
-            buf.append(ch)
-            i += 1
+        if ch in "'\"" or text.startswith("$'", i):
+            quote = text[i:i + 2] if ch == "$" else ch
+            buf.append(quote)
+            i += len(quote)
             continue
         if ch == "\\" and i + 1 < n:
             buf.append(ch)
             buf.append(text[i + 1])
-            at_token_start, i = False, i + 2
-            continue
-        if ch == "#" and at_token_start:
-            while i < n and text[i] != "\n":
-                i += 1
+            i += 2
             continue
         # A case header ends at its `in`, even when its first arm shares
         # the line. Quoted/escaped words remain intact until shlex reads them.
@@ -382,11 +331,11 @@ def _split(text, context):
             # Preserve function headers: `f()` and `f ()` are not subshells.
             if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
                 buf.append("()")
-                at_token_start, i = False, i + 2
+                i += 2
                 continue
             buf.append(" " + groups[0] + " ")
             word_start, redirect_target = len(buf), False
-            at_token_start, i = True, i + 1
+            i += 1
             continue
         if ch == ")":
             if cases and cases[-1] == "pattern":
@@ -395,7 +344,7 @@ def _split(text, context):
             else:
                 buf.append(" " + groups[1] + " ")
                 word_start, redirect_target = len(buf), False
-            at_token_start, i = True, i + 1
+            i += 1
             continue
         redirect = _REDIRECT.match(text, i)
         if redirect and not (cases and cases[-1] == "pattern"):
@@ -409,19 +358,19 @@ def _split(text, context):
                 del buf[word_start:]
             buf.append(" " + context.new("redirect", (fd, op)) + " ")
             word_start, redirect_target = len(buf), True
-            at_token_start, i = True, redirect.end()
+            i = redirect.end()
             continue
         if ch == "|" and text[i:i + 2] != "||":
             if cases and cases[-1] == "pattern":
                 buf.append(ch)  # case alternatives are one pattern, not a pipeline
-                at_token_start, i = False, i + 1
+                i += 1
                 continue
             combined = text[i:i + 2] == "|&"
             if combined:
                 # Bash applies the implicit stderr copy AFTER explicit redirects.
                 buf.append(" " + context.new("redirect", ("2", ">&")) + " 1 ")
             end_stage()
-            at_token_start, i = True, i + (2 if combined else 1)
+            i += 2 if combined else 1
             continue
         if ch in ";\n&|":
             pair = text[i:i + 2]
@@ -439,14 +388,12 @@ def _split(text, context):
                             if text.startswith(t, i)), None)
             if arm_end and cases:
                 cases[-1] = "pattern"
-            at_token_start = True
             i += len(arm_end) if arm_end else len(separator)
             continue
         if ch.isspace() and len(buf) > word_start:
             redirect_target = False
         buf.append(ch)
-        at_token_start = ch.isspace()
-        if at_token_start:
+        if ch.isspace():
             word_start = len(buf)
         i += 1
     end_statement("")
@@ -580,18 +527,18 @@ def _stage(text, context):
             continue
         take(word)
         argv.append(word)
-    stdout = sinks.get("1")
-    return Stage(argv, writes, reads, heredoc, substitutions,
+    stdout, stdin = sinks.get("1"), bodies.get("0")
+    return Stage(argv, writes, reads, stdin[0] if stdin else heredoc, substitutions,
                  [stdout] if stdout is not None else [], group_open, group_close,
                  pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 bodies.get("0"))
+                 stdin)
 
 
 def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages."""
     context = _Parse(script)
-    text = _lift_heredocs(join_continuations(without_comments(script)), context)
+    text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     text, _inners = _lift_substitutions(text, context)
     out = []
     for raw, separator in _split(text, context):

@@ -278,13 +278,18 @@ class FlatImportModeTest(unittest.TestCase):
     """The modules that carry a flat-import fallback still import flat.
 
     #1639 P15 fix round 3, R2-5. `skill/scripts` is also on sys.path in
-    several live paths (`setup_flow` imports `plan_contract`, `discovery`,
-    `grouping_engine`, `coverage_model` flat; `dispatch` imports
-    `model_resolver` flat), and seven modules carry `try: from scripts.x import
-    ... except ModuleNotFoundError: from x import ...` for it. Round 2 added a
-    package-qualified import to `evidence` and `x0x_report` with no fallback,
-    which narrowed the mode for four modules at once -- silently, because
-    nothing live reaches those four flat today and the suite stayed green.
+    several live paths (`discovery` imports `diff_map`, `plan_contract` and
+    `repo_config` flat; `setup_proposal` imports `coverage_model` and
+    `groups_schema` flat -- #1766 retired `setup_flow`'s six flat imports,
+    `dispatch`'s `model_resolver` and `grouping_engine`'s three), and the
+    modules under `skill/scripts/` carry `try: from scripts.x import ... except
+    ModuleNotFoundError: from x import ...` for it. How many there are is not
+    written down here on purpose: it went stale twice, and
+    `tests/test_module_identity.py` now censuses both that shape and the doubled
+    modules it exists to avoid. Round 2 added a package-qualified import to
+    `evidence` and `x0x_report` with no fallback, which narrowed the mode for
+    four modules at once -- silently, because nothing live reaches those four
+    flat today and the suite stayed green.
 
     A fresh interpreter per module, run FROM skill/scripts with only that
     directory on the path -- the real shape of the mode (a script in that

@@ -11,13 +11,18 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
 import scripts.findings_contract as fc
 import scripts.group_runner as gr
 import scripts.phases.review as review
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.findings as findings_mod
+import scripts.synth.integrity as integrity_mod
+import scripts.synth.plan as plan_mod
 import scripts.synthesize as syn
 import shutil
 from tests._test_helpers import write_host_evidence
@@ -73,6 +78,141 @@ class PayloadDefectsTest(unittest.TestCase):
     def test_is_acceptable_mirrors_the_defect_list(self):
         self.assertTrue(fc.is_acceptable({"findings": [{"t": 1}]}))
         self.assertFalse(fc.is_acceptable({"findings": [None]}))
+
+
+class OneCellIdentityParserTest(unittest.TestCase):
+    """ARC-3899903550 (#1765): every reader of the cell-file name must give the
+    same answer, because the four that parsed it independently disagreed.
+
+    `cell_of` did not validate the domain, `present_cells` and
+    `integrity._expected_from_filename` did, and `synth/findings.GROUP_RE`
+    accepted the retired 4.x `-panel_review` / `-lens_sweep-<lens>` suffixes and
+    the panel names beside the domain codes. The consequential disagreement was
+    an off-roster or mistyped domain: ingest stamped no `_group`, the mislabel
+    guard said "nothing wrong", the floor audit could not see the cell -- and
+    the defect diagnostic claimed a cell for it anyway. Every branch failed
+    toward invisible, in four different directions.
+
+    `plan.out_of_scope_findings` is the fifth reader -- it was `GROUP_RE`'s other
+    caller, so the symbol could not be deleted without repointing it, and a
+    re-drift there is exactly as silent as the four this finding was written
+    about. It is in the table for that reason, not for symmetry.
+    """
+
+    # The triage probe table, plus a hyphenated group, a hyphenated group with a
+    # lowercase domain, a missing domain and a non-findings name. `None` means
+    # "this name identifies no cell", which every reader must agree on.
+    CASES = (
+        ("findings-App-SEC.json", ("App", "SEC")),
+        ("findings-App-XYZ.json", None),
+        ("findings-App-security-panel_review.json", None),
+        ("findings-App-SEC-lens_sweep-foo.json", None),
+        ("findings-App-sec.json", None),
+        ("findings-a-b-SEC.json", ("a-b", "SEC")),
+        ("findings-a-b-sec.json", None),
+        ("findings-App.json", None),
+        ("groups.json", None),
+    )
+
+    def _ingested_group(self, name):
+        """The `_group` ingest stamps on a finding read out of a file so named."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"severity": "LOW", "panel": "code"}]}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                loaded = findings_mod.load_findings([path])
+        self.assertEqual(len(loaded), 1, name)
+        return loaded[0].get("_group")
+
+    @staticmethod
+    def _candidate_groups(name):
+        """Every group some hyphen-splitting parse of `name` could arrive at.
+
+        The plan in `_out_of_scope_checked` names them all, so a leaner reader
+        cannot escape the assertion by deriving a DIFFERENT group from a retired
+        spelling: `findings-App-security-panel_review.json` yields `App` under
+        the 4.x alternation and `App-security` under a bare rpartition, and both
+        are in the plan.
+        """
+        if not (name.startswith("findings-") and name.endswith(".json")):
+            return []
+        parts = name[len("findings-"):-len(".json")].split("-")
+        return ["-".join(parts[:i]) for i in range(1, len(parts))]
+
+    def _out_of_scope_checked(self, name):
+        """`out_of_scope_findings`' `checked` for one in-scope finding in a file
+        so named -- 1 when the reader placed the file against its group, 0 when
+        it did not.
+
+        The plan also names one unrelated group: with no plan groups at all the
+        function returns None ("nothing could be checked"), which is a third
+        answer this parity assertion has no use for.
+        """
+        plan = [{"group": group, "files": ["a.py"]}
+                for group in self._candidate_groups(name) + ["Unrelated"]]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"severity": "LOW", "panel": "code",
+                                         "location": {"file": "a.py"}}]}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = plan_mod.out_of_scope_findings([path], plan)
+        return result["checked"]
+
+    def test_every_reader_of_the_name_agrees_on_the_cell(self):
+        for name, cell in self.CASES:
+            with self.subTest(name=name):
+                self.assertEqual(fc.cell_of(name), list(cell) if cell else None)
+                self.assertEqual(coverage_io.present_cells([name]),
+                                 {cell[0]: {cell[1]}} if cell else {})
+                self.assertEqual(integrity_mod._expected_from_filename(name), cell)
+                self.assertEqual(self._ingested_group(name),
+                                 cell[0] if cell else None)
+                self.assertEqual(self._out_of_scope_checked(name),
+                                 1 if cell else 0)
+
+    def test_a_dropped_off_roster_file_is_named_without_a_cell(self):
+        # Validating the domain must not cost the diagnostic its subject: a file
+        # whose trailing token is no OCRDb domain names no cell, but the operator
+        # still has to be told the file was dropped.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "findings-App-XYZ.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [None]}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                _kept, diagnostics = findings_mod.load_findings_detailed([path])
+                malformed = integrity_mod.malformed_findings_files([path])
+        self.assertEqual([entry["file"] for entry in diagnostics], [path])
+        self.assertIsNone(diagnostics[0]["cell"])
+        self.assertEqual([entry["file"] for entry in malformed], [path])
+        self.assertIsNone(malformed[0]["cell"])
+
+
+class FlatImportArmTest(unittest.TestCase):
+    """#1765: `cell_of` validates against `groups_schema`, so this module gained
+    a dual-import fallback, and the `except ModuleNotFoundError` arm is reached
+    by nothing in the suite -- every importer today uses `scripts.findings_
+    contract`. `tests/test_layout.py`'s `FLAT_MODULES` does not list this module,
+    so the pin lives here, in the same fresh-interpreter shape #1770 used for
+    `coverage_model`. Round 2 of #1639 P15 is the regression this closes: an
+    import narrowed for four modules at once, silently, because nothing live
+    reached them flat and the suite stayed green.
+    """
+
+    def test_findings_contract_imports_flat_with_only_skill_scripts_on_the_path(self):
+        scripts = os.path.dirname(os.path.abspath(fc.__file__))
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = scripts
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import findings_contract as fc; "
+             "print(fc.cell_of('findings-a-SEC.json'), fc.cell_of('findings-a-XYZ.json'))"],
+            cwd=scripts, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # The roster has to be the one that answers, not an empty stand-in: a
+        # fallback that imported a DIFFERENT module would still exit 0.
+        self.assertEqual(proc.stdout.strip(), "['a', 'SEC'] None")
 
 
 class SharedAcceptanceTest(unittest.TestCase):

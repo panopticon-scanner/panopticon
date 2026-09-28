@@ -5,7 +5,10 @@ panel ran partial, a scout-requested tool produced no output, or an integrity ch
 undeclared or content-substituted findings file, which on the driver path is caught by the driver's
 own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
-NOT certified, distinct from a real `FAIL`. `summary.coverage_certified` and
+NOT certified, distinct from a real `FAIL`. Another cause (#2178): under the default `--gate-scope
+on-diff`, an ACTIVE delta review whose hunk map has no ranges while active findings exist reads
+`INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change with no findings
+passes, and the gate never falls back to the wider scope. `summary.coverage_certified` and
 `meta.coverage.divergence` carry the detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when
 an artifact it wrote fails its own published schema (next paragraph), `3` on an unreadable OCRDb
 bundle, `0` otherwise. Exit `2` is also argparse's usage-error code; a genuine INCONCLUSIVE run
@@ -15,7 +18,12 @@ checking whether the report exists. Consumers should key certification on `summa
 `INCONCLUSIVE` with a real grade still attached. When `meta.coverage.resume` shows pending work in
 either phase, the terminal summary also prints a `**Resume:**` line (fan-out/verify done vs. total)
 directly under the Grade/Gate line; a fully-complete or resume-absent run prints no such line, so a
-resumed run never reads as a fresh full scan.
+resumed run never reads as a fresh full scan. Every `meta.integrity` key that sinks certification
+is also NAMED on that summary, as an `**Integrity:**` line saying what the key measured and that
+the run is not certified (#1761): `synth/integrity.INTEGRITY_KEYS` is the one table both the gate
+and the renderer read, so no sinking key reaches that summary as the bare word `incomplete`. The
+keys that report without gating — a cross-domain filing, the planned-file and hash counters, the
+unenforced-ack disclosure — print as a `**Note:**` or not at all.
 
 **Terminal completion, artifact validity and coverage certification are three different things
 (#1639 P15),** and the exit status names which one failed. *Terminal completion* is whether the run
@@ -52,7 +60,8 @@ that EXISTS and cannot be read (unreadable, not JSON, not an object) leaves the 
 set unknown, so `tools_absent` is not computed from the scout's advisory list — that fallback
 silently drops every scanner the runner selected and the scout never asked for — and the run reports
 `meta.integrity.tools_manifest_invalid` with the reason, which fails `integrity_ok` like every other
-entry in that section (so the gate goes INCONCLUSIVE) and sets `summary.coverage_certified: false`
+SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do), so the gate goes
+INCONCLUSIVE, and sets `summary.coverage_certified: false`
 with a `coverage_note` saying *tools manifest unreadable*. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest (a

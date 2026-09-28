@@ -674,42 +674,20 @@ def assign_by_catalog(files, catalog):
     assigned, leftovers, _ = assign_scoped(files, catalog)
     return assigned, leftovers
 
-def _to_list(val):
-    """Normalise a YAML scalar, sequence, or None into a list."""
-    if val is None:
-        return []
-    if isinstance(val, str):
-        return [val]
-    return list(val)
-
 def load_catalog(repo):
     """Load the file group catalog from the root config (#1681).
 
-    A missing config returns {}; an unreadable/invalid one, or a legacy
-    matrix file with no root config, is raised as ValueError so callers fail
-    loud on a broken catalog."""
+    The SAME read, validation and shape as `_committed_matrix` -- one catalog,
+    not a third of its own (#2229) -- with the refusal labelled for this
+    function's callers. A missing config is {}; an unreadable or invalid one,
+    and a legacy matrix file with no root config, raises so callers fail loud.
+
+    It used to normalize the legacy list form itself, repair a scalar `match:`
+    into a one-element list nothing else agreed with, carry 4.x
+    `patterns:`/`facets:` keys nothing has read since the matrix landed, and
+    crash on a non-mapping `groups:` or body (#2189)."""
     try:
-        doc = repo_config.read_document(repo)
-        if doc.errors:
-            raise ValueError("; ".join(doc.errors))
-        if doc.doc is None:
-            return {}
-        raw = doc.doc.get("groups") or {}
-        if isinstance(raw, list):
-            print("%s: legacy list form -- normalizing to mapping; "
-                  "re-run --setup to rewrite" % repo_config.CONFIG_NAMES[0],
-                  file=sys.stderr)
-            raw = {g.get("name"): g for g in raw
-                   if isinstance(g, dict) and g.get("name")}
-        out = {}
-        for name, body in raw.items():
-            body = body or {}
-            out[name] = {
-                "patterns": _to_list(body.get("patterns")),
-                "match": _to_list(body.get("match")),
-                "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
-            }
-        return out
+        return _committed_matrix(repo)
     except ValueError as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
@@ -1455,52 +1433,57 @@ def emit(obj, fh=None):
     json.dump(obj, fh, indent=2)
     fh.write("\n")
 
-def _leaf_body(body):
-    """The four leaf lists of a committed group body, order-faithful."""
-    body = body if isinstance(body, dict) else {}
-    return {
-        "match": list(body.get("match") or []),
-        "tests": list(body.get("tests") or []),
-        "panels": list(body.get("panels") or []),
-        "exclude": list(body.get("exclude") or []),
-    }
+def _disclose_committed(lines):
+    """Print config disclosures on stderr, with the prefix every reader uses."""
+    for line in lines:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+
+def _committed_document(repo):
+    """The committed root config, read through ONE seam by every reader of it
+    (#2229, owner ruling 2026-09-27).
+
+    `doc.disclosures` print FIRST, on every path: a refused symlink at the
+    config path resolves to no document with NO error, so an empty answer was
+    the only thing the operator ever saw of it -- and this seam is why the
+    setup and run sides cannot print different channels of it.
+
+    `doc.errors` -- unreadable, no `version: 1`, over-cap, a legacy-only tree
+    -- RAISE. They used to be printed and then read as "nothing committed" by
+    `_committed_matrix` and `_committed_exclude_paths` while `_matrix_catalog`
+    refused the same document, so one reader merged a setup draft against an
+    empty matrix and dropped the operator's `exclude_paths:`. The message rides
+    the exception, not a print: the caller that surfaces it says it once."""
+    doc = repo_config.read_document(repo)
+    _disclose_committed(doc.disclosures)
+    if doc.errors:
+        raise ValueError("; ".join(doc.errors))
+    return doc
+
+def _committed_groups(repo):
+    """(doc, mapping, errors) for the committed `groups:` value, normalized by
+    the owner with both disclosure channels printed: the read every groups
+    reader shares (#2229). `mapping` is {} with no document."""
+    doc = _committed_document(repo)
+    raw, errors, disclosures = groups_schema.normalize_groups_mapping(
+        (doc.doc or {}).get("groups"))
+    _disclose_committed(disclosures)
+    return doc, raw, errors
 
 def _committed_matrix(repo):
-    """Committed root config's `groups:` as serializable {name: body},
-    preserving committed field ORDER verbatim (never-clobber is
-    byte-faithful). A leaf body is {match, tests, panels, exclude}; a PARENT
-    (keys are subgroup names, #1305) is {"subgroups": {sub: leaf body}} so the
-    structure survives the additive merge instead of collapsing to an empty
-    leaf (5.2). Empty when none is committed (first run -> adopt-all).
+    """Committed root config's `groups:` as serializable {name: body}: a leaf
+    is {match, tests, panels, exclude}, a PARENT (subgroup names as keys, #1305)
+    is {"subgroups": {sub: leaf}}, so the structure survives the additive merge
+    instead of collapsing to an empty leaf (5.2). Empty when none is committed
+    (first run -> adopt-all).
 
-    Disclosures are printed FIRST, exactly as `_matrix_catalog` prints them
-    (I2): a refused symlink at the config path resolves to no document with NO
-    error, so `{}` was the only thing the operator ever saw of it -- and `{}`
-    here means "nothing committed", which is what setup then merged against."""
-    doc = repo_config.read_document(repo)
-    for line in doc.disclosures:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
-    for e in doc.errors:
-        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
-    if doc.doc is None:
-        return {}
-    raw = doc.doc.get("groups") or {}
-    if isinstance(raw, list):  # legacy list form (Task 5)
-        raw = {g.get("name"): g for g in raw
-               if isinstance(g, dict) and g.get("name")}
-    # Validate only; errors are non-fatal on read (disclosed, not blocking) --
-    # the raw-order bodies below are returned regardless of what parse_groups
-    # finds.
-    _, errs = groups_schema.parse_groups({"groups": raw})
-    for e in errs:
-        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
-    out = {}
-    for name, body in raw.items():
-        if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
-            out[name] = {"subgroups": {sub: _leaf_body(sb) for sub, sb in body.items()}}
-        else:
-            out[name] = _leaf_body(body)
-    return out
+    `_matrix_catalog` un-flattened (#2229) -- one read, one validation, one
+    owner -- never a second parse of the authored bodies. So a document this
+    refuses is refused by every other reader, a `match:` the schema rejects is
+    `[]` rather than the six one-character globs `list("src/**")` yielded
+    (#2189), a name it rejects never comes back, and `panels:`/`exclude:` are
+    the parsed domain SETS: sorted, not authored order. It feeds an ADDITIVE
+    merge, so `setup_flow.config_refusal` refuses what it cannot round trip."""
+    return groups_schema.committed_bodies(_matrix_catalog(repo))
 
 def _matrix_catalog(repo):
     """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan
@@ -1509,54 +1492,59 @@ def _matrix_catalog(repo):
     A missing config returns {}; an unreadable or invalid document -- and a
     legacy matrix file with no root config (#1681, no fallback) -- is raised
     as ValueError so the caller fails loud instead of silently degrading to an
-    empty catalog.
+    empty catalog. Disclosures print first (`_committed_document`).
 
-    Disclosures are printed FIRST, before either exit. A refused symlink at
-    the config path resolves to no document with NO error (`repo_config`
-    refuses to follow it), so returning {} here is a silent fall back to
-    whole-repo chunking unless the refusal itself is on stderr -- same for a
-    stale `settings`-era JSON beside an absent config."""
-    doc = repo_config.read_document(repo)
-    for line in doc.disclosures:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
-    if doc.errors:
-        raise ValueError("; ".join(doc.errors))
+    Per-ENTRY schema errors stay disclosed and non-blocking here: one bad group
+    among good ones degrades to its own empty match while the rest of the
+    matrix holds, and `_declares_groups` makes an all-invalid catalog loud
+    (#run8 COD-B1A). Setup refuses them outright instead
+    (`setup_flow.config_refusal`): it is about to write a draft."""
+    doc, raw, errors = _committed_groups(repo)
     if doc.doc is None:
         return {}
-    groups, errs = groups_schema.parse_groups(doc.doc)
+    groups, errs = groups_schema.parse_groups({"groups": raw})
     collisions = groups_schema._reserved_name_errors(groups)
     if collisions:
         raise ValueError("; ".join(collisions))
-    for e in errs:
+    for e in errors + errs:
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
 
 def _declares_groups(repo):
     """True iff the committed root config actually declares one or more groups
     (#run8 COD-B1A: an authored-but-unusable catalog must fail loud, not
-    degrade to whole-repo chunking). No config, an invalid one, or a
-    legacy-only tree declares nothing here -- `_matrix_catalog` is what
-    surfaces those loud."""
-    doc = repo_config.read_document(repo)
-    if doc.doc is None:
-        return False
-    raw = doc.doc.get("groups")
-    if isinstance(raw, list):   # legacy list form
-        return any(isinstance(g, dict) and g.get("name") for g in raw)
-    return bool(isinstance(raw, dict) and raw)
+    degrade to whole-repo chunking). No config and an empty `groups:` mapping
+    declare nothing; an unreadable document or a legacy-only tree raises, the
+    way every reader does.
+
+    The OWNER decides what counts as declared (#2229). This used to ask its own
+    question of the legacy list form -- does any entry carry a name? -- and to
+    read a non-mapping `groups:` as "nothing declared", so a run over
+    `groups: API` printed the error and chunked the whole repo with rc 0
+    (#2189). A value the owner cannot normalize is a declaration nothing could
+    read: the case COD-B1A exists to refuse."""
+    doc, raw, errors = _committed_groups(repo)
+    return doc.doc is not None and bool(raw or errors)
 
 def _committed_exclude_paths(repo):
     """Committed top-level `exclude_paths:` globs from the root config
-    (Task 4, #1136): a missing/unreadable/invalid config is non-fatal here --
-    ``[]`` (no pruning), never a hard failure; errors are disclosed."""
-    doc = repo_config.read_document(repo)
-    for e in doc.errors:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    (Task 4, #1136), for the run side and the setup side both -- the ONE copy
+    (#2229; `setup_flow`'s alias resolves here).
+
+    Per the owner ruling 2026-09-27 it discloses and refuses instead of
+    answering `[]` for anything it cannot read: disclosures print, and both a
+    document with errors and an `exclude_paths:` value the schema rejects
+    RAISE. Both halves mattered -- the discovery copy printed `doc.errors` and
+    never `doc.disclosures`, the setup copy printed the disclosures and
+    swallowed BOTH error sets, so a committed pruning policy could vanish from
+    a setup draft with a refused symlink as its only trace. A missing config is
+    still `[]`: no pruning."""
+    doc = _committed_document(repo)
     if doc.doc is None:
         return []
     globs, errs = groups_schema.parse_exclude_paths(doc.doc)
-    for e in errs:
-        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    if errs:
+        raise ValueError("; ".join(errs))
     return globs
 
 def _norm_scope_path(repo, p):
@@ -1701,7 +1689,14 @@ def _repo_scan(argv=None):
     # this point on) -- excluded files land in NEITHER a group NOR a leftover.
     # Absent `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a
     # no-op (byte-identical back-compat).
-    exclude_globs = _committed_exclude_paths(repo)
+    try:
+        exclude_globs = _committed_exclude_paths(repo)
+    except ValueError as exc:
+        # The matrix read's refusal below, and this reader runs first: since
+        # #2229 a document nothing could read -- or a pruning policy the schema
+        # rejects -- is an error on EVERY reader, so the scan exits here.
+        print("panopticon: %s" % exc, file=sys.stderr)
+        return 1
     _exclude_re = [_glob_to_re(g) for g in exclude_globs]
 
     def _apply_exclude(fs):
@@ -1724,6 +1719,9 @@ def _repo_scan(argv=None):
     result["discovery"] = _discovery_block(info)
     try:
         catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
+        # In the SAME guard (#2229): it reads the same document through the same
+        # seam, and a reader that raises must not do it past the scan.
+        declares = _declares_groups(repo)
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
@@ -1736,8 +1734,7 @@ def _repo_scan(argv=None):
     # unusable catalog is an error, not a request for the default. (A single bad
     # group among good ones still degrades gracefully -- its files fall to ._N,
     # disclosed via ungrouped_files -- because a match-bearing group survives.)
-    if _declares_groups(repo) and not any(
-            g.get("match") for g in catalog.values()):
+    if declares and not any(g.get("match") for g in catalog.values()):
         print("panopticon: %s declares groups but none survived schema validation "
               "(see the 'committed %s:' errors above); refusing to silently fall "
               "back to whole-repo default chunking. Fix the entries or remove the "
