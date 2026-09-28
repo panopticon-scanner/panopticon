@@ -116,12 +116,17 @@ proposal, draft, report, manifest) and starts over.
 `?` stay inside a path segment, `**` crosses segments, a pattern with no `/` matches the basename at
 any depth, a leading `/` anchors to the repo root, a trailing `/` claims a directory and everything
 under it (`docs/` == `docs/**`), and `!` re-excludes with last-match-wins in `match:`/`tests:` (a
-committed `exclude_paths:` entry may not start with `!`; it is reported and dropped). Character
+committed `exclude_paths:` entry may not start with `!`; it is refused, not dropped). Character
 classes (`*.[ch]`, `file[0-9].txt`) are **not** supported — write each spelling as its own glob, or
 use `?` for a single character. One in a setup proposal fails the proposal outright; one in a
 committed `panopticon.yml` is reported to stderr like any other schema error (committed-file errors
 are disclosed, not blocking) and the pattern then matches nothing, loudly, instead of matching the
-wrong files (#1501).
+wrong files (#1501). A WRITE is stricter than a run: `driver setup` refuses a config whose
+schema errors it would otherwise merge against, naming them and writing no draft, and a
+top-level `exclude_paths:` entry that fails to parse refuses on both paths. A document nothing
+can read at all — unparseable, no `version: 1`, a `.panopticon/groups.yml`-only tree, a refused
+symlink at the config path — is an error to every reader of it, and whatever the resolver has to
+say about one is printed on both paths (#2229).
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC

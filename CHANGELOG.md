@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One owner reads the committed config; errors refuse and disclosures print on both paths (#2229,
+  #2189; ARC-1814846877, epic #1761).** Five readers each normalized the legacy `groups:` list form
+  themselves -- `groups_schema.parse_groups`, `discovery.load_catalog`, `_committed_matrix`,
+  `_declares_groups` (a DIFFERENT predicate: does any entry carry a name?) and
+  `setup_flow.migrate_config` -- three re-implemented the leaf-vs-parent rule, and the two
+  `_committed_exclude_paths` copies each printed the disclosure channel the other dropped, with
+  docstrings citing each other wrongly. `groups_schema` owns all of it now
+  (`normalize_groups_mapping`, `is_leaf_body`, `committed_bodies`) and every reader calls it.
+  Per the owner ruling (2026-09-27) a document with `doc.errors` -- unreadable, no `version: 1`, a
+  legacy-only tree -- RAISES on every reader instead of reading as "nothing committed" on some of
+  them, and every reader prints `doc.disclosures`, so a refused symlink at the config path can no
+  longer be visible on the setup path and silent on the run path. `_committed_matrix` is
+  `_matrix_catalog` un-flattened rather than a second pass over the authored bodies, which is #2189:
+  a scalar `match: src/**` used to become six one-character globs, a name the schema had just
+  rejected came back anyway, and a non-mapping `groups:` or group body crashed `driver setup` with
+  an AttributeError and no JSON status. **Behaviour change:** a setup run over a config the schema
+  rejects now refuses with the named error and writes no draft (`config_refusal`), where it used to
+  merge against an empty matrix and tell the operator to move the result over their own file; a
+  `driver run` still degrades per entry, one bad group at a time. `panels:`/`exclude:` come back
+  from the validated domain sets, so a draft renders them sorted rather than in authored order.
 - **spotbugs and pip-audit emit a repo-relative `location.file`, and the contract says so (#1768,
   #2188; ARC-284455831, ARC-2852754506).** SpotBugs nests a `SourceLine` inside the enclosing
   `<Class>` and another inside each `<Method>` before emitting the bug's own as a DIRECT child, so

@@ -11,6 +11,7 @@ from tests.discovery_test_helpers import (
 )
 
 import scripts.discovery as discovery  # noqa: E402
+import scripts.groups_schema as groups_schema  # noqa: E402
 orchestrator = discovery   # #run7 COD-X0X: one module identity
 
 
@@ -503,10 +504,14 @@ def test_matrix_catalog_refuses_a_legacy_tree_loud(tmp_path):
         discovery._matrix_catalog(str(tmp_path))
 
 
-def test_declares_groups_ignores_a_legacy_file(tmp_path):
+def test_declares_groups_refuses_a_legacy_file(tmp_path):
+    # Was `is False`. Owner ruling 2026-09-27 (#2229): every reader RAISES on
+    # `doc.errors`, and a legacy-only tree is one -- reading it as "declares
+    # nothing" is the silent whole-repo fallback #run8 COD-B1A refuses.
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text("groups:\n  A:\n    match: ['a/**']\n")
-    assert discovery._declares_groups(str(tmp_path)) is False
+    with pytest.raises(ValueError, match="migrate-config"):
+        discovery._declares_groups(str(tmp_path))
 
 
 def test_repo_scan_refuses_a_config_without_version(tmp_path, capsys):
@@ -537,24 +542,27 @@ def test_matrix_catalog_discloses_a_refused_symlink_config(tmp_path, capsys):
     assert discovery._declares_groups(str(tmp_path)) is False
 
 
-def test_committed_matrix_ignores_a_legacy_tree(tmp_path, capsys):
-    # The non-raising half of the legacy refusal: `_committed_matrix` feeds
-    # the never-clobber merge, so it degrades to "nothing committed" rather
-    # than raise -- but it must say why, or setup silently proposes a catalog
-    # over one the operator already wrote.
+def test_committed_matrix_refuses_a_legacy_tree(tmp_path):
+    # Was the "non-raising half" of the legacy refusal: it degraded to {} and
+    # only SAID why. Owner ruling 2026-09-27 (#2229): `_committed_matrix` feeds
+    # the never-clobber merge, and "nothing committed" is exactly what let
+    # setup propose a catalog over one the operator already wrote, so the
+    # document nothing could read is an error here too.
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "groups:\n  A:\n    match: ['a/**']\n")
-    assert discovery._committed_matrix(str(tmp_path)) == {}
-    assert "migrate-config" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="migrate-config"):
+        discovery._committed_matrix(str(tmp_path))
 
 
-def test_committed_exclude_paths_ignores_a_legacy_tree(tmp_path, capsys):
+def test_committed_exclude_paths_refuses_a_legacy_tree(tmp_path):
+    # Was `== []` with the reason on stderr. Same ruling (#2229): an exclusion
+    # policy nobody could read must not read as "exclude nothing".
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "exclude_paths: ['vendor/**']\n")
-    assert discovery._committed_exclude_paths(str(tmp_path)) == []
-    assert "migrate-config" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="migrate-config"):
+        discovery._committed_exclude_paths(str(tmp_path))
 
 
 def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):
@@ -567,3 +575,185 @@ def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):
             git_cmd(tmp_path, "x")
         with pytest.raises(AssertionError, match="git subprocess timed out"):
             git_output(tmp_path, "x")
+
+
+# --- #2229 (ARC-1814846877) + #2189: ONE owner for reading the committed
+# config. Five readers each carried their own legacy-list normalisation -- one
+# of them (`_declares_groups`) a DIFFERENT predicate -- three re-implemented the
+# leaf-vs-parent rule, and the two `_committed_exclude_paths` copies each
+# printed the disclosure channel the other dropped. OWNER RULING 2026-09-27:
+# the single owner RAISES on `doc.errors` and PRINTS `doc.disclosures` on BOTH
+# paths (setup stops swallowing parse errors, discovery starts printing
+# disclosures). ------------------------------------------------------------
+
+LEGACY_LIST_CONFIG = ("version: 1\ngroups:\n"
+                      "  - name: Auth\n    match: ['src/auth/**']\n"
+                      "  - name: Api\n    match: ['src/api/**']\n")
+LEGACY_NOTICE = "legacy list form -- normalizing to mapping"
+
+
+def _committed_ids(repo):
+    """Each root-config reader's answer to "which review units are declared?",
+    as sorted ids: every reader's own shape reduced to the one thing they all
+    have to agree on."""
+    doc = discovery.repo_config.read_document(repo).doc or {}
+    parsed, _errors = groups_schema.parse_groups(doc)
+    return {
+        "parse_groups": sorted(parsed),
+        "load_catalog": sorted(discovery.load_catalog(repo)),
+        "_committed_matrix": sorted(discovery._committed_matrix(repo)),
+        "_matrix_catalog": sorted(discovery._matrix_catalog(repo)),
+    }
+
+
+def _case_repo(tmp_path, name, text):
+    """A repo whose only content is a committed root config."""
+    repo = tmp_path / name
+    repo.mkdir()
+    (repo / "panopticon.yml").write_text(text, encoding="utf-8")
+    return str(repo)
+
+
+class TestOneOwnerForTheCommittedConfig:
+    """Every reader of the committed config, pinned to each other."""
+
+    def test_every_reader_reads_the_legacy_list_form_the_same_way(self, tmp_path):
+        repo = _case_repo(tmp_path, "legacy", LEGACY_LIST_CONFIG)
+        ids = _committed_ids(repo)
+        assert ids == {label: ["Api", "Auth"] for label in ids}
+        assert discovery._declares_groups(repo) is True
+
+    def test_every_reader_discloses_the_legacy_list_form(self, tmp_path, capsys):
+        # The notice is the OWNER's one wording, printed by every reader that
+        # reads a document -- `parse_groups` itself is pure and returns it.
+        repo = _case_repo(tmp_path, "legacy", LEGACY_LIST_CONFIG)
+        for label, reader in (("load_catalog", discovery.load_catalog),
+                              ("_committed_matrix", discovery._committed_matrix),
+                              ("_matrix_catalog", discovery._matrix_catalog),
+                              ("_declares_groups", discovery._declares_groups)):
+            reader(repo)
+            err = capsys.readouterr().err
+            assert LEGACY_NOTICE in err, label
+            assert "panopticon.yml:" in err, label
+        legacy_repo = tmp_path / "migrate"
+        (legacy_repo / ".panopticon").mkdir(parents=True)
+        (legacy_repo / ".panopticon" / "groups.yml").write_text(
+            "groups:\n  - name: Auth\n    match: ['src/auth/**']\n", encoding="utf-8")
+        setup_flow.migrate_config(str(legacy_repo))
+        assert LEGACY_NOTICE in capsys.readouterr().err
+
+    def test_both_exclude_paths_callers_are_one_function(self, tmp_path, capsys):
+        # The refused-symlink disclosure used to reach stderr on the setup copy
+        # and not on the discovery one; there is one copy now.
+        assert setup_flow._committed_exclude_paths is discovery._committed_exclude_paths
+        repo = tmp_path / "symlink"
+        repo.mkdir()
+        (repo / "elsewhere.yml").write_text(
+            "version: 1\nexclude_paths: ['vendor/**']\n", encoding="utf-8")
+        (repo / "panopticon.yml").symlink_to(repo / "elsewhere.yml")
+        assert discovery._committed_exclude_paths(str(repo)) == []
+        assert "symlink" in capsys.readouterr().err
+
+    def test_every_reader_raises_on_a_document_error(self, tmp_path, capsys):
+        # Owner ruling: a document nothing could read is an ERROR on every
+        # reader -- never `{}`/`[]` read as "nothing committed" by one reader
+        # and a refusal by the next. A legacy-only tree is the case that used
+        # to split them.
+        repo = tmp_path / "legacy-only"
+        (repo / ".panopticon").mkdir(parents=True)
+        (repo / ".panopticon" / "groups.yml").write_text(
+            "groups:\n  A:\n    match: ['a/**']\n", encoding="utf-8")
+        for label, reader in (("load_catalog", discovery.load_catalog),
+                              ("_committed_matrix", discovery._committed_matrix),
+                              ("_matrix_catalog", discovery._matrix_catalog),
+                              ("_declares_groups", discovery._declares_groups),
+                              ("_committed_exclude_paths",
+                               discovery._committed_exclude_paths)):
+            with pytest.raises(ValueError, match="migrate-config"):
+                reader(str(repo))
+            assert label
+
+    def test_a_scalar_match_is_never_character_split(self, tmp_path, capsys):
+        # #2189: three readers gave three answers -- [], six one-character
+        # globs, and a silent repair to ['src/**'].
+        repo = _case_repo(tmp_path, "scalar",
+                          "version: 1\ngroups:\n  API:\n    match: src/**\n")
+        assert discovery._matrix_catalog(repo)["API"]["match"] == []
+        assert discovery._committed_matrix(repo)["API"]["match"] == []
+        assert discovery.load_catalog(repo)["API"]["match"] == []
+        assert "match must be a non-empty list" in capsys.readouterr().err
+
+    def test_a_name_the_schema_rejects_never_comes_back(self, tmp_path, capsys):
+        for index, body in enumerate(("  bad name:\n    match: ['a/**']\n",
+                                      "  ../x:\n    match: ['a/**']\n")):
+            repo = _case_repo(tmp_path, "name%d" % index, "version: 1\ngroups:\n" + body)
+            assert discovery._committed_matrix(repo) == {}
+            assert discovery.load_catalog(repo) == {}
+            assert "is invalid" in capsys.readouterr().err
+
+    PROBES_2189 = (
+        ("groups: API\n", "groups must be a mapping/object"),
+        ("groups:\n  API: src/**\n", "definition must be a mapping"),
+        ("groups:\n  API:\n    match: [1]\n", "match entries must be non-empty strings"),
+        ("groups:\n  API:\n    match: [null, 'src/**']\n",
+         "match entries must be non-empty strings"),
+        ("groups:\n  API:\n    match: ['a/**']\n    tests: [[a]]\n",
+         "tests entries must be non-empty strings"),
+        ("groups:\n  1:\n    match: ['a/**']\n", "group name 1 is invalid"),
+        ("groups:\n  API:\n    match: src/**\n", "match must be a non-empty list"),
+        ("groups:\n  Ungrouped:\n    match: ['a/**']\n", "reserved for the unmatched-file sink"),
+    )
+
+    def test_the_2189_probes_are_named_errors_never_tracebacks(self, tmp_path, capsys):
+        # Every input Claudia's triage crashed `driver setup` on: a named
+        # error from every reader, and the SAME named error from the refusal
+        # that stops setup before a byte is written.
+        for index, (body, message) in enumerate(self.PROBES_2189):
+            repo = _case_repo(tmp_path, "probe%d" % index, "version: 1\n" + body)
+            seen = []
+            for reader in (discovery.load_catalog, discovery._committed_matrix,
+                           discovery._matrix_catalog, discovery._declares_groups):
+                try:
+                    reader(repo)
+                except ValueError as exc:
+                    seen.append(str(exc))
+            err = capsys.readouterr().err
+            assert message in err or any(message in s for s in seen), body
+            reasons = setup_flow.config_refusal(repo)
+            assert any(message in reason for reason in reasons), body
+
+    DECLARED = (
+        ("version: 1\ngroups:\n  A:\n    match: ['a/**']\n", True),
+        ("version: 1\ngroups: {}\n", False),
+        ("version: 1\nexclude_paths: ['vendor/**']\n", False),
+        ("version: 1\ngroups: API\n", True),        # #2189: was False -> whole-repo
+        ("version: 1\ngroups: []\n", False),
+        (LEGACY_LIST_CONFIG, True),
+    )
+
+    def test_declares_groups_agrees_with_the_owner(self, tmp_path):
+        # It used to ask its own question (does any entry carry a name?), which
+        # is why `groups: API` read as "declares nothing" and a run over it
+        # fell back to whole-repo chunking with rc 0.
+        for index, (text, expected) in enumerate(self.DECLARED):
+            repo = _case_repo(tmp_path, "declared%d" % index, text)
+            doc = discovery.repo_config.read_document(repo).doc or {}
+            raw, errors, _disclosures = groups_schema.normalize_groups_mapping(
+                doc.get("groups"))
+            assert discovery._declares_groups(repo) is expected, text
+            assert bool(raw or errors) is expected, text
+
+    def test_a_run_over_a_declared_but_unreadable_groups_value_fails_loud(self, tmp_path):
+        # The other half of #2189's third probe: rc 1 and the COD-B1A refusal,
+        # never a silent whole-repo fallback.
+        repo = tmp_path / "scalar-groups"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "panopticon.yml").write_text("version: 1\ngroups: API\n", encoding="utf-8")
+        git_cmd(repo, "init", "-q")
+        git_cmd(repo, "add", "-A")
+        git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
+        out = repo / "groups.json"
+        assert discovery.main(["--repo-scan", str(repo), "--out", str(out)]) == 1
+        assert not out.exists()

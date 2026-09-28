@@ -973,23 +973,37 @@ def config_refusal(repo):
 
     `driver run` fails loud on an authored-but-invalid root config; setup was
     the one path that proceeded. `discovery._committed_matrix` and
-    `_committed_exclude_paths` answer `{}`/`[]` for ANY unreadable document, so
-    ingest merged against an empty matrix, dropped the operator's
-    `exclude_paths:`, and the completion message told them to move a draft that
-    discards their own matrix over the real file.
+    `_committed_exclude_paths` answered `{}`/`[]` for ANY unreadable document,
+    so ingest merged against an empty matrix, dropped the operator's
+    `exclude_paths:`, and told them to move a draft that discards their own
+    matrix over the real file. Both raise now (#2229); this turns the refusal
+    into a named status before either runs.
 
     Refuses on the document's ERRORS (no `version: 1`, over-cap, unparseable,
     a legacy-only tree) and on the RESOLVER's own disclosures -- a refused
     symlink at either name resolves to no document with no error at all, and
     both names present is an ambiguity nothing should be written against.
 
+    And on the SCHEMA's errors, per the owner ruling 2026-09-27 (#2189): a
+    scalar `match:`, a non-mapping `groups:`, an invalid or reserved group name
+    used to reach the merge as a raw body -- character-split, crashing `driver
+    setup` with an AttributeError and no JSON status, or quietly proposing a
+    catalog over the operator's own. A run degrades per-entry; a WRITE cannot.
+
     The informational disclosures `read_document` adds on TOP of a readable
     document -- the retired JSON config, a legacy matrix file beside a valid
-    root config, unknown top-level keys -- are deliberately not
-    refusals: they are printed elsewhere, and a first run on a tree with no
-    config at all is the ordinary case, not a fault."""
+    root config, unknown top-level keys -- are deliberately not refusals: they
+    are printed elsewhere, and a first run on a tree with no config at all is
+    the ordinary case, not a fault."""
+    import groups_schema  # noqa: E402
     doc = repo_config.read_document(repo)
     reasons = list(doc.errors) + list(repo_config.resolve(repo).disclosures)
+    if doc.doc is not None:
+        raw, group_errors, _disclosures = groups_schema.normalize_groups_mapping(
+            doc.doc.get("groups"))
+        _groups, parse_errors = groups_schema.parse_groups({"groups": raw})
+        _globs, exclude_errors = groups_schema.parse_exclude_paths(doc.doc)
+        reasons += group_errors + parse_errors + exclude_errors
     if not reasons:
         return []
     return reasons + ["fix it or delete it; nothing was written"]
@@ -1049,19 +1063,17 @@ def migrate_config(repo):
         raise ValueError("%s unreadable: %s" % (legacy, exc)) from exc
     if not isinstance(doc, dict):
         raise ValueError("%s must be a mapping" % legacy)
-    raw = doc.get("groups") or {}
-    if isinstance(raw, list):
-        raw = {g.get("name"): g for g in raw if isinstance(g, dict) and g.get("name")}
-    _, errors = groups_schema.parse_groups({"groups": raw})
+    # #2229: the owner normalizes, validates and shapes -- this verb had its own
+    # copy of all three, reaching across for `discovery._leaf_body`.
+    raw, errors, disclosures = groups_schema.normalize_groups_mapping(doc.get("groups"))
+    for line in disclosures:
+        print("%s: %s" % (repo_config.LEGACY_GROUPS_PATH, line), file=sys.stderr)
+    parsed, parse_errors = groups_schema.parse_groups({"groups": raw})
+    excludes, exclude_errors = groups_schema.parse_exclude_paths(doc)
+    errors += parse_errors + exclude_errors
     if errors:
         raise ValueError("%s: %s" % (legacy, "; ".join(errors)))
-    groups = {}
-    for name, body in raw.items():
-        if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
-            groups[name] = {"subgroups": {sub: discovery._leaf_body(sb) for sub, sb in body.items()}}
-        else:
-            groups[name] = discovery._leaf_body(body)
-    excludes, _ = groups_schema.parse_exclude_paths(doc)
+    groups = groups_schema.committed_bodies(parsed)
     path = os.path.join(repo, repo_config.CONFIG_NAMES[0])
     with runio._open_w_nofollow(path) as fh:
         fh.write(sp.dump_config_yaml(groups, exclude_paths=excludes))
@@ -1121,24 +1133,11 @@ def _committed_settings(repo):
 _MAX_PROPOSAL_BYTES = 1_048_576   # 1 MiB -- far above any legitimate proposal
 
 
-def _committed_exclude_paths(repo):
-    """The committed root config's top-level `exclude_paths`, [] when absent
-    or unusable (a corrupt committed file is disclosed elsewhere).
-
-    Read from the raw document rather than from committed_matrix, which returns
-    the `groups:` mapping alone (#1504).
-
-    Disclosures go to stderr the way `discovery._matrix_catalog` prints them
-    (I2): a refused symlink at the config path resolves to no document with NO
-    error, so an empty exclude list is otherwise the only trace of it."""
-    import groups_schema  # noqa: E402
-    doc = repo_config.read_document(repo)
-    for line in doc.disclosures:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
-    if doc.doc is None:
-        return []
-    globs, _errors = groups_schema.parse_exclude_paths(doc.doc)
-    return globs
+# #2229: ONE `_committed_exclude_paths`, in `discovery` -- the phase that owns
+# the read. This side's copy printed the resolver's disclosures and swallowed
+# both `doc.errors` and the `exclude_paths:` parse errors, while the discovery
+# copy printed the errors and never the disclosures.
+_committed_exclude_paths = discovery._committed_exclude_paths
 
 
 def _draft_settings(repo, max_per_group, max_groups):
