@@ -86,8 +86,12 @@ def _domain(finding):
     """The finding's roster domain: its own ``domain`` field if it has one, else
     the prefix of its ``code``.
 
-    The normalization is ``ocrdb.roster_domain``, shared with ``strain_report``
-    (#2236). Two properties that predate the sharing and still hold:
+    The claim is resolved HERE and validated by ``ocrdb.clamp_domain`` -- which
+    takes a domain, not a code, so a hyphenated claim (``DAT-C1B``,
+    ``SEC-NOPE``) is clamped and disclosed rather than re-split into the domain
+    before its first hyphen. ``strain_report`` holds a code and goes through
+    ``ocrdb.roster_domain``, the wrapper around the same clamp (#2236). Two
+    properties that predate the sharing and still hold:
 
     * #run7 COD-C2D — the value flows in verbatim from synthesize (no case-fold
       upstream), so it is upper-cased, and "SEC" and "sec" cluster into ONE
@@ -103,7 +107,7 @@ def _domain(finding):
     """
     # The `or ZZZ` default is not a rejected claim: a finding with no `domain`
     # and no `code` claims no domain, which IS the sentinel, so it reaches
-    # `roster_domain` already normalized and is not disclosed.
+    # `clamp_domain` already normalized and is not disclosed.
     dom = (finding.get("domain")
            or (ocrdb.domain_prefix(str(finding.get("code", "")))
                or ocrdb.UNKNOWN_DOMAIN))
@@ -114,7 +118,7 @@ def _domain(finding):
                             _one_line(claim, 40), ocrdb.UNKNOWN_DOMAIN),
               file=sys.stderr)
 
-    return ocrdb.roster_domain(dom, disclose=_disclose)
+    return ocrdb.clamp_domain(dom, disclose=_disclose)
 
 
 def _lead(cluster):

@@ -21,7 +21,13 @@ two markers may not appear in any golden, with today's three offenders in a
 SHRINK-ONLY `PENDING` set. An entry that no longer offends fails as STALE, so
 the set cannot record a debt that has been paid, and it empties when part (b)
 re-captures the three against a synthetic `/src` corpus -- which needs the
-fixtures image and therefore docker, so it is a follow-up and not this test.
+fixtures image and therefore docker, so it is a follow-up (#2313) and not this
+test.
+
+Every file under `tests/goldens/` is scanned, with no per-file exemption: the
+directory's own README used to need one to quote the forbidden path while
+stating the rule, and was reworded instead, because an exemption whose reason is
+permanent prose is a hole the guard can never close.
 """
 import re
 import tempfile
@@ -32,17 +38,15 @@ from tests._test_helpers import REPO_ROOT
 
 GOLDENS = "tests/goldens"
 
-# `/mnt/panopticon` is the operator's checkout root. `.worktrees/` is a path
-# SEGMENT (the lookbehind is what keeps `my.worktrees/` out of it), so a scratch
-# worktree name cannot reach a public golden either -- run-8's tool-axis
-# worktree-exclusion gap is how one got in.
-OPERATOR_PATHS = re.compile(r"/mnt/panopticon|(?<![^\s\"'/])\.worktrees/")
-
-# The rule's own documentation has to quote a forbidden path to state the rule.
-# One file, named, and checked: `test_the_documentation_exemption_is_not_stale`
-# fails if it stops quoting one, so the exemption cannot outlive its reason.
-# Nothing else under the directory is exempt, `.md` included.
-DOCUMENTED = frozenset({"tests/goldens/tool-raw/README.md"})
+# `/mnt/panopticon` is the operator's checkout root (case-sensitive: that is how
+# the tools wrote it). `.worktrees/` must START a path segment, which the
+# lookbehind spells as "not preceded by a word character, a dot or a dash" --
+# admitting whitespace, a quote, a slash, `(`, `=`, `[`, a backslash or nothing
+# at all, because a tool writes a path inside argv echo, parentheses and brackets
+# as readily as inside quotes, and refusing `my.worktrees/` and `a.worktrees/` is
+# the only thing that has to stay out (both pinned below). Run-8's tool-axis
+# worktree-exclusion gap is how a worktree name got into a public golden.
+OPERATOR_PATHS = re.compile(r"/mnt/panopticon|(?<![\w.-])\.worktrees/")
 
 # The goldens that offend today. SHRINK-ONLY: an entry is a debt, not a
 # permission, and it is removed in the same change that re-captures the file.
@@ -56,17 +60,20 @@ PENDING = frozenset({
 def _offenders(root=REPO_ROOT):
     """Every file under `tests/goldens/` naming the operator's checkout.
 
-    Recursive, and every extension: a golden is whatever the capture wrote, so a
-    surface restricted to `*.raw` would miss the next format silently. Raw tool
-    output is not guaranteed to decode, and an undecodable byte is not a reason
-    to skip a file, so it is replaced rather than raised on.
+    Recursive, every extension, and NO exemption: a golden is whatever the
+    capture wrote, so a surface restricted to `*.raw` would miss the next format
+    silently, and a per-file skip would stop the guard seeing whatever is added
+    to that file next (fix round 1, finding 3 -- the directory's README was
+    reworded so it no longer needs one). Raw tool output is not guaranteed to
+    decode, and an undecodable byte is not a reason to skip a file, so it is
+    replaced rather than raised on.
     """
     found = set()
     root = Path(root)
     base = root / GOLDENS
     for path in sorted(base.rglob("*")):
         relative = path.relative_to(root).as_posix()
-        if not path.is_file() or relative in DOCUMENTED:
+        if not path.is_file():
             continue
         if OPERATOR_PATHS.search(path.read_text(encoding="utf-8", errors="replace")):
             found.add(relative)
@@ -98,16 +105,6 @@ class TestGoldensProvenance(unittest.TestCase):
                          if not (Path(REPO_ROOT) / p).is_file())
         self.assertEqual(missing, [], "PENDING names absent file(s): %s" % missing)
 
-    def test_the_documentation_exemption_is_not_stale(self):
-        for relative in sorted(DOCUMENTED):
-            with self.subTest(relative=relative):
-                path = Path(REPO_ROOT) / relative
-                self.assertTrue(path.is_file(), relative)
-                self.assertTrue(
-                    OPERATOR_PATHS.search(path.read_text(encoding="utf-8")),
-                    "%s no longer quotes a forbidden path, so it no longer "
-                    "needs the exemption -- drop it from DOCUMENTED" % relative)
-
     def test_the_scan_reaches_every_depth_and_extension(self):
         # A must-trip control on a synthetic tree: the guard is only as good as
         # its reach, and a non-recursive walk or an extension filter would fail
@@ -120,9 +117,13 @@ class TestGoldensProvenance(unittest.TestCase):
                 ("tests/goldens/tool-raw/b.raw", 'file /src/.worktrees/w/x.py'),
                 ("tests/goldens/deep/nested/c.txt", 'at /mnt/panopticon/x'),
                 ("tests/goldens/d.json", '"/src/.worktrees/w"'),
+                ("tests/goldens/e.raw", 'bandit(.worktrees/w/x.py)'),
+                ("tests/goldens/g.raw", 'gosec --path=.worktrees/w'),
+                ("tests/goldens/h.txt", 'trivy [.worktrees/w/x] HIGH'),
                 ("tests/goldens/clean.raw", '{"uri": "file:///src/app.py"}'),
-                ("tests/goldens/my.worktrees/e.raw", "no marker here"),
+                ("tests/goldens/my.worktrees/i.raw", "no marker here"),
                 ("tests/goldens/f.raw", "a my.worktrees/ dir is not a segment"),
+                ("tests/goldens/j.raw", "nor is a.worktrees/ one"),
             ):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,20 +133,11 @@ class TestGoldensProvenance(unittest.TestCase):
             self.assertEqual(expected, {"tests/goldens/a.raw",
                                         "tests/goldens/tool-raw/b.raw",
                                         "tests/goldens/deep/nested/c.txt",
-                                        "tests/goldens/d.json"})
+                                        "tests/goldens/d.json",
+                                        "tests/goldens/e.raw",
+                                        "tests/goldens/g.raw",
+                                        "tests/goldens/h.txt"})
             self.assertEqual(_offenders(root), expected)
-
-    def test_the_documented_exemption_is_by_path_not_by_extension(self):
-        # A second `.md` under the directory is scanned like anything else: the
-        # exemption is one named file, not a category.
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for relative in ("tests/goldens/tool-raw/README.md",
-                             "tests/goldens/tool-raw/NOTES.md"):
-                path = root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("pinned to /mnt/panopticon once", encoding="utf-8")
-            self.assertEqual(_offenders(root), {"tests/goldens/tool-raw/NOTES.md"})
 
     def test_undecodable_bytes_do_not_skip_a_file(self):
         with tempfile.TemporaryDirectory() as directory:

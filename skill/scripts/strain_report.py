@@ -78,15 +78,34 @@ def _is_gap(code):
     return ocrdb.is_fallback_code(code)
 
 
+def _claimed_domain(code):
+    """The domain a code CLAIMS, normalized but NOT clamped -- what decides
+    `cross_domain`.
+
+    The published `domain` is `_domain`'s clamped answer, because its schema enum
+    is the roster. This is deliberately not that: two codes claiming two
+    DIFFERENT off-roster domains are cross-domain strain, and comparing the
+    clamped values would read both as the `ZZZ` sentinel and publish "same
+    domain" -- under-reporting the one thing the schema says the flag carries,
+    and the signal this module's docstring calls `cross_run_disagreement`'s
+    unique contribution (fix round 1, finding 2). `ocrdb.domain_claim` and not
+    the raw `ocrdb.domain_of`, so case or stray whitespace alone is not a
+    disagreement.
+    """
+    return ocrdb.domain_claim(ocrdb.domain_prefix(str(code)))
+
+
 def _domain(code):
     """The roster domain of an OCRDb code (`DAT-C1B` -> `DAT`), clamped to the
     `ZZZ` sentinel when the prefix is not a roster domain.
 
     #2236 (ARC-101960059): this returned the prefix VERBATIM while
     `x0x_report._domain` clamped, so an off-roster prefix reached the published
-    `signals[].domain` -- whose schema enum IS the roster -- and decided
-    `cross_domain`. Both emitters ask `ocrdb.roster_domain` now, so the same
-    finding cannot be classified two ways the day this emitter is wired in.
+    `signals[].domain`, whose schema enum IS the roster. Both emitters go through
+    `ocrdb.clamp_domain` now -- this one via `roster_domain`, because it holds a
+    code rather than a resolved claim -- so the same finding cannot be classified
+    two ways the day this emitter is wired in. What the clamp does NOT decide is
+    `cross_domain`: see `_claimed_domain`.
     """
     def _disclose(claim):
         print("strain: domain %r is not an OCRDb domain; recording the signal "
@@ -165,7 +184,7 @@ def advisor_recode_signals(findings, run_id=None):
             "code_preferred": preferred,
             "direction": direction(filed, preferred),
             "domain": dom,
-            "cross_domain": dom != _domain(preferred),
+            "cross_domain": _claimed_domain(filed) != _claimed_domain(preferred),
             "recurrence": len(pairs),
             "occurrences": [o for _f, o in pairs],
         }
@@ -253,7 +272,7 @@ def cross_run_signals(runs, window=20):
             "code_preferred": preferred,
             "direction": direction(filed, preferred),
             "domain": dom,
-            "cross_domain": dom != _domain(preferred),
+            "cross_domain": _claimed_domain(filed) != _claimed_domain(preferred),
             "recurrence": len(pairs),
             "occurrences": occurrences,
         }

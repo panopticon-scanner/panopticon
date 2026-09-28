@@ -53,6 +53,14 @@ FINDING = {
 
 @pytest.mark.parametrize(("finding", "rejected", "expected"), [
     ({}, False, ["self-scan", "severity:info", "evidence:unverified"]),
+    # Fix round 1, finding 6: an explicit null means "not stated", so it takes
+    # the same defaults an absent key does. Before, `str(None).upper()` reached
+    # the table as 'NONE'/'None' and the refusal named a value nobody wrote.
+    ({"severity": None}, False, ["self-scan", "severity:info", "evidence:unverified"]),
+    ({"evidence": {"status": None}}, False,
+     ["self-scan", "severity:info", "evidence:unverified"]),
+    ({"severity": None, "evidence": {"status": None}}, False,
+     ["self-scan", "severity:info", "evidence:unverified"]),
     ({"severity": "critical", "evidence": {"status": "tool_confirmed"}}, False,
      ["self-scan", "severity:critical", "evidence:tool-confirmed"]),
     ({"severity": "HIGH", "evidence": {"status": "advisor_confirmed"},
@@ -102,12 +110,29 @@ def test_the_refusal_bounds_and_escapes_a_report_authored_value():
     assert len(message.splitlines()) == 1
 
 
-def test_the_two_label_tables_are_derived_from_the_canonical_taxonomy():
-    # The tables are no longer a hand-copy that could drift; they are the
-    # taxonomy, spelled the way `.github/labels.yml` spells it.
-    # `tests/test_label_catalog_parity.py` pins them against BOTH.
-    assert file_issues.SEV_LABEL["CRITICAL"] == "severity:critical"
-    assert file_issues.EV_LABEL["backup_scope_limited"] == "evidence:backup-scope-limited"
+def test_main_refuses_an_off_taxonomy_finding_before_filing_anything(
+        tmp_path, monkeypatch):
+    # Fix round 1, finding 5. The taxonomy check needs no network and no ledger,
+    # so it runs over the WHOLE batch before the first `create`: a bad finding in
+    # position 2 of `todo` files ZERO issues. Fail-closed is right; two public
+    # issues and then an abort is not, and a partly-filed run is the state the
+    # operator then has to reason about.
+    report, _records = _split_report(tmp_path)
+    part = tmp_path / "part.json"
+    data = json.loads(part.read_text(encoding="utf-8"))
+    data["findings"][0]["evidence"]["status"] = "not_a_status"   # todo position 2
+    part.write_text(json.dumps(data), encoding="utf-8")
+    created = []
+    monkeypatch.setattr(file_issues, "load_ledger", lambda *a, **k: {})
+    monkeypatch.setattr(file_issues, "create",
+                        lambda *a, **k: created.append(a) or "https://e.test/1")
+    monkeypatch.setattr(file_issues, "record", lambda *a, **k: None)
+    monkeypatch.setattr(file_issues.triage, "gh_env", lambda *a, **k: {})
+    monkeypatch.setattr(file_issues.sys, "argv", [
+        "file_issues.py", "--report", str(report), "--throttle", "0"])
+    with pytest.raises(ValueError, match="not_a_status"):
+        file_issues.main()
+    assert created == []
 
 
 def _split_finding(name, rejected=False):

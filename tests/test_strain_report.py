@@ -78,6 +78,8 @@ class TestSharedReportContracts(unittest.TestCase):
             ("sec-x0x", True, "SEC"),
             ("Sec-X0x", True, "SEC"),
             ("zzz-x0x", True, "ZZZ"),
+            ("SEC-X0X ", True, "SEC"),        # fix round 1, finding 7: the two
+            (" SEC-X0X", True, "SEC"),        # halves of the owner both strip
             ("sec-a1a", False, "SEC"),
             ("XYZ-A1A", False, "ZZZ"),
             ("NOTADOMAIN-A1A", False, "ZZZ"),
@@ -113,6 +115,48 @@ class TestSharedReportContracts(unittest.TestCase):
                 # code prefix, and normalizes that through the same clamp.
                 self.assertEqual(x0x._domain({"code": code, "domain": "dat"}), "DAT")
                 self.assertEqual(x0x._domain({"code": code, "domain": "nope"}), "ZZZ")
+
+    def test_a_hyphenated_domain_claim_is_clamped_not_re_split(self):
+        # Fix round 1, finding 1. `x0x_report._domain` resolves the CLAIM first
+        # -- the finding's own `domain` field, else the code's prefix -- so
+        # handing that claim to a CODE-shaped normalizer would split it a second
+        # time and let whatever precedes the first `-` win: `DAT-C1B` filed under
+        # `DAT`, `SEC-NOPE` under `SEC`, and the clamp's disclosure gone. That is
+        # the inference `_domain` exists to refuse (#1639 P15 F1: the prefix of an
+        # agent's value is not a domain just because it looks like one), one field
+        # over. `ocrdb.clamp_domain` validates a DOMAIN claim;
+        # `ocrdb.roster_domain` is the code-shaped wrapper around it.
+        for claim in ("DAT-C1B", "SEC-NOPE", "dat-c1b"):
+            with self.subTest(claim=claim):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(
+                        x0x._domain({"id": "f", "domain": claim,
+                                     "code": "SEC-X0X"}), "ZZZ")
+                self.assertIn("is not an OCRDb domain", err.getvalue())
+                self.assertIn(claim.upper(), err.getvalue())
+
+    def test_cross_domain_is_decided_on_the_raw_claims(self):
+        # Fix round 1, finding 2. The published `domain` is CLAMPED, because its
+        # schema enum is the roster. `cross_domain` is not: two codes claiming
+        # two different off-roster domains ARE cross-domain strain, and comparing
+        # the clamped values would read both as ZZZ and publish "same domain" --
+        # under-reporting the one thing the schema says this field carries
+        # ("True when `code_filed` and `code_preferred` belong to different
+        # domains") and the signal this module's docstring calls
+        # `cross_run_disagreement`'s unique contribution.
+        f = _finding(code="XYZ-A1A", advisor="ABC-A1A")
+        sig = sr.advisor_recode_signals([f], "run1")[0]
+        self.assertEqual(sig["domain"], "ZZZ")        # published: roster-pinned
+        self.assertTrue(sig["cross_domain"])          # decided on XYZ vs ABC
+        # The claim is still NORMALIZED, so case or stray whitespace alone is not
+        # a cross-domain disagreement. `ocrdb.domain_of` on its own would say it
+        # was, which is why the comparison goes through `ocrdb.domain_claim`.
+        for filed, preferred in (("SEC-A1A", "sec-a1b"), ("SEC-A1A", " SEC-A1B")):
+            with self.subTest(filed=filed, preferred=preferred):
+                g = _finding(code=filed, advisor=preferred)
+                self.assertFalse(
+                    sr.advisor_recode_signals([g], "run1")[0]["cross_domain"])
 
     def test_both_emitters_disclose_the_clamp_on_stderr(self):
         # A clamp rewrites a published value, so neither emitter may do it

@@ -19,11 +19,18 @@ evidence exposed.
   unknown severity or evidence status: a ninth status used to be filed as `evidence:unverified`,
   a label asserting the opposite of what happened (ARC-1576523829). `x0x_report` and
   `strain_report` share one gap predicate and one roster clamp (`ocrdb.is_fallback_code`,
-  `ocrdb.roster_domain`), so `is_fallback` is now CASE-INSENSITIVE and strain's published `domain`
-  can no longer leave the roster enum that its own schema declares (ARC-101960059). And
-  `tests/test_goldens_provenance.py` refuses a golden naming `/mnt/panopticon` or a `.worktrees/`
-  path segment, with today's three -- `gitleaks`, `bandit`, `trivy` -- in a shrink-only `PENDING`
-  set that empties when part (b) re-captures them against a synthetic corpus (ARC-168995033).
+  `ocrdb.clamp_domain`), so `is_fallback` is now CASE-INSENSITIVE and whitespace-stripped, and
+  strain's published `domain` can no longer leave the roster enum that its own schema declares
+  (ARC-101960059). A `domain` claim that is not a roster domain is still clamped to `ZZZ` and
+  disclosed, never reinterpreted as the domain before its first hyphen -- `clamp_domain` validates
+  a domain and `roster_domain` is the wrapper for a caller holding a code. `cross_domain` is
+  decided on the RAW claims (`ocrdb.domain_claim`), not the clamped ones: two codes claiming two
+  different off-roster domains are cross-domain strain, and comparing clamped values would publish
+  "same domain". And `tests/test_goldens_provenance.py` refuses any file under `tests/goldens/`
+  that names `/mnt/panopticon` or a `.worktrees/` path segment -- no per-file exemption; the
+  directory's README was reworded so it no longer needs one -- with today's three offending goldens
+  (`bandit.raw`, `gitleaks.raw`, `trivy.raw`) in a shrink-only `PENDING` set that empties when
+  #2313 re-captures them against a synthetic corpus (ARC-168995033).
 - **The workflow guard names the step it cannot read, and refuses a heredoc delimiter bash
   must parse (#1793).** A `shell_lex.Unreadable` escaped `main` as a traceback that named no
   step and hid every other step's defect (#2252); it is now that step's defect. A delimiter
