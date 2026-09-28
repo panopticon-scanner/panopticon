@@ -344,6 +344,88 @@ class Reader:
             raise ValueError("listing outside directory scope denied; use an explicit granted file")
         return sorted(self.scope["dirs"])
 
+    def _read_file(self, arguments):
+        path = _path(arguments["path"], self.cwd)
+        grant = self._require(path)
+        offset, limit = arguments.get("offset", 1), arguments.get("limit", 200)
+        if (type(offset) is not int or type(limit) is not int
+                or not 1 <= offset <= 100000 or not 1 <= limit <= 1000):
+            raise ValueError("offset/limit outside bounded read range")
+        data, truncated = _read(path, grant=grant)
+        lines = data.splitlines()
+        text = "\n".join("%s:%d:%s" % (path, n + 1, lines[n])
+                         for n in range(offset - 1, min(len(lines), offset - 1 + limit)))
+        if truncated or len(lines) > offset - 1 + limit:
+            text += "\n[file truncated; request a narrower line range]"
+        return _result(text)
+
+    def _list_files(self, arguments, pattern):
+        files, truncated = self._files(self._roots(arguments))
+        shown = [path for path in files
+                 if fnmatch.fnmatchcase(os.path.relpath(path, self.cwd), pattern)]
+        text = "\n".join(shown)
+        if truncated:
+            text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
+        return _result(text)
+
+    def _search_paths(self, arguments):
+        """Select a file or bounded directory walk under the existing grants."""
+        walk_truncated = False
+        if "path" in arguments:
+            path = _path(arguments["path"], self.cwd)
+            grant = self._require(path)
+            # Directory classification also refuses symlinks and nonregular files.
+            try:
+                with _open(path, grant=grant):
+                    pass
+                files = [path]
+            except HardLinkDenied:
+                raise            # a refusal of THIS path, never "it is a directory"
+            except (IsADirectoryError, ValueError):
+                files, walk_truncated = self._files(self._roots(arguments))
+        else:
+            if not self.scope["dirs"]:
+                raise ValueError("search outside directory scope denied; supply an explicit granted file")
+            files, walk_truncated = self._files(self._roots(arguments))
+        return files, walk_truncated
+
+    def _search(self, arguments, pattern):
+        files, walk_truncated = self._search_paths(arguments)
+        matches = []
+        skipped: list[str] = []
+        more = 0
+        total = 0
+        note_bytes = 0
+        for path in files:
+            try:
+                data, truncated = _read(path, grant=self._require(path))
+            except HardLinkDenied as exc:
+                # F2: skip THIS file, disclose it, keep the rest of the
+                # answer. N1: name the first MAX_SKIP_NOTES, count the rest.
+                # N5: and stop at MAX_SKIP_NOTE_BYTES, whichever comes first,
+                # over paths elided to a fixed width. Both bounds are applied
+                # HERE, before the body is assembled, so whatever the notes
+                # do not spend is left to the matches.
+                note = SKIPPED_NOTE % (_elided(path), exc)
+                size = len(note.encode("utf-8")) + 1
+                if len(skipped) < MAX_SKIP_NOTES and note_bytes + size <= MAX_SKIP_NOTE_BYTES:
+                    skipped.append(note)
+                    note_bytes += size
+                else:
+                    more += 1
+                continue
+            total += len(data.encode("utf-8"))
+            for number, line in enumerate(data.splitlines(), 1):
+                if pattern in line:
+                    matches.append("%s:%d:%s" % (path, number, line))
+                    if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
+                        return _result(_body(matches, skipped, more, "[search truncated]"))
+            if truncated or total >= MAX_SEARCH_BYTES:
+                return _result(_body(matches, skipped, more,
+                                     "[search truncated; pass path= to narrow]"))
+        return _result(_body(matches, skipped, more,
+                             TRUNCATION_NOTE % len(files) if walk_truncated else None))
+
     def call(self, name, arguments):
         try:
             descriptor = next((tool for tool in TOOLS if tool["name"] == name), None)
@@ -354,81 +436,13 @@ class Reader:
                     or set(schema["required"]) - set(arguments)):
                 raise ValueError("invalid read tool arguments")
             if name == "read_file":
-                path = _path(arguments["path"], self.cwd)
-                grant = self._require(path)
-                offset, limit = arguments.get("offset", 1), arguments.get("limit", 200)
-                if (type(offset) is not int or type(limit) is not int
-                        or not 1 <= offset <= 100000 or not 1 <= limit <= 1000):
-                    raise ValueError("offset/limit outside bounded read range")
-                data, truncated = _read(path, grant=grant)
-                lines = data.splitlines()
-                text = "\n".join("%s:%d:%s" % (path, n + 1, lines[n])
-                                 for n in range(offset - 1, min(len(lines), offset - 1 + limit)))
-                if truncated or len(lines) > offset - 1 + limit:
-                    text += "\n[file truncated; request a narrower line range]"
-                return _result(text)
+                return self._read_file(arguments)
             pattern = arguments.get("pattern", "*")
             if not isinstance(pattern, str) or not pattern or len(pattern) > 4096:
                 raise ValueError("invalid bounded search/list pattern")
             if name == "list_files":
-                files, truncated = self._files(self._roots(arguments))
-                shown = [path for path in files
-                         if fnmatch.fnmatchcase(os.path.relpath(path, self.cwd), pattern)]
-                text = "\n".join(shown)
-                if truncated:
-                    text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
-                return _result(text)
-            walk_truncated = False
-            if "path" in arguments:
-                path = _path(arguments["path"], self.cwd)
-                grant = self._require(path)
-                # Directory classification also refuses symlinks and nonregular files.
-                try:
-                    with _open(path, grant=grant):
-                        pass
-                    files = [path]
-                except HardLinkDenied:
-                    raise            # a refusal of THIS path, never "it is a directory"
-                except (IsADirectoryError, ValueError):
-                    files, walk_truncated = self._files(self._roots(arguments))
-            else:
-                if not self.scope["dirs"]:
-                    raise ValueError("search outside directory scope denied; supply an explicit granted file")
-                files, walk_truncated = self._files(self._roots(arguments))
-            matches = []
-            skipped: list[str] = []
-            more = 0
-            total = 0
-            note_bytes = 0
-            for path in files:
-                try:
-                    data, truncated = _read(path, grant=self._require(path))
-                except HardLinkDenied as exc:
-                    # F2: skip THIS file, disclose it, keep the rest of the
-                    # answer. N1: name the first MAX_SKIP_NOTES, count the rest.
-                    # N5: and stop at MAX_SKIP_NOTE_BYTES, whichever comes first,
-                    # over paths elided to a fixed width. Both bounds are applied
-                    # HERE, before the body is assembled, so whatever the notes
-                    # do not spend is left to the matches.
-                    note = SKIPPED_NOTE % (_elided(path), exc)
-                    size = len(note.encode("utf-8")) + 1
-                    if len(skipped) < MAX_SKIP_NOTES and note_bytes + size <= MAX_SKIP_NOTE_BYTES:
-                        skipped.append(note)
-                        note_bytes += size
-                    else:
-                        more += 1
-                    continue
-                total += len(data.encode("utf-8"))
-                for number, line in enumerate(data.splitlines(), 1):
-                    if pattern in line:
-                        matches.append("%s:%d:%s" % (path, number, line))
-                        if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
-                            return _result(_body(matches, skipped, more, "[search truncated]"))
-                if truncated or total >= MAX_SEARCH_BYTES:
-                    return _result(_body(matches, skipped, more,
-                                         "[search truncated; pass path= to narrow]"))
-            return _result(_body(matches, skipped, more,
-                                 TRUNCATION_NOTE % len(files) if walk_truncated else None))
+                return self._list_files(arguments, pattern)
+            return self._search(arguments, pattern)
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)
 
