@@ -131,6 +131,77 @@ def norm_uri(uri):
 _norm_uri = norm_uri
 
 
+class CaptureCoverage:
+    """Bounded native-record diagnostics using the #2032 file-coverage hook.
+
+    File counts cover distinct identifiable paths in the capture, not the
+    scanner's full input tree. A path with any malformed record is partial even
+    when its other findings survive. Unlocated records are counted separately;
+    a malformed run is not evidence that exactly one source file failed.
+    """
+
+    def __init__(self):
+        self.paths: set[str] = set()
+        self.failed_paths: set[str] = set()
+        self.malformed_records = 0
+        self.unlocated_records = 0
+        self.records: list[dict] = []
+
+    def seen(self, path):
+        if not isinstance(path, str) or not path:
+            return None
+        # Keep full identities for counting; bound and neutralize display text
+        # only when publishing it. A shared long prefix must not merge files.
+        path = path.removeprefix("file://").removeprefix("/src/").lstrip("/")
+        if not path:
+            return None
+        self.paths.add(path)
+        return path
+
+    def malformed(self, record, reason, path=None):
+        self.malformed_records += 1
+        path = self.seen(path)
+        if path is None:
+            self.unlocated_records += 1
+        else:
+            self.failed_paths.add(path)
+        if len(self.records) < 100:
+            # Callers supply structural JSON paths and fixed reason codes,
+            # never values, exception text or property names from the capture.
+            self.records.append({"record": record, "reason": reason})
+
+    def array(self, value, record, path=None):
+        if isinstance(value, list):
+            return value
+        self.malformed(record, "expected_array", path)
+        return []
+
+    def object(self, value, record, path=None):
+        if isinstance(value, dict):
+            return value
+        self.malformed(record, "expected_object", path)
+        return None
+
+    def finish(self, tool):
+        if self.malformed_records:
+            print("%s: partial capture: %d malformed record(s), %d without an "
+                  "identifiable source file; usable findings retained" % (
+                      tool, self.malformed_records, self.unlocated_records), file=sys.stderr)
+        files = sorted(self.failed_paths)
+        return {
+            "status": "partial" if self.malformed_records else "complete",
+            "parsed_files": len(self.paths - self.failed_paths),
+            "unparsed_files": len(files), "unavailable_files": 0,
+            "files": [{"file": inert_text(path, limit=239, mode="path"),
+                       "reason": "parse_error"} for path in files[:100]],
+            "files_omitted": max(0, len(files) - 100), "capabilities_unavailable": [],
+            "malformed_records": self.malformed_records,
+            "unlocated_records": self.unlocated_records,
+            "records": self.records,
+            "records_omitted": self.malformed_records - len(self.records),
+        }
+
+
 def rules_index(run):
     idx = {}
     for r in (run.get("tool", {}).get("driver", {}).get("rules") or []):

@@ -7,7 +7,7 @@ import sys
 import tempfile
 from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
                    parse_json_bytes, read_capped_report, run_tool, scratch_cwd)
-from .sarif_utils import LEVEL_TO_SEV
+from .sarif_utils import CaptureCoverage, LEVEL_TO_SEV
 
 
 # #run9 OPS-D1A: the scanned repo is untrusted under redteam. _safe_copytree
@@ -356,7 +356,7 @@ class RoslynSecGuardAdapter:
     def _location(self, loc: dict) -> dict:
         # SARIF v1 uses resultFile; v2 uses physicalLocation/artifactLocation.
         if not isinstance(loc, dict):
-            loc = {}
+            raise ValueError("expected location object")
         phys = loc.get("physicalLocation", {})
         if phys:
             artifact = phys.get("artifactLocation", {})
@@ -368,6 +368,8 @@ class RoslynSecGuardAdapter:
             region = result_file.get("region", {})
             uri = result_file.get("uri", "")
             line = region.get("startLine", 1)
+        if not isinstance(uri, str) or not uri:
+            raise ValueError("expected location URI")
         # Strip the file:// scheme and temporary build prefix if present.
         if uri.startswith("file://"):
             uri = uri[7:]
@@ -388,39 +390,60 @@ class RoslynSecGuardAdapter:
             return message
         return default
 
+    @staticmethod
+    def _source_path(result):
+        """Best-effort attribution of a malformed result, without parsing it."""
+        locations = result.get("locations")
+        if not isinstance(locations, list) or not locations or not isinstance(locations[0], dict):
+            return None
+        location = locations[0]
+        physical = location.get("physicalLocation")
+        artifact = (physical.get("artifactLocation") if isinstance(physical, dict)
+                    else location.get("resultFile"))
+        return artifact.get("uri") if isinstance(artifact, dict) else None
+
     def parse(self, raw: bytes, group: str) -> list[dict]:
+        return self.parse_with_file_coverage(raw, group)[0]
+
+    def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict]:
         data = parse_json_bytes(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("runs"), list):
+            raise ValueError("roslyn-secguard: expected an object with a runs array")
+        coverage = CaptureCoverage()
         out = []
         n = 1
-        runs = data.get("runs") or []
-        if not isinstance(runs, list):
-            return []
-        for run in runs:
-            if not isinstance(run, dict):
+        for ri, run in enumerate(data["runs"]):
+            record = "runs[%d]" % ri
+            run = coverage.object(run, record)
+            if run is None:
                 continue
-            results = run.get("results") or []
-            if not isinstance(results, list):
-                continue
-            for result in results:
+            # SARIF may omit results for a run without findings; a present
+            # non-array value is malformed, not the same as an omitted key.
+            results = coverage.array(run.get("results", []), record + ".results")
+            for fi, result in enumerate(results):
+                result_record = record + ".results[%d]" % fi
+                result = coverage.object(result, result_record)
+                if result is None:
+                    continue
+                path = self._source_path(result)
+                rule_id = result.get("ruleId")
+                if not isinstance(rule_id, str) or not rule_id:
+                    coverage.malformed(result_record + ".ruleId", "expected_identifier", path)
+                    continue
+                # Only SCS rules are findings. Compiler/restore diagnostics are
+                # intentionally dropped: they can quote source (#86).
+                if not rule_id.startswith("SCS"):
+                    continue
+                # Preserve DROP_IF_NO_LOCATION (#476). Wrong container types
+                # are errors even when falsey; absent/null/[] remain policy drops.
+                locs = result.get("locations")
+                if locs is None or locs == []:
+                    continue
+                locs = coverage.array(locs, result_record + ".locations", path)
+                if not locs:
+                    continue
                 try:
-                    rule_id = result.get("ruleId", "")
-                    # Only DotnetariumSCS (SCS) rules are findings. Compiler/restore
-                    # diagnostics (CS####, NU####, MSB####) are dropped: they are
-                    # noise from offline builds and can quote file content into
-                    # the report (the #86 exfiltration channel).
-                    if not rule_id.startswith("SCS"):
-                        continue
-                    # Omitted key and present-but-empty/null are the SAME
-                    # case - a location-less diagnostic (#476). Both drop:
-                    # previously an omitted key emitted a placeholder-location
-                    # finding while an empty list was dropped, an asymmetry
-                    # with no basis in SARIF semantics.
-                    # Policy: DROP_IF_NO_LOCATION (see adapter constant).
-                    locs = result.get("locations") or []
-                    if not locs:
-                        continue
-                    loc = locs[0]
-                    location = self._location(loc)
+                    location = self._location(locs[0])
                     cwe = _ROSLYN_CWE.get(rule_id)
                     message = self._message_text(result, rule_id)
                     level = str(result.get("level", "warning")).lower()
@@ -438,9 +461,12 @@ class RoslynSecGuardAdapter:
                         citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )
-                except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result
-                    print(f"roslyn-secguard: skipping result {result.get('ruleId', 'unknown')}: {exc!r}", file=sys.stderr)
+                except (AttributeError, TypeError, ValueError):
+                    # Do not echo the capture or an exception containing its
+                    # values. One bad result must not discard usable siblings.
+                    coverage.malformed(result_record, "invalid_result", path)
                     continue
+                coverage.seen(path)
                 out.append(finding)
                 n += 1
-        return out
+        return out, coverage.finish(self.name)

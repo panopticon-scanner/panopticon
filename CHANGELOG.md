@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
+  findings remain available to reports and the security gate. Bounded diagnostics and coverage
+  facts distinguish malformed records, including those without an identifiable source file,
+  from valid empty results. Invalid top-level capture containers fail ingestion.
 - **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
   CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
   rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the
