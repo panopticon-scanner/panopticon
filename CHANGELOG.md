@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A SIGTERM the driver did not arm ends the Kimi runner's children before the home strip
+  (#1805).** The stripper's SIG_DFL/C-installed branch restored the default disposition and
+  re-raised the signal without ending the runner's registered children first, so a process whose
+  SIGTERM was never wired to the driver's own handler could die and leave them running against a
+  home whose guard hooks had just been stripped. It now calls `terminate_children` -- the same
+  bounded termination the interrupt path uses -- before the strip; the chained-predecessor branch
+  is unchanged.
 - **The workflow guard reads comments, continuations and heredocs the way bash does (#1793;
   COD-3418139920, COD-3636110933).** `shell_reader.statements()` settled all three in passes
   that ran before any quote tracking, so a `#` line inside a multi-line string, a `<<WORD`

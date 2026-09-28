@@ -428,6 +428,54 @@ class TestHomeLocation(unittest.TestCase):
             kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
             self.assertEqual([False], at_death, "the process died holding its secrets")
 
+    def test_a_default_predecessor_ends_registered_children_before_the_strip(self):
+        # #2219: `teardown` never runs on this branch either, so the bounded
+        # termination `iter_batch`'s interrupt path gets from
+        # `terminate_children` has to run HERE, before the strip -- otherwise a
+        # registered child, leading its own session (#1575), outlives this
+        # process and keeps running against a home whose guard hooks were just
+        # stripped. A stand-in child stands in for that survivor; nothing here
+        # is signalled for real.
+        order = []
+
+        class _Child:
+            def terminate(self):
+                order.append("terminated")
+
+            def kill(self):                     # pragma: no cover - not reached
+                order.append("child-killed")
+
+            def wait(self, timeout=None):
+                return 0
+
+        real_strip_secrets = kimi_home.strip_secrets
+
+        def recording_strip_secrets(home):
+            order.append("stripped")
+            return real_strip_secrets(home)
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(shutil.rmtree, r.kimi_home, True)
+            self.addCleanup(r._disarm_crash_strippers)
+            r.register_child(_Child())
+            handler = r._signal_stripper(signal.SIG_DFL)
+            with mock.patch.object(kimi_home, "strip_secrets", recording_strip_secrets), \
+                 mock.patch.object(signal, "signal") as install, \
+                 mock.patch.object(os, "kill",
+                                   side_effect=lambda *_a: order.append("killed")) as kill:
+                handler(signal.SIGTERM, None)
+            install.assert_called_once_with(signal.SIGTERM, signal.SIG_DFL)
+            kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+            self.assertEqual(["terminated", "stripped", "killed"], order,
+                             "the registered child must be ended before the home is "
+                             "stripped and the process re-raises the signal")
+            self.assertEqual([], r.terminate_children(),
+                             "the child registry must be emptied by the branch's own "
+                             "termination, not just walked")
+
     def test_an_ignored_sigterm_leaves_the_run_and_its_home_alone(self):
         # SIG_IGN next in the chain: the run carries on, so its home must too
         # -- a strip here would un-guard every entry still running or to come.
