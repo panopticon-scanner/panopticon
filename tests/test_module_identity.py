@@ -149,7 +149,6 @@ PERMITTED_BOOTSTRAPS = {
     "skill/scripts/reconcile.py": 1,
     "skill/scripts/run_fixture_tests.py": 1,
     "skill/scripts/run_tools.py": 1,
-    "skill/scripts/score_gate.py": 1,
     "skill/scripts/security_gate.py": 1,
     "skill/scripts/setup_flow.py": 1,
     "skill/scripts/synthesize.py": 1,

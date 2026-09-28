@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Keep score-gate imports from changing the search path (#2279, #1823).** Package and flat
+  imports retain evidence module identity without modifying `sys.path`. Direct file execution
+  remains supported, and the bootstrap allowance is removed from the import guard.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
