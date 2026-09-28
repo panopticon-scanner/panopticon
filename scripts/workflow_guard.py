@@ -806,8 +806,8 @@ def main(argv=None, out=print):
     for line in defects:
         out(line)
     if defects:
-        out("%d unverified fetch-and-exec step(s); see scripts/workflow_guard.py"
-            % len(defects))
+        out("%d defect(s): unverified fetch-and-exec, or code the guard cannot read; "
+            "see scripts/workflow_guard.py" % len(defects))
     return 1 if defects else 0
 
 

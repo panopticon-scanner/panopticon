@@ -787,22 +787,32 @@ class TestOneLexicalPass(unittest.TestCase):
         # `t`) swallows what bash runs, and a body read as code hides it
         # behind a quote left open there (#2224). So the reader raises, and
         # names the word as bash delimits it -- up to the metacharacter that
-        # ends it, past the brackets and quotes inside it.
+        # ends it, past the brackets and quotes inside it, and past the
+        # `\`-newlines before it, which bash folds away first.
         for script, word in (("cat <<$(a b)\n$(a b)\necho a\n$\n", "$(a b)"),
                              ("cat <<$'\\t'\n\t\necho a\nt\n", "$'\\t'"),
                              ("cat <<${x y} >out\n${x y}\n", "${x y}"),
                              ("cat <<$[1]; echo a\n$[1]\n", "$[1]"),
-                             ("cat <<`a b`|cat\n`a b`\n", "`a b`"),
                              ("cat <<@(a b)\n@(a b)\n", "@(a b)"),
                              ('cat <<"$(a b)"\n$(a b)\n', '"$(a b)"'),
                              ("cat <<E$(a b)F\nE$(a b)F\n", "E$(a b)F"),
                              ("cat <<-$(a b)\n\t$(a b)\n", "$(a b)"),
                              ("cat 3<<$(a b)\n$(a b)\n", "$(a b)"),
-                             ("x=$(cat <<$(a b))\n", "$(a b)")):
+                             ("x=$(cat <<$(a b))\n", "$(a b)"),
+                             ("cat <<\\\n$(x)\nit's\n$(x)\n", "$(x)"),
+                             ("cat << \\\n $(x)\nit's\n$(x)\n", "$(x)")):
             with self.subTest(script=script):
                 with self.assertRaises(shell_lex.Unreadable) as raised:
                     shell_reader.statements(script)
                 self.assertIn("`%s`" % word, str(raised.exception))
+        # A word holding backquotes is fenced by a longer run of them and
+        # spaced off -- a code span that shows them, in Markdown too.
+        for script, shown in (("cat <<`a b`|cat\n`a b`\n", "`` `a b` ``"),
+                              ("cat <<``a\n``a\n", "``` ``a ```")):
+            with self.subTest(script=script):
+                with self.assertRaises(shell_lex.Unreadable) as raised:
+                    shell_reader.statements(script)
+                self.assertIn("delimiter %s is" % shown, str(raised.exception))
         # A plain, quoted, `<<-` or numeric-fd delimiter is spelled and its
         # body read, so the quote in it hides nothing below the terminator;
         # and a `<<` with no word after it stays text, the lines below code.

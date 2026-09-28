@@ -12,6 +12,7 @@ evidence exposed.
   step and hid every other step's defect (#2252); it is now that step's defect. A delimiter
   bash parses to spell (`<<$(...)`) was read as code, so a quote left open in its body hid the
   payload after the terminator (#2224); the reader now refuses it, naming the word.
+  The closing count says "N defect(s)" where it said "N unverified fetch-and-exec step(s)".
 - **A refused `CODEX_HOME` is the remedy readiness and the setup acknowledgment show (#1803;
   COD-1638371699).** `host_disclosure.remedy` named `--emit-host-agents codex`, and
   `setup_ack._remedy_clause` named it or `driver loop --setup --host codex --mode headless`,

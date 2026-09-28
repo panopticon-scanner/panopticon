@@ -26,8 +26,10 @@ The repo-wide application of the rule (every `run:` step in
 check with.
 """
 import os
+import re
 import tempfile
 import unittest
+from unittest import mock
 
 import shell_reader
 import workflow_forms
@@ -1724,6 +1726,9 @@ class TestCli(unittest.TestCase):
         for line in lines[:4]:
             self.assertIn(" -- cannot read this step: ", line)
         self.assertIn("straight to `sh`", lines[4])
+        # The count names what it counts, a refused step as well as a fetch.
+        self.assertEqual("5 defect(s): unverified fetch-and-exec, or code the guard cannot "
+                         "read; see scripts/workflow_guard.py", lines[5])
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -2022,11 +2027,15 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # The delimiter is the whole word, not its `EOF` prefix; `  EOF` is a
         # body line, not a terminator; an unquoted body is compared folded, so
         # `E\` + `OF` ends it; and the body starts after the newline that ends
-        # the command, which a string running over two lines moves down.
+        # the command, which a string running over two lines moves down. A
+        # `\`-newline and a blank before the word are both gone to bash; read
+        # as an empty word, which no line below matched, they left `it's` to
+        # be read as code, and its quote hid the payload.
         for script in ("cat <<EOF-X\nbody\nEOF-X\n%s\nEOF\n",
                        "cat <<EOF\n  EOF\nit's\nEOF\n%s\n",
                        "cat <<EOF\nE\\\nOF\n%s\nEOF\n",
-                       'cat <<EOF; echo "multi\nline"\nbody\nEOF\n%s\n'):
+                       'cat <<EOF; echo "multi\nline"\nbody\nEOF\n%s\n',
+                       "cat << \\\n EOF\nit's\nEOF\n%s\n"):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
 
@@ -2204,12 +2213,49 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # that the whole step is long enough to read under the cap and the
         # substitution alone is not. Each raised there, past the step's own
         # read, as a traceback naming no step.
-        for script in ("echo `echo $(cat <<EOF)`\n",
-                       'cat <<EOF\n$(echo "$(cat <<X)"\n)\nEOF\n',
-                       "echo $( %s: <<EOF%s\nit's\nEOF\n)\n# %s\n"
-                       % ("(" * 50, ") " * 50, "x" * 4000)):
+        for script, cause in (("echo `echo $(cat <<EOF)`\n", "closes before"),
+                              ('cat <<EOF\n$(echo "$(cat <<X)"\n)\nEOF\n', "closes before"),
+                              ("echo $( %s: <<EOF%s\nit's\nEOF\n)\n# %s\n"
+                               % ("(" * 50, ") " * 50, "x" * 4000), "`((`")):
             with self.subTest(script=script[:30]):
-                self.refused(script)
+                self.refused(script, cause)
+
+    def test_the_job_reads_again_only_what_its_steps_read(self):
+        # `job_defects` catches those per step because its walk -- `read`,
+        # then `_unread_records` -- parses every text `_defects` parses again
+        # job-wide, down the same substitutions. A text only `_defects` parsed
+        # would raise past that catch again. A marker's prefix is minted per
+        # parse, so texts are compared without it.
+        parsed = []
+        job = [False]
+        statements, defects = wg.statements, wg._defects
+
+        def recorded(text):
+            parsed.append((job[0], re.sub(r"@@shell-[0-9a-f]+-", "@@", text)))
+            return statements(text)
+
+        def marked(*args):
+            job[0] = True
+            try:
+                return defects(*args)
+            finally:
+                job[0] = False
+
+        # Each text is written in one step only: no other step's walk can
+        # parse it in that step's place.
+        steps =[("nested", "echo $(echo $(echo `echo $(true)`))\n"),
+                 ("body", 'cat <<EOF\n$(printf "$(id)" `pwd`)\nEOF\n'),
+                 ("strings", "eval \"$(echo $(date))\"\nx=$(sh -c 'echo $(uname)')\n"),
+                 ("deep", "echo `x=$(cat <<EOF\nhi\nEOF\n)`\n"),
+                 ("stdin", "bash -s <<EOF\necho $(%s)\nEOF\n" % self.PAYLOAD)]
+        with mock.patch.object(wg, "statements", recorded), \
+                mock.patch.object(wg, "_defects", marked):
+            found = wg.job_defects(steps)
+        self.assertFalse([why for _name, why in found if why.startswith("cannot read this")])
+        per_step = {text for inside, text in parsed if not inside}
+        in_job = {text for inside, text in parsed if inside}
+        self.assertTrue(in_job)
+        self.assertLessEqual(in_job, per_step, in_job - per_step)
 
     def test_an_escaped_quote_inside_a_substitution_string(self):
         # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at

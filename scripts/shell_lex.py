@@ -389,10 +389,13 @@ class _Lexer:
         word = text[start:end]
         if len(word) > 60 or "\n" in word:  # named by its start
             word = word.partition("\n")[0][:57] + "..."
-        raise Unreadable("the heredoc delimiter `%s` is a word bash parses to spell: a "
+        # A Markdown code span: fenced by more backquotes than any run in the word.
+        tick = "`" * (1 + max(map(len, re.findall("`+", word)), default=0))
+        shown = tick + word + tick if len(tick) == 1 else "%s %s %s" % (tick, word, tick)
+        raise Unreadable("the heredoc delimiter %s is a word bash parses to spell: a "
                          "guessed spelling would end its body at a decoy line, and a "
                          "body read as code hides what follows its terminator behind "
-                         "a quote left open in it" % word)
+                         "a quote left open in it" % shown)
 
     def bodies(self, frame: _Frame, i: int) -> int:
         """Read the heredocs `frame` queued, one after another from the line
@@ -412,11 +415,12 @@ class _Lexer:
 def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
     """(delimiter, quoted, end) for the heredoc word after an operator ending
     at `i`: the word as bash compares lines with it -- quotes removed, quoted
-    if any part of it was. None when no word follows or a quote in it never
-    closes. Where the word starts, when bash has to PARSE it to spell it
-    (`_PARSED`, or the `(` of an extglob pattern after it)."""
-    while i < len(text) and text[i] in " \t":
-        i += 1
+    if any part of it was. None when no word follows, a `#` there starts a
+    comment, or a quote in it never closes. Where the word starts, when bash
+    has to PARSE it to spell it (`_PARSED`, or the `(` of an extglob pattern
+    after it)."""
+    while text.startswith((" ", "\t", "\\\n"), i):  # a `\`-newline: gone, as in code
+        i += 2 if text[i] == "\\" else 1
     start, quoted = i, False
     parts: list[str] = []
     while i < len(text) and text[i] not in _BREAK:
