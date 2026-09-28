@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share bounded manifest name validation (#2277, #1820).** Tool repairers share object,
+  row-count and name checks. Overlong tool identities are still dropped; suppression names are
+  still cut and colliding counts summed, with the same warnings and value checks.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
