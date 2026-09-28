@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An interrupted or terminated driver ends its phase child and its runner children (#1805;
+  COD-869076756).** A phase child (discovery, tools, synthesize) leads its own session, so the
+  terminal's Ctrl-C never reached it, and `_run_child` ended its group only on a timeout: an
+  interrupt waited out the 5 s reader join, then left the child running and writing into the run
+  folder. A SIGTERM (a supervisor's stop, a CI cancel) killed the driver outright and left the
+  phase child and every registered runner child running. `_run_child` now ends the group on any
+  exception while its readers start or while it waits, and by the owner's ruling a SIGTERM takes
+  the Ctrl-C path: the CLI runs `main` under `procgroup.sigterm_as_interrupt`, which raises it as
+  the same interrupt and absorbs every later one until `main` returns; a SIGTERM that nothing
+  handles prints `driver: stopped by SIGTERM` and exits 143 on every supported Python. The Kimi
+  runner's SIGTERM secret-stripper now lets that interrupt run first and leaves the strip to
+  `teardown`, after the children its `config.toml` guards are gone; it still strips before a
+  default-disposition SIGTERM ends the process, and at an ignored one it no longer strips a run
+  that carries on with entries still in flight (`teardown` or `atexit` strips it later).
 - **A refused ledger recovery names the issue it could not read (#1805; COD-273223337).**
   Recovering the filed-issues ledger from GitHub refused the whole batch, anonymously, when a
   quoted marker block in one issue's own text tripped the check; `refusing:` now prefixes that
