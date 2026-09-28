@@ -1,4 +1,11 @@
+import json
 import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 import scripts.evidence as evidence
 import scripts.score_gate as sg
@@ -13,6 +20,37 @@ def test_the_evidence_module_is_the_package_one_not_a_second_copy():
     # be comparing one copy against the other. Package first, flat fallback:
     # the pattern host_disclosure.py and model_resolver.py already use.
     assert sg.evidence is evidence
+
+
+@pytest.mark.parametrize("mode", ("package", "flat", "both"))
+def test_fresh_import_preserves_search_path_and_evidence_identity(tmp_path, mode):
+    scripts = Path(sg.__file__).resolve().parent
+    roots = {"package": [scripts.parent], "flat": [scripts],
+             "both": [scripts.parent, scripts]}[mode]
+    module = "score_gate" if mode == "flat" else "scripts.score_gate"
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(map(str, roots)))
+    program = (
+        "import importlib, json, sys\n"
+        "before = list(sys.path)\n"
+        "gate = importlib.import_module(sys.argv[1])\n"
+        "evidence = importlib.import_module(gate.evidence.__name__)\n"
+        "print(json.dumps([before == sys.path, gate.evidence is evidence, "
+        "sorted(n for n in sys.modules if n in ('evidence', 'scripts.evidence'))]))\n"
+    )
+    result = subprocess.run([sys.executable, "-S", "-c", program, module],
+                            cwd=tmp_path, env=env, capture_output=True, text=True,
+                            check=True, timeout=30)
+    expected = "evidence" if mode == "flat" else "scripts.evidence"
+    assert json.loads(result.stdout) == [True, True, [expected]]
+
+
+def test_direct_file_execution_needs_no_caller_bootstrap(tmp_path):
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run([sys.executable, "-S", str(Path(sg.__file__).resolve())],
+                            cwd=tmp_path, env=env, capture_output=True, text=True,
+                            check=True, timeout=30)
+    assert result.stdout == result.stderr == ""
 
 
 def _f(sev, conf="POSSIBLE", status="unverified"):
