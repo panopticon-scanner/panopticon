@@ -1,5 +1,6 @@
 """Integrity certification and summary contracts."""
 
+import ast
 import json
 import os
 import tempfile
@@ -422,9 +423,11 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # file over. Resolved through the same two constants `validate_schema`
         # itself uses, so a moved reference directory cannot make this vacuous.
         #
-        # A static property list is also the enumeration a CONDITIONAL branch in
-        # `integrity_section` cannot dodge, which the fixture-run check above
-        # (two runs, the ack path being today's only condition) can.
+        # This pin ties the TABLE to the SCHEMA and nothing else: neither of
+        # them sees what a run actually publishes, and `meta.integrity` has no
+        # `additionalProperties: false`, so a published-but-untabled key stays
+        # invisible to it. That side is
+        # `test_every_key_integrity_section_publishes_is_in_the_table` below.
         with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
                                validate_schema_mod.REPORT_SCHEMA),
                   encoding="utf-8") as fh:
@@ -512,6 +515,46 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       "filed outside their cell's domain; often a catalog gap (X0X). "
                       "Does NOT affect certification.", md)
         self.assertNotIn("**Integrity:**", md)
+
+    def test_every_key_integrity_section_publishes_is_in_the_table(self):
+        # The RUNTIME side of the membership, and the one the fixture-run check
+        # above cannot cover: it makes two `integrity_section` calls (plain, and
+        # with an ack present for `write_guard_covers_bash`), so a key published
+        # under any THIRD condition is invisible to it -- the re-review planted
+        # one under `if dispatch_plan_mismatched:` and the whole battery stayed
+        # green. An AST enumeration of every key the function can write does not
+        # depend on reaching the branch that writes it.
+        #
+        # A SUBSET, not set equality: the table also carries the two keys
+        # `reconcile` appends, which this function never writes.
+        with open(integrity_mod.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        section = next(node for node in ast.walk(tree)
+                       if isinstance(node, ast.FunctionDef)
+                       and node.name == "integrity_section")
+        literal, subscripted = set(), set()
+        for node in ast.walk(section):
+            if not isinstance(node, ast.Assign):
+                continue
+            named = [t for t in node.targets
+                     if isinstance(t, ast.Name) and t.id == "integrity"]
+            if named and isinstance(node.value, ast.Dict):
+                literal |= {k.value for k in node.value.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "integrity"
+                        and isinstance(target.slice, ast.Constant)):
+                    subscripted.add(target.slice.value)
+        # Both arms are exercised by the real function today, so a walk that
+        # silently stops matching one of them fails here rather than passing
+        # vacuously.
+        self.assertIn("unexpected_findings_files", literal)
+        self.assertIn("write_guard_covers_bash", subscripted)
+        self.assertEqual(
+            sorted((literal | subscripted) - set(integrity_mod.INTEGRITY_KEYS)), [],
+            "keys `integrity_section` can publish that INTEGRITY_KEYS does not name")
 
     def test_evidence_text_neutralizes_its_own_output(self):
         # Review finding 6: `tools.base.inert_text`'s own docstring states the
