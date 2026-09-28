@@ -487,9 +487,7 @@ def _uses(stmts, dest, after):
     that created it has run.
     """
     names, out = {dest}, []
-    for index, statement in enumerate(stmts):
-        if index < after:
-            continue
+    for index, statement in enumerate(stmts[after:], after):
         for position, stage in enumerate(statement.stages):
             argv, how = command(stage.argv), None
             for name in sorted(names):
@@ -506,6 +504,8 @@ def _uses(stmts, dest, after):
 
 
 def _use(statement, position, stage, argv, dest):
+    if any(same_file(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
+        return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
     if not argv:
         return None
     argv, handed, recursive = described(statement, position, stage, argv)

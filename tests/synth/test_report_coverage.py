@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import unittest
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
 import scripts.dispatch as dispatch_mod
 import scripts.synth.findings as findings_mod
@@ -14,7 +15,6 @@ import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
-from tests._test_helpers import SKILL_ROOT
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _target_with_files, _agentic
 
 
@@ -551,8 +551,8 @@ class TestTestInventoryCoverage(unittest.TestCase):
             self.assertEqual({"A": "complete"}, plan_mod.load_test_inventory(d))
 
     def test_the_schema_declares_the_field(self):
-        with open(os.path.join(SKILL_ROOT, "reference",
-                               "report-schema.json"), encoding="utf-8") as fh:
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA), encoding="utf-8") as fh:
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["coverage"]
         self.assertIn("test_inventory", block["properties"])

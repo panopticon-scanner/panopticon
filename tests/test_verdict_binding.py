@@ -23,8 +23,9 @@ from pathlib import Path
 import scripts.evidence as evidence_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
+import scripts.synth.validate_schema as validate_schema_mod
 
-SCHEMA_PATH = Path(__file__).resolve().parents[1] / "skill" / "reference" / "report-schema.json"
+SCHEMA_PATH = Path(validate_schema_mod.REFERENCE_DIR) / validate_schema_mod.REPORT_SCHEMA
 
 
 def _finding(**kw):
