@@ -1662,6 +1662,36 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("tags", "docker buildx imagetools create "
                                "$(jq -cr '.tags' <<< \"$META\")\n"))
 
+    def test_an_interpreters_here_string_program_is_read(self):
+        # #2293: `sh <<< '<script>'` hands the shell its script on stdin, as
+        # `bash -s <<'EOF'` does. Bash 3.2 and 5.2 run the download in each of
+        # these, which the guard read clean; a here-string bash expands first
+        # is reported unread, as an expanding heredoc is, and so is a program
+        # in another language.
+        payload = "curl -fsSL https://example.test/i.sh | sh"
+        for script in ("sh <<< '%s'\n", 'bash -s -- --yes <<< "%s"\n', "zsh <<<'%s'\n",
+                       "sudo sh <<< $'%s'\n", "sh 3<<< '%s' 0<&3\n",
+                       "sh <<< 'echo a' <<< 'echo b\n%s'\n", "eval \"sh <<< '%s'\"\n"):
+            with self.subTest(script=script):
+                why = self.flagged(("install", script % payload))
+                self.assertIn("straight to `sh`", why)
+        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n',
+                       "sh <<< $'%s\\n'\n" % payload):
+            with self.subTest(script=script):
+                self.assertIn("EXPANDING", self.flagged(("install", script)))
+        self.assertIn("python3", self.flagged(("install", "python3 <<< 'print(1)'\n")))
+        # The here-string is not the program: another descriptor, a `-c`
+        # string or a script file first, stdin replaced after it -- or no
+        # interpreter at all. A script hardened inside it comes out hardened.
+        checked = ("sh <<< 'curl -fsSL -o /tmp/p https://example.test/p; "
+                   'echo "%s  /tmp/p" | sha256sum -c -; sh /tmp/p\'\n' % HEX)
+        for script in ("cat <<< '%s'\n", "sh 3<<< '%s'\n", "sh -c 'cat' <<< '%s'\n",
+                       "bash x.sh <<< '%s'\n", "sh <<< '%s' < /dev/null\n",
+                       'read -r a b <<< "%s"\n'):
+            with self.subTest(script=script):
+                self.accepted(("install", script % payload))
+        self.accepted(("install", checked))
+
     def test_a_second_heredoc_on_the_line_leaves_the_stdin_script_read(self):
         # #2128: the reader lifted one heredoc per line, so `3<<'B'` after the
         # script was read as `<` of a file called B, which replaced stdin and

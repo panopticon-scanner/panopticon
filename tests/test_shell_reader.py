@@ -462,6 +462,36 @@ class TestHeredocOnStandardInput(unittest.TestCase):
         self.assertIsNone(stage("bash -s < script.sh").stdin_heredoc)
         self.assertIsNone(stage("bash -s").stdin_heredoc)
 
+    def test_a_here_string_is_the_body_its_descriptor_reads(self):
+        # #2293: `<<<` hands the command its word on that descriptor, quotes
+        # removed as bash removes them -- the script of an interpreter in
+        # front of it, as a heredoc is. A word bash expands first (`$`, a
+        # backquote, `~`, an escape `$'...'` decodes) says so, as written.
+        # It is no sums list to quote back: `heredoc` stays None.
+        for script, body in (("sh <<< 'curl x | sh'", ("curl x | sh", False)),
+                             ('sh <<<"a \\$b \\` \\\\ \\c"', ("a $b ` \\ \\c", False)),
+                             ("sh <<< a\\ b'c'$'d\\''", ("a bcd'", False)),
+                             ("sh <<< 'a\nb'", ("a\nb", False)),
+                             ("sh <<< {a,b}*", ("{a,b}*", False)),
+                             ('sh <<< "$CMD"', ("$CMD", True)),
+                             ("sh <<< ~/x", ("~/x", True)),
+                             ("sh 3<<< 'x' 0<&3", ("x", False)),
+                             ("sh 3<<< 'x'", None),
+                             ("sh <<< 'x' < f", None)):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                self.assertEqual(body, parsed.stdin_heredoc)
+                self.assertIsNone(parsed.heredoc)
+        for script in ("sh <<< $'a\\n'", "sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
+            with self.subTest(script=script):
+                self.assertTrue(stage(script).stdin_heredoc[1])
+        parsed = stage("sha256sum -c <<< 'x' 3<<EOF\nbody\nEOF")
+        self.assertEqual(("body", ("x", False)), (parsed.heredoc, parsed.stdin_heredoc))
+        # The lines below a here-string are code, whatever its word held; and
+        # a `$(...)` keeps its word as written, to be read again as a script.
+        self.assertEqual([[['sh']], [['echo', 'a']]], argvs("sh <<< 'x\ny'; echo a\n"))
+        self.assertEqual(["sh <<< 'a b'"], stage("echo $(sh <<< 'a b')").substitutions)
+
 
 class TestPipelineStdoutProvenance(unittest.TestCase):
     def test_stdout_aliases_and_redirect_order(self):
@@ -853,7 +883,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                              ("cat 3<\\\n<EOF\nit's\nEOF\necho a\n", None),
                              ("cat <<\\\n-EOF\n\tit's\n\tEOF\necho a\n", ("it's", True)),
                              ("cat <\\\n<\\\n-'EOF'\n\tit's\n\tEOF\necho a\n", ("it's", False)),
-                             ("cat <\\\n<<x\necho a\nx\n", None)):
+                             ("cat <\\\n<<x\necho a\nx\n", ("x", False))):
             with self.subTest(script=script):
                 self.assertEqual(body, shell_reader.statements(script)[0].stages[0].stdin_heredoc)
                 self.assertIn([['echo', 'a']], argvs(script))

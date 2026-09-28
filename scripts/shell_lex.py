@@ -24,6 +24,8 @@ one forward pass, from the state it is in, and so does `lex`:
                    later, as a script of its own); the delimiters queue, and
                    their bodies are read one after another from the next
                    newline
+    here-strings   the word after a `<<<` outside `$(...)`, spelled as bash
+                   hands it over, where nothing in it expands (`_string`)
 
 Two readings are not bash's. A `<<` with no terminator line below it is left
 as text rather than swallowing the rest of the script: bash runs nothing below
@@ -141,10 +143,12 @@ class Unreadable(Exception):
 def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     """`script` with its comments removed, its continuations folded, and each
     heredoc -- operator, word and body -- replaced by the marker
-    `heredoc(body, expands, fd)` returns, spaced off as a word of its own.
-    Raises `Unreadable` rather than guess, past the cap on reading `((`
-    again, at a heredoc its substitution closes over and at a delimiter bash
-    parses to spell."""
+    `heredoc(body, expands, fd)` returns, spaced off as a word of its own; a
+    here-string's word too, after its `<<<`, when bash hands it over as
+    written (`_string`) and no `$(...)` holds it: `heredoc(text, False, "0")`,
+    whose descriptor the reader reads off the operator. Raises `Unreadable`
+    rather than guess, past the cap on reading `((` again, at a heredoc its
+    substitution closes over and at a delimiter bash parses to spell."""
     return _Lexer(script, heredoc).run()
 
 
@@ -270,7 +274,14 @@ class _Lexer:
             if here and here[1] == "<":         # a here-string
                 out.append("<<<")
                 self.word = len(out)
-                return here.end()
+                # Spelled at the top only: a `$(...)` is read again as a script
+                # of its own, and spelled there, not as a marker it cannot read.
+                spelled = _string(text, here.end()) if frame.kind == "top" else None
+                if spelled is None:             # a word bash expands: read on
+                    return here.end()
+                out.append(" %s " % self.heredoc(spelled[0], False, "0"))
+                self.word, self.at = len(out), self.stood(spelled[0])
+                return spelled[1]
             if here:
                 return self.operator(i, frame, here.end(), here[1] == "-")
             if ch == "[" and self.named != self.word:  # only a word's first `[`
@@ -455,6 +466,41 @@ def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
     if i == start or text[start] == "#":
         return None
     return start if text.startswith("(", i) else ("".join(parts), quoted, i)
+
+
+def _string(text: str, i: int) -> tuple[str, int] | None:
+    """(text, end) for the word after a `<<<` ending at `i` when bash hands
+    it to the command as written (#2293): its quotes and escapes removed, and
+    nothing left that bash expands -- no `$` or backquote outside '...' and
+    $'...' that no backslash escapes, no unquoted `~`, no `$'...'` escape but
+    the four that are the character, no `$"..."`. Glob and brace characters
+    are text to it. None for an unquoted `[`, which may open a subscript, a
+    word no quote closes, no word and a comment: those are read as code."""
+    while text.startswith((" ", "\t", "\\\n"), i):
+        i += 2 if text[i] == "\\" else 1
+    start, parts = i, []
+    while i < len(text) and text[i] not in _BREAK:
+        match = _QUOTED.match(text, i)
+        if match:
+            single, ansi, double = match.groups()
+            if single is not None:
+                parts.append(single)
+            elif ansi is not None and not set(_ANSI_ESCAPE.findall(ansi)) - set("\\'\"?"):
+                parts.append(_ANSI_ESCAPE.sub(r"\1", ansi))
+            elif (double is not None and match[0][0] == '"'
+                  and not set("$`") & set(re.sub(r"\\.", "", double, flags=re.S))):
+                parts.append(_DQ_ESCAPE.sub(lambda m: m[1] or "", double))
+            else:
+                return None
+            i = match.end()
+        elif text[i] in "$`~[\"'":
+            return None
+        else:
+            parts.append(text[i + 1:i + 2].replace("\n", "") if text[i] == "\\" else text[i])
+            i += 2 if text[i] == "\\" else 1
+    if i == start or text[start] == "#" or text.startswith("(", i):
+        return None
+    return "".join(parts), i
 
 
 class _Lines:

@@ -67,6 +67,8 @@ from shell_wrappers import WRAPPERS, dynamic, unwrap
 # questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
 # hands stdin somewhere else afterwards, and only the second question can say
 # whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
+# A here-string is a body the second question reads too (`sh <<< '...'`,
+# #2293) -- expanding unless `lex` spelled its word -- and never the first's.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
@@ -92,7 +94,7 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-_REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
+_REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -443,8 +445,9 @@ def _stage(text, context):
     pipe_inputs = {"0": True}
     # Which heredoc each descriptor reads, in that same order: a heredoc is an
     # input FILE opened on one descriptor, so a later open, copy or close of
-    # that descriptor replaces it exactly as it replaces a pipe.
-    bodies: dict[str, tuple[str, bool]] = {}
+    # that descriptor replaces it exactly as it replaces a pipe. A here-string
+    # is one too; the third field says which, as only a heredoc is quoted back.
+    bodies: dict[str, tuple[str, bool, bool]] = {}
     # fd 1 initially feeds the next pipeline stage. Opening its aliases copies
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
@@ -493,14 +496,16 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if op == "<":
+            if op in ("<", "<<<"):
+                spelled = op == "<<<" and entry and entry[0] == "heredoc"
+                word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
                 pipe_outputs[number] = False
-                reads_body(number, bodies.get(source) if source and source != "?"
-                           else None)
+                reads_body(number, (word, not spelled, False) if op == "<<<" else
+                           bodies.get(source) if source and source != "?" else None)
             else:
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
@@ -519,18 +524,18 @@ def _stage(text, context):
             number = fd.lstrip("0") or "0"
             pipe_inputs[number] = False
             pipe_outputs[number] = False
-            reads_body(number, (heredoc, expands))
+            reads_body(number, (heredoc, expands, True))
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
         take(word)
         argv.append(word)
     stdout, stdin = sinks.get("1"), bodies.get("0")
-    return Stage(argv, writes, reads, stdin[0] if stdin else heredoc, substitutions,
-                 [stdout] if stdout is not None else [], group_open, group_close,
-                 pipe_inputs["0"], pipe_outputs["1"],
+    return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
+                 substitutions, [stdout] if stdout is not None else [], group_open,
+                 group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 stdin)
+                 stdin[:2] if stdin else None)
 
 
 def statements(script):

@@ -128,8 +128,8 @@ that starts catching one fails there, and this list is edited with it.
   `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
   longer CRASHES, which is what it did until #1697's review.
   CLOSED for the OTHER heredoc spelling, the body handed to an interpreter as
-  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<'EOF'`, `python3 - <<'EOF'` --
-  #1839, run-14 SEC-3915165799, which found it neither read nor reported).
+  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`, `python3 - <<'EOF'` --
+  #1839 and #2293; run-14 SEC-3915165799 found it neither read nor reported).
   Two facts decide it and both are already parsed: whether a command's program
   is its standard input at all (`workflow_forms.stdin_program`, an operand walk
   -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
@@ -138,11 +138,11 @@ that starts catching one fails there, and this list is edited with it.
   (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the
   interpreter as the text it was written as, so `_stdin_scripts` reads it
   exactly as `_flattened` reads an `eval` string -- a `curl … | sh` inside it
-  is the defect it is at the top level. An EXPANDING body is REPORTED unread
-  (`_unread_stdin`) instead of read, because its `$(...)` were lifted into the
-  enclosing parse's table before this text was reached: the entry above, one
-  redirection over. A program in a language this module has no grammar for is
-  reported too, which is the answer `unparseable` already gives a
+  is the defect it is at the top level. An EXPANDING one is REPORTED unread
+  (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
+  were lifted into the enclosing parse's table before this text was reached
+  -- the entry above, one redirection over. A program in a language this
+  module has no grammar for is reported too, the answer `unparseable` gives a
   `shell: python` step. What that leaves unread: an interpreter whose program
   is on stdin in a spelling the operand walk does not resolve -- behind an
   option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
@@ -276,13 +276,13 @@ def _fetch_records(stmts, stream_exec=False):
 def _unread_stdin(stage):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
-    A heredoc body handed to an interpreter is a program, not data
-    (`workflow_forms.stdin_program`), and two kinds of it cannot be read: one
-    written in a language this module has no grammar for, and one the shell
-    would EXPAND -- whose `$(...)` were lifted into the enclosing parse's table
-    before the body reached here, so what the interpreter runs is not the text
-    this module holds. Quoted shell is the third kind and is READ, in
-    `_stdin_scripts`.
+    A heredoc body or here-string handed to an interpreter is a program, not
+    data (`workflow_forms.stdin_program`), and two kinds of it cannot be read:
+    one in a language this module has no grammar for, and one the shell would
+    EXPAND -- a body whose `$(...)` were lifted into the enclosing parse's
+    table before it reached here, a here-string whose word bash expands first
+    (#2293) -- so what the interpreter runs is not the text this module holds.
+    Quoted shell is the third kind and is READ, in `_stdin_scripts`.
     """
     argv = command(stage.argv)
     here = stage.stdin_heredoc
@@ -291,16 +291,16 @@ def _unread_stdin(stage):
         return None
     name = os.path.basename(argv[0])
     if kind != SHELL_PROGRAM:
-        return ("hands a heredoc body to `%s` as the program to run, which this "
-                "guard does not parse -- it cannot say whether that program "
-                "downloads and executes anything; write it in bash/sh, or "
-                "exempt the step with a reason" % name)
+        return ("hands a heredoc body or here-string to `%s` as the program to "
+                "run, which this guard does not parse -- it cannot say whether "
+                "that program downloads and executes anything; write it in "
+                "bash/sh, or exempt the step with a reason" % name)
     if here[1]:
-        return ("hands an EXPANDING heredoc body to `%s` as the script to run: "
-                "its `$(...)` were lifted into the enclosing parse before this "
-                "text was read, so the guard cannot say what the script runs -- "
-                "quote the delimiter (`<<'EOF'`) and the body is read as "
-                "written; pass job values as arguments instead "
+        return ("hands an EXPANDING heredoc body or here-string to `%s` as the "
+                "script to run: it runs what bash expands it to -- values and "
+                "`$(...)` output this guard never sees -- so the guard cannot say "
+                "what the script runs; quote it (`<<'EOF'`, `<<< '...'`) and it is "
+                "read as written, pass job values as arguments instead "
                 "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
                 "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
                 % (name, name))
@@ -332,8 +332,8 @@ def _stdin_scripts(argv, stage):
     `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
     quoted delimiter the interpreter reads the body as the text it was written
     as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level. An
-    EXPANDING body is read nowhere; `_unread_stdin` reports it instead.
+    `curl … | sh` inside it is the same defect it is at the top level; so is
+    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: `_unread_stdin`.
     """
     here = stage.stdin_heredoc
     if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
