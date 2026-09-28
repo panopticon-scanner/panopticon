@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard reads comments, continuations and heredocs the way bash does (#1793;
+  COD-3418139920, COD-3636110933).** `shell_reader.statements()` settled all three in passes
+  that ran before any quote tracking, so a `#` line inside a multi-line string, a `<<WORD`
+  inside quotes, in a comment or at the tail of a `<<<`, and a backslash ending a comment or a
+  quoted heredoc line each hid a statement bash runs, and the guard reported the step clean.
+  `scripts/shell_lex.py` now reads them in one quote-aware forward pass: heredocs queue until
+  the newline, a body ends at the line bash compares, and a delimiter bash must parse to spell
+  (`<<$(...)`) stays text. A command's `((` is arithmetic or two subshells, whose heredocs are
+  real, by the character after its first group, as bash decides it; nesting that would take
+  over eight re-readings of the script to decide raises `shell_lex.Unreadable` rather than
+  guess. An `a[...]` subscript, where `<<` is a shift, opens only where bash reads an
+  assignment -- across lines, and inside `a=(...)` -- so among a command's arguments
+  (`echo a[1<<X]`) `<<` is a heredoc. The scanners after the lexer now agree on `\"`
+  inside "...", `$'...'` and an apostrophe inside "...": misread, each hid what followed it.
+  Every heredoc on a line is read and filed under its descriptor, so the guard reads the
+  script `bash -s <<'A' 3<<'B'` runs (#2128).
+  A heredoc opened inside a `$(...)`, `<(...)` or `>(...)` that closes before the newline its
+  body would follow raises `shell_lex.Unreadable` too: bash 5.2 takes that body from the lines
+  below and runs what follows its terminator, which the guard does not model. Inside `$((...))`
+  a `$(...)` is read as the commands bash runs there.
 - **A Ctrl-C during a fresh run's first phase ends with the `interrupted:` status (#1805).**
   `orchestrate.loop` called `_first_run`, and the resume seam's `_run`, before its own `try`, so
   a Ctrl-C there escaped as a traceback and `_finish` never ran. Both calls now live inside the
