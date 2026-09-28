@@ -410,6 +410,58 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("Before any paid dispatch", loop)
         self.assertNotIn("arms a guard or launches anything", loop)
 
+    def test_the_guides_gating_sentence_names_every_row_that_gates(self):
+        """#2245 (ARC-1308156980): the guide enumerated four of the five gating
+        rows, so an operator reading it could not predict which failing row
+        exits 1 -- `dependencies` was missing, and a missing package is the one
+        readiness failure a fresh checkout meets first.
+
+        The names come from the code, not from a second list: `GATING_ROWS` is
+        what `phases/readiness._preflight` builds `failed` from. Either spelling
+        counts, because the table labels `tools-image` with a hyphen while the
+        `--json` document keys it `tools_image`.
+        """
+        import scripts.phases.readiness as readiness
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        sentence = _section(loop, "Gating rows are", "marked `→` in the table")
+        self.assertTrue(readiness.GATING_ROWS, "no gating rows to check")
+        for name in readiness.GATING_ROWS:
+            with self.subTest(row=name):
+                self.assertTrue(
+                    "`%s`" % name in sentence
+                    or "`%s`" % name.replace("-", "_") in sentence,
+                    "the guide's gating sentence does not name the gating row "
+                    "%r, so the doc predicts a different exit code from the "
+                    "code: %r" % (name, sentence))
+
+    def test_the_evidence_chapter_spells_every_status_and_the_gate_eligible_set(self):
+        """#2245 (ARC-2689115794): the chapter that ENUMERATES the statuses
+        listed seven of eight, omitting `backup_scope_limited` -- the one status
+        invented so an evidence-scope failure could not quietly decide a gate --
+        and an operator reading only that list mis-predicts the gate on it.
+
+        Both constants are read from `scripts.evidence`, so adding a ninth
+        status or widening the default gate set fails here until the chapter
+        says so. The bullet list and the gate sentence are checked separately:
+        a status named in passing further down the chapter is not an entry in
+        the list a reader counts.
+        """
+        import scripts.evidence as evidence
+        chapter = _section(self.text, "## Evidence", "## Notes")
+        statuses = _section(chapter, "how hard the claim was verified):",
+                            "\nGrades and the CI gate ")
+        for name in evidence.EVIDENCE_STATUSES:
+            with self.subTest(status=name):
+                self.assertIn("`%s`" % name, statuses,
+                              "the evidence chapter's status list does not "
+                              "name %r" % name)
+        gate = _section(chapter, "Grades and the CI gate ", "Run a verify phase")
+        for name in sorted(evidence.GATE_ELIGIBLE_DEFAULT):
+            with self.subTest(gate_eligible=name):
+                self.assertIn("`%s`" % name, gate,
+                              "the chapter's gate sentence does not name the "
+                              "gate-eligible status %r" % name)
+
     def test_the_test_inventory_diagnostic_is_documented(self):
         # #1638 P13: an operator who meets `Test inventory: X: empty` in a
         # report, or a `TST-X0X` INFO finding in the JSON, has to be able to

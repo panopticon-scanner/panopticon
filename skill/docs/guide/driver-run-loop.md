@@ -106,8 +106,9 @@ The host contract (5.2, plan 6):
   — host CLIs are located with `shutil.which` and never started, and the Docker probe is the
   readiness phase's own — and prints ONE compact document (a table, or the object under `--json`):
   `guide` (the absolute path of `PANOPTICON.md` inside this install, and whether it exists),
-  `sub_skills` (each required `superpowers:*` sub-skill and where it was found, or null), `matrix`
-  (the resolved config path, plus groups, code files and test files from the committed
+  `dependencies` (the Python packages a run imports, which are missing, and the `pip install` that
+  fixes it), `sub_skills` (each required `superpowers:*` sub-skill and where it was found, or null),
+  `matrix` (the resolved config path, plus groups, code files and test files from the committed
   `panopticon.yml`, or the remedy when there is none), `existing_run` (the tag under `runs/latest`,
   the last state recorded for that run — `complete`, `checkpoint`, `error`, `started` for a run
   folder that has recorded none of those yet, and `none` for no run in this tree at all — and how
@@ -121,9 +122,10 @@ The host contract (5.2, plan 6):
   this run's manifest, else the driver's default. So a BARE `driver readiness <target>` reports on
   the same host a bare `driver loop <target>` would drive, and `selected_from` (`"--host"` |
   `"manifest"` | `"default"`, echoed in the table header) says which of the three answered. Gating
-  rows are `guide`, `matrix`, `tools_image` and the resolved host's own `cli` row, marked `→` in the
-  table: `driver loop` resolves a host to headless whenever `skill/scripts/runners/<H>.py` exists,
-  which is a fact about this repo and not about this machine, so a binary that is not there is a
+  rows are `guide`, `dependencies`, `matrix`, `tools_image` and the resolved host's own `cli` row,
+  marked `→` in the table: `driver loop` resolves a host to headless whenever
+  `skill/scripts/runners/<H>.py` exists, which is a fact about this repo and not about this machine,
+  so a binary that is not there is a
   loop that cannot start, and the row's remedy names both ways out (install it, or
   `driver loop --host H --mode session`). A resolved host that names no CLI of ours — `generic` —
   passes: session mode needs no binary. Every OTHER host's `cli` row, and every `sub_skills` row, is
@@ -415,7 +417,12 @@ on Claude hooks, and always uses the return-persist path.
   `rejected_file`, and the entry's NEXT prompt carries the reason and a `prior_rejection` stamp so
   the retry is told what to fix. - **The loop ledgers** every launch in
   `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials` —
-  the host envelope's `permission_denials`, verbatim — error, and on a FAILED row `stderr`: the
+  what the host reported as blocked, which is NOT one measurement across families (#2241): on
+  `claude` it is the envelope's `permission_denials` verbatim, and an all-`[]` column beside replies
+  that carry findings is how an unarmed guard shows up; on `codex` it is the MCP tool calls the
+  stream marked failed (tool errors, not permission decisions); `kimi` reports none at all and
+  always writes `[]`. So an empty column means "none reported", not "none happened" — error, and on
+  a FAILED row `stderr`: the
   first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted
   again at the ledger, which is the one thing that appends to this file. A successful row carries no
   `stderr` key at all, so its shape is unchanged. Run 14 is why: 309 launches were ledgered as
@@ -915,7 +922,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   entry is self-describing (`id` = `review-<group>-<domain>`). `verify`'s adversarial BACKUP round
   batches the same way (all pending backup cells in one `group: null` checkpoint, #20) but is
   sequenced AFTER primary completes; the per-finding TOOL round is likewise a separate checkpoint —
-  each round depends on the prior round's verdicts being complete. A TOOL round entry is scoped by
+  each round depends on the prior round's verdicts being complete. The TOOL round's queue is
+  RE-DERIVED rather than read: `verify` runs before `synthesize`, so the report whose verify queue
+  these verdicts have to match does not exist yet (the verdicts are one of its inputs), and the only
+  way to dispatch against the queue synthesize will build is to build it the same way — the driver
+  runs synthesize's own combined pipeline over the same inputs, so the `(queue_id, finding id)`
+  pairs are byte-identical and no verdict is dropped for naming a finding the report numbered
+  differently. A TOOL round entry is scoped by
   its finding's `location.file` ALONE — tool findings carry no group, so
   `coverage.group_files_containing` looks the file up in the discovered groups: a repo-relative path
   naming a real file grants the whole group that holds it, an ungrouped file grants only itself, and

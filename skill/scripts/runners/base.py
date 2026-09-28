@@ -93,7 +93,15 @@ class RunResult:
     cost_usd: object         # float | None
     model: object            # str | None
     session_id: object       # str | None
-    denials: list            # the host's permission_denials, verbatim
+    denials: list            # what this host reported as BLOCKED -- and the families do not
+                             # measure the same thing (#2241), so read an empty list as
+                             # "none reported", never as "none happened". claude puts the
+                             # envelope's `permission_denials` here verbatim, which is why a
+                             # ledger whose rows are all `[]` while the replies carry findings
+                             # reads as an unarmed guard THERE and nowhere else; codex puts the
+                             # `mcp_tool_call` items its stream marked failed, which are tool
+                             # errors and not permission decisions; kimi always passes `[]` --
+                             # its JSONL envelope reports none.
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
     host_error: object = None      # the HOST's own error surface (#1623): str | dict | None
                                    # -- the CLI's error line or the provider error object it

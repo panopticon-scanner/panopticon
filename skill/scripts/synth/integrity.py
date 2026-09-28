@@ -375,9 +375,15 @@ def reconcile_findings_files(plan, ingested_paths):
     return unexpected, missing
 
 def _plan_hash(plan):
-    """Canonical plan-content hash -- mirror of dispatch.plan_content_hash
-    (#493 R2; a shared import is blocked by the two sys.path conventions,
-    #742 -- keep the two in sync)."""
+    """Canonical plan-content hash -- the ONE implementation, with no twin to
+    keep in sync: the `dispatch.plan_content_hash` this once mirrored (#493 R2)
+    went with the 4.x DispatchPlan builder and no longer exists anywhere.
+
+    Every `plan_sha256` in the tree is this function's output. `phases/requests.py`
+    and `phases/setup_ack.py` stamp it, `run_manifest.record_artifact_stamp`'s
+    docstring names it as the canonical hash the artifact stamp carries, and the
+    two checks in this module -- the #493 R2 ack-staleness test and the
+    substituted-plan test below -- re-derive it from the plans on disk."""
     return hashlib.sha256(
         json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

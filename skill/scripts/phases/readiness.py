@@ -270,6 +270,15 @@ HOST_SOURCE_NOTES = {
 }
 
 
+# The rows that GATE, in the order `_preflight` evaluates them -- and the ONE
+# place their names are written. Module level so a doc-vs-code pin can read
+# them: `tests/test_skill_md.py` asserts the guide's gating sentence names
+# every one of them, which is how #2245 found `dependencies` missing from it.
+# The hyphenated spelling is the table label; the `--json` document keys the
+# same rows with underscores.
+GATING_ROWS = ("guide", "dependencies", "matrix", "cli", "tools-image")
+
+
 # Rendered width of the row label column, so the human form is a table and not
 # a ragged list.
 _LABEL = 13
@@ -515,10 +524,12 @@ def preflight(target=".", host=None, online=None):
     # `all(...)` would have read None as a failure, which is why this is a
     # `is False` filter and not a truthiness test.
     dependencies = readiness_checks._dependencies_row()
-    gating = (("guide", guide["ok"]), ("dependencies", dependencies["ok"]),
-              ("matrix", matrix["ok"]),
-              ("cli", readiness_checks._cli_gate(cli)),
-              ("tools-image", tools_image["ok"]))
+    # `strict=True`: a row added to the values without a name in GATING_ROWS
+    # (or the reverse) raises here instead of silently not gating.
+    gating = tuple(zip(GATING_ROWS,
+                       (guide["ok"], dependencies["ok"], matrix["ok"],
+                        readiness_checks._cli_gate(cli), tools_image["ok"]),
+                       strict=True))
     failed = [name for name, ok in gating if ok is False]
     return {"schema_version": PREFLIGHT_SCHEMA_VERSION,
             "target": os.path.abspath(target),

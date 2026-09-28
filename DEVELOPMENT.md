@@ -340,6 +340,16 @@ characters, and matching consumes the whole path.
   keep it); `tests/test_module_identity.py` gates the rest — the import-time doubled-module
   census, a shrink-only per-module ceiling on the `sys.path` bootstrap sites, and no import
   fallback in a package module. Retiring the remaining flat imports is tracked in #1516.
+  Neither mode is a packaging artefact: `pyproject.toml` declares `py-modules = []`, so a build
+  of this project ships no importable code at all — the skill directory and the tools image are
+  the delivery vehicles, and `pip install -e ".[dev]"` is for the test and lint tooling.
+- **One Dockerfile stage, and the split is 5.3's** (owner ruling 2026-09-27, #1772). Every
+  toolchain the scanners need — Python, Ruby, Node, Go, the JDK, Rust, the .NET SDK — installs
+  into the one `python:3.12-slim` stage, so an upstream break fails the whole build and no
+  toolchain's layers survive it. Accepted for 5.2, because the image is digest-pinned, published
+  publicly and rebuilt nightly, and `tools-image-health.yml` turns red if a break outlasts
+  `MAX_AGE_DAYS: 3`. 5.3's brief: one stage per toolchain, still ONE published image, so a break
+  in one toolchain cannot invalidate the others' layers.
 
 ## Running
 Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`
