@@ -60,8 +60,8 @@ that EXISTS and cannot be read (unreadable, not JSON, not an object) leaves the 
 set unknown, so `tools_absent` is not computed from the scout's advisory list — that fallback
 silently drops every scanner the runner selected and the scout never asked for — and the run reports
 `meta.integrity.tools_manifest_invalid` with the reason, which fails `integrity_ok` like every other
-SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do; seven of the
-twenty-one do not), so the gate goes INCONCLUSIVE, and sets `summary.coverage_certified: false`
+SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do), so the gate goes
+INCONCLUSIVE, and sets `summary.coverage_certified: false`
 with a `coverage_note` saying *tools manifest unreadable*. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest (a

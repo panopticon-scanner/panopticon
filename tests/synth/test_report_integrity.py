@@ -324,11 +324,13 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "content_snapshot_missing": True,
         "empty_dispatch_plans": 1,
         # The loader's THIRD reason, the one a filename alone cannot be told
-        # apart from a plan that does not parse (review finding 8).
+        # apart from a plan that does not parse (review finding 8), and -- only
+        # a foreign report can carry it -- a row with no reason at all.
         "invalid_dispatch_plans": [
             {"file": "dispatch-plan-decoy.json",
              "reason": "unrecognized dispatch-plan file (expected %s)"
-                       % plan_mod.DRIVER_DISPATCH_PLAN}],
+                       % plan_mod.DRIVER_DISPATCH_PLAN},
+            {"file": "dispatch-plan-orphan.json"}],
         "invalid_verify_queue": "verify queue has no entries list",
         "plans_seen": 1,
         "dispatch_plan_missing": True,
@@ -493,9 +495,15 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # NAME, which may parse and may meet the cell contract. The file alone
         # does not say which of the three fired, and it is the only key whose
         # rows carry a reason the summary was dropping.
+        # `file: reason`, not `file (reason)` (re-review R2): the reason that
+        # motivated naming reasons at all ends in a parenthetical of its own, so
+        # the parenthesised form collided -- `…file (expected x.json)) (a plan
+        # file on disk …` -- in the common case, not an edge one. A row with no
+        # reason says so rather than rendering `None`.
         md = self._summary("invalid_dispatch_plans")
-        self.assertIn("**Integrity:** INVALID DISPATCH PLAN — dispatch-plan-decoy.json "
-                      "(unrecognized dispatch-plan file (expected %s)) (a plan file "
+        self.assertIn("**Integrity:** INVALID DISPATCH PLAN — dispatch-plan-decoy.json: "
+                      "unrecognized dispatch-plan file (expected %s), "
+                      "dispatch-plan-orphan.json: no reason recorded (a plan file "
                       "on disk that does not parse, does not meet the review-cell "
                       "contract, or is not the dispatch plan the driver writes; run "
                       "not certified)" % plan_mod.DRIVER_DISPATCH_PLAN, md)

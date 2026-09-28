@@ -1,6 +1,6 @@
 """Findings-file integrity: planned vs ingested files, labels, the unenforced
 ack, and `INTEGRITY_KEYS` -- the one table naming which of those facts sinks
-certification and what the report says when one does."""
+certification and what the summary says when one does."""
 import hashlib
 import json
 import os
@@ -159,11 +159,18 @@ def _row_evidence(key, row):
     The file, plus -- for `invalid_dispatch_plans` -- the loader's reason: that
     key's three reasons include a plan rejected on its NAME, which a filename
     alone cannot be told apart from one that does not parse.
+
+    `file: reason`, not `file (reason)`: that third reason ends in a
+    parenthetical of its own ("(expected dispatch-plan-driver.json)"), so the
+    parenthesised form collided with the sentence's own in the COMMON case. A
+    row carrying no reason -- which only a foreign report can produce -- says so
+    rather than rendering `None`.
     """
     if not isinstance(row, dict):
         return str(row)
     if key == "invalid_dispatch_plans":
-        return "%s (%s)" % (row.get("file"), row.get("reason"))
+        return "%s: %s" % (row.get("file"),
+                           row.get("reason") or "no reason recorded")
     return str(row.get("file"))
 
 
