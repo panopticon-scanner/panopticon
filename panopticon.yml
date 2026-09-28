@@ -431,6 +431,7 @@ groups:
       - skill/scripts/html_report.py
       - skill/scripts/x0x_report.py
       - skill/scripts/strain_report.py
+      - skill/scripts/report_records.py
       - scripts/file_issues.py
       - scripts/file_fixmes.py
       - scripts/triage.py
@@ -454,6 +455,7 @@ groups:
     - .github/**
     - scripts/workflow_guard.py
     - scripts/shell_reader.py
+    - scripts/shell_lex.py
     - scripts/workflow_forms.py
     - scripts/workflow_fetch.py
     tests:

@@ -38,9 +38,18 @@ evidence as-is. It does NOT adjudicate. The disposition (`boundary` /
 exists precisely because X0X could only ever argue `new_code` while OCRDb's
 vocabulary already had the other three.
 """
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import os
 import sys
+
+if TYPE_CHECKING:
+    from scripts import ocrdb, report_records
+else:
+    try:
+        from scripts import ocrdb, report_records
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import ocrdb
+        import report_records
 
 SCHEMA_VERSION = 1
 
@@ -73,7 +82,7 @@ def _domain(code):
     """Domain prefix of an OCRDb code (`DAT-C1B` -> `DAT`), or None."""
     if not code:
         return None
-    head = str(code).split("-", 1)[0].strip().upper()
+    head = ocrdb.domain_prefix(str(code)).strip().upper()
     return head or None
 
 
@@ -100,19 +109,7 @@ def _canonical_pair(a, b):
 def _occurrence(finding, run_id=None):
     """An occurrence record, or None when the finding has no file (the schema
     requires `file` on every occurrence)."""
-    loc = finding.get("location") or {}
-    if not loc.get("file"):
-        return None
-    o = {"file": loc["file"]}
-    if loc.get("line_start") is not None:
-        o["line_start"] = loc["line_start"]
-    if loc.get("line_end") is not None:
-        o["line_end"] = loc["line_end"]
-    if finding.get("id"):
-        o["finding_id"] = finding["id"]
-    if run_id:
-        o["run_id"] = run_id
-    return o
+    return report_records.occurrence(finding, run_id)
 
 
 def advisor_recode_signals(findings, run_id=None):

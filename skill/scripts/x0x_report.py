@@ -18,11 +18,14 @@ import sys
 
 if TYPE_CHECKING:
     import scripts.ocrdb as ocrdb
+    import scripts.report_records as report_records
 else:
     try:
         import scripts.ocrdb as ocrdb
+        import scripts.report_records as report_records
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import ocrdb
+        import report_records
 
 SCHEMA_VERSION = 1
 
@@ -70,22 +73,12 @@ def _cwes(finding):
 def _occurrence(finding):
     """An occurrence record, or None when the finding has no file (schema requires
     ``file`` on every occurrence)."""
-    loc = finding.get("location") or {}
-    if not loc.get("file"):
-        return None
-    o = {"file": loc["file"]}
-    if loc.get("line_start") is not None:
-        o["line_start"] = loc["line_start"]
-    if loc.get("line_end") is not None:
-        o["line_end"] = loc["line_end"]
-    if finding.get("id"):
-        o["finding_id"] = finding["id"]
-    return o
+    return report_records.occurrence(finding)
 
 
 def _domain(finding):
     dom = (finding.get("domain")
-           or (str(finding.get("code", "")).split("-")[0] or "ZZZ"))
+           or (ocrdb.domain_prefix(str(finding.get("code", ""))) or "ZZZ"))
     # #run7 COD-C2D: OCRDb domains/codes are uppercase by convention, but the
     # value flows in verbatim from synthesize (no case-fold upstream). Fold it so
     # "SEC" and "sec" cluster into ONE candidate instead of splitting on the key

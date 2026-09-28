@@ -9,6 +9,8 @@ import json
 import tempfile
 import unittest
 
+from tests.synth.helpers import _chdir
+
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
@@ -151,7 +153,6 @@ class TestFindingsFileIntegrity(unittest.TestCase):
     def test_mislabeled_file_forces_inconclusive_end_to_end(self):
         # --fail-on high makes the base gate PASS (no high findings); the
         # integrity gap then raises it to INCONCLUSIVE (OFF would be preserved).
-        prev = os.getcwd()
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".panopticon"))
             p = os.path.join(d, "findings-g1-SEC.json")        # SEC cell name
@@ -177,12 +178,9 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            try:
-                os.chdir(d)
+            with _chdir(d):
                 with contextlib.redirect_stdout(io.StringIO()):
                     syn.main(["--target", "t", "--fail-on", "high", "--out", out, p])
-            finally:
-                os.chdir(prev)
             with open(out, encoding="utf-8") as fh:
                 report = json.load(fh)
             self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
@@ -421,12 +419,8 @@ class IntegritySectionTest(unittest.TestCase):
                                   out_path=os.path.join(run_dir, "out-file-hashes.json"))
             with open(os.path.join(root, ".panopticon", "out-file-hashes.json"), "w") as fh:
                 json.dump({os.path.realpath(cell): "0" * 64}, fh)
-            cwd = os.getcwd()
-            os.chdir(root)
-            try:
+            with _chdir(root):
                 sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
-            finally:
-                os.chdir(cwd)
         self.assertEqual(sec["content_mismatched_files"], [])
         self.assertEqual(sec["content_hashes_checked"], 1)
 

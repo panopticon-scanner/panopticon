@@ -30,6 +30,8 @@ import os
 import tempfile
 import unittest
 
+from tests.synth.helpers import _chdir
+
 import scripts.redact as redact
 import scripts.strain_report as strain_report
 import scripts.synth.findings as findings_mod
@@ -138,31 +140,29 @@ def _run(tmpdir, max_bytes=None):
         return real_write(report, out_path, max_bytes=max_bytes)
 
     buf = io.StringIO()
-    prev = os.getcwd()
-    os.chdir(tmpdir)
-    try:
-        with contextlib.redirect_stdout(buf), \
-                contextlib.redirect_stderr(io.StringIO()):
-            syn.main(["--target", "app", "--run-dir", run_dir,
-                      "--groups", groups, "--emit-verify-queue", fp])
-        # The advisor answers this run's queue, so the bundle carries the
-        # queue's run_id -- match_verdict_by_id rejects a cross-run verdict.
-        with open(os.path.join(run_dir, "verify-queue.json"),
-                  encoding="utf-8") as fh:
-            queue_run_id = json.load(fh)["run_id"]
-        with open(os.path.join(v_dir, "verdicts-app-SEC.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump(_verdicts_doc(loaded[0]["id"], loaded[1]["id"],
-                                    queue_run_id), fh)
-        if max_bytes is not None:
-            render_mod.write_report = _small_write
-        with contextlib.redirect_stdout(buf), \
-                contextlib.redirect_stderr(io.StringIO()):
-            syn.main(["--target", "app", "--out", out, "--run-dir", run_dir,
-                      "--groups", groups, "--verdicts-dir", v_dir, fp])
-    finally:
-        render_mod.write_report = real_write
-        os.chdir(prev)
+    with _chdir(tmpdir):
+        try:
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                syn.main(["--target", "app", "--run-dir", run_dir,
+                          "--groups", groups, "--emit-verify-queue", fp])
+            # The advisor answers this run's queue, so the bundle carries the
+            # queue's run_id -- match_verdict_by_id rejects a cross-run verdict.
+            with open(os.path.join(run_dir, "verify-queue.json"),
+                      encoding="utf-8") as fh:
+                queue_run_id = json.load(fh)["run_id"]
+            with open(os.path.join(v_dir, "verdicts-app-SEC.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(_verdicts_doc(loaded[0]["id"], loaded[1]["id"],
+                                        queue_run_id), fh)
+            if max_bytes is not None:
+                render_mod.write_report = _small_write
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                syn.main(["--target", "app", "--out", out, "--run-dir", run_dir,
+                          "--groups", groups, "--verdicts-dir", v_dir, fp])
+        finally:
+            render_mod.write_report = real_write
     return [out_dir, run_dir], out, buf.getvalue()
 
 
@@ -340,9 +340,7 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                                "detail": "sha256:" + digest}}}, fh)
         out = os.path.join(out_dir, "report.json")
         buf = io.StringIO()
-        prev = os.getcwd()
-        os.chdir(d)
-        try:
+        with _chdir(d):
             with contextlib.redirect_stdout(buf), \
                     contextlib.redirect_stderr(io.StringIO()):
                 syn.main(["--target", "app", "--run-dir", run,
@@ -364,8 +362,6 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                           "--groups", os.path.join(run, "groups.json"),
                           "--verdicts-dir", verdicts,
                           sec, cod])
-        finally:
-            os.chdir(prev)
         with open(out, encoding="utf-8") as fh:
             return json.load(fh)
 
@@ -459,9 +455,7 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
             with open(fp, "w", encoding="utf-8") as fh:
                 json.dump(self._finding(), fh)
 
-            prev = os.getcwd()
-            os.chdir(d)
-            try:
+            with _chdir(d):
                 # Pass 1: the orchestrator's --emit-verify-queue run.
                 with contextlib.redirect_stdout(io.StringIO()), \
                         contextlib.redirect_stderr(io.StringIO()):
@@ -486,8 +480,6 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
                     syn.main(["--target", "app", "--run-dir", run,
                               "--out", os.path.join(out_dir, "report.json"),
                               "--verdicts-dir", v_dir, fp])
-            finally:
-                os.chdir(prev)
             with open(os.path.join(out_dir, "report.json"), encoding="utf-8") as fh:
                 report = json.load(fh)
 
