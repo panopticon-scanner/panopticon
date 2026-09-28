@@ -465,9 +465,11 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
     So: the push route resolves `github.event.before` (the previous main head)
     and the PR routes resolve `base.sha`, and from whichever sha that is the
     step walks up to five FIRST-PARENT ancestors looking for one with a
-    successful run. `--status success` stays -- a red run's capture may be
-    partial -- and walking further back only makes the gate stricter (an older
-    baseline means more findings read as new), never looser.
+    successful run. Walking further back changes WHICH findings are excused, and
+    since #2309 that is not monotone: an older baseline can carry a finding main
+    has since removed, whose leftover pairs as "moved" with a new head occurrence
+    of the same tool, rule and message. Only the pool SHRINKING -- a rejected or
+    partial baseline -- is monotone, and that direction is stricter.
 
     Everything else here is a fail-toward-strictness pin. The gate receives the
     flags only when a download actually happened, and the fetch step degrades to

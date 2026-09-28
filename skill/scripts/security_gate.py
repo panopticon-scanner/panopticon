@@ -39,15 +39,17 @@ SECURITY_MODES = ("standard", REDTEAM)
 BASELINE_HEADING = ("pre-existing (in the base commit's scan; governed by the "
                     "post-merge audit and GitHub dismissals)")
 
-# #2309 owner ruling 2026-09-28: the third category, and why it is printed
-# apart from the one above rather than folded into it. A HIGH that a verbatim
-# extraction MOVES from one module to another is pre-existing -- the base
-# commit carries it, at a path that no longer does -- but it is not the same
-# claim: the heading above says this commit's diff never touched the finding,
-# and this one says the diff touched it and moving it is ALL it did. Either way
-# it does not gate. See `split_pre_existing` for what pairs and what does not.
-MOVED_HEADING = ("pre-existing (moved: the same tool, rule and message left an "
-                 "unmatched base path -- an extraction, not a new occurrence)")
+# #2309 owner ruling 2026-09-28: the third category, printed apart from the one
+# above because it is a WEAKER claim, and the wording is held down to what the
+# code can actually establish (fix round 1, review findings 5 and 8). The
+# heading above says this commit's diff never touched the finding. This one says
+# only that the base commit carried one more copy of this tool, rule and message
+# than the head has here -- the COUNT of that key did not increase. It is not a
+# verified extraction: nothing here can tell an extraction from a deletion plus
+# an unrelated addition of the same key, and `DEVELOPMENT.md` discloses that.
+# Either way it does not gate. See `split_pre_existing` for what pairs.
+MOVED_HEADING = ("pre-existing (moved: an unmatched base copy of this tool, "
+                 "rule and message; no net-new occurrence)")
 
 
 def load_manifest(path):
@@ -277,9 +279,42 @@ def moved_identity(finding):
     excuse every later occurrence of it -- a second head copy has no orphan left
     to pair with and is NEW, exactly as a second copy at the same path already
     was. Nothing about severity, and nothing about lines, changes here.
+
+    This is not the whole pairing key: `_pair_key` adds the suppression side, so
+    the flag cannot be crossed (fix round 1, review finding 3).
+
+    AND IT ONLY DROPS THE PATH FIELD, not the path wherever a tool wrote it into
+    its own MESSAGE -- which some do: gitleaks' message reads `generic-api-key
+    has detected secret for file /mnt/panopticon/.env.`, and trivy embeds its own
+    grade. Such a finding keys itself by its path, so a move of one still counts
+    as NEW. That direction fails safe, and it is the reason a relocated gitleaks
+    hit can still red a check this heading otherwise covers.
     """
     tool, rule, _path, message = finding_identity(finding)
     return tool, rule, message
+
+
+def _pair_key(finding):
+    """`moved_identity` plus WHICH SIDE of the suppression the finding is on.
+
+    Fix round 1, review finding 3, narrowed fail-closed inside the #2309 ruling.
+    Under `--security redteam` -- what both live invocations pass -- the gate
+    population on each side is `kept + gate_counted(suppressed)`, so a vendored
+    finding re-admitted by #1578 policy C sits in the SAME multiset as a
+    first-party one. The exact identity kept those apart for free, because
+    suppression is decided by the path and the path was in the key. Dropping the
+    path let them cross, in both directions, and the sharp edge is policy C's
+    secret-class arm, where messages are rule-generic: a `G101 "Potential
+    hardcoded credentials"` the base carried under `vendor/` would have excused a
+    DIFFERENT hardcoded credential added to first-party code in the same PR.
+
+    So the flag is part of the key: an orphan may only pair with a head finding
+    on its own side of the suppression. It costs the extraction #2309 was filed
+    for nothing -- both sides of that pair are unsuppressed -- and a
+    name-suppressed finding that genuinely moves from one vendored path to
+    another still pairs, because both sides are suppressed.
+    """
+    return moved_identity(finding) + (bool(finding.get("suppressed")),)
 
 
 def disclose_file_coverage(dispositions, label):
@@ -375,12 +410,15 @@ def split_pre_existing(high, baseline):
     TWO PASSES, and the order of them is the whole proof. The first is the exact
     one above, on the full path-keyed identity. The second is #2309's owner
     ruling (2026-09-28): a finding the first pass left in `new` pairs with ONE
-    remaining base entry of the same `moved_identity` -- an ORPHAN -- and is
-    `moved`, pre-existing at a path that is not this one. A verbatim extraction
-    carrying a HIGH from one module to another is exactly that, and the
+    remaining base entry of the same `_pair_key` -- an ORPHAN -- and is `moved`.
+    What that establishes is a COUNT: the base carried one more copy of this
+    tool, rule and message than the head has here. A verbatim extraction
+    carrying a HIGH from one module to another produces exactly that, and the
     path-SENSITIVE identity alone counted it new while leaving the base's own
     copy unmatched, reddening a required check on a diff that changed no
-    behaviour.
+    behaviour. It does NOT establish that a move is what happened -- a deletion
+    plus an unrelated addition of the same key reads the same, which
+    `DEVELOPMENT.md` discloses rather than this code detecting.
 
     By construction an orphan's path NO LONGER CARRIES that finding at that
     count: the exact pass ran first and spent every same-path match it could, so
@@ -391,8 +429,9 @@ def split_pre_existing(high, baseline):
     The orphan pool is a `collections.Counter` over the entries the exact pass
     did not consume, DECREMENTED as it pairs and never rebuilt: two base copies
     excuse two moves and a third head copy is new, the same multiset rule the
-    first pass obeys. A `moved` finding never gates; `main` prints it under
-    `MOVED_HEADING` and counts it separately.
+    first pass obeys. Keyed by `_pair_key`, so an orphan pairs only on its own
+    side of the suppression (fix round 1, review finding 3). A `moved` finding
+    never gates; `main` prints it under `MOVED_HEADING` and counts it separately.
 
     Head order is preserved in all three lists, so the printed rows read in the
     same order the strict gate printed them.
@@ -414,10 +453,10 @@ def split_pre_existing(high, baseline):
         key = finding_identity(finding)
         if pool[key]:
             pool[key] -= 1
-            orphans[moved_identity(finding)] += 1
+            orphans[_pair_key(finding)] += 1
     still_new, moved = [], []
     for finding in new:
-        key = moved_identity(finding)
+        key = _pair_key(finding)
         if orphans[key]:
             orphans[key] -= 1
             moved.append(finding)
@@ -427,7 +466,7 @@ def split_pre_existing(high, baseline):
 
 
 def _row(finding):
-    """`  SEV ID path:line - message`, the one row shape both lists use.
+    """`  SEV ID path:line - message`, the one row shape all three lists use.
 
     A pre-existing finding is printed exactly as legibly as the one that failed
     the build: a reader deciding whether the split is right needs the same
@@ -520,7 +559,7 @@ def main(argv=None):
             # re-derived from the policy -- so the number and the exit code
             # beside it can never disagree (fix round 1, ruling 2). A
             # suppressed finding is the only kind carrying a `suppressed`
-            # segment, which is what identifies it in either list.
+            # segment, which is what identifies it in any of the three lists.
             #
             # THREE numbers since the delta landed (#1790 fix round 1, I3), and
             # the invariant above is why. GATED asserts "this blocks the merge",

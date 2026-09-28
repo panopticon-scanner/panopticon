@@ -206,16 +206,26 @@ characters, and matching consumes the whole path.
   stderr line naming what was wrong. It fails toward strictness in every
   direction and never toward silence.
 
-  **One blind spot in the identity, inherent to the ruling.** Replacement
-  *inside one file is invisible*: five findings in a file that share one
-  identity are matched five-for-five, so a diff deleting all five and adding
-  five fresh ones gates on nothing. It is the one an author controls; a
-  full-tree review, not this gate, is what catches it.
+  **One blind spot in the identity, inherent to the ruling — and wider since
+  #2309.** Replacement *inside one file is invisible*: five findings in a file
+  that share one identity are matched five-for-five, so a diff deleting all five
+  and adding five fresh ones gates on nothing. Replacement *across two files* is
+  invisible too, whenever the base's copy leaves. What this gate promises is that
+  the COUNT of a (tool, rule, message) did not increase — not that no finding
+  appeared at a new place, and it cannot tell an extraction from a deletion plus
+  an unrelated addition of the same key. For lint-shaped adapters the message is
+  rule-generic, so one `B603` deleted anywhere excuses one `B603` added anywhere.
+  It is the blind spot an author controls; a full-tree review, not this gate, is
+  what catches it.
 
   **A MOVED finding is pre-existing (moved)** (#2309, ruling 2026-09-28): a head
   finding the exact pass left as new pairs with ONE unmatched base finding of the
-  same tool, rule and message at a path that no longer carries it. A second copy
-  there, or one with no orphan left, is still new; moved rows print apart, never gate.
+  same tool, rule and message — one the base carried one more copy of than the
+  head has here. A second copy, or one with no orphan left to pair with, is still
+  new. The pairing never crosses the suppression: a name-suppressed orphan cannot
+  excuse a first-party finding, nor the reverse. Moved rows print under their own
+  heading and never gate. An adapter that writes the path into its own message
+  (gitleaks, trivy) keys itself, so a move of one of those still counts as new.
 
   **One residual to know about**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep

@@ -11,9 +11,12 @@ evidence exposed.
   gate's delta pass keys on the path, so a refactor that relocated a `docker kill` call reddened the
   required `scan` check on a diff that changed no behaviour (#2305). After the exact pass, a head
   finding still counted new pairs with ONE unmatched base finding of the same tool, rule and message
-  at a path that no longer carries it, printed under `pre-existing (moved: …)`. One orphan excuses
-  one occurrence: a second copy, or any occurrence the base has no orphan left for, is still new and
-  still gates, and the strict route's verdict line is byte-identical.
+  — one the base carried one more copy of than the head has here — and prints under its own
+  `pre-existing (moved: …)` heading. One orphan excuses one occurrence: a second copy, or any
+  occurrence the base has no orphan left for, is still new and still gates, and the pairing never
+  crosses the suppression (a vendored orphan cannot excuse a first-party finding). What it
+  establishes is a COUNT, not a verified move; `DEVELOPMENT.md` says what that leaves invisible. The
+  strict route's verdict line is byte-identical.
 - **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
   CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
   rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the

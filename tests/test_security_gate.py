@@ -1759,17 +1759,30 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         # The extraction landed the call in `tool_capture.py` and a second
         # `docker kill` was added beside it. The base has one copy to pair, so
         # the second occurrence gates.
+        #
+        # The base's OTHER finding is one the head keeps where it was, so all
+        # three lists are non-empty at once and the PRINT ORDER is measurable
+        # (fix round 1, review finding 7): the rows that gate, then the ones
+        # whose count did not increase, then the ones the diff never touched.
+        # Each heading has to sit immediately above the list it speaks for.
         with tempfile.TemporaryDirectory() as root:
             head = self._capture(root, "head", {"semgrep": _delta_sarif(
                 _delta_result(uri="/src/skill/scripts/tool_capture.py", line=11),
-                _delta_result(uri="/src/skill/scripts/tool_capture.py", line=42))})
+                _delta_result(uri="/src/skill/scripts/tool_capture.py", line=42),
+                _delta_result(uri="/src/skill/scripts/keeper.py"))})
             base = self._capture(root, "base", {"semgrep": _delta_sarif(
-                _delta_result(uri="/src/skill/scripts/run_tools.py"))})
+                _delta_result(uri="/src/skill/scripts/run_tools.py"),
+                _delta_result(uri="/src/skill/scripts/keeper.py"))})
             rc, out, _err = self._run(head, base)
         self.assertEqual(rc, 1)
-        self.assertIn("1 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing; "
+        self.assertIn("1 HIGH/CRITICAL new; 1 HIGH/CRITICAL pre-existing; "
                       "1 HIGH/CRITICAL moved", out)
-        self.assertIn(gate.MOVED_HEADING, out)
+        self.assertLess(out.index("tool_capture.py:42"),
+                        out.index(gate.MOVED_HEADING), out)
+        self.assertLess(out.index(gate.MOVED_HEADING),
+                        out.index(gate.BASELINE_HEADING), out)
+        self.assertLess(out.index(gate.BASELINE_HEADING),
+                        out.index("keeper.py:1"), out)
 
     def test_a_new_occurrence_the_base_has_no_orphan_for_is_still_new(self):
         # The old path has to STOP carrying the finding. Here it still does, so
@@ -1836,6 +1849,41 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         self.assertIn("1 HIGH/CRITICAL moved", out)
         self.assertIn("0 GATED (CRITICAL/secret, #1578 policy C), "
                       "1 pre-existing, 0 disclosed only", out)
+
+    # Fix round 1, review finding 3: the pairing may not cross the SUPPRESSION.
+    # Under `--security redteam` -- what both live invocations pass -- policy C
+    # re-admits a name-suppressed finding into the same multiset as a first-party
+    # one, and the exact identity kept the two apart for free because suppression
+    # is decided by the path. Dropping the path from the key would have let a
+    # vendored orphan excuse a first-party finding, whose sharp edge is policy
+    # C's secret-class arm: rule-generic credential messages (`G101 "Potential
+    # hardcoded credentials"`) would excuse a DIFFERENT secret in the same PR.
+
+    def test_a_name_suppressed_base_orphan_cannot_excuse_a_first_party_one(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv(
+                "app/lib/package-lock.json")})
+            base = self._capture(root, "base", {"osv-scanner": _critical_osv()})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("1 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing", out)
+        self.assertNotIn("HIGH/CRITICAL moved", out)
+        self.assertNotIn(gate.MOVED_HEADING, out)
+
+    def test_a_first_party_base_orphan_cannot_excuse_a_suppressed_one(self):
+        # The same refusal in the other direction, and the verdict line is the
+        # one a suppressed CRITICAL with no baseline copy has always produced.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv()})
+            base = self._capture(root, "base", {"osv-scanner": _critical_osv(
+                "app/lib/package-lock.json")})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("1 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing", out)
+        self.assertNotIn("HIGH/CRITICAL moved", out)
+        self.assertNotIn(gate.MOVED_HEADING, out)
+        self.assertIn("1 GATED (CRITICAL/secret, #1578 policy C), "
+                      "0 pre-existing, 0 disclosed only, --security redteam", out)
 
     def test_the_orphan_pool_is_a_multiset_and_head_order_survives(self):
         # Read off `split_pre_existing` directly, because the claim is about the
