@@ -4,8 +4,7 @@
 Files in *tools_dir* are matched by basename (without extension) against the
 registered adapters in ``scripts.tools.ADAPTERS`` and routed to the matching
 adapter for parsing. SARIF or JSON files whose basename has no registered
-adapter are skipped with a diagnostic. No third-party imports of its own; the
-adapters it routes to declare theirs (`defusedxml`, for spotbugs).
+adapter are skipped with a diagnostic. Adapters own their third-party imports.
 """
 import json
 import os

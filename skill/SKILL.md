@@ -53,11 +53,11 @@ phase — the CI gate `skill/scripts/security_gate.py`, which imports
 `ready: true` — stop with an `ImportError` naming the package instead of
 parsing an untrusted scanner report with the hardening silently gone. The
 gating `dependencies` row of `driver readiness` names an absent `jsonschema`
-with the `pip install` that fixes it; a missing `pyyaml` or `defusedxml` never
-gets that far, because the driver's own import chain — host probes into the
-adapter package — fails first with a traceback naming the package (#2369
-tracks reaching the row for all three). Either way, run `driver readiness`
-before you run anything.
+with the `pip install` that fixes it; a missing `defusedxml` never gets that
+far, because the driver's own import chain — host probes into the adapter
+package — fails first with a traceback naming the package, and neither does a
+missing `pyyaml`, which discovery imports directly (#2369 tracks reaching the
+row for all three). Either way, run `driver readiness` before you run anything.
 
 **The three `superpowers:*` sub-skills above** are the only other external
 things this skill asks for. Panopticon does not ship them and does not install
