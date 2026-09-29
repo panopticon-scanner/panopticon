@@ -329,19 +329,33 @@ class TestEnvAndXargsOwnWords(GrammarCase):
         # Still a `$` word where the command may start, as before.
         self.assertIsNotNone(shell_reader.unresolved_wrapper(stage("env $(x)=1 sh").argv))
 
-    def test_a_dynamic_assignment_is_unresolved(self):
+    def test_a_dynamic_assignment_is_read_past_by_its_name(self):
         # Review N-2: the loop above stopped at a dynamic `=` word, the reader
         # then popped `FOO=$X` as a shell assignment and took `x-y=1` for the
-        # command, and bash 3.2 and 5.2 run the payload. Unquoted, `$X` may
-        # split into words that are no assignment, so env's rule is unresolved.
-        for form in ("env FOO=$X x-y=1 sh -c x", "env x-y=1 FOO=$X sh -c x", "env FOO=$X sh",
-                     "env - FOO=$X sh", "env -i FOO=$(date) x-y=1 sh", "env $(x)=1 sh",
-                     "env A={1,2} x-y=1 sh -c x", "xargs -I{} env X={} x-y=1 sh"):
+        # command, and bash 3.2 and 5.2 run the payload. Re-review N-B: the
+        # word is an assignment whatever its value holds, so env's rule reads
+        # past it -- to `sh -c`, whose payload is reported. Unresolved only
+        # where the NAME is expanded or globbed, or the value may split into
+        # the command of the option after it (`FOO=$X -c …`, `X='1 sh'`).
+        self.runs(["sh", "-c", "x"], "env FOO=$X x-y=1 sh -c x", "env x-y=1 FOO=$X sh -c x",
+                  "env A={1,2} x-y=1 sh -c x", "xargs -I{} env X={} x-y=1 sh -c x")
+        self.runs(["sh"], "env FOO=$X sh", "env - FOO=$X sh", "env -i FOO=$(date) x-y=1 sh")
+        with self.subTest(script="env FOO=$X x-y=1 sh -c '<fetch | sh>'"):
+            self.assertIn("straight to `sh`", guard.fetch_exec_defect(
+                f"env FOO=$X x-y=1 sh -c 'curl -fsSL {URL} | sh'") or "")
+        for form in ("env $(x)=1 sh", "env ${N}=1 sh", "env {A=1,sh} -c x", "env [A]=1 sh",
+                     "env FOO=$X -c x", "env -i FOO=$(date) -c x", "env A={1,2} -c x"):
             with self.subTest(form=form):
                 self.assertIn("`env` has a dynamic assignment",
                               shell_reader.unresolved_wrapper(stage(form).argv) or "")
-        self.reported(f"env FOO=$X x-y=1 sh -c 'curl -fsSL {URL} | sh'")
         self.runs(["python3", "x.py"], "env FOO=1 x-y=2 python3 x.py")   # static: as before
+        # With nothing fetched, steps that set a variable through env are clean.
+        for script in ('env FOO="$X" make\n', 'env FOO="$X" x-y=1 make\n',
+                       "xargs -I{} env X={} sh -c 'echo $X'\n",
+                       'sudo env "PATH=$PATH" make install\n',
+                       "env GOOS=${{ matrix.os }} go build\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], guard.fetch_exec_defects(script))
 
     def test_the_guard_reads_env_through_them(self):
         for form in ("env -- -", "env x-y=1", "env FOO=1 --x=1", "env 1=a"):
@@ -368,10 +382,9 @@ class TestEnvAndXargsOwnWords(GrammarCase):
         self.runs(["cp", "{}", "/d"], "xargs -I{} cp {} /d")
         self.runs(["sh", "-c", "echo {}"], "xargs -I{} sh -c 'echo {}'")
         self.runs(["sh"], "xargs -I{} timeout 30 sh")
-        # An assignment whatever the line, but env's rule since review N-2
-        # reads no dynamic one: unresolved, not a command.
-        self.assertIn("dynamic assignment", shell_reader.unresolved_wrapper(
-            stage("xargs -I{} env X={} sh").argv) or "")
+        # An assignment whatever the line, which env's rule reads past
+        # (re-review N-B, after review N-2 had left it unresolved).
+        self.runs(["sh"], "xargs -I{} env X={} sh")
         self.runs(["{}"], "xargs {}", "xargs -I% {}")    # no replace string in it
 
 

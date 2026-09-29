@@ -320,11 +320,19 @@ def unwrap(argv, head, has_substitution):
     if head == "env":
         # coreutils env once its options end, `--` or not: one lone `-` is
         # `-i`, and each word holding a `=` is an assignment, `x-y=1` too.
-        # A dynamic one may expand to words that are not (`FOO=$X`, review
-        # N-2), and decides where the command starts: unresolved.
+        # One whose NAME bash expands or globs (`$(x)=1`, `{A=1,sh}`) may be
+        # no assignment, and an expanding value ahead of an option may split
+        # into the command that option is for (`FOO=$X -c …`, `X='1 sh'`):
+        # unresolved (review N-2). Any other value is read past (re-review
+        # N-B): one splitting into a command word ahead of a word that is no
+        # option stays the value-following gap `$CMD --flag` is.
         i += argv[i:i + 1] == ["-"]
         while i < len(argv) and "=" in argv[i]:
-            if dynamic(argv[i], has_substitution):
+            word, name = argv[i], argv[i].split("=", 1)[0]
+            if ("$" in name or "@@" in name and has_substitution(word)
+                    or isinstance(word, Rewritten) and any(ch in name for ch in "*?[{},")
+                    or dynamic(word, has_substitution) and argv[i + 1:i + 2] != []
+                    and argv[i + 1].startswith("-")):
                 return None, "has a dynamic assignment"
             i += 1
     if head in _UTIL_LINUX:
