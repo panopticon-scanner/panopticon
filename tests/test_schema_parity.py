@@ -223,6 +223,20 @@ def _build_report(tmpdir):
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
+    # #2225 fix round 1: the ONE tool finding that reaches `findings[]` here, and
+    # the only producer of `tool_evidence.included_by` -- parsed by the real
+    # dependency-check adapter, so the key the schema now describes is walked
+    # rather than asserted about. Both bandit results above are under `vendor/`
+    # and are withheld by the redteam gate, so without this the tool axis
+    # contributes no finding whose evidence block the walk can descend into.
+    dc_path = os.path.join(tools, "dependency-check.json")
+    with open(dc_path, "w", encoding="utf-8") as fh:
+        json.dump({"dependencies": [{
+            "fileName": "commons-fileupload-1.4.jar",
+            "includedBy": [{"reference": "org.owasp.webgoat:webgoat-container:2023.4"}],
+            "vulnerabilities": [{"name": "CVE-2023-24998", "severity": "MEDIUM",
+                                 "cwes": ["CWE-770"],
+                                 "description": "Apache Commons FileUpload DoS"}]}]}, fh)
     # M3/#1646: a NON-EMPTY `sanitized` block, so the walk descends into the
     # per-tool row and its `dropped[]` item shape rather than stopping at an
     # empty map. It is written through the real writer, like everything else here.
@@ -231,7 +245,8 @@ def _build_report(tmpdir):
     # fixture writes the manifest without running the scan loop, which is
     # exactly the caller the explicit argument exists for.
     tools_manifest.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
-                                  ["bandit"], [sarif_path], run_id="parity-run",
+                                  ["bandit", "dependency-check"],
+                                  [sarif_path, dc_path], run_id="parity-run",
                                   network={"bandit": "none",
                                            "pip-audit": "proxied:pypi.org"},
                                   sanitized={"pip-audit": {
@@ -366,7 +381,8 @@ class TestSchemaParity(unittest.TestCase):
         self.assertEqual(meta["tools"]["panels_with_scanner_context"],
                          {"with": 1, "without": 1})
         self.assertEqual(meta["coverage"]["test_inventory"], {"app": "empty"})
-        self.assertEqual(meta["coverage"]["tools_ran"], ["bandit"])
+        self.assertEqual(meta["coverage"]["tools_ran"],
+                         ["bandit", "dependency-check"])
         # #1578: non-empty, or the per-segment value this section describes is
         # never walked. #1701: this counts what stayed off the GATE, and under
         # this fixture's `--security redteam` that is the one B602 lint drop
@@ -385,6 +401,13 @@ class TestSchemaParity(unittest.TestCase):
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")
+        # #2225 fix round 1: the dependency-check finding is the only producer of
+        # `tool_evidence.included_by`, so pin it here like every other producer --
+        # if it stops reaching `findings[]`, the walk below silently stops
+        # covering the key and the schema may drift away from it again.
+        evidence = [f.get("tool_evidence") or {} for f in self.report["findings"]]
+        self.assertTrue([e for e in evidence if e.get("included_by")],
+                        "no included_by evidence: that key's shape is unwalked")
         # M3: the two sections this PR added must be NON-EMPTY, or the walk
         # stops at the list and never reaches the item shape it describes.
         self.assertTrue(meta["integrity"]["cross_domain_findings"],

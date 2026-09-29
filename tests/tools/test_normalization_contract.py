@@ -412,6 +412,26 @@ class TestHostileToolTextIsInert(unittest.TestCase):
                          f["title"])
         self.assertEqual(r"a\x1b[2Kb.py", f["location"]["file"])
 
+    def test_the_builder_leaves_an_evidence_key_it_never_named_alone(self):
+        # Fix round 1 of #2225, finding 1, said where the boundary IS. This
+        # class drives the two builders, and a builder neutralizes the fields IT
+        # fills -- title, category, `location.file`, the prose and `rule_id`. A
+        # per-adapter `tool_evidence` key is not one of them and passes through
+        # exactly as the adapter handed it over, so an adapter that adds one owes
+        # `inert_text` on the way in (dependency-check's `included_by`, pinned
+        # against a hostile reference in tests/tools/test_dependency_check.py).
+        # Asserted rather than assumed: a later decision to neutralize the whole
+        # evidence dict becomes a visible change here, instead of quietly making
+        # each adapter's own neutralizer redundant.
+        live = "pkg\x1b[2J"
+        f = base.make_finding(
+            self.ADAPTER, 1, "G", title="t", severity="HIGH", category="c",
+            location={"file": "a.py", "line_start": 1}, description="d",
+            impact="i", remediation="r",
+            tool_evidence={"rule_id": self.RULE, "included_by": [live]})
+        self.assertEqual(r"r\x1b[31m1", f["tool_evidence"]["rule_id"])
+        self.assertEqual([live], f["tool_evidence"]["included_by"])
+
     def test_both_builders_bound_an_unbounded_message(self):
         # A SARIF `message.text` is unbounded inside the 50 MiB ingest cap.
         huge = "A" * (base.INERT_TEXT_MAX * 3)

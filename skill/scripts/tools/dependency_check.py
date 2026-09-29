@@ -5,9 +5,10 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import (OutputCapExceeded, has_any_file, make_finding,
-                   normalize_severity, omit_none, parse_json_bytes,
-                   read_capped_report, run_tool, scratch_cwd, target_root_cv)
+from .base import (INERT_CUT, OutputCapExceeded, has_any_file, inert_text,
+                   make_finding, normalize_severity, omit_none,
+                   parse_json_bytes, read_capped_report, run_tool, scratch_cwd,
+                   target_root_cv)
 
 
 # #1576 (run-13 OPS-3272189615): rc returned when the scanner was killed for
@@ -35,6 +36,14 @@ BUILD_MANIFESTS = ("pom.xml", "build.gradle", "build.gradle.kts")
 # attributes findings to groups by it, every exclude glob matches it. The build
 # manifest that declared the dependency is the repo file that stands in for the
 # jar, and the shape every sibling dependency adapter already emits.
+#
+# One window stays open, and it is `tools/pip_audit.py`'s identical ContextVar's
+# too: a `parse` in the SAME process after an `invoke` reads THAT invocation's
+# manifest, so a caller that invoked target A and then parsed bytes from target B
+# would locate B's findings at A's manifest. No caller does that today
+# (`capture_goldens` invokes and parses one target at a time, and the
+# container/ingest split never shares a process), and closing it belongs to both
+# adapters at once rather than to one of them.
 _manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dependency_check_manifest_path", default=None)
 
@@ -52,23 +61,48 @@ def _first_manifest(root: str) -> str | None:
     return None
 
 
-def _included_by(dep: dict) -> list[str] | None:
-    """The `reference` of each `includedBy` entry, or None when there are none.
+# How many `includedBy` references travel with one finding, and how a cut list
+# says so. The strings are bounded one at a time by `inert_text`, but their
+# COUNT is the target's to choose, and `synth/render.render_summary` prints what
+# a finding carries -- so the list is bounded too, and the marker ends in
+# `INERT_CUT`, the same mark a cut string wears, so a shortened list cannot read
+# as a whole one.
+INCLUDED_BY_MAX = 16
 
-    These are Maven coordinates (`org.owasp.webgoat:webgoat-container:2023.4`)
-    or pURLs -- what pulled the vulnerable jar in -- and NEVER repository
-    paths, so they are surfaced as evidence and can never become
-    `location.file`. None rather than `[]` so `omit_none` drops the key: an
-    empty list would read as "nothing pulled this in" rather than "the tool did
-    not say".
+
+def _included_by(dep: dict) -> list[str] | None:
+    """The `reference` of each `includedBy` entry, inert and bounded, or None.
+
+    What pulled the vulnerable jar in: Maven coordinates
+    (`org.owasp.webgoat:webgoat-container:2023.4`) or pURLs. The guarantee here
+    is STRUCTURAL, not a claim about what this scanner will always put in the
+    field: these values are surfaced as evidence ONLY and are never used as a
+    location, whatever the tool emits in them -- `location.file` comes from
+    `_located_at` and from nothing else.
+
+    Each reference is neutralized on the way in (`inert_text`, the one
+    neutralizer for target-authored text, #1829 SEC-4277410777): `make_finding`
+    inerts `rule_id`, `location.file` and the prose, and a per-adapter evidence
+    key it has never heard of has to do its own. The filter tests the INERTED
+    value, so a whitespace-only reference leaves nothing rather than an empty
+    string. A non-string reference is dropped rather than coerced: `inert_text`
+    stringifies, and `str(None)` is the forged `"None"`
+    `test_a_result_without_a_rule_id_keeps_a_null_rule_id` refuses for a rule id.
+    None rather than `[]` so `omit_none` drops the key -- an empty list would
+    read as "nothing pulled this in" rather than "the tool did not say".
     """
     entries = dep.get("includedBy")
     if not isinstance(entries, list):
         return None
-    refs = [e["reference"] for e in entries
+    refs = [t for e in entries
             if isinstance(e, dict) and isinstance(e.get("reference"), str)
-            and e["reference"]]
-    return refs or None
+            and (t := inert_text(e["reference"]))]
+    if not refs:
+        return None
+    if len(refs) <= INCLUDED_BY_MAX:
+        return refs
+    cut = len(refs) - INCLUDED_BY_MAX
+    return refs[:INCLUDED_BY_MAX] + ["%d more%s" % (cut, INERT_CUT)]
 
 
 class DependencyCheckAdapter:
@@ -217,15 +251,15 @@ class DependencyCheckAdapter:
     def _located_at(self) -> str:
         """The build manifest this parse's findings are located at (#2225).
 
-        Three routes, because a real scan runs `invoke` and `parse` in
-        DIFFERENT PROCESSES (#1649): run_tools dispatches the adapter as
-        `docker run ... _run_adapter.py`, which only invokes, and
-        `ingest_tools` parses the captured bytes back on the host. `invoke`'s
-        own choice is used when the two share a process (capture_goldens);
-        otherwise the same choice is made again from the target root ingest
-        names around its parse; and a caller with bytes and no tree at all gets
-        `DEFAULT_MANIFEST`. All three are repo-relative, which is the shape
-        `location.file` carries everywhere downstream.
+        Two routes and a last resort, because a real scan runs `invoke` and
+        `parse` in DIFFERENT PROCESSES (#1649): run_tools dispatches the adapter
+        as `docker run ... _run_adapter.py`, which only invokes, and
+        `ingest_tools` parses the captured bytes back on the host. `invoke`'s own
+        choice is used when the two share a process (capture_goldens); otherwise
+        the same choice is made again from the target root ingest names around
+        its parse. The last resort is for a caller with bytes and no tree at all.
+        All three answers are repo-relative, which is the shape `location.file`
+        carries everywhere downstream.
         """
         chosen = _manifest_path_cv.get()
         if chosen:

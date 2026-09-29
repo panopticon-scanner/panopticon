@@ -14,11 +14,17 @@ evidence exposed.
   exclude glob all resolve that against the repo root. Owner ruling: MANIFEST PROXY. The location is
   now the build manifest the scan audited, resolved `pom.xml` -> `build.gradle` ->
   `build.gradle.kts` (`BUILD_MANIFESTS`, the same tuple `is_applicable` selects on) through the
-  three routes `tools/pip_audit.py` already uses -- the manifest `invoke` recorded, else the first
-  one under the root `ingest_tools` names around its parse, else `DEFAULT_MANIFEST` ("pom.xml")
-  for a caller holding bytes and no tree. The jar still names the vulnerable artifact in `title`,
-  `impact` and `tool_evidence.package_name`; a dependency's `includedBy` references are surfaced as
-  `tool_evidence.included_by` (Maven coordinates, never repo paths, so never a location).
+  two routes and the last resort `tools/pip_audit.py` already uses -- the manifest `invoke`
+  recorded, else the first one under the root `ingest_tools` names around its parse, else
+  `DEFAULT_MANIFEST` ("pom.xml") for a caller holding bytes and no tree. The jar still names the
+  vulnerable artifact in `title`, `impact` and `tool_evidence.package_name`; a dependency's
+  `includedBy` references are surfaced as `tool_evidence.included_by`, which is EVIDENCE ONLY and is
+  never used as a location whatever the tool emits in it -- inert (`inert_text`, like every other
+  target-authored string) and bounded to 16 entries with a marked cut, and described in
+  `report-schema.json`. Two vulnerable artifacts that share one advisory used to collapse to one
+  survivor once they arrived at the same manifest locus, so `synth/corroborate.dedupe` now splits a
+  rule bucket by `tool_evidence.package_name` when its members name one (members naming none keep
+  their single bucket, which is every SARIF-path and agent finding).
   `line_start` stays 1 and no argv byte, cwd or `-w` changed, so no real-image round is owed. The
   `PATH_DEBT` register in `tests/tools/test_normalization_contract.py` is empty again: the entry and
   the self-liquidating expiry test that owed it are gone, its meta-tests hold on the empty register.

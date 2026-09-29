@@ -24,7 +24,9 @@ def _reset_dependency_check_context_vars():
     ingest replay through `target_root_cv`, and the bytes-only default). Found
     by exactly that: two of this file's tests passed alone and failed in file
     order. `target_root_cv` is ingest_tools' process-wide state for the same
-    reason, so it is reset here too.
+    reason, so it is reset here too. Pytest-only, like pip_audit's: the
+    `unittest.main()` footer at the bottom of this file does not carry fixtures,
+    which is this repo's posture for every test file that has both.
     """
     tokens = [(var, var.set(None))
               for var in (dc._manifest_path_cv, base.target_root_cv)]
@@ -444,6 +446,80 @@ class TestLocationIsTheBuildManifest(unittest.TestCase):
         self.assertTrue(golden)
         for finding in golden:
             self.assertNotIn("included_by", finding["tool_evidence"])
+
+    def test_a_hostile_included_by_reference_arrives_inert_and_bounded(self):
+        # Fix round 1, finding 1. `make_finding` neutralizes `rule_id`,
+        # `location.file` and the prose; a per-adapter evidence key it has never
+        # heard of has to neutralize its own, or a scanner-authored reference
+        # reaches `render_summary` and an operator's terminal live. The 5000
+        # characters are the other half: the string is target-controlled and
+        # unbounded inside the 50 MiB ingest cap.
+        hostile = ("pkg\x1b[2J\x00\x7f " + "A" * 5000)
+        payload = json.dumps({
+            "dependencies": [
+                {
+                    "fileName": "commons-fileupload-1.4.jar",
+                    "includedBy": [{"reference": hostile}],
+                    "vulnerabilities": [{"name": "CVE-2023-24998",
+                                         "severity": "HIGH"}],
+                }
+            ]
+        }).encode()
+        f = only(dc.DependencyCheckAdapter().parse(payload, "g1"))
+        refs = f["tool_evidence"]["included_by"]
+        self.assertEqual(1, len(refs))
+        ref = refs[0]
+        for live in ("\x1b", "\x00", "\x7f", " "):
+            self.assertNotIn(live, ref,
+                             "a live %r reached tool_evidence.included_by" % live)
+        # Escaped, not deleted -- the ESC is the evidence that someone tried.
+        self.assertIn(r"\x1b[2J", ref)
+        self.assertLessEqual(len(ref), base.INERT_TEXT_MAX + len(base.INERT_CUT),
+                             "included_by is unbounded target text")
+        self.assertTrue(ref.endswith(base.INERT_CUT),
+                        "a cut reference must say that it was cut")
+
+    def test_a_long_included_by_list_is_bounded_with_a_marker(self):
+        # Fix round 1, finding 4. Each reference is bounded on its own; the
+        # LENGTH of the list is the target's to choose, so it is bounded too, and
+        # the marker wears `INERT_CUT` so a shortened list cannot read as whole.
+        payload = json.dumps({
+            "dependencies": [
+                {
+                    "fileName": "commons-fileupload-1.4.jar",
+                    "includedBy": [{"reference": "org.example:dep-%02d:1.0" % n}
+                                   for n in range(20)],
+                    "vulnerabilities": [{"name": "CVE-2023-24998",
+                                         "severity": "HIGH"}],
+                }
+            ]
+        }).encode()
+        f = only(dc.DependencyCheckAdapter().parse(payload, "g1"))
+        refs = f["tool_evidence"]["included_by"]
+        self.assertEqual(dc.INCLUDED_BY_MAX + 1, len(refs))
+        self.assertEqual(["org.example:dep-%02d:1.0" % n
+                          for n in range(dc.INCLUDED_BY_MAX)],
+                         refs[:dc.INCLUDED_BY_MAX])
+        self.assertEqual("4 more" + base.INERT_CUT, refs[dc.INCLUDED_BY_MAX])
+
+    def test_a_reference_that_is_not_a_string_is_dropped_not_coerced(self):
+        # Fix round 1, finding 1 (the controller's expression stringified the
+        # value; `inert_text(None)` is the literal "None"). A missing or
+        # non-string reference must leave NOTHING, never a forged coordinate --
+        # the contract test's `..._keeps_a_null_rule_id` rule, one field over.
+        payload = json.dumps({
+            "dependencies": [
+                {
+                    "fileName": "commons-fileupload-1.4.jar",
+                    "includedBy": [{}, {"reference": None}, {"reference": "   "},
+                                   {"reference": "org.example:real:1.0"}],
+                    "vulnerabilities": [{"name": "CVE-2023-24998",
+                                         "severity": "HIGH"}],
+                }
+            ]
+        }).encode()
+        f = only(dc.DependencyCheckAdapter().parse(payload, "g1"))
+        self.assertEqual(["org.example:real:1.0"], f["tool_evidence"]["included_by"])
 
     # --- the ContextVar is per-invocation, not adapter state -----------------
 
