@@ -16,6 +16,7 @@ evidence exposed.
   A bare `tool` is read as running a download written to `/usr/local/bin/tool` (#2308).
   A checksum must precede each use of a download, not only its first (172 pre-existing fail-opens).
   A checksum in a script given to `sh -c`, `eval` or a shell's stdin must stop the step to count.
+  Its own pipefail (`bash -o pipefail -c`, a plain `set -o pipefail`) is read as its `-e` is.
   Such a script sits in its runner's branch, and its own `fi` or `done` ends none of the step's.
   A script given to a shell inside `$(...)` is reported if it fetches or its job downloads anything.
   `env A=$X sh` reads through to `sh`; `env $(x)=1 sh` and `env A=$X -c …` are reported.

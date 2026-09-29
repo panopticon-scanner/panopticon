@@ -254,16 +254,19 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     it stops the script (`-e` holds, or it is the last command) and every
     command running a script around it passes that on, up to the step's own
     shell, where `swallowed` decides. A child shell has `-e` only from its
-    options or a `set`; `eval` keeps the step's, but not ahead of `||`/`&&`,
-    where bash suspends it. `stops`: this script's failure stops the step;
-    `errexit`: `-e` at its top (None: the step's own shell); `pipefail`: a
-    pipeline fails on any of its commands; `shell`: the script's runner;
+    options or a `set`, and `pipefail` so too (re-review N-D); `eval` keeps
+    the step's, but not `-e` ahead of `||`/`&&`, where bash suspends it.
+    `stops`: this script's failure stops the step; `errexit`: `-e` at its
+    top (None: the step's own shell); `pipefail`: a pipeline there fails on
+    any of its commands; `shell`: the script's runner;
     `outer`: the bodies of the command running it, below the step's own, and
     `key` a name for the script, unique in the step, for its own bodies.
     """
     out, last = [], len(stmts) - 1
     inner = {} if errexit is None else regions(stmts)
     on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit, inner)
+    fails = [pipefail] * len(stmts) if errexit is None else _errexit_states(
+        stmts, pipefail, inner, "pipefail")
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for stage in statement.stages:
@@ -272,39 +275,42 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
                          and (on[index] or index == last)
-                         and (pipefail or stage is statement.stages[-1]))
+                         and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(statements(text), gates, on[index] and statement.separator
                                      not in ("&&", "||") if own else _errexit(argv[1:]),
-                                     pipefail and own, name, region, key + ((index, ordinal),)))
+                                     fails[index] if own else _errexit(argv[1:], False, "pipefail"),
+                                     name, region, key + ((index, ordinal),)))
         if errexit is None:
             out.append(statement)
             continue
         why = (_UNGATED % shell if not stops
                else None if on[index] or index == last else _RUNS_ON % shell)
         out.append(Inlined(statement.stages, statement.separator, region,
-                           (why, why or (None if pipefail else _PIPED % shell))))
+                           (why, why or (None if fails[index] else _PIPED % shell))))
     return out
 
 
-def _errexit(words, state=False):
-    """Whether these shell or `set` options leave `-e` on, from `state`."""
+def _errexit(words, state=False, name="errexit"):
+    """Whether these shell or `set` options leave `-e` on, from `state` -- or
+    the option `-o name` sets, for `pipefail`, which no letter spells."""
     words = iter(words)
     for word in words:
         if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
             break
         if word[:2] != "--":                    # bash's long options carry none
-            if "e" in word[1:]:
+            if "e" in word[1:] and name == "errexit":
                 state = word[0] == "-"
-            if "o" in word[1:] and next(words, None) == "errexit":
+            if "o" in word[1:] and next(words, None) == name:
                 state = word[0] == "-"
     return state
 
 
-def _errexit_states(stmts, state, where):
-    """Whether `-e` holds as each of `stmts` runs, from `state` at the top: a
-    `set` turns it on only as a plain statement outside every branch (`where`,
-    their `regions`), group, list and background job, and off wherever it is."""
+def _errexit_states(stmts, state, where, name="errexit"):
+    """Whether `-e` (or `-o name`) holds as each of `stmts` runs, from `state`
+    at the top: a `set` turns it on only as a plain statement outside every
+    branch (`where`, their `regions`), group, list and background job, and
+    off wherever it is."""
     depth, states = 0, []
     for index, statement in enumerate(stmts):
         states.append(state)
@@ -315,7 +321,8 @@ def _errexit_states(stmts, state, where):
                          and index not in where and len(statement.stages) == 1
                          and statement.separator not in ("&", "&&", "||")
                          and not (index and stmts[index - 1].separator in ("&&", "||")))
-                state = _errexit(argv[1:], state) if plain else state and _errexit(argv[1:], state)
+                state = (_errexit(argv[1:], state, name) if plain
+                         else state and _errexit(argv[1:], state, name))
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
     return states

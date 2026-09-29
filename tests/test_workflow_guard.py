@@ -1054,9 +1054,10 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
     after `sh -c 'CHECK; echo ok'` and after `sh -c 'CHECK' || true`. Such a
     checksum now clears a use only where its failure stops the step: it stops
     the script (`-e` holds there, or it is the script's last command, the last
-    of its pipeline) and the command handing the script over does not swallow
-    that. `eval` runs in the step's own shell, so its script keeps the step's
-    `-e` -- except where bash suspends it, behind `||`/`&&`, `!` or `if`."""
+    of its pipeline unless the script's own pipefail holds) and the command
+    handing the script over does not swallow that. `eval` runs in the step's
+    own shell, so its script keeps the step's `-e` and pipefail -- except
+    `-e` where bash suspends it, behind `||`/`&&`, `!` or `if`."""
 
     FETCH = "curl -fsSL -o tool https://example.test/tool\n"
     CHECK = 'echo "%s  tool" | sha256sum -c -' % HEX
@@ -1073,16 +1074,22 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
     def test_a_check_the_script_carries_on_past_is_reported(self):
         for form in ("sh -c '%s; echo ok'", "sh <<< '%s; echo ok'",
                      "sh <<'EOF'\n%s\necho ok\nEOF", "sh -c 'set -e; set +e; %s; echo ok'",
-                     "eval '%s; echo ok' || exit 1"):
+                     "eval '%s; echo ok' || exit 1", "bash -o pipefail -c '%s | cat; echo ok'"):
             with self.subTest(form=form):
                 self.assertReported(form, "carries on past its failure")
         self.assertReported('sh -c "sh -c \'%s\'; echo ok"', "the step does not stop",
                             self.CHECK.replace('"', '\\"'))
 
     def test_a_check_piped_into_another_command_in_the_script_is_reported(self):
-        for form in ("sh -c '%s | cat'", "sh -ec '%s | cat; echo ok'"):
+        # Re-review N-D: unless the script's own pipefail holds, read from
+        # its options or a plain `set` as its `-e` is.
+        for form in ("sh -c '%s | cat'", "sh -ec '%s | cat; echo ok'",
+                     "bash -c 'set -o pipefail; set +o pipefail; %s | cat'"):
             with self.subTest(form=form):
                 self.assertReported(form, "piped into a command whose status the pipeline takes")
+        with self.subTest(form="an eval in it keeps the script's"):
+            self.assertReported("sh -c 'eval \"%s | cat\"'", "piped into a command whose status",
+                                self.CHECK.replace('"', '\\"'))
 
     def test_a_script_whose_failure_the_step_goes_on_past_is_reported(self):
         for form in ("sh -c '%s' || true", "sh <<< '%s' || true",
@@ -1097,7 +1104,10 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
                      "bash -euo pipefail -c '%s; echo ok'", "sh <<< 'set -e; %s; echo ok'",
                      "sh -c 'set -o errexit; %s; echo ok'",
                      "bash -e <<'EOF'\n%s\necho ok\nEOF", "eval '%s; echo ok'",
-                     "eval '%s' || exit 1", "sh -c '%s' || exit 1"):
+                     "eval '%s' || exit 1", "sh -c '%s' || exit 1",
+                     "bash -o pipefail -c '%s | cat'", "bash -eo pipefail -c '%s | cat; echo ok'",
+                     "bash -c 'set -o pipefail; %s | cat'", "bash -o errexit -o pipefail "
+                     "-c '%s | cat; echo ok'", "sh -c 'set -euo pipefail; %s | cat; echo ok'"):
             with self.subTest(form=form):
                 self.assertEqual([], self.job(form))
         self.assertEqual([], self.job('sh -c "sh -c \'%s\'"', self.CHECK.replace('"', '\\"')))
@@ -1109,10 +1119,17 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
         self.assertEqual([], self.job("%s"))
 
     def test_an_exit_behind_the_check_in_a_script_without_e_is_not_read(self):
-        # Fail-closed, and the rule's one known over-report: bash stops this
-        # script at `exit 1`, but only `-e` or the script's last command are
-        # read as stopping it.
+        # Fail-closed, and the rule's known over-reports (re-review N-D): bash
+        # stops each of these scripts at the failing check -- at `exit 1`, at
+        # `exit $?`, and under a `set -e` or `set -o pipefail` written inside
+        # a branch -- but only `-e` or pipefail from the script's options or
+        # a plain `set`, or its last command, are read as stopping it.
         self.assertReported("sh -c '%s || exit 1; echo ok'", "carries on past its failure")
+        self.assertReported("sh -c '%s; exit $?'", "carries on past its failure")
+        self.assertReported("sh -c 'if true; then set -e; fi; %s; echo ok'",
+                            "carries on past its failure")
+        self.assertReported("bash -c 'if true; then set -o pipefail; fi; %s | cat'",
+                            "piped into a command whose status the pipeline takes")
 
 
 class TestChecksumRescueStatus(unittest.TestCase):
