@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
+  Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
+  got a schema entry and a fixture value, `additional_loci` got neither.
+  `synth/findings.aggregate_tool_findings` stamps it with the other loci one rule fired at in one
+  file before collapsing them into one finding, and nothing described it, so no consumer could
+  validate against it -- and #1602's parity walk stayed green because the fixture's SARIF had one
+  hit per rule per file, so no finding ever carried the key. That SARIF now fires B602 twice in
+  the reviewed file, at two lines no `_agentic` finding claims: an aggregated survivor sharing an
+  agent's locus meets dedupe's tool+agent reinforce-merge, whose survivor is the more severe AGENT
+  finding, and the key would reach no artifact at all. `discarded_claims[]` items `$ref` the
+  findings item schema, so the one entry covers both sections.
 - **`finding_fingerprint` and `reconcile_key` carry the artifact term (#2352, #1768, ARC-A4A).**
   Follow-up to #2225: the two stages that COLLAPSE tool findings learned that one advisory against
   two artifacts at one manifest locus is two issues, but the two IDENTITY functions did not. Two

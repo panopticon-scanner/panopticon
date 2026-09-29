@@ -1131,6 +1131,30 @@
             "type": "integer",
             "description": "How many tool findings sharing this panel, category, file, rule id and artifact (`tool_evidence.package_name`) were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings."
           },
+          "additional_loci": {
+            "type": "array",
+            "description": "The other loci a tool rule fired at in this file when synth/findings.aggregate_tool_findings collapsed them into this one finding (see `occurrences`): the survivor keeps the primary locus in `location` and lists the rest here, lowest line first, an agent-corroborated locus winning the primary slot. Absent on a finding that aggregated nothing.",
+            "items": {
+              "type": "object",
+              "required": [
+                "file"
+              ],
+              "properties": {
+                "file": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "line_start": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
           "corroborated": {
             "type": "boolean"
           },
