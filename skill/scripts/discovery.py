@@ -970,8 +970,8 @@ def _is_confined_regular(repo, rel):
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
     """Apply the discovery policy to a candidate path list.
 
-    Shared by both discovery methods and the `--scope-changed` branch (#2272), so
-    the git listing, the walk and the delta set get one treatment: EXCLUDE_DIRS /
+    Shared by the git listing and the `--scope-changed` branch (#2272), so both
+    get the treatment the walk applies inline: EXCLUDE_DIRS /
     EXCLUDE_DIR_GLOBS on every ancestor segment (a repo that TRACKS node_modules
     still shouldn't review it), the one ``dot_paths.allowed`` policy, the
     fixture-corpus pruning (#434, recorded in ``pruned_fixtures`` for disclosure),
