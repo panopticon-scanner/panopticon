@@ -28,7 +28,7 @@ class _EmitFails:
 
 class TestRunAdapterFailClosed(unittest.TestCase):
     # #1051 / SEC-G2B: a crash, an emit failure, or an unregistered adapter must
-    # exit NON-ZERO so the caller (run_tools._capture_run) treats it as a skip
+    # exit NON-ZERO so the caller (tool_capture._capture_run) treats it as a skip
     # and the manifest lands it in `missing` -- never a clean rc 0 that reads as
     # "ran clean".
 

@@ -2,18 +2,23 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
 
-from tests._test_helpers import FakePopen, first, only
+from tests._test_helpers import REPO_ROOT, FakePopen, first, only
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
+# Re-keyed from SCS0026 to SCS0029 (#2325, COD-1750030735): SCS0026 is LDAP
+# injection (CWE-90), not XSS -- cross-site scripting is SCS0029 (CWE-79), so
+# the "Potential XSS" message now names the rule it actually belongs to and
+# the CWE-79 assertion below stays true.
 ROSLYN_SAMPLE = json.dumps({
     "runs": [{
         "results": [{
-            "ruleId": "SCS0026",
+            "ruleId": "SCS0029",
             "message": {"text": "Potential XSS"},
             "locations": [{
                 "physicalLocation": {
@@ -123,7 +128,7 @@ ROSLYN_SAMPLE_MALFORMED_SIBLING = json.dumps({
          "locations": [{"physicalLocation": {
              "artifactLocation": {"uri": "a.cs"},
              "region": {"startLine": 3}}}]},
-        # ruleId is not a string, so rule_id.startswith("SCS") raises mid-parse.
+        # A malformed identifier must not erase the usable sibling.
         {"ruleId": None,
          "message": {"text": "malformed result"},
          "locations": [{"physicalLocation": {
@@ -157,6 +162,20 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(by_rule["SCS0002"], "HIGH")
         self.assertEqual(by_rule["SCS0026"], "MEDIUM")
         self.assertEqual(by_rule["SCS0018"], "LOW")
+
+    def test_v1_path_attribution_matches_the_location_parser_fallback(self):
+        sample = json.loads(ROSLYN_SAMPLE_V1)
+        results = only(sample["runs"])["results"]
+        only(only(results)["locations"])["physicalLocation"] = {}
+        adapter = rs.RoslynSecGuardAdapter()
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(facts["parsed_files"], 1)
+        results.append({**only(results), "ruleId": None})
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (0, 1))
+        self.assertEqual(facts["unlocated_records"], 0)
 
     def test_parse_defaults_missing_level_to_warning_severity(self):
         # ROSLYN_SAMPLE has no "level" key at all; SARIF's own default for an
@@ -194,10 +213,22 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         for bad in (
             b'{"runs": ["not-a-dict"]}',
             b'{"runs": [null]}',
-            b'{"runs": null}',
             b'{"runs": [{"results": null}]}',
         ):
-            self.assertEqual(rs.RoslynSecGuardAdapter().parse(bad, "g1"), [])
+            findings, facts = rs.RoslynSecGuardAdapter().parse_with_file_coverage(bad, "g1")
+            self.assertEqual(findings, [])
+            self.assertEqual(facts["status"], "partial")
+
+    def test_intentional_policy_drops_do_not_claim_a_parse_failure(self):
+        for result in ({"ruleId": "CS1001", "message": "compiler diagnostic"},
+                       {"ruleId": "SCS0002"}, {"ruleId": "SCS0002", "locations": None},
+                       {"ruleId": "SCS0002", "locations": []}):
+            with self.subTest(result=result):
+                raw = json.dumps({"runs": [{"results": [result]}, {}]}).encode()
+                findings, facts = rs.RoslynSecGuardAdapter().parse_with_file_coverage(raw, "g1")
+                self.assertEqual(findings, [])
+                self.assertEqual(facts["status"], "complete")
+                self.assertEqual(facts["malformed_records"], 0)
 
     def test_parse_string_message(self):
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_STRING_MESSAGE, "g1")
@@ -221,7 +252,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MALFORMED_SIBLING, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
-        self.assertIn("roslyn-secguard: skipping result None:", stderr.getvalue())
+        self.assertIn("roslyn-secguard: partial capture: 1 malformed record(s)", stderr.getvalue())
 
     def test_build_target_prefers_solution(self):
         adapter = rs.RoslynSecGuardAdapter()
@@ -659,6 +690,125 @@ class TestSarifWriteIsBounded(unittest.TestCase):
         self.assertEqual(raw, b"")
         self.assertNotIn(rc, (0, 1))       # recorded missing, never clean
         self.assertIn("write-time output cap", err.getvalue())
+
+
+class TestVendorCweTable(unittest.TestCase):
+    """#2325 (COD-1750030735): `_ROSLYN_CWE` is DotnetariumSCS 1.1.0's own
+    31-rule table now, not nine hand-picked entries with one wrong and one
+    phantom. SCS0026 is LDAP injection (CWE-90); cross-site scripting is
+    SCS0029 (CWE-79), which the old table lacked entirely. SCS0041 was never
+    a rule this tool shipped.
+    """
+
+    _EXPECTED_IDS = frozenset(
+        "SCS%04d" % i for i in
+        list(range(1, 14)) + list(range(15, 20)) + list(range(21, 25)) + list(range(26, 35)))
+
+    def test_the_table_has_exactly_the_vendors_31_rule_ids(self):
+        self.assertEqual(31, len(rs._ROSLYN_CWE))
+        self.assertEqual(self._EXPECTED_IDS, set(rs._ROSLYN_CWE))
+
+    def test_scs0041_is_absent(self):
+        self.assertNotIn("SCS0041", rs._ROSLYN_CWE)
+
+    def test_every_value_is_a_cwe_id(self):
+        for rule_id, cwe in rs._ROSLYN_CWE.items():
+            with self.subTest(rule_id=rule_id):
+                self.assertRegex(cwe, r"^CWE-\d+$")
+
+    def test_scs0026_is_ldap_injection_and_scs0029_is_xss(self):
+        self.assertEqual("CWE-90", rs._ROSLYN_CWE["SCS0026"])
+        self.assertEqual("CWE-79", rs._ROSLYN_CWE["SCS0029"])
+
+    def test_a_four_digit_cwe_id_is_kept_whole(self):
+        self.assertEqual("CWE-1004", rs._ROSLYN_CWE["SCS0009"])
+
+    def test_spot_values_the_old_nine_entry_table_never_named(self):
+        self.assertEqual("CWE-643", rs._ROSLYN_CWE["SCS0003"])   # XPath injection
+        self.assertEqual("CWE-524", rs._ROSLYN_CWE["SCS0019"])   # OutputCache vs auth
+        self.assertEqual("CWE-521", rs._ROSLYN_CWE["SCS0032"])   # weak password policy
+
+
+class TestRoslynGoldenParity(unittest.TestCase):
+    """Every rule descriptor DotnetariumSCS actually emitted in a captured
+    scan is a table key, and the golden's own findings cite the vendor's CWE.
+    """
+
+    GOLDEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "goldens", "tool-raw", "roslyn-secguard.raw")
+
+    def test_every_golden_rule_descriptor_is_a_table_key(self):
+        with open(self.GOLDEN, "rb") as fh:
+            data = json.load(fh)
+        rules = only(data["runs"])["tool"]["driver"]["rules"]
+        rule_ids = [rule["id"] for rule in rules]
+        self.assertTrue(rule_ids)
+        for rule_id in rule_ids:
+            with self.subTest(rule_id=rule_id):
+                self.assertIn(rule_id, rs._ROSLYN_CWE)
+
+    def test_the_goldens_findings_cite_the_vendors_cwe(self):
+        with open(self.GOLDEN, "rb") as fh:
+            raw = fh.read()
+        findings = rs.RoslynSecGuardAdapter().parse(raw, "g1")
+        self.assertTrue(findings)
+        for finding in findings:
+            with self.subTest(rule_id=finding["tool_evidence"]["rule_id"]):
+                self.assertEqual(["CWE-352"], finding["citations"]["cwe"])
+
+
+class TestUnmappedRuleShipsWithNoFabricatedCitation(unittest.TestCase):
+    def test_scs0000_has_no_cwe_and_ships_without_a_citations_key(self):
+        # SCS0000 is the analyzer's own proof-of-run notice; the vendor's
+        # Messages.yml gives it no `cwe`, so it must stay uncited rather than
+        # borrow one.
+        sample = json.dumps({
+            "runs": [{
+                "results": [{
+                    "ruleId": "SCS0000",
+                    "message": {"text": "Compilation analysis completed for X."},
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": "Program.cs"},
+                            "region": {"startLine": 1},
+                        }
+                    }],
+                }]
+            }]
+        }).encode()
+        finding = only(rs.RoslynSecGuardAdapter().parse(sample, "g1"))
+        self.assertNotIn("citations", finding)
+
+
+class TestVendorVersionMatchesTheDockerfilePin(unittest.TestCase):
+    """#2325 (COD-1750030735): `_ROSLYN_CWE`'s provenance comment names the
+    DotnetariumSCS version it was generated from, but nothing asserted it
+    still matches the Dockerfile's own `ARG DOTNETARIUM_SCS_VERSION` pin --
+    the same failure mode #2275/#2285 guards for spotbugs.py, one level up
+    (`TestVendorVersionsMatchTheDockerfilePins` in test_spotbugs.py).
+    """
+
+    def test_the_constant_matches_the_dockerfiles_arg_pin(self):
+        with open(os.path.join(REPO_ROOT, "Dockerfile"), encoding="utf-8") as fh:
+            dockerfile = fh.read()
+        arg = re.search(r"ARG DOTNETARIUM_SCS_VERSION=(\S+)", dockerfile)
+        self.assertIsNotNone(arg, "no ARG DOTNETARIUM_SCS_VERSION in Dockerfile")
+        self.assertEqual(
+            arg.group(1), rs._TABLE_DOTNETARIUM_SCS_VERSION,
+            "Dockerfile's DOTNETARIUM_SCS_VERSION no longer matches the version "
+            "_ROSLYN_CWE was generated from -- regenerate _ROSLYN_CWE from the "
+            "new version's embedded Messages.yml and update "
+            "_TABLE_DOTNETARIUM_SCS_VERSION in roslyn_secguard.py")
+
+    def test_the_provenance_comment_still_names_the_constant(self):
+        # Read the module SOURCE and keep only comment lines: the constant's
+        # own assignment line also contains its value, and checking the
+        # unfiltered file would pass even if the surrounding prose never
+        # mentioned it, so the comment could still drift from the constant
+        # unnoticed.
+        with open(rs.__file__, encoding="utf-8") as fh:
+            comments = "".join(line for line in fh if line.lstrip().startswith("#"))
+        self.assertIn(rs._TABLE_DOTNETARIUM_SCS_VERSION, comments)
 
 
 if __name__ == "__main__":

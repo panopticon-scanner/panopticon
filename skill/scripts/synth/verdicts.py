@@ -93,34 +93,17 @@ class Resolved:
     suppressed_not_gated: list = field(default_factory=list)
 
 
-def resolve_findings(fs, delta, run, gated_suppressed=()):
-    """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
-    verdicts, derive every finding's evidence object and fingerprint, then
-    partition for the gate under the two-axis severity x evidence model.
+@dataclass(frozen=True)
+class _Matches:
+    matched: dict
+    count: int
+    unanswered: int
+    engaged_cells: set
+    misrouted: list
 
-    Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
-    applied to queued findings; every finding gets an evidence object.
-    `fs.verdicts_supplied` records whether --verdicts-dir was passed at all
-    (distinct from whether it yielded any verdicts) so the aggregate "no
-    verdict" note still fires for an existing-but-empty dir.
-    """
-    findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
-    catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
-    ocrdb_bundle = ocrdb.load_bundle()
-    ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
-    queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
-    # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
-    # tool finding the adapters park the rule id in
-    # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
-    # no tool_evidence), evidence.tool_rule_id falls back to it, and
-    # finding_fingerprint uses it as the identity discriminator -- while
-    # evidence.apply_verdict overwrites that same field with the advisor's
-    # prose. Recomputing afterwards would export a hash of the reasoning text,
-    # so the "stable cross-run identity" would change whenever an advisor
-    # re-worded itself. Harmless for findings that are never verdicted
-    # (including those cut by --max-verify): nothing between here and the
-    # assignment site mutates an identity field on them.
-    pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
+
+def _bind_verdicts(fs, findings, queue):
+    """Bind and apply answers, measuring engagement before any verdict mutates it."""
     verdicts = fs.verdicts or {}
     matched = {}
     matched_n = 0
@@ -148,21 +131,31 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
         elif fs.verdicts_supplied and plan_mod._finding_owed_verification(entry["finding"], engaged_cells):
             unanswered += 1
         matched[id(entry["finding"])] = v
+    return _Matches(matched, matched_n, unanswered, engaged_cells, verdict_misrouted)
+
+
+def _verify_matrix(findings, matches):
+    """An engaged cell is verified once any of its findings matched an answer."""
     # P5 verify-matrix disclosure: engaged cells (>= F_p) that received no
     # verdict -- the same cells that just drove `unanswered` above. A cell
     # counts as verified once ANY of its findings matched a verdict.
     verified_cells = set()
     for f in findings:
-        if matched.get(id(f)) is not None:
+        if matches.matched.get(id(f)) is not None:
             grp, dom = f.get("_group"), f.get("domain")
             if grp is not None and dom is not None:
                 verified_cells.add((grp, dom))
-    verify_matrix_cov = {
-        "engaged": len(engaged_cells),
-        "unverified_engaged": sorted(list(k) for k in engaged_cells
+    return {
+        "engaged": len(matches.engaged_cells),
+        "unverified_engaged": sorted(list(k) for k in matches.engaged_cells
                                      if k not in verified_cells)}
-    if ocrdb_coverage is not None:
-        ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matched, ocrdb_bundle))
+
+
+def _verdict_stats(fs, findings, queue, cut, matches):
+    """Disclose lost, unknown and unmatched answers in stderr and the artifact."""
+    verdicts, by_fid = fs.verdicts or {}, fs.verdict_bundles or {}
+    unanswered, verdict_misrouted = matches.unanswered, matches.misrouted
+    matched_n = matches.count
     if unanswered:
         print("synthesize: %d queued findings had no verdict; left unverified"
               % unanswered, file=sys.stderr)
@@ -200,7 +193,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     _bundle_supplied = sum(len(vs) for vs in by_fid.values())
     _finding_ids = {f.get("id") for f in findings if f.get("id")}
     _bundle_unknown = sum(len(vs) for fid, vs in by_fid.items() if fid not in _finding_ids)
-    verdict_stats = {
+    return {
         "queued": len(queue),
         "cut": cut,
         "supplied": len(verdicts) + _bundle_supplied,
@@ -222,6 +215,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
         # same convention as tool_axis.rejection_rate.
         "unanswered": unanswered if fs.verdicts_supplied else None,
     }
+
+
+def _derive_evidence(findings, catalog, matched, pre_verdict_fps):
+    """Attach evidence while preserving identity captured before advisor changes."""
     # Re-validate citations after advisor merges (idempotent; preserves epss).
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
@@ -234,6 +231,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
         f["fingerprint"] = pre_verdict_fps[id(f)]
         f.pop("citation_quality", None)
 
+
+
+def _tool_axis(findings):
+    """Measure tool-side decisions independently from the severity gate."""
     tool_like = [f for f in findings
                  if evidence_mod.is_tool_sourced(f) or f.get("reinforced")]
 
@@ -243,7 +244,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     confirmed = _tool_count("tool_confirmed")
     rejected_n = _tool_count("rejected")
     decided = confirmed + rejected_n
-    tool_axis = {
+    return {
         "queued": len(tool_like),
         "confirmed": confirmed,
         "rejected": rejected_n,
@@ -255,6 +256,19 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
         "rejection_rate": round(rejected_n / decided, 3) if decided else None,
     }
 
+
+
+@dataclass(frozen=True)
+class _Partitions:
+    active: list
+    rejected: list
+    gate_eligible: list
+    on_diff_active: list
+    pre_existing_active: list
+
+
+def _partition_gate(findings, delta, run):
+    """Apply the run's delta scope and evidence policy to active findings."""
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
     delta_mode = delta.active
@@ -269,6 +283,12 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     gate_eligible = (gate_source if run.gate_unverified else
                      [f for f in gate_source
                       if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
+    return _Partitions(active, rejected, gate_eligible, on_diff_active, pre_existing_active)
+
+
+def _scope_suppressed(gated_suppressed, delta, run):
+    """Apply the same delta scope, then the owner-ruled suppressed gate policy."""
+    delta_mode = delta.active
     # #1701 fix round 1 (F1): the gate-counted vendored drops take the SAME
     # delta filter the real population just took. They carry a `location.file`,
     # so `classify_findings` can answer for them, and under `--changes
@@ -307,10 +327,14 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                             if not ingest_tools.gates_when_suppressed(f)]
     gated = [f for f in gated if ingest_tools.gates_when_suppressed(f)]
 
-    tool_names = {evidence_mod.tool_name(f) for f in findings
-                  if evidence_mod.is_tool_sourced(f)}
+    return gated, suppressed_not_gated
+
+
+def _delta_meta(delta, partitions):
+    """Describe the actual hunk map and the resulting active populations."""
+    delta_mode = delta.active
     # #1783 (ARC-2340795244): what the artifact was, not just what it claimed.
-    # `files_changed` above is the ARTIFACT's own number; `hunks_files` /
+    # `files_changed` is the ARTIFACT's own number; `hunks_files` /
     # `hunks_ranges` are the map this run actually classified against, and an
     # ACTIVE delta with `hunks_files: 0` matched no finding at all -- every one
     # classified off-diff, so under `--gate-scope on-diff` there was nothing
@@ -320,7 +344,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     hunks_load = delta.report if delta_mode else None
     hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
                                  if delta_mode else (0, 0))
-    delta_meta = ({"base": delta.diff_hunks.get("base"),
+    return ({"base": delta.diff_hunks.get("base"),
                    "base_source": delta.diff_hunks.get("base_source"),
                    "base_commit": delta.diff_hunks.get("base_commit"),
                    "delta_start": delta.diff_hunks.get("delta_start"),
@@ -332,20 +356,60 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                    "hunks_ranges": hunks_ranges,
                    "ranges_dropped": hunks_load.ranges_dropped if hunks_load else None,
                    "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
-                   "on_diff_total": len(on_diff_active),
-                   "pre_existing_total": len(pre_existing_active)}
+                   "on_diff_total": len(partitions.on_diff_active),
+                   "pre_existing_total": len(partitions.pre_existing_active)}
                   if delta_mode else None)
-    return Resolved(findings=findings, active=active, rejected=rejected,
-                    gate_eligible=gate_eligible, on_diff_active=on_diff_active,
-                    pre_existing_active=pre_existing_active,
+
+
+def resolve_findings(fs, delta, run, gated_suppressed=()):
+    """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
+    verdicts, derive every finding's evidence object and fingerprint, then
+    partition for the gate under the two-axis severity x evidence model.
+
+    Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
+    applied to queued findings; every finding gets an evidence object.
+    `fs.verdicts_supplied` records whether --verdicts-dir was passed at all
+    (distinct from whether it yielded any verdicts) so the aggregate "no
+    verdict" note still fires for an existing-but-empty dir.
+    """
+    findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
+    catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
+    ocrdb_bundle = ocrdb.load_bundle()
+    ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
+    queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
+    # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
+    # tool finding the adapters park the rule id in
+    # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
+    # no tool_evidence), evidence.tool_rule_id falls back to it, and
+    # finding_fingerprint uses it as the identity discriminator -- while
+    # evidence.apply_verdict overwrites that same field with the advisor's
+    # prose. Recomputing afterwards would export a hash of the reasoning text,
+    # so the "stable cross-run identity" would change whenever an advisor
+    # re-worded itself. Harmless for findings that are never verdicted
+    # (including those cut by --max-verify): nothing between here and the
+    # assignment site mutates an identity field on them.
+    pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
+    matches = _bind_verdicts(fs, findings, queue)
+    verify_matrix_cov = _verify_matrix(findings, matches)
+    if ocrdb_coverage is not None:
+        ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
+    verdict_stats = _verdict_stats(fs, findings, queue, cut, matches)
+    _derive_evidence(findings, catalog, matches.matched, pre_verdict_fps)
+    tool_axis = _tool_axis(findings)
+    partitions = _partition_gate(findings, delta, run)
+    gated, suppressed_not_gated = _scope_suppressed(gated_suppressed, delta, run)
+    tool_names = {evidence_mod.tool_name(f) for f in findings
+                  if evidence_mod.is_tool_sourced(f)}
+    return Resolved(findings=findings, active=partitions.active, rejected=partitions.rejected,
+                    gate_eligible=partitions.gate_eligible,
+                    on_diff_active=partitions.on_diff_active,
+                    pre_existing_active=partitions.pre_existing_active,
                     integration_findings=integration_findings,
                     ocrdb_bundle=ocrdb_bundle, ocrdb_coverage=ocrdb_coverage,
                     verdict_stats=verdict_stats, verify_matrix=verify_matrix_cov,
                     tool_axis=tool_axis, tool_names=tool_names,
-                    delta_mode=delta_mode, delta_meta=delta_meta,
-                    doc_policy=fs.doc_policy, verdict_unloadable=verdict_unloadable,
-                    # Gate-aware unanswered count: measured only when
-                    # --verdicts-dir was passed at all (see verdict_stats).
-                    unanswered_gate=unanswered if fs.verdicts_supplied else 0,
-                    gated_suppressed=gated,
-                    suppressed_not_gated=suppressed_not_gated)
+                    delta_mode=delta.active, delta_meta=_delta_meta(delta, partitions),
+                    doc_policy=fs.doc_policy, verdict_unloadable=fs.verdict_unloadable or [],
+                    # Measured only when --verdicts-dir was passed at all.
+                    unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,
+                    gated_suppressed=gated, suppressed_not_gated=suppressed_not_gated)

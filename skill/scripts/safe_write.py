@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The no-follow `.panopticon` artifact open, and nothing else. Stdlib-only.
+"""No-follow `.panopticon` artifact writes and staged publication. Stdlib-only.
 
 `.panopticon/` lives INSIDE the reviewed tree, so under redteam every artifact
 path is a name an untrusted target can pre-commit as a symlink to any file the
@@ -109,3 +109,37 @@ def open_a_nofollow(path):
         else:
             raise
     return os.fdopen(fd, "a", encoding="utf-8")
+
+
+def publish_texts(targets):
+    """Stage `(final_path, temp_path, text)` entries, then publish in reverse.
+
+    Callers put the main report first so its sibling pointers go live last.
+    Every write must finish before any destination is replaced. Each replace
+    is atomic; the set is not a transaction, so a failed replace can leave
+    earlier siblings published. Return final paths in the supplied order.
+
+    Stage names and serialization belong to the caller. Cleanup includes the
+    currently failing write or close and planted leaf links. Confine parents
+    before creating directories or tracking cleanup: removing a temporary
+    through an escaping intermediate link would itself modify another tree.
+    """
+    staged = []
+    try:
+        for final, temp, text in targets:
+            parent = os.path.dirname(os.path.abspath(temp))
+            confine_artifact_path(parent)
+            os.makedirs(parent, exist_ok=True)
+            staged.append((temp, final))
+            with open_w_nofollow(temp) as stream:
+                stream.write(text)
+        for temp, final in reversed(staged):
+            os.replace(temp, final)
+    finally:
+        for temp, _ in staged:
+            if os.path.lexists(temp):
+                try:
+                    os.remove(temp)
+                except OSError:
+                    pass
+    return [final for _, final in staged]

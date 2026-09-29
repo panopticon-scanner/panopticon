@@ -21,6 +21,75 @@ evidence exposed.
   A script given to a shell inside `$(...)` is reported if it fetches or its job downloads anything.
   `env A=$X sh` reads through to `sh`; `env $(x)=1 sh` and `env A=$X -c …` are reported.
   `sh {-c,'…'}` and `sh [-]c` are reported, and `sh ./x_*.run` as running a download `x_1.run`.
+- **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
+  findings remain available to reports and the security gate. Bounded diagnostics and coverage
+  facts distinguish malformed records, including those without an identifiable source file,
+  from valid empty results. Invalid top-level capture containers fail ingestion.
+- **Separate verdict resolution stages (#2318, #1826).** Matching, evidence and gate partitions
+  retain fingerprint identity, delta scope, accounting and suppressed-finding policy.
+- **Separate reconciliation decisions (#2317, #1826).** Indexing, recurring matches and close
+  checks retain coverage guards, reason text, collision disclosure and output ordering.
+- **Share staged report publication (#2316, #1820).** Clean partial staging writes before
+  propagating failures; publish report siblings before the main report.
+- **A HIGH a verbatim extraction MOVES is pre-existing (moved), not new (#2309).** The pre-merge
+  gate's delta pass keys on the path, so a refactor that relocated a `docker kill` call reddened the
+  required `scan` check on a diff that changed no behaviour (#2305). After the exact pass, a head
+  finding still counted new pairs with ONE unmatched base finding of the same tool, rule and message
+  — one the base carried one more copy of than the head has here — and prints under its own
+  `pre-existing (moved: …)` heading. One orphan excuses one occurrence: a second copy, or any
+  occurrence the base has no orphan left for, is still new and still gates, and the pairing never
+  crosses the suppression (a vendored orphan cannot excuse a first-party finding). What it
+  establishes is a COUNT, not a verified move; `DEVELOPMENT.md` says what that leaves invisible. The
+  strict route's verdict line is byte-identical.
+- **roslyn-secguard cites the vendor's CWE for all 31 DotnetariumSCS rules (#1795).** SCS0026 is
+  CWE-90 (LDAP injection), not CWE-79 (cross-site scripting, which is SCS0029); 23 of the 31
+  rules shipped uncited, and SCS0041 never existed. A test now pins the table's version to the
+  Dockerfile's `ARG DOTNETARIUM_SCS_VERSION` pin.
+- **Per-repo configuration moved to a root `panopticon.yml` (#1681).** BREAKING for an existing
+  tree: the committed matrix lives at `<repo>/panopticon.yml` (or the read-only alias
+  `.panopticon.yml`) under `version: 1` with `groups:`, `exclude_paths:` and `settings:` keys, and
+  `.panopticon/` now holds run artifacts only. `.panopticon/groups.yml` is no longer read by any
+  phase — alone it is an error naming the remedy, beside a root config it is disclosed and ignored —
+  and `.panopticon/config.json` is no longer read either, its keys having become `settings:`.
+  `python3 skill/scripts/driver.py migrate-config <repo>` writes the root file from the legacy one,
+  preserving committed order, refusing if a root config already exists, and leaving the old file for
+  you to delete.
+- **The single-stage tools image is a decision, and its split is 5.3's (#1772, #2242).** Every
+  toolchain installs into one stage, so one upstream break fails the whole build; the accepted cost
+  is written down in `Dockerfile` and `DEVELOPMENT.md` now, with 5.3's brief (one stage per
+  toolchain, still one published image).
+- **Documentation corrections where a reader looks (#2238, #2239, #2240, #2241, #2242, #2243,
+  #2244, #2245).** Comments, docstrings and guide prose the code had outgrown: the `nvd-cache.yml`
+  workflow ordering claim, the packaging intent in `pyproject.toml`, `integrity._plan_hash`'s
+  vanished twin, what `RunResult.denials` counts per host family, why the driver re-derives
+  synthesize's verify queue, what else shares synthesize's exit `2`, the `dependencies` gating row,
+  the eighth evidence status, and `synthesize.py`'s "stdlib-only" claim. Two of these are pinned:
+  `readiness.GATING_ROWS` against the guide's gating sentence, and
+  `evidence.EVIDENCE_STATUSES`/`GATE_ELIGIBLE_DEFAULT` against the evidence chapter.
+- **Parity pins for the mirrored tables, the fixture corpus and the goldens (#2234, #2235, #2236,
+  #2237).** Four LOW/MEDIUM findings, one shape: a definition kept in two places with nothing
+  comparing them. `sarif_utils`' hand-mirrored fixture corpus is pinned against `discovery`'s,
+  value for value and predicate against predicate, so the #434 tool/agentic parity is a test and
+  not a comment (ARC-1496429894). The four parallel legacy-SARIF tables -- `LEGACY_SARIF_TOOLS`,
+  `TOOL_CMD`, the registered `LegacySarifAdapter` rows and `sarif_utils.PREFIX` -- are asserted
+  EQUAL, as are the tool registry and the recommendable set, which closes the directions nobody
+  had pinned (ARC-3428598333, ARC-1125964489). `file_issues` derives its two label tables from
+  `evidence.SEV_ORDER`/`EVIDENCE_STATUSES` instead of hand-copying them, and now RAISES on an
+  unknown severity or evidence status: a ninth status used to be filed as `evidence:unverified`,
+  a label asserting the opposite of what happened (ARC-1576523829). `x0x_report` and
+  `strain_report` share one gap predicate and one roster clamp (`ocrdb.is_fallback_code`,
+  `ocrdb.clamp_domain`), so `is_fallback` is now CASE-INSENSITIVE and whitespace-stripped, and
+  strain's published `domain` can no longer leave the roster enum that its own schema declares
+  (ARC-101960059). A `domain` claim that is not a roster domain is still clamped to `ZZZ` and
+  disclosed, never reinterpreted as the domain before its first hyphen -- `clamp_domain` validates
+  a domain and `roster_domain` is the wrapper for a caller holding a code. `cross_domain` is
+  decided on the RAW claims (`ocrdb.domain_claim`), not the clamped ones: two codes claiming two
+  different off-roster domains are cross-domain strain, and comparing clamped values would publish
+  "same domain". And `tests/test_goldens_provenance.py` refuses any file under `tests/goldens/`
+  that names `/mnt/panopticon` or a `.worktrees/` path segment -- no per-file exemption; the
+  directory's README was reworded so it no longer needs one -- with today's three offending goldens
+  (`bandit.raw`, `gitleaks.raw`, `trivy.raw`) in a shrink-only `PENDING` set that empties when
+  #2313 re-captures them against a synthetic corpus (ARC-168995033).
 - **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed
   clean. `scripts/shell_wrappers.py`, which now holds the reader's wrapper table, reads each by
@@ -68,6 +137,33 @@ evidence exposed.
   pins the docker argv of both staged tools, in both security modes, with and without the
   target's own `.bandit`, against a golden captured before the move. `ToolAdapters` gains
   an `Image` layer so the matrix can claim the new files without passing the 48-file cap.
+- **The capture path leaves `run_tools.py` (#1762, ARC-2609514778, ARC-3243338950; part 2 of 3).**
+  One container run supervised, bounded, classified, redacted and persisted — `_capture_run` through
+  `_atomic_write`: the `threading.Timer` watchdog with the `--cidfile` kill that stops the container
+  and not just the CLI client, the concurrent stderr drain, the stdout spool under
+  `MAX_TOOL_OUTPUT_BYTES` with its truncation marker, the exit-code classification (timeout,
+  non-`(0, 1)`, empty-output fail-closed), the semgrep stderr annotator and the one redaction choke
+  point — moves to `skill/scripts/tool_capture.py` whole. `_stream_and_write` moved entire rather
+  than being split: the watchdog and the kill path are bound by the cidfile contract.
+  `run_tools.py` goes from 1774 to 1322 lines and the new module is 524, under the 700-line
+  ceiling. No argv, flag, path, byte, message or file format changed — `tests/test_tool_capture.py`
+  compares the bytes written, the rows returned and the lines printed for fifteen capture shapes
+  against a golden captured before the move, and the patch-rule guard now derives BOTH modules'
+  names, and the `run_tools` aliases each test file really binds, instead of a fixed list.
+- **The tools manifest leaves `run_tools.py` (#1762, ARC-2609514778; part 3 of 3).**
+  `tools-manifest.json`'s schema -- selected/produced/missing, the `excluded_dirs` rows, the run id
+  and scope, the eslint `file_coverage` read and the four posture ledgers it reads back -- moves to
+  `skill/scripts/tools_manifest.py` whole, and the two ledgers whose only reader is the writer (the
+  network posture and the gitleaks ignore-file posture) move with it; `run_tools` binds them back,
+  and still clears and fills both where the argv is built. `run_tools.py` goes from 1322 to 1136
+  lines and the new module is 265, under the 700-line ceiling. The pin STAYS in
+  `tests/test_flat_module_ceiling.py`, lowered to 1136: all three extractions have now landed and
+  the module is still over the ceiling, holding detection, virtualenv partitioning, selection, the
+  docker argv and the CLI. No manifest key, value, order or byte changed, no argv and no message --
+  `tests/test_tools_manifest.py` compares the exact bytes of seven manifests (both security modes,
+  `run_id` set and unset, the eslint coverage read, an adapter refused its egress, and the
+  docker-absent shape) against a golden captured before the move, and the patch-rule guard derives
+  all three modules' names from their own ASTs.
 - **Discovery surfaces the dot-paths the shipped catalogs and the SEC floor claim, and both
   discovery paths apply one policy (#1784, #1771; ARC-124841687, ARC-1940929242).** The policy was
   `ALLOWED_DOTDIR_SUBTREES = (".github/workflows",)` plus a blanket skip of every other root
@@ -1325,7 +1421,9 @@ Setup now front-loads the grouping work so every later run reuses it
   `profile` (`purpose`, `surfaces`, `entry_points`, `trust_boundaries`);
   `custom:` groups and catalog entries without an affinity row get their
   review floor from the profile's surfaces (#1490 for setup-time groups).
-- **Size policy (stage 3):** cap = `--max-per-group` > `config.json
+- **Size policy (stage 3)** — superseded by #1681, which moved both keys out of
+  `.panopticon/config.json` and under `settings:` in the root `panopticon.yml`:
+  cap = `--max-per-group` > `config.json
   max_per_group` > 48; ceiling = `--max-groups` > `config.json max_groups` >
   `max(4, 2 * ceil(code_files / cap))`. A layer under 6 files merges back, a
   vertical over the cap splits by its layers (residual `Core`), over the
@@ -1353,7 +1451,10 @@ Setup now front-loads the grouping work so every later run reuses it
   and frameworks, already-claimed counts, test trees and the size arithmetic,
   bounded and sanitized (#1120) — is computed once with the sizes pinned in
   `setup-manifest.json` and rendered into the brief.
-- **Compatibility (5.1 -> 5.2):** the `groups.yml` schema is unchanged and a
+- **Compatibility (5.1 -> 5.2)** — superseded by #1681: the schema below is
+  unchanged, but the file moved to the root `panopticon.yml` under a `groups:`
+  key, so an upgrade now runs `driver migrate-config` rather than nothing. The
+  original note: the `groups.yml` schema is unchanged and a
   5.1 setup proposal still validates; re-running `driver setup` is optional
   and never overwrites a committed `groups.yml`. Three run-time behaviours DO
   change without re-running setup: a wildcard `tests:` glob (`**/*_test.go`)

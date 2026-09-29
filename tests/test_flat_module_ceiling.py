@@ -44,10 +44,12 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # de4675d; measured with `wc -l`, which agrees with `splitlines()` on every
 # file here). An entry is a debt, not a permission: it may only go DOWN, and it
 # must disappear once the module is at or under LINE_CEILING, and it is lowered
-# to the new count whenever the module shrinks. Twenty modules when it landed,
-# and the five with a fix shape written down are the first ones owed:
-# `run_tools.py` (three extractions -- scanner config, capture, manifest --
-# ARC-2609514778), `setup_flow.py` (ARC-1181155147), `orchestrate.py`
+# to the new count whenever the module shrinks. Twenty modules, and the five
+# with a fix shape written down are the first ones owed:
+# `run_tools.py` (ARC-2609514778 -- all three extractions have now landed,
+# scanner config, capture and manifest, and the pin below is what they did not
+# reach: detection, virtualenv partitioning, selection, the docker argv and the
+# CLI), `setup_flow.py` (ARC-1181155147), `orchestrate.py`
 # (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
 # (ARC-2990316730).
 PENDING: dict[str, int] = {
@@ -64,7 +66,7 @@ PENDING: dict[str, int] = {
     "skill/scripts/loop_batch.py": 822,
     "skill/scripts/orchestrate.py": 738,
     "skill/scripts/read_guard_hook.py": 786,
-    "skill/scripts/run_tools.py": 1774,
+    "skill/scripts/run_tools.py": 1136,
     "skill/scripts/safe_git.py": 852,
     "skill/scripts/setup_flow.py": 1335,
     "skill/scripts/setup_proposal.py": 741,

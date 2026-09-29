@@ -12,6 +12,7 @@ from unittest import mock
 
 import scripts.run_tools as rt
 import scripts.scanner_config as sc
+import scripts.tools_manifest as tm
 
 from tests.run_tools_test_helpers import _DockerStub, _FakeResult
 
@@ -207,7 +208,7 @@ class TestAdapterSelection(unittest.TestCase):
                 target, ["gitleaks"], out_dir, venv_dirs=[],
                 runner=lambda cmd, **kw: _FakeResult(
                     returncode=7, stdout=b'{"runs":[]}', stderr=b'failed'))
-            payload = rt.write_manifest(os.path.join(target, "manifest.json"),
+            payload = tm.write_manifest(os.path.join(target, "manifest.json"),
                                         ["gitleaks"], written)
             self.assertEqual(written, [])
             self.assertEqual(payload["produced"], [])
@@ -274,7 +275,7 @@ class TestAdapterSelection(unittest.TestCase):
             out = os.path.join(d, "out")
             with mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
                 written = rt.run_tools(d, ["fake"], out, runner=lambda cmd, **kw: fake)
-            payload = rt.write_manifest(
+            payload = tm.write_manifest(
                 os.path.join(d, "m.json"), ["fake"], written)
             self.assertEqual(payload["produced"], [])
             self.assertEqual(payload["missing"], ["fake"])
@@ -404,7 +405,7 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
             out = os.path.join(artifacts, "out")
             written = rt.run_tools(target, list(tools), out, runner=inspect,
                                    venv_dirs=[], security_mode=mode)
-            manifest = rt.write_manifest(os.path.join(artifacts, "manifest.json"),
+            manifest = tm.write_manifest(os.path.join(artifacts, "manifest.json"),
                                          list(tools), written)
         return seen, manifest
 
@@ -499,7 +500,7 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                                    venv_dirs=[], security_mode="redteam")
             self.assertEqual(written, [])
             self.assertFalse(os.path.exists(os.path.join(out, "gitleaks.sarif")))
-            manifest = rt.write_manifest(os.path.join(artifacts, "manifest.json"),
+            manifest = tm.write_manifest(os.path.join(artifacts, "manifest.json"),
                                          ["gitleaks"], written)
             self.assertEqual(manifest["produced"], [])
             self.assertEqual(manifest["missing"], ["gitleaks"])
@@ -518,7 +519,7 @@ class TestGitleaksIgnoreFileOverlay(unittest.TestCase):
                     raise OSError("no scratch")
                 return original(*args, **kwargs)
 
-            with mock.patch.object(rt.tempfile, "mkdtemp", side_effect=fail_overlay):
+            with mock.patch.object(sc.tempfile, "mkdtemp", side_effect=fail_overlay):
                 seen, manifest = self._run(d, "redteam", tools=("gitleaks", "semgrep"))
             self.assertEqual(seen, [])
             self.assertEqual(manifest["missing"], ["gitleaks"])
@@ -790,7 +791,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                 d, ["bandit"], os.path.join(d, "out"), runner=runner,
                 venv_dirs=[{"path": ".venv", "reason": rt.VENV_MARKER}],
                 **kwargs)
-            seen["manifest"] = rt.write_manifest(
+            seen["manifest"] = tm.write_manifest(
                 os.path.join(d, "m.json"), ["bandit"], written)
         return seen
 

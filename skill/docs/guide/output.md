@@ -11,9 +11,12 @@ on-diff`, an ACTIVE delta review whose hunk map has no ranges while active findi
 passes, and the gate never falls back to the wider scope. `summary.coverage_certified` and
 `meta.coverage.divergence` carry the detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when
 an artifact it wrote fails its own published schema (next paragraph), `3` on an unreadable OCRDb
-bundle, `0` otherwise. Exit `2` is also argparse's usage-error code; a genuine INCONCLUSIVE run
-still writes a full report artifact, whereas a usage error does not, so disambiguate the two by
-checking whether the report exists. Consumers should key certification on `summary.gate` and
+bundle, `0` otherwise. Exit `2` is also argparse's usage-error code and `main`'s own precondition
+refusals, which never reach the gate: a `--compare` report it cannot read (either of the two), a
+`--compare` with neither `--html-out` nor `--out`, and an artifact-root refusal. A genuine
+INCONCLUSIVE run still writes a full report artifact and every one of those returns before the
+report is built, so disambiguate them by checking whether the report exists. Consumers should key
+certification on `summary.gate` and
 `summary.coverage_certified`, not on `overall_grade` alone — a tool-only coverage gap yields
 `INCONCLUSIVE` with a real grade still attached. When `meta.coverage.resume` shows pending work in
 either phase, the terminal summary also prints a `**Resume:**` line (fan-out/verify done vs. total)
@@ -74,6 +77,22 @@ mean the artifact is unreadable. The domain rules the schema cannot express — 
 security HIGH with no CVSS score or no exploit scenario, two findings sharing an id, an unknown
 `evidence.status` — are checked alongside it and stay advisory: they print as `SCHEMA:` lines and
 are counted in `meta.schema_errors`, and they do not change the exit status.
+
+**Malformed OSV and Roslyn captures (#2105).** Invalid top-level containers fail ingestion.
+Malformed child containers or records retain usable sibling findings and disclose partial coverage
+in the adapter's `file_coverage` facts and `meta.coverage.tools_file_partial`. The report sets
+`summary.coverage_certified: false`; the finding-based security gate and usable delta baseline
+remain available, with a partial-coverage diagnostic. Valid empty arrays stay complete. Roslyn's
+intentional compiler and location-less diagnostic drops retain their existing policy.
+
+These adapters count distinct identifiable paths in the capture, not every file the scanner read.
+A path with any malformed record counts as `unparsed_files` even when other findings from that path
+survive. `malformed_records` counts malformed entries or fields; `unlocated_records` counts those
+without an identifiable source path, including malformed Roslyn runs. No filename is invented for
+them. `files` and structural `records` examples are capped at 100 each, with omitted counts; file
+display text is bounded and escaped. One stderr summary reports the malformed and unlocated counts
+without quoting scanner values or exceptions. Optional OSV severity metadata keeps its fallback
+behavior; these facts describe malformed finding containers and required identifiers or paths.
 
 **Per-run folders (5.1).** Each run's working artifacts — findings, verdicts, coverage, scout
 profiles, tool output, dispatch plans, hashes — live under `.panopticon/runs/<tag>/`, where `<tag>`

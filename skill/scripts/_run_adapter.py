@@ -16,7 +16,7 @@ from scripts.tools.base import SECURITY_FLAG, SECURITY_MODES, STANDARD
 
 # #1051 / SEC-G2B: every failure path exits NON-ZERO. A crash, an emit failure,
 # or an unregistered adapter previously returned 0, which the caller
-# (run_tools._capture_run) read as a clean run -- a silent crash reported as
+# (tool_capture._capture_run) read as a clean run -- a silent crash reported as
 # success. Fail closed instead: FAIL_RC forces _capture_run's rc-check to skip
 # the tool, so the coverage manifest lands it in `missing` (-> INCONCLUSIVE).
 FAIL_RC = 2

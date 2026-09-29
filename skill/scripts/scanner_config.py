@@ -6,10 +6,10 @@ scanner instead of letting the reviewed repository choose them (bandit's
 `--ini`, trivy's `--ignorefile`); the ignore FILE it overlays out of the way
 (gitleaks' `.gitleaksignore`); and the inline suppression COMMENT knobs it
 passes under `--security redteam`. With them travel two of the four ledgers
-`run_tools.write_manifest` reads back, so `tools-manifest.json` reports what the
-runner OBSERVED itself doing rather than restating an intention (the other two,
-the network posture and the gitleaks ignore-file posture, stayed with the
-dispatch loop that fills them).
+`tools_manifest.write_manifest` reads back, so `tools-manifest.json` reports what
+the runner OBSERVED itself doing rather than restating an intention (the other
+two, the network posture and the gitleaks ignore-file posture, live beside that
+writer; `run_tools` binds all four back and is where each is filled).
 
 Separate from `run_tools` because it is a POLICY surface, and it grew like one:
 #1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
@@ -198,7 +198,7 @@ SUPPRESSION_IGNORED = "ignored"      # a verified knob was passed (redteam)
 SUPPRESSION_HONOURED = "honoured"    # the comment stood, and is disclosed
 SUPPRESSION_NA = "n/a"               # assessed: this argv honours no comment
 # Filled where the argv is built and read back by `write_manifest`, like
-# `run_tools._NETWORK_POSTURE`: "the operator's own suppression comments were
+# `tools_manifest._NETWORK_POSTURE`: "the operator's own suppression comments were
 # honoured" is a coverage fact. For a flag-lever tool the row is read off the
 # argv, so the claim cannot outlive the flag; for an ingest-lever tool
 # (`SUPPRESSION_INGEST_LEVER`) no flag decides and the row says what the mode

@@ -4,12 +4,18 @@ Split out of `phases/verify.py` (a pure move) so neither module sits on the
 700-line ceiling. `verify.py` keeps the cell and backup rounds and calls
 `_verify_tools_execute` / `_verify_tools_done` here as its third round.
 
-The queue is recomputed rather than read: `_tool_verify_queue` runs
+The queue is recomputed rather than read, because at this point there is
+nothing to read: `verify` runs BEFORE `synthesize` in `driver.PHASES`, so the
+report whose queue these verdicts must match does not exist yet, and the
+verdicts are one of its inputs. The only way to dispatch against the queue
+synthesize will build is to build it the same way -- `_tool_verify_queue` runs
 synthesize's OWN combined pipeline over the same inputs, so the (queue_id,
 finding id) pairs the driver dispatches against are byte-identical to the
-ones synthesize will later try to match a verdict to. `_tools_include_fixtures`
-is the one flag both sides read, which is why `phases/review.py` and
-`phases/synthesize.py` reach it here.
+ones synthesize will later try to match a verdict to. That is also why every
+argument below is pinned to synthesize's own ingest call, and why a drifted pin
+has cost real coverage before -- `_tool_verify_queue` names the incidents.
+`_tools_include_fixtures` is the one flag both sides read, which is why
+`phases/review.py` and `phases/synthesize.py` reach it here.
 
 `_confine_claim_location` came along because this is the channel #run8
 ARC-F2A was about -- a finding's `location.file` embedded verbatim in an
