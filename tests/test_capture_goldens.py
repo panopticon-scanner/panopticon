@@ -225,7 +225,7 @@ class _RecordingAdapter(_Adapter):
 
 
 class TestRedactBeforeWrite(unittest.TestCase):
-    """#run12: three adapters (gitleaks, bandit, trivy) point at /mnt/panopticon
+    """#run12: three adapters (gitleaks, bandit, trivy) pointed at /mnt/panopticon
     -- the operator's own checkout -- so a real .env was in gitleaks' scan path
     and its live API key was committed to a public golden. capture_goldens.py had
     no redaction step of any kind, so whatever a scanner found got written
