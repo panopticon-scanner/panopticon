@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Catalog rows for `.bandit` and two unlisted eslint spellings (#2330, #1784, ARC-G1B).** Owner
+  ruling 2026-09-28 on #2274: a root dot-file no shipped catalog NAMES stays invisible BY DESIGN,
+  and the remedy for a wanted one is a catalog row per spelling -- never a widened stem.
+  `skill/data/commons_catalog.yml` `Config` gains `.bandit`, `.eslintrc.cjs` and `.eslintrc.yaml`,
+  and `skill/scripts/dot_paths.py` `FILES` gains the same three, so this repository's own `.bandit`
+  -- named by neither the catalogs nor the SEC floor, and therefore reaching no group at all -- is
+  reviewable surface; with no committed `Config` group in `panopticon.yml` it is claimed by the
+  Commons catalog's `Config` category, which in this repo folds into the reported `Commons` group,
+  so the next self-scan carries one more file there and a reviewer may now question this repo's own
+  bandit `skips=`. The ruling named `.eslintrc.mjs` too; it is not a spelling the legacy cascade
+  reads (`.mjs` is flat config, already claimed as `eslint.config.mjs`), so no row. `.eslintcache`
+  stays out: the family is still spelled name by name (now seven) precisely to keep generated state
+  pruned.
 - **The zero-hunk delta gate counts only what the gate would have judged (#1783, #2222, follow-up to
   #2178).** Owner ruling 2026-09-28: the refusal is a statement about findings the empty hunk map
   hid FROM THE GATE, so `delta.zero_hunk_population` re-applies this run's own two policies to the
