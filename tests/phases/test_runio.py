@@ -507,6 +507,23 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             with open(path, encoding="utf-8") as stream:
                 self.assertEqual(json.load(stream), {"old": True})
 
+    def test_successful_publication_leaves_a_later_writers_stage_alone(self):
+        real_replace = os.replace
+
+        def publish_then_start_next_writer(source, destination):
+            real_replace(source, destination)
+            with open(source, "w", encoding="utf-8") as stream:
+                stream.write("NEXT WRITER")
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "artifact.json")
+            with mock.patch.object(runio.os, "replace", side_effect=publish_then_start_next_writer):
+                runio._write_json(path, {"ok": True})
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {"ok": True})
+            with open(path + ".tmp", encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "NEXT WRITER")
+
     def test_a_plain_write_that_fails_does_truncate_it(self):
         # The contrast, so the flag is not decorative: this is what the reader
         # of a per-entry usage.json was exposed to.

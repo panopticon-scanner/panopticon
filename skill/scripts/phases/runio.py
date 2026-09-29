@@ -277,15 +277,16 @@ def _write_json(path, data, atomic=True):
     _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
     os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
     target = path + ".tmp" if atomic else path
-    opened = False
+    staged = False
     try:
         with _open_w_nofollow(target) as fh:
-            opened = True
+            staged = atomic
             json.dump(data, fh, indent=2, sort_keys=True)
         if atomic:
             os.replace(target, path)
+            staged = False  # publication ended ownership of the staging name
     finally:
-        if atomic and opened:
+        if staged:
             try:
                 os.remove(target)
             except OSError:
