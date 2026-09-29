@@ -18,9 +18,10 @@ evidence exposed.
   fixture prune (#434) and the `.git`-segment drop hold under delta review too -- and so does the
   drop of a changed TRACKED symlink, which `--repo-scan` already dropped (`_is_confined_regular`
   is the shared `isfile`), so a target that tracks symlinks loses those files from a delta review.
-  The instance every target hits: a delta run no longer reviews its own untracked `.panopticon/`
-  run artifacts, which used to arrive as an `Ungrouped` cell of nothing but run output, with a
-  scout checkpoint spent on it; the run now advances through the remaining phases instead.
+  The instance a target hits unless it gitignores that directory: a delta run no longer reviews its
+  own untracked `.panopticon/` run artifacts, which used to arrive as an `Ungrouped` cell of nothing
+  but run output, with a scout checkpoint spent on it; the run now advances through the remaining
+  phases instead.
   The delta path now feeds the same `pruned_fixtures` list, which stays whole-repo-scoped because
   the listing runs first and the changed set is a subset of it: a delta run's
   `excluded.fixture_dirs` equals the whole-repo prune, unlike `excluded_count`, which #1136
