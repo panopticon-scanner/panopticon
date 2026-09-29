@@ -734,6 +734,14 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
             [countless, self._agent("AG-1", "HIGH")]))
         self.assertNotIn("occurrences", survivor)
         self.assertNotIn("additional_loci", survivor)
+        # A list that holds no locus dicts is no aggregation either: the count
+        # must not arrive beside an empty list.
+        dictless = dict(self._tool_hit("BN-2", 10), occurrences=2,
+                        additional_loci=["src/app.py:12"])
+        survivor = only(corroborate_mod.dedupe(
+            [dictless, self._agent("AG-2", "HIGH")]))
+        self.assertNotIn("occurrences", survivor)
+        self.assertNotIn("additional_loci", survivor)
         # And when the pair does travel, the survivor owns its locus dicts: the
         # list is new AND so is every dict in it, so no later in-place rewrite of
         # a locus can reach through to another finding.

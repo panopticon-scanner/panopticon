@@ -89,7 +89,10 @@ def _carry_aggregation(best, other):
         isinstance(best.get("occurrences"), int) and best["occurrences"] > 1
     ):
         return
-    best["additional_loci"] = [dict(locus) for locus in loci if isinstance(locus, dict)]
+    carried = [dict(locus) for locus in loci if isinstance(locus, dict)]
+    if not carried:
+        return  # a list with no locus dicts is no aggregation: the count stays with it
+    best["additional_loci"] = carried
     best["occurrences"] = count
 
 def _by_package(members):
