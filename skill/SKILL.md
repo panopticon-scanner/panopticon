@@ -148,7 +148,8 @@ resolve against cwd; only the script path substitutes.
   entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,
   marker, prompt_file, delivery, out_file` (never the inline `prompt`; `agent` is required on an
   `enforced` entry — it names the shell that IS the enforcement, and the workflow refuses the batch
-  when an enforced entry arrives without it). It runs one subagent per entry — inside its registered
+  when an enforced entry arrives without it, or when an unenforced one names a shell anyway —
+  the loop sets `agent` to null on those). It runs one subagent per entry — inside its registered
   `panopticon-*` shell when the entry is `enforced`, on the entry's
   `model` otherwise — marker line first (the read guard binds through the workflow transcript
   layout) and `prompt_file` second (granted to the entry's read scope), and returns `persist`

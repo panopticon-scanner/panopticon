@@ -143,8 +143,11 @@ class TestPromptFileGuard(DispatchScriptTestCase):
 class TestAgentTypeVsModel(DispatchScriptTestCase):
     """(d) enforced + agent -> opts.agentType == agent, NO opts.model.
     enforced WITHOUT an agent -> refused, nothing dispatched (#1783,
-    ARC-204863095). unenforced with agent -> opts.model, NO agentType --
-    the #1720 contract: an unenforced entry never names a shell."""
+    ARC-204863095). unenforced WITH an agent -> refused too, nothing
+    dispatched (#2166): the mirror half of the same statement, since the
+    #1720 contract is that an unenforced entry never names a shell -- the
+    phases set `agent` to None on those. unenforced with no agent (or an
+    empty one) -> opts.model, NO agentType."""
 
     def test_enforced_with_agent_sets_agent_type_never_model(self):
         entries = [_entry("e1", agent="panopticon-scout", enforced=True,
@@ -191,22 +194,108 @@ class TestAgentTypeVsModel(DispatchScriptTestCase):
         self.assertIn("e2", out["error"])
         self.assertEqual([], out["calls"], "e1 must not be dispatched either")
 
-    def test_unenforced_with_agent_uses_model_never_agent_type(self):
+    def test_unenforced_with_agent_is_refused_and_dispatches_nothing(self):
+        # #2166: the mirror of the refusal above, and the half B7 left out.
+        # The phases set `agent` to None on every unenforced entry, so a shell
+        # name on one is a claim this run never made; it used to fall to the
+        # `e.model` branch and run there with no refusal and no log line.
         entries = [_entry("e1", agent="panopticon-scout", enforced=False,
                           model="sonnet")]
         out = self.run_harness({"args": {"entries": entries},
                                 "replies": {"e1": "ok"}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("e1", out["error"])
+        self.assertIn("unenforced", out["error"])
+        self.assertIn("panopticon-scout", out["error"])
+        self.assertEqual([], out["calls"], "no agent should be dispatched")
+
+    def test_an_unenforced_second_entry_naming_a_shell_refuses_before_the_first_is_dispatched(self):
+        # The mirror of the two-entry case above: validation precedes dispatch
+        # for this refusal too, so the good enforced entry sorted ahead of the
+        # bad one is never launched, and never charged.
+        entries = [_entry("e1", agent="panopticon-scout", enforced=True),
+                   _entry("e2", enforced=False, model="opus",
+                          agent="panopticon-domain-panel")]
+        out = self.run_harness({"args": {"entries": entries},
+                                "replies": {"e1": "ok", "e2": "ok"}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("e2", out["error"])
+        self.assertEqual([], out["calls"], "e1 must not be dispatched either")
+
+    def test_an_empty_agent_string_on_an_unenforced_entry_is_not_a_shell(self):
+        # Mirror of the enforced empty-string case: `agent: ""` is falsy, and
+        # the dispatch branch has always read it as an absent name, so the
+        # refusal reads it the same way -- `""` is absent on both sides.
+        entries = [_entry("e1", agent="", enforced=False, model="sonnet")]
+        out = self.run_harness({"args": {"entries": entries},
+                                "replies": {"e1": "ok"}})
+        self.assertIsNone(out["error"])
         opts = out["calls"][0]["opts"]
         self.assertEqual("sonnet", opts["model"])
         self.assertNotIn("agentType", opts)
 
-    def test_unenforced_with_agent_and_no_model_names_neither(self):
-        entries = [_entry("e1", agent="panopticon-scout", enforced=False)]
+    def test_unenforced_without_agent_and_no_model_names_neither(self):
+        entries = [_entry("e1", enforced=False)]
         out = self.run_harness({"args": {"entries": entries},
                                 "replies": {"e1": "ok"}})
         opts = out["calls"][0]["opts"]
         self.assertNotIn("agentType", opts)
         self.assertNotIn("model", opts)
+
+
+class TestRefusalsEscapeTheId(DispatchScriptTestCase):
+    """(d2) #2166: every validation refusal that prints an id prints it
+    through `JSON.stringify`, the JS register of the `%r` that
+    `loop_batch.misroute_refusal` uses for the same value. The id is read out
+    of the dispatch request, a file inside the reviewed tree, and the refusal
+    reaches the operator's terminal -- so a control character, an ANSI escape
+    or an embedded newline in it has to arrive as its escape sequence rather
+    than as bytes the terminal acts on."""
+
+    ESC = "\x1b"
+    # `ESC [ 2 K` erases the operator's current line; the newline then forges
+    # a second line of output underneath the refusal.
+    HOSTILE_ID = "e1" + ESC + "[2K\nfake"
+    # What JSON.stringify renders those two as -- checked in node, not guessed.
+    ESCAPED_ESC = "\\u001b[2K"
+    ESCAPED_NEWLINE = "\\n"
+
+    def _refusals(self):
+        """One entry per validation refusal that prints an id, each carrying
+        HOSTILE_ID and each shaped so that ITS refusal is the one that fires
+        (a matching marker wherever the marker is not the point)."""
+        return {
+            "marker": {"id": self.HOSTILE_ID, "prompt_file": "e1.md"},
+            "prompt_file": _entry(self.HOSTILE_ID, prompt_file=""),
+            "enforced_without_shell": _entry(self.HOSTILE_ID, enforced=True,
+                                             model="opus"),
+            "unenforced_with_shell": _entry(self.HOSTILE_ID, enforced=False,
+                                            model="opus",
+                                            agent="panopticon-domain-panel"),
+        }
+
+    def test_the_hostile_id_really_carries_the_raw_bytes(self):
+        # The must-trip control: without it the assertions below could pass on
+        # test data that never held an escape or a newline in the first place.
+        self.assertIn(self.ESC, self.HOSTILE_ID)
+        self.assertIn("\n", self.HOSTILE_ID)
+
+    def test_every_refusal_that_prints_an_id_escapes_it(self):
+        for name, entry in self._refusals().items():
+            with self.subTest(refusal=name):
+                out = self.run_harness({"args": {"entries": [entry]},
+                                        "replies": {self.HOSTILE_ID: "ok"}})
+                self.assertIsNotNone(out["error"], "this shape must be refused")
+                self.assertIn(self.ESCAPED_ESC, out["error"])
+                self.assertIn(self.ESCAPED_NEWLINE, out["error"])
+                self.assertNotIn(
+                    self.ESC, out["error"],
+                    "a raw ESC byte reached the operator's terminal")
+                self.assertNotIn(
+                    "\n", out["error"],
+                    "a raw newline reached the operator's terminal")
+                self.assertEqual([], out["calls"],
+                                 "no agent should be dispatched")
 
 
 class TestPromptShape(DispatchScriptTestCase):
