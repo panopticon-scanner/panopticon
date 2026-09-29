@@ -531,7 +531,6 @@ class TestTheDiscoveryBlockReachesTheSection(unittest.TestCase):
         self.assertIsNone(sec["discovery_files_truncated"])
 
 
-
 class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
     """SEC-377944137 (#1832): #1208's own reasoning, one file up.
 
