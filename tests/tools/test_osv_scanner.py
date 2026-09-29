@@ -315,8 +315,36 @@ class TestOsvScannerAdapter(unittest.TestCase):
                 {"packages": []},
             ]
         }).encode()
-        findings = osv.OsvScannerAdapter().parse(sample, "g1")
+        findings, facts = osv.OsvScannerAdapter().parse_with_file_coverage(sample, "g1")
         self.assertEqual(findings, [])
+        self.assertEqual(facts["status"], "partial")
+        self.assertEqual(facts["malformed_records"], 3)
+        self.assertEqual(facts["unlocated_records"], 1)
+
+    def test_optional_metadata_types_cannot_discard_a_usable_advisory(self):
+        sample = json.loads(self._severity_sample([{
+            "id": "OSV-1234", "summary": None, "details": {}, "aliases": 5,
+            "severity": {}, "database_specific": {"severity": "HIGH"},
+        }]))
+        only(only(sample["results"])["packages"])["groups"] = 5
+        findings, facts = osv.OsvScannerAdapter().parse_with_file_coverage(
+            json.dumps(sample).encode(), "g1")
+        self.assertEqual(only(findings)["severity"], "HIGH")
+        self.assertEqual(only(findings)["description"], "No description provided.")
+        self.assertEqual(facts["status"], "complete")
+
+    def test_bad_source_preserves_advisory_with_an_unlocated_coverage_gap(self):
+        for source in (None, [], {"path": None}, {"path": []}):
+            with self.subTest(source=source):
+                sample = json.loads(self._severity_sample([{"id": "OSV-1234"}]))
+                only(sample["results"])["source"] = source
+                findings, facts = osv.OsvScannerAdapter().parse_with_file_coverage(
+                    json.dumps(sample).encode(), "g1")
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(facts["status"], "partial")
+                self.assertEqual(facts["unlocated_records"], 1)
+                self.assertEqual(facts["parsed_files"], 0)
+                self.assertEqual(facts["files"], [])
 
     def test_parse_empty_results(self):
         findings = osv.OsvScannerAdapter().parse(b'{"results": []}', "g1")

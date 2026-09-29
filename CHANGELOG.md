@@ -20,6 +20,12 @@ evidence exposed.
   twenty-four argv shapes (every tool with a repeatable knob, bandit's comma-joined value, a tool
   with none; zero, one and two directories; `target` set and unset) against a golden captured before
   the move, and the patch-rule guard derives all four modules' names from their own ASTs.
+- **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
+  findings remain available to reports and the security gate. Bounded diagnostics and coverage
+  facts distinguish malformed records, including those without an identifiable source file,
+  from valid empty results. Invalid top-level capture containers fail ingestion.
+- **Separate verdict resolution stages (#2318, #1826).** Matching, evidence and gate partitions
+  retain fingerprint identity, delta scope, accounting and suppressed-finding policy.
 - **Separate reconciliation decisions (#2317, #1826).** Indexing, recurring matches and close
   checks retain coverage guards, reason text, collision disclosure and output ordering.
 - **Share staged report publication (#2316, #1820).** Clean partial staging writes before

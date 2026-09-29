@@ -128,7 +128,7 @@ ROSLYN_SAMPLE_MALFORMED_SIBLING = json.dumps({
          "locations": [{"physicalLocation": {
              "artifactLocation": {"uri": "a.cs"},
              "region": {"startLine": 3}}}]},
-        # ruleId is not a string, so rule_id.startswith("SCS") raises mid-parse.
+        # A malformed identifier must not erase the usable sibling.
         {"ruleId": None,
          "message": {"text": "malformed result"},
          "locations": [{"physicalLocation": {
@@ -162,6 +162,20 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(by_rule["SCS0002"], "HIGH")
         self.assertEqual(by_rule["SCS0026"], "MEDIUM")
         self.assertEqual(by_rule["SCS0018"], "LOW")
+
+    def test_v1_path_attribution_matches_the_location_parser_fallback(self):
+        sample = json.loads(ROSLYN_SAMPLE_V1)
+        results = only(sample["runs"])["results"]
+        only(only(results)["locations"])["physicalLocation"] = {}
+        adapter = rs.RoslynSecGuardAdapter()
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(facts["parsed_files"], 1)
+        results.append({**only(results), "ruleId": None})
+        findings, facts = adapter.parse_with_file_coverage(json.dumps(sample).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (0, 1))
+        self.assertEqual(facts["unlocated_records"], 0)
 
     def test_parse_defaults_missing_level_to_warning_severity(self):
         # ROSLYN_SAMPLE has no "level" key at all; SARIF's own default for an
@@ -199,10 +213,22 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         for bad in (
             b'{"runs": ["not-a-dict"]}',
             b'{"runs": [null]}',
-            b'{"runs": null}',
             b'{"runs": [{"results": null}]}',
         ):
-            self.assertEqual(rs.RoslynSecGuardAdapter().parse(bad, "g1"), [])
+            findings, facts = rs.RoslynSecGuardAdapter().parse_with_file_coverage(bad, "g1")
+            self.assertEqual(findings, [])
+            self.assertEqual(facts["status"], "partial")
+
+    def test_intentional_policy_drops_do_not_claim_a_parse_failure(self):
+        for result in ({"ruleId": "CS1001", "message": "compiler diagnostic"},
+                       {"ruleId": "SCS0002"}, {"ruleId": "SCS0002", "locations": None},
+                       {"ruleId": "SCS0002", "locations": []}):
+            with self.subTest(result=result):
+                raw = json.dumps({"runs": [{"results": [result]}, {}]}).encode()
+                findings, facts = rs.RoslynSecGuardAdapter().parse_with_file_coverage(raw, "g1")
+                self.assertEqual(findings, [])
+                self.assertEqual(facts["status"], "complete")
+                self.assertEqual(facts["malformed_records"], 0)
 
     def test_parse_string_message(self):
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_STRING_MESSAGE, "g1")
@@ -226,7 +252,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MALFORMED_SIBLING, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
-        self.assertIn("roslyn-secguard: skipping result None:", stderr.getvalue())
+        self.assertIn("roslyn-secguard: partial capture: 1 malformed record(s)", stderr.getvalue())
 
     def test_build_target_prefers_solution(self):
         adapter = rs.RoslynSecGuardAdapter()
