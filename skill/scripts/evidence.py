@@ -222,14 +222,32 @@ def norm_path(p):
     return fpath
 
 
+def artifact_term(finding):
+    """`tool_evidence.package_name` when it names an artifact, else None.
+
+    The ONE rule every identity and collapse stage uses (#2225/#2352): a non-empty
+    string splits two findings at one locus; absent, empty, a non-string or a non-dict
+    `tool_evidence` means "no artifact" and the finding keys exactly as it did before
+    the term existed (absent-means-unchanged). Only a tool-sourced finding names an
+    artifact; an agent-authored `tool_evidence` never reaches an identity (#914 guard).
+    """
+    if not is_tool_sourced(finding):
+        return None
+    te = finding.get("tool_evidence")
+    pkg = te.get("package_name") if isinstance(te, dict) else None
+    return pkg if isinstance(pkg, str) and pkg else None
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding.
 
     Keys on panel + category + normalized file + the discriminator that is
     actually stable for that source: a tool's rule_id, or an agent finding's
-    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
-    free-text description (agent prose is re-worded every run). Also the
-    verify-queue's queue_id (P2) — the same identity both passes compute.
+    title -- plus `tool_evidence.package_name` when the finding names an
+    artifact, so two jars sharing one advisory at one manifest locus are two
+    identities (#2352). Deliberately EXCLUDES line numbers (issues survive code
+    moves) and free-text description (agent prose is re-worded every run). Also
+    the verify-queue's queue_id (P2) — the same identity both passes compute.
     """
     loc = finding.get("location") or {}
     fpath = norm_path(loc.get("file"))
@@ -237,9 +255,12 @@ def finding_fingerprint(finding):
     # advisor prose, which would be a disastrous identity discriminator.
     rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
     discriminator = str(rule) if rule else str(finding.get("title") or "")
-    payload = "|".join([str(finding.get("panel") or ""),
-                        str(finding.get("category") or ""),
-                        fpath, discriminator]).encode("utf-8")
+    parts = [str(finding.get("panel") or ""),
+             str(finding.get("category") or ""), fpath, discriminator]
+    pkg = artifact_term(finding)
+    if pkg is not None:
+        parts.append(pkg)
+    payload = "|".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
@@ -271,38 +292,21 @@ def matrix_finding_id(finding):
 
 
 def reconcile_key(finding):
-    """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
-    once a finding carries an OCRDb domain code (5.0), the tighter
-    (normalized_file, "code", code).
-
-    Separate from finding_fingerprint (the within-run identity, left untouched):
-    reconcile keys on this to match a finding across two independent agentic
-    runs, where the free-text title finding_fingerprint uses as an agent
-    finding's discriminator is re-worded every run. Dropping the title (keeping
-    file + panel + category) lets a re-worded finding match; a genuinely-fixed
-    one's key vanishes (#914). The file normalization is finding_fingerprint's
-    exactly -- both call norm_path.
-
-    5.0: this was the seam the #914-era docstring flagged -- the finding-code
-    catalog now exists (OCRDb), so a code-bearing finding reconciles on
-    (file, code) instead of the free-text `category`, a strictly more precise
-    identity (two reviewers naming the same OCRDb code agree even when their
-    prose category differs). A code-less finding is UNCHANGED: it falls through
-    to the legacy (file, panel, category) tuple exactly as before, so reconcile.py
-    (this function's only consumer) sees no behavior change for pre-5.0/code-less
-    findings. The two arms are disjoint EXCEPT one narrow case -- a code-less
-    finding whose `panel` is the literal "code" (itself a real PANELS value) and
-    whose `category` happens to equal a code-string aliases a code-bearing
-    finding at the same file. That coarse cross-run match is benign (both keys
-    resolve to the same reconcile identity, not a correctness bug); it is NOT the
-    impossibility earlier wording claimed.
+    """Coarse CROSS-RUN identity: (file, panel, category), or (file, "code", code) with
+    an OCRDb code, plus `tool_evidence.package_name` when it names an artifact -- two
+    jars on one advisory at one manifest are two identities (#2352). Coarser than
+    finding_fingerprint, so a re-worded finding matches (#914); a code-less or
+    artifact-less finding keys as before, and panel=="code" aliasing (#1034) is benign.
     """
     loc = finding.get("location") or {}
     code = finding.get("code")
     if code:
-        return (norm_path(loc.get("file")), "code", str(code))
-    return (norm_path(loc.get("file")), str(finding.get("panel") or ""),
-            str(finding.get("category") or ""))
+        key = (norm_path(loc.get("file")), "code", str(code))
+    else:
+        key = (norm_path(loc.get("file")), str(finding.get("panel") or ""),
+               str(finding.get("category") or ""))
+    pkg = artifact_term(finding)
+    return (key + (pkg,)) if pkg is not None else key
 
 
 def sev_rank(finding):
@@ -317,12 +321,10 @@ def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
     Precedence (P2, #446): an advisor VERDICT decides first, whatever the
-    source — previously tool-sourcing short-circuited ahead of verdicts, so an
-    advisor could never refute a scanner. Without a verdict, a tool-sourced or
-    reinforced finding is `tool_reported`: reported, not verified, and NOT
-    gate-eligible. Never mutates the finding. Self-asserted
-    provenance.confirmation_status is deliberately ignored — a reviewer cannot
-    confirm its own finding.
+    source. Without a verdict, a tool-sourced or reinforced finding is
+    `tool_reported`: reported, not verified, and NOT gate-eligible. Never
+    mutates the finding. Self-asserted provenance.confirmation_status is
+    deliberately ignored — a reviewer cannot confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
@@ -419,10 +421,8 @@ def build_verify_queue(findings, max_verify=None):
     """Return (entries, cut) for ALL findings, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
-    must mutate the real objects).
-
-    P2 (#446): tool-sourced and reinforced findings queue too — they are claims
-    like any other, and `tool_confirmed` now requires an advisor verdict.
+    must mutate the real objects); tool-sourced and reinforced findings queue
+    too, as claims like any other (P2, #446).
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the

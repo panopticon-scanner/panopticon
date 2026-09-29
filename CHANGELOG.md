@@ -17,6 +17,24 @@ evidence exposed.
   `frozenset()`; the ratchet's stale-entry half is what proved each re-capture, failing on all
   three until the entries came out. The normalization contract, the legacy-SARIF severity tests
   and the security gate's non-vendored/vendored pair all hold on the new bytes.
+- **`finding_fingerprint` and `reconcile_key` carry the artifact term (#2352, #1768, ARC-A4A).**
+  Follow-up to #2225: the two stages that COLLAPSE tool findings learned that one advisory against
+  two artifacts at one manifest locus is two issues, but the two IDENTITY functions did not. Two
+  vulnerable jars sharing one CVE at `pom.xml:1` hashed identically, so the verify queue handed the
+  second one a `<fingerprint>-1` suffix and logged a collision for a pair that is two real
+  vulnerabilities; `reconcile.py` recomputes both keys on both runs from today's algorithm, so a CVE
+  newly matched against a second jar in run 3 was read as the FIRST jar recurring from run 2 -- a
+  new vulnerability reported as a standing one. Both identities now append
+  `tool_evidence.package_name` when the finding names an artifact, and one definition,
+  `evidence.artifact_term`, is the only reading of that field: it serves both identities and
+  replaces the inline copy each collapse stage carried (`synth/findings.aggregate_tool_findings`
+  and `synth/corroborate._by_package`, behaviour unchanged). A finding naming no artifact -- every
+  SARIF-path and agent finding, and one carrying an empty or non-string value -- keys byte-for-byte
+  as it did before the term existed. The `--pr`/delta gate needed NO change and got none:
+  `security_gate.finding_identity`'s fourth element is the whitespace-collapsed TITLE, which
+  dependency-check starts with the jar name, so two artifacts were already two gate identities --
+  now pinned by a test. The same one-locus shape reaches `osv-scanner`, `pip-audit`, `npm-audit`,
+  `cargo-audit` and `bundler-audit`, which the one definition covers by construction.
 - **The workflow guard closes eight LOW follow-ups from its 5.2 reviews (#1793).**
   `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
   `sh <<< '…'` is read as its script; an interpreter's here-string bash expands is reported (#2293).

@@ -355,6 +355,48 @@ class TestBuildDiffCohorts(unittest.TestCase):
         diff = reconcile.build_diff(t2, t3, "r2", "r3")
         self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"T"})
 
+    def _jar(self, fid, jar):
+        """A dependency-check-shaped finding: located at the build manifest it
+        audited (#2225's manifest proxy), the vulnerable ARTIFACT in the title
+        and in `tool_evidence.package_name`."""
+        return {"id": fid, "panel": "security",
+                "category": "vulnerable-dependency",
+                "title": "%s: CVE-2021-1" % jar,
+                "source": "tool:dependency-check",
+                "location": {"file": "pom.xml", "line_start": 1},
+                "tool_evidence": {"rule_id": "CVE-2021-1", "package_name": jar}}
+
+    def _jar_diff(self, run2, run3):
+        """`build_diff` with the close path LIVE -- run3 states it reviewed the
+        manifest and declares itself repo-wide, so no close_guard short-circuits
+        the cohort reads (#2352)."""
+        diff = reconcile.build_diff(self._recs(run2), self._recs(run3), "r2", "r3",
+                                    run3_reviewed_files={"pom.xml"},
+                                    run3_review_type="repo")
+        self.assertIsNone(diff["meta"]["close_guard"])
+        return diff
+
+    def test_a_second_jar_on_the_same_advisory_is_new_not_recurring(self):
+        # #2352: two vulnerable artifacts sharing one advisory at one manifest
+        # are two CROSS-RUN identities. Both keys reconcile recomputes -- the
+        # exact fingerprint and the coarse reconcile_key -- ignored the
+        # artifact, so a jar first reported in run 3 read as the run-2 jar
+        # recurring.
+        diff = self._jar_diff([self._jar("A2", "a.jar")],
+                              [self._jar("A3", "a.jar"), self._jar("B3", "b.jar")])
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(self._cohort_ids(diff, "new", "run3"), {"B3"})
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+
+    def test_control_one_jar_on_both_sides_recurs_with_nothing_new(self):
+        diff = self._jar_diff([self._jar("A2", "a.jar")],
+                              [self._jar("A3", "a.jar")])
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(diff["new"], [])
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+
     def test_split_merge_cardinality_both_kept(self):
         # two run2 findings on one coarse key, one run3 finding on it -> both kept.
         r2 = self._recs([self._f("A", "m.py", "code", "dup", "Dup logic A"),

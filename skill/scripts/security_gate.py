@@ -237,7 +237,10 @@ def finding_identity(finding):
     that never touched it. Same reasoning, and the same three helpers, as
     `evidence.finding_fingerprint` -- `tool_name`, `tool_rule_id`, `norm_path`
     -- so this gate's idea of "the same finding" cannot drift from the one the
-    report already uses.
+    report already uses. The report's identity also carries
+    `tool_evidence.package_name` (#2352); this gate gets the artifact through the
+    TITLE, which dependency-check starts with the jar name, so the two still agree
+    on what a finding is.
 
     The MESSAGE is in it, because one rule fires many times in one file for
     different reasons and, once the line is gone, the message is the only field
