@@ -323,7 +323,7 @@ jobs:
       # builds its failure note from the first 300 characters of it.
       # Both security workflows scan in `redteam` (owner ruling 2026-09-26,
       # #1839). Today the mode changes two things: under `redteam` the
-      # virtualenv skip is off (run_tools.py, `partition_venv_dirs` hands the
+      # virtualenv skip is off (venv_scope.py, `partition_venv_dirs` hands the
       # scanners nothing) and the gate re-admits name-suppressed findings
       # (security_gate.py, policy C), so a PR cannot hide a CRITICAL or a
       # secret-class finding under a `venv/`-named directory

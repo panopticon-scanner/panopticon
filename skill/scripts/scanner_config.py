@@ -14,7 +14,7 @@ writer; `run_tools` binds all four back and is where each is filled).
 Separate from `run_tools` because it is a POLICY surface, and it grew like one:
 #1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
 own 700-line ratchet, having absorbed the whole post-run scanner-policy series
-because nothing pushed back on it. This is part 1 of 3 of that split, and it
+because nothing pushed back on it. This is part 1 of 4 of that split, and it
 moved the block whole -- no string, flag, path, message or exception changed, and
 `tests/test_scanner_config.py` pins the docker argv of every staged tool against
 a golden captured before the move.
@@ -23,7 +23,9 @@ The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why the two bandit exclude tuples live here (`BANDIT_INI_TEXT` is built
 from them at import) while `_bandit_exclude_value` and `_excludable` stayed
 behind -- they read the virtualenv detector, and following them would have
-dragged it across and closed the loop. Stdlib-only.
+dragged it across and closed the loop. Part 4 gave that detector its own module:
+they now live in `venv_scope`, which imports the two tuples FROM here, one
+direction still. Stdlib-only.
 """
 import contextlib
 import os
@@ -36,7 +38,7 @@ from scripts.tools.base import REDTEAM, SECURITY_FLAG
 
 # Where the target is mounted inside every scanner container. One name, so the
 # `-v` mount and the `-w` working directory cannot come to disagree about which
-# path the two mount-cwd scanners are pointed at. (`run_tools._with_venv_excludes`
+# path the two mount-cwd scanners are pointed at. (`venv_scope._with_venv_excludes`
 # and bandit's `--ini` pin still spell it literally; both are outside #1877's
 # scope.)
 TARGET_MOUNT = "/src"
@@ -67,7 +69,7 @@ BANDIT_INI_NAME = "bandit.ini"
 TRIVY_IGNOREFILE_NAME = ".trivyignore"
 # The target's OWN bandit ini as bandit sees it, honoured under `standard` only
 # (owner ruling of 2026-09-25 on #1924; see `_scanner_owned_config`). Spelled
-# literally, like `run_tools._with_venv_excludes`' `/src` prefixes, because it is
+# literally, like `venv_scope._with_venv_excludes`' `/src` prefixes, because it is
 # a pinned argv token, not a mount this module composes from `TARGET_MOUNT` above.
 TARGET_BANDIT_INI = "/src/.bandit"
 

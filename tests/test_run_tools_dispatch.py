@@ -13,6 +13,7 @@ from unittest import mock
 import scripts.run_tools as rt
 import scripts.scanner_config as sc
 import scripts.tools_manifest as tm
+import scripts.venv_scope as vs
 
 from tests.run_tools_test_helpers import _DockerStub, _FakeResult
 
@@ -942,7 +943,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         # must carry everything the ini carries -- plus this run's virtualenvs,
         # which the ini deliberately does not name (round 1 C1).
         venvs = [{"path": ".venv", "reason": rt.VENV_MARKER}]
-        cmd = rt._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), venvs)
+        cmd = vs._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), venvs)
         argv_value = [a for a in cmd
                       if a.startswith("--exclude=")][0][len("--exclude="):]
         ini_value = self._ini_excludes(rt.BANDIT_INI_TEXT)
