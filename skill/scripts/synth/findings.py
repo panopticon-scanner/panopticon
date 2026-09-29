@@ -495,18 +495,17 @@ def aggregate_tool_findings(findings):
         if not evidence_mod.is_tool_sourced(f) or not rule:
             out.append(f)
             continue
-        # #2225: the ARTIFACT the advisory is about, on exactly the terms
-        # `corroborate._by_package` uses one stage later. dependency-check is
-        # located at the build manifest it audited, so two DIFFERENT vulnerable
-        # jars sharing one CVE reach one (panel, category, file, rule) key --
-        # and aggregated into ONE finding carrying `occurrences: 2` before
-        # dedupe ever saw them, which is the same lost vulnerability one stage
-        # earlier. Absent or non-string means one bucket, so every SARIF-path
-        # finding (no `package_name`) behaves exactly as before.
-        pkg = (f.get("tool_evidence") or {}).get("package_name")
+        # #2225: the ARTIFACT the advisory is about, read through
+        # `evidence.artifact_term` -- the one definition `corroborate._by_package`
+        # uses one stage later (#2352). dependency-check is located at the build
+        # manifest it audited, so two DIFFERENT vulnerable jars sharing one CVE
+        # reach one (panel, category, file, rule) key -- and aggregated into ONE
+        # finding carrying `occurrences: 2` before dedupe ever saw them, which is
+        # the same lost vulnerability one stage earlier. Naming no artifact means
+        # one bucket, so every SARIF-path finding behaves exactly as before.
         key = (f.get("panel"), f.get("category"),
                evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
-               str(rule), pkg if isinstance(pkg, str) and pkg else None)
+               str(rule), evidence_mod.artifact_term(f))
         if key not in groups:
             groups[key] = []
             order.append(key)

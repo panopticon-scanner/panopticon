@@ -79,8 +79,9 @@ def _by_package(members):
     buckets: dict[str | None, list[dict[str, Any]]] = {}
     order = []
     for m in members:
-        pkg = (m.get("tool_evidence") or {}).get("package_name")
-        key = pkg if isinstance(pkg, str) and pkg else None
+        # `evidence.artifact_term` is the one reading of the term, shared with
+        # both identity functions and `findings.aggregate_tool_findings` (#2352).
+        key = evidence_mod.artifact_term(m)
         if key not in buckets:
             buckets[key] = []
             order.append(key)

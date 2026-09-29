@@ -360,8 +360,10 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     """Partition cross-run identities into recurring / closed / ambiguous / new.
 
     A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
-    (file, panel, category) appears in the other run -- the coarse tier catches
-    agent findings whose title was re-worded (#914); the coarse run3 side is
+    (file, panel, category[, artifact]) appears in the other run -- the artifact is
+    `tool_evidence.package_name`, present only on a tool finding that names one, so
+    two vulnerable jars at one manifest are two identities (#2352). The coarse tier
+    catches agent findings whose title was re-worded (#914); the coarse run3 side is
     populated from every record sharing that coarse key, so a re-worded run3
     finding is never silently dropped from the diff (#914 final-review F4).
     A non-recurring run2 finding is CLOSED only when ALL of the following hold:
