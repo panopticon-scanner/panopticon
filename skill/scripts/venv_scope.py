@@ -308,7 +308,7 @@ def _bandit_exclude_value(venv_dirs):
     preserved.
 
     Nothing in it is read out of the target (#1839). It used to merge the
-    `exclude` entries of the target's own `.bandit` -- a file `run_tools` also
+    `exclude` entries of the target's own `.bandit` -- a file `scanner_config` also
     PINNED with `--ini`, so the reviewed repository chose bandit's `exclude`,
     and through the same file its `tests` and `skips`: a committed
     `tests = B999` would have reduced the merge gate's Python SAST to one check,

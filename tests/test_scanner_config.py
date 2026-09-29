@@ -197,7 +197,7 @@ GOLDEN = {
 
 
 class TestTheDockerArgvSurvivesTheExtraction(unittest.TestCase):
-    """#1762 split 1/3 is a pure move, and this is what "pure" is allowed to
+    """#1762 split 1/4 is a pure move, and this is what "pure" is allowed to
     mean: every scanner-owned config launch builds the same argv it built
     before the block left `run_tools`.
 

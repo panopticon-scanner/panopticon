@@ -27,14 +27,14 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # #1762 (ARC-2609514778) part 1 of 4: the scanner-owned configuration block moved
 # to `scanner_config` whole. These names stay bound HERE because something still
 # reads them through `run_tools.<name>`: the two exclude tuples are read by
-# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py` (part 4
-# took their one reader here, `_bandit_exclude_value`, with the virtualenv
-# block), `_working_dir_flags` and the dispatch loop spell `TARGET_MOUNT`
-# (`tests/test_code_scanning_reports.py` pins it against the report side), two of
-# the four ledgers the tools manifest reads back move with the block and are
-# cleared by `run_tools()`, and the staged-config constants are read by
-# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`. A ledger
-# is the SAME dict object either way, so `.clear()`/`.pop()` here and
+# `tests/test_run_tools_core.py`, `tests/test_run_tools_dispatch.py` and
+# `tests/test_venv_scope.py` (part 4 took their one reader here,
+# `_bandit_exclude_value`); `_working_dir_flags` and the dispatch loop spell
+# `TARGET_MOUNT` (`tests/test_code_scanning_reports.py` pins it against the
+# report side); two of the four ledgers the manifest reads back move with the
+# block and are cleared by `run_tools()`; and the staged-config constants are
+# read by `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`.
+# A ledger is the SAME dict object either way, so `.clear()`/`.pop()` here and
 # `[tool] = ...` there address one ledger.
 #
 # CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved

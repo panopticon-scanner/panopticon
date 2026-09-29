@@ -35,7 +35,7 @@ import scripts.run_tools as rt
 import scripts.venv_scope as vs
 
 
-def _venv(root, rel, marker=True, shape=True):
+def _plant_venv(root, rel, marker=True, shape=True):
     """A virtualenv as a creator leaves one: the marker AND an interpreter."""
     os.makedirs(os.path.join(root, rel), exist_ok=True)
     if marker:
@@ -57,12 +57,12 @@ def _plant_the_golden_tree(root):
     one past it, one under a pruned directory, and one whose NAME no exclusion
     value can carry. Plus ordinary source, which must stay unflagged.
     """
-    _venv(root, ".venv")                                    # marker + shape
-    _venv(root, "marker-only", shape=False)                 # a claim, no env
-    _venv(root, os.path.join("a", "b", ".venv"))            # at the bound
-    _venv(root, os.path.join("a", "b", "c", ".venv"))       # past the bound
-    _venv(root, os.path.join("node_modules", "venv"))       # under a pruned dir
-    _venv(root, "a,b")                                      # inexpressible name
+    _plant_venv(root, ".venv")                              # marker + shape
+    _plant_venv(root, "marker-only", shape=False)           # a claim, no env
+    _plant_venv(root, os.path.join("a", "b", ".venv"))      # at the bound
+    _plant_venv(root, os.path.join("a", "b", "c", ".venv"))  # past the bound
+    _plant_venv(root, os.path.join("node_modules", "venv"))  # under a pruned dir
+    _plant_venv(root, "a,b")                                # inexpressible name
     os.makedirs(os.path.join(root, "src"), exist_ok=True)    # real source
 
 
@@ -241,8 +241,11 @@ class TestTheVirtualenvWalkAndItsExclusionKnobs(unittest.TestCase):
     """#1638 P09 (D8): keep the scanners out of virtualenvs in the first place.
 
     The eight self-contained tests of `tests/test_run_tools_core.py`'s
-    `TestVirtualenvExclusion`, which keeps the ones that drive a whole
-    `run_tools()`/`main()` dispatch to prove the flags reach a real argv.
+    `TestVirtualenvExclusion`, which keeps the rest: MOSTLY tests that drive a
+    whole `run_tools()`/`main()` dispatch to prove the flags reach a real argv,
+    plus two `collect_sanitization` cases, the repo's own committed `.bandit`
+    spellings, and two `_is_excluded`/`select_adapters` checks on ruling 3's
+    root manifests.
     """
 
     def _venv(self, root, rel, marker=True, shape=True):
@@ -448,8 +451,9 @@ class TestNoTargetDirectoryNameReachesAnExclusionKnob(unittest.TestCase):
     doublestar ALTERNATION, `a,b` splits bandit's comma-joined value, and `*` is
     the whole tree out of semgrep's scope. The four self-contained tests of
     `tests/test_run_tools_core.py`'s `TestNoTargetTextReachesAScannerConfig`,
-    which keeps the ones about the staged bandit ini -- that file is
-    `scanner_config`'s and did not move.
+    which keeps the two about the scanner-owned staged config -- those files are
+    `scanner_config`'s and did not move -- and the one that drives
+    `run_tools()`'s own convenience default.
     """
 
     # Names the ALLOWLIST must refuse. `a\x00b` is refused by the predicate but

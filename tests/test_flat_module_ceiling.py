@@ -46,10 +46,11 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # must disappear once the module is at or under LINE_CEILING, and it is lowered
 # to the new count whenever the module shrinks. Twenty modules, and the five
 # with a fix shape written down are the first ones owed:
-# `run_tools.py` (ARC-2609514778 -- all three extractions have now landed,
-# scanner config, capture and manifest, and the pin below is what they did not
-# reach: detection, virtualenv partitioning, selection, the docker argv and the
-# CLI), `setup_flow.py` (ARC-1181155147), `orchestrate.py`
+# `run_tools.py` (ARC-2609514778 -- all four extractions have now landed,
+# scanner config, capture, manifest and the virtualenv scope, and the pin below
+# is what they did not reach: docker detection, language detection, selection,
+# the docker argv and the CLI), `setup_flow.py` (ARC-1181155147),
+# `orchestrate.py`
 # (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
 # (ARC-2990316730).
 PENDING: dict[str, int] = {
