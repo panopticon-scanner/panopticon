@@ -522,6 +522,44 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(len(all_ids), len(set(all_ids)))
 
 
+class TestArtifactIdentityAcrossRuns(unittest.TestCase):
+    """#2352: two vulnerable artifacts sharing one advisory at one manifest are
+    two CROSS-RUN identities. Both keys reconcile recomputes -- the exact
+    fingerprint and the coarse reconcile_key -- ignored the artifact, so a jar
+    first reported in run 3 was read as the run-2 jar recurring."""
+
+    def _recs(self, findings):
+        return reconcile.iter_records({"findings": findings})
+
+    def _jar(self, fid, jar):
+        return {"id": fid, "panel": "security",
+                "category": "vulnerable-dependency",
+                "title": "%s: CVE-2021-1" % jar,
+                "source": "tool:dependency-check",
+                "location": {"file": "pom.xml", "line_start": 1},
+                "tool_evidence": {"rule_id": "CVE-2021-1", "package_name": jar}}
+
+    def _ids(self, diff, cohort, side):
+        return {r["id"] for e in diff[cohort] for r in e.get(side, [])}
+
+    def test_a_second_jar_on_the_same_advisory_is_new_not_recurring(self):
+        r2 = self._recs([self._jar("A2", "a.jar")])
+        r3 = self._recs([self._jar("A3", "a.jar"), self._jar("B3", "b.jar")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(self._ids(diff, "new", "run3"), {"B3"})
+        self.assertEqual(self._ids(diff, "closed", "run2"), set())
+
+    def test_control_one_jar_on_both_sides_recurs_with_nothing_new(self):
+        r2 = self._recs([self._jar("A2", "a.jar")])
+        r3 = self._recs([self._jar("A3", "a.jar")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(diff["new"], [])
+
+
 class TestRun3CoverageGuards(unittest.TestCase):
     """#1807 (run-14 DAT-1268532600): absence of a run3 finding is only evidence
     of a fix on a file run3 actually reviewed. A NARROWER run3 -- e.g.

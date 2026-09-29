@@ -1,3 +1,4 @@
+import hashlib
 import os
 import json
 import unittest
@@ -294,6 +295,62 @@ class TestReconcileKeyCollision(unittest.TestCase):
         b = ev.reconcile_key({"location": {"file": "a.py"},
                               "panel": "security", "category": "SEC-A1A"})
         self.assertNotEqual(a, b)   # only panel=="code" can collide
+
+
+class TestArtifactTerm(unittest.TestCase):
+    """#2352: `artifact_term` is the ONE reading of `tool_evidence.package_name`,
+    and both identity functions carry it. The manifest proxy (#2225) puts every
+    dependency-check finding at `pom.xml:1`, so the ARTIFACT is what tells two
+    vulnerable jars sharing one advisory apart."""
+
+    MISSING = object()
+
+    def _f(self, pkg=MISSING, **over):
+        f = {"id": "SEC-9", "panel": "security",
+             "category": "vulnerable-dependency", "title": "CVE-2021-1",
+             "source": "tool:dependency-check",
+             "location": {"file": "pom.xml", "line_start": 1},
+             "tool_evidence": {"rule_id": "CVE-2021-1"}}
+        if pkg is not self.MISSING:
+            f["tool_evidence"]["package_name"] = pkg
+        f.update(over)
+        return f
+
+    def test_only_a_non_empty_string_names_an_artifact(self):
+        self.assertEqual(ev.artifact_term(self._f("a.jar")), "a.jar")
+        # A non-dict `tool_evidence` is out of scope: the report schema makes it
+        # an object, and both inline copies this helper replaces read it the
+        # same way, so behaviour there is unchanged rather than pinned here.
+        for absent in (self._f(), self._f(""), self._f(None), self._f(["a.jar"]),
+                       self._f(0), {}, {"tool_evidence": None}):
+            with self.subTest(finding=absent):
+                self.assertIsNone(ev.artifact_term(absent))
+
+    def test_two_jars_at_one_locus_are_two_fingerprints(self):
+        self.assertNotEqual(ev.finding_fingerprint(self._f("a.jar")),
+                            ev.finding_fingerprint(self._f("b.jar")))
+
+    def test_two_jars_are_two_reconcile_keys_in_both_arms(self):
+        self.assertNotEqual(ev.reconcile_key(self._f("a.jar")),
+                            ev.reconcile_key(self._f("b.jar")))
+        self.assertNotEqual(ev.reconcile_key(self._f("a.jar", code="SEC-A1A")),
+                            ev.reconcile_key(self._f("b.jar", code="SEC-A1A")))
+
+    def test_a_finding_naming_no_artifact_keys_exactly_as_before(self):
+        # absent-means-unchanged, pinned against the pre-#2352 payload spelled
+        # out here rather than against the function that is being changed.
+        expected = hashlib.sha256("|".join(
+            ["security", "vulnerable-dependency", "pom.xml",
+             "CVE-2021-1"]).encode("utf-8")).hexdigest()[:16]
+        self.assertEqual(ev.finding_fingerprint(self._f()), expected)
+        self.assertEqual(ev.reconcile_key(self._f()),
+                         ("pom.xml", "security", "vulnerable-dependency"))
+
+    def test_an_empty_package_name_keys_like_no_package_name_at_all(self):
+        bare, empty = self._f(), self._f("")
+        self.assertEqual(ev.finding_fingerprint(bare),
+                         ev.finding_fingerprint(empty))
+        self.assertEqual(ev.reconcile_key(bare), ev.reconcile_key(empty))
 
 
 class TestReportSectionPartition(unittest.TestCase):

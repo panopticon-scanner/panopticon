@@ -222,14 +222,28 @@ def norm_path(p):
     return fpath
 
 
+def artifact_term(finding):
+    """`tool_evidence.package_name` when it names an artifact, else None.
+
+    The ONE rule every identity and collapse stage uses (#2225/#2352): a
+    non-empty string splits two findings at one locus; absent, empty or
+    non-string means "no artifact" and the finding keys exactly as it did
+    before the term existed (absent-means-unchanged).
+    """
+    pkg = (finding.get("tool_evidence") or {}).get("package_name")
+    return pkg if isinstance(pkg, str) and pkg else None
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding.
 
     Keys on panel + category + normalized file + the discriminator that is
     actually stable for that source: a tool's rule_id, or an agent finding's
-    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
-    free-text description (agent prose is re-worded every run). Also the
-    verify-queue's queue_id (P2) — the same identity both passes compute.
+    title -- plus `tool_evidence.package_name` when the finding names an
+    artifact, so two jars sharing one advisory at one manifest locus are two
+    identities (#2352). Deliberately EXCLUDES line numbers (issues survive code
+    moves) and free-text description (agent prose is re-worded every run). Also
+    the verify-queue's queue_id (P2) — the same identity both passes compute.
     """
     loc = finding.get("location") or {}
     fpath = norm_path(loc.get("file"))
@@ -237,9 +251,12 @@ def finding_fingerprint(finding):
     # advisor prose, which would be a disastrous identity discriminator.
     rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
     discriminator = str(rule) if rule else str(finding.get("title") or "")
-    payload = "|".join([str(finding.get("panel") or ""),
-                        str(finding.get("category") or ""),
-                        fpath, discriminator]).encode("utf-8")
+    parts = [str(finding.get("panel") or ""),
+             str(finding.get("category") or ""), fpath, discriminator]
+    pkg = artifact_term(finding)
+    if pkg:
+        parts.append(pkg)
+    payload = "|".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
@@ -271,38 +288,21 @@ def matrix_finding_id(finding):
 
 
 def reconcile_key(finding):
-    """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
-    once a finding carries an OCRDb domain code (5.0), the tighter
-    (normalized_file, "code", code).
-
-    Separate from finding_fingerprint (the within-run identity, left untouched):
-    reconcile keys on this to match a finding across two independent agentic
-    runs, where the free-text title finding_fingerprint uses as an agent
-    finding's discriminator is re-worded every run. Dropping the title (keeping
-    file + panel + category) lets a re-worded finding match; a genuinely-fixed
-    one's key vanishes (#914). The file normalization is finding_fingerprint's
-    exactly -- both call norm_path.
-
-    5.0: this was the seam the #914-era docstring flagged -- the finding-code
-    catalog now exists (OCRDb), so a code-bearing finding reconciles on
-    (file, code) instead of the free-text `category`, a strictly more precise
-    identity (two reviewers naming the same OCRDb code agree even when their
-    prose category differs). A code-less finding is UNCHANGED: it falls through
-    to the legacy (file, panel, category) tuple exactly as before, so reconcile.py
-    (this function's only consumer) sees no behavior change for pre-5.0/code-less
-    findings. The two arms are disjoint EXCEPT one narrow case -- a code-less
-    finding whose `panel` is the literal "code" (itself a real PANELS value) and
-    whose `category` happens to equal a code-string aliases a code-bearing
-    finding at the same file. That coarse cross-run match is benign (both keys
-    resolve to the same reconcile identity, not a correctness bug); it is NOT the
-    impossibility earlier wording claimed.
+    """Coarse CROSS-RUN identity: (file, panel, category), or (file, "code", code) with
+    an OCRDb code, plus `tool_evidence.package_name` when it names an artifact -- two
+    jars on one advisory at one manifest are two identities (#2352). Coarser than
+    finding_fingerprint, so a re-worded finding matches (#914); a code-less or
+    artifact-less finding keys as before, and panel=="code" aliasing (#1034) is benign.
     """
     loc = finding.get("location") or {}
     code = finding.get("code")
     if code:
-        return (norm_path(loc.get("file")), "code", str(code))
-    return (norm_path(loc.get("file")), str(finding.get("panel") or ""),
-            str(finding.get("category") or ""))
+        key = (norm_path(loc.get("file")), "code", str(code))
+    else:
+        key = (norm_path(loc.get("file")), str(finding.get("panel") or ""),
+               str(finding.get("category") or ""))
+    pkg = artifact_term(finding)
+    return key + (pkg,) if pkg else key
 
 
 def sev_rank(finding):
