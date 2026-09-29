@@ -31,11 +31,11 @@ from scripts.tools.sarif_utils import (
     _rules_index,
     sarif_to_findings,
 )
-from scripts.run_tools import (      # #run7 OPS-D1A: shared cap
-    MAX_TOOL_OUTPUT_BYTES,
-    VENV_MARKER,
-    has_venv_shape,                  # #1839: one venv-shape predicate
-)
+from scripts.run_tools import MAX_TOOL_OUTPUT_BYTES   # #run7 OPS-D1A: shared cap
+# #1762 part 4: the virtualenv block left `run_tools` for `venv_scope`, so the
+# marker token and the shape predicate come from their owner -- ONE definition of
+# each, which is #1839's whole point (the scan side and this side must not drift).
+from scripts.venv_scope import VENV_MARKER, has_venv_shape
 
 # Re-export shared SARIF helpers so existing callers/tests keep working.
 __all__ = [
@@ -156,8 +156,8 @@ _VENDORED_DIRS = {"vendor", "node_modules", "bower_components", "third_party",
 # METADATA FIRST: `pyvenv.cfg` is the marker every creator writes (venv,
 # virtualenv, uv, pipenv, poetry-in-project), so it catches the ones named
 # `env/` or `.direnv/` that no name list would. #1839: the token comes from
-# `run_tools`, which writes it into the manifest rows `scan_skipped_venvs` reads
-# back -- two spellings of it could not be told apart when they drifted.
+# `venv_scope`, whose walk writes it into the manifest rows `scan_skipped_venvs`
+# reads back -- two spellings of it could not be told apart when they drifted.
 _VENV_MARKER = VENV_MARKER
 _VENV_DIR_NAMES = {".venv", "venv"}
 # NAMES SECOND, and unconditionally: ingest reads SARIF paths and often has no
@@ -227,7 +227,7 @@ def _has_venv_marker(root, rel):
     that resolves outside it is not a tree we let mark anything.
 
     #1839 (run-14 SEC-1486247143): the shape test is the same predicate the
-    scan side uses (`run_tools.has_venv_shape`), deliberately imported rather
+    scan side uses (`venv_scope.has_venv_shape`), deliberately imported rather
     than restated. A bare `pyvenv.cfg` is ONE file the reviewed repository can
     commit, and on the strength of it this rule dropped every finding under the
     directory holding it -- `src/pyvenv.cfg` took `src/` out of the report at any
@@ -1009,7 +1009,7 @@ def scan_skipped_venvs(manifest):
     """The virtualenv directories THIS RUN'S SCAN was told to skip, as
     `{reserved segment: [directory, ...]}` (#1839, run-14 SEC-1486247143).
 
-    `run_tools.partition_venv_dirs` hands semgrep, trivy and bandit an exclusion
+    `venv_scope.partition_venv_dirs` hands semgrep, trivy and bandit an exclusion
     for a `pyvenv.cfg`-confirmed directory AND for a `venv`/`.venv` name under
     `--security standard` -- the #1638 P09 walk saving -- and the scanners then
     report nothing from either, so there is no finding for `suppressed_counts` to
