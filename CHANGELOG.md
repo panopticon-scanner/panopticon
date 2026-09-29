@@ -22,6 +22,30 @@ evidence exposed.
   the loop that prints an id now prints it through `JSON.stringify`. The enforced/unenforced
   dispatch branch itself is unchanged: validation now leaves it reachable only by the two shapes
   it was written for, and `agent: ""` still reads as absent on both sides.
+- **`--scope-changed` asks the same dot-path policy `--repo-scan` asks (#2272, #1784, ARC-F2E).**
+  The delta path built its reviewed set from git-diff output, pruned fixture corpora and committed
+  `exclude_paths`, and stopped -- it never asked `dot_paths.allowed`. So a tracked, CHANGED
+  `.hidden/a.py`, `.venv/lib/x.py` or `.mypy_cache/b.py` -- and a changed `node_modules/c.js` in a
+  target that tracks it -- was reviewable surface under `--scope-changed` while `--repo-scan` pruned
+  it; #1136's comment at that caller already named this class of delta-path divergence. The branch
+  now goes through the SAME `_filter_reviewable` with the SAME arguments as the whole-repo listing,
+  so the one dot-path policy, `EXCLUDE_DIRS`/`EXCLUDE_DIR_GLOBS` on every ancestor segment, the
+  fixture prune (#434) and the `.git`-segment drop hold under delta review too -- and so does the
+  drop of a changed TRACKED symlink, which `--repo-scan` already dropped (`_is_confined_regular`
+  is the shared `isfile`), so a target that tracks symlinks loses those files from a delta review.
+  The instance a target hits unless it gitignores that directory: a delta run no longer reviews its
+  own untracked `.panopticon/` run artifacts, which used to arrive as an `Ungrouped` cell of nothing
+  but run output, with a scout checkpoint spent on it; the run now advances through the remaining
+  phases instead.
+  The delta path now feeds the same `pruned_fixtures` list, which stays whole-repo-scoped because
+  the listing runs first and the changed set is a subset of it: a delta run's
+  `excluded.fixture_dirs` equals the whole-repo prune, unlike `excluded_count`, which #1136
+  re-derives from the changed set. Two divergences remain and are NOT touched here -- the delta call
+  skips `_cap_discovered`, so the `discovery` block still describes the whole-repo listing on a
+  delta run (#2376), and prunes are silent on both paths (#2377). A parity test pins AGREEMENT
+  rather than a second copy of the policy: over one tree carrying every dot-path shape
+  `dot_paths` distinguishes, plus a tracked symlink, the delta set must equal `--repo-scan`'s OWN
+  output intersected with the changed set.
 - **Discovery's git failure and truncation reach the report (#2271, #1784, ARC-F2E).**
   `discovery.py` records `method`, `files_seen`, `files_truncated` and `git_failure` in the
   `discovery` block of `groups.json` and prints the last two on its OWN stderr. On the driver path
