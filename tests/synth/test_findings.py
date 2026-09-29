@@ -19,6 +19,7 @@ import scripts.evidence as evidence_mod
 import scripts.tools.base as tool_base
 
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_args
+from tests._test_helpers import first
 
 
 class TestFindingIdShape(unittest.TestCase):
@@ -792,6 +793,123 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
         out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 3)  # two rules + the agent bucket
         self.assertTrue(all(f.get("reinforced") for f in out))
+
+class TestDedupePackageDiscrimination(unittest.TestCase):
+    """#2225 fix round 1, finding 3: two ARTIFACTS, one CVE, one manifest.
+
+    dependency-check reports against jars but is located at the build manifest it
+    audited (the owner's manifest-proxy ruling), so two DIFFERENT vulnerable jars
+    that share one advisory now arrive at the same (file, line, category, rule)
+    bucket -- `pom.xml:1` + `CVE-2023-44487` -- where the most-severe-survivor
+    rule discarded one of two real vulnerabilities. The artifact is what makes
+    them distinct, so a rule bucket whose members name one is split by it. The
+    same shape reaches this code from npm-audit and osv-scanner, whose findings
+    are all located at one lockfile.
+    """
+
+    def _dep(self, fid, rule, package=None, sev="MEDIUM"):
+        f = {
+            "id": fid,
+            "title": "%s: %s" % (package or "dependency", rule),
+            "severity": sev,
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "dependency_vulnerability",
+            "source": "tool:dependency-check",
+            "location": {"file": "pom.xml", "line_start": 1},
+            "tool_evidence": {"rule_id": rule},
+            "provenance": {"discovered_by": "tool:dependency-check",
+                           "confirmation_status": "TOOL"},
+        }
+        if package is not None:
+            f["tool_evidence"]["package_name"] = package
+        return f
+
+    def test_two_artifacts_sharing_one_cve_at_one_manifest_both_survive(self):
+        # Through the REAL pipeline both synthesize passes use --
+        # `prepare_for_queue` is aggregate THEN dedupe, and the aggregate stage
+        # collapsed the pair first, so a fix in dedupe alone left the
+        # vulnerability lost one stage earlier (fix round 2, R1).
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-http2-4.1.86.jar"),
+        ]
+        out, _integration = corroborate_mod.prepare_for_queue(findings)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(
+            {f["tool_evidence"]["package_name"] for f in out},
+            {"netty-codec-4.1.86.jar", "netty-http2-4.1.86.jar"})
+        self.assertEqual({1}, {f["occurrences"] for f in out},
+                         "each artifact is its own issue, not an occurrence of one")
+
+    def test_the_dedupe_stage_alone_also_keeps_the_two_artifacts(self):
+        # The second stage, pinned on its own: `dedupe` is reached with both
+        # findings intact whenever aggregation is not in the caller's path.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-http2-4.1.86.jar"),
+        ]
+        out = corroborate_mod.dedupe(findings)
+        self.assertEqual(len(out), 2)
+
+    def test_one_artifact_reported_twice_still_aggregates_to_one(self):
+        # The control, through the same real path: one artifact, one rule, one
+        # locus is ONE issue seen twice, and the count is what says so.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+        ]
+        out, _integration = corroborate_mod.prepare_for_queue(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(first(out)["occurrences"], 2)
+
+    def test_the_same_artifact_and_rule_still_collapses_to_the_most_severe(self):
+        # The control: the sub-bucket is keyed on the artifact, so two reports of
+        # ONE artifact under one rule are still one issue seen twice.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-codec-4.1.86.jar",
+                      sev="HIGH"),
+        ]
+        out = corroborate_mod.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(first(out)["severity"], "HIGH")
+
+    def test_members_with_no_package_name_keep_todays_behaviour(self):
+        # Nothing names an artifact (every SARIF-path adapter, and an agent
+        # finding), so there is exactly ONE sub-bucket and the collapse is
+        # unchanged.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487"),
+            self._dep("DC-002", "CVE-2023-44487", sev="HIGH"),
+        ]
+        out = corroborate_mod.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(first(out)["severity"], "HIGH")
+
+    def test_a_named_artifact_does_not_absorb_the_unnamed_members(self):
+        # A mixed bucket: the unnamed members stay together in their own bucket
+        # rather than being folded into an artifact they were never reported for.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487"),
+            self._dep("DC-003", "CVE-2023-44487", sev="HIGH"),
+        ]
+        out = corroborate_mod.dedupe(findings)
+        self.assertEqual(len(out), 2)
+        packages = {(f["tool_evidence"].get("package_name"), f["severity"])
+                    for f in out}
+        self.assertEqual(packages,
+                         {("netty-codec-4.1.86.jar", "MEDIUM"), (None, "HIGH")})
+
+    def test_distinct_rules_for_one_artifact_are_still_distinct_issues(self):
+        # The rule bucket is still the outer one: two advisories against one jar
+        # are two issues, as they were before the artifact split existed.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2024-29025", package="netty-codec-4.1.86.jar"),
+        ]
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
 class TestCalibrationFixmes(unittest.TestCase):
     def test_models_used_dedups_inconsistent_versions(self):

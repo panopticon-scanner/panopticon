@@ -1127,6 +1127,10 @@
           "reinforced": {
             "type": "boolean"
           },
+          "occurrences": {
+            "type": "integer",
+            "description": "How many tool findings sharing this panel, category, file and rule id were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings."
+          },
           "corroborated": {
             "type": "boolean"
           },
@@ -1300,6 +1304,13 @@
               },
               "ecosystem": {
                 "type": "string"
+              },
+              "included_by": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What pulled the vulnerable artifact in, as the tool reported them, written by the dependency-check adapter from its includedBy entries; evidence only, never used as a location; bounded, with a cut list marked by a trailing \"N more\u2026\" entry."
               }
             }
           }
