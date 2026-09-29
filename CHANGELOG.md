@@ -10,15 +10,19 @@ evidence exposed.
 - **SKILL.md's dependency list now matches the gating readiness row -- `defusedxml` was missing
   (#2323, #1784, ARC-F2E).** SKILL.md's § Dependencies named `pyyaml` and `jsonschema`, so a
   checkout that installed exactly what the doc listed failed `driver readiness`'s gating
-  `dependencies` row on the third package `readiness_checks.RUNTIME_PACKAGES` checks -- and a
-  missing package is the one readiness failure a fresh checkout meets first. The paragraph now
-  names all three and says how each is absent differently: `pyyaml` takes discovery down with a
-  traceback, `jsonschema` fails closed after the whole review has been paid for, and `defusedxml`
-  does not fail the run at all -- the spotbugs adapter falls back to the stdlib XML parser, which
-  expands the internal entities `defusedxml` refuses, while golden capture imports it at module
-  level and cannot load without it. A new `tests/test_skill_md.py` case reads `RUNTIME_PACKAGES`
-  and asserts the section names every pip name in it, so a package added to the gating row cannot
-  skip the doc again.
+  `dependencies` row on `defusedxml`, one of the three packages
+  `readiness_checks.RUNTIME_PACKAGES` checks -- and a missing package is the one readiness failure
+  a fresh checkout meets first. The paragraph now names all three and says how each is absent
+  differently: `pyyaml` takes discovery down with a traceback, `jsonschema` fails closed after the
+  whole review has been paid for, and `defusedxml` is caught only by the readiness row itself --
+  which, being `PHASES[0]`, refuses to start the run -- because nothing in the scan would fail:
+  `tools/spotbugs.py` falls back to the stdlib XML parser, which expands the internal entities
+  `defusedxml` refuses, so an ingest that skips readiness (a direct `ingest_tools.py` run, or a
+  resumed run whose `readiness.json` already recorded `ready: true`) parses an untrusted scanner
+  report with the hardening silently gone. Golden capture imports it unguarded too, but runs
+  outside a review rather than in one. A new `tests/test_skill_md.py` case reads
+  `RUNTIME_PACKAGES` and asserts the section names every pip name in it, so a package added to the
+  gating row cannot skip the doc again.
 - **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
   Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
   got a schema entry and a fixture value, `additional_loci` got neither.

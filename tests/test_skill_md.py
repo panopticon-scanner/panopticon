@@ -281,9 +281,12 @@ class TestSkillMd(unittest.TestCase):
 
     def test_skill_md_names_the_python_packages_a_run_needs(self):
         # #1639 P15 I2: SKILL.md said the three sub-skills were the only
-        # external things this skill asks for. Two Python packages are not
-        # optional, and the one this PR made load-bearing fails AFTER the
-        # review is paid for, so the operator meets it in the wrong place.
+        # external things this skill asks for. THREE Python packages are not
+        # optional (#2323: the prose named two of them and the gating row
+        # checked three; the sibling case below reads the tuple, so no count
+        # here can go stale again), and the one this PR made load-bearing fails
+        # AFTER the review is paid for, so the operator meets it in the wrong
+        # place.
         deps = _section(self.skill_md, "## Dependencies", "Where hosts typically look")
         for token in ("pyyaml", "jsonschema", "pip install",
                       "driver readiness", "dependencies"):
