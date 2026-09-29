@@ -379,6 +379,9 @@ class TestArtifactTerm(unittest.TestCase):
         # `tool_evidence` and an AttributeError out of reconcile_key.
         tool = dict(agent, source="tool:dependency-check")
         self.assertIsNone(ev.artifact_term(tool))
+        # ...and #2359: finding_fingerprint reads the rule id too, so the same
+        # payload must survive that identity as well as this one.
+        self.assertEqual(len(ev.finding_fingerprint(tool)), 16)
         self.assertEqual(ev.reconcile_key(tool), ("auth.py", "security", "authz"))
         self.assertEqual(ev.reconcile_key(dict(tool, code="SEC-A1A")),
                          ("auth.py", "code", "SEC-A1A"))
@@ -388,6 +391,49 @@ class TestArtifactTerm(unittest.TestCase):
         self.assertEqual(ev.finding_fingerprint(bare),
                          ev.finding_fingerprint(empty))
         self.assertEqual(ev.reconcile_key(bare), ev.reconcile_key(empty))
+
+
+class TestMalformedToolEvidence(unittest.TestCase):
+    """#2359: nothing validates a report read off disk -- `reconcile.load_report`
+    is a plain json.load -- so a stored finding's `tool_evidence` or `provenance`
+    can be a non-dict, and `iter_records` fingerprints EVERY record of a prior
+    run. One guarded reader stands behind both reads, so a malformed finding
+    names no rule instead of aborting the reconcile with an AttributeError."""
+
+    def _f(self, **over):
+        f = {"id": "SEC-1", "panel": "security", "category": "injection",
+             "title": "t", "source": "tool:bandit",
+             "location": {"file": "a.py"}}
+        f.update(over)
+        return f
+
+    def test_a_non_dict_tool_evidence_still_falls_through_to_provenance(self):
+        f = self._f(tool_evidence="x",
+                    provenance={"confirmation_reasoning": "B105"})
+        self.assertEqual(ev.tool_rule_id(f), "B105")
+        fp = ev.finding_fingerprint(f)
+        self.assertEqual(len(fp), 16)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
+        self.assertEqual(ev.reconcile_key(f), ("a.py", "security", "injection"))
+        # the SARIF rule is the discriminator, exactly as on a well-formed payload
+        self.assertEqual(fp, ev.finding_fingerprint(
+            self._f(tool_evidence={"rule_id": "B105"})))
+
+    def test_a_rule_id_nowhere_readable_is_no_rule_and_no_raise(self):
+        for f in (self._f(tool_evidence="x", provenance="x"),
+                  self._f(tool_evidence={}, provenance=["x"]),
+                  self._f(tool_evidence={"package_name": "a.jar"})):
+            with self.subTest(finding=f):
+                self.assertIsNone(ev.tool_rule_id(f))
+                self.assertEqual(len(ev.finding_fingerprint(f)), 16)
+
+    def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
+        te = {"rule_id": "B105"}
+        self.assertIs(ev._tool_evidence({"tool_evidence": te}), te)
+        for bad in (None, "x", ["x"], 0):
+            with self.subTest(value=bad):
+                self.assertEqual(ev._tool_evidence({"tool_evidence": bad}), {})
+        self.assertEqual(ev._tool_evidence({}), {})
 
 
 class TestReportSectionPartition(unittest.TestCase):

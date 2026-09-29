@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One guarded reader for `tool_evidence`, so a malformed stored finding cannot abort `reconcile`
+  (#2359, #1768, ARC-A4A).** The low follow-up #2358 left behind: that change guarded the field's
+  read in `artifact_term`, while `tool_rule_id` still read the same field -- and its `provenance`
+  fallback -- with `(finding.get(...) or {}).get(...)`, which raises `AttributeError` on a non-dict.
+  Nothing validates a report read off disk (`reconcile.load_report` is a plain `json.load`) and
+  `iter_records` fingerprints EVERY record of a prior run through `finding_fingerprint`, which reads
+  the rule id, so one schema-invalid finding in a stored report aborted the whole cross-run diff
+  with a traceback instead of keying as rule-less. `evidence._tool_evidence` is now the single
+  reading of the field for both functions (`{}` for absent or malformed), the provenance fallback
+  is guarded inline the same way, and a dict-valued field reads exactly as before.
 - **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
   empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
   three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus
