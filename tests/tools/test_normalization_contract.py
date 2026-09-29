@@ -123,13 +123,17 @@ def _strings(where, value):
 # it publishes a debt and names the issue that owes the answer.
 #
 # Each entry also owes its OWN self-liquidating expiry test, pinning the shape
-# that makes it a debt, so the entry fails the day the adapter stops emitting it
-# (`test_the_dependency_check_debt_is_still_owed` is that test for the one entry
-# here). Without one a second entry would inherit the shape assertion below and
+# that makes it a debt, so the entry fails the day the adapter stops emitting
+# it. Without one a second entry would inherit the shape assertion below and
 # no expiry pin, and the register would quietly stop emptying itself.
-PATH_DEBT = {
-    "dependency-check": "#2225: a vulnerable jar's basename; owner call pending",
-}
+#
+# EMPTY today, and it emptied itself the way it was built to. dependency-check
+# was the one entry -- a vulnerable jar's basename -- and the owner's MANIFEST
+# PROXY ruling on #2225 moved its findings onto the build manifest the scan
+# audited, which retired the entry and the expiry test that owed it. The
+# meta-tests below still hold on an empty register, so the machinery is here for
+# the next adapter that needs it rather than rebuilt from the comment.
+PATH_DEBT: dict[str, str] = {}
 
 
 def _path_shape_error(path):
@@ -227,7 +231,7 @@ class TestNormalizationContract(unittest.TestCase):
         self.assertIsInstance(loc, dict, "%s: location is not an object" % name)
         self.assertTrue(loc.get("file"), "%s: location.file is empty" % name)
         # ...and a repo-relative one: see PATH_DEBT above for the half of this
-        # a bytes-only contract cannot check, and which adapter still owes it.
+        # a bytes-only contract cannot check, which no adapter owes today.
         shape = _path_shape_error(loc["file"])
         self.assertIsNone(
             shape, "%s: location.file %r is %s -- the delta gate, the advisor's "
@@ -333,9 +337,11 @@ class TestLocationFileIsARepoPath(unittest.TestCase):
             "PATH_DEBT names an adapter that is not registered")
 
     def test_a_disclosed_debt_still_satisfies_the_shape_rule(self):
-        # An entry is a debt, not an exemption. dependency-check's jar basename
-        # is a perfectly legal relative path that resolves to nothing, and the
-        # shape rule holds it exactly as it holds every other adapter.
+        # An entry is a debt, not an exemption: a path that is shape-legal and
+        # still resolves to nothing -- dependency-check's jar basename was the
+        # last one (#2225) -- is held by the shape rule exactly as every other
+        # adapter's path is. Vacuous while the register is empty, and that is
+        # the point: it is the assertion a new entry inherits.
         for name in sorted(PATH_DEBT):
             if not os.path.isfile(golden_path(name)):
                 continue
@@ -345,20 +351,6 @@ class TestLocationFileIsARepoPath(unittest.TestCase):
                 self.assertTrue(findings)
                 for f in findings:
                     self.assertIsNone(_path_shape_error(f["location"]["file"]))
-
-    def test_the_dependency_check_debt_is_still_owed(self):
-        # Self-liquidating, the way the size ratchet's PENDING entries are:
-        # when #2225 is ruled and the adapter emits the declaring manifest
-        # instead, this fails and takes the PATH_DEBT entry with it.
-        with open(golden_path("dependency-check"), "rb") as fh:
-            findings = ADAPTERS["dependency-check"].parse(fh.read(), "Probe")
-        self.assertTrue(findings)
-        files = sorted({f["location"]["file"] for f in findings})
-        self.assertEqual(
-            files, [f for f in files
-                    if not os.path.dirname(f) and f.endswith(".jar")],
-            "dependency-check emits something other than a bare jar name now -- "
-            "if #2225 is answered, drop its PATH_DEBT entry with this test")
 
 
 class TestHostileToolTextIsInert(unittest.TestCase):
