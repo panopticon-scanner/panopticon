@@ -174,7 +174,6 @@ groups:
     - ".eslintrc.cjs"
     - ".eslintrc.js"
     - ".eslintrc.json"
-    - ".eslintrc.mjs"
     - ".eslintrc.yaml"
     - ".eslintrc.yml"
     - ".flake8"

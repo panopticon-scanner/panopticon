@@ -1266,9 +1266,11 @@ class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
     #2274: a root dot-file the shipped catalogs do not NAME stays invisible by
     design, and the remedy for a wanted one is a catalog row per spelling --
     not a widened stem. This repository's own `.bandit` was named by neither a
-    catalog glob nor a floor hint, so it reached no group at all; `.eslintrc.cjs`,
-    `.eslintrc.yaml` and `.eslintrc.mjs` are ordinary hand-written eslint config
-    that the five listed spellings missed.
+    catalog glob nor a floor hint, so it reached no group at all; `.eslintrc.cjs`
+    and `.eslintrc.yaml` are ordinary hand-written eslint config that the five
+    listed spellings missed. (`.eslintrc.mjs` was named by the ruling too and is
+    NOT here: the legacy cascade does not read it -- `.mjs` is flat config, and
+    the catalog claims that as `eslint.config.mjs`.)
 
     Each spelling is asserted through the REAL discovery path -- the dot-path
     policy and the Commons catalog together -- because a row in only one of the
@@ -1313,9 +1315,6 @@ class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
 
     def test_eslintrc_yaml_reaches_the_config_group(self):
         self._assert_reaches_config(".eslintrc.yaml")
-
-    def test_eslintrc_mjs_reaches_the_config_group(self):
-        self._assert_reaches_config(".eslintrc.mjs")
 
     def test_eslintcache_at_the_root_still_reaches_no_group_at_all(self):
         # The generated-state exclusion the ruling KEEPS: `.eslint*` is spelled

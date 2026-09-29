@@ -135,7 +135,7 @@ walked instead. Either way, build/dependency/cache directories are pruned by nam
 (`node_modules`, `.venv`, `__pycache__`, …), and a path that starts with a dot is surface only when
 the shipped catalogs or the deterministic SEC floor name it — or name its config family, so a
 `.golangci.toml` rides in beside the `.golangci.yml` the catalog spells. The `.eslint` family is
-the one exception: only the eight spellings the catalog names ride in, so the generated
+the one exception: only the seven spellings the catalog names ride in, so the generated
 `.eslintcache` beside them does not (#2330).
 Named: `.github/`, `.circleci/`, `.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed
 dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` and
