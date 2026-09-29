@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
+  use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
   report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
 - **The virtualenv scope leaves `run_tools.py` (#1762, #2306, ARC-2609514778; part 4).** Finding the

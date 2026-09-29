@@ -33,7 +33,7 @@ from tests.synth.helpers import (
 class TestPipelineCitations(unittest.TestCase):
     def test_citations_enriched_end_to_end(self):
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-g1-security.json")
+            fp = os.path.join(d, "findings-g1-SEC.json")
             with open(fp, "w") as fh:
                 json.dump(
                     {
@@ -67,7 +67,7 @@ class TestPipelineCitations(unittest.TestCase):
 class TestToolsDirIntegration(unittest.TestCase):
     def test_tool_findings_merged_and_reinforced(self):
         with tempfile.TemporaryDirectory() as d:
-            agent = os.path.join(d, "findings-g1-security.json")
+            agent = os.path.join(d, "findings-g1-SEC.json")
             with open(agent, "w") as fh:
                 json.dump(
                     {
@@ -148,7 +148,7 @@ class TestHtmlOut(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out_json = os.path.join(d, "report.json")
             out_html = os.path.join(d, "report.html")
-            finding = os.path.join(d, "findings-x-code.json")
+            finding = os.path.join(d, "findings-x-COD.json")
             with open(finding, "w") as fh:
                 json.dump(
                     {
@@ -175,7 +175,7 @@ class TestHtmlOut(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out_json = os.path.join(d, "report.json")
             out_html = os.path.join(d, "report.html")
-            finding = os.path.join(d, "findings-x-code.json")
+            finding = os.path.join(d, "findings-x-COD.json")
             title = "<script>alert('title')</script>"
             description = "<b>Description with <img src=x onerror=alert(1)></b>"
             location_file = "<script>a.py</script>"
@@ -351,7 +351,7 @@ class TestHtmlOut(unittest.TestCase):
 
 class TestTwoPassCli(unittest.TestCase):
     def _write_findings(self, d, findings):
-        fp = os.path.join(d, ".panopticon", "findings-g1-security-panel_review.json")
+        fp = os.path.join(d, ".panopticon", "findings-g1-SEC.json")
         os.makedirs(os.path.dirname(fp), exist_ok=True)
         with open(fp, "w") as fh:
             json.dump({"findings": findings}, fh)
@@ -510,7 +510,7 @@ class TestTwoPassCli(unittest.TestCase):
         # hit -- only the ingest_tools path sets it), and compares the
         # resulting id sets directly.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            agent = os.path.join(d, "findings-g1-code.json")
+            agent = os.path.join(d, "findings-g1-COD.json")
             with open(agent, "w") as fh:
                 json.dump(
                     {
@@ -640,7 +640,7 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
             os.makedirs(os.path.join(d, ".panopticon", "tools"))
             with open(os.path.join(d, ".panopticon", "tools", "semgrep.sarif"), "w") as fh:
                 fh.write("{}")
-            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)
             err = io.StringIO()
@@ -654,7 +654,7 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
             os.makedirs(tools)
             with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
                 fh.write('{"runs":[]}')
-            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)
             err = io.StringIO()
@@ -676,7 +676,7 @@ class TestMainExitAndScout(unittest.TestCase):
                 _json.dump({"group": "g1", "tools": ["semgrep"], "files": ["a.py"]}, fh)
             with open(os.path.join(pan, "groups.json"), "w") as fh:
                 _json.dump({"groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
-            findings = os.path.join(pan, "findings-g1-code-panel_review.json")
+            findings = os.path.join(pan, "findings-g1-COD.json")
             with open(findings, "w") as fh:
                 _json.dump({"findings": []}, fh)
             with _chdir(d):
@@ -713,7 +713,7 @@ class TestMainExitAndScout(unittest.TestCase):
                 json.dump({"group": "c", "tools": ["trivy", None]}, fh)
             with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
                 json.dump({"groups": [{"name": "a", "files": ["x.py"]}]}, fh)
-            findings = os.path.join(pan, "findings-a-code-panel_review.json")
+            findings = os.path.join(pan, "findings-a-COD.json")
             with open(findings, "w", encoding="utf-8") as fh:
                 json.dump({"findings": []}, fh)
             out_path = os.path.join(pan, "report.json")
@@ -742,7 +742,7 @@ class TestScoutToolDisclosure(unittest.TestCase):
             os.makedirs(".panopticon")
             with open(os.path.join(".panopticon", "scout-g1.json"), "w") as fh:
                 json.dump({"group": "g1", "tools": [], "panels": ["code"]}, fh)
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)
             out = os.path.join(d, "r.json")
@@ -760,7 +760,7 @@ class TestScoutToolDisclosure(unittest.TestCase):
     def test_no_scout_profiles_no_disclosure(self):
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)
             out = os.path.join(d, "r.json")
@@ -791,7 +791,7 @@ class TestUnusableScannerCertification(unittest.TestCase):
         tools_manifest.write_manifest(os.path.join(d, "tools-manifest.json"),
                                       ["bandit"], [os.path.join(td, "bandit.sarif")],
                                       run_id="rid-1")
-        fp = os.path.join(d, "findings-g1-code.json")
+        fp = os.path.join(d, "findings-g1-COD.json")
         with open(fp, "w") as fh:
             json.dump({"findings": []}, fh)
         out = os.path.join(d, "r.json")
@@ -849,7 +849,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
             "produced": ["semgrep"], "missing": [], "excluded_scope": []}
         with open(os.path.join(run_dir, "tools-manifest.json"), "w") as fh:
             json.dump(tm, fh)
-        fp = os.path.join(d, "findings-g1-code.json")
+        fp = os.path.join(d, "findings-g1-COD.json")
         with open(fp, "w") as fh:
             json.dump({"findings": []}, fh)
         return os.path.join(run_dir, "groups.json"), fp
@@ -943,7 +943,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
         # .panopticon must say so loudly rather than silently read stale artifacts.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             os.makedirs(".panopticon")
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)
             out = os.path.join(d, "r.json")
@@ -978,7 +978,7 @@ class MainLoaderOrderTest(unittest.TestCase):
             return real_load_queue(run_dir)
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": []}, fh)   # nothing to queue this run
             panopticon_dir = os.path.join(d, ".panopticon")
@@ -1019,7 +1019,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
     """
 
     def _fixture(self, d):
-        fp = os.path.join(d, "findings-g1-security.json")
+        fp = os.path.join(d, "findings-g1-SEC.json")
         with open(fp, "w") as fh:
             json.dump({"findings": [_agentic("SE-001")]}, fh)
         return fp, os.path.join(d, "report.json")
@@ -1135,7 +1135,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             return real_write(report, out_path)
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": [_agentic("SE-001")]}, fh)
             out = os.path.join(d, "report.json")
@@ -1241,7 +1241,7 @@ def test_a_sloppy_agent_finding_never_ends_the_run(label, patch, announces, tmp_
                "confidence": "LIKELY", "panel": "code", "category": "injection",
                "location": {"file": "a.py", "line_start": 1}}
     finding.update(patch)
-    fp = tmp_path / "findings-g1-code.json"
+    fp = tmp_path / "findings-g1-COD.json"
     fp.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
     out = tmp_path / "report.json"
     buf, err = io.StringIO(), io.StringIO()
@@ -1268,7 +1268,7 @@ def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
     (run_dir / "coverage-ok.json").write_text(
         json.dumps({"group": "app", "floor": [9, "SEC"], "effective": ["SEC"]}),
         encoding="utf-8")
-    fp = tmp_path / "findings-app-code.json"
+    fp = tmp_path / "findings-app-COD.json"
     fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
     out = tmp_path / "report.json"
     buf, err = io.StringIO(), io.StringIO()
@@ -1383,7 +1383,7 @@ def test_a_code_with_no_ocrdb_domain_files_under_the_ZZZ_sentinel(tmp_path):
     # plausible slip there is -- emitted `domain: "CWE"` and ended the run.
     # Silently: `code` is a perfectly good string, so the repair pass had
     # nothing to say about it.
-    fp = tmp_path / "findings-g1-code.json"
+    fp = tmp_path / "findings-g1-COD.json"
     fp.write_text(json.dumps({"findings": [
         {"id": "SE-001", "title": "hardcoded key", "severity": "HIGH",
          "confidence": "LIKELY", "panel": "code", "category": "secrets",
@@ -1453,7 +1453,7 @@ def test_a_mistyped_groups_json_cannot_end_the_run(tmp_path):
         {"name": "g1", "files": "a.py"},
         {"name": 7, "files": ["b.py"]},
         {"name": "g3", "files": ["c.py", 9]}]}), encoding="utf-8")
-    fp = tmp_path / "findings-g1-code.json"
+    fp = tmp_path / "findings-g1-COD.json"
     fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
     out = tmp_path / "report.json"
     buf, err = io.StringIO(), io.StringIO()
@@ -1490,7 +1490,7 @@ _HOSTILE_GROUPS_JSON = [
 def test_no_groups_json_a_target_can_write_ends_the_run(tmp_path, label, groups_json):
     groups = tmp_path / "groups.json"
     groups.write_text(json.dumps(groups_json), encoding="utf-8")
-    fp = tmp_path / "findings-g1-code.json"
+    fp = tmp_path / "findings-g1-COD.json"
     fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
     out = tmp_path / "report.json"
     buf, err = io.StringIO(), io.StringIO()
@@ -1581,7 +1581,7 @@ class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
         if manifest_bytes is not None:
             with open(os.path.join(run_dir, "tools-manifest.json"), "wb") as fh:
                 fh.write(manifest_bytes)
-        fp = os.path.join(run_dir, "findings-g1-code.json")
+        fp = os.path.join(run_dir, "findings-g1-COD.json")
         with open(fp, "w") as fh:
             json.dump({"findings": []}, fh)
         out = os.path.join(d, "r.json")

@@ -43,7 +43,7 @@ class TestEndToEnd(unittest.TestCase):
             gname = first(groups["groups"], "group")["name"]
             # 2. write a findings file as a panel agent would
             os.makedirs(os.path.join(d, ".panopticon"))
-            fp = os.path.join(d, ".panopticon", "findings-%s-code.json" % gname)
+            fp = os.path.join(d, ".panopticon", "findings-%s-COD.json" % gname)
             with open(fp, "w") as fh:
                 json.dump({"findings": [{"id": "CD-001", "title": "smell",
                     "severity": "MEDIUM", "confidence": "POSSIBLE", "panel": "code",
@@ -104,7 +104,7 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
             groups = json.loads(r.stdout)
             gname = first(groups["groups"], "group")["name"]
             os.makedirs(os.path.join(d, ".panopticon"))
-            fp = os.path.join(d, ".panopticon", "findings-%s-code.json" % gname)
+            fp = os.path.join(d, ".panopticon", "findings-%s-COD.json" % gname)
             with open(fp, "w") as fh:
                 json.dump({"findings": [{
                     "id": "AR-001", "code": "ARC-X0X", "domain": "ARC",
