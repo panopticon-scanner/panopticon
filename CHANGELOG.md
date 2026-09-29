@@ -17,6 +17,35 @@ evidence exposed.
   with a traceback instead of keying as rule-less. `evidence._tool_evidence` is now the single
   reading of the field for both functions (`{}` for absent or malformed), the provenance fallback
   is guarded inline the same way, and a dict-valued field reads exactly as before.
+- **SKILL.md's dependency list now matches the gating readiness row -- `defusedxml` was missing
+  (#2323, #1784, ARC-F2E).** SKILL.md's § Dependencies named `pyyaml` and `jsonschema`, so a
+  checkout that installed exactly what the doc listed failed `driver readiness`'s gating
+  `dependencies` row on `defusedxml`, one of the three packages
+  `readiness_checks.RUNTIME_PACKAGES` checks -- and a missing package is the one readiness failure
+  a fresh checkout meets first. The paragraph now names all three and says how each is absent
+  differently: `pyyaml` takes discovery down with a traceback, `jsonschema` fails closed after the
+  whole review has been paid for, and `defusedxml` is caught only by the readiness row itself --
+  which, being `PHASES[0]`, refuses to start the run -- because nothing in the scan would fail:
+  `tools/spotbugs.py` falls back to the stdlib XML parser, which expands the internal entities
+  `defusedxml` refuses, so an ingest driven outside the loop (the CI gate `security_gate.py`, which
+  imports `ingest_tools` and never runs the readiness phase, or a resumed run whose
+  `readiness.json` already recorded `ready: true`) parses an untrusted scanner report with the
+  hardening silently gone. Golden capture also imports it, unguarded, but runs outside a review
+  rather than in one. A new `tests/test_skill_md.py` case reads
+  `RUNTIME_PACKAGES` and asserts the section names every pip name in it, so a package added to the
+  gating row cannot skip the doc again.
+- **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
+  Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
+  got a schema entry and a fixture value, `additional_loci` got neither.
+  `synth/findings.aggregate_tool_findings` stamps it with the other loci one rule fired at in one
+  file before collapsing them into one finding, and nothing described it, so no consumer could
+  validate against it -- and #1602's parity walk stayed green because the fixture's SARIF had one
+  hit per rule per file, so no finding ever carried the key. That SARIF now fires B602 twice in
+  the reviewed file, at two lines no `_agentic` finding claims: an aggregated survivor sharing an
+  agent's locus meets dedupe's tool+agent reinforce-merge, whose survivor is the more severe
+  member (here the HIGH agentic finding), and the key would reach no artifact at all.
+  `discarded_claims[]` items `$ref` the findings item schema, so the one entry covers both
+  sections.
 - **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
   empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
   three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus
