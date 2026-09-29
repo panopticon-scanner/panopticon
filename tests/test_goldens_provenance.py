@@ -23,8 +23,8 @@ names the ones that still do. It is EMPTY as of this change -- the three
 re-captures emptied it -- so the guard now forbids both markers everywhere,
 with nothing parked. An entry that no longer offends fails as STALE, so the set
 can never record a debt that has been paid: a golden that regresses may be
-parked here only while its re-capture is outstanding, and the entry goes in the
-same change that re-captures the file.
+parked here only while its re-capture is outstanding, and the entry comes OUT
+in the same change that re-captures the file.
 
 Every file under `tests/goldens/` is scanned, with no per-file exemption: the
 directory's own README used to need one to quote the forbidden path while
@@ -35,6 +35,7 @@ import re
 import tempfile
 from pathlib import Path
 import unittest
+import unittest.mock
 
 from tests._test_helpers import REPO_ROOT
 
@@ -78,6 +79,11 @@ def _offenders(root=REPO_ROOT):
     return found
 
 
+def _module():
+    import sys
+    return sys.modules[__name__]
+
+
 class TestGoldensProvenance(unittest.TestCase):
     def test_no_golden_outside_pending_names_the_operators_checkout(self):
         extra = _offenders() - PENDING
@@ -97,6 +103,16 @@ class TestGoldensProvenance(unittest.TestCase):
             stale, [],
             "PENDING names golden(s) that no longer offend: %s -- remove the "
             "entr(y/ies); the set only shrinks" % stale)
+
+    def test_a_paid_debt_left_in_pending_still_trips(self):
+        # Must-trip control for the shrink-only half now that PENDING is empty:
+        # a clean golden parked in the set must fail as STALE, or the rule
+        # above is asserting over nothing.
+        clean = "tests/goldens/tool-raw/semgrep.raw"
+        self.assertNotIn(clean, _offenders())
+        with unittest.mock.patch.object(_module(), "PENDING", frozenset({clean})), \
+                self.assertRaises(AssertionError):
+            self.test_every_pending_entry_still_offends()
 
     def test_every_pending_entry_names_a_file_that_exists(self):
         missing = sorted(p for p in PENDING

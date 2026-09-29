@@ -158,9 +158,9 @@ def trim(raw: bytes) -> bytes:
 def redact_bytes(raw: bytes):
     """Mask secrets in a payload that is about to be COMMITTED. -> (bytes, fired)
 
-    Three adapters below scan /mnt/panopticon -- the operator's own checkout --
-    so a real .env sits in gitleaks' path, and #run12 committed a live API key
-    into a public golden because nothing here looked. Capture is the last point
+    Three adapters below used to scan /mnt/panopticon -- the operator's own
+    checkout -- so a real .env sat in gitleaks' path, and #run12 committed a
+    live API key into a public golden because nothing here looked. Capture is the last point
     where a secret can be stopped before it enters git history, where removing
     it costs a rewrite rather than an edit.
 
