@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import os
 import json
@@ -6,6 +7,34 @@ import unittest
 import scripts.evidence as evidence
 
 ev = evidence
+
+
+def _key_reads(tree, key):
+    """The enclosing function names (module level -> "<module>") of every
+    LOAD-context read of `key` in `tree`: an `x[key]` subscript or an
+    `x.get(key)` call. A write (`x[key] = v`) is Store context and is not a
+    read, so it does not count (#2365)."""
+    def is_read(node):
+        if isinstance(node, ast.Subscript):
+            return (isinstance(node.ctx, ast.Load)
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == key)
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and bool(node.args)
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == key)
+
+    found = set()
+
+    def visit(node, scope):
+        if is_read(node):
+            found.add(scope)
+        for child in ast.iter_child_nodes(node):
+            visit(child, child.name if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope)
+
+    visit(tree, "<module>")
+    return found
 
 
 def _finding(**kw):
@@ -434,6 +463,63 @@ class TestMalformedToolEvidence(unittest.TestCase):
             with self.subTest(value=bad):
                 self.assertEqual(ev._tool_evidence({"tool_evidence": bad}), {})
         self.assertEqual(ev._tool_evidence({}), {})
+
+
+class TestMalformedLocation(unittest.TestCase):
+    """#2365: `load_report` is a plain `json.load`, so a stored finding's
+    `location` can be any JSON value. A non-dict must key exactly like an absent
+    one instead of aborting the caller on `.get`."""
+
+    def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
+        loc = {"file": "a.py", "line_start": 3}
+        self.assertIs(ev.location_of({"location": loc}), loc)
+        for bad in (None, "a.py", ["a.py"], 7):
+            with self.subTest(value=bad):
+                self.assertEqual(ev.location_of({"location": bad}), {})
+        self.assertEqual(ev.location_of({}), {})
+
+    def test_a_string_location_keys_exactly_like_no_location_at_all(self):
+        absent = _finding(source="tool:bandit")
+        absent.pop("location")
+        for fn in (ev.finding_fingerprint, ev.matrix_finding_id, ev.reconcile_key,
+                   ev._queue_tiebreak):
+            with self.subTest(function=fn.__name__):
+                self.assertEqual(fn(_finding(source="tool:bandit", location="a.py")),
+                                 fn(absent))
+
+
+class TestOneReaderPerGuardedKey(unittest.TestCase):
+    """#2365: `tool_evidence` and `location` are both read off an unvalidated
+    stored report, and the unguarded idiom recurred four times for `location`
+    after #2359 fixed it for `tool_evidence`. So each key has exactly ONE reader
+    in `evidence.py` and every other use goes through it. Scoped to
+    `evidence.py`: `skill/scripts/phases/review.py` keeps an in-process copy of
+    the `location` idiom, the recorded exception, safe because its input is built
+    in-process and never comes off disk."""
+
+    def _tree(self):
+        with open(evidence.__file__, encoding="utf-8") as fh:
+            return ast.parse(fh.read())
+
+    def test_each_guarded_key_is_read_inside_its_reader_only(self):
+        tree = self._tree()
+        for key, reader in (("tool_evidence", "_tool_evidence"),
+                            ("location", "location_of")):
+            with self.subTest(key=key):
+                self.assertEqual(_key_reads(tree, key), {reader})
+
+    def test_the_walker_trips_on_both_read_idioms(self):
+        self.assertEqual(
+            _key_reads(ast.parse('def f(x):\n    return x.get("location")\n'),
+                       "location"), {"f"})
+        self.assertEqual(
+            _key_reads(ast.parse('def g(x):\n    return x["location"]["file"]\n'),
+                       "location"), {"g"})
+
+    def test_a_write_is_not_a_read(self):
+        self.assertEqual(
+            _key_reads(ast.parse('def h(q, v):\n    q["location"] = v\n'),
+                       "location"), set())
 
 
 class TestReportSectionPartition(unittest.TestCase):

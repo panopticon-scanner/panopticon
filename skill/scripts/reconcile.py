@@ -184,8 +184,16 @@ def iter_records(report):
     """
     out = []
     for kind, key in (("finding", "findings"), ("rejected", "discarded_claims")):
-        for f in report.get(key) or []:
-            loc = f.get("location") or {}
+        entries = report.get(key)
+        # #2365: a non-list value is no list of claims at all -- a dict would
+        # otherwise iterate as its KEYS -- so it reads as empty and counts
+        # nothing skipped; only a real entry that is not a dict is a skip.
+        skipped = 0
+        for f in entries if isinstance(entries, list) else []:
+            if not isinstance(f, dict):
+                skipped += 1
+                continue
+            loc = evidence.location_of(f)
             out.append({
                 "id": f.get("id"),
                 "kind": kind,
@@ -197,6 +205,10 @@ def iter_records(report):
                 "fingerprint": evidence.finding_fingerprint(f),
                 "coarse_key": evidence.reconcile_key(f),
             })
+        if skipped:
+            # Never a silent skip: a dropped claim is a disclosure gap.
+            print("reconcile: skipped %d non-dict %s entries" % (skipped, key),
+                  file=sys.stderr)
     return out
 
 

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -224,6 +226,59 @@ class TestIterRecords(unittest.TestCase):
         self.assertEqual(len(records[0]["fingerprint"]), 16)
         self.assertEqual(records[0]["coarse_key"],
                          ("a.py", "security", "injection"))
+
+    def test_a_malformed_location_or_a_non_dict_entry_is_not_fatal(self):
+        # #2365, the same class #2359 closed for `tool_evidence`: `location` off
+        # an unvalidated json.load can be a string, and `findings[]` can hold a
+        # non-dict entry. Either aborted the WHOLE cross-run diff at `.get`.
+        def _f(fid, **kw):
+            f = {"id": fid, "panel": "security", "category": "injection",
+                 "title": "t", "source": "tool:bandit",
+                 "tool_evidence": {"rule_id": "B105"}}
+            f.update(kw)
+            return f
+
+        bad = _f("F-2", location="a.py")
+        doc = {"findings": [_f("F-1", location={"file": "a.py"}), bad, "junk", 42],
+               "discarded_claims": [_f("R-1", location=None)]}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            records = reconcile.iter_records(
+                reconcile.load_report(self._written(doc)))
+        self.assertEqual([r["id"] for r in records], ["F-1", "F-2", "R-1"])
+        by_id = {r["id"]: r for r in records}
+        self.assertEqual(by_id["F-2"]["location_file"], "")
+        stripped = {k: v for k, v in bad.items() if k != "location"}
+        self.assertEqual(by_id["F-2"]["fingerprint"],
+                         evidence.finding_fingerprint(stripped))
+        # A silent skip would be a disclosure gap: one counted line, on stderr.
+        self.assertEqual(err.getvalue().splitlines(),
+                         ["reconcile: skipped 2 non-dict findings entries"])
+
+    def test_a_findings_value_that_is_not_a_list_yields_nothing_and_no_line(self):
+        # A dict would otherwise iterate as its KEYS and be counted as skipped
+        # entries; it is no list of claims at all, so it reads as empty.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(reconcile.iter_records({"findings": {"a": 1}}), [])
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_well_formed_report_says_nothing_on_stderr(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            reconcile.iter_records(reconcile.load_report(
+                os.path.join(FIXTURES, "run2.json")))
+        self.assertEqual(err.getvalue(), "")
+
+    def _written(self, doc):
+        """`doc` as a report file on disk, so the test goes through the real
+        `load_report` -> `iter_records` path rather than a hand-built dict."""
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        path = os.path.join(tmpdir, "run2.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
 
     def test_carries_category_and_coarse_key(self):
         report = {"findings": [{"id": "X-1", "panel": "security",

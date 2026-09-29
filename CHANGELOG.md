@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One guarded `location` reader in `evidence.py`, so a malformed stored finding no longer aborts
+  the cross-run diff (#2365, #1768, ARC-A4A).** `finding_fingerprint`, `matrix_finding_id`,
+  `reconcile_key` and `_queue_tiebreak` each carried their own `finding.get("location") or {}`, and
+  `reconcile.iter_records` a fifth copy. `load_report` is a plain `json.load` with no schema check,
+  so a stored report holding `"location": "a.py"` reached `.get("file")` and aborted the WHOLE
+  cross-run diff with `AttributeError` -- exactly the blast radius #2359 closed for `tool_evidence`,
+  in an idiom that had by then recurred four times. All five sites read `evidence.location_of` now,
+  which hands back the dict or `{}`, so a non-dict `location` keys precisely as an absent one does.
+  `iter_records` also skips a non-dict `findings[]` entry instead of raising on it, printing one
+  counted `reconcile: skipped N non-dict <key> entries` line to stderr per section, because a
+  silently dropped claim is a disclosure gap; a `findings` value that is not a list at all reads as
+  empty and counts nothing. An AST guard in `tests/test_evidence.py` walks `evidence.py` and fails
+  if any LOAD-context read of `location` or `tool_evidence` sits outside its one reader. The honest
+  limit: that guard covers `evidence.py` alone -- `phases/review.py` keeps an in-process copy of the
+  idiom, a recorded exception because its input is built in-process and never comes off disk.
 - **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
   (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
   rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in

@@ -108,13 +108,9 @@ def _agent_verdict(raw):
     (a) strip every private (`_`-prefixed) key. They are the pipeline's own
         carriers -- `_backup_missing_evidence` here, `_merged_ids`/`_group` on
         findings -- so an advisor that plants one is asserting a controller
-        decision. Round 1 F1 demonstrated a backup REJECTION laundered into a
-        retained primary CONFIRMED (rejected, factor 0.0, out of the gate ->
-        backup_scope_limited, factor 1.5, IN the gate) and a primary-only
-        verdict fabricating a "backup could not see" disclosure about a round
-        that never ran; round 2 N1 then found the same key emptying a cell's
-        whole backup scope through `phases/verify._cell_verdicts`, so no
-        adversarial round was dispatched;
+        decision (round 1 F1: a backup REJECTION laundered into a retained
+        primary CONFIRMED, out of the gate -> in it; round 2 N1: a cell's whole
+        backup scope emptied through `phases/verify._cell_verdicts`);
 
     (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
         say what it concluded, never which ROUND it was.
@@ -127,12 +123,12 @@ def _agent_verdict(raw):
 
     Three jobs since #1639 P15 fix round 2 (F3). The third is TYPE repair: the
     verify round writes this verdict's `reasoning`, `model`, `code`,
-    `references` and `citations` onto an already-normalized finding, into
-    fields `report-schema.json` pins -- after the findings boundary, with
-    nothing between. One advisor answering in a list where a string belongs
-    ended a completed run in `error`. `validate_schema.repair_verdict` does it
-    against the schema nodes those fields land in, so this boundary and the
-    findings boundary cannot disagree about a type.
+    `references` and `citations` onto an already-normalized finding, into fields
+    `report-schema.json` pins -- after the findings boundary, with nothing
+    between (an advisor answering in a list where a string belongs ended a
+    completed run in `error`). `validate_schema.repair_verdict` does it against
+    the schema nodes those fields land in, so this boundary and the findings
+    boundary cannot disagree about a type.
     """
     clean = {k: v for k, v in raw.items()
              if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
@@ -193,6 +189,12 @@ def _tool_evidence(finding):
     return te if isinstance(te, dict) else {}
 
 
+def location_of(finding):
+    """`location` as a dict, `{}` for absent or malformed (#2365)."""
+    loc = finding.get("location")
+    return loc if isinstance(loc, dict) else {}
+
+
 def tool_rule_id(finding):
     """The scanner rule a tool finding came from, wherever its adapter put it: the dependency
     scanners set `tool_evidence.rule_id`, while the SARIF path carries it in
@@ -249,7 +251,7 @@ def finding_fingerprint(finding):
     moves) and free-text description (agent prose is re-worded every run). Also
     the verify-queue's queue_id (P2) — the same identity both passes compute.
     """
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     fpath = norm_path(loc.get("file"))
     # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
     # advisor prose, which would be a disastrous identity discriminator.
@@ -282,7 +284,7 @@ def matrix_finding_id(finding):
         dom = code.split("-", 1)[0] if "-" in code else "GEN"
     if not (isinstance(dom, str) and re.fullmatch(r"[A-Z]{2,8}", dom)):
         dom = "GEN"
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     title = " ".join(str(finding.get("title") or "").split())
     seed = "|".join([dom, str(finding.get("category") or ""),
                      norm_path(loc.get("file")), title,
@@ -298,7 +300,7 @@ def reconcile_key(finding):
     finding_fingerprint, so a re-worded finding matches (#914); a code-less or
     artifact-less finding keys as before, and panel=="code" aliasing (#1034) is benign.
     """
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     code = finding.get("code")
     if code:
         key = (norm_path(loc.get("file")), "code", str(code))
@@ -412,7 +414,7 @@ def _queue_tiebreak(f):
     A residual tie after this means the two findings are identical in every
     field that could distinguish them: genuinely fungible claims.
     """
-    loc = f.get("location") or {}
+    loc = location_of(f)
     return (str(loc.get("file") or ""), str(loc.get("line_start") or ""),
            str(f.get("severity") or ""), str(f.get("source") or ""))
 
@@ -875,27 +877,25 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
 
     A backup that returns NEEDS_MORE_INFO naming the files it was not granted
     (`missing_evidence`) is not disagreeing with the primary; it is reporting
-    that it could not look. Run-13's redaction-order defect was CONFIRMED by the
-    primary, reproduced by hand, and then published as unverifiable because the
-    backup -- granted the claim file alone -- said NEEDS_MORE_INFO about a
-    cross-file call order. So a scope-limited backup NMI displaces NO primary:
-    the primary verdict is returned, carrying the paths the backup named, and
-    `derive_evidence` spends that carrier only on a CONFIRMED -- which is what
-    makes the honest `backup_scope_limited`, while a primary REJECTED stays
-    `rejected` and a bare primary NMI stays `needs_more_info` (fix round 4, N1;
-    the branch used to retain a CONFIRMED only, so a rejected finding was
-    published as a gate-eligible disclosure instead). A backup NMI that names
-    NOTHING is a substantive "the code does not say", and keeps today's
-    backup-wins semantics.
+    that it could not look (run-13: a defect CONFIRMED and hand-reproduced, then
+    published as unverifiable because the backup, granted the claim file alone,
+    said NMI about a cross-file call order). So a scope-limited backup NMI
+    displaces NO primary: the primary verdict is returned, carrying the paths the
+    backup named, and `derive_evidence` spends that carrier only on a CONFIRMED
+    -- which is what makes the honest `backup_scope_limited`, while a primary
+    REJECTED stays `rejected` and a bare primary NMI stays `needs_more_info` (fix
+    round 4, N1; the branch used to retain a CONFIRMED only, so a rejected
+    finding was published as a gate-eligible disclosure instead). A backup NMI
+    that names NOTHING is a substantive "the code does not say", and keeps
+    today's backup-wins semantics.
 
     Where several BACKUP verdicts exist for one finding, the LEAST FAVOURABLE to
     it is the one that counts, and where several PRIMARY verdicts do, first-wins
     -- BOTH through `resolve_duplicates`, so the retained primary above is the
-    same verdict the driver acted on. `stage`
-    itself is controller-stamped at load, so "the backup" is a round the driver
-    dispatched, never a label an advisor chose for itself -- which is also what
-    makes the retained primary and the scope-limited backup necessarily
-    different bundles.
+    same verdict the driver acted on. `stage` itself is controller-stamped at
+    load, so "the backup" is a round the driver dispatched, never a label an
+    advisor chose for itself -- which is also what makes the retained primary and
+    the scope-limited backup necessarily different bundles.
     """
     fid = finding.get("id")
     if not fid:
