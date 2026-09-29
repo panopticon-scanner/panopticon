@@ -657,6 +657,18 @@ class TestDocumentedShellReading(unittest.TestCase):
             self.assertTrue(shell_reader.has_substitution(argument))
             self.assertEqual('$(...)', shell_reader.readable(argument))
 
+    def test_an_extglob_group_is_part_of_its_word(self):
+        # Re-review I-5: bash reads `!(keep|*.md)` as one word with `extglob`
+        # on, and refuses the line with it off -- never `!` and a subshell
+        # piping into a command called `*.md`.
+        parsed = shell_reader.statements("rm -rf !(keep|*.md) ./x\n")
+        self.assertEqual([[["rm", "-rf", "!(keep|*.md)", "./x"]]],
+                         [[part.argv for part in statement.stages] for statement in parsed])
+        # A `$(...)` in it is lifted, as anywhere; where a command starts, the
+        # word is one bash expands, as `*(...)` is.
+        self.assertEqual(["curl u"], stage("echo @($(curl u)|x)").substitutions)
+        self.assertIn("is a pattern", shell_reader.unresolved_wrapper(stage("@(sh) -c x").argv))
+
     def test_unquoted_heredoc_expands_but_quoted_heredoc_is_literal(self):
         parsed = shell_reader.statements(
             "cat <<EOF\n$(printf expanded)\nEOF\n"

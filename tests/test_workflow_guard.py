@@ -713,6 +713,42 @@ class TestAPatternWhereTheCommandStarts(unittest.TestCase):
                 why = wg.job_defects([("step", script % self.PAYLOAD)])
                 self.assertIn("is a pattern", why[0][1] if why else "")
 
+    def test_in_a_conditional_an_array_or_an_extglob_group_there_is_none(self):
+        # Re-review I-5: 16 jobs in 10 calibration-pool repos, 14 of them
+        # fetching nothing, failed on #2294's rule, where the reader put these
+        # words where a command starts. Bash runs none of them: a conditional
+        # expands no pattern, an array literal globs its words into the array,
+        # and an extglob group is part of its word (`shopt -s extglob`).
+        for script in ("results=(files/x/*)\n", "blockmaps=(static/dist/*.blockmap)\n",
+                       "A=(${DIR}/*)\n", "arr=(*.txt)\n",
+                       "files=(\n  dist/*.dmg\n  dist/*.exe\n)\n", "files+=(\n  **/*.sh\n)\n",
+                       "declare -A t=(\n  [n8n]=${V}\n)\n",
+                       "f() {\n  local -a x=( *.sh )\n}\n",
+                       "if [[ $v =~ ^2\\.(0|[1-9]*)$ ]]; then :; fi\n",
+                       "[[ $d =~ ME([[:space:]]|(\\\\[rn]))+ ]]\n",
+                       "case 1.2 in\n  +([0-9]).+([0-9]) ) echo ok ;;\nesac\n",
+                       "for f in @(*.deb|*.zip); do echo \"$f\"; done\n",
+                       "rm -rf !(keep|*.md)\n", "x=@(a|b)\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        # The must-trips: a pattern where a command starts, beside them or in a
+        # substitution inside them; an extglob group that is the command or
+        # stands where `sh` looks for `-c`, which bash with `extglob` on expands
+        # (`@(sh)` to `sh`, given a file `sh`; `!(x)` too, which with it off
+        # negates a subshell); a case arm's `[[)`, a pattern and no conditional;
+        # and an array's `[` no `]` closes, which bash 3.2 reads on past as code.
+        for script in ("( [s]h -c %s )\n", "{sh,-c} %s\n", "[s]h -c %s\n",
+                       "arr=(*.txt); [s]h -c %s\n", "files=(\n  *.txt\n)\n[s]h -c %s\n",
+                       "[[ -n x ]]&&[s]h -c %s\n", "arr=( $([s]h -c %s) )\n",
+                       "[[ -n $([s]h -c %s) ]]\n", "shopt -s extglob\n@([s]h) -c %s\n",
+                       "!([s]h -c %s)\n", "declare -A t=(\n  [a]=1\n)\n[s]h -c %s\n",
+                       "shopt -s extglob\n@(sh) -c %s\n", "shopt -s extglob\nsh @(-c) %s\n",
+                       "shopt -s extglob\n!(x) -c %s\n",
+                       "case $x in\n  [[) [s]h -c %s ;;\nesac\n", "x=( [[ ) ; [s]h -c %s\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("is a pattern", why[0][1] if why else "")
+
 
 class TestTheFormsThatHideAFetch(unittest.TestCase):
     """Spellings that are not `curl <url> -o <file>` and mean the same thing.

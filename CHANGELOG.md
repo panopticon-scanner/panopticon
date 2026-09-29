@@ -11,6 +11,7 @@ evidence exposed.
   `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
   `sh <<< '…'` is read as its script; an interpreter's here-string bash expands is reported (#2293).
   A brace or glob word where a command starts (`{sh,-c}`, `[s]h`) is reported, not read (#2294).
+  Globs in `[[ … ]]`, array literals and extglob groups are not commands; `@(sh) -c …` is reported.
   `"$PWD/tool"` and `"$(pwd)/tool"` are read as running a download called `tool` (#2310).
   A bare `tool` is read as running a download written to `/usr/local/bin/tool` (#2308).
   A checksum must precede each use of a download, not only its first (172 pre-existing fail-opens).

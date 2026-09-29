@@ -9,18 +9,20 @@ Bash expands an unquoted brace (`{sh,-c}`, `{a..b}`) or pathname pattern
 (`*`, `?`, `[...]`) into any number of words before a command sees them.
 `patterned` marks each such character no quote or backslash covers, before
 `shell_reader` splits a stage into words, and `is_pattern` asks a word split
-out of it whether bash expands it. What bash never expands is kept unmarked
-where it is read: `lex` escapes each character `patterned` would mark inside
-an arithmetic command, and `patterned` passes a `${...}` through.
+out of it whether bash expands it. What never becomes a command's words is
+kept unmarked where it is read: `lex` escapes each character `patterned`
+would mark inside an arithmetic command, a conditional's `[[ ... ]]` and an
+array literal (re-review I-5), and `patterned` passes a `${...}` through.
 
 Stdlib only.
 """
 
 
 # Put before each character of a brace or pathname pattern that no quote or
-# backslash covers (`patterned`): bash expands such a word into any number of
-# words before a command sees it (#2294), and a word split out of the text
-# after its quotes are gone still says so (`is_pattern`).
+# backslash covers (`patterned`), and before an extglob group's `@`, `+` or
+# `!` (`shell_lex.lex`): bash expands such a word into any number of words
+# before a command sees it (#2294), and a word split out of the text after
+# its quotes are gone still says so (`is_pattern`).
 MARK = "\ue000"             # a private-use character
 GLOB = "*?[{},"             # the characters it goes before
 
@@ -81,12 +83,12 @@ def _expansion_end(text: str, i: int) -> int | None:
 
 
 def is_pattern(word: str) -> bool:
-    """Whether a word `patterned` marked is one bash expands: a marked `*` or
-    `?`, a marked `[` with a `]` after it, or a marked `{` with a marked `}`
-    after it and a marked `,` or a `..` between. From the first `{` to the
-    last `}`, so a word it misreads is one bash may not expand, never the
-    other way round."""
-    if MARK + "*" in word or MARK + "?" in word:
+    """Whether a word `patterned` marked is one bash expands: a marked `*`,
+    `?` or extglob group, a marked `[` with a `]` after it, or a marked `{`
+    with a marked `}` after it and a marked `,` or a `..` between. From the
+    first `{` to the last `}`, so a word it misreads is one bash may not
+    expand, never the other way round."""
+    if any(MARK + ch in word for ch in "*?@+!"):
         return True
     at = word.find(MARK + "[")
     if at >= 0 and "]" in word[at:]:

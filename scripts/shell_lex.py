@@ -73,6 +73,24 @@ where a reserved word starts a command. Where bash 3.2 and 5.2 part -- a
 redirection before an assignment, `time -p --`, `coproc`, `{fd}>`, `|&`,
 `function f ((` -- it reads what 5.2, the CI runners' bash, reads.
 
+Three more places hold words no command runs, which the reader -- making each
+`(` a group, each `|` a pipe and each line a statement -- would read where a
+command starts (re-review I-5 of #1793's follow-ups): a conditional's
+`[[ ... ]]`, where bash expands no pattern; an array literal's words
+(`arr=(*.txt)`, `a+=(`, on one line or several, after `declare` too), which
+bash globs into the array; and an extglob group (`@(`, `+(`, `*(`, `?(` or
+`!(` inside a word). In the first two `lex` escapes each character
+`shell_patterns.patterned` would mark, as in an arithmetic command -- of a
+subscript only its `[`, as bash 3.2 reads on as code where no `]` closes it --
+and a `)` the conditional did not open ends it: a case arm's `[[)` is a
+pattern. An extglob group is part of its word, as bash reads it with `extglob`
+on -- off, it is a syntax error and nothing from its line on runs -- so `lex`
+escapes the group's own metacharacters and, outside those two places, marks
+the word a pattern (`shell_patterns.MARK`): at a command's head, or where a
+shell looks for `-c`, it is one bash expands. So is a `!(` where a command
+starts, which bash with `extglob` off reads as a negated subshell. A `$(...)`
+in any of these is code, read as ever.
+
 Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
 the `$(...)` matcher `shell_reader` lifts substitutions with. The pattern
 marks, `patterned` and `is_pattern`, are `scripts/shell_patterns.py`'s.
@@ -80,7 +98,7 @@ marks, `patterned` and `is_pattern`, are `scripts/shell_patterns.py`'s.
 import re
 from typing import Callable
 
-from shell_patterns import GLOB
+from shell_patterns import GLOB, MARK
 
 # bash's metacharacters: a word ends at any of them, and a `#` right after one
 # begins a comment.
@@ -95,8 +113,8 @@ _OPENERS = (("$((", "$((", 2), ("$(", "(", 1), ("<(", "(", 1), (">(", "(", 1),
             ("'", "'", 0), ('"', '"', 0), ("`", "`", 0))
 # The brackets a frame counts, and the character that ends each other frame.
 # "((" is a command's `((...))`; "a[" the subscript of an array assignment,
-# `a[1<<2]=x`: arithmetic too.
-_PAIRS = {"(": "()", "((": "()", "$((": "()", "[": "[]", "a[": "[]"}
+# `a[1<<2]=x`: arithmetic too; "x(" an extglob group.
+_PAIRS = {"(": "()", "((": "()", "$((": "()", "[": "[]", "a[": "[]", "x(": "()"}
 _CLOSE = {"'": "'", "$'": "'", '"': '"', "`": "`", "{": "}"}
 # The openers a frame reads as text: "..." every quote but the `"` that ends
 # it, and bash's arithmetic -- `((...))`, `$((...))` and `$[...]` -- the `${`
@@ -120,11 +138,15 @@ _STARTERS = ("!", "{", "coproc", "do", "elif", "else", "for", "function", "if",
              "select", "then", "time", "until", "while")
 _NAMERS = ("coproc", "for", "function", "select")
 _TIMED = (("time", "-p"), ("time", "--"), ("-p", "--"))
+# What opens an extglob group before a word's `(` -- `*` and `?` as `lex`
+# escapes them in `[[` and an array literal -- and the frames it escapes in.
+_EXTGLOB = ("@", "+", "!", "*", "?", "\\*", "\\?")
+_QUIET = ("top", "(", "x(")
 _ASSIGNS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _COMPOUND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[.*\])?\+?=", re.S)  # then `(`
 _IO_NUMBER = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
 # The state a word is read in: saved around a `$(...)`, and at a `((`.
-_STATE = ("word", "named", "at", "target", "last", "compound", "assigned")
+_STATE = ("word", "named", "at", "target", "last", "compound", "assigned", "cond")
 # A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
 _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
                      re.S)
@@ -151,8 +173,10 @@ def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     `heredoc(body, expands, fd)` returns, spaced off as a word of its own; a
     here-string's word too, after its `<<<`, when bash hands it over as
     written (`_string`) and no `$(...)` holds it: `heredoc(text, False, "0")`,
-    whose descriptor the reader reads off the operator; and an arithmetic
-    command's pattern characters escaped, the words unchanged. Raises
+    whose descriptor the reader reads off the operator; and the pattern
+    characters of an arithmetic command, a conditional and an array literal
+    escaped, and an extglob group's metacharacters -- its word, outside those,
+    marked a pattern (`shell_patterns.MARK`) -- the words unchanged. Raises
     `Unreadable` rather than guess, past the cap on reading `((` again, at a
     heredoc its substitution closes over and at a delimiter bash parses to
     spell."""
@@ -211,6 +235,7 @@ class _Lexer:
         self.at, self.target, self.last = "head", False, ""     # `_HEADS`
         self.compound = ""              # in `name=(...)`: `at` from before it
         self.assigned = -1              # the last word a `[...]=` assigns in
+        self.cond = 0                   # inside `[[ ... ]]`: 1 + the `(` open in it
         self.lines: dict[bool, _Lines] = {}
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
@@ -254,11 +279,19 @@ class _Lexer:
         if kind in _CODE:               # a `$(...)` holds commands of its own
             self.frames[-1].saved = self.saved()
             vars(self).update(word=len(self.out), at="head", target=False, last="",
-                              compound="")
+                              compound="", cond=0)
         return i + len(opener)
 
     def saved(self) -> dict:
         return {name: getattr(self, name) for name in _STATE}
+
+    def extglob(self, i: int) -> bool:
+        """Whether the `(` at `i` opens an extglob group: right after one of
+        `_EXTGLOB` in a word, and not closing at once (`f@() {` defines `f@`).
+        A `!(` where a command starts is one: with `extglob` on, bash 3.2 and
+        5.2 both expand `!(x) -c …` to the files not named `x`."""
+        out = self.out
+        return len(out) > self.word and out[-1] in _EXTGLOB and not self.text.startswith(")", i + 1)
 
     def step(self, i: int, frame: _Frame) -> int:
         """Read the character at `i`, which opens nothing; the index after it."""
@@ -276,6 +309,12 @@ class _Lexer:
             if ch in _BREAK:
                 if self.unspelled[0] == len(self.frames):
                     self.refuse(i)
+                if ch == "(" and self.extglob(i):   # one word with the text around it
+                    if not (self.cond or self.compound) and out[-1] in "@+!":
+                        out[-1] = MARK + out[-1]    # one bash expands, as `*(` is
+                    out.append("\\(")
+                    self.frames.append(_Frame("x(", 1))
+                    return i + 1
                 self.token(i)
             here = _HERE.match(text, i) if ch == "<" else None
             if here and here[1] == "<":         # a here-string
@@ -295,10 +334,16 @@ class _Lexer:
                 self.named = self.word
                 if start and self.compound or self.at != "argument" and _NAME.fullmatch(
                         "".join(out[self.word:])):
-                    return self.push(i, "[", "a[", 1)
-        # Bash expands no pattern in an arithmetic command (review N-1): what
-        # `patterned` would mark comes out escaped, the word it spells the same.
-        out.append("\\" + ch if frame.kind == "((" and ch in GLOB else ch)
+                    i = self.push(i, "[", "a[", 1)
+                    out[-1] = "\\[" if self.cond or self.compound else "["
+                    return i
+        # Bash expands no pattern in an arithmetic command (review N-1), and no
+        # command runs the words of `[[ ... ]]` or an array literal (re-review
+        # I-5): what `patterned` would mark comes out escaped, the word it spells
+        # the same; so do an extglob group's metacharacters, which are its word's.
+        quiet = frame.kind == "((" or (self.cond or self.compound) and frame.kind in _QUIET
+        out.append("\\" + ch if ch in GLOB and quiet or frame.kind == "x(" and ch in _BREAK
+                   else ch)
         pair = _PAIRS.get(frame.kind, "")
         if ch in pair:
             frame.depth += 1 if ch == pair[0] else -1
@@ -345,6 +390,10 @@ class _Lexer:
         if it is an IO number -- and past that metacharacter."""
         text, ch, before = self.text, self.text[i], self.text[i - 1:i]
         word = "".join(self.out[self.word:])
+        if word == "[[" and self.at in _HEADS or word == "]]" and self.cond:
+            self.cond = int(word == "[[")       # a conditional expands no pattern
+        if self.cond and ch in "()":            # and ends at a `)` it did not open
+            self.cond += 1 if ch == "(" else -1
         if word and not (ch in "<>" and _IO_NUMBER.fullmatch(word)):
             self.at = self.stood(word)
         if ch in "<>":
