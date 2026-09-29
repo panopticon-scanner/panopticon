@@ -684,6 +684,16 @@ class TestAPatternWhereTheCommandStarts(unittest.TestCase):
                 self.assertEqual([], wg.job_defects([("step", script.replace(
                     "%s", self.PAYLOAD))]))
 
+    def test_where_a_shell_looks_for_c_or_a_script_it_is_reported(self):
+        # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`.
+        for script in ("sh {-c,%s}\n", "sudo bash {-c,%s}\n", "sh -o pipefail {-c,%s}\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("looks for `-c` or a script", why[0][1] if why else "")
+        for script in ("bash lint.sh src/*.py\n", "sh -c 'echo' {a,b}\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+
     def test_inside_an_expansion_or_arithmetic_there_is_none(self):
         # Review N-1: bash globs nothing written inside `${...}`, `((...))` or
         # `$((...))`, and these idioms were reported from #2294 on.

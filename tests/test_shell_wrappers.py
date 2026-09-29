@@ -402,6 +402,19 @@ class TestAPatternBashExpands(GrammarCase):
         self.assertIn("dynamic assignment",     # env's own rule since review N-2
                       shell_reader.unresolved_wrapper(stage("env {A=1,sh} -c x").argv) or "")
 
+    def test_where_a_shell_looks_for_c_or_a_script(self):
+        # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`, which
+        # was read as `sh` running a file called `{-c,…}`, clean.
+        self.unresolved("sh {-c,'curl x | sh'}", "bash -{c,x} 'curl x | sh'",
+                        "sh -o pipefail {-c,x}", "sh -- {a,b}", "sh [x].sh")
+        for form in ("sudo sh {-c,x}", "env A=1 sh {-c,x}"):
+            with self.subTest(form=form):
+                self.assertIn("where `sh` looks for `-c` or a script",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        # After the program, a pattern is only the script's argument.
+        self.runs(["sh", "x.sh", "*.txt"], "sh x.sh *.txt")
+        self.runs(["sh", "-c", "echo", "{a,b}"], "sh -c 'echo' {a,b}")
+
     def test_quoted_escaped_or_no_pattern_it_is_the_word_it_looks_like(self):
         self.runs(["{sh,-c}", "x"], "'{sh,-c}' x", "\\{sh,-c} x", "{sh','-c} x",
                   "sudo '{sh,-c}' x")

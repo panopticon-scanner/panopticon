@@ -98,6 +98,9 @@ _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 # An assignment to an array element, `a[1]=x`: bash globs no assignment word.
 _SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
+# The shells whose options and program word a pattern may rewrite into a `-c`
+# and its script (`sh {-c,'…'}`, review N-3): `workflow_forms._SHELL_STRING`.
+_SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
@@ -118,7 +121,7 @@ class _Token(str):
 
 
 class _Expanded(_Token, Rewritten):
-    """A word holding lifted text that bash also expands as a pattern."""
+    """A word bash expands as a pattern (#2294), lifted text in it or not."""
 
 
 def _markers(text):
@@ -475,7 +478,7 @@ def _stage(text, context):
     for raw in tokens:
         word = context.token(context.restore_arithmetic(raw.replace(MARK, "")))
         if is_pattern(raw):             # bash expands it first (#2294)
-            word = _Expanded(word, word.markers) if isinstance(word, _Token) else Rewritten(word)
+            word = _Expanded(word, _markers(word))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -614,6 +617,13 @@ def _command_result(argv):
         # the last word it reads a pid from (`xargs taskset -p ...`).
         head, argv = behind
         reason = "`%s` has no command as written, and xargs appends words to it" % head
+    if reason is None and argv and os.path.basename(argv[0]) in _SHELLS:
+        end = next((k for k, w in enumerate(argv[1:], 1) if not w.startswith(("-", "+"))
+                    and argv[k - 1][1:] not in ("o", "O")), len(argv) - 1)   # the program
+        word = next((w for w in argv[1:end + 1] if isinstance(w, _Expanded)), None)
+        if word is not None:
+            reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
+                readable(word), os.path.basename(argv[0]))
     return argv, reason, heads
 
 
