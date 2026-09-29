@@ -480,7 +480,12 @@ class TestTheZeroHunkPopulation(unittest.TestCase):
         # delta, which is scope `all` -- the wider scope this count is about) and
         # the severity half from `grading.gate_verdict`, one finding at a time:
         # a finding the gate would FAIL on is one the empty map hid from it.
-        # Whichever policy moves, this equality moves with it.
+        # The floor is ONE definition (`findings.severity_floor_admits`), so
+        # this equality cannot see a floor change -- it is what keeps the
+        # MIRRORED evidence half from drifting, and it still trips if
+        # `gate_verdict` ever re-inlines a floor of its own. `gate_verdict`'s
+        # quantifier is pinned by `test_grading.py`'s `test_gate_*`, not here:
+        # a one-element list makes `any` and `all` agree.
         findings = [self._f("CRITICAL", fid="A-1"),
                     self._f("HIGH", status="tool_confirmed", fid="A-2"),
                     self._f("HIGH", status="backup_scope_limited", fid="A-3"),

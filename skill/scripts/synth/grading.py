@@ -42,6 +42,10 @@ def gate_verdict(findings, fail_on):
     on a zero-hunk delta run -- so the two cannot disagree about the floor."""
     if not fail_on:
         return "OFF"
+    # Resolve the floor BEFORE any verdict: an unknown `--fail-on` raises here
+    # whether or not `findings` is empty, so a misconfigured gate never reads
+    # PASS on a clean run (#2222 re-review; argparse constrains the flag today).
+    findings_mod.severity_floor_rank(fail_on)
     return ("FAIL" if any(findings_mod.severity_floor_admits(f, fail_on)
                           for f in findings) else "PASS")
 

@@ -40,6 +40,14 @@ class TestGrading(unittest.TestCase):
     def test_gate_off_when_no_threshold(self):
         self.assertEqual(grading_mod.gate_verdict([self._f("CRITICAL")], None), "OFF")
 
+    def test_an_unknown_threshold_raises_even_with_no_findings(self):
+        # #2222 re-review: the floor is resolved before any verdict, so a
+        # misconfigured `--fail-on` fails closed on a clean run instead of
+        # reading PASS (argparse constrains the flag; this pins the seam).
+        with self.assertRaises(ValueError):
+            grading_mod.gate_verdict([], "bogus")
+        self.assertEqual(grading_mod.gate_verdict([], "high"), "PASS")
+
     def test_gate_fail_at_or_above_threshold(self):
         self.assertEqual(grading_mod.gate_verdict([self._f("HIGH")], "high"), "FAIL")
         self.assertEqual(grading_mod.gate_verdict([self._f("CRITICAL")], "high"), "FAIL")

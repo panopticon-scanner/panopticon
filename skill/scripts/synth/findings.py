@@ -350,6 +350,15 @@ def load_findings_detailed(paths):
 _sev_rank = evidence_mod.sev_rank
 
 
+def severity_floor_rank(fail_on):
+    """The rank `--fail-on` names; raises `ValueError` on an unknown name (#2222).
+
+    Resolved on its own so `grading.gate_verdict` can fail closed BEFORE any
+    verdict: under `any()` an empty findings list never enters the predicate,
+    and an uninterpretable threshold must not read as PASS on a clean run."""
+    return SEV_ORDER.index(str(fail_on).upper())
+
+
 def severity_floor_admits(finding, fail_on):
     """Is `finding` at or above the `--fail-on` severity floor? (#2222)
 
@@ -368,7 +377,7 @@ def severity_floor_admits(finding, fail_on):
     """
     if not fail_on:
         return True
-    return _sev_rank(finding) <= SEV_ORDER.index(str(fail_on).upper())
+    return _sev_rank(finding) <= severity_floor_rank(fail_on)
 
 
 def _norm_line(v):
