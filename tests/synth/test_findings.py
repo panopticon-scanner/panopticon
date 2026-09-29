@@ -19,7 +19,7 @@ import scripts.evidence as evidence_mod
 import scripts.tools.base as tool_base
 
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_args
-from tests._test_helpers import first
+from tests._test_helpers import first, only
 
 
 class TestFindingIdShape(unittest.TestCase):
@@ -536,6 +536,222 @@ class TestReinforceMerge(unittest.TestCase):
         }
         corroborate_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "AGENT")
+
+class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
+    """#2361: `aggregate_tool_findings` deliberately parks an aggregated tool
+    finding on a line an agent also flagged, so dedupe reinforces the pair -- and
+    dedupe then keeps the more severe member. What the aggregation recorded has to
+    survive that wherever the aggregated member is DROPPED, and must not be copied
+    off a member that stays in the report."""
+
+    def _tool_hit(self, fid, line, sev="MEDIUM", panel="security",
+                  category="known_vulns", rule="B602", file="src/app.py"):
+        return {
+            "id": fid,
+            "title": "subprocess call with shell=True",
+            "severity": sev,
+            "confidence": "CERTAIN",
+            "panel": panel,
+            "category": category,
+            "source": "tool:bandit",
+            "tool_evidence": {"rule_id": rule},
+            "location": {"file": file, "line_start": line},
+            "provenance": {"discovered_by": "tool:bandit",
+                           "confirmation_status": "TOOL"},
+        }
+
+    def _agent(self, fid, sev, category="known_vulns", line=10, file="src/app.py"):
+        return {
+            "id": fid,
+            "title": "shell injection reachable from the request path",
+            "severity": sev,
+            "confidence": "LIKELY",
+            "panel": "security",
+            "category": category,
+            "source": "agent:security-reviewer",
+            "location": {"file": file, "line_start": line},
+        }
+
+    def test_carries_the_dropped_members_aggregation(self):
+        # The dedupe stage on its own (the way #2225 pins its sub-bucket rule
+        # separately from the aggregate stage): an already-aggregated tool member
+        # loses the exactly-two reinforce to a more severe agent finding, so the
+        # survivor has to inherit the rule's other loci and its count -- otherwise
+        # every other line that rule fired at is retired with no trace.
+        loci = [{"file": "src/app.py", "line_start": 12}]
+        aggregated = dict(self._tool_hit("BN-1", 10), occurrences=2,
+                          additional_loci=loci)
+        survivor = only(corroborate_mod.dedupe(
+            [aggregated, self._agent("AG-1", "HIGH")]))
+        self.assertEqual(survivor["id"], "AG-1")
+        self.assertTrue(survivor["reinforced"])
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"], loci)
+        self.assertIsNot(survivor["additional_loci"], loci,
+                         "the survivor must own its list, not alias the dropped"
+                         " member's")
+
+    def test_leaves_an_aggregated_survivors_own_loci_alone(self):
+        # Two aggregated tool findings meeting at one locus (#2225: two artifacts
+        # under one advisory at one manifest, here in one sub-bucket because
+        # neither names a package): the survivor's own count and loci stand --
+        # neither replaced by the member it absorbed nor summed with it. The agent
+        # LOW is what puts dedupe on the per-category drop loop at all.
+        own = [{"file": "pom.xml", "line_start": 1}]
+        best = dict(self._tool_hit("DC-1", 1, sev="HIGH", file="pom.xml"),
+                    occurrences=3, additional_loci=own)
+        dropped = dict(self._tool_hit("DC-2", 1, file="pom.xml"), occurrences=2,
+                       additional_loci=[{"file": "pom.xml", "line_start": 9}])
+        out = corroborate_mod.dedupe(
+            [best, dropped, self._agent("AG-1", "LOW", line=1, file="pom.xml")])
+        survivor = first([f for f in out if f["id"] == "DC-1"])
+        self.assertEqual(survivor["occurrences"], 3)
+        self.assertEqual(survivor["additional_loci"], own)
+
+    def test_agent_survivor_inherits_the_tool_members_loci(self):
+        # The parity-fixture shape (#2353 had to avoid it), through the real
+        # aggregate -> dedupe pipeline: one rule at lines 10 and 12, an agent HIGH
+        # at 10. The pair collapses onto the agent finding, and line 12 must still
+        # be in the report.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "HIGH")])
+        survivor = only(out)
+        self.assertEqual(survivor["id"], "AG-1")
+        self.assertEqual(survivor["location"]["line_start"], 10)
+        self.assertTrue(survivor["reinforced"])
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        self.assertIn("BN-1", evidence_mod.merged_ids(survivor))
+
+    def test_tool_survivor_keeps_its_own_unchanged(self):
+        # The control: the agent finding is a LOW, so the tool MEDIUM wins the
+        # same cluster and carries exactly what it already carried.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "LOW")])
+        survivor = only(out)
+        self.assertEqual(survivor["id"], "BN-1")
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+
+    def test_the_representative_merge_does_not_duplicate_the_aggregation(self):
+        # dedupe's per-category path merges a REPRESENTATIVE tool finding into an
+        # agent survivor so `reinforced` stays tool-reported -- but that
+        # representative survives its own rule bucket and reaches the report, so
+        # nothing was dropped and there is nothing to carry. Carrying there would
+        # print "2 loci of this rule" on two entries for one pair of hits, on an
+        # entry whose `_merged_ids` does not even name the source.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "HIGH"), self._agent("AG-2", "MEDIUM")])
+        by_id = {f["id"]: f for f in out}
+        self.assertEqual(sorted(by_id), ["AG-1", "BN-1"],
+                         "one survivor per rule bucket: the agent pair and the"
+                         " aggregated tool finding")
+        self.assertEqual(by_id["BN-1"]["occurrences"], 2)
+        self.assertEqual(by_id["BN-1"]["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        agent_survivor = by_id["AG-1"]
+        self.assertTrue(agent_survivor["reinforced"])
+        self.assertNotIn("occurrences", agent_survivor)
+        self.assertNotIn("additional_loci", agent_survivor)
+        self.assertEqual(len([f for f in out if f.get("additional_loci")]), 1,
+                         "one aggregation, one entry claiming it")
+
+    def test_the_per_category_drop_loop_carries_them(self):
+        # The larger-cluster path that DOES drop an aggregated member: two tool
+        # findings share category, rule and artifact at one locus but differ in
+        # PANEL, so aggregate_tool_findings (keyed on panel) leaves both alive and
+        # aggregates only the redteam one. dedupe's sub-bucket then keeps the more
+        # severe of the two and drops the aggregated one -- whose loci must travel.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("TA-1", 10, sev="HIGH", panel="security"),
+             self._tool_hit("TB-1", 10, panel="redteam"),
+             self._tool_hit("TB-2", 12, panel="redteam"),
+             self._agent("AG-1", "LOW")])
+        survivor = first([f for f in out if f["id"] == "TA-1"])
+        self.assertEqual(survivor["location"]["line_start"], 10)
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
+
+    def test_the_drop_loop_carries_without_an_agent_member(self):
+        # The same two-panel cluster with NO agent finding: the category is not
+        # corroborated, nothing is marked reinforced, but the sub-bucket still
+        # drops the aggregated member -- and the carry is a property of the
+        # drop, not of corroboration, so the loci still travel.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("TA-1", 10, sev="HIGH", panel="security"),
+             self._tool_hit("TB-1", 10, panel="redteam"),
+             self._tool_hit("TB-2", 12, panel="redteam")])
+        survivor = only(out)
+        self.assertEqual(survivor["id"], "TA-1")
+        self.assertFalse(survivor.get("reinforced"))
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
+
+    def test_no_carry_across_categories(self):
+        # dedupe's exactly-two branch collapses a tool+agent pair at one locus
+        # "even across categories" -- which is why cvss is gated on a category
+        # match. `additional_loci` is a factual claim about other lines OF THIS
+        # RULE, so attaching rule Y's loci to issue X would have the filed issue
+        # cite a rule it does not have and point triage at an unrelated line.
+        aggregated = dict(self._tool_hit("BN-1", 10),
+                          occurrences=2,
+                          additional_loci=[{"file": "src/app.py", "line_start": 12}])
+        survivor = only(corroborate_mod.dedupe(
+            [aggregated, self._agent("AG-1", "HIGH", category="secrets")]))
+        self.assertEqual(survivor["id"], "AG-1")
+        self.assertTrue(survivor["reinforced"])
+        self.assertNotIn("occurrences", survivor)
+        self.assertNotIn("additional_loci", survivor)
+
+    def test_agent_declared_aggregation_never_lands_on_a_tool_survivor(self):
+        # Both keys are stamped by aggregate_tool_findings on TOOL findings only.
+        # Nothing type-pins them on the way in, so an agent finding -- LLM-authored
+        # over target-controlled text -- can declare them; they must not be stamped
+        # onto a tool survivor, where a reader takes them for scanner output.
+        agent = dict(self._agent("AG-1", "LOW"), occurrences=3,
+                     additional_loci=[{"file": "totally/other.py", "line_start": 1}])
+        survivor = only(corroborate_mod.dedupe([self._tool_hit("BN-1", 10), agent]))
+        self.assertEqual(survivor["id"], "BN-1")
+        self.assertTrue(survivor["reinforced"])
+        self.assertNotIn("occurrences", survivor)
+        self.assertNotIn("additional_loci", survivor)
+
+    def test_count_and_loci_move_together_or_not_at_all(self):
+        # file_issues prints the count and then iterates the list, so a count
+        # without its loci renders as "Occurrences: 3" with nothing under it. The
+        # two are one decision.
+        countless = dict(self._tool_hit("BN-1", 10), occurrences=3)
+        survivor = only(corroborate_mod.dedupe(
+            [countless, self._agent("AG-1", "HIGH")]))
+        self.assertNotIn("occurrences", survivor)
+        self.assertNotIn("additional_loci", survivor)
+        # A list that holds no locus dicts is no aggregation either: the count
+        # must not arrive beside an empty list.
+        dictless = dict(self._tool_hit("BN-2", 10), occurrences=2,
+                        additional_loci=["src/app.py:12"])
+        survivor = only(corroborate_mod.dedupe(
+            [dictless, self._agent("AG-2", "HIGH")]))
+        self.assertNotIn("occurrences", survivor)
+        self.assertNotIn("additional_loci", survivor)
+        # And when the pair does travel, the survivor owns its locus dicts: the
+        # list is new AND so is every dict in it, so no later in-place rewrite of
+        # a locus can reach through to another finding.
+        locus = {"file": "src/app.py", "line_start": 12}
+        aggregated = dict(self._tool_hit("BN-2", 10), occurrences=2,
+                          additional_loci=[locus])
+        carried = only(corroborate_mod.dedupe(
+            [aggregated, self._agent("AG-2", "HIGH")]))
+        self.assertEqual(carried["additional_loci"], [locus])
+        self.assertIsNot(carried["additional_loci"][0], locus)
 
 class TestReinforce(unittest.TestCase):
     def test_tool_and_agent_reinforce(self):
