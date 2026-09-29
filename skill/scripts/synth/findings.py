@@ -429,7 +429,11 @@ def aggregate_tool_findings(findings):
     """Collapse repeated tool hits of one rule in one file into a single finding.
 
     A scanner rule that fires 18 times in a workflow file is ONE issue with 18
-    loci, not 18 issues. Only tool-sourced findings aggregate; agent findings
+    loci, not 18 issues. One rule against two different ARTIFACTS at one locus
+    is two issues, though (#2225: a manifest-located dependency scanner reports
+    every jar at `pom.xml:1`), so `tool_evidence.package_name` is part of the
+    key -- findings naming no artifact share one bucket, as they always did.
+    Only tool-sourced findings aggregate; agent findings
     are distinct judgements and pass through untouched. The survivor keeps the
     lowest line as its primary locus and records the rest in `additional_loci`
     — except where an agent independently flagged one of the other lines, in
@@ -453,16 +457,26 @@ def aggregate_tool_findings(findings):
         return (0 if corroborated else 1, line if isinstance(line, int) else 0)
 
     out = []
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str | None],
+                 list[dict[str, Any]]] = {}
     order = []
     for f in findings:
         rule = evidence_mod.tool_rule_id(f)
         if not evidence_mod.is_tool_sourced(f) or not rule:
             out.append(f)
             continue
+        # #2225: the ARTIFACT the advisory is about, on exactly the terms
+        # `corroborate._by_package` uses one stage later. dependency-check is
+        # located at the build manifest it audited, so two DIFFERENT vulnerable
+        # jars sharing one CVE reach one (panel, category, file, rule) key --
+        # and aggregated into ONE finding carrying `occurrences: 2` before
+        # dedupe ever saw them, which is the same lost vulnerability one stage
+        # earlier. Absent or non-string means one bucket, so every SARIF-path
+        # finding (no `package_name`) behaves exactly as before.
+        pkg = (f.get("tool_evidence") or {}).get("package_name")
         key = (f.get("panel"), f.get("category"),
                evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
-               str(rule))
+               str(rule), pkg if isinstance(pkg, str) and pkg else None)
         if key not in groups:
             groups[key] = []
             order.append(key)

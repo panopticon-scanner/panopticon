@@ -21,10 +21,12 @@ evidence exposed.
   `includedBy` references are surfaced as `tool_evidence.included_by`, which is EVIDENCE ONLY and is
   never used as a location whatever the tool emits in it -- inert (`inert_text`, like every other
   target-authored string) and bounded to 16 entries with a marked cut, and described in
-  `report-schema.json`. Two vulnerable artifacts that share one advisory used to collapse to one
-  survivor once they arrived at the same manifest locus, so `synth/corroborate.dedupe` now splits a
-  rule bucket by `tool_evidence.package_name` when its members name one (members naming none keep
-  their single bucket, which is every SARIF-path and agent finding).
+  `report-schema.json`. Two vulnerable artifacts that share one advisory used to collapse to ONE
+  finding once they arrived at the same manifest locus, and BOTH stages that collapse tool findings
+  now carry the artifact: `tool_evidence.package_name` joins the aggregate key in
+  `synth/findings.aggregate_tool_findings` (which ran first and merged the pair into one
+  `occurrences: 2` finding) and splits the rule bucket in `synth/corroborate.dedupe`. Findings
+  naming no artifact keep their single bucket at both stages -- every SARIF-path and agent finding.
   `line_start` stays 1 and no argv byte, cwd or `-w` changed, so no real-image round is owed. The
   `PATH_DEBT` register in `tests/tools/test_normalization_contract.py` is empty again: the entry and
   the self-liquidating expiry test that owed it are gone, its meta-tests hold on the empty register.

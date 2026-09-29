@@ -826,15 +826,42 @@ class TestDedupePackageDiscrimination(unittest.TestCase):
         return f
 
     def test_two_artifacts_sharing_one_cve_at_one_manifest_both_survive(self):
+        # Through the REAL pipeline both synthesize passes use --
+        # `prepare_for_queue` is aggregate THEN dedupe, and the aggregate stage
+        # collapsed the pair first, so a fix in dedupe alone left the
+        # vulnerability lost one stage earlier (fix round 2, R1).
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-http2-4.1.86.jar"),
+        ]
+        out, _integration = corroborate_mod.prepare_for_queue(findings)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(
+            {f["tool_evidence"]["package_name"] for f in out},
+            {"netty-codec-4.1.86.jar", "netty-http2-4.1.86.jar"})
+        self.assertEqual({1}, {f["occurrences"] for f in out},
+                         "each artifact is its own issue, not an occurrence of one")
+
+    def test_the_dedupe_stage_alone_also_keeps_the_two_artifacts(self):
+        # The second stage, pinned on its own: `dedupe` is reached with both
+        # findings intact whenever aggregation is not in the caller's path.
         findings = [
             self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
             self._dep("DC-002", "CVE-2023-44487", package="netty-http2-4.1.86.jar"),
         ]
         out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 2)
-        self.assertEqual(
-            {f["tool_evidence"]["package_name"] for f in out},
-            {"netty-codec-4.1.86.jar", "netty-http2-4.1.86.jar"})
+
+    def test_one_artifact_reported_twice_still_aggregates_to_one(self):
+        # The control, through the same real path: one artifact, one rule, one
+        # locus is ONE issue seen twice, and the count is what says so.
+        findings = [
+            self._dep("DC-001", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+            self._dep("DC-002", "CVE-2023-44487", package="netty-codec-4.1.86.jar"),
+        ]
+        out, _integration = corroborate_mod.prepare_for_queue(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(first(out)["occurrences"], 2)
 
     def test_the_same_artifact_and_rule_still_collapses_to_the_most_severe(self):
         # The control: the sub-bucket is keyed on the artifact, so two reports of

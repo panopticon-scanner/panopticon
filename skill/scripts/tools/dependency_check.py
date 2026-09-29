@@ -63,10 +63,11 @@ def _first_manifest(root: str) -> str | None:
 
 # How many `includedBy` references travel with one finding, and how a cut list
 # says so. The strings are bounded one at a time by `inert_text`, but their
-# COUNT is the target's to choose, and `synth/render.render_summary` prints what
-# a finding carries -- so the list is bounded too, and the marker ends in
-# `INERT_CUT`, the same mark a cut string wears, so a shortened list cannot read
-# as a whole one.
+# COUNT is the target's to choose, and every reference is carried in the
+# finding's envelope into `report.json` -- whose size the split writer measures
+# in BYTES -- so the list is bounded too. (Not for the terminal's sake: nothing
+# in `synth/render` reads `tool_evidence`.) The marker ends in `INERT_CUT`, the
+# same mark a cut string wears, so a shortened list cannot read as a whole one.
 INCLUDED_BY_MAX = 16
 
 
@@ -272,6 +273,12 @@ class DependencyCheckAdapter:
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
         # Resolved ONCE per parse, not per finding: it stats the target root.
+        # Every finding this adapter emits therefore shares one locus, so the
+        # ARTIFACT is what keeps two advisories about DIFFERENT jars apart
+        # downstream -- and BOTH stages that collapse tool findings key on
+        # `tool_evidence.package_name` for it (#2225):
+        # `synth/findings.aggregate_tool_findings` first, then
+        # `synth/corroborate.dedupe`.
         manifest = self._located_at()
         out = []
         n = 1

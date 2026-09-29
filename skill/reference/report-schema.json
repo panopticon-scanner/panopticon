@@ -1310,7 +1310,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Dependency coordinates (Maven GAV or pURL, never repository paths) that pulled the vulnerable artifact in, written by the dependency-check adapter from the tool's includedBy entries; bounded, with a cut list marked by a trailing \"N more\u2026\" entry."
+                "description": "What pulled the vulnerable artifact in, as the tool reported them, written by the dependency-check adapter from its includedBy entries; evidence only, never used as a location; bounded, with a cut list marked by a trailing \"N more\u2026\" entry."
               }
             }
           }
