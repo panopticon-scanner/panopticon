@@ -14,6 +14,7 @@ except ImportError:
     resource = None
 
 import scripts.hosts as hosts_mod
+import scripts.synth.delta as delta_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.render as render_mod
@@ -38,6 +39,14 @@ class TestGrading(unittest.TestCase):
 
     def test_gate_off_when_no_threshold(self):
         self.assertEqual(grading_mod.gate_verdict([self._f("CRITICAL")], None), "OFF")
+
+    def test_an_unknown_threshold_raises_even_with_no_findings(self):
+        # #2222 re-review: the floor is resolved before any verdict, so a
+        # misconfigured `--fail-on` fails closed on a clean run instead of
+        # reading PASS (argparse constrains the flag; this pins the seam).
+        with self.assertRaises(ValueError):
+            grading_mod.gate_verdict([], "bogus")
+        self.assertEqual(grading_mod.gate_verdict([], "high"), "PASS")
 
     def test_gate_fail_at_or_above_threshold(self):
         self.assertEqual(grading_mod.gate_verdict([self._f("HIGH")], "high"), "FAIL")
@@ -217,10 +226,23 @@ class TestAZeroHunkDeltaGateCannotReadPass(unittest.TestCase):
         self.assertIn(self.REASON, r["coverage_note"])
 
     def test_off_is_preserved(self):
-        r = grading_mod.certify("A", [], None, set(), [],
-                                delta_zero_hunks=self.REASON)
+        # #2222 round 1 (review finding 6): `certify` composes `coverage_note`
+        # for every gate word, OFF included, and with no `--fail-on` the gate
+        # applies no severity floor at all -- so the clause the operator reads
+        # has to be true without a threshold. Pinned on the REAL note string, and
+        # fed the population an OFF run actually has (the evidence policy alone).
+        real = delta_mod.zero_hunk_gate_gap(
+            delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}},
+                                   report=delta_mod.HunksLoad(ranges=0)),
+            len(delta_mod.zero_hunk_population(self._crit(), None, False)),
+            "on-diff")
+        r = grading_mod.certify("A", [], None, set(), [], delta_zero_hunks=real)
         self.assertEqual(r["gate"], "OFF")
         self.assertFalse(r["coverage_certified"])
+        self.assertIn(self.REASON, r["coverage_note"])
+        self.assertIn("1 gate-eligible finding(s) (the active set after the "
+                      "gate's evidence policy and any --fail-on floor, before "
+                      "delta scoping)", r["coverage_note"])
 
     def test_it_composes_with_the_manifest_note_and_follows_it(self):
         # Precedence: the manifest note names a BROKEN FILE the operator has to
