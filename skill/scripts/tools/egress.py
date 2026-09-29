@@ -203,7 +203,7 @@ def write_config(scratch, subnet, hosts):
     here from this module's own table, never from target text, and they are
     written to a scratch directory rather than into `.panopticon/tools/` so
     they can neither be mistaken for a capture by the ingest walk nor need a
-    write path through `run_tools._redact_capture` (#1639 P11's choke point,
+    write path through `tool_capture._redact_capture` (#1639 P11's choke point,
     which exists for bytes a scanner produced).
     """
     conf, filt = render_config(subnet, hosts)
@@ -469,7 +469,7 @@ def _control(runner, cmd, timeout=CONTROL_TIMEOUT):
 
     Accepts both shapes the seam returns: a live `Popen` (the production
     runner) and a `CompletedProcess`-like double, the same duck-typing
-    `run_tools._capture_run` does at its own call site.
+    `tool_capture._capture_run` does at its own call site.
 
     The except is NARROW on purpose. A docker that cannot be started or will
     not answer is an unavailable egress, and failing closed on it is the whole

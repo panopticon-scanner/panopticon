@@ -6,25 +6,21 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
-import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
-import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import groups_schema
 from scripts import executable
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
-from scripts.tools.base import SECURITY_FLAG, drain_stderr_async
+from scripts.tools.base import SECURITY_FLAG
 from scripts import plan_contract
-from scripts import redact
-from scripts import safe_write
 from scripts import scanner_config
+from scripts import tool_capture
+from scripts import tools_manifest
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -33,9 +29,8 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # reads them through `run_tools.<name>`: `_bandit_exclude_value` composes the two
 # exclude tuples, `_working_dir_flags` and the dispatch loop spell `TARGET_MOUNT`
 # (`tests/test_code_scanning_reports.py` pins it against the report side), two of
-# the four ledgers `write_manifest` reads back move with the block and are cleared
-# by `run_tools()` (`write_manifest`'s own `scanner_config=` keyword would shadow
-# the module inside it), and the staged-config constants are read by
+# the four ledgers the tools manifest reads back move with the block and are
+# cleared by `run_tools()`, and the staged-config constants are read by
 # `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`. A ledger
 # is the SAME dict object either way, so `.clear()`/`.pop()` here and
 # `[tool] = ...` there address one ledger.
@@ -43,9 +38,12 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved
 # must target `scanner_config`, where the moved code looks it up -- patching a
 # binding here reaches nothing, whether or not the name appears below. So no moved
-# FUNCTION is bound here and all twelve are called `scanner_config.<name>`;
-# `tests/test_scanner_config.py::TestThePatchRuleIsOneRule` enforces both halves
-# from the two modules' own ASTs, and holds the same list this block binds.
+# FUNCTION is bound here: every call `run_tools` still makes is spelled
+# `scanner_config.<name>`, and the moved functions it no longer calls at all are
+# not re-bound either. The `tool_capture` and `tools_manifest` blocks below obey
+# the same rule. `tests/test_scanner_config.py::TestThePatchRuleIsOneRule`
+# enforces both halves from all three modules' own ASTs, and holds the same list
+# each block binds.
 #
 # `noqa: F401` marks the ones only a TEST reads through this module: ruff cannot
 # see a use from here, and an `__all__` would silence it by also narrowing a
@@ -61,8 +59,44 @@ from scripts.scanner_config import (
     TRIVY_IGNOREFILE_NAME,        # noqa: F401
     TRIVY_IGNOREFILE_TEXT,        # noqa: F401
     TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # the two that move, of write_manifest's four
-    _SUPPRESSION_POSTURE,
+    _SCANNER_CONFIG_POSTURE,      # two of the manifest's four ledgers, both
+    _SUPPRESSION_POSTURE,         # cleared by `run_tools()`; only this one popped
+)
+
+# #1762 (ARC-2609514778, ARC-3243338950) part 2 of 3: the capture path -- one
+# container run supervised, bounded, classified, redacted and written -- moved
+# to `tool_capture` whole. Three names stay bound HERE, all three READ bindings
+# under the same patch rule as the block above: `run_tools()` multiplies
+# `TOOL_TIMEOUT` into the egress session's ceiling and
+# `tests/test_run_tools_containment.py` reads it through this module;
+# `ingest_tools` imports `MAX_TOOL_OUTPUT_BYTES` from here as the shared cap and
+# `tests/test_run_tools_core.py` and `tests/test_run_tools_languages.py` read it
+# through this module (part 3 took its one reader here, the manifest's eslint
+# capture read, with the writer); and `_REDACTED_CAPTURES` is the ledger
+# `run_tools()` clears and the dispatch loop discards a withdrawn capture from --
+# the SAME set object either way, so `.clear()` here and `.add()` there address
+# one ledger. `_capture_run` is the one moved FUNCTION this module still calls,
+# and it is called `tool_capture._capture_run(...)`.
+from scripts.tool_capture import (
+    MAX_TOOL_OUTPUT_BYTES,        # noqa: F401
+    TOOL_TIMEOUT,
+    _REDACTED_CAPTURES,
+)
+
+# #1762 (ARC-2609514778) part 3 of 3: the tools manifest -- `tools-manifest.json`'s
+# schema, its `excluded_dirs` row builder and the two posture ledgers whose only
+# reader is the writer -- moved to `tools_manifest` whole. Three names stay bound
+# HERE, all three READ bindings under the same patch rule as the blocks above:
+# `find_virtualenvs`' `max_depth` default is `VENV_MAX_DEPTH` and
+# `tests/test_run_tools_core.py` reads it through this module, and
+# `_NETWORK_POSTURE` and `_IGNORE_FILE_POSTURE` are cleared by `run_tools()` and
+# filled by the dispatch loop where the argv is built -- the SAME dict object
+# either way. `write_manifest` is the one moved FUNCTION this module still calls,
+# and `main` calls it `tools_manifest.write_manifest(...)`.
+from scripts.tools_manifest import (
+    VENV_MAX_DEPTH,
+    _IGNORE_FILE_POSTURE,
+    _NETWORK_POSTURE,
 )
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -111,9 +145,6 @@ def recommendable_tools(languages=None, target=None):
         adapters &= set(select_adapters(target).keys())
     return sorted(BASE_TOOLS | lang_tools | adapters)
 
-# Max seconds to let a single docker-run tool invocation run before it's killed;
-# prevents a hung tool from blocking the whole batch (CD-007).
-TOOL_TIMEOUT = 900
 # The gating docker probe runs before any tool; bound it so a wedged daemon
 # socket cannot hang the whole scan pipeline (#1112).
 DOCKER_PROBE_TIMEOUT = 30
@@ -259,11 +290,11 @@ def detect_languages(target):
 # are kept out of them rather than only having their findings dropped at ingest.
 # `pyvenv.cfg` is the marker every creator writes (venv, virtualenv, uv, pipenv,
 # in-project poetry); the conventional names are the fallback for a venv built
-# by something that wrote no marker. Depth-bounded: venvs live near the root,
-# and this walk is paid on every scan.
+# by something that wrote no marker. Depth-bounded by `VENV_MAX_DEPTH`, which is
+# bound above out of `tools_manifest` (the manifest publishes it as
+# `depth_bound`): venvs live near the root, and this walk is paid on every scan.
 VENV_MARKER = "pyvenv.cfg"
 VENV_DIR_NAMES = ("venv", ".venv")
-VENV_MAX_DEPTH = 3
 _VENV_WALK_PRUNE = {".git", "node_modules", "__pycache__"}
 
 # #1839 (run-14 SEC-1486247143): the marker alone is a CLAIM the reviewed
@@ -733,20 +764,19 @@ def _working_dir_flags(tool):
     inside = tool in DISPATCH_KEEPS_TARGET_CWD
     return ["-w", TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
 
-MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
-
 
 def _popen_runner(cmd, stdout=None, stderr=None, timeout=None, env=None):
     """The default PRODUCTION runner (#1111 / run7 COD-A2A).
 
-    Returns a live subprocess.Popen so _capture_run streams the child's stdout
-    through _stream_and_write's bounded sink -- the memory guard #1111 advertised
-    but never reached, because the old default (subprocess.run) buffers the ENTIRE
-    output in memory before returning and thus always took the drop path. `timeout`
-    is accepted for call-signature parity with the subprocess.run seam but is NOT
-    honored here: Popen has no timeout=, so the wall-clock bound is enforced by
-    _stream_and_write's watchdog instead (which also bounds a hung streaming read,
-    something a single subprocess.run timeout could not do mid-buffer)."""
+    Returns a live subprocess.Popen so tool_capture._capture_run streams the
+    child's stdout through that module's _stream_and_write bounded sink -- the
+    memory guard #1111 advertised but never reached, because the old default
+    (subprocess.run) buffers the ENTIRE output in memory before returning and
+    thus always took the drop path. `timeout` is accepted for call-signature
+    parity with the subprocess.run seam but is NOT honored here: Popen has no
+    timeout=, so the wall-clock bound is enforced by _stream_and_write's
+    watchdog instead (which also bounds a hung streaming read, something a
+    single subprocess.run timeout could not do mid-buffer)."""
     return subprocess.Popen(cmd, stdout=stdout, stderr=stderr, env=env)
 
 
@@ -768,490 +798,6 @@ class _DockerContext:
     def __init__(self, executable_path, env):
         self.executable = executable_path
         self.env = env
-
-
-def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
-    """Run one docker tool/adapter invocation and land its stdout at out_path.
-
-    Streams stdout into a bounded sink so adversarial/large target output does
-    not accumulate unbounded in orchestrator memory (#1111). On exceeding the
-    byte cap the output is truncated with a marker and a stderr notice, but the
-    file is still written so the tool is recorded as produced rather than
-    silently skipped.
-    """
-    try:
-        os.remove(out_path)
-    except OSError:
-        pass
-    # #run9 OPS-D1A: give a `docker run` a --cidfile so _stream_and_write can
-    # `docker kill` the real container on a watchdog timeout -- proc.kill() reaches
-    # only the CLI client. The cidfile must NOT pre-exist (docker refuses to start),
-    # so it lives in a fresh temp dir cleaned up here. Inserted right after `run`.
-    docker_bin = cidfile = cid_dir = None
-    if (docker_context is not None and len(docker) >= 2
-            and docker[0] == docker_context.executable and docker[1] == "run"):
-        docker_bin = docker_context.executable
-        cid_dir = tempfile.mkdtemp(prefix="pano-cid-")
-        cidfile = os.path.join(cid_dir, "cid")
-        docker = docker[:2] + ["--cidfile", cidfile] + docker[2:]
-    try:
-        proc = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                      timeout=TOOL_TIMEOUT)
-        # Backward compat: tests may inject a CompletedProcess-like runner.
-        if hasattr(proc, "stdout") and isinstance(proc.stdout, (bytes, type(None))):
-            return _write_completed(label, tool, proc, out_path)
-        return _stream_and_write(label, tool, proc, out_path,
-                                 docker_bin=docker_bin, cidfile=cidfile,
-                                 docker_env=(docker_context.env
-                                             if docker_context is not None else None))
-    except subprocess.TimeoutExpired:
-        print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
-              file=sys.stderr)
-    except Exception as e:  # noqa: BLE001
-        print("%s %s failed: %s; skipping" % (label, tool, e), file=sys.stderr)
-    finally:
-        if cid_dir:
-            shutil.rmtree(cid_dir, ignore_errors=True)
-    return None
-
-
-def _write_completed(label, tool, res, out_path):
-    """Legacy path for runner callables that return a CompletedProcess."""
-    if getattr(res, "returncode", 1) not in (0, 1):
-        excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
-            "utf-8", errors="replace").strip()
-        print("%s %s exited %s; skipping%s" % (
-            label, tool, res.returncode,
-            (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-        return None
-    out_bytes = res.stdout or b""
-    if len(out_bytes) > MAX_TOOL_OUTPUT_BYTES:
-        print("%s %s output exceeded %d byte limit; skipping" % (
-            label, tool, MAX_TOOL_OUTPUT_BYTES), file=sys.stderr)
-        return None
-    if not out_bytes.strip():
-        print("%s %s produced no output on a selected target; recording as "
-              "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
-        return None
-    return _atomic_write(out_path, _redact_capture(tool, out_bytes))
-
-
-# #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is
-# just {executionSuccessful: true}, and tool.driver.rules lists the CONFIG's
-# rules whether or not any file matched. So a semgrep whose ruleset covers none
-# of the target's languages scans 0 files and emits an artifact byte-identical
-# in shape to a genuinely clean run. The one witness is semgrep's own stderr,
-# which exists only at run time -- capture it into the artifact while we have it.
-_SEMGREP_SCANNED = re.compile(rb"\bran\s+\d+\s+rules?\s+on\s+(\d+)\s+files?\b",
-                              re.IGNORECASE)
-
-
-def _semgrep_scanned_files(stderr):
-    """The M in semgrep's `Ran N rules on M files`, or None if it isn't there.
-
-    None means "no claim": semgrep's summary wording is English prose and has
-    drifted across versions, so an unrecognised line must leave the artifact
-    unannotated and the disposition exactly as it is today. Fabricating a 0
-    would strip coverage credit from a scanner that really did run.
-    """
-    m = _SEMGREP_SCANNED.search(stderr or b"")
-    return int(m.group(1)) if m else None
-
-
-def _annotate_scanned_files(payload, count):
-    """Record `count` as runs[0].properties.panopticon_scanned_files.
-
-    Tolerant by design: output that is not a SARIF document with at least one
-    run object is returned untouched. This runs on every semgrep capture, and a
-    malformed artifact is already handled (and reported) by the ingest walk --
-    it must not become a write failure here.
-    """
-    try:
-        doc = json.loads(payload)
-        run = doc["runs"][0]
-        if not isinstance(run, dict):
-            return payload
-    except (ValueError, KeyError, IndexError, TypeError):
-        return payload
-    run.setdefault("properties", {})["panopticon_scanned_files"] = count
-    return json.dumps(doc).encode("utf-8")
-
-
-# Per-tool post-capture annotation, keyed by tool name: signals that exist only
-# while the child runs and would otherwise be lost to the artifact.
-_STDERR_ANNOTATORS = {"semgrep": _semgrep_scanned_files}
-
-
-def _annotate_from_stderr(tool, payload, stderr):
-    """Apply `tool`'s stderr annotation, if it has one. Identity otherwise."""
-    reader = _STDERR_ANNOTATORS.get(tool)
-    if reader is None:
-        return payload
-    count = reader(stderr)
-    return payload if count is None else _annotate_scanned_files(payload, count)
-
-
-def _drain(stream):
-    """Read and discard the rest of a stream past the byte cap so the child is
-    never left blocked on a full pipe. #run7 QAL-D1A: shared by both truncation
-    branches in _stream_and_write (previously an inline duplicate)."""
-    while stream.read(64 * 1024):
-        pass
-
-
-def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
-                      docker_bin=None, cidfile=None, docker_env=None):
-    """Stream stdout from a Popen-like object with an explicit byte cap AND a
-    wall-clock deadline.
-
-    The byte cap keeps a large/adversarial target's output from accumulating in
-    memory (#1111). The deadline is enforced by a watchdog that kills the child
-    at `timeout`: a Popen has no ``timeout=`` of its own, so without it a hung or
-    trickle-slow tool would block the streaming ``read()`` (or the post-cap
-    ``_drain`` of an infinite producer) forever -- restoring the bound that the
-    old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
-    timed_out = {"hit": False}
-
-    def _kill_container():
-        # #run9 OPS-D1A: proc.kill() SIGKILLs the `docker run` CLI client, which
-        # cannot forward the signal to the daemon -- the `--rm` container keeps
-        # running (and is never removed). When we recorded its id via --cidfile,
-        # stop it directly. Best-effort: an empty/absent cidfile (container not
-        # started yet) or a docker error is a no-op.
-        if not (docker_bin and cidfile):
-            return
-        try:
-            with open(cidfile, encoding="utf-8") as fh:
-                cid = fh.read().strip()
-        except OSError:
-            return
-        if not cid:
-            return
-        try:
-            subprocess.run([docker_bin, "kill", cid], capture_output=True, timeout=10,
-                           env=docker_env)
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-    def _watchdog():
-        # Kill the child so the blocking read()/drain unblocks at EOF, and stop the
-        # container it launched (OPS-D1A) so a hung tool leaves nothing running.
-        timed_out["hit"] = True
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        _kill_container()
-
-    timer = threading.Timer(timeout, _watchdog)
-    timer.daemon = True
-    timer.start()
-    # #1510: drain stderr concurrently from the start. Reading stdout to EOF
-    # first deadlocks against any scanner that fills its 64KB stderr pipe before
-    # emitting stdout -- the parent waits on stdout the blocked child cannot
-    # write, and only the watchdog breaks it, costing the whole scan timeout and
-    # that tool's coverage. Shared with tools/base.run_tool, which already had it.
-    join_stderr = drain_stderr_async(proc)
-    try:
-        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-            truncated = False
-            try:
-                while True:
-                    chunk = proc.stdout.read(64 * 1024)
-                    if not chunk:
-                        break
-                    room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
-                    if room <= 0:
-                        truncated = True
-                        _drain(proc.stdout)   # discard remaining stdout, unstored
-                        break
-                    if len(chunk) > room:
-                        spool.write(chunk[:room])
-                        truncated = True
-                        _drain(proc.stdout)
-                        break
-                    spool.write(chunk)
-                # The watchdog guarantees the child terminates, so wait() is bounded.
-                rc = proc.wait()
-                stderr = join_stderr()
-            finally:
-                try:
-                    proc.stdout.close()
-                except Exception:
-                    pass
-                try:
-                    proc.stderr.close()
-                except Exception:
-                    pass
-                if proc.poll() is None:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    _kill_container()      # OPS-D1A: stop the container, not just the client
-
-            # A watchdog kill lands rc < 0 (signal). Only treat it as a timeout
-            # when the child did NOT finish cleanly first -- else a tool that
-            # completed a hair before the deadline (rc 0/1) would be misreported.
-            if timed_out["hit"] and rc not in (0, 1):
-                print("%s %s timed out after %ss; skipping" % (label, tool, timeout),
-                      file=sys.stderr)
-                return None
-
-            if rc not in (0, 1):
-                excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
-                print("%s %s exited %s; skipping%s" % (
-                    label, tool, rc,
-                    (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-                return None
-
-            if spool.tell() == 0:
-                print("%s %s produced no output on a selected target; recording as "
-                      "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
-                return None
-
-            if truncated:
-                # Both numbers describe RAW bytes: the cap is measured on the
-                # stream as it arrives (above), which is the only count that
-                # bounds memory. `_whole_lines` and `_redact_capture` run after,
-                # and either can change the retained prefix's length, so the
-                # marker is a statement about what the child produced and what
-                # was kept -- not about the size of the file on disk (#1639 P11).
-                # Cutting on a raw byte count can also split a token in half,
-                # and a fragment matches none of the length-anchored patterns:
-                # `_whole_lines` drops the partial last line so the fragment
-                # goes with it, EXCEPT on output with no line breaks (a compact
-                # single-line SARIF) or a last line over `_TRUNCATE_TRIM_MAX`,
-                # where the prefix is kept as cut and a split value can survive
-                # as an unmatched fragment.
-                marker = (
-                    "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
-                    "only the first %d bytes were retained]\n" % (
-                        MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
-                ).encode("utf-8")
-                print("%s %s output exceeded %d byte limit; truncated and retained "
-                      "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
-                      file=sys.stderr)
-                # Write only up to the cap, redacted, then append the marker for
-                # the tail -- appended AFTER the pass so panopticon's own text
-                # is never rewritten by it.
-                spool.seek(0)
-                return _atomic_write(
-                    out_path,
-                    _redact_capture(
-                        tool, _whole_lines(spool.read(MAX_TOOL_OUTPUT_BYTES)))
-                    + marker)
-
-            spool.seek(0)
-            # Redaction is LAST: the semgrep annotator rewrites the payload on
-            # its way out, so a choke point ahead of it could be reopened by it.
-            return _atomic_write(
-                out_path,
-                _redact_capture(tool,
-                                _annotate_from_stderr(tool, spool.read(), stderr)))
-    finally:
-        timer.cancel()
-
-
-# Which tools' captures this run put through `_redact_capture`. A run_tools()
-# call clears it and `write_manifest` reads it back, so the artifact reports what
-# the runner OBSERVED itself doing rather than restating an intention (#1639 P11
-# F5): replace the choke point with identity and the manifest's claim goes false.
-# Module-level because the pass runs three call frames below the run loop --
-# threading a ledger through _capture_run/_write_completed/_stream_and_write
-# would put plumbing in five signatures to carry one bit.
-_REDACTED_CAPTURES: set[str] = set()
-
-# What egress each tool was granted this run, keyed by tool name (#1645). Same
-# construction and the same reason as the ledger above: `run_tools()` clears it
-# and fills it WHERE THE ARGV IS BUILT, so the manifest reports what the runner
-# observed itself doing -- take the flags away and the claim goes with them,
-# rather than a `proxied:` string surviving as an intention nothing enforces.
-# Values are `"none"`, `"proxied:<allowlist>"` or the fail-closed
-# `"excluded:online egress unavailable"` (scripts.tools.egress).
-_NETWORK_POSTURE: dict[str, str] = {}
-
-# Only a produced Gitleaks capture may carry this observation. Filled from the
-# mount kept alive during its launch, then filtered to produced in write_manifest.
-_IGNORE_FILE_POSTURE: dict[str, str] = {}
-
-# Above this size a capture is re-serialized in json.dumps' default layout
-# instead of the producer's own: matching the layout costs one extra
-# serialization of the ORIGINAL document to verify the guess, which is free on a
-# normal capture and not worth it on a huge one (only reached when redaction
-# fired, and every consumer parses the file rather than reading it).
-_STYLE_PROBE_MAX_BYTES = 4 * 1024 * 1024
-# The producer's indentation, read off the head of the document.
-_JSON_INDENT = re.compile(r"[\[{]\n(\x20+)\S")
-
-
-def _json_style(text):
-    """`json.dumps` kwargs guessed from how `text` itself is laid out.
-
-    A guess: the caller VERIFIES it reproduces the original before using it, so
-    being wrong costs one comparison rather than a reformatted file.
-    """
-    head = text[:4096]
-    m = _JSON_INDENT.search(head)
-    if m:
-        return {"indent": len(m.group(1))}
-    return {} if '": ' in head or '", "' in head else {"separators": (",", ":")}
-
-
-# How much of a retained prefix `_whole_lines` may give up to end on a line
-# boundary. A last line longer than this is not line-oriented output, and the
-# evidence in it is worth more than the fragment risk.
-_TRUNCATE_TRIM_MAX = 64 * 1024
-
-
-def _whole_lines(prefix):
-    """Drop a trailing partial line from a capture the byte cap cut (#1639 P11
-    F2).
-
-    The cap is measured on the RAW stream -- the only count that bounds memory
-    (ruling 4) -- so it can land in the middle of a token, and the length-
-    anchored patterns do not match a fragment: `ghp_QQQQQQQQQQ` is not a
-    credential but it is not masked either. Scanner output is line-oriented, so
-    ending on the last newline drops the split value instead of keeping half of
-    it.
-
-    Bounded both ways: a capture with no newline at all (a compact single-line
-    SARIF), or whose last line is longer than `_TRUNCATE_TRIM_MAX`, keeps its
-    prefix exactly as cut -- the trim must never empty a file or throw away
-    megabytes of retained evidence to tidy one line, and for those shapes the
-    fragment risk is what the marker comment documents.
-    """
-    cut = prefix.rfind(b"\n")
-    if cut == -1 or len(prefix) - (cut + 1) > _TRUNCATE_TRIM_MAX:
-        return prefix
-    return prefix[:cut + 1]
-
-
-def _redact_capture(tool, data):
-    """The ONE redaction choke point for a raw scanner capture (#1639 P11).
-
-    `.panopticon/tools/<tool>.sarif|json` is what an operator copies into a CI
-    job's artifacts, and nothing masked it: the report's pass
-    (`redact.redact_tree`, #1634) walks the REPORT tree, which these files are
-    not part of, and a secret scanner's output is a file full of other people's
-    credentials by construction. Every write path calls this immediately before
-    `_atomic_write`, and `TestRawCaptureRedaction` reads run_tools' own AST to
-    keep it that way for the next path somebody adds.
-
-    Structure is preserved by PARSING, not by trusting the patterns to stay
-    inside a string (fix round 1 F1). A JSON capture -- which is every capture
-    but spotbugs' XML -- goes through `redact.redact_tree`, the same per-leaf
-    walk the report uses since #1661, so a pattern can never span two fields:
-    `ruleId`, `locations`, `region` line numbers and `level` survive because the
-    walk never sees them as text. The flat pass had no such guarantee, and the
-    PEM rule broke it -- an unterminated `-----BEGIN` in one snippet closed on a
-    later result's `-----END` and swallowed every result in between. Non-JSON
-    captures (spotbugs' XML) still take the flat pass, where every pattern but
-    the PEM body is anchored to a character class that cannot cross a `"`, and
-    the PEM body -- which has to cross quotes, since source code embeds a key
-    one quoted literal per line -- is bounded to 16 KiB and cannot span two
-    `-----BEGIN` blocks. So a flat-pass match over a structured document is
-    bounded rather than open-ended; it is not the guarantee parsing gives, which
-    is why JSON never takes this path. That length bound has a cost worth
-    knowing before you publish a capture: a PEM block whose body runs longer
-    than 16 KiB is not masked AT ALL -- header included -- so a capture quoting
-    one very large key can still carry it verbatim.
-
-    Whichever path runs, it is `scripts/redact.py`'s pattern set -- never a
-    second copy: two redactors drift, and the one reached only by raw captures
-    would drift silently.
-
-    The tree walk masks string LEAVES, not dict KEYS -- the report's contract
-    since #1661, and the right one here: a SARIF key comes from the tool's own
-    schema, and the target-derived keys that do exist (npm-audit's per-package
-    objects) are identifiers, not quoted secrets. The flat pass did mask a key,
-    but only as a side effect of not knowing what a key was, which is the same
-    blindness that let it eat three results.
-
-    Bytes in, bytes out, because bytes are what the writer holds. The document
-    is re-serialized ONLY when redaction actually fired, in the producer's own
-    layout where that is recognisable; a capture with nothing to mask is
-    returned as the exact bytes the scanner produced, so all fifteen committed
-    real-scanner goldens are byte-identical through this function and a payload
-    that is not valid UTF-8 (decoded here with errors="replace") is never
-    rewritten by a pass that had nothing to do. When the pass DOES fire on such
-    a payload its bytes are not preserved: it was decoded with replacement, so
-    every byte that was not valid UTF-8 comes back as U+FFFD alongside the
-    masked secret.
-    """
-    _REDACTED_CAPTURES.add(tool)
-    text = data.decode("utf-8", errors="replace")
-    try:
-        parsed = json.loads(text)
-    except ValueError:
-        if tool == "eslint-security":
-            # Broken scanner JSON can contain arbitrary source fragments too.
-            # Discard it without converting whole-capture failure into a clean scan.
-            return b"panopticon: unusable ESLint capture\n"
-        masked = redact.redact(text)        # XML/plain-text captures
-    else:
-        # The parse is bounded by MAX_TOOL_OUTPUT_BYTES, and ingest already
-        # parses this same file, so it adds no ceiling the pipeline lacked.
-        if tool == "eslint-security":
-            from scripts.tools.eslint_security import sanitize_capture
-            try:
-                # Work on a copy so changed source diagnostics force serialization.
-                cleaned = sanitize_capture(json.loads(text))
-            except ValueError:
-                # Invalid metadata or a malformed neighboring row must not
-                # disable parser-text sanitization. No trustworthy document
-                # can be retained; publish only an unparseable static marker.
-                return b"panopticon: unusable ESLint capture\n"
-        else:
-            cleaned = parsed
-        scrubbed = redact.redact_tree(cleaned)
-        if scrubbed == parsed:
-            return data
-        style = {}
-        if len(text) <= _STYLE_PROBE_MAX_BYTES:
-            probe = _json_style(text)
-            if json.dumps(parsed, **probe) == text:
-                style = probe
-        masked = json.dumps(scrubbed, **style)
-    if masked == text:
-        return data
-    # Disclosed, not silent: for most scanners a secret in the capture means the
-    # scan surface was wrong. Only ever reached when a capture is being written,
-    # so it cannot crowd out the driver's no-output failure note (#1317).
-    note = ("capture diagnostics or secret-shaped values sanitized before writing"
-            if tool == "eslint-security" else
-            "capture carried secret-shaped values; masked before writing")
-    print("%s %s" % (tool, note), file=sys.stderr)
-    return masked.encode("utf-8")
-
-
-def _atomic_write(out_path, data):
-    """Atomically replace out_path with data.
-
-    #1735: every SARIF capture goes through here, and `out_path` is under
-    `.panopticon/tools/` in the REVIEWED tree. `mkstemp` leaves no plantable
-    staging name, but it stages in `dirname(out_path)` -- so a target that
-    commits `.panopticon/tools` as a directory symlink has every capture
-    written, and then `os.replace`d, outside the tree. O_NOFOLLOW would never
-    see that (it guards the final component only); the whole-path confinement
-    is the guard that does.
-    """
-    safe_write.confine_artifact_path(out_path)
-    fd, temp_path = tempfile.mkstemp(
-        prefix=".%s-" % os.path.basename(out_path),
-        dir=os.path.dirname(out_path) or ".")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temp_path, out_path)
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-    return out_path
 
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
@@ -1321,9 +867,9 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     total = len(tools)
     progress.header(target, total)
     # #1645: what the runner OBSERVED itself granting each tool, the same
-    # construction as `_REDACTED_CAPTURES` above -- cleared here, filled where
-    # the argv is built, read back by `write_manifest`. A claim written from
-    # intent would survive the flags going away; this one does not.
+    # construction as `tool_capture._REDACTED_CAPTURES` -- cleared here, filled
+    # where the argv is built, read back by `write_manifest`. A claim written
+    # from intent would survive the flags going away; this one does not.
     _NETWORK_POSTURE.clear()
     _SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
     _SCANNER_CONFIG_POSTURE.clear()
@@ -1395,8 +941,9 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                 scanner_config._record_scanner_config(tool, cmd)
                 with progress.tool(tool, index, total) as step:
                     done = step.finish(
-                        _capture_run("tool", tool, docker, out_path, runner,
-                                     docker_context=docker_context))
+                        tool_capture._capture_run("tool", tool, docker,
+                                                  out_path, runner,
+                                                  docker_context=docker_context))
             if done:
                 written.append(done)
             continue
@@ -1446,8 +993,9 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     and bool(getattr(adapter, "reads_security_mode", False)),
                     adapter_mode)
                 with progress.tool(tool, index, total) as step:
-                    done = _capture_run("adapter", tool, docker, out_path, runner,
-                                        docker_context=docker_context)
+                    done = tool_capture._capture_run(
+                        "adapter", tool, docker, out_path, runner,
+                        docker_context=docker_context)
                     if tool == "gitleaks" and security_mode == REDTEAM:
                         mountpoint = os.path.join(target, ".gitleaksignore")
                         try:
@@ -1488,194 +1036,6 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         progress.note("[%d/%d] %s skipped: no runner registered"
                       % (index, total, tool))
     return written
-
-
-def _excluded_dir_row(d):
-    """One `excluded_dirs` row for the manifest.
-
-    #1740: `skipped` is the whole point of the row under redteam -- a name-only
-    venv is DETECTED and scanned anyway. True for a caller that passed
-    `find_virtualenvs` output directly, which is the pre-#1740 meaning of this
-    list. #1839: `note` is present only when the runner had a reason of its own
-    for scanning a directory it detected -- a marker with no environment under
-    it, or a name no exclusion pattern can express -- so an operator reading
-    `skipped: false` under `standard` is not left to guess which.
-    """
-    row = {"path": str(d["path"]), "reason": str(d["reason"]),
-           "skipped": bool(d.get("skipped", True))}
-    if d.get("note"):
-        row["note"] = str(d["note"])
-    return row
-
-
-def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
-                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None, exclude_globs=(), suppression_comments=None,
-                   scanner_config=None, ignore_files=None):
-    """Write the exact selected/produced scanner set for coverage gating.
-
-    `excluded_scope` names adapters that were applicable but whose entire
-    surface fell under the gate's --exclude globs; they are disclosed (never
-    required), and are kept out of `selected` so the missing-set invariant
-    holds.
-
-    `excluded_dirs` (#1638 P09) are the virtualenv directories this scan
-    DETECTED, as ``{"path", "reason", "skipped"[, "note"]}`` rows -- so a report can say
-    what was pruned and on what evidence (`pyvenv.cfg` or the conventional
-    name) rather than leaving a silent hole in the scanned surface. #1740:
-    `skipped` is what separates the two, because under `--security redteam` a
-    name-only directory is detected and scanned anyway; it defaults to True, so
-    a caller handing `find_virtualenvs` output straight in still publishes this
-    list's pre-#1740 meaning. `depth_bound` is how deep
-    the walk that found them looked: the list is what the SCANNERS were told to
-    skip, and ingest drops virtualenv findings at any depth, so a reader knows
-    the list is bounded rather than exhaustive. Additive: both fields are new in
-    this schema version and every consumer reads them optionally, so an older
-    manifest without them still loads.
-
-    `sanitized` (#1646) is what an adapter refused to hand its scanner, per
-    adapter: `{"pip-audit": {"source", "kept", "dropped": [{"line", "reason"}],
-    "hashes_stripped"}}`. pip-audit is now given a GENERATED requirements file
-    holding only bare PEP 508 lines, because resolving an editable/local/VCS/URL
-    requirement runs the reviewed repo's build backend -- so the dependency
-    audit can be PARTIAL, and this is where it says by how much and which lines.
-    Stated on every manifest, `{}` included, so its absence cannot be read as
-    "nothing was dropped" on a run that never measured.
-
-    `exclude_globs` (#1740 fix round 1) are the `--exclude` path globs this
-    scan was given -- the driver passes the repository's committed
-    `exclude_paths:`, CI passes its own. `excluded_scope` beside it names the
-    ADAPTERS those globs disqualified; this is the policy itself, so a reader
-    can tell "no adapter was excluded" from "no policy was applied". Stated on
-    every manifest, `[]` included, like `sanitized`.
-
-    `file_coverage` carries bounded scanner file facts derived from the exact
-    written capture. Partial source coverage leaves produced/missing unchanged;
-    ingestion independently derives the same facts for legacy raw arrays.
-
-    `redacted` (#1639 P11) says whether every capture this run wrote went
-    through the redaction choke point, read off the ledger `_redact_capture`
-    keeps -- an observation, so replacing the choke point with identity makes
-    the claim go false rather than leaving a stale `true` behind. The tools
-    phase copies it into `tools-ran.json`.
-
-    `suppression_comments` (#1839) is what this run does with an inline
-    suppression comment in the target's own source, per tool: `"ignored"` where
-    the pinned scanner's knob for it was passed (`--security redteam`),
-    `"honoured"` where the comment stood -- `standard` is an operator scanning
-    their own repository, and where no knob exists at the pin it is a residual;
-    this repository's own CI (`security.yml` and the fork-PR
-    `security-fork.yml`) scans in `redteam`, so nothing target-authored is
-    honoured on either check -- and
-    `"n/a"` for a tool whose argv honours no such comment at all. A tool with no
-    row was not ASSESSED, which is deliberately not the same claim as `n/a`.
-    Defaults to the ledger `run_tools()` filled while building each argv -- an
-    observation, like `redacted` and `network`. For a FLAG-lever tool (bandit,
-    gitleaks) that observation is the argv itself, so taking the flag away makes
-    the claim change rather than leaving an intention behind; for an INGEST-lever
-    tool (`scanner_config.SUPPRESSION_INGEST_LEVER`, semgrep today) the argv
-    decides nothing and the row follows the run's mode, which is what does. This
-    row is about COMMENTS only. `ignore_files` separately records the source-root
-    `.gitleaksignore` observed at launch: `honoured` for a target file allowed
-    under standard, `neutralised` for the redteam empty-file mount, and
-    `absent` when no file exists. Only a produced Gitleaks scan gets a row.
-    An explicit map follows the same observation override pattern as
-    `suppression_comments`; it is still filtered to produced Gitleaks.
-
-    One row is true for a reason that is NOT on the argv, and this is the
-    schema of record, so it says so: semgrep's. At the pin the scanner reports
-    a `# nosemgrep`'d result whether or not `--disable-nosem` is passed, so the
-    row is RECORDED from the mode (fix round 2: reading it off the belt flag
-    would publish `honoured` for a redteam run the moment the belt came off)
-    and the INGEST enforces it --
-    `ingest_tools.ingest_dir_detailed` drops those results under `standard` and
-    publishes the count per tool as `suppressed_in_source`, which is where a
-    reader sees HOW MUCH a honoured comment cost. `run_tools` never sees that
-    number: this manifest is written before anything is ingested.
-
-    `scanner_config` (#1839) is which configuration file each pinned scanner ran
-    under: `"scanner-owned"` for a constant of ours staged in a scratch, and
-    `"target .bandit (its skips and tests)"` for the one case the owner ruling
-    of 2026-09-25 leaves with the operator -- a `.bandit` committed to the repository being scanned,
-    honoured under `standard` and never under `redteam`. Same construction as
-    `network` above: read off the argv the runner built.
-
-    `network` (#1645) is the egress each tool was given: `"none"` for the
-    `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY
-    adapter that ran behind this run's proxy, and `"excluded:online egress
-    unavailable"` for one that could not be given an egress path and was
-    therefore NOT run. "pip-audit: produced" has never said what that scanner
-    could reach while it ran, and this is where the answer goes. Defaults to
-    the ledger `run_tools()` filled while building each argv -- an observation,
-    like `redacted` -- and an explicit value is for a caller that did not run
-    the loop. The third posture also MOVES the adapter: it leaves `selected`
-    for `excluded_scope`, the shape the gate already reads as "applicable, not
-    required by scope, disclosed"; the network refusal independently prevents
-    coverage certification. An adapter left in both lists would read as a
-    required scanner that went missing (and `security_gate` rejects the
-    overlap outright).
-    """
-    network = {str(k): str(v) for k, v in
-               (_NETWORK_POSTURE if network is None else network).items()}
-    refused = sorted(t for t, posture in network.items()
-                     if posture.startswith(egress.EXCLUDED_PREFIX))
-    selected = [t for t in selected if t not in set(refused)]
-    excluded_scope = list(excluded_scope) + refused
-    selected = list(dict.fromkeys(str(tool) for tool in selected))
-    produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
-    observed_ignore_files = (_IGNORE_FILE_POSTURE if ignore_files is None
-                             else ignore_files)
-    file_coverage = {}
-    for capture_path in written:
-        if os.path.basename(capture_path) == "eslint-security.json":
-            from scripts.tools.eslint_security import file_coverage as eslint_coverage
-            try:
-                with open(capture_path, "rb") as capture:
-                    data = capture.read(MAX_TOOL_OUTPUT_BYTES + 1)
-                if len(data) <= MAX_TOOL_OUTPUT_BYTES:
-                    file_coverage["eslint-security"] = eslint_coverage(json.loads(data))
-            except (OSError, ValueError):
-                pass  # ingestion retains the whole-capture failure path
-    payload = {"schema_version": 1, "run_id": run_id,
-               "file_coverage": file_coverage,
-               "selected": selected, "produced": produced,
-               "missing": sorted(set(selected) - set(produced)),
-               # #1639 P11 F5: what the runner OBSERVED, not what it intends --
-               # every capture written this run passed `_redact_capture`. False
-               # when nothing was written (there is nothing to vouch for) and
-               # false if any capture reached disk without the pass, so the
-               # phase can copy the answer into `tools-ran.json` instead of
-               # asserting another module's behaviour with a literal.
-               "redacted": bool(produced) and all(
-                   tool in _REDACTED_CAPTURES for tool in produced),
-               "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
-               "network": network,
-               "suppression_comments": {
-                   str(k): str(v) for k, v in
-                   (_SUPPRESSION_POSTURE if suppression_comments is None
-                    else suppression_comments).items()},
-               "ignore_files": {"gitleaks": observed_ignore_files["gitleaks"]}
-               if ("gitleaks" in produced
-                   and isinstance(observed_ignore_files.get("gitleaks"), str)
-                   and observed_ignore_files["gitleaks"] in
-                   ("honoured", "neutralised", "absent")) else {},
-               "scanner_config": {
-                   str(k): str(v) for k, v in
-                   (_SCANNER_CONFIG_POSTURE if scanner_config is None
-                    else scanner_config).items()},
-               "sanitized": dict(sanitized or {}),
-               "exclude_globs": [str(g) for g in exclude_globs or ()],
-               "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
-               "depth_bound": depth_bound}
-    # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
-    # inside the reviewed tree. Confine before the makedirs (a symlinked
-    # intermediate would be traversed by it) and never open through a link.
-    safe_write.confine_artifact_path(path)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with safe_write.open_w_nofollow(path) as fh:
-        json.dump(payload, fh, indent=2)
-        fh.write("\n")
-    return payload
 
 
 def main(argv=None):
@@ -1755,17 +1115,19 @@ def main(argv=None):
         # (COD-X0X #1406). The selection above is pure filesystem/logic and needs
         # no docker, so `effective` is a faithful record of what WOULD have run.
         if a.manifest:
-            write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
-                           run_id=a.run_id, excluded_dirs=venv_rows,
-                           sanitized=sanitized, exclude_globs=a.exclude)
+            tools_manifest.write_manifest(
+                a.manifest, effective, [], excluded_scope=excluded_scope,
+                run_id=a.run_id, excluded_dirs=venv_rows,
+                sanitized=sanitized, exclude_globs=a.exclude)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
                       run_id=a.run_id, security_mode=a.security_mode)
     if a.manifest:
-        write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
-                       run_id=a.run_id, excluded_dirs=venv_rows,
-                       sanitized=sanitized, exclude_globs=a.exclude)
+        tools_manifest.write_manifest(
+            a.manifest, effective, paths, excluded_scope=excluded_scope,
+            run_id=a.run_id, excluded_dirs=venv_rows,
+            sanitized=sanitized, exclude_globs=a.exclude)
     print("\n".join(paths))
     return 0
 

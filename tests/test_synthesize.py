@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import scripts.synthesize as syn
-import scripts.run_tools as run_tools
+import scripts.tools_manifest as tools_manifest
 import scripts.synth.findings as findings_mod
 import scripts.phases.coverage as coverage_phase
 import scripts.synth.coverage_io as coverage_io
@@ -788,9 +788,9 @@ class TestUnusableScannerCertification(unittest.TestCase):
             fh.write(payload)
         # The real writer's own manifest: bandit selected AND produced, nothing
         # missing -- which is the truth about bytes, and a lie about coverage.
-        run_tools.write_manifest(os.path.join(d, "tools-manifest.json"),
-                                 ["bandit"], [os.path.join(td, "bandit.sarif")],
-                                 run_id="rid-1")
+        tools_manifest.write_manifest(os.path.join(d, "tools-manifest.json"),
+                                      ["bandit"], [os.path.join(td, "bandit.sarif")],
+                                      run_id="rid-1")
         fp = os.path.join(d, "findings-g1-code.json")
         with open(fp, "w") as fh:
             json.dump({"findings": []}, fh)

@@ -34,7 +34,7 @@ import tempfile
 import unittest
 
 import scripts.hosts as hosts
-import scripts.run_tools as run_tools
+import scripts.tools_manifest as tools_manifest
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -230,15 +230,15 @@ def _build_report(tmpdir):
     # leaves the per-tool value unwalked. Stated rather than observed here: this
     # fixture writes the manifest without running the scan loop, which is
     # exactly the caller the explicit argument exists for.
-    run_tools.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
-                             ["bandit"], [sarif_path], run_id="parity-run",
-                             network={"bandit": "none",
-                                      "pip-audit": "proxied:pypi.org"},
-                             sanitized={"pip-audit": {
-                                 "source": "requirements.txt", "kept": 2,
-                                 "dropped": [{"line": "-e .", "reason": "editable"}],
-                                 "hashes_stripped": True,
-                                 "truncated": False, "dropped_truncated": 0}})
+    tools_manifest.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
+                                  ["bandit"], [sarif_path], run_id="parity-run",
+                                  network={"bandit": "none",
+                                           "pip-audit": "proxied:pypi.org"},
+                                  sanitized={"pip-audit": {
+                                      "source": "requirements.txt", "kept": 2,
+                                      "dropped": [{"line": "-e .", "reason": "editable"}],
+                                      "hashes_stripped": True,
+                                      "truncated": False, "dropped_truncated": 0}})
 
     # The 5.2 host posture, in the artifact's own shape (state/by/detail).
     with open(os.path.join(run_dir, "host-capabilities.json"), "w",

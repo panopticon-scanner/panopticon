@@ -14,7 +14,7 @@ from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.run_tools import _redact_capture  # noqa: E402
+from scripts.tool_capture import _redact_capture  # noqa: E402
 from scripts.tools import ADAPTERS  # noqa: E402
 
 # The image layout as configuration (#1654): a hardcoded /opt/panopticon
@@ -164,7 +164,7 @@ def redact_bytes(raw: bytes):
     where a secret can be stopped before it enters git history, where removing
     it costs a rewrite rather than an edit.
 
-    Delegates to `run_tools._redact_capture` -- the PRODUCTION capture pass
+    Delegates to `tool_capture._redact_capture` -- the PRODUCTION capture pass
     (#1639 P11) -- rather than running a second flat sweep of its own. These
     files are the goldens a real capture is tested against, so they have to be
     masked with the same semantics a real capture gets: parse a JSON payload and
