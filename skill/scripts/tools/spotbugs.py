@@ -13,6 +13,14 @@ from scripts.claim_scope import confined_to_root
 from .base import (as_list, make_finding, omit_none, run_tool, scratch_cwd,
                    target_root_cv)
 
+# The two vendor versions `_SPOTBUGS_CWE` below was generated from -- a
+# version bump that regenerates the table without updating these, or updates
+# these without regenerating the table, now fails a test instead of going
+# stale silently (#2275, #2285). Nothing at run time reads them; the
+# provenance comment below already names both.
+_TABLE_SPOTBUGS_VERSION = "4.8.6"
+_TABLE_FINDSECBUGS_VERSION = "1.13.0"
+
 # Every CWE core SpotBugs 4.8.6 or FindSecBugs 1.13.0 itself assigns to a bug
 # pattern (#2275, COD-1501398192), from each vendor's own `findbugs.xml`, on
 # 2026-09-28. Two sources, no category filter (a vendor maps a CWE to a

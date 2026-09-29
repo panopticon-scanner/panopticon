@@ -90,15 +90,17 @@ everything else; precedence is `--target` > CLI flag > environment variable
 full flag list.
 
 **Mount a corpus, never your own checkout.** `gitleaks`, `bandit`, and `trivy`
-used to be pinned to `/mnt/panopticon` in `TARGETS`, so a refresh scanned the
-operator's real working tree — `.env` included — and #run12 committed the live
-API key gitleaks found into this public directory. They are `/src` now, and a
-test pins that. For `gitleaks` specifically the mounted target must carry
-**synthetic** secrets, or the golden parses to zero findings; inventing fake
-credentials for it is correct, and scanning your own tree to get real ones is
-the bug. Capture also redacts every payload before writing, and reports
-`"redacted": true` when it fires — treat that flag as "my capture target was
-wrong", not as "handled".
+used to be pinned to the operator's own checkout root in `TARGETS`, so a refresh
+scanned the operator's real working tree — `.env` included — and #run12 committed
+the live API key gitleaks found into this public directory. They are `/src` now
+and `tests/test_capture_goldens.py` pins that. `tests/test_goldens_provenance.py`
+refuses a committed golden that names an operator checkout or worktree at all,
+which is why this paragraph describes that path rather than spelling it. For
+`gitleaks` specifically the mounted target must carry **synthetic** secrets, or
+the golden parses to zero findings; inventing fake credentials for it is correct,
+and scanning your own tree to get real ones is the bug. Capture also redacts
+every payload before writing, and reports `"redacted": true` when it fires —
+treat that flag as "my capture target was wrong", not as "handled".
 
 Each capture re-parses its own trimmed payload before writing, so a trim that
 broke the shape is rejected rather than committed. Trimming is format-aware:

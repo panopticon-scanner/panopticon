@@ -1282,9 +1282,9 @@ class TestRedactedCaptureStillIngests(unittest.TestCase):
             }]}]}
 
     def test_rule_and_location_survive_the_capture_redaction(self):
-        import scripts.run_tools as rt
+        import scripts.tool_capture as tc
         raw = _json.dumps(self._sarif(self.MARKER)).encode("utf-8")
-        redacted = rt._redact_capture("gitleaks", raw)
+        redacted = tc._redact_capture("gitleaks", raw)
         self.assertNotIn(self.MARKER.encode(), redacted)
 
         doc = _json.loads(redacted)
@@ -1318,7 +1318,7 @@ class TestRedactedCaptureStillIngests(unittest.TestCase):
         """Non-vacuity: rule, location, severity and citations above are what
         the UNREDACTED capture yields too, so the assertions pin survival
         rather than describing a finding redaction happened to reshape."""
-        import scripts.run_tools as rt
+        import scripts.tool_capture as tc
         raw = _json.dumps(self._sarif(self.MARKER)).encode("utf-8")
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "gitleaks.sarif"), "wb") as fh:
@@ -1326,7 +1326,7 @@ class TestRedactedCaptureStillIngests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 plain = first(it.ingest_dir(d, "g1"))
             with open(os.path.join(d, "gitleaks.sarif"), "wb") as fh:
-                fh.write(rt._redact_capture("gitleaks", raw))
+                fh.write(tc._redact_capture("gitleaks", raw))
             with contextlib.redirect_stderr(io.StringIO()):
                 masked = first(it.ingest_dir(d, "g1"))
         for key in ("tool_evidence", "location", "source", "severity",

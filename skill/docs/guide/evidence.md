@@ -19,6 +19,10 @@ Findings carry two independent axes: **severity** (impact if true — never rewr
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not
   gate-eligible by default).
 - `unverified` — no verification attempted.
+- `backup_scope_limited` — the primary advisor confirmed the claim and the adversarial backup could
+  not check it, because the files it needed lay outside the bounded evidence closure it was granted
+  (#1638 P16). A confirmed finding wearing a disclosure, not a contested one: gate-eligible, and NOT
+  counted as "verified" in the report's coverage line.
 
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,

@@ -154,7 +154,7 @@ _MAX_INCLUDE_DEPTH = 1
 
 # Bounds. `dropped` is TARGET-AUTHORED text on its way into two published
 # artifacts (`tools-manifest.json`, then `report.json`), and every sibling path
-# in this module is already bounded -- `run_tools.MAX_TOOL_OUTPUT_BYTES` on tool
+# in this module is already bounded -- `tool_capture.MAX_TOOL_OUTPUT_BYTES` on tool
 # stdout, `redact`'s 16 KiB PEM bound. A 50 MB junk requirements file would
 # otherwise be read whole (twice: once in the container, once on the host) and
 # copied wholesale into both. The read is capped FIRST, so the cost is bounded
@@ -226,7 +226,7 @@ def _safe_to_publish(line):
 
     Redact BEFORE truncating: cutting first could split a token into a fragment
     no length-anchored pattern matches, which is the same trap
-    `run_tools._redact_capture` names for its own byte cap.
+    `tool_capture._redact_capture` names for its own byte cap.
     """
     out = redact.redact(_USERINFO.sub(r"\1[REDACTED]@", line))
     if len(out) > _MAX_PUBLISHED_CHARS:
