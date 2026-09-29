@@ -233,8 +233,8 @@ def _build_report(tmpdir):
                            # multiples of ten, and an aggregated survivor sharing
                            # a locus with an agent finding is dedupe's tool+agent
                            # reinforce-merge, whose survivor is the more severe
-                           # AGENT finding -- `additional_loci` would never reach
-                           # the artifact at all.
+                           # member (here the HIGH agentic finding) --
+                           # `additional_loci` would never reach the artifact.
                            {"ruleId": "B602", "level": "warning",
                             "message": {"text": "subprocess with shell=True"},
                             "locations": [{"physicalLocation": {
@@ -441,12 +441,16 @@ class TestSchemaParity(unittest.TestCase):
         aggregated = [f for f in self.report["findings"] if f.get("additional_loci")]
         self.assertTrue(aggregated,
                         "no aggregated finding: additional_loci is unwalked")
+        self.assertEqual(len(aggregated), 1,
+                         "the fixture aggregates exactly one rule; a second makes"
+                         " the pin below arbitrary")
+        drifted = "additional_loci drifted: expected the src/app.py:12 sibling" \
+                  " and occurrences 2"
         self.assertEqual(aggregated[0]["additional_loci"][0]["file"], "src/app.py",
-                         "no aggregated finding: additional_loci is unwalked")
+                         drifted)
         self.assertEqual(aggregated[0]["additional_loci"][0]["line_start"], 12,
-                         "no aggregated finding: additional_loci is unwalked")
-        self.assertEqual(aggregated[0]["occurrences"], 2,
-                         "no aggregated finding: additional_loci is unwalked")
+                         drifted)
+        self.assertEqual(aggregated[0]["occurrences"], 2, drifted)
         # M3: the two sections this PR added must be NON-EMPTY, or the walk
         # stops at the list and never reaches the item shape it describes.
         self.assertTrue(meta["integrity"]["cross_domain_findings"],

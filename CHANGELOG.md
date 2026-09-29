@@ -15,9 +15,10 @@ evidence exposed.
   validate against it -- and #1602's parity walk stayed green because the fixture's SARIF had one
   hit per rule per file, so no finding ever carried the key. That SARIF now fires B602 twice in
   the reviewed file, at two lines no `_agentic` finding claims: an aggregated survivor sharing an
-  agent's locus meets dedupe's tool+agent reinforce-merge, whose survivor is the more severe AGENT
-  finding, and the key would reach no artifact at all. `discarded_claims[]` items `$ref` the
-  findings item schema, so the one entry covers both sections.
+  agent's locus meets dedupe's tool+agent reinforce-merge, whose survivor is the more severe
+  member (here the HIGH agentic finding), and the key would reach no artifact at all.
+  `discarded_claims[]` items `$ref` the findings item schema, so the one entry covers both
+  sections.
 - **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
   empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
   three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus
