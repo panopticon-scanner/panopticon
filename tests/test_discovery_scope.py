@@ -846,6 +846,14 @@ def test_repo_scan_scope_changed_asks_the_dot_path_policy(tmp_path):
                             str(repo), "--out", str(out)])
     assert rc == 0
     assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
+    # The changed set unions `ls-files --others`, and the run above left its own
+    # `groups.json` UNTRACKED under `.panopticon/`. Before #2272 a second delta
+    # run reviewed that artifact (tests/test_driver.py's --pr run stopped at a
+    # scout checkpoint for an "Ungrouped" cell holding nothing but run output);
+    # the run's own artifact directory is a pruned dot-dir on both paths.
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
 
 
 def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):

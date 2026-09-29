@@ -408,8 +408,14 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # --base, manifest["base"] stays None (anti-drift key -- a bare resume
         # passes base=None -> no false drift) and the gh-detected PR base lands
         # in manifest["pr_base"], the origin-preference channel.
+        # #2272: --no-tools for the same reason test_reset_restarts_from_scratch
+        # carries it (#1515). Before #2272 the delta path put the run's own
+        # untracked `.panopticon/` artifacts on the review surface, so this run
+        # stopped at a spurious scout checkpoint; with them dropped the changed
+        # set is empty and the run advances into tools_execute, whose child
+        # run_tools.py probes docker outside conftest's in-process refusal.
         d = self._repo()
-        args = driver.build_parser().parse_args(["run", d, "--pr", "7"])
+        args = driver.build_parser().parse_args(["run", d, "--pr", "7", "--no-tools"])
         with mock.patch(
                 "scripts.phases.runio.resolve_review_root",
                 return_value=(d, d, "main")) as resolve:
