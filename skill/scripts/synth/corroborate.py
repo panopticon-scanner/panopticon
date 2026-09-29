@@ -41,9 +41,7 @@ def _reinforce_merge(best, other):
     """Pull missing enrichment from other into best. The agent's cvss and
     exploit_scenario are preferred when either finding has them; other text
     fields are filled only if best lacks them; citations are merged rather
-    than overwritten. An aggregated tool finding's `occurrences` and
-    `additional_loci` come across too, since those are the other loci of the
-    same issue rather than enrichment (#2361)."""
+    than overwritten."""
     # Prefer agent-authored cvss/exploit_scenario ONLY when best and other are
     # the SAME issue (category match). _reinforce_merge fires for any same-LOCUS
     # tool+agent pair, so without this gate an agent finding about issue X could
@@ -60,21 +58,39 @@ def _reinforce_merge(best, other):
         if not best.get(field) and other.get(field):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
-    # #2361: an aggregated tool finding's other loci are part of the issue, not
-    # enrichment; when it is the dropped member, the survivor inherits them.
-    # `aggregate_tool_findings` deliberately parks the survivor on a locus an
-    # agent also flagged so the pair reinforces here -- and the agent finding is
-    # usually the more severe member, so without this the rule's other lines and
-    # its count left the report with the dropped member, disclosed nowhere. A
-    # survivor carrying its OWN aggregation keeps it: two aggregated findings at
-    # one locus are two issues (#2225, distinct artifacts), never one sum.
-    # A rule-carrying tool finding is stamped `occurrences: 1` even when it
-    # aggregated nothing, so only a count ABOVE one is an aggregation to carry.
-    if other.get("additional_loci") and not best.get("additional_loci"):
-        best["additional_loci"] = list(other["additional_loci"])
-    if isinstance(other.get("occurrences"), int) and other["occurrences"] > 1 \
-            and not (isinstance(best.get("occurrences"), int) and best["occurrences"] > 1):
-        best["occurrences"] = other["occurrences"]
+
+# `findings.aggregate_tool_findings` deliberately parks an aggregated survivor on
+# a locus an agent also flagged so the pair still reinforces in `dedupe` -- which
+# then keeps the more severe member, usually the agent finding. Without the carry
+# below, that rule's other lines and its count left the report with the dropped
+# member, disclosed nowhere.
+def _carry_aggregation(best, other):
+    """Carry a DROPPED tool member's aggregation onto the survivor (#2361).
+
+    Called only where `other` leaves the report. Its `occurrences` and
+    `additional_loci` are the other loci of the same issue, not enrichment,
+    so they move as ONE unit and only when: `other` is tool-sourced (agent
+    findings declare neither), it is the same issue (category match -- the
+    gate `_reinforce_merge` already applies to cvss), its loci are a well-
+    typed non-empty list with a count above one (a rule-carrying tool
+    finding is stamped `occurrences: 1` when it aggregated nothing), and
+    `best` carries no aggregation of its own. A survivor with its own
+    aggregation keeps it: two aggregated findings at one locus are two
+    issues (#2225, distinct artifacts), never one sum."""
+    if not _is_tool_sourced(other):
+        return
+    if str(best.get("category")) != str(other.get("category")):
+        return
+    loci = other.get("additional_loci")
+    count = other.get("occurrences")
+    if not (isinstance(loci, list) and loci and isinstance(count, int) and count > 1):
+        return
+    if best.get("additional_loci") or (
+        isinstance(best.get("occurrences"), int) and best["occurrences"] > 1
+    ):
+        return
+    best["additional_loci"] = [dict(locus) for locus in loci if isinstance(locus, dict)]
+    best["occurrences"] = count
 
 def _by_package(members):
     """One rule bucket split by `tool_evidence.package_name`, in first-seen order.
@@ -147,6 +163,7 @@ def dedupe(findings):
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             _reinforce_merge(best, other)
+            _carry_aggregation(best, other)
             evidence_mod.record_merged_id(best, other)
             result.append(best)
         else:
@@ -195,9 +212,11 @@ def dedupe(findings):
                                     key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)),
                                 )
                                 _reinforce_merge(best, best_tool)
+                                # no _carry_aggregation: best_tool stays in the report (#2361)
                             for m in sub:
                                 if m is not best:
                                     _reinforce_merge(best, m)
+                                    _carry_aggregation(best, m)
                         # #1476: alias EVERY collapsed member -- the
                         # corroboration branch above is conditional, the drop is not.
                         for m in sub:

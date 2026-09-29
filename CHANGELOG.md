@@ -7,48 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **The reinforced survivor inherits the aggregated tool finding's `occurrences` and
-  `additional_loci` (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review
-  reproduced -- that PR's parity fixture had to pick two lines no agent claimed to keep the key
-  reachable at all. `synth/findings.aggregate_tool_findings` deliberately parks an aggregated
-  survivor on a locus an agent also flagged, so `synth/corroborate.dedupe` reinforces the pair --
-  and dedupe keeps the MORE SEVERE member, usually the agent finding, whose `_reinforce_merge`
-  copied cvss, scenario, impact, remediation, references and citations but not the aggregation. So
-  an agent flagging one of a rule's lines silently retired that rule's other loci and its count:
-  nothing in the report said the rule had fired more than once, and `scripts/file_issues.py`,
-  which renders both, had nothing to render. Both of dedupe's branches carry them now -- the
-  exactly-two tool+agent cluster and the per-category path's representative-tool merge -- and a
-  survivor already carrying its own aggregation keeps it, never a sum (#2225: two artifacts at one
-  manifest locus are two issues). Honest limit, unchanged here: the merged tool member's rule id
-  is still disclosed only through `merged_ids`.
-- **One guarded reader for `tool_evidence`, so a malformed stored finding cannot abort `reconcile`
-  through the rule id (#2359, #1768, ARC-A4A).** The low follow-up #2358 left behind: that change
-  guarded the field's read in `artifact_term`, while `tool_rule_id` still read the same field --
-  and its `provenance` fallback -- with `(finding.get(...) or {}).get(...)`, which raises
-  `AttributeError` on a string or a list. Nothing validates a report read off disk
-  (`reconcile.load_report` is a plain `json.load`) and `iter_records` fingerprints EVERY record of
-  a prior run through `finding_fingerprint`, which reads the rule id, so one schema-invalid finding
-  in a stored report aborted the whole cross-run diff with a traceback instead of keying as
-  rule-less. `evidence._tool_evidence` is now the single reading of the field for both functions
-  (`{}` for absent or malformed), the provenance fallback is guarded inline the same way, and a
-  dict-valued field reads exactly as before.
-- **SKILL.md's dependency list now matches the gating readiness row -- `defusedxml` was missing
-  (#2323, #1784, ARC-F2E).** SKILL.md's § Dependencies named `pyyaml` and `jsonschema`, so a
-  checkout that installed exactly what the doc listed failed `driver readiness`'s gating
-  `dependencies` row on `defusedxml`, one of the three packages
-  `readiness_checks.RUNTIME_PACKAGES` checks -- and a missing package is the one readiness failure
-  a fresh checkout meets first. The paragraph now names all three and says how each is absent
-  differently: `pyyaml` takes discovery down with a traceback, `jsonschema` fails closed after the
-  whole review has been paid for, and `defusedxml` is caught only by the readiness row itself --
-  which, being `PHASES[0]`, refuses to start the run -- because nothing in the scan would fail:
-  `tools/spotbugs.py` falls back to the stdlib XML parser, which expands the internal entities
-  `defusedxml` refuses, so an ingest driven outside the loop (the CI gate `security_gate.py`, which
-  imports `ingest_tools` and never runs the readiness phase, or a resumed run whose
-  `readiness.json` already recorded `ready: true`) parses an untrusted scanner report with the
-  hardening silently gone. Golden capture also imports it, unguarded, but runs outside a review
-  rather than in one. A new `tests/test_skill_md.py` case reads
-  `RUNTIME_PACKAGES` and asserts the section names every pip name in it, so a package added to the
-  gating row cannot skip the doc again.
+- **A dropped tool member's `occurrences` and `additional_loci` move onto the reinforced survivor
+  (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review reproduced -- that PR's
+  parity fixture had to pick two lines no agent claimed to keep the key reachable at all.
+  `synth/findings.aggregate_tool_findings` deliberately parks an aggregated survivor on a locus an
+  agent also flagged, so `synth/corroborate.dedupe` reinforces the pair -- and dedupe keeps the
+  MORE SEVERE member, usually the agent finding, whose `_reinforce_merge` copied cvss, scenario,
+  impact, remediation, references and citations but not the aggregation. So an agent flagging one
+  of a rule's lines silently retired that rule's other loci and its count: nothing in the report
+  said the rule had fired more than once, and `scripts/file_issues.py`, which renders both, had
+  nothing to render. A new `_carry_aggregation` moves the pair, and only where the aggregated
+  member actually LEAVES the report: dedupe's exactly-two tool+agent merge and its per-category
+  sub-bucket drop loop carry it, while the per-category representative merge does NOT -- that tool
+  finding survives its own rule bucket and reaches the report, so carrying there would have two
+  entries claim one pair of hits, on an entry that does not even alias the source. It carries only
+  when the dropped member is tool-sourced (an agent finding can declare either key) and in the
+  survivor's category (one rule's loci are not another issue's), only a well-typed non-empty locus
+  list and a count above one moving as ONE unit, and only onto a survivor with no aggregation of
+  its own -- which keeps it, never a sum (#2225: two artifacts at one manifest locus are two
+  issues). Honest limit, unchanged here: the absorbed tool member's rule id is not disclosed
+  anywhere in the report -- `_merged_ids` carries its finding id for verdict binding only and is
+  stripped before the artifact is written.
 - **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
   Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
   got a schema entry and a fixture value, `additional_loci` got neither.
