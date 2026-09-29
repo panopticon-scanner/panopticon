@@ -14,6 +14,7 @@ and a SECOND implementation behind that name is exactly the drift layout rule
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.safe_write as safe_write
 from scripts.phases import runio
@@ -86,6 +87,41 @@ class TestNoFollowOpen(unittest.TestCase):
                 os.path.join(self.pano, "runs", "tag", "report.json"))
         # a path with no `.panopticon` segment is not an artifact path
         safe_write.confine_artifact_path(os.path.join(self.root, "elsewhere.json"))
+
+    def test_publication_stages_every_file_before_publishing_the_main_last(self):
+        targets = [(os.path.join(self.pano, name), os.path.join(self.pano, name + ".tmp"),
+                    name) for name in ("main.json", "part.json", "discarded.json")]
+        real_replace = os.replace
+        published = []
+
+        def replace(source, destination):
+            for final, temp, text in targets:
+                with open(final if final in published else temp, encoding="utf-8") as stream:
+                    self.assertEqual(stream.read(), text)
+            real_replace(source, destination)
+            published.append(destination)
+
+        with mock.patch.object(safe_write.os, "replace", side_effect=replace):
+            paths = safe_write.publish_texts(iter(targets))
+        self.assertEqual(paths, [target[0] for target in targets])
+        self.assertEqual(published, list(reversed(paths)))
+        self.assertEqual(sorted(os.listdir(self.pano)),
+                         ["discarded.json", "main.json", "part.json"])
+
+    def test_publication_refuses_an_escaping_parent_before_creation_or_cleanup(self):
+        outside = os.path.join(self.root, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "staging.tmp")
+        with open(victim, "w", encoding="utf-8") as stream:
+            stream.write("PRECIOUS")
+        os.symlink(outside, os.path.join(self.pano, "runs"))
+        for suffix in ("staging.tmp", "new/staging.tmp"):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                safe_write.publish_texts([(os.path.join(self.pano, "report.json"),
+                                           os.path.join(self.pano, "runs", suffix), "{}")])
+        with open(victim, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "PRECIOUS")
+        self.assertEqual(os.listdir(outside), ["staging.tmp"])
 
 
 if __name__ == "__main__":

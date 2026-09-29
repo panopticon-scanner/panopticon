@@ -46,7 +46,7 @@ import pytest
 
 from tests._test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
                            only, skip_or_fail)
-from scripts import run_tools
+from scripts import run_tools, tools_manifest
 from scripts.tools.legacy_sarif import LegacySarifAdapter
 from tests.tools.helpers import OK_SCAN_EXIT_CODES, in_tools_image
 
@@ -268,7 +268,7 @@ class TestGitleaksRunToolsDocker(unittest.TestCase):
             str(target), ["gitleaks"], str(captures),
             image=self.__class__._image_id, security_mode=mode)
         manifest_path = root / "tools-manifest.json"
-        run_tools.write_manifest(str(manifest_path), ["gitleaks"], written)
+        tools_manifest.write_manifest(str(manifest_path), ["gitleaks"], written)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(original,
                          {p.name: p.read_bytes() for p in target.iterdir()},
@@ -327,7 +327,7 @@ class TestGitleaksRunToolsDocker(unittest.TestCase):
                 str(target), ["gitleaks"], str(captures),
                 image=self.__class__._image_id, security_mode="redteam")
             manifest_path = root / "tools-manifest.json"
-            run_tools.write_manifest(str(manifest_path), ["gitleaks"], written)
+            tools_manifest.write_manifest(str(manifest_path), ["gitleaks"], written)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(written, [])
             self.assertEqual(manifest["selected"], ["gitleaks"])
