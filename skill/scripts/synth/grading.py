@@ -35,14 +35,19 @@ def risk_level(findings):
     return "LOW"
 
 def gate_verdict(findings, fail_on):
-    """Return CI gate verdict (PASS/FAIL/OFF) based on findings and threshold."""
+    """Return CI gate verdict (PASS/FAIL/OFF) based on findings and threshold.
+
+    The threshold itself is `findings.severity_floor_admits` (#2222), shared with
+    `delta.zero_hunk_population` -- the count of what this gate WOULD have judged
+    on a zero-hunk delta run -- so the two cannot disagree about the floor."""
     if not fail_on:
         return "OFF"
-    threshold = findings_mod.SEV_ORDER.index(str(fail_on).upper())
-    for f in findings:
-        if findings_mod._sev_rank(f) <= threshold:
-            return "FAIL"
-    return "PASS"
+    # Resolve the floor BEFORE any verdict: an unknown `--fail-on` raises here
+    # whether or not `findings` is empty, so a misconfigured gate never reads
+    # PASS on a clean run (#2222 re-review; argparse constrains the flag today).
+    findings_mod.severity_floor_rank(fail_on)
+    return ("FAIL" if any(findings_mod.severity_floor_admits(f, fail_on)
+                          for f in findings) else "PASS")
 
 def gate_severity_roles(gate_eligible, fail_on):
     """Which severities the `--fail-on` threshold puts IN PLAY, and which of
@@ -131,9 +136,12 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     provenance and nothing the findings depend on.
 
     `delta_zero_hunks` (#2178, owner ruling 2026-09-27) is the REASON an ACTIVE
-    delta review's diff-hunks map carried no ranges while active findings existed
-    under `--gate-scope on-diff`: the gate scoped against something that is not a
-    measured diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
+    delta review's diff-hunks map carried no ranges while GATE-ELIGIBLE findings
+    existed under `--gate-scope on-diff` -- `delta.zero_hunk_population`, i.e.
+    active past the evidence policy and any `--fail-on` floor, which is the
+    population this gate would have judged under the wider scope (#2222, owner
+    ruling 2026-09-28): the gate scoped against something that is not a measured
+    diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
     that decision and this is only its answer; None means no gap. Unlike the two
     reasons above it is a ONE-channel fact -- nothing else in the report moves the
     gate for it -- so it joins `gate_relevant_gap` directly (PASS -> INCONCLUSIVE,
@@ -603,10 +611,17 @@ def grade_report(run, resolved, reconciled, delta=None):
     overall = health_grade(health["score"])
     # #2178: computed HERE, from the same delta context `resolve_findings`
     # classified against, the same active list it partitioned, and this run's own
-    # `gate_scope` -- the three inputs the refusal is a statement about.
-    delta_zero_hunks = (delta_mod.zero_hunk_gate_gap(delta, len(resolved.active),
-                                                     run.gate_scope)
-                        if delta is not None else None)
+    # `gate_scope` -- the three inputs the refusal is a statement about. #2222
+    # narrows the count to the population the GATE would have judged:
+    # `zero_hunk_population` re-applies this run's evidence policy and
+    # `--fail-on` floor to that active list, minus the delta scoping the empty
+    # map broke.
+    delta_zero_hunks = None
+    if delta is not None:
+        would_have_judged = delta_mod.zero_hunk_population(
+            resolved.active, run.fail_on, run.gate_unverified)
+        delta_zero_hunks = delta_mod.zero_hunk_gate_gap(
+            delta, len(would_have_judged), run.gate_scope)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,

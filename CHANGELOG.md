@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The zero-hunk delta gate counts only what the gate would have judged (#1783, #2222, follow-up to
+  #2178).** Owner ruling 2026-09-28: the refusal is a statement about findings the empty hunk map
+  hid FROM THE GATE, so `delta.zero_hunk_population` re-applies this run's own two policies to the
+  active set -- the evidence policy `verdicts._partition_gate` applies, then the `--fail-on` floor,
+  which becomes `findings.severity_floor_admits` so the gate and this count have ONE spelling of it
+  (`grading.gate_verdict` is now that predicate under `any()`) -- and never the delta scoping that
+  empty map broke. Two runs that read INCONCLUSIVE now PASS: an empty `--changes` map whose only
+  active findings sit below `--fail-on`, and one whose findings are all unverified under the default
+  `confirmed_only` policy. A CONFIRMED finding at or above the floor still reads INCONCLUSIVE, an
+  OFF gate is still preserved, and the `coverage_note` clause now says `gate-eligible` instead of
+  `active`.
 - **dependency-check locates a finding at the build manifest, not the jar (#2225, #1768,
   ARC-1020240040).** The scanner analyses ARTIFACTS, so `location.file` was
   `angus-activation-2.0.1.jar` -- a name that exists nowhere in the reviewed repository, and the
