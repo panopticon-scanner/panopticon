@@ -1426,6 +1426,73 @@ class TestABranchIsNotAlwaysTaken(unittest.TestCase):
              ("b", self.FETCH + self.CHECK + self.EXEC)]))
 
 
+class TestAScriptsKeywordsAreItsOwn(unittest.TestCase):
+    """Review I-3 of the #1793 follow-ups: `regions` read the keywords of a
+    script handed to a shell as the step's own, so the `fi` in
+    `sh <<< 'fi' || true` closed the loop around it, and the checksum after
+    it read as unconditional. With X unset, bash 3.2 and 5.2 skip the loop and
+    run `./tool` with the checksum failing. A script's statements now sit in
+    the branch of the command that runs it, and its keywords shape only its
+    own map."""
+
+    FETCH = "curl -fsSL -o tool https://example.test/tool\n"
+    CHECK = 'echo "%s  tool" | sha256sum -c -\n' % HEX
+
+    def job(self, opened, form, closed):
+        return wg.job_defects([("step", self.FETCH + opened + form + "\n" + self.CHECK +
+                                closed + "./tool\n")])
+
+    def test_a_close_inside_a_script_does_not_close_the_steps_branch(self):
+        for opened, closed in (("for f in $X; do\n", "done\n"),
+                               ('if [ -n "$X" ]; then\n', "fi\n")):
+            for form in ("sh <<< 'fi' || true", "sh -c 'fi' || true",
+                         "sh <<'EOF' || true\nfi\nEOF", "eval 'fi' || true",
+                         "sh -c 'done; esac' || true"):
+                with self.subTest(opened=opened, form=form):
+                    found = self.job(opened, form, closed)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+
+    def test_an_open_inside_a_script_does_not_hold_the_steps_branch_open(self):
+        # The loop's `done` closed the script's `then` instead of the loop, and
+        # `./tool` read as inside the loop with the checksum.
+        found = wg.job_defects([("step", self.FETCH + "for f in $X; do\n" + self.CHECK +
+                                 "sh -c 'if true; then' || true\ndone\n./tool\n")])
+        self.assertEqual(1, len(found), found)
+        self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+
+    def test_a_script_on_the_line_opening_a_branch_runs_in_it(self):
+        # It was read ahead of the `then`/`do` that carries it, as if it always
+        # ran: base cleared `./tool` after `fi` with it, and bash skips it.
+        for form in ("if [ -n \"$X\" ]; then sh -c '%s'; fi\n",
+                     "for f in $X; do sh -c '%s'; done\n",
+                     "if [ -n \"$X\" ]; then sh <<< '%s'; fi\n"):
+            with self.subTest(form=form):
+                found = wg.job_defects([("step", self.FETCH + form % self.CHECK.strip() +
+                                         "./tool\n")])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+        # ... and, the other way, in the arm its pattern opens, with the use.
+        self.assertEqual([], wg.job_defects([("step", self.FETCH + "case \"$X\" in\n"
+                                              "  a) sh -c '%s'; ./tool ;;\nesac\n"
+                                              % self.CHECK.strip())]))
+
+    def test_the_scripts_own_branches_still_bind(self):
+        # A checksum inside the script's own `if` clears nothing outside it;
+        # one after the script's balanced branch clears the use after it.
+        self.assertIn(wg._UNSHARED_BRANCH, wg.job_defects([("step", self.FETCH +
+            "sh -ec 'if [ -n \"$X\" ]; then %s; fi'\n./tool\n" % self.CHECK.strip())])[0][1])
+        self.assertEqual([], wg.job_defects([("step", self.FETCH +
+            "sh -ec 'if true; then :; fi; %s'\n./tool\n" % self.CHECK.strip())]))
+        self.assertEqual([], wg.job_defects([("step", self.FETCH + 'if [ -n "$X" ]; then\n' +
+            "sh -ec '%s'\n./tool\nfi\n" % self.CHECK.strip())]))
+
+    def test_without_the_script_the_branch_is_reported_as_before(self):
+        # The must-trip control: reported on every tree.
+        found = self.job("for f in $X; do\n", ":", "done\n")
+        self.assertEqual(1, len(found), found)
+
+
 class TestTheJobIsTheScope(unittest.TestCase):
     """M5: steps in one job share the workspace, /tmp and PATH.
 

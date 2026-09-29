@@ -297,12 +297,17 @@ def regions(stmts):
 
     Read at the head of the statement only. A keyword is a keyword where a
     command was expected; `echo then` is an argument, and counting it would
-    open a body that never closes.
+    open a body that never closes. A statement of a script handed to a shell
+    (`Inlined`) sits in the body of the command running it and in its own
+    script's bodies: that script's keywords never touch these (review I-3).
     """
     where = {}
     stack: list[tuple[int, str]] = []
-    opened = 0
+    opened, inlined = 0, []
     for index, statement in enumerate(stmts):
+        if isinstance(statement, Inlined):          # placed with its carrier's body
+            inlined.append((index, statement.region))
+            continue
         head = statement.stages[0].argv if statement.stages else []
         token = head[0] if head else None
         if token in _BRANCH_CLOSE:
@@ -324,8 +329,11 @@ def regions(stmts):
                 stack.pop()                     # this pattern ends the last arm
             opened += 1
             stack.append((opened, "arm"))
-        if stack:
-            where[index] = tuple(identity for identity, _kind in stack)
+        here = tuple(identity for identity, _kind in stack)
+        for at, region in inlined + [(index, ())]:
+            if here + region:
+                where[at] = here + region
+        inlined = []
     return where
 
 
@@ -427,16 +435,17 @@ def stdin_program(argv):
 
 
 # A statement of a script handed to a shell, as `flattened` inlines it, with
-# why a checksum there clears nothing: as its pipeline's last command, and as
-# an earlier one (None: it may clear).
-Inlined = collections.namedtuple("Inlined", "stages separator credit")
+# its bodies below the command running it (`regions`), and why a checksum there
+# clears nothing: as its pipeline's last command, and as an earlier one (None:
+# it may clear).
+Inlined = collections.namedtuple("Inlined", "stages separator region credit")
 _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
             "the last command, so the script carries on past its failure")
 _UNGATED = "is inside the script `%s` runs, and the step does not stop when that script fails"
 _PIPED = "is inside the script `%s` runs, piped into a command whose status the pipeline takes"
 
 
-def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None):
+def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=(), key=()):
     """`eval "<script>"` expanded, in place, into the statements it runs.
 
     In place and in ORDER, rather than harvested separately, so the fetch, the
@@ -452,27 +461,31 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None):
     options or a `set`; `eval` keeps the step's, but not ahead of `||`/`&&`,
     where bash suspends it. `stops`: this script's failure stops the step;
     `errexit`: `-e` at its top (None: the step's own shell); `pipefail`: a
-    pipeline fails on any of its commands; `shell`: the script's runner.
+    pipeline fails on any of its commands; `shell`: the script's runner;
+    `outer`: the bodies of the command running it, below the step's own, and
+    `key` a name for the script, unique in the step, for its own bodies.
     """
     out, last = [], len(stmts) - 1
-    on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit)
+    inner = {} if errexit is None else regions(stmts)
+    on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit, inner)
     for index, statement in enumerate(stmts):
+        region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for stage in statement.stages:
             argv = command(stage.argv)
             for text in scripts(argv) + stdin_scripts(argv, stage):
-                name = os.path.basename(argv[0])
+                name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
                          and (on[index] or index == last)
                          and (pipefail or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(statements(text), gates, on[index] and statement.separator
                                      not in ("&&", "||") if own else _errexit(argv[1:]),
-                                     pipefail and own, name))
+                                     pipefail and own, name, region, key + ((index, ordinal),)))
         if errexit is None:
             out.append(statement)
             continue
         why = _UNGATED % shell if not stops else None if on[index] or index == last else _RUNS_ON % shell
-        out.append(Inlined(statement.stages, statement.separator,
+        out.append(Inlined(statement.stages, statement.separator, region,
                            (why, why or (None if pipefail else _PIPED % shell))))
     return out
 
@@ -491,11 +504,11 @@ def _errexit(words, state=False):
     return state
 
 
-def _errexit_states(stmts, state):
+def _errexit_states(stmts, state, where):
     """Whether `-e` holds as each of `stmts` runs, from `state` at the top: a
-    `set` turns it on only as a plain statement outside every branch, group,
-    list and background job, and off wherever it is written."""
-    where, depth, states = regions(stmts), 0, []
+    `set` turns it on only as a plain statement outside every branch (`where`,
+    their `regions`), group, list and background job, and off wherever it is."""
+    depth, states = 0, []
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
