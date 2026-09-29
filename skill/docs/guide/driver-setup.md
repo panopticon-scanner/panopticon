@@ -139,7 +139,7 @@ the one exception: only the seven spellings the catalog names ride in, so the ge
 `.eslintcache` beside them does not (#2330).
 Named: `.github/`, `.circleci/`, `.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed
 dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` and
-`.pre-commit-config.yaml`. `.git/` and generated tool state (`.eslintcache`) stay out, and so does a
+`.pre-commit-config.yaml`. `.git/` and generated tool state stay out, and so does a
 dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.

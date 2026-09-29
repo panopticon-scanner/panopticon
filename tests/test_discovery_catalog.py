@@ -1272,7 +1272,8 @@ class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
     NOT here: the legacy cascade does not read it -- `.mjs` is flat config, and
     the catalog claims that as `eslint.config.mjs`.)
 
-    Each spelling is asserted through the REAL discovery path -- the dot-path
+    Each spelling is asserted through the real discovery path (the walk arm; the git-listing arm
+    for these names is pinned by the bidirectional meta-test above) -- the dot-path
     policy and the Commons catalog together -- because a row in only one of the
     two files still reaches nothing: the policy drops the file before the
     catalog sees it, or the catalog leaves a kept file in `Ungrouped`. The two
