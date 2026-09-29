@@ -603,15 +603,15 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     names, uses = _uses(stmts, fetch.dest, after=index)
     if not uses:
         return None                             # fetched and only read: not this rule
-    first_use, how = uses[0]
     # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
               and any(names_file(text, name) for name in sorted(names))]
-    cleared = [i for i, why in naming
-               if why is None and _binds(conditions, i, first_use)]
-    if any(i < first_use for i in cleared):
+    first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
+        why is None and i < u and _binds(conditions, i, u) for i, why in naming)), (None, None))
+    if first_use is None:
         return None
+    cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
         # made runnable is theatre.

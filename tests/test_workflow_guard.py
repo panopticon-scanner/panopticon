@@ -1428,6 +1428,70 @@ class TestTheJobIsTheScope(unittest.TestCase):
         self.assertEqual([], wg.job_defects([("build", "make test\n")]))
 
 
+class TestEveryUseIsAskedForItsCheck(unittest.TestCase):
+    """Review I-1 of the #1793 follow-ups: `_defect` asked only a download's
+    FIRST use whether a binding checksum came before it. A use inside the
+    checksum's branch, `case` arm, loop body or `if:` step, ahead of a use
+    after it, took the binding, and the job read clean while bash 3.2 and 5.2
+    run the later use with the checksum skipped. Each use is asked now, in
+    order, and the first one no checksum clears is the one reported: reading
+    one more use can add a report, never remove one."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % HEX
+    PLACES = ("shell branch", "case arm", "loop", "if: step")
+    # (where the download lands, a use the follow-ups taught the guard to
+    # read, the use after it that nothing guards)
+    USES = (("tool", '"$PWD/tool" --version', "./tool"),                      # #2310
+            ("/usr/local/bin/tool", "tool --version", "/usr/local/bin/tool"),  # #2308
+            ("tool", "env x-y=1 ./tool --version", "./tool"),                 # #2307
+            ("tool", "sh <<< './tool --version'", "./tool"))                  # #2293
+
+    def job(self, place, dest, inside, after):
+        fetch = "curl -fsSL -o %s %s\n" % (dest, self.URL)
+        body = self.CHECK % dest + (inside + "\n" if inside else "")
+        if place == "if: step":
+            return [wg.Step("get", fetch), wg.Step("check", body, None, "env.X == 'y'"),
+                    wg.Step("run", after + "\n")]
+        opened, closed = {"shell branch": ('if [ -n "$X" ]; then\n', "fi\n"),
+                          "case arm": ('case "$X" in\na)\n', ";;\nesac\n"),
+                          "loop": ("for f in $X; do\n", "done\n")}[place]
+        return [("step", fetch + opened + body + closed + after + "\n")]
+
+    def assertReported(self, place, found):
+        self.assertEqual(1, len(found), found)
+        self.assertIn(wg._UNSHARED_IF if place == "if: step" else wg._UNSHARED_BRANCH,
+                      found[0][1])
+
+    def test_a_use_the_checksum_guards_does_not_clear_one_after_it(self):
+        for place in self.PLACES:
+            for dest, inside, after in self.USES:
+                with self.subTest(place=place, inside=inside):
+                    self.assertReported(place, wg.job_defects(self.job(place, dest, inside, after)))
+
+    def test_nor_does_a_use_the_guard_always_read(self):
+        # The same weakness with a use the guard read before the follow-ups:
+        # base read these clean as well.
+        for place in self.PLACES:
+            with self.subTest(place=place):
+                self.assertReported(place, wg.job_defects(
+                    self.job(place, "tool", "./tool --version", "./tool")))
+
+    def test_without_the_use_inside_it_is_reported_as_before(self):
+        # The must-trip control: reported on every tree.
+        for place in self.PLACES:
+            for dest, _inside, after in self.USES:
+                with self.subTest(place=place, after=after):
+                    self.assertReported(place, wg.job_defects(self.job(place, dest, None, after)))
+
+    def test_a_checksum_before_every_use_still_clears_them_all(self):
+        for dest, inside, after in self.USES:
+            script = ("curl -fsSL -o %s %s\n" % (dest, self.URL) + self.CHECK % dest +
+                      'if [ -n "$X" ]; then\n%s\nfi\n%s\n' % (inside, after))
+            with self.subTest(inside=inside):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+
+
 class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
     """L1: the parser reads sh/bash. A step that runs pwsh, python or cmd is
     not clean, it is UNREAD -- and saying so is the only honest answer."""
