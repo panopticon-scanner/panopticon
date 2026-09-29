@@ -806,10 +806,10 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
     commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
     exact delta even if branch tips move.
 
-    ``exclude`` goes straight to ``diff_map.hunk_map``: non-empty only for a
-    ``--pr`` worktree, where it names the root config filenames the operator's
-    sync just overwrote there (#1681) -- without it, that overwrite would be
-    attributed to the PR in this very artifact. One disclosure line documents it.
+    ``exclude`` goes straight to ``diff_map.hunk_map``: non-empty only for a ``--pr``
+    worktree naming the root config filenames the operator's sync just overwrote
+    there (#1681) -- without it that overwrite is attributed to the PR in this very
+    artifact. One disclosure line documents the exclusion, so it is never a silent gap.
     """
     if exclude:
         print("panopticon --pr: excluding %s from the delta map (this "
@@ -970,16 +970,16 @@ def _is_confined_regular(repo, rel):
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
     """Apply the discovery policy to a candidate path list.
 
-    Shared by both discovery methods so the git listing gets the same treatment
-    the walk gives: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every ancestor segment (a
-    repo that TRACKS node_modules still shouldn't review it), the one
-    ``dot_paths.allowed`` policy, the fixture-corpus pruning (#434, recorded in
-    ``pruned_fixtures`` for disclosure), and — git path only in practice —
-    dropping anything with a ``.git`` segment: a gitlink or nested-repo artifact is
-    never a reviewable file (#500 saw ``design-system/.git`` leak into group
-    lists). ``isfile`` is injected so the pure filtering logic stays unit-testable;
-    on the git path it also drops gitlink directory entries and index entries
-    deleted from disk.
+    Shared by both discovery methods and the `--scope-changed` branch (#2272), so
+    the git listing, the walk and the delta set get one treatment: EXCLUDE_DIRS /
+    EXCLUDE_DIR_GLOBS on every ancestor segment (a repo that TRACKS node_modules
+    still shouldn't review it), the one ``dot_paths.allowed`` policy, the
+    fixture-corpus pruning (#434, recorded in ``pruned_fixtures`` for disclosure),
+    and — git path only in practice — dropping anything with a ``.git`` segment: a
+    gitlink or nested-repo artifact is never a reviewable file (#500 saw
+    ``design-system/.git`` leak into group lists). ``isfile`` is injected so the
+    pure filtering logic stays unit-testable; on the git path it also drops gitlink
+    directory entries and index entries deleted from disk.
     """
     out = []
     for rel in sorted(set(paths)):
@@ -1057,9 +1057,9 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
 # #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth`
 # on every groups.json entry for the 4.x plan contract retired in #1444 (readers:
 # plan_contract's DEPTH_ORDER, dispatch.load_group_assignment, synthesize's
-# _load_group_assignments). Nothing reads `depth` now; the 5.x axis is the
-# (domain, group) cell. is_architecture_file / is_database_file survive: they
-# still feed compute_group_panels.
+# _load_group_assignments). Nothing reads `depth` now, and the 5.x review axis is
+# the (domain, group) cell, not a per-group depth. is_architecture_file /
+# is_database_file survive: they still feed compute_group_panels.
 
 def _discovery_block(info):
     """The `discovery` block of groups.json: how the surface was found and how
@@ -1820,10 +1820,10 @@ def _repo_scan(argv=None):
         # (rc 0, disclosed in `excluded_count`) rather than refuse the run.
         # `_apply_exclude` below is what prunes it, so every entry that survives
         # this branch is in `allf` -- the same invariant the singular gets from its
-        # own membership test. `prune_fixture_files` cannot fire on that universe
-        # any more (standard mode pruned the corpora from the listing before
-        # `excluded_files` was taken off it, and redteam keeps them); it stays for
-        # a universe that ever widened to accept a fixture path.
+        # own membership test. `prune_fixture_files` cannot fire on that universe any
+        # more (standard mode pruned the corpora from the listing before
+        # `excluded_files` was taken off it, and redteam keeps them); it stays as what
+        # would prune a fixture path if this universe ever widened to accept one.
         universe = set(allf) | set(excluded_files)
         entries: list[str] = []
         for raw in args.scope_files:

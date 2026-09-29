@@ -220,20 +220,12 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
 
 
 def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
-    import os
-    repo = tmp_path
-    (repo / ".panopticon").mkdir(parents=True)
-    for p in ["src/real.py", "tests/fixtures/vuln/app.py"]:
-        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
-        (repo / p).write_text("x=1\n")
+    # One scaffold for this file (#2272 review, finding 6): `_repo_tracking` below.
     yml = "groups:\n  Real:\n    match: ['src/**']\n    panels: [SEC]\n"
     if exclude_paths:
         yml += "exclude_paths: ['tests/fixtures/**']\n"
-    (repo / "panopticon.yml").write_text("version: 1\n" + yml)
-    git_cmd(repo, "init", "-q")
-    git_cmd(repo, "add", "-A")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
-    return repo
+    return _repo_tracking(tmp_path, ["src/real.py", "tests/fixtures/vuln/app.py"],
+                          config="version: 1\n" + yml)
 
 
 def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
@@ -796,34 +788,45 @@ def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys
 # that arm of the filter is unreachable from a real listing on either path.
 _DOT_PATH_SHAPES = (
     ".github/workflows/ci.yml",      # allowed root dot-DIR (dot_paths.DIRS)
+    ".github/CODEOWNERS",            # allowed: a file DIRECTLY under a DIRS root (#1771)
     ".gitignore",                    # allowed root dot-FILE (dot_paths.FILES)
     ".env.local",                    # allowed root dot-file STEM (.env*)
+    "config/.env",                   # allowed NESTED dot-file ("unchanged behaviour")
     ".hidden/a.py",                  # denied root dot-dir: not in DIRS
     ".venv/lib/x.py",                # denied root dot-dir, also EXCLUDE_DIRS
     ".notarc",                       # denied root dot-file: no FILES/stem entry
     "src/.mypy_cache/b.py",          # denied NESTED dot-dir (tool state)
+    ".github/.cache/x.yml",          # denied dot segment UNDER an allowed DIRS root
     "node_modules/c.js",             # tracked dependency tree (EXCLUDE_DIRS)
     "tests/fixtures/vuln/app.py",    # fixture corpus (#434)
 )
 
 
-def _repo_tracking(tmp_path, paths):
-    """Commit `paths` -- `add -f`, so a tracked `.venv`/`node_modules` really is
-    tracked whatever the ambient ignore rules say -- and return the repo."""
+def _repo_tracking(tmp_path, paths, links=(), config=None):
+    """Commit `paths`, plus `links` as (name, target) SYMLINK pairs and `config` as
+    the committed `panopticon.yml` -- `add -f`, so a tracked `.venv`/`node_modules`
+    really is tracked whatever the ambient ignore rules say."""
     repo = tmp_path
     (repo / ".panopticon").mkdir(parents=True)
     for p in paths:
         os.makedirs(os.path.dirname(repo / p), exist_ok=True)
         (repo / p).write_text("x = 1\n")
+    for name, target in links:
+        os.symlink(target, repo / name)
+    if config is not None:
+        (repo / "panopticon.yml").write_text(config)
     git_cmd(repo, "init", "-q")
     git_cmd(repo, "add", "-Af")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
     return repo
 
 
-def _rewrite_and_commit(repo, paths):
+def _rewrite_and_commit(repo, paths, links=()):
     for p in paths:
         (repo / p).write_text("x = 2\n")
+    for name, target in links:
+        os.remove(repo / name)          # RETARGET: the link's own blob changes, so
+        os.symlink(target, repo / name)  # git diff lists it (writing would follow it)
     git_cmd(repo, "add", "-Af")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
 
@@ -850,12 +853,23 @@ def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
     # expected set taken from --repo-scan's OWN output rather than a second copy
     # of the policy -- so this reddens on any future delta-path filter that sits
     # beside `_filter_reviewable` instead of going through it. `src/untouched.py`
-    # never changes, so the intersection really narrows. Delta runs FIRST: the
-    # artifacts these runs write are themselves untracked files under a pruned
+    # never changes, so the intersection really narrows. `link.py` is a TRACKED
+    # symlink: --repo-scan has always dropped it (`_is_confined_regular` is the
+    # shared `isfile`) and the delta path used to REVIEW it, so it is pinned by
+    # name below, not just incidentally by the parity assertion. Delta runs FIRST:
+    # the artifacts these runs write are themselves untracked files under a pruned
     # dot-dir, and running it first keeps that out of the changed set entirely.
     tree = ["src/app.py", "src/untouched.py", *_DOT_PATH_SHAPES]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, [p for p in tree if p != "src/untouched.py"])
+    repo = _repo_tracking(tmp_path, tree, links=[("link.py", "src/app.py")])
+    _rewrite_and_commit(repo, [p for p in tree if p != "src/untouched.py"],
+                        links=[("link.py", "src/untouched.py")])
+    # `changed` is read from git, never from `collect_changed_files`, so the
+    # expected set owes nothing to the module under test. The two agree only while
+    # this tree keeps three properties -- no deletions, no renames, no untracked
+    # files -- because the module computes its set from `merge-base` with
+    # `--diff-filter=d --find-renames` and then unions `ls-files --others`. An
+    # editor who adds one of those three must widen THIS derivation, not the
+    # assertion below.
     changed = {ln for ln in git_output(repo, "diff", "--name-only",
                                       "HEAD~1").splitlines() if ln}
     delta = repo / ".panopticon" / "delta.json"
@@ -863,5 +877,9 @@ def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
                               str(repo), "--out", str(delta)]) == 0
     assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
-    assert _reviewed_files(delta) == _reviewed_files(whole) & changed
-    assert "src/untouched.py" in _reviewed_files(whole)     # the ∩ really narrows
+    in_delta, in_whole = _reviewed_files(delta), _reviewed_files(whole)
+    assert in_delta == in_whole & changed
+    assert "src/untouched.py" in in_whole                  # the ∩ really narrows
+    assert "link.py" in changed                            # git really sees it change
+    assert "link.py" not in in_delta                       # #2272: dropped on BOTH
+    assert "link.py" not in in_whole                       # paths, by name
