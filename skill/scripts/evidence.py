@@ -187,21 +187,22 @@ def tool_name(finding):
     return src[len("tool:"):] if src.startswith("tool:") else None
 
 
-def tool_rule_id(finding):
-    """The scanner rule a tool finding came from, wherever its adapter put it.
+def _tool_evidence(finding):
+    """`tool_evidence` as a dict, `{}` for absent or malformed (#2359)."""
+    te = finding.get("tool_evidence")
+    return te if isinstance(te, dict) else {}
 
-    Two adapter families disagree: the dependency scanners (pip_audit,
-    bundler_audit, dependency_check, eslint_security) set
-    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
-    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
-    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
-    only the first form made every SARIF finding look rule-less, which silently
-    disabled both aggregation and rule-based fingerprint identity for them.
+
+def tool_rule_id(finding):
+    """The scanner rule a tool finding came from, wherever its adapter put it: the dependency
+    scanners set `tool_evidence.rule_id`, while the SARIF path carries it in
+    `provenance.confirmation_reasoning`; reading only the first made SARIF findings rule-less.
     """
-    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    rule = _tool_evidence(finding).get("rule_id")
     if rule:
         return rule
-    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
+    prov = finding.get("provenance")
+    return (prov.get("confirmation_reasoning") if isinstance(prov, dict) else None) or None
 
 
 def norm_path(p):
@@ -233,8 +234,7 @@ def artifact_term(finding):
     """
     if not is_tool_sourced(finding):
         return None
-    te = finding.get("tool_evidence")
-    pkg = te.get("package_name") if isinstance(te, dict) else None
+    pkg = _tool_evidence(finding).get("package_name")
     return pkg if isinstance(pkg, str) and pkg else None
 
 

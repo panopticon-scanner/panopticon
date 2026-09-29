@@ -203,6 +203,28 @@ class TestIterRecords(unittest.TestCase):
         records = reconcile.iter_records(report)
         self.assertEqual(records[0]["location_file"], "")
 
+    def test_a_malformed_tool_evidence_in_a_stored_report_is_not_fatal(self):
+        # #2359: load_report is a plain json.load with no schema check, so a
+        # report read off disk can hold a finding whose `tool_evidence` (and
+        # `provenance`) is not a dict. Every record here is fingerprinted, so
+        # one such finding must key as rule-less rather than abort the diff.
+        doc = {"findings": [{"id": "F-1", "panel": "security",
+                             "category": "injection", "title": "t",
+                             "source": "tool:bandit", "tool_evidence": "x",
+                             "provenance": "x",
+                             "location": {"file": "a.py"}}],
+               "discarded_claims": []}
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        path = os.path.join(tmpdir, "run2.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        records = reconcile.iter_records(reconcile.load_report(path))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records[0]["fingerprint"]), 16)
+        self.assertEqual(records[0]["coarse_key"],
+                         ("a.py", "security", "injection"))
+
     def test_carries_category_and_coarse_key(self):
         report = {"findings": [{"id": "X-1", "panel": "security",
                                 "category": "injection",
