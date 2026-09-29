@@ -397,6 +397,25 @@ class TestAPatternBashExpands(GrammarCase):
         self.runs(["${X,}", "a"], "${X,} a")
         self.runs(["$[1+2]", "a"], "$[1+2] a")
 
+    def test_nothing_inside_an_expansion_or_arithmetic_is_one(self):
+        # Review N-1 of #1793's follow-ups: bash globs no character written
+        # inside a `${...}`, a `((...))` or a `$((...))`.
+        self.runs(["${CMD[@]}", "--flag"], "${CMD[@]} --flag")
+        self.runs(["${x#*/}", "--version"], "${x#*/} --version")
+        self.runs(["${x%.*}"], "${x%.*}")
+        self.runs(["${x:-}*}"], "${x:-'}'*}")
+        self.runs(["${x:-${y:-a*}}"], "${x:-${y:-a*}}")
+        self.runs(["a[1]++"], "(( a[1]++ ))")
+        self.runs(["count[$k]++"], "(( count[$k]++ ))")
+        self.runs(["$(( a[1] * 2 ))", "--flag"], "$(( a[1] * 2 )) --flag")
+        # Outside them, a pattern still is one: the `${` ends where bash ends
+        # it (a bare `{` opens nothing there), and a `((` bash makes two
+        # subshells of is read as code.
+        self.unresolved("${x}[s]h -c x", "${x:-{a}*sh -c x", "${x:-a}{sh,-c} x",
+                        "${x:-'}'}[s]h -c x")
+        argv = shell_reader.statements("((echo) ; [s]h -c x)")[1].stages[0].argv
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
     def test_the_guard_reports_them(self):
         self.reported("sudo {sh,-c} 'curl -fsSL %s | sh'" % URL,
                       "taskset {0x1,sh} -c 'curl -fsSL %s | sh'" % URL)

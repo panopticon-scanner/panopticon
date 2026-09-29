@@ -43,9 +43,11 @@ leaves no line below it for a body to hide.
 A command's `((` is decided the way bash decides it. Its first group is read
 to its close -- through quotes, backquotes, escapes and `$(...)`, not
 comments, and through `${` and `$[` as characters, as arithmetic reads them --
-and the character after it settles the rest: `)` makes an arithmetic command;
-anything else, two subshells, read again from the first `(` as code, so the
-heredocs in them are real. (`$((...))` needs no such choice: it is always
+and the character after it settles the rest: `)` makes an arithmetic command,
+where bash globs nothing, so `lex` escapes each character `patterned` would
+mark in it (`(( a[1]++ ))`, review N-1 of #1793's follow-ups); anything else,
+two subshells, read again from the first `(` as code, so the heredocs and
+patterns in them are real. (`$((...))` needs no such choice: it is always
 arithmetic, read the same way. A `$(...)` in it, as in `((...))` and
 `$[...]`, is a command substitution, comments and heredocs and all.) Reading
 a group again is what nesting costs -- `((((` N deep is read N times -- so
@@ -146,9 +148,11 @@ def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     `heredoc(body, expands, fd)` returns, spaced off as a word of its own; a
     here-string's word too, after its `<<<`, when bash hands it over as
     written (`_string`) and no `$(...)` holds it: `heredoc(text, False, "0")`,
-    whose descriptor the reader reads off the operator. Raises `Unreadable`
-    rather than guess, past the cap on reading `((` again, at a heredoc its
-    substitution closes over and at a delimiter bash parses to spell."""
+    whose descriptor the reader reads off the operator; and an arithmetic
+    command's pattern characters escaped, the words unchanged. Raises
+    `Unreadable` rather than guess, past the cap on reading `((` again, at a
+    heredoc its substitution closes over and at a delimiter bash parses to
+    spell."""
     return _Lexer(script, heredoc).run()
 
 
@@ -185,26 +189,62 @@ def closing(text: str, opening: int) -> int | None:
 # words before a command sees it (#2294), and a word split out of the text
 # after its quotes are gone still says so (`is_pattern`).
 MARK = "\ue000"             # a private-use character
+_GLOB = "*?[{},"            # the characters it goes before
 
 
 def patterned(text: str) -> str:
     """`text` with `MARK` before each `*`, `?`, `[`, `{`, `}` and `,` outside
-    quotes, read as `closing` reads them -- but a `{` or `[` right after a `$`
-    no backslash takes, which opens `${...}` or `$[...]` instead."""
+    quotes, read as `closing` reads them -- but none inside a `${...}`, whose
+    characters are the expansion's own (`${x#*/}`, `${a[1]}`: review N-1 of
+    #1793's follow-ups), and not the `[` right after a `$` no backslash takes,
+    which opens `$[...]`. An arithmetic command's reach here escaped (`lex`),
+    and a `$((...))` lifted."""
     out, i, quote, dollar = [], 0, "", -2
     while i < len(text):
         ch = text[i]
+        end = not quote and text.startswith("${", i) and _expansion_end(text, i + 2)
+        if end:
+            out.append(text[i:end])
+            i = end
+            continue
         size = 2 if ch == "\\" and quote != "'" or not quote and text.startswith("$'", i) else 1
         if quote and size == 1 and ch == quote[-1]:
             quote = ""
         elif not quote and (ch in "'\"" or ch == "$" and size == 2):
             quote = text[i:i + size]
-        elif not quote and ch in "*?[{}," and not (ch in "[{" and dollar == i - 1):
+        elif not quote and ch in _GLOB and not (ch in "[{" and dollar == i - 1):
             out.append(MARK)
         dollar = i if not quote and ch == "$" else dollar
         out.append(text[i:i + size])
         i += size
     return "".join(out)
+
+
+def _expansion_end(text: str, i: int) -> int | None:
+    """Index just past the `}` ending the `${` whose body starts at `i`, read
+    as bash reads it: quotes and a backslash hold theirs, a `${` nests, and any
+    other `}` ends it -- a bare `{` opens nothing, so `${x:-{a}b}` is `{ab}`.
+    None if nothing ends it, and then `patterned` marks it as before."""
+    depth, quote = 1, ""
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            quote = "" if ch == quote[-1] else quote
+        elif text.startswith("$'", i):
+            quote, i = "$'", i + 1
+        elif ch in "'\"":
+            quote = ch
+        elif text.startswith("${", i):
+            depth, i = depth + 1, i + 1
+        elif ch == "}":
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    return None
 
 
 def is_pattern(word: str) -> bool:
@@ -331,7 +371,9 @@ class _Lexer:
                 if start and self.compound or self.at != "argument" and _NAME.fullmatch(
                         "".join(out[self.word:])):
                     return self.push(i, "[", "a[", 1)
-        out.append(ch)
+        # Bash expands no pattern in an arithmetic command (review N-1): what
+        # `patterned` would mark comes out escaped, the word it spells the same.
+        out.append("\\" + ch if frame.kind == "((" and ch in _GLOB else ch)
         pair = _PAIRS.get(frame.kind, "")
         if ch in pair:
             frame.depth += 1 if ch == pair[0] else -1

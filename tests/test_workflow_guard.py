@@ -684,6 +684,21 @@ class TestAPatternWhereTheCommandStarts(unittest.TestCase):
                 self.assertEqual([], wg.job_defects([("step", script.replace(
                     "%s", self.PAYLOAD))]))
 
+    def test_inside_an_expansion_or_arithmetic_there_is_none(self):
+        # Review N-1: bash globs nothing written inside `${...}`, `((...))` or
+        # `$((...))`, and these idioms were reported from #2294 on.
+        for script in ("(( a[1]++ ))\n", "(( count[$k]++ ))\n", "${CMD[@]} --flag\n",
+                       "${x#*/} --version\n", "${x%.*}\n", "if (( a[i] > 0 )); then :; fi\n",
+                       "$(( a[1] * 2 )) --flag\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        # The must-trips: a pattern beside or inside them, where bash globs it.
+        for script in ("${x}[s]h -c %s\n", "(( a[1]++ )) && [s]h -c %s\n",
+                       "((echo) ; [s]h -c %s)\n", "(( $([s]h -c %s) ))\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("is a pattern", why[0][1] if why else "")
+
 
 class TestTheFormsThatHideAFetch(unittest.TestCase):
     """Spellings that are not `curl <url> -o <file>` and mean the same thing.
