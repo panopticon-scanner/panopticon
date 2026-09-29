@@ -786,3 +786,82 @@ def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys
     assert rc == 2
     assert "\\n" in err and "not-a-line" in err
     assert err.count("\n") == 1                  # one line, the refusal
+
+
+# --- #2272: the delta path asks the SAME policy --repo-scan asks -------------
+
+# Every dot-path shape `dot_paths.allowed` distinguishes, plus the two non-dot
+# classes `_filter_reviewable` prunes (a TRACKED dependency tree, a fixture
+# corpus). A `.git`-SEGMENT path is not here: `git add` refuses to track one, so
+# that arm of the filter is unreachable from a real listing on either path.
+_DOT_PATH_SHAPES = (
+    ".github/workflows/ci.yml",      # allowed root dot-DIR (dot_paths.DIRS)
+    ".gitignore",                    # allowed root dot-FILE (dot_paths.FILES)
+    ".env.local",                    # allowed root dot-file STEM (.env*)
+    ".hidden/a.py",                  # denied root dot-dir: not in DIRS
+    ".venv/lib/x.py",                # denied root dot-dir, also EXCLUDE_DIRS
+    ".notarc",                       # denied root dot-file: no FILES/stem entry
+    "src/.mypy_cache/b.py",          # denied NESTED dot-dir (tool state)
+    "node_modules/c.js",             # tracked dependency tree (EXCLUDE_DIRS)
+    "tests/fixtures/vuln/app.py",    # fixture corpus (#434)
+)
+
+
+def _repo_tracking(tmp_path, paths):
+    """Commit `paths` -- `add -f`, so a tracked `.venv`/`node_modules` really is
+    tracked whatever the ambient ignore rules say -- and return the repo."""
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in paths:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x = 1\n")
+    git_cmd(repo, "init", "-q")
+    git_cmd(repo, "add", "-Af")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
+    return repo
+
+
+def _rewrite_and_commit(repo, paths):
+    for p in paths:
+        (repo / p).write_text("x = 2\n")
+    git_cmd(repo, "add", "-Af")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
+
+
+def test_repo_scan_scope_changed_asks_the_dot_path_policy(tmp_path):
+    # #2272: the delta path built `scoped` straight off git-diff output and never
+    # asked `dot_paths.allowed`, so a CHANGED tracked `.hidden/`, `.venv/` or
+    # `node_modules/` file was reviewable surface under --scope-changed while
+    # --repo-scan pruned it. `.github/workflows/ci.yml` is the control: a dot-path
+    # the policy ALLOWS must still be reviewed.
+    tree = ["src/app.py", ".hidden/a.py", ".venv/lib/x.py", "node_modules/c.js",
+            ".github/workflows/ci.yml"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, tree)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
+
+
+def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
+    # The parity pin #2272 asks for: ONE tree, every dot-path shape, and an
+    # expected set taken from --repo-scan's OWN output rather than a second copy
+    # of the policy -- so this reddens on any future delta-path filter that sits
+    # beside `_filter_reviewable` instead of going through it. `src/untouched.py`
+    # never changes, so the intersection really narrows. Delta runs FIRST: the
+    # artifacts these runs write are themselves untracked files under a pruned
+    # dot-dir, and running it first keeps that out of the changed set entirely.
+    tree = ["src/app.py", "src/untouched.py", *_DOT_PATH_SHAPES]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, [p for p in tree if p != "src/untouched.py"])
+    changed = {ln for ln in git_output(repo, "diff", "--name-only",
+                                      "HEAD~1").splitlines() if ln}
+    delta = repo / ".panopticon" / "delta.json"
+    whole = repo / ".panopticon" / "whole.json"
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(delta)]) == 0
+    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
+    assert _reviewed_files(delta) == _reviewed_files(whole) & changed
+    assert "src/untouched.py" in _reviewed_files(whole)     # the ∩ really narrows

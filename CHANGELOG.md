@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`--scope-changed` asks the same dot-path policy `--repo-scan` asks (#2272, #1784, ARC-F2E).**
+  The delta path built its reviewed set from git-diff output, pruned fixture corpora and committed
+  `exclude_paths`, and stopped -- it never asked `dot_paths.allowed`. So a tracked, CHANGED
+  `.hidden/a.py`, `.venv/lib/x.py` or `.mypy_cache/b.py` -- and a changed `node_modules/c.js` in a
+  target that tracks it -- was reviewable surface under `--scope-changed` while `--repo-scan` pruned
+  it; #1136's comment at that caller already named this class of delta-path divergence. The branch
+  now goes through the SAME `_filter_reviewable` with the SAME arguments as the whole-repo listing,
+  so the one dot-path policy, `EXCLUDE_DIRS`/`EXCLUDE_DIR_GLOBS` on every ancestor segment, the
+  fixture prune (#434) and the `.git`-segment drop hold under delta review too -- and a fixture
+  prefix the CHANGED set triggers is disclosed in the same `excluded.fixture_dirs` list, the way
+  `excluded_count` already reflects the changed set. A parity test pins AGREEMENT rather than a
+  second copy of the policy: over one tree carrying every dot-path shape `dot_paths` distinguishes,
+  the delta set must equal `--repo-scan`'s OWN output intersected with the changed set.
 - **Discovery's git failure and truncation reach the report (#2271, #1784, ARC-F2E).**
   `discovery.py` records `method`, `files_seen`, `files_truncated` and `git_failure` in the
   `discovery` block of `groups.json` and prints the last two on its OWN stderr. On the driver path

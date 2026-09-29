@@ -143,6 +143,8 @@ dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` an
 dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.
+`--scope-changed` narrows that same surface through the same filter, so a changed tracked
+`.venv/lib/x.py` is pruned from a delta review exactly as it is from a whole-repo one (#2272).
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC

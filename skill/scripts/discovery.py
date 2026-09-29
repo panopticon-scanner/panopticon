@@ -305,12 +305,11 @@ def _worktree_dirty(repo, exclude=()):
     live tree (e.g. -c usage), False for a clean checkout.
 
     ``exclude`` (#1681 fix round 3, M4): repo-root-relative names whose status
-    lines are not dirt. The ``--pr-worktree`` caller passes the root config
-    names -- the SAME ones `write_diff_hunks` and `collect_changed_files`
-    exclude -- because `diff_map._sync_config` wrote the operator's config into
-    that worktree before this ran: without it the answer is True on every --pr
-    run, and the driver's own sync is declared as the PR author's uncommitted
-    work.
+    lines are not dirt. The ``--pr-worktree`` caller passes the root config names
+    -- the SAME ones `write_diff_hunks` and `collect_changed_files` exclude --
+    because `diff_map._sync_config` wrote the operator's config into that worktree
+    before this ran: without it the answer is True on every --pr run, and the
+    driver's own sync is declared as the PR author's uncommitted work.
     """
     r = _git(repo, ["status", "--porcelain", "-z"], text=False)
     names = set(exclude)
@@ -349,14 +348,12 @@ def collect_changed_files(repo, base=None, exclude=()):
 
     ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped
     from the changed set before it is returned -- the ``--pr-worktree`` caller
-    passes the root config names here, the SAME ones ``diff_map.hunk_map``
-    excludes, so the reviewed file set and the on-diff hunk map keep agreeing
-    (the invariant this module's ``--find-renames`` comment above already
-    names) instead of diverging on the one file `_sync_config` just
-    overwrote: without this, that file was still dispatched as reviewable PR
-    surface even though the delta map had no hunks for it. A plain (non-PR)
-    delta review passes none, so a real changed root config there is still
-    reviewed exactly like any other file.
+    passes the root config names, the SAME ones ``diff_map.hunk_map`` excludes,
+    so the reviewed file set and the on-diff hunk map keep agreeing (the
+    ``--find-renames`` invariant below) instead of diverging on the one file
+    `_sync_config` just overwrote: that file was dispatched as reviewable PR
+    surface with no hunks for it. A plain (non-PR) delta review passes none, so
+    a real changed root config there is reviewed exactly like any other file.
 
     Only files that still exist in the working tree are returned. Returns
     None if no git history is available.
@@ -809,11 +806,10 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
     commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
     exact delta even if branch tips move.
 
-    ``exclude`` is passed straight to ``diff_map.hunk_map``: non-empty only
-    for a ``--pr`` worktree, where it names the root config filenames the
-    operator's sync just overwrote there (#1681) -- without it, that overwrite
-    would be attributed to the PR in this very artifact. One disclosure line
-    documents the exclusion so it is never a silent gap.
+    ``exclude`` goes straight to ``diff_map.hunk_map``: non-empty only for a
+    ``--pr`` worktree, where it names the root config filenames the operator's
+    sync just overwrote there (#1681) -- without it, that overwrite would be
+    attributed to the PR in this very artifact. One disclosure line documents it.
     """
     if exclude:
         print("panopticon --pr: excluding %s from the delta map (this "
@@ -1058,12 +1054,11 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                 out.append(rel)
     return _cap_discovered(sorted(out), info)
 
-# #run10: _looks_risky / _compute_depth lived here, stamping a shallow/standard/
-# deep `depth` onto every groups.json entry. Its readers were plan_contract's
-# DEPTH_ORDER checks, dispatch.load_group_assignment and synthesize's
-# _load_group_assignments -- all part of the 4.x plan contract retired in #1444.
-# Nothing reads `depth` now, and the 5.x review axis is the (domain, group) cell,
-# not a per-group depth. is_architecture_file / is_database_file survive: they
+# #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth`
+# on every groups.json entry for the 4.x plan contract retired in #1444 (readers:
+# plan_contract's DEPTH_ORDER, dispatch.load_group_assignment, synthesize's
+# _load_group_assignments). Nothing reads `depth` now; the 5.x axis is the
+# (domain, group) cell. is_architecture_file / is_database_file survive: they
 # still feed compute_group_panels.
 
 def _discovery_block(info):
@@ -1796,14 +1791,20 @@ def _repo_scan(argv=None):
             print("could not determine changed files; is %s a git repo?" % repo,
                   file=sys.stderr)
             return 2
-        scoped = prune_fixture_files(changed, args.security == "redteam")
-        # Delta-path parity (#1136): --scope-changed rebuilds `scoped` from
-        # git-diff output, which never passed through the whole-repo exclude
-        # filter above. Re-apply so committed exclude_paths hold under delta
-        # review too, and re-derive excluded_files so the disclosure reflects
-        # what was actually pruned from the changed set (not the whole-repo
-        # count). --scope-dir/-file/-group derive `scoped` from the already-
-        # pruned `allf`, so they keep the whole-repo excluded_files as-is.
+        # Delta-path parity (#1136, #2272): --scope-changed rebuilds `scoped`
+        # from git-diff output, which never passed the whole-repo filters above.
+        # It asks the SAME `_filter_reviewable` with the SAME arguments as the
+        # whole-repo listing -- the one dot-path policy, EXCLUDE_DIRS/GLOBS per
+        # ancestor segment, the #434 fixture prune, the `.git`-segment drop --
+        # because a changed tracked `.venv/x.py` was reviewable surface HERE while
+        # --repo-scan pruned it. A future delta-path filter goes THROUGH that
+        # function, never beside it. Then committed exclude_paths prune, re-deriving
+        # excluded_files from the changed set, not the whole-repo count that the
+        # --scope-dir/-file/-group branches keep (they narrow the pruned `allf`).
+        scoped = _filter_reviewable(
+            changed, include_fixtures=(args.security == "redteam"),
+            pruned_fixtures=pruned_fixtures,
+            isfile=lambda rel: _is_confined_regular(repo, rel))
         scoped, excluded_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
@@ -1818,12 +1819,11 @@ def _repo_scan(argv=None):
         # #1136 requires a named-but-excluded file to be PRUNED from the delta
         # (rc 0, disclosed in `excluded_count`) rather than refuse the run.
         # `_apply_exclude` below is what prunes it, so every entry that survives
-        # this branch is in `allf` -- the same invariant the singular gets from
-        # its own membership test. `prune_fixture_files` cannot fire on that
-        # universe any more (standard mode pruned the corpora from the listing
-        # before `excluded_files` was taken off it, and redteam keeps them); it
-        # stays because it is what would have to prune a fixture path if this
-        # universe ever widened to accept one.
+        # this branch is in `allf` -- the same invariant the singular gets from its
+        # own membership test. `prune_fixture_files` cannot fire on that universe
+        # any more (standard mode pruned the corpora from the listing before
+        # `excluded_files` was taken off it, and redteam keeps them); it stays for
+        # a universe that ever widened to accept a fixture path.
         universe = set(allf) | set(excluded_files)
         entries: list[str] = []
         for raw in args.scope_files:
