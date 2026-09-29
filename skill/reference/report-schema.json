@@ -607,6 +607,14 @@
             },
             "write_guard_covers_bash": {
               "type": "boolean"
+            },
+            "discovery_git_failure": {
+              "type": ["string", "null"],
+              "description": "#2271: the reason the target's own Git listing FAILED during discovery, so the file surface was found by a raw directory walk instead — a string, else null. A raw walk does not honour the target's `.gitignore`, so this run's reviewed surface may be far larger than the target's own; it is a SUPERSET of the intended one, never a gap in it. Recorded in the run's `groups.json` discovery block and printed on discovery's own stderr, which the driver buffers and discards on a successful run — so this is the only surface it reaches (see also meta.integrity.discovery_files_truncated). It does NOT gate certification: the artifacts on disk are still what they claim to be, which is what this section measures. Null means the Git listing succeeded, the target is not a Git worktree, or no discovery block was present (not measured: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). Free text from git's stderr with a path out of the reviewed tree in it: neutralized and bounded where it is rendered (`synth/integrity.evidence_text`)."
+            },
+            "discovery_files_truncated": {
+              "type": ["integer", "null"],
+              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all."
             }
           }
         },

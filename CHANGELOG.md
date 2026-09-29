@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Discovery's git failure and truncation reach the report (#2271, #1784, ARC-F2E).**
+  `discovery.py` records `method`, `files_seen`, `files_truncated` and `git_failure` in the
+  `discovery` block of `groups.json` and prints the last two on its OWN stderr. On the driver path
+  `phases/discovery.discovery_execute` runs the child through `child._run_child` -- both streams
+  into bounded buffers -- and reads that stderr only when `groups.json` is MISSING, and no synth
+  module, renderer or schema read the block. So on a successful `driver run` both disclosures were
+  captured and dropped: a git-listing failure was a silent downgrade to a raw walk that does NOT
+  honour the target's `.gitignore` ("this run's surface may be far larger than the target's own"),
+  visible only to whoever hand-ran `discovery.py`. Two new `meta.integrity` keys carry them now --
+  `discovery_git_failure` (the reason, else null) and `discovery_files_truncated` (an integer on
+  every scan, `0` included; null = no discovery block, not measured) -- threaded from the parsed
+  `groups.json` through `PlanInputs.load` on the same seam as `plan_owed` / `plan_sha256`, and
+  rendered by the existing `INTEGRITY_KEYS` loop as `**Note:**` lines. THE RULING: both are
+  NON-GATING, the same precedence the truncation disclosure already had, because the reviewed
+  surface is a SUPERSET (git failure) or a PREFIX (truncation) of the intended one and the artifacts
+  on disk are still what they claim to be, which is what this section measures. THE DISSENT,
+  recorded so the owner can flip either `sinks` in one line: a surface "far larger than the target's
+  own" is arguably not a run that should certify at all. Both values are isinstance-guarded at the
+  publish boundary (`groups.json` is target-writable, and a bool is not an integer where `integer`
+  is pinned), and the failure string is git's stderr, so it goes through `evidence_text`'s
+  `inert_text` wrap like every other free-text slot. `method`, `exclude_paths` and `ungrouped_files`
+  stay run artifacts in `groups.json` only; this surfaces the two that name a DEGRADED run.
 - **One guarded `location` reader in `evidence.py`, so a malformed stored finding no longer aborts
   the cross-run diff (#2365, #1768, ARC-A4A).** `finding_fingerprint`, `matrix_finding_id`,
   `reconcile_key` and `_queue_tiebreak` each carried their own `finding.get("location") or {}`, and

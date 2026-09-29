@@ -65,6 +65,26 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "cross_domain_findings": IntegrityKey(
         False, "%s. Reviewers filed outside their cell's domain; often a "
                "catalog gap (X0X). Does NOT affect certification."),
+    # #2271: discovery's two DEGRADATION disclosures, which the driver path
+    # dropped -- `discovery.py` printed them on its own stderr and wrote them
+    # into `groups.json`, and nothing downstream read either. NON-GATING, on
+    # the same precedence as the truncation disclosure that already did not
+    # gate: the reviewed surface is a SUPERSET (the git listing failed, so the
+    # raw walk ignored the target's `.gitignore`) or a PREFIX (the cap cut it)
+    # of the intended one, and the artifacts on disk are still what they claim
+    # to be, which is what this section gates on. The DISSENT, kept so the
+    # owner can flip either `sinks` in one line: a surface "far larger than the
+    # target's own" is arguably not a run that should certify at all.
+    #
+    # Listed truncation-first so the LOUDER of the two renders above it (this
+    # table's order is render order, reversed), and both below the failures.
+    "discovery_files_truncated": IntegrityKey(
+        False, "DISCOVERY TRUNCATED — %s files beyond the cap were not "
+               "reviewed"),
+    "discovery_git_failure": IntegrityKey(
+        False, "DISCOVERY FELL BACK TO A RAW WALK — %s (the target's Git "
+               "listing failed, so the surface does not honour its .gitignore "
+               "and may be far larger than the target's own)"),
     # Counters and disclosures with no line of their own: a planned file that
     # never arrived is not evidence of tampering (`reconcile_findings_files`
     # reports it and no gate reads it), and the rest are measurements --
@@ -184,6 +204,12 @@ def evidence_text(key, value):
     cross-domain row carries an agent-authored domain, and `inert_text`'s rule
     is that fixing such text at the producer is what lets every renderer
     inherit it instead of each one remembering. It also bounds the slot.
+
+    The scalar branch below is what carries the free-text reasons --
+    `invalid_verify_queue`, `tools_manifest_invalid` and (#2271)
+    `discovery_git_failure`, which is git's own stderr with a path out of the
+    reviewed tree in it -- through that same wrap, and it is why a count such
+    as `discovery_files_truncated` renders as the plain integer it is.
     """
     if key == "cross_domain_findings":
         by: dict[tuple, int] = {}
@@ -443,13 +469,43 @@ def load_verify_queue(run_dir):
     return None, "verify queue has no entries list"
 
 
+def _discovery_disclosures(discovery):
+    """Discovery's two DEGRADATION disclosures out of the run folder's
+    `groups.json` `discovery` block, as `(git_failure, files_truncated)`
+    (#2271).
+
+    `(None, None)` for an absent or unusable block -- NOT MEASURED, which is
+    what a direct `synthesize.py` call over hand-collected findings publishes
+    and what a run folder written before the block existed (#1576) carries. A
+    measured `0` truncation is a different fact and survives as `0`:
+    `discovery._discovery_block` publishes it on every scan precisely so a
+    reader comparing two runs can see that this one reviewed the whole tree
+    rather than a prefix of it.
+
+    isinstance-guarded, because `groups.json` is written inside the reviewed
+    tree and a hostile target can pre-commit one. `repair.repair_groups_json`
+    pins the five fields of that file which already reached the artifact; these
+    two are pinned here, at the boundary that publishes them, for the same
+    reason. A bool is not an integer for this purpose -- `jsonschema` rejects
+    `True` where `integer` is pinned, so an unrepaired one would fail the
+    artifact it rode into.
+    """
+    block = discovery if isinstance(discovery, dict) else {}
+    failure, truncated = block.get("git_failure"), block.get("files_truncated")
+    return (failure if isinstance(failure, str) else None,
+            truncated if isinstance(truncated, int)
+            and not isinstance(truncated, bool) else None)
+
+
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
-                      invalid_verify_queue, plan_owed=False, plan_sha256=None):
+                      invalid_verify_queue, plan_owed=False, plan_sha256=None,
+                      discovery=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
-    check, and the plan-loader's own counts. `plan_lists` is the per-file
-    list load_dispatch_plans_detailed returned; `plans_seen` / `invalid_plans`
+    check, the plan-loader's own counts, and discovery's two degradation
+    disclosures. `plan_lists` is the per-file list
+    load_dispatch_plans_detailed returned; `plans_seen` / `invalid_plans`
     / `invalid_verify_queue` are that loader's and load_verify_queue's
     disclosures, carried through so "no plan found" and "reconciled, nothing
     wrong" read apart.
@@ -461,7 +517,12 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
     `phases/synthesize.py` rather than read here so this package stays free of
     `scripts.run_manifest`, and both default to "nothing claimed" because a
     direct `synthesize.py` call over hand-collected findings has no driver to
-    ask."""
+    ask.
+
+    `discovery` is the run's `groups.json` `discovery` block (#2271), threaded
+    through `plan.PlanInputs.load` on the same seam as those two and defaulting
+    to None for the same reason -- see `_discovery_disclosures` for what it
+    publishes and why each field is guarded."""
     plan = [e for pl in plan_lists for e in pl]
     unexpected, missing = reconcile_findings_files(plan, files)
     ack = read_unenforced_ack(os.path.join(run_dir, "unenforced-ack.json"))
@@ -568,6 +629,8 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
               "(dropped source evidence): %s"
               % (len(malformed), ", ".join(d["file"] for d in malformed)),
               file=sys.stderr)
+    discovery_git_failure, discovery_files_truncated = \
+        _discovery_disclosures(discovery)
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
                  "malformed_findings_files": malformed,
@@ -585,7 +648,11 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  "invalid_verify_queue": invalid_verify_queue,
                  "plans_seen": plans_seen,
                  "dispatch_plan_missing": dispatch_plan_missing,
-                 "dispatch_plan_mismatched": dispatch_plan_mismatched}
+                 "dispatch_plan_mismatched": dispatch_plan_mismatched,
+                 # #2271: published on every report like every other key here,
+                 # `None` where this run measured nothing.
+                 "discovery_git_failure": discovery_git_failure,
+                 "discovery_files_truncated": discovery_files_truncated}
     if ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so
         # they appear in meta.integrity in the final report (#680).
