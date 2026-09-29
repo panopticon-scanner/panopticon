@@ -608,7 +608,7 @@ class TestADownloadWrittenIntoADirectoryOnPath(unittest.TestCase):
     """#2308: `curl -o /usr/local/bin/tool …; tool --version` read clean: the
     download is bound to its path, and `tool` is not that path, but bash finds
     the file by looking the bare name up on PATH. A bare name that is the
-    basename of a download written into one of `workflow_forms.PATH_DIRS` is
+    basename of a download written into one of `workflow_operands.PATH_DIRS` is
     now running it -- as the command or as a wrapper word, still read
     through."""
 

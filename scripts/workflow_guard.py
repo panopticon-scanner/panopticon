@@ -81,7 +81,7 @@ that starts catching one fails there, and this list is edited with it.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
-* directories on the runner's PATH not in `workflow_forms.PATH_DIRS` (#2308),
+* directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308),
   `$HOME/.cargo/bin` and `/snap/bin` among them, or one a step puts there
   (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name finds a download in neither.
   KEPT: the first differ by image (review N-4); the other is a VALUE, which
