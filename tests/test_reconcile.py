@@ -186,6 +186,16 @@ class TestLoadReport(unittest.TestCase):
 
 
 class TestIterRecords(unittest.TestCase):
+    def _written(self, doc):
+        """`doc` as a report file on disk, so the test goes through the real
+        `load_report` -> `iter_records` path rather than a hand-built dict."""
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        path = os.path.join(tmpdir, "run2.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
+
     def test_tags_kind_and_recomputes_fingerprint(self):
         report = reconcile.load_report(os.path.join(FIXTURES, "run2.json"))
         records = reconcile.iter_records(report)
@@ -216,12 +226,7 @@ class TestIterRecords(unittest.TestCase):
                              "provenance": "x",
                              "location": {"file": "a.py"}}],
                "discarded_claims": []}
-        tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmpdir)
-        path = os.path.join(tmpdir, "run2.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh)
-        records = reconcile.iter_records(reconcile.load_report(path))
+        records = reconcile.iter_records(reconcile.load_report(self._written(doc)))
         self.assertEqual(len(records), 1)
         self.assertEqual(len(records[0]["fingerprint"]), 16)
         self.assertEqual(records[0]["coarse_key"],
@@ -255,13 +260,23 @@ class TestIterRecords(unittest.TestCase):
         self.assertEqual(err.getvalue().splitlines(),
                          ["reconcile: skipped 2 non-dict findings entries"])
 
-    def test_a_findings_value_that_is_not_a_list_yields_nothing_and_no_line(self):
-        # A dict would otherwise iterate as its KEYS and be counted as skipped
-        # entries; it is no list of claims at all, so it reads as empty.
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(reconcile.iter_records({"findings": {"a": 1}}), [])
-        self.assertEqual(err.getvalue(), "")
+    def test_a_non_list_section_reads_as_empty_through_the_real_path(self):
+        # #2365: a non-list section is no list of claims, and the rule has to
+        # hold where reports are actually read. `load_report` used to coerce
+        # with `list(...)`, so a dict arrived at `iter_records` as its KEYS and
+        # was announced as skipped entries, and `42` aborted the load itself
+        # with TypeError. Both layers now read it as empty and count nothing.
+        for shape in ({"a": 1}, "abc", 42):
+            with self.subTest(findings=shape):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    records = reconcile.iter_records(
+                        reconcile.load_report(self._written({"findings": shape})))
+                    # ... and the same rule as `iter_records`' own contract, for
+                    # a caller that hands it a section directly.
+                    direct = reconcile.iter_records({"findings": shape})
+                self.assertEqual((records, direct), ([], []))
+                self.assertEqual(err.getvalue(), "")
 
     def test_a_well_formed_report_says_nothing_on_stderr(self):
         err = io.StringIO()
@@ -269,16 +284,6 @@ class TestIterRecords(unittest.TestCase):
             reconcile.iter_records(reconcile.load_report(
                 os.path.join(FIXTURES, "run2.json")))
         self.assertEqual(err.getvalue(), "")
-
-    def _written(self, doc):
-        """`doc` as a report file on disk, so the test goes through the real
-        `load_report` -> `iter_records` path rather than a hand-built dict."""
-        tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmpdir)
-        path = os.path.join(tmpdir, "run2.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh)
-        return path
 
     def test_carries_category_and_coarse_key(self):
         report = {"findings": [{"id": "X-1", "panel": "security",

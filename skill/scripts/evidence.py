@@ -190,7 +190,7 @@ def _tool_evidence(finding):
 
 
 def location_of(finding):
-    """`location` as a dict, `{}` for absent or malformed (#2365)."""
+    """`location` as a dict (the finding's own, not a copy), `{}` for absent or malformed (#2365)."""
     loc = finding.get("location")
     return loc if isinstance(loc, dict) else {}
 

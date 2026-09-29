@@ -11,23 +11,23 @@ ev = evidence
 
 def _key_reads(tree, key):
     """The enclosing function names (module level -> "<module>") of every
-    LOAD-context read of `key` in `tree`: an `x[key]` subscript or an
-    `x.get(key)` call. A write (`x[key] = v`) is Store context and is not a
-    read, so it does not count (#2365)."""
-    def is_read(node):
-        if isinstance(node, ast.Subscript):
-            return (isinstance(node.ctx, ast.Load)
-                    and isinstance(node.slice, ast.Constant)
-                    and node.slice.value == key)
-        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "get" and bool(node.args)
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value == key)
+    occurrence of `key` as a constant in `tree`, in ANY idiom -- `x[key]`,
+    `x.get(key)`, `x.pop(key)`, `x.setdefault(key)`, `key in x`, a constant
+    assigned to a name and read later -- except one: the slice of a Store-context
+    subscript, which is a write (#2365). Naming the KEY rather than a list of
+    read idioms is what makes the guard hold for idioms nobody has used yet.
 
+    A function's decorators and default arguments are attributed to that function
+    rather than to its enclosing scope, so the one shape this scan cannot see is
+    a read hidden in the decorator list or the defaults OF THE READER ITSELF.
+    """
+    written = {id(node.slice) for node in ast.walk(tree)
+               if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)}
     found = set()
 
     def visit(node, scope):
-        if is_read(node):
+        if (isinstance(node, ast.Constant) and node.value == key
+                and id(node) not in written):
             found.add(scope)
         for child in ast.iter_child_nodes(node):
             visit(child, child.name if isinstance(
@@ -492,10 +492,16 @@ class TestOneReaderPerGuardedKey(unittest.TestCase):
     """#2365: `tool_evidence` and `location` are both read off an unvalidated
     stored report, and the unguarded idiom recurred four times for `location`
     after #2359 fixed it for `tool_evidence`. So each key has exactly ONE reader
-    in `evidence.py` and every other use goes through it. Scoped to
-    `evidence.py`: `skill/scripts/phases/review.py` keeps an in-process copy of
-    the `location` idiom, the recorded exception, safe because its input is built
-    in-process and never comes off disk."""
+    in `evidence.py`, and this guard fails on every occurrence of the key as a
+    constant, in any idiom, except a subscript write.
+
+    It covers `evidence.py` alone. `phases/review.py` and `security_gate.py` keep
+    the idiom on adapter-constructed findings, whose `location` is always a dict
+    an adapter built, so those are safe by construction; `scripts/file_issues.py`
+    -- the other consumer of the same `reconcile.load_report` -- still carries it
+    and is tracked as #2372. One layer up, a report whose top level is not an
+    object or whose `meta.parts` is not a list still aborts in `load_report`
+    itself (#2373)."""
 
     def _tree(self):
         with open(evidence.__file__, encoding="utf-8") as fh:
@@ -508,13 +514,19 @@ class TestOneReaderPerGuardedKey(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(_key_reads(tree, key), {reader})
 
-    def test_the_walker_trips_on_both_read_idioms(self):
-        self.assertEqual(
-            _key_reads(ast.parse('def f(x):\n    return x.get("location")\n'),
-                       "location"), {"f"})
-        self.assertEqual(
-            _key_reads(ast.parse('def g(x):\n    return x["location"]["file"]\n'),
-                       "location"), {"g"})
+    def test_the_walker_trips_on_every_read_idiom(self):
+        # Must-trip controls: each idiom in its own tiny module, each reporting
+        # its own function. A walker that missed one would make the assertion
+        # above vacuous for exactly that idiom -- which is how `.pop`,
+        # `.setdefault` and `in` went unmodelled in the first cut (#2365).
+        for body in ('return x.get("location")', 'return x["location"]["file"]',
+                     'return x.pop("location", {})',
+                     'return x.setdefault("location", {})',
+                     'return "location" in x'):
+            with self.subTest(idiom=body):
+                self.assertEqual(
+                    _key_reads(ast.parse("def f(x):\n    " + body + "\n"),
+                               "location"), {"f"})
 
     def test_a_write_is_not_a_read(self):
         self.assertEqual(

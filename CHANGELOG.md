@@ -17,11 +17,17 @@ evidence exposed.
   which hands back the dict or `{}`, so a non-dict `location` keys precisely as an absent one does.
   `iter_records` also skips a non-dict `findings[]` entry instead of raising on it, printing one
   counted `reconcile: skipped N non-dict <key> entries` line to stderr per section, because a
-  silently dropped claim is a disclosure gap; a `findings` value that is not a list at all reads as
-  empty and counts nothing. An AST guard in `tests/test_evidence.py` walks `evidence.py` and fails
-  if any LOAD-context read of `location` or `tool_evidence` sits outside its one reader. The honest
-  limit: that guard covers `evidence.py` alone -- `phases/review.py` keeps an in-process copy of the
-  idiom, a recorded exception because its input is built in-process and never comes off disk.
+  silently dropped claim is a disclosure gap; and a `findings` or `discarded_claims` section that is
+  not a list reads as empty in `load_report` and in `iter_records`, and counts nothing. An AST guard
+  in `tests/test_evidence.py` walks `evidence.py` and fails if `location` or `tool_evidence` appears
+  as a constant anywhere outside its one reader, in any idiom -- subscript, `.get`, `.pop`,
+  `.setdefault`, `in`, or a constant bound to a name -- a subscript write excepted. The honest
+  limits: that guard covers `evidence.py` alone; `phases/review.py` and `security_gate.py` keep the
+  idiom on adapter-constructed findings, whose `location` is always a dict an adapter built, so
+  those are safe by construction, but `scripts/file_issues.py` -- the other consumer of this same
+  `load_report` -- still carries it and is tracked as #2372; and one layer up, a report whose top
+  level is not an object or whose `meta.parts` is not a list still aborts in `load_report` itself
+  (#2373).
 - **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
   (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
   rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in
