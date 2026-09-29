@@ -47,7 +47,7 @@ import secrets
 import shlex
 
 from shell_lex import closing, lex
-from shell_patterns import MARK, is_pattern, patterned
+from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
 from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -122,7 +122,8 @@ class _Token(str):
 
 
 class _Expanded(_Token, Rewritten):
-    """A word bash expands as a pattern (#2294), lifted text in it or not."""
+    """A word bash expands as a pattern (#2294), lifted text in it or not;
+    `covers` knows one by its `lead`: may it begin with `-` (`leads`)."""
 
 
 def _markers(text):
@@ -477,9 +478,10 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        word = context.token(context.restore_arithmetic(raw.replace(MARK, "")))
+        word = context.token(context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")))
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
+            setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -619,9 +621,7 @@ def _command_result(argv):
         head, argv = behind
         reason = "`%s` has no command as written, and xargs appends words to it" % head
     if reason is None and argv and os.path.basename(argv[0]) in _SHELLS:
-        end = next((k for k, w in enumerate(argv[1:], 1) if not w.startswith(("-", "+"))
-                    and argv[k - 1][1:] not in ("o", "O")), len(argv) - 1)   # the program
-        word = next((w for w in argv[1:end + 1] if isinstance(w, _Expanded)), None)
+        word = next((w for w in shell_words(argv) if getattr(w, "lead", False)), None)
         if word is not None:
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))

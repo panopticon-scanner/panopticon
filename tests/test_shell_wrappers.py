@@ -417,9 +417,14 @@ class TestAPatternBashExpands(GrammarCase):
 
     def test_where_a_shell_looks_for_c_or_a_script(self):
         # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`, which
-        # was read as `sh` running a file called `{-c,…}`, clean.
+        # was read as `sh` running a file called `{-c,…}`, clean. Re-review
+        # N-C: only a pattern that may expand to a word beginning with `-`
+        # becomes an option, and none after `--`.
         self.unresolved("sh {-c,'curl x | sh'}", "bash -{c,x} 'curl x | sh'",
-                        "sh -o pipefail {-c,x}", "sh -- {a,b}", "sh [x].sh")
+                        "sh -o pipefail {-c,x}", "sh [-]c 'curl x | sh'", "sh * x", "sh ?c x",
+                        "sh -o {pipefail,-c} x", "sh [!a]c x", "sh [a'-'c]c x", "sh [+--]c x",
+                        "sh [$D]c x", "sh [$(echo -)]c x", "sh [a-]c x", "sh $X{-c,x}",
+                        "sh $(true){-c,x}", 'sh "${X}"* x')
         for form in ("sudo sh {-c,x}", "env A=1 sh {-c,x}"):
             with self.subTest(form=form):
                 self.assertIn("where `sh` looks for `-c` or a script",
@@ -427,6 +432,13 @@ class TestAPatternBashExpands(GrammarCase):
         # After the program, a pattern is only the script's argument.
         self.runs(["sh", "x.sh", "*.txt"], "sh x.sh *.txt")
         self.runs(["sh", "-c", "echo", "{a,b}"], "sh -c 'echo' {a,b}")
+        # One that cannot begin with `-`, or follows `--`, is the program,
+        # which the guard binds to a download it may match (`covers`).
+        self.runs(["sh", "--", "{a,b}"], "sh -- {a,b}")
+        for form in ("sh [x].sh", "bash [a-c]*.sh", "sh scripts/*.sh", "bash -n scripts/*.sh",
+                     "sudo sh ./cuda_*.run", "bash ./build-{a,b}.sh", 'bash "$D"/*.sh'):
+            with self.subTest(form=form):
+                self.assertIsNone(shell_reader.unresolved_wrapper(stage(form).argv))
 
     def test_quoted_escaped_or_no_pattern_it_is_the_word_it_looks_like(self):
         self.runs(["{sh,-c}", "x"], "'{sh,-c}' x", "\\{sh,-c} x", "{sh','-c} x",

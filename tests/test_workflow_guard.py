@@ -690,13 +690,39 @@ class TestAPatternWhereTheCommandStarts(unittest.TestCase):
 
     def test_where_a_shell_looks_for_c_or_a_script_it_is_reported(self):
         # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`.
-        for script in ("sh {-c,%s}\n", "sudo bash {-c,%s}\n", "sh -o pipefail {-c,%s}\n"):
+        # Re-review N-C: so is any pattern there that may begin with `-`.
+        for script in ("sh {-c,%s}\n", "sudo bash {-c,%s}\n", "sh -o pipefail {-c,%s}\n",
+                       "sh [-]c %s\n", "bash -{c,x} %s\n"):
             with self.subTest(script=script):
                 why = wg.job_defects([("step", script % self.PAYLOAD)])
                 self.assertIn("looks for `-c` or a script", why[0][1] if why else "")
         for script in ("bash lint.sh src/*.py\n", "sh -c 'echo' {a,b}\n"):
             with self.subTest(script=script):
                 self.assertEqual([], wg.job_defects([("step", script)]))
+
+    def test_a_program_a_shell_is_handed_as_a_glob_binds_a_download(self):
+        # Re-review N-C: a pattern that cannot begin with `-` is the program,
+        # and runs a download it matches -- `sh ./cuda_*.run` after `curl -o
+        # cuda_1.run`, which bash 3.2 and 5.2 run and base read clean for the
+        # `./`. The glob binds with a leading `./` dropped and a brace read as
+        # `*`, and with a `$` in it by its last part, which r1 reported as a
+        # pattern alone; with nothing fetched it runs nothing unchecked.
+        get = ("get", "curl -fsSL -o cuda_1.run https://example.test/c\n")
+        for use in ("sh ./cuda_*.run --silent", "sudo sh ./cuda_*.run", "bash ./cuda_{1,2}.run",
+                    "chmod +x ./cuda_*.run", 'sh "$PWD"/cuda_*.run', "sh $(pwd)/cuda_*.run",
+                    "sh ${X}*"):
+            with self.subTest(use=use):
+                self.assertIn("cuda_1.run", "".join(w for _n, w in wg.job_defects(
+                    [get, ("run", use + "\n")])))
+        with self.subTest(use="checked, then sh ./cuda_*.run"):
+            check = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+            self.assertEqual([], wg.job_defects([get, ("run", check + "sh ./cuda_*.run\n")]))
+        for script in ("sh scripts/*.sh\n", "bash [a-c]*.sh\n", "bash -n scripts/*.sh\n",
+                       "sudo sh ./cuda_*.run\n", "bash ./build-{a,b}.sh\n", "sh ./configure*\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        with self.subTest(use="a download no glob matches"):
+            self.assertEqual([], wg.job_defects([get, ("run", 'sh "$D"/*.sh ./x_*.run\n')]))
 
     def test_inside_an_expansion_or_arithmetic_there_is_none(self):
         # Review N-1: bash globs nothing written inside `${...}`, `((...))` or

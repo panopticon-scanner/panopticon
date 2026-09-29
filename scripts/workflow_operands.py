@@ -135,6 +135,14 @@ def names_file(content, dest):
 # An operand that carries a glob metacharacter DESCRIBES files rather than
 # naming one, which is the whole of what `chmod +x *.sh` had over the rule.
 _GLOB = re.compile(r"[*?\[]")
+# In a word bash expands as a pattern, a brace or extglob group, a `$...` and
+# a `$(...)` stand for any text where a glob is matched, and a leading `./`
+# names what the name after it names: so `sh ./cuda_*.run` runs a download
+# `cuda_1.run` (re-review N-C). With a `$` in it, only the shell knows the
+# directory, so its last part binds the download's, as in `may_run`.
+_GROUP = re.compile(r"\{[^{}]*\}|[@+!*?]\([^()]*\)")
+_EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\(\.\.\.\)|\$(?:\w+|[^\w{])")
+_HERE = re.compile(r"^(?:\./+)+")
 # `find`'s ways of running a command over what it walked. The operand is `{}`,
 # which names nothing at all.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
@@ -145,17 +153,28 @@ def covers(token, dest, recursive=False):
     """Does this operand stand for `dest`, even without naming it?
 
     Three spellings, and the guard binds by NAME, so each one hid a use:
-    exactly (`chmod +x /tmp/payload`), by a glob (`chmod +x /tmp/*.sh`), and by
-    the directory a recursive command walks (`chmod -R +x /tmp`). A glob is
-    matched against the whole path and, for a bare dest, its basename -- the
-    same asymmetry `names_file` draws, and for the same reason.
+    exactly (`chmod +x /tmp/payload`), by a glob (`chmod +x /tmp/*.sh`, or a
+    word bash expands, read as `_GROUP` says), and by the directory a
+    recursive command walks (`chmod -R +x /tmp`). A glob is matched against
+    the whole path, a leading `./` on either dropped, and, for a bare dest,
+    its basename -- the same asymmetry `names_file` draws, and for the same
+    reason.
     """
     if same_file(token, dest):
         return True
-    if _GLOB.search(token):
-        return (fnmatch.fnmatch(dest, token)
+    glob, loose = token, False
+    if getattr(token, "lead", None) is not None:    # a word bash expands (the reader's)
+        glob = shell_reader.readable(token)
+        loose = bool(_EXPANSION.search(glob))
+        while _GROUP.search(glob) or _EXPANSION.search(glob):
+            glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
+    if _GLOB.search(glob):
+        glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
+        if loose:
+            glob, dest = os.path.basename(glob), os.path.basename(dest)
+        return (fnmatch.fnmatch(dest, glob)
                 or (not os.path.dirname(dest)
-                    and fnmatch.fnmatch(os.path.basename(dest), token)))
+                    and fnmatch.fnmatch(os.path.basename(dest), glob)))
     if recursive and not token.startswith("-"):
         prefix = os.path.normpath(token)
         if prefix == ".":
