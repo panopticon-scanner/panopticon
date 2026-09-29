@@ -141,8 +141,8 @@ that starts catching one fails there, and this list is edited with it.
   then the body is that program's input DATA), and which body descriptor 0
   finally reads, with the flag saying whether it EXPANDED
   (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the
-  interpreter as the text it was written as, so `_stdin_scripts` reads it
-  exactly as `_flattened` reads an `eval` string -- a `curl … | sh` inside it
+  interpreter as the text it was written as, so `workflow_forms.flattened`
+  reads it exactly as it reads an `eval` string -- a `curl … | sh` inside it
   is the defect it is at the top level. An EXPANDING one is REPORTED unread
   (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
   were lifted into the enclosing parse's table before this text was reached
@@ -187,8 +187,8 @@ import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
                             chmod_executable, chmod_targets, covers, described,
-                            in_container, may_run, names_file, parse_fetch, regions,
-                            same_file, scripts, stdin_program, streamed_fetch, swallowed)
+                            flattened, in_container, may_run, names_file, parse_fetch,
+                            regions, same_file, stdin_program, streamed_fetch, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -283,7 +283,7 @@ def _unread_stdin(stage):
     EXPAND -- a body whose `$(...)` were lifted into the enclosing parse's
     table before it reached here, a here-string whose word bash expands first
     (#2293) -- so what the interpreter runs is not the text this module holds.
-    Quoted shell is the third kind and is READ, in `_stdin_scripts`.
+    Quoted shell is the third kind and is READ, in `workflow_forms.stdin_scripts`.
     """
     argv = command(stage.argv)
     here = stage.stdin_heredoc
@@ -308,43 +308,9 @@ def _unread_stdin(stage):
     return None
 
 
-def _flattened(stmts):
-    """`eval "<script>"` expanded, in place, into the statements it runs.
-
-    In place and in ORDER, rather than harvested separately, so the fetch, the
-    checksum and the `chmod` written inside one quoted script are read as the
-    sequence they are: a step hardened inside its own string must come out
-    hardened, not unread. The wrapper is kept -- its redirections and the stage
-    it pipes into are still the wrapper's.
-    """
-    out = []
-    for statement in stmts:
-        for stage in statement.stages:
-            argv = command(stage.argv)
-            for text in scripts(argv) + _stdin_scripts(argv, stage):
-                out.extend(_flattened(statements(text)))
-        out.append(statement)
-    return out
-
-
-def _stdin_scripts(argv, stage):
-    """The QUOTED heredoc script this stage hands an interpreter, if it does.
-
-    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
-    quoted delimiter the interpreter reads the body as the text it was written
-    as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level; so is
-    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: `_unread_stdin`.
-    """
-    here = stage.stdin_heredoc
-    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
-        return []
-    return [here[0]]
-
-
 def read(script):
     """Every statement a `run:` script runs, quoted scripts expanded."""
-    return _flattened(statements(script))
+    return flattened(statements(script))
 
 
 def fetches(script):

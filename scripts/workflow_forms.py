@@ -28,9 +28,11 @@ Three questions live here, each one a shape a step writes down:
                                quote away from a substitution; `stdin_program`
                                the interpreter whose program arrives on standard
                                input instead, which is the same act one
-                               REDIRECTION away (`bash -s <<'EOF'`); and
-                               `in_container` the operand a `docker run` hands
-                               to a shell on the far side of a bind mount
+                               REDIRECTION away (`bash -s <<'EOF'`), whose
+                               quoted body is `stdin_scripts`; `flattened`
+                               reads both in place of the command handed them;
+                               and `in_container` the operand a `docker run`
+                               hands to a shell on the far side of a bind mount
     whether a failure matters  `swallowed` reads the separator, the `!` and
                                the `if`/`while` around a command, and `regions`
                                the branch bodies it was written inside -- the
@@ -44,7 +46,7 @@ import os
 import re
 
 import shell_reader
-from shell_reader import command, conditional, negated
+from shell_reader import command, conditional, negated, statements
 from shell_wrappers import dynamic
 
 
@@ -421,6 +423,41 @@ def stdin_program(argv):
         if letters and letters[-1] in _VALUE_OPTIONS:
             next(rest, None)                # an option's value is not a program
     return answer
+
+
+def flattened(stmts):
+    """`eval "<script>"` expanded, in place, into the statements it runs.
+
+    In place and in ORDER, rather than harvested separately, so the fetch, the
+    checksum and the `chmod` written inside one quoted script are read as the
+    sequence they are: a step hardened inside its own string must come out
+    hardened, not unread. The wrapper is kept -- its redirections and the stage
+    it pipes into are still the wrapper's.
+    """
+    out = []
+    for statement in stmts:
+        for stage in statement.stages:
+            argv = command(stage.argv)
+            for text in scripts(argv) + stdin_scripts(argv, stage):
+                out.extend(flattened(statements(text)))
+        out.append(statement)
+    return out
+
+
+def stdin_scripts(argv, stage):
+    """The QUOTED heredoc script this stage hands an interpreter, if it does.
+
+    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
+    quoted delimiter the interpreter reads the body as the text it was written
+    as, so reading it here is exactly as sound as reading that string -- and a
+    `curl … | sh` inside it is the same defect it is at the top level; so is
+    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
+    `_unread_stdin`.
+    """
+    here = stage.stdin_heredoc
+    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
+        return []
+    return [here[0]]
 
 
 # --- whether a command's failure is allowed to matter -------------------------
