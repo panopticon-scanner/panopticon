@@ -219,7 +219,32 @@ def _build_report(tmpdir):
                             "message": {"text": "subprocess with shell=True"},
                             "locations": [{"physicalLocation": {
                                 "artifactLocation": {"uri": "vendor/lib/shell.py"},
-                                "region": {"startLine": 2}}}]}]}]}
+                                "region": {"startLine": 2}}}]},
+                           # #2353: ONE rule firing TWICE in ONE reviewed file --
+                           # the only shape that makes
+                           # `synth/findings.aggregate_tool_findings` stamp
+                           # `additional_loci`, the sibling of `occurrences` that
+                           # no fixture value reached until now. The pair
+                           # collapses to one finding at the lower line carrying
+                           # `occurrences: 2` and the other locus. Neither is
+                           # under `vendor/`, so the three `tools_suppressed*`
+                           # tallies still count only the two vendored results
+                           # above, and neither is 10*n: the `_agentic` loci are
+                           # multiples of ten, and an aggregated survivor sharing
+                           # a locus with an agent finding is dedupe's tool+agent
+                           # reinforce-merge, whose survivor is the more severe
+                           # member (here the HIGH agentic finding) --
+                           # `additional_loci` would never reach the artifact.
+                           {"ruleId": "B602", "level": "warning",
+                            "message": {"text": "subprocess with shell=True"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "src/app.py"},
+                                "region": {"startLine": 11}}}]},
+                           {"ruleId": "B602", "level": "warning",
+                            "message": {"text": "subprocess with shell=True"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "src/app.py"},
+                                "region": {"startLine": 12}}}]}]}]}
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
@@ -408,6 +433,24 @@ class TestSchemaParity(unittest.TestCase):
         evidence = [f.get("tool_evidence") or {} for f in self.report["findings"]]
         self.assertTrue([e for e in evidence if e.get("included_by")],
                         "no included_by evidence: that key's shape is unwalked")
+        # #2353: the two-loci bandit hit is the only producer of
+        # `additional_loci`, the sibling `occurrences` got a schema entry and a
+        # fixture value while this key got neither. With no aggregated finding
+        # the walk below never sees the key, which is #1602's silence class
+        # exactly: a report key no schema describes and no test reaches.
+        aggregated = [f for f in self.report["findings"] if f.get("additional_loci")]
+        self.assertTrue(aggregated,
+                        "no aggregated finding: additional_loci is unwalked")
+        self.assertEqual(len(aggregated), 1,
+                         "the fixture aggregates exactly one rule; a second makes"
+                         " the pin below arbitrary")
+        drifted = "additional_loci drifted: expected the src/app.py:12 sibling" \
+                  " and occurrences 2"
+        self.assertEqual(aggregated[0]["additional_loci"][0]["file"], "src/app.py",
+                         drifted)
+        self.assertEqual(aggregated[0]["additional_loci"][0]["line_start"], 12,
+                         drifted)
+        self.assertEqual(aggregated[0]["occurrences"], 2, drifted)
         # M3: the two sections this PR added must be NON-EMPTY, or the walk
         # stops at the list and never reaches the item shape it describes.
         self.assertTrue(meta["integrity"]["cross_domain_findings"],
