@@ -41,19 +41,21 @@ Two kinds, and `driver readiness` reports both.
 `pyproject.toml` and imported by the run itself (`pyyaml` by discovery,
 `defusedxml` by the spotbugs adapter's report parse, `jsonschema` by the
 completion path that validates the published report against its schema).
-Golden capture imports `defusedxml` unguarded too, but that runs outside a
-review, not in one. None of the three is optional and none fails cheaply: a
-missing `pyyaml` takes discovery down with a traceback; a missing `jsonschema`
-is fail-closed by design, so the run exits `artifact invalid` *after* the
-whole review has been paid for; and a missing `defusedxml` is caught only by
-the gating readiness row below, because nothing in the scan itself fails — the
-spotbugs adapter falls back to the stdlib XML parser, which expands the
-internal entities `defusedxml` refuses. So an ingest that skips readiness — a
-direct `skill/scripts/ingest_tools.py` run, or a resumed run whose
-`readiness.json` already recorded `ready: true` — parses an untrusted scanner
-report with the hardening silently gone. `driver readiness` has a gating
-`dependencies` row that says which one is absent and the `pip install` that
-fixes it — run it before you run anything.
+Golden capture also imports `defusedxml`, unguarded, but that runs outside a
+review, not in one. None of the three is optional, and each is absent in a
+different way: a missing `pyyaml` takes discovery down with a traceback; a
+missing `jsonschema` is fail-closed by design, so the run exits
+`artifact invalid` *after* the whole review has been paid for; and a missing
+`defusedxml` is caught only by the gating readiness row below, which
+`driver run` runs first itself, because nothing in the scan itself fails —
+the spotbugs adapter falls back to the stdlib XML parser, which expands the
+internal entities `defusedxml` refuses. So an ingest driven outside the loop —
+the CI gate `skill/scripts/security_gate.py`, which imports `ingest_tools` and
+never runs the readiness phase, or a resumed run whose `readiness.json`
+already recorded `ready: true` — parses an untrusted scanner report with the
+hardening silently gone. `driver readiness` has a gating `dependencies` row
+that says which one is absent and the `pip install` that fixes it — run it
+before you run anything.
 
 **The three `superpowers:*` sub-skills above** are the only other external
 things this skill asks for. Panopticon does not ship them and does not install

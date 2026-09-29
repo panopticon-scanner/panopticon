@@ -17,10 +17,11 @@ evidence exposed.
   whole review has been paid for, and `defusedxml` is caught only by the readiness row itself --
   which, being `PHASES[0]`, refuses to start the run -- because nothing in the scan would fail:
   `tools/spotbugs.py` falls back to the stdlib XML parser, which expands the internal entities
-  `defusedxml` refuses, so an ingest that skips readiness (a direct `ingest_tools.py` run, or a
-  resumed run whose `readiness.json` already recorded `ready: true`) parses an untrusted scanner
-  report with the hardening silently gone. Golden capture imports it unguarded too, but runs
-  outside a review rather than in one. A new `tests/test_skill_md.py` case reads
+  `defusedxml` refuses, so an ingest driven outside the loop (the CI gate `security_gate.py`, which
+  imports `ingest_tools` and never runs the readiness phase, or a resumed run whose
+  `readiness.json` already recorded `ready: true`) parses an untrusted scanner report with the
+  hardening silently gone. Golden capture also imports it, unguarded, but runs outside a review
+  rather than in one. A new `tests/test_skill_md.py` case reads
   `RUNTIME_PACKAGES` and asserts the section names every pip name in it, so a package added to the
   gating row cannot skip the doc again.
 - **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
