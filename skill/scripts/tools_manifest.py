@@ -27,7 +27,7 @@ ledger.
 
 Separate from `run_tools` because that module was 2215 lines, outside this
 repo's own 700-line ratchet, and absorbing every new scanner policy because
-nothing pushed back (#1762, ARC-2609514778). This is part 3 of 3 of that split
+nothing pushed back (#1762, ARC-2609514778). This is part 3 of 4 of that split
 and it moved the block whole: no key, value, order, byte or message changed, and
 `tests/test_tools_manifest.py` compares the exact BYTES of seven manifests --
 both security modes, `run_id` set and unset, the eslint coverage read, an
@@ -36,7 +36,8 @@ captured before the move.
 
 The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why `VENV_MAX_DEPTH` lives here while the walk that reads it back
-(`find_virtualenvs`) stayed behind. Stdlib-only.
+(`find_virtualenvs`) lives in `venv_scope`, part 4 of the same split, which
+imports it from here. Stdlib-only.
 """
 import json
 import os
@@ -55,9 +56,10 @@ from scripts.tools import egress
 # lives HERE, and not with the walk, for the import direction: `run_tools` imports
 # this module and never the reverse, and `write_manifest`'s `depth_bound` default
 # is bound at `def` time, so the bound cannot be read back across the seam.
-# `run_tools.find_virtualenvs` -- the walk that is actually bounded by it, and its
-# other reader -- binds it back. Venvs live near the root, and that walk is paid
-# on every scan.
+# `venv_scope.find_virtualenvs` -- the walk that is actually bounded by it, and
+# its other reader -- imports it from here; `run_tools` binds it back for the
+# tests that read it there. Venvs live near the root, and that walk is paid on
+# every scan.
 VENV_MAX_DEPTH = 3
 
 
