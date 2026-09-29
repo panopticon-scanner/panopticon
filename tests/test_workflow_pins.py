@@ -832,6 +832,58 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
             % (m.group(1), ".".join(str(n) for n in RUNNER_PIP_FLOOR)))
 
 
+class TestGateClosureCoversRuntimePackages(unittest.TestCase):
+    """#2363: installed with `--no-deps`, the gate's requirements file IS the
+    environment, so a runtime package the gate's import chain reaches has to be
+    listed in it or the gate cannot start.
+
+    Both commands that run repository code in that environment
+    (`skill/scripts/run_tools.py` and `skill/scripts/security_gate.py`) reach
+    `scripts.tools`, whose package body builds `ADAPTERS` by importing every
+    adapter, and an adapter is free to import a declared runtime dependency at
+    module level. The existing guards in this file assert the install COMMAND
+    (`--require-hashes`, a pinned file) and that every pinned line carries a
+    digest; none of them asks whether the closure covers what the gate imports.
+    That gap red-lined the `scan` and `fork-scan` checks the moment
+    `tools/spotbugs.py` stopped falling back to the stdlib XML parser.
+    """
+
+    GATE = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")
+
+    @staticmethod
+    def _normalised(name):
+        """PEP 503-style, enough for these names: pip treats `rpds-py` and
+        `rpds_py` as one project, and so must a guard reading two files."""
+        return name.lower().replace("_", "-")
+
+    def _pinned_names(self):
+        with open(self.GATE, encoding="utf-8") as fh:
+            text = join_continuations(fh.read())
+        names = set()
+        for line in text.splitlines():
+            m = _PIN_LINE.match(line.strip())
+            if m:
+                names.add(self._normalised(m.group("name")))
+        return names
+
+    def test_every_runtime_package_is_in_the_gate_closure(self):
+        import scripts.phases.readiness_checks as readiness_checks
+        pinned = self._pinned_names()
+        self.assertTrue(pinned, "the gate's requirements file pins nothing; "
+                                "this guard is reading the wrong file")
+        self.assertTrue(readiness_checks.RUNTIME_PACKAGES, "no packages to check")
+        for _module, pip_name in readiness_checks.RUNTIME_PACKAGES:
+            with self.subTest(package=pip_name):
+                self.assertIn(
+                    self._normalised(pip_name), pinned,
+                    "%s is in readiness_checks.RUNTIME_PACKAGES, so the gate's "
+                    "import chain reaches it, but %s does not pin it -- and "
+                    "that file is installed with --require-hashes --no-deps, "
+                    "so it is the whole environment. The gate would fail at "
+                    "import, not degrade."
+                    % (pip_name, os.path.relpath(self.GATE, REPO_ROOT)))
+
+
 # --- #1652: the scheduled adapter job's test selector ------------------------
 # `adapter-integration.yml` is the only job that runs the real adapter probes
 # against the real fixtures, and it selects them with a whole-tree
