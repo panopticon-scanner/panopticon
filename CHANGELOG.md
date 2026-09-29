@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
+  report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
 - **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
   findings remain available to reports and the security gate. Bounded diagnostics and coverage
   facts distinguish malformed records, including those without an identifiable source file,

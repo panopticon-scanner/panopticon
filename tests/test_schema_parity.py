@@ -34,6 +34,7 @@ import tempfile
 import unittest
 
 import scripts.hosts as hosts
+import scripts.ocrdb as ocrdb
 import scripts.tools_manifest as tools_manifest
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
@@ -413,6 +414,35 @@ class TestSchemaParity(unittest.TestCase):
             "means and who writes it) -- a key no schema describes is a "
             "contract no consumer can validate against."
             % (len(drift), "\n  ".join(drift)))
+
+
+class TestDomainRosterParity(unittest.TestCase):
+    """Published enums track the runtime roster, including its ZZZ exception."""
+
+    def test_finding_domains_match_the_runtime_roster_in_every_report(self):
+        schemas = ((validate_schema_mod.REPORT_SCHEMA, "findings"),
+                   (validate_schema_mod.X0X_SCHEMA, "candidates"),
+                   ("strain-report-schema.json", "signals"))
+        for name, collection in schemas:
+            with self.subTest(schema=name):
+                with open(os.path.join(validate_schema_mod.REFERENCE_DIR, name),
+                          encoding="utf-8") as stream:
+                    schema = json.load(stream)
+                enum = schema["properties"][collection]["items"]["properties"]["domain"]["enum"]
+                # Comparing sorted lists also rejects duplicate enum members.
+                self.assertEqual(sorted(enum), sorted(ocrdb.DOMAIN_TO_PANEL))
+
+    def test_coverage_cells_exclude_the_domainless_sentinel(self):
+        # ZZZ can describe a finding, but it never names a scheduled review cell.
+        sentinel = ocrdb.domain_of(ocrdb.UNKNOWN_DOMAIN_FALLBACK)
+        self.assertIn(sentinel, ocrdb.DOMAIN_TO_PANEL)
+        expected = sorted(set(ocrdb.DOMAIN_TO_PANEL) - {sentinel})
+        coverage = _load_schema()["properties"]["meta"]["properties"]["coverage"]
+        cells = coverage["properties"]["cells"]
+        for name in ("reviewed", "planned_pairs"):
+            with self.subTest(cells=name):
+                enum = cells["properties"][name]["items"]["items"][1]["enum"]
+                self.assertEqual(sorted(enum), expected)
 
 
 if __name__ == "__main__":
