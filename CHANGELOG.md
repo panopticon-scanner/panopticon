@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Separate verdict resolution stages (#2318, #1826).** Matching, evidence and gate partitions
+  retain fingerprint identity, delta scope, accounting and suppressed-finding policy.
 - **Separate reconciliation decisions (#2317, #1826).** Indexing, recurring matches and close
   checks retain coverage guards, reason text, collision disclosure and output ordering.
 - **Share staged report publication (#2316, #1820).** Clean partial staging writes before
