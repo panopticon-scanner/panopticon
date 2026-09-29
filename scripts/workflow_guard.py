@@ -188,8 +188,9 @@ import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
                             chmod_executable, chmod_targets, covers, described, flattened,
-                            in_container, may_run, names_file, parse_fetch, regions, same_file,
-                            stdin_program, streamed_fetch, substitution_script, swallowed)
+                            in_container, kept, may_run, names_file, parse_fetch, regions,
+                            same_file, stdin_program, streamed_fetch, substitution_script,
+                            swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -233,7 +234,7 @@ def _walk(stmts, stream_exec=False, inside=False):
     the downloaded bytes become behaviour. Three forms are REPORTED unread: a
     command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
     stdin program not readable as written (`_unread_stdin`) and, `inside` a
-    substitution, a script handed to a shell (`substitution_script`, review I-4).
+    substitution, a script handed to a shell (`substitution_script`), which `kept` weighs.
     """
     found, unread = [], []
     for index, statement in enumerate(stmts):
@@ -255,7 +256,7 @@ def _walk(stmts, stream_exec=False, inside=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or inside and substitution_script(argv, stage)
+            reason = _unread_stdin(stage) or inside and substitution_script(argv, stage, _walk)
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
@@ -615,7 +616,7 @@ def _defects(stmts, conditions=None, soft=(), walked=None):
     checks = _checks(stmts, soft)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
-    found = list(unread)
+    found = kept(unread, fetched)
     for index, fetch in fetched:
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:
@@ -662,8 +663,7 @@ def job_defects(steps):
     owner = []
     conditions = {}
     soft = set()
-    found = []
-    fetched, unread = [], []
+    found, fetched, unread = [], [], []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)

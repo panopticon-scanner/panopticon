@@ -337,15 +337,37 @@ def stdin_scripts(argv, stage):
     return [here[0]]
 
 
-def substitution_script(argv, stage):
+class Idle(str):
+    """An unread reason `kept` keeps only where there are downloads: see
+    `substitution_script`."""
+
+
+def substitution_script(argv, stage, walk):
     """Why the script this stage hands a shell goes unread in a command
-    substitution, which `flattened` does not reach (review I-4), or None."""
-    if not scripts(argv) + stdin_scripts(argv, stage):
+    substitution, which `flattened` does not reach (review I-4), or None.
+
+    `walk` is the guard's own walk (`workflow_guard._walk`), over the script
+    flattened as a step's is -- which reads each script handed on inside it
+    in place, once. A script it finds a fetch or an unread form in is
+    reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
+    `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but
+    the guard follows no download into a substitution, where a script may
+    still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`.
+    """
+    handed = scripts(argv) + stdin_scripts(argv, stage)
+    if not handed:
         return None
-    return ("hands a script to `%s` inside a command substitution, where this guard "
-            "reads none -- it cannot say whether that script downloads and executes "
-            "anything; run it outside the substitution, or exempt the step with a "
-            "reason" % os.path.basename(argv[0]))
+    why = ("hands a script to `%s` inside a command substitution, where this guard "
+           "follows no download -- it cannot say whether that script fetches or runs "
+           "one unchecked; run it outside the substitution, or exempt the step with a "
+           "reason" % os.path.basename(argv[0]))
+    return why if any(any(walk(flattened(statements(text)))) for text in handed) else Idle(why)
+
+
+def kept(unread, fetched):
+    """The `(index, why)` of `unread` that stand where `fetched` are the
+    downloads: an `Idle` one only if there are any."""
+    return [(index, why) for index, why in unread if fetched or not isinstance(why, Idle)]
 
 
 # --- whether a command's failure is allowed to matter -------------------------
