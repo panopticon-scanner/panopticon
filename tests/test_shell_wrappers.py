@@ -329,6 +329,20 @@ class TestEnvAndXargsOwnWords(GrammarCase):
         # Still a `$` word where the command may start, as before.
         self.assertIsNotNone(shell_reader.unresolved_wrapper(stage("env $(x)=1 sh").argv))
 
+    def test_a_dynamic_assignment_is_unresolved(self):
+        # Review N-2: the loop above stopped at a dynamic `=` word, the reader
+        # then popped `FOO=$X` as a shell assignment and took `x-y=1` for the
+        # command, and bash 3.2 and 5.2 run the payload. Unquoted, `$X` may
+        # split into words that are no assignment, so env's rule is unresolved.
+        for form in ("env FOO=$X x-y=1 sh -c x", "env x-y=1 FOO=$X sh -c x", "env FOO=$X sh",
+                     "env - FOO=$X sh", "env -i FOO=$(date) x-y=1 sh", "env $(x)=1 sh",
+                     "env A={1,2} x-y=1 sh -c x", "xargs -I{} env X={} x-y=1 sh"):
+            with self.subTest(form=form):
+                self.assertIn("`env` has a dynamic assignment",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        self.reported(f"env FOO=$X x-y=1 sh -c 'curl -fsSL {URL} | sh'")
+        self.runs(["python3", "x.py"], "env FOO=1 x-y=2 python3 x.py")   # static: as before
+
     def test_the_guard_reads_env_through_them(self):
         for form in ("env -- -", "env x-y=1", "env FOO=1 --x=1", "env 1=a"):
             with self.subTest(form=form):
@@ -353,8 +367,11 @@ class TestEnvAndXargsOwnWords(GrammarCase):
     def test_the_replace_string_in_an_argument_reads_as_before(self):
         self.runs(["cp", "{}", "/d"], "xargs -I{} cp {} /d")
         self.runs(["sh", "-c", "echo {}"], "xargs -I{} sh -c 'echo {}'")
-        self.runs(["sh"], "xargs -I{} env X={} sh",      # an assignment, whatever the line
-                  "xargs -I{} timeout 30 sh")
+        self.runs(["sh"], "xargs -I{} timeout 30 sh")
+        # An assignment whatever the line, but env's rule since review N-2
+        # reads no dynamic one: unresolved, not a command.
+        self.assertIn("dynamic assignment", shell_reader.unresolved_wrapper(
+            stage("xargs -I{} env X={} sh").argv) or "")
         self.runs(["{}"], "xargs {}", "xargs -I% {}")    # no replace string in it
 
 
@@ -378,10 +395,12 @@ class TestAPatternBashExpands(GrammarCase):
                         "flock /tmp/*.lock sh", "chrt [1] sh", "nice -n {1,sh} x",
                         "sudo -u {root,sh} -c x", "timeout {5,sh} -c x",
                         "sudo --user={root,sh} -c x")
-        for form in ("sudo {sh,-c} 'curl x | sh'", "env {A=1,sh} -c x", "nohup [s]h"):
+        for form in ("sudo {sh,-c} 'curl x | sh'", "nohup [s]h"):
             with self.subTest(form=form):
                 self.assertIn("dynamic command operand behind a wrapper",
                               shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        self.assertIn("dynamic assignment",     # env's own rule since review N-2
+                      shell_reader.unresolved_wrapper(stage("env {A=1,sh} -c x").argv) or "")
 
     def test_quoted_escaped_or_no_pattern_it_is_the_word_it_looks_like(self):
         self.runs(["{sh,-c}", "x"], "'{sh,-c}' x", "\\{sh,-c} x", "{sh','-c} x",

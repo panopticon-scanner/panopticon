@@ -320,8 +320,12 @@ def unwrap(argv, head, has_substitution):
     if head == "env":
         # coreutils env once its options end, `--` or not: one lone `-` is
         # `-i`, and each word holding a `=` is an assignment, `x-y=1` too.
+        # A dynamic one may expand to words that are not (`FOO=$X`, review
+        # N-2), and decides where the command starts: unresolved.
         i += argv[i:i + 1] == ["-"]
-        while i < len(argv) and "=" in argv[i] and not dynamic(argv[i], has_substitution):
+        while i < len(argv) and "=" in argv[i]:
+            if dynamic(argv[i], has_substitution):
+                return None, "has a dynamic assignment"
             i += 1
     if head in _UTIL_LINUX:
         return _operands(head, argv[i:], seen, has_substitution)
