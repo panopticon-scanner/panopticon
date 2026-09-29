@@ -114,8 +114,9 @@ SESSION_REMEDY = (
 # imported by the completion path's artifact validation, which is deliberately fail-closed,
 # so an install without it does not quietly stop validating -- it exits
 # `artifact invalid` after the whole review has been paid for. PyYAML is a hard
-# import in discovery and takes the run down with a traceback. defusedxml
-# hardens the XML golden-capture path against DTD and entity expansion.
+# import in discovery and takes the run down with a traceback. defusedxml is the
+# XML parser for the spotbugs adapter and the golden-capture path; both refuse
+# DTD and entity expansion the stdlib parser performs, and neither falls back.
 RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("defusedxml", "defusedxml"),
                     ("jsonschema", "jsonschema"))
 

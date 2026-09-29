@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
+  (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
+  rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in
+  `pyproject.toml`'s `[project] dependencies`, pinned in `requirements-tools.txt` and gated by
+  `readiness_checks.RUNTIME_PACKAGES` -- was in practice optional hardening, downgraded with no
+  stderr line, no manifest row and a `nosec` that silenced the scanner along with it. That gating
+  readiness row catches the missing package for `driver run`/`driver loop`, but the paths that
+  never run readiness do not: the CI gate `security_gate.py`, which imports `ingest_tools` and
+  through it every adapter, and a resumed run whose `readiness.json` already recorded
+  `ready: true`, both parsed an untrusted scanner report with internal-entity expansion enabled.
+  The import is bare now, so a missing package fails at import naming `defusedxml`, on every path,
+  before any report is parsed -- and the tools image is unaffected because it already ships
+  `defusedxml==0.7.1`. The `# nosec B314` on `ET.fromstring` went with the fallback, since bandit
+  does not flag the defused call, and the adapter test that pinned the fallback as working now
+  asserts the import raises instead.
 - **One guarded reader for `tool_evidence`, so a malformed stored finding cannot abort `reconcile`
   through the rule id (#2359, #1768, ARC-A4A).** The low follow-up #2358 left behind: that change
   guarded the field's read in `artifact_term`, while `tool_rule_id` still read the same field --

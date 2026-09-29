@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 import sys
 
-try:
-    import defusedxml.ElementTree as ET
-except ImportError:
-    import xml.etree.ElementTree as ET  # nosec B405
+# Required, not optional hardening: the stdlib parser expands the internal
+# entities this one refuses, and readiness gates on the package itself (#2363).
+import defusedxml.ElementTree as ET
 
 from scripts.claim_scope import confined_to_root
 
@@ -457,7 +456,7 @@ class SpotBugsAdapter:
         text = self._trim_to_xml(raw.decode("utf-8", errors="replace").strip())
         if not text:
             return []
-        root = ET.fromstring(text)  # nosec B314
+        root = ET.fromstring(text)
         out = []
         n = 1
         for bug in root.findall("BugInstance"):
