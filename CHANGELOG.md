@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One guarded `location` reader in `evidence.py`, so a malformed stored finding no longer aborts
+  the cross-run diff (#2365, #1768, ARC-A4A).** `finding_fingerprint`, `matrix_finding_id`,
+  `reconcile_key` and `_queue_tiebreak` each carried their own `finding.get("location") or {}`, and
+  `reconcile.iter_records` a fifth copy. `load_report` is a plain `json.load` with no schema check,
+  so a stored report holding `"location": "a.py"` reached `.get("file")` and aborted the WHOLE
+  cross-run diff with `AttributeError` -- exactly the blast radius #2359 closed for `tool_evidence`,
+  in an idiom that had by then recurred four times. All five sites read `evidence.location_of` now,
+  which hands back the dict or `{}`, so a non-dict `location` keys precisely as an absent one does.
+  `iter_records` also skips a non-dict `findings[]` entry instead of raising on it, printing one
+  counted `reconcile: skipped N non-dict <key> entries` line to stderr per section, because a
+  silently dropped claim is a disclosure gap; and a `findings` or `discarded_claims` section that is
+  not a list reads as empty in `load_report` and in `iter_records`, and counts nothing. An AST guard
+  in `tests/test_evidence.py` walks `evidence.py` and fails if `location` or `tool_evidence` appears
+  as a constant anywhere outside its one reader, in any idiom -- subscript, `.get`, `.pop`,
+  `.setdefault`, `in`, or a constant bound to a name -- a subscript write excepted. The honest
+  limits: that guard covers `evidence.py` alone; `phases/review.py` and `security_gate.py` keep the
+  idiom on adapter-constructed findings, whose `location` is always a dict an adapter built, so
+  those are safe by construction, but `scripts/file_issues.py` -- the other consumer of this same
+  `load_report` -- still carries it and is tracked as #2372; and one layer up, a report whose top
+  level is not an object or whose `meta.parts` is not a list still aborts in `load_report` itself
+  (#2373).
 - **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
   (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
   rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in

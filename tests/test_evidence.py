@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import os
 import json
@@ -6,6 +7,34 @@ import unittest
 import scripts.evidence as evidence
 
 ev = evidence
+
+
+def _key_reads(tree, key):
+    """The enclosing function names (module level -> "<module>") of every
+    occurrence of `key` as a constant in `tree`, in ANY idiom -- `x[key]`,
+    `x.get(key)`, `x.pop(key)`, `x.setdefault(key)`, `key in x`, a constant
+    assigned to a name and read later -- except one: the slice of a Store-context
+    subscript, which is a write (#2365). Naming the KEY rather than a list of
+    read idioms is what makes the guard hold for idioms nobody has used yet.
+
+    A function's decorators and default arguments are attributed to that function
+    rather than to its enclosing scope, so the one shape this scan cannot see is
+    a read hidden in the decorator list or the defaults OF THE READER ITSELF.
+    """
+    written = {id(node.slice) for node in ast.walk(tree)
+               if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)}
+    found = set()
+
+    def visit(node, scope):
+        if (isinstance(node, ast.Constant) and node.value == key
+                and id(node) not in written):
+            found.add(scope)
+        for child in ast.iter_child_nodes(node):
+            visit(child, child.name if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope)
+
+    visit(tree, "<module>")
+    return found
 
 
 def _finding(**kw):
@@ -434,6 +463,75 @@ class TestMalformedToolEvidence(unittest.TestCase):
             with self.subTest(value=bad):
                 self.assertEqual(ev._tool_evidence({"tool_evidence": bad}), {})
         self.assertEqual(ev._tool_evidence({}), {})
+
+
+class TestMalformedLocation(unittest.TestCase):
+    """#2365: `load_report` is a plain `json.load`, so a stored finding's
+    `location` can be any JSON value. A non-dict must key exactly like an absent
+    one instead of aborting the caller on `.get`."""
+
+    def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
+        loc = {"file": "a.py", "line_start": 3}
+        self.assertIs(ev.location_of({"location": loc}), loc)
+        for bad in (None, "a.py", ["a.py"], 7):
+            with self.subTest(value=bad):
+                self.assertEqual(ev.location_of({"location": bad}), {})
+        self.assertEqual(ev.location_of({}), {})
+
+    def test_a_string_location_keys_exactly_like_no_location_at_all(self):
+        absent = _finding(source="tool:bandit")
+        absent.pop("location")
+        for fn in (ev.finding_fingerprint, ev.matrix_finding_id, ev.reconcile_key,
+                   ev._queue_tiebreak):
+            with self.subTest(function=fn.__name__):
+                self.assertEqual(fn(_finding(source="tool:bandit", location="a.py")),
+                                 fn(absent))
+
+
+class TestOneReaderPerGuardedKey(unittest.TestCase):
+    """#2365: `tool_evidence` and `location` are both read off an unvalidated
+    stored report, and the unguarded idiom recurred four times for `location`
+    after #2359 fixed it for `tool_evidence`. So each key has exactly ONE reader
+    in `evidence.py`, and this guard fails on every occurrence of the key as a
+    constant, in any idiom, except a subscript write.
+
+    It covers `evidence.py` alone. `phases/review.py` and `security_gate.py` keep
+    the idiom on adapter-constructed findings, whose `location` is always a dict
+    an adapter built, so those are safe by construction; `scripts/file_issues.py`
+    -- the other consumer of the same `reconcile.load_report` -- still carries it
+    and is tracked as #2372. One layer up, a report whose top level is not an
+    object or whose `meta.parts` is not a list still aborts in `load_report`
+    itself (#2373)."""
+
+    def _tree(self):
+        with open(evidence.__file__, encoding="utf-8") as fh:
+            return ast.parse(fh.read())
+
+    def test_each_guarded_key_is_read_inside_its_reader_only(self):
+        tree = self._tree()
+        for key, reader in (("tool_evidence", "_tool_evidence"),
+                            ("location", "location_of")):
+            with self.subTest(key=key):
+                self.assertEqual(_key_reads(tree, key), {reader})
+
+    def test_the_walker_trips_on_every_read_idiom(self):
+        # Must-trip controls: each idiom in its own tiny module, each reporting
+        # its own function. A walker that missed one would make the assertion
+        # above vacuous for exactly that idiom -- which is how `.pop`,
+        # `.setdefault` and `in` went unmodelled in the first cut (#2365).
+        for body in ('return x.get("location")', 'return x["location"]["file"]',
+                     'return x.pop("location", {})',
+                     'return x.setdefault("location", {})',
+                     'return "location" in x'):
+            with self.subTest(idiom=body):
+                self.assertEqual(
+                    _key_reads(ast.parse("def f(x):\n    " + body + "\n"),
+                               "location"), {"f"})
+
+    def test_a_write_is_not_a_read(self):
+        self.assertEqual(
+            _key_reads(ast.parse('def h(q, v):\n    q["location"] = v\n'),
+                       "location"), set())
 
 
 class TestReportSectionPartition(unittest.TestCase):
