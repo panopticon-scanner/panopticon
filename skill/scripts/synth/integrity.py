@@ -492,9 +492,12 @@ def _discovery_disclosures(discovery):
     """
     block = discovery if isinstance(discovery, dict) else {}
     failure, truncated = block.get("git_failure"), block.get("files_truncated")
-    return (failure if isinstance(failure, str) else None,
+    # An empty reason is the no-failure case `None` already means, and a
+    # negative count is not a measurement this pipeline can produce
+    # (`_cap_discovered` writes `max(0, ...)`): both publish None (#2271 review).
+    return ((failure or None) if isinstance(failure, str) else None,
             truncated if isinstance(truncated, int)
-            and not isinstance(truncated, bool) else None)
+            and not isinstance(truncated, bool) and truncated >= 0 else None)
 
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,

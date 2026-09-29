@@ -12,6 +12,7 @@ import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.report as report_mod
+import scripts.tools.base as tool_base
 import scripts.synth.render as render_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -603,9 +604,17 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # own precedence rule ("an artifact-trust problem outranks a
         # disclosure") puts the failures first. Both still sit above the
         # host-capability disclosure, which is where this cluster landed.
-        md = self._summary("mislabeled_findings_files", "cross_domain_findings")
-        self.assertLess(md.index("**Integrity:**"), md.index("**Note:**"))
-        self.assertLess(md.index("**Note:**"), md.index("**Host capabilities:**"))
+        md = self._summary("mislabeled_findings_files", "cross_domain_findings",
+                           "discovery_git_failure", "discovery_files_truncated")
+        self.assertLess(md.rindex("**Integrity:**"), md.index("**Note:**"))
+        self.assertLess(md.rindex("**Note:**"), md.index("**Host capabilities:**"))
+        # Structurally too: every sinking key with a line sits AFTER the last
+        # non-gating entry in the table, so an insertion into the wrong block
+        # fails here rather than silently flipping the precedence.
+        order = list(integrity_mod.INTEGRITY_KEYS.items())
+        last_note = max(i for i, (_, s) in enumerate(order) if not s.sinks)
+        first_sink = min(i for i, (_, s) in enumerate(order) if s.sinks)
+        self.assertLess(last_note, first_sink)
 
     def test_a_key_with_no_line_of_its_own_prints_neither(self):
         # NOTED is not derived from the table here on purpose -- a test that
@@ -668,7 +677,10 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
             r"boom\x1b[2K @")
         long_failure = "x" * 9000
         bounded = integrity_mod.evidence_text("discovery_git_failure", long_failure)
-        self.assertLess(len(bounded), len(long_failure))
+        # The cap plus `inert_text`'s one-character cut marker: a cap
+        # regression fails here, not at 8999.
+        self.assertEqual(len(bounded), tool_base.INERT_TEXT_MAX + 1)
+        self.assertTrue(bounded.startswith("x" * tool_base.INERT_TEXT_MAX))
         # ...and the count is a plain integer, not a quoted or escaped one.
         self.assertEqual(
             integrity_mod.evidence_text("discovery_files_truncated", 7), "7")

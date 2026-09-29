@@ -522,6 +522,15 @@ class TestTheDiscoveryBlockReachesTheSection(unittest.TestCase):
         self.assertIsNone(sec["discovery_git_failure"])
         self.assertIsNone(sec["discovery_files_truncated"])
 
+    def test_an_empty_reason_and_a_negative_count_publish_nothing(self):
+        # #2271 review: an empty reason is the no-failure case `None` already
+        # means, and a negative count is not a measurement `_cap_discovered`
+        # can produce -- neither may become a third state or a false Note.
+        sec = self._section({"files_truncated": -5, "git_failure": ""})
+        self.assertIsNone(sec["discovery_git_failure"])
+        self.assertIsNone(sec["discovery_files_truncated"])
+
+
 
 class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
     """SEC-377944137 (#1832): #1208's own reasoning, one file up.
