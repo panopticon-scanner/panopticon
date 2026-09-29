@@ -482,6 +482,7 @@ groups:
     - scripts/workflow_guard.py
     - scripts/shell_reader.py
     - scripts/shell_lex.py
+    - scripts/shell_patterns.py
     - scripts/shell_wrappers.py
     - scripts/workflow_forms.py
     - scripts/workflow_fetch.py

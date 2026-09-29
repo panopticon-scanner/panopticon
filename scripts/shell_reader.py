@@ -46,7 +46,8 @@ import re
 import secrets
 import shlex
 
-from shell_lex import MARK, closing, is_pattern, lex, patterned
+from shell_lex import closing, lex
+from shell_patterns import MARK, is_pattern, patterned
 from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -645,8 +646,6 @@ def wrapper_words(argv):
     read through, though what runs is the file at ./flock (#2227).
     """
     return _command_result(argv)[2]
-
-
 
 
 def negated(argv):
