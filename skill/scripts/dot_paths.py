@@ -51,8 +51,9 @@ DIRS = frozenset(
     " .tx .vscode .woodpecker".split())
 # Root dot-FILES, one row per name the catalogs or the floor spell out.
 FILES = frozenset(
-    ".air.toml .coderabbit.yaml .codespellrc .dockerignore .editorconfig"
-    " .eslintignore .eslintrc .eslintrc.js .eslintrc.json .eslintrc.yml"
+    ".air.toml .bandit .coderabbit.yaml .codespellrc .dockerignore"
+    " .editorconfig .eslintignore .eslintrc .eslintrc.cjs .eslintrc.js"
+    " .eslintrc.json .eslintrc.mjs .eslintrc.yaml .eslintrc.yml"
     " .flake8 .git-blame-ignore-revs .gitattributes .gitignore .gitlab-ci.yml"
     " .gitmodules .gitpod.yml .goreleaser.yml .htaccess .ignore .mailmap"
     " .markdownlint.yaml .netrc .npmrc .nvmrc .oxfmtrc.json .oxlintrc.json"
@@ -66,9 +67,9 @@ FILES = frozenset(
 # yet (`.golangci.toml`, `.prettierrc.yaml`). That is deliberate -- each family
 # here is hand-written tool CONFIG, which is reviewable surface whichever
 # extension its owner picked, and a tool that adds one should not need a
-# discovery release. `.eslint*` is the exception and stays as five exact names
-# in FILES: its family also contains `.eslintcache`, which is generated state,
-# the `.mypy_cache` class the ruling keeps pruned.
+# discovery release. `.eslint*` is the exception and stays as eight exact
+# names in FILES: its family also contains `.eslintcache`, which is generated
+# state, the `.mypy_cache` class the ruling keeps pruned.
 FILE_STEMS = (".clang", ".codecov", ".drone", ".env", ".golangci",
               ".prettier", ".travis", ".yarnrc")
 

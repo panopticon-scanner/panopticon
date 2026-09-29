@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Catalog rows for `.bandit` and three unlisted eslint spellings (#2330, #1784,
+  ARC-G1B).** Owner ruling 2026-09-28 on #2274: a root dot-file no shipped catalog NAMES
+  stays invisible BY DESIGN, and the remedy for a wanted one is a catalog row per
+  spelling -- never a widened stem. `skill/data/commons_catalog.yml` `Config` gains
+  `.bandit`, `.eslintrc.cjs`, `.eslintrc.yaml` and `.eslintrc.mjs`, and
+  `skill/scripts/dot_paths.py` `FILES` gains the same four, so this repository's own
+  `.bandit` -- named by neither the catalogs nor the SEC floor, and therefore reaching no
+  group at all -- is reviewable surface. `.eslintcache` stays out: the family is still
+  spelled name by name (now eight) precisely to keep generated state pruned.
 - **The virtualenv scope leaves `run_tools.py` (#1762, #2306, ARC-2609514778; part 4).** Finding the
   virtualenvs under the target (`pyvenv.cfg` plus the SHAPE of an environment, depth-bounded and
   confined), deciding which of them a scanner's exclusion knob may be handed (the security mode, the
