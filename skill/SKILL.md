@@ -37,15 +37,21 @@ file stays focused on the host-facing contract.
 
 Two kinds, and `driver readiness` reports both.
 
-**Python packages** — `pyyaml` and `jsonschema`, declared in `pyproject.toml`
-and imported by the run itself (`pyyaml` by discovery, `jsonschema` by the
-completion path that validates the published report against its schema).
-Neither is optional and neither fails cheaply: a missing `pyyaml` takes
-discovery down with a traceback, and a missing `jsonschema` is fail-closed by
-design, so the run exits `artifact invalid` *after* the whole review has been
-paid for. `driver readiness` has a gating `dependencies` row that says which
-one is absent and the `pip install` that fixes it — run it before you run
-anything.
+**Python packages** — `pyyaml`, `defusedxml` and `jsonschema`, declared in
+`pyproject.toml` and imported by the run itself (`pyyaml` by discovery,
+`defusedxml` by the spotbugs adapter's report parse and by golden capture,
+`jsonschema` by the completion path that validates the published report
+against its schema). None of the three is optional, and none fails where an
+operator would look: a missing `pyyaml` takes discovery down with a
+traceback; a missing `jsonschema` is fail-closed by design, so the run exits
+`artifact invalid` *after* the whole review has been paid for; and a missing
+`defusedxml` does not fail the run at all — the spotbugs adapter falls back
+to the stdlib XML parser, which expands the internal entities `defusedxml`
+refuses, so an untrusted scanner report is parsed with that hardening
+silently gone, while golden capture imports the package at module level and
+cannot load without it. `driver readiness` has a gating `dependencies` row
+that says which one is absent and the `pip install` that fixes it — run it
+before you run anything.
 
 **The three `superpowers:*` sub-skills above** are the only other external
 things this skill asks for. Panopticon does not ship them and does not install

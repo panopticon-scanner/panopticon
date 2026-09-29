@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **SKILL.md's dependency list now matches the gating readiness row -- `defusedxml` was missing
+  (#2323, #1784, ARC-F2E).** SKILL.md's § Dependencies named `pyyaml` and `jsonschema`, so a
+  checkout that installed exactly what the doc listed failed `driver readiness`'s gating
+  `dependencies` row on the third package `readiness_checks.RUNTIME_PACKAGES` checks -- and a
+  missing package is the one readiness failure a fresh checkout meets first. The paragraph now
+  names all three and says how each is absent differently: `pyyaml` takes discovery down with a
+  traceback, `jsonschema` fails closed after the whole review has been paid for, and `defusedxml`
+  does not fail the run at all -- the spotbugs adapter falls back to the stdlib XML parser, which
+  expands the internal entities `defusedxml` refuses, while golden capture imports it at module
+  level and cannot load without it. A new `tests/test_skill_md.py` case reads `RUNTIME_PACKAGES`
+  and asserts the section names every pip name in it, so a package added to the gating row cannot
+  skip the doc again.
 - **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
   empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
   three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus

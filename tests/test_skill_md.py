@@ -289,6 +289,29 @@ class TestSkillMd(unittest.TestCase):
                       "driver readiness", "dependencies"):
             self.assertIn(token, deps, token)
 
+    def test_the_dependencies_section_names_every_package_the_gating_row_checks(self):
+        """#2323 (ARC-F2E): the paragraph named `pyyaml` and `jsonschema` while
+        `readiness_checks.RUNTIME_PACKAGES` checked three, so a checkout that
+        installed exactly what SKILL.md listed failed the gating `dependencies`
+        row on `defusedxml` -- and a missing package is the one readiness
+        failure a fresh checkout meets first.
+
+        The names come from the code, not from a second list, for the same
+        reason the gating-sentence test reads `GATING_ROWS`: a package added to
+        the row has to reach the doc, or the doc sends an operator into an
+        exit 1 it did not predict.
+        """
+        import scripts.phases.readiness_checks as readiness_checks
+        deps = _section(self.skill_md, "## Dependencies", "Where hosts typically look")
+        self.assertTrue(readiness_checks.RUNTIME_PACKAGES, "no packages to check")
+        for _module, pip in readiness_checks.RUNTIME_PACKAGES:
+            with self.subTest(package=pip):
+                self.assertIn(
+                    "`%s`" % pip, deps,
+                    "SKILL.md's Dependencies section does not name %r, which the gating "
+                    "`dependencies` row checks, so an install that follows the doc fails "
+                    "readiness" % pip)
+
     def test_the_guide_distinguishes_completion_validity_and_certification(self):
         # #1639 P15: the run-13 ledger's complaint was that final-schema
         # assurance lived in a controller-side check, and that terminal
