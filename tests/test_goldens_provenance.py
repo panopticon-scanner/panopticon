@@ -8,21 +8,23 @@ that directory's own README: **mount a corpus, never your own checkout.**
 `gitleaks`, `bandit` and `trivy` used to be pinned to `/mnt/panopticon` in
 `capture_goldens.TARGETS`, so a refresh scanned the operator's real working tree
 -- `.env` included, and run-12 committed a live API key gitleaks found into this
-public directory. The code moved those three to `src_root`; the committed
-artifacts were never re-captured.
+public directory. The code moved those three to `src_root`, and part (b) (#2313)
+re-captured the committed artifacts against a synthetic corpus at `/src`.
 
-So the contract is pinned to artifacts that assert the operator's layout rather
-than the tool's output: `/mnt/panopticon` paths, and one `.worktrees/` segment
-naming an operator worktree (`k3-ci-docker-config`) in a public file. The live
-secret itself is scrubbed, so this is a provenance defect, not an exposure.
+Until it did, the contract was pinned to artifacts that asserted the operator's
+layout rather than the tool's output: `/mnt/panopticon` paths, and one
+`.worktrees/` segment naming an operator worktree (`k3-ci-docker-config`) in a
+public file. The live secret itself was scrubbed, so that was a provenance
+defect, not an exposure.
 
 This is the ratchet, on the `tests/test_repo_config_literals.py` pattern: the
-two markers may not appear in any golden, with today's three offenders in a
-SHRINK-ONLY `PENDING` set. An entry that no longer offends fails as STALE, so
-the set cannot record a debt that has been paid, and it empties when part (b)
-re-captures the three against a synthetic `/src` corpus -- which needs the
-fixtures image and therefore docker, so it is a follow-up (#2313) and not this
-test.
+two markers may not appear in any golden, and the SHRINK-ONLY `PENDING` set
+names the ones that still do. It is EMPTY as of this change -- the three
+re-captures emptied it -- so the guard now forbids both markers everywhere,
+with nothing parked. An entry that no longer offends fails as STALE, so the set
+can never record a debt that has been paid: a golden that regresses may be
+parked here only while its re-capture is outstanding, and the entry goes in the
+same change that re-captures the file.
 
 Every file under `tests/goldens/` is scanned, with no per-file exemption: the
 directory's own README used to need one to quote the forbidden path while
@@ -48,13 +50,9 @@ GOLDENS = "tests/goldens"
 # worktree-exclusion gap is how a worktree name got into a public golden.
 OPERATOR_PATHS = re.compile(r"/mnt/panopticon|(?<![\w.-])\.worktrees/")
 
-# The goldens that offend today. SHRINK-ONLY: an entry is a debt, not a
+# The goldens that offend today: none. SHRINK-ONLY -- an entry is a debt, not a
 # permission, and it is removed in the same change that re-captures the file.
-PENDING = frozenset({
-    "tests/goldens/tool-raw/bandit.raw",
-    "tests/goldens/tool-raw/gitleaks.raw",
-    "tests/goldens/tool-raw/trivy.raw",
-})
+PENDING = frozenset()
 
 
 def _offenders(root=REPO_ROOT):

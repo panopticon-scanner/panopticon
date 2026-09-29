@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
+  empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
+  three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus
+  mounted at `/src` -- an `app/main.py` of textbook bandit offences, an `app/settings.py` of
+  invented tokens, a fake `app/deploy_key.pem`, and a known-vulnerable node lockfile for trivy --
+  so no committed golden names `/mnt/panopticon` or an operator worktree any more, and gitleaks'
+  snippets are the scanner's own `REDACTED`. `tests/test_goldens_provenance.py` `PENDING` is now
+  `frozenset()`; the ratchet's stale-entry half is what proved each re-capture, failing on all
+  three until the entries came out. The normalization contract, the legacy-SARIF severity tests
+  and the security gate's non-vendored/vendored pair all hold on the new bytes.
 - **The workflow guard closes eight LOW follow-ups from its 5.2 reviews (#1793).**
   `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
   `sh <<< '…'` is read as its script; an interpreter's here-string bash expands is reported (#2293).

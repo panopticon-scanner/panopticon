@@ -676,8 +676,9 @@ def _relocated_gitleaks_golden(prefix):
     REAL output, per tests/goldens/tool-raw/README.md: the rules, the absent
     `level`, the message shapes and the envelope are all the scanner's own.
     Only `artifactLocation.uri` moves, and it has to: the capture's own hits sit
-    in `.env` and under `.panopticon/`, and the run-artifact exclusion drops
-    those before the name-based suppression this test is about can see them.
+    at `/src/app/deploy_key.pem` and `/src/app/settings.py`, and what this test
+    is about is the gate's NON-vendored versus vendored verdict, which needs the
+    same hits under a prefix of each kind.
     """
     with open(os.path.join(GOLDEN_DIR, "gitleaks.raw"), encoding="utf-8") as fh:
         sarif = json.load(fh)
