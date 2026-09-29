@@ -954,6 +954,76 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
             'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
 
 
+class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
+    """Review I-2 of the #1793 follow-ups: a checksum inside a script handed to
+    `sh -c`, to a shell's standard input (a quoted heredoc, and since #2293 a
+    here-string) or to `eval` was credited as if the step's own shell ran it.
+    A child shell has no `-e` unless it is given one, and exits with its last
+    command's status: bash 3.2 and 5.2 run `./tool` with the checksum failing
+    after `sh -c 'CHECK; echo ok'` and after `sh -c 'CHECK' || true`. Such a
+    checksum now clears a use only where its failure stops the step: it stops
+    the script (`-e` holds there, or it is the script's last command, the last
+    of its pipeline) and the command handing the script over does not swallow
+    that. `eval` runs in the step's own shell, so its script keeps the step's
+    `-e` -- except where bash suspends it, behind `||`/`&&`, `!` or `if`."""
+
+    FETCH = "curl -fsSL -o tool https://example.test/tool\n"
+    CHECK = 'echo "%s  tool" | sha256sum -c -' % HEX
+
+    def job(self, form, check=CHECK):
+        return wg.job_defects([("step", self.FETCH + form % check + "\n./tool\n")])
+
+    def assertReported(self, form, why, check=CHECK):
+        found = self.job(form, check)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names tool is inside the script", found[0][1])
+        self.assertIn(why, found[0][1])
+
+    def test_a_check_the_script_carries_on_past_is_reported(self):
+        for form in ("sh -c '%s; echo ok'", "sh <<< '%s; echo ok'",
+                     "sh <<'EOF'\n%s\necho ok\nEOF", "sh -c 'set -e; set +e; %s; echo ok'",
+                     "eval '%s; echo ok' || exit 1"):
+            with self.subTest(form=form):
+                self.assertReported(form, "carries on past its failure")
+        self.assertReported('sh -c "sh -c \'%s\'; echo ok"', "the step does not stop",
+                            self.CHECK.replace('"', '\\"'))
+
+    def test_a_check_piped_into_another_command_in_the_script_is_reported(self):
+        for form in ("sh -c '%s | cat'", "sh -ec '%s | cat; echo ok'"):
+            with self.subTest(form=form):
+                self.assertReported(form, "piped into a command whose status the pipeline takes")
+
+    def test_a_script_whose_failure_the_step_goes_on_past_is_reported(self):
+        for form in ("sh -c '%s' || true", "sh <<< '%s' || true",
+                     "sh -ec '%s; echo ok' || true", "if sh -c '%s'; then :; fi",
+                     "! sh -c '%s'", "eval '%s; echo ok' || true", "eval '%s' || true"):
+            with self.subTest(form=form):
+                self.assertReported(form, "the step does not stop when that script fails")
+
+    def test_a_check_that_stops_the_script_and_the_step_still_clears(self):
+        for form in ("sh -c '%s'", "sh <<< '%s'", "sh <<'EOF'\n%s\nEOF",
+                     "sh -ec '%s; echo ok'", "sh -e -c '%s; echo ok'",
+                     "bash -euo pipefail -c '%s; echo ok'", "sh <<< 'set -e; %s; echo ok'",
+                     "sh -c 'set -o errexit; %s; echo ok'",
+                     "bash -e <<'EOF'\n%s\necho ok\nEOF", "eval '%s; echo ok'",
+                     "eval '%s' || exit 1", "sh -c '%s' || exit 1"):
+            with self.subTest(form=form):
+                self.assertEqual([], self.job(form))
+        self.assertEqual([], self.job('sh -c "sh -c \'%s\'"', self.CHECK.replace('"', '\\"')))
+
+    def test_the_top_level_twins_read_as_before(self):
+        # The must-trip controls: the step's own `CHECK || true` is reported
+        # on every tree, and its own `CHECK` clears.
+        self.assertIn("hands its failure to a `||` branch", self.job("%s || true")[0][1])
+        self.assertEqual([], self.job("%s"))
+
+    def test_an_exit_behind_the_check_in_a_script_without_e_is_not_read(self):
+        # Fail-closed, and the rule's one known over-report: bash stops this
+        # script at `exit 1`, but only `-e` or the script's last command are
+        # read as stopping it.
+        self.assertReported("sh -c '%s || exit 1; echo ok'", "carries on past its failure")
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"
@@ -1721,10 +1791,13 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
 
     def test_a_checksum_inside_the_string_still_clears_it(self):
         # The expansion keeps the ORDER, so a step hardened inside its own
-        # quoted script is read as hardened rather than as unread.
-        self.accepted(("run", 'sh -c "curl -sfL https://example.test/p -o /tmp/p; '
-                              'echo %s  /tmp/p | sha256sum -c -; '
-                              'chmod +x /tmp/p"\n' % HEX))
+        # quoted script is read as hardened rather than as unread -- where
+        # the checksum stops the script: under `sh -ec`, and not under a bare
+        # `sh -c`, which carries on to the `chmod` (review I-2).
+        script = ('sh -%s "curl -sfL https://example.test/p -o /tmp/p; '
+                  'echo %s  /tmp/p | sha256sum -c -; chmod +x /tmp/p"\n')
+        self.accepted(("run", script % ("ec", HEX)))
+        self.assertIn("carries on past its failure", self.flagged(("run", script % ("c", HEX))))
 
     def test_a_pipe_to_a_shell_inside_the_string_is_still_a_pipe_to_a_shell(self):
         self.flagged(("run", 'eval "curl -sfL https://example.test/i.sh | sh"\n'))
@@ -1827,13 +1900,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                 self.assertIn("/tmp/p", why)
 
     def test_a_checksum_inside_the_heredoc_script_still_clears_it(self):
-        # The expansion keeps the ORDER, exactly as the `eval` string above:
-        # a step hardened inside its own heredoc comes out hardened.
-        self.accepted(("install", "bash -s <<'EOF'\n"
-                                  "curl -sfL https://example.test/p -o /tmp/p\n"
-                                  'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX +
-                                  "chmod +x /tmp/p\n"
-                                  "EOF\n"))
+        # The expansion keeps the ORDER, exactly as the `sh -c` string above:
+        # a step hardened inside its own heredoc comes out hardened, where
+        # `set -e` makes the checksum stop the script (review I-2).
+        script = ("bash -s <<'EOF'\n%s"
+                  "curl -sfL https://example.test/p -o /tmp/p\n"
+                  'echo "%s  /tmp/p" | sha256sum -c -\n'
+                  "chmod +x /tmp/p\n"
+                  "EOF\n")
+        self.accepted(("install", script % ("set -euo pipefail\n", HEX)))
+        self.assertIn("carries on past its failure",
+                      self.flagged(("install", script % ("", HEX))))
 
     def test_an_expanding_heredoc_script_is_reported_unread(self):
         why = self.flagged(("install", "bash -s <<EOF\n"
@@ -1900,15 +1977,20 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.assertIn("python3", self.flagged(("install", "python3 <<< 'print(1)'\n")))
         # The here-string is not the program: another descriptor, a `-c`
         # string or a script file first, stdin replaced after it -- or no
-        # interpreter at all. A script hardened inside it comes out hardened.
-        checked = ("sh <<< 'curl -fsSL -o /tmp/p https://example.test/p; "
-                   'echo "%s  /tmp/p" | sha256sum -c -; sh /tmp/p\'\n' % HEX)
+        # interpreter at all.
         for script in ("cat <<< '%s'\n", "sh 3<<< '%s'\n", "sh -c 'cat' <<< '%s'\n",
                        "bash x.sh <<< '%s'\n", "sh <<< '%s' < /dev/null\n",
                        'read -r a b <<< "%s"\n'):
             with self.subTest(script=script):
                 self.accepted(("install", script % payload))
-        self.accepted(("install", checked))
+        # A script hardened inside it comes out hardened where the checksum
+        # stops it: bash 3.2 and 5.2 run /tmp/p with the checksum failing
+        # without the `set -e;`, and not with it (review I-2).
+        checked = ("sh <<< '%scurl -fsSL -o /tmp/p https://example.test/p; "
+                   'echo "%s  /tmp/p" | sha256sum -c -; sh /tmp/p\'\n')
+        self.assertIn("carries on past its failure",
+                      self.flagged(("install", checked % ("", HEX))))
+        self.accepted(("install", checked % ("set -e; ", HEX)))
 
     def test_a_second_heredoc_on_the_line_leaves_the_stdin_script_read(self):
         # #2128: the reader lifted one heredoc per line, so `3<<'B'` after the

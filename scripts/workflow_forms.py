@@ -41,6 +41,7 @@ Three questions live here, each one a shape a step writes down:
 
 Stdlib only, like everything under it.
 """
+import collections
 import fnmatch
 import os
 import re
@@ -425,7 +426,17 @@ def stdin_program(argv):
     return answer
 
 
-def flattened(stmts):
+# A statement of a script handed to a shell, as `flattened` inlines it, with
+# why a checksum there clears nothing: as its pipeline's last command, and as
+# an earlier one (None: it may clear).
+Inlined = collections.namedtuple("Inlined", "stages separator credit")
+_RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
+            "the last command, so the script carries on past its failure")
+_UNGATED = "is inside the script `%s` runs, and the step does not stop when that script fails"
+_PIPED = "is inside the script `%s` runs, piped into a command whose status the pipeline takes"
+
+
+def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None):
     """`eval "<script>"` expanded, in place, into the statements it runs.
 
     In place and in ORDER, rather than harvested separately, so the fetch, the
@@ -433,15 +444,71 @@ def flattened(stmts):
     sequence they are: a step hardened inside its own string must come out
     hardened, not unread. The wrapper is kept -- its redirections and the stage
     it pipes into are still the wrapper's.
+
+    Hardened means the checksum's failure stops the STEP (review I-2 of #1793):
+    it stops the script (`-e` holds, or it is the last command) and every
+    command running a script around it passes that on, up to the step's own
+    shell, where `swallowed` decides. A child shell has `-e` only from its
+    options or a `set`; `eval` keeps the step's, but not ahead of `||`/`&&`,
+    where bash suspends it. `stops`: this script's failure stops the step;
+    `errexit`: `-e` at its top (None: the step's own shell); `pipefail`: a
+    pipeline fails on any of its commands; `shell`: the script's runner.
     """
-    out = []
-    for statement in stmts:
+    out, last = [], len(stmts) - 1
+    on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit)
+    for index, statement in enumerate(stmts):
         for stage in statement.stages:
             argv = command(stage.argv)
             for text in scripts(argv) + stdin_scripts(argv, stage):
-                out.extend(flattened(statements(text)))
-        out.append(statement)
+                name = os.path.basename(argv[0])
+                gates = (stops and swallowed(stmts, index, statement, stage) is None
+                         and (on[index] or index == last)
+                         and (pipefail or stage is statement.stages[-1]))
+                own = name == "eval"            # runs in this shell, with its `-e`
+                out.extend(flattened(statements(text), gates, on[index] and statement.separator
+                                     not in ("&&", "||") if own else _errexit(argv[1:]),
+                                     pipefail and own, name))
+        if errexit is None:
+            out.append(statement)
+            continue
+        why = _UNGATED % shell if not stops else None if on[index] or index == last else _RUNS_ON % shell
+        out.append(Inlined(statement.stages, statement.separator,
+                           (why, why or (None if pipefail else _PIPED % shell))))
     return out
+
+
+def _errexit(words, state=False):
+    """Whether these shell or `set` options leave `-e` on, from `state`."""
+    words = iter(words)
+    for word in words:
+        if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
+            break
+        if word[:2] != "--":                    # bash's long options carry none
+            if "e" in word[1:]:
+                state = word[0] == "-"
+            if "o" in word[1:] and next(words, None) == "errexit":
+                state = word[0] == "-"
+    return state
+
+
+def _errexit_states(stmts, state):
+    """Whether `-e` holds as each of `stmts` runs, from `state` at the top: a
+    `set` turns it on only as a plain statement outside every branch, group,
+    list and background job, and off wherever it is written."""
+    where, depth, states = regions(stmts), 0, []
+    for index, statement in enumerate(stmts):
+        states.append(state)
+        for stage in statement.stages:
+            argv = command(stage.argv)
+            if argv and argv[0] == "set":
+                plain = (not depth and not stage.group_open and stage.argv[0] == "set"
+                         and index not in where and len(statement.stages) == 1
+                         and statement.separator not in ("&", "&&", "||")
+                         and not (index and stmts[index - 1].separator in ("&&", "||")))
+                state = _errexit(argv[1:], state) if plain else state and _errexit(argv[1:], state)
+            depth = max(0, depth + stage.group_open + stage.argv.count("{")
+                        - stage.group_close - stage.argv.count("}"))
+    return states
 
 
 def stdin_scripts(argv, stage):
@@ -587,6 +654,8 @@ def swallowed(stmts, index, statement, stage):
     sentence a reader gets when the check they wrote did not clear the fetch
     they wrote it for.
     """
+    if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
+        return statement.credit[stage is not statement.stages[-1]]
     if statement.separator == "&":
         return "is detached with `&`"
     if statement.separator == "||" and not _stops_the_job(stmts, index):
