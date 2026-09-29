@@ -15,11 +15,12 @@ import os
 import re
 import shlex
 import unittest
+from unittest import mock
 
 import yaml
 
 from tests._test_helpers import REPO_ROOT
-from workflow_guard import UNNAMED, fetches, job_defects, run_jobs
+from workflow_guard import UNNAMED, Step, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including
 # the two the install rule was written for -- and a guard that reads a comment
@@ -176,6 +177,13 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
         # in the fleet. "No defects" is evidence only while the scan still
         # sees the two artifact downloads this repo has (hadolint in
         # docker-build-pr.yml, the DependencyCheck release in nvd-cache.yml).
+        # `fetches` raises on a step the reader refuses, which has no answer
+        # in its shape -- none is "no downloads" -- so `job_defects`, which
+        # names such a step, is asked first (#2286).
+        refused = ["%s / %s -- %s" % defect for defect in _fetch_defects_in_repo()
+                   if defect[2].startswith("cannot read this step: ")]
+        self.assertEqual([], refused, "the fetch scan cannot read these steps:\n" +
+                         "\n".join(refused))
         found = [(w, f) for w, _j, steps in _run_jobs_in_repo()
                  for step in steps for f in fetches(step.script)]
         self.assertGreaterEqual(
@@ -183,6 +191,16 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
                            "scanner is broken, not the tree")
         self.assertTrue(all(f.url for _w, f in found),
                         "a fetch was seen with no URL parsed out of it: %s" % found)
+
+    def test_a_step_the_reader_refuses_fails_the_scan_by_name(self):
+        # The scan above ERRORED on such a step with a `shell_lex.Unreadable`
+        # traceback that named no step, beside the gate test's named failure.
+        steps = [Step("fetch", "curl -fsSL -o t https://example.test/t\n"),
+                 Step("refused", "cat <<$(a b)\nit's\n$(a b)\n")]
+        with mock.patch.dict(globals(), {"_run_jobs_in_repo": lambda: [("x.yml", "j", steps)]}):
+            with self.assertRaises(AssertionError) as raised:
+                self.test_the_fetch_scan_is_actually_seeing_the_downloads()
+        self.assertIn("x.yml / refused -- cannot read this step: ", str(raised.exception))
 
     def test_no_fetch_exemption_outlives_the_step_it_was_written_for(self):
         fired = set()

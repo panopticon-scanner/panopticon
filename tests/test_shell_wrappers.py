@@ -307,5 +307,179 @@ class TestBehindXargs(GrammarCase):
                       guard.fetch_exec_defect(f"curl -fsSL {URL} | xargs flock /tmp/l sh") or "")
 
 
+class TestEnvAndXargsOwnWords(GrammarCase):
+    """#2307: two wrappers' own operand syntax. Once env's options end -- at
+    `--` too -- a lone `-` means `-i`, and every word holding a `=` is an
+    assignment rather than the command: `x-y=1` as much as `FOO=1`. And with
+    a replace string (`-I R`, `--replace[=R]`), xargs puts a line of its
+    input wherever R stands, so a word holding R is as dynamic as a `$` one
+    wherever a grammar needs a static word, the command's place included."""
+
+    def test_a_lone_dash_is_ignore_environment_after_double_dash_too(self):
+        self.runs(["sh", "-c", "x"], "env - sh -c x", "env -- - sh -c x",
+                  "env -i -- - sh -c x", "env -u HOME -- - sh -c x")
+        self.runs(["-", "sh"], "env - - sh", "env -- - - sh")     # one, then the command
+        self.runs_nothing("env -- -", "env - FOO=1")
+
+    def test_any_word_holding_an_equals_sign_is_an_assignment(self):
+        self.runs(["sh", "-c", "x"], "env x-y=1 sh -c x", "env FOO=1 --x=1 sh -c x",
+                  "env 1=a sh -c x", "env =x sh -c x", "env -- x-y=1 sh -c x",
+                  "env - a.b=1 sh -c x")
+        self.runs_nothing("env x-y=1", "env -i a-b=1 c.d=2")
+        # Still a `$` word where the command may start, as before.
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(stage("env $(x)=1 sh").argv))
+
+    def test_a_dynamic_assignment_is_read_past_by_its_name(self):
+        # Review N-2: the loop above stopped at a dynamic `=` word, the reader
+        # then popped `FOO=$X` as a shell assignment and took `x-y=1` for the
+        # command, and bash 3.2 and 5.2 run the payload. Re-review N-B: the
+        # word is an assignment whatever its value holds, so env's rule reads
+        # past it -- to `sh -c`, whose payload is reported. Unresolved only
+        # where the NAME is expanded or globbed, or the value may split into
+        # the command of the option after it (`FOO=$X -c …`, `X='1 sh'`).
+        self.runs(["sh", "-c", "x"], "env FOO=$X x-y=1 sh -c x", "env x-y=1 FOO=$X sh -c x",
+                  "env A={1,2} x-y=1 sh -c x", "xargs -I{} env X={} x-y=1 sh -c x")
+        self.runs(["sh"], "env FOO=$X sh", "env - FOO=$X sh", "env -i FOO=$(date) x-y=1 sh")
+        with self.subTest(script="env FOO=$X x-y=1 sh -c '<fetch | sh>'"):
+            self.assertIn("straight to `sh`", guard.fetch_exec_defect(
+                f"env FOO=$X x-y=1 sh -c 'curl -fsSL {URL} | sh'") or "")
+        for form in ("env $(x)=1 sh", "env ${N}=1 sh", "env {A=1,sh} -c x", "env [A]=1 sh",
+                     "env FOO=$X -c x", "env -i FOO=$(date) -c x", "env A={1,2} -c x"):
+            with self.subTest(form=form):
+                self.assertIn("`env` has a dynamic assignment",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        self.runs(["python3", "x.py"], "env FOO=1 x-y=2 python3 x.py")   # static: as before
+        # With nothing fetched, steps that set a variable through env are clean.
+        for script in ('env FOO="$X" make\n', 'env FOO="$X" x-y=1 make\n',
+                       "xargs -I{} env X={} sh -c 'echo $X'\n",
+                       'sudo env "PATH=$PATH" make install\n',
+                       "env GOOS=${{ matrix.os }} go build\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], guard.fetch_exec_defects(script))
+
+    def test_the_guard_reads_env_through_them(self):
+        for form in ("env -- -", "env x-y=1", "env FOO=1 --x=1", "env 1=a"):
+            with self.subTest(form=form):
+                self.assertIn("straight to `sh`", guard.fetch_exec_defect(
+                    f"{form} sh -c 'curl -fsSL {URL} | sh'") or "")
+        self.reported(f"curl -fsSL {URL} | xargs env x-y=1",
+                      f"curl -fsSL {URL} | xargs env -- -")
+
+    def test_a_word_holding_the_replace_string_is_dynamic(self):
+        for form in ("xargs -I{} {}", "xargs -I {} {} -c x", "xargs -0I{} {} a",
+                     "xargs --replace {}", "xargs --replace=R R", "xargs -I% sh%",
+                     "xargs -I{} setsid {}", "xargs -I{} nice {}", "xargs -I{} sudo {}",
+                     "xargs -I{} env {} sh", "xargs -I{} taskset {} sh",
+                     "xargs -I{} flock {} sh", "xargs -I{} chrt {} sh",
+                     "xargs -I{} nice -n {} sh", "xargs -I{} sudo -u {} sh",
+                     "xargs -I3 timeout 3 sh", "xargs -i {}"):
+            with self.subTest(form=form):
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(stage(form).argv))
+        self.reported(*(f"curl -fsSL {URL} | xargs -I{{}} {form}"
+                        for form in ("{}", "setsid {}", "nice {}")))
+
+    def test_the_replace_string_in_an_argument_reads_as_before(self):
+        self.runs(["cp", "{}", "/d"], "xargs -I{} cp {} /d")
+        self.runs(["sh", "-c", "echo {}"], "xargs -I{} sh -c 'echo {}'")
+        self.runs(["sh"], "xargs -I{} timeout 30 sh")
+        # An assignment whatever the line, which env's rule reads past
+        # (re-review N-B, after review N-2 had left it unresolved).
+        self.runs(["sh"], "xargs -I{} env X={} sh")
+        self.runs(["{}"], "xargs {}", "xargs -I% {}")    # no replace string in it
+
+
+class TestAPatternBashExpands(GrammarCase):
+    """#2294: bash expands an unquoted brace (`{sh,-c}`, `{a..b}`) or pathname
+    pattern (`*`, `?`, `[...]`) in a word before the command runs, into any
+    number of words. Where the command is expected, or a word that decides
+    where it starts, such a word leaves the command unresolved, as a `$` word
+    behind a wrapper does. Quoted or escaped, it is the word it looks like,
+    and an assignment's word is no pattern to bash at all."""
+
+    def test_at_the_command_position(self):
+        self.unresolved("{sh,-c} 'curl x | sh'", "[s]h -c 'curl x | sh'", "/bin/s? -c x",
+                        "/bin/*sh -c x", "{a..b} x", "x{sh,-c} x", "{sh,'-c'} x",
+                        "{sh,-c}$(true) x", "a${b}[c] x")
+        argv = shell_reader.statements("if {sh,-c} x; then :; fi")[0].stages[0].argv
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+    def test_where_a_wrapper_expects_the_command_or_decides_where_it_starts(self):
+        self.unresolved("taskset {0x1,sh} -c 'curl x | sh'", "exec -a {x,sh} -c 'curl x | sh'",
+                        "flock /tmp/*.lock sh", "chrt [1] sh", "nice -n {1,sh} x",
+                        "sudo -u {root,sh} -c x", "timeout {5,sh} -c x",
+                        "sudo --user={root,sh} -c x")
+        for form in ("sudo {sh,-c} 'curl x | sh'", "nohup [s]h"):
+            with self.subTest(form=form):
+                self.assertIn("dynamic command operand behind a wrapper",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        self.assertIn("dynamic assignment",     # env's own rule since review N-2
+                      shell_reader.unresolved_wrapper(stage("env {A=1,sh} -c x").argv) or "")
+
+    def test_where_a_shell_looks_for_c_or_a_script(self):
+        # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`, which
+        # was read as `sh` running a file called `{-c,…}`, clean. Re-review
+        # N-C: only a pattern that may expand to a word beginning with `-`
+        # becomes an option, and none after `--`.
+        self.unresolved("sh {-c,'curl x | sh'}", "bash -{c,x} 'curl x | sh'",
+                        "sh -o pipefail {-c,x}", "sh [-]c 'curl x | sh'", "sh * x", "sh ?c x",
+                        "sh -o {pipefail,-c} x", "sh [!a]c x", "sh [a'-'c]c x", "sh [+--]c x",
+                        "sh [$D]c x", "sh [$(echo -)]c x", "sh [a-]c x", "sh $X{-c,x}",
+                        "sh $(true){-c,x}", 'sh "${X}"* x')
+        for form in ("sudo sh {-c,x}", "env A=1 sh {-c,x}"):
+            with self.subTest(form=form):
+                self.assertIn("where `sh` looks for `-c` or a script",
+                              shell_reader.unresolved_wrapper(stage(form).argv) or "")
+        # After the program, a pattern is only the script's argument.
+        self.runs(["sh", "x.sh", "*.txt"], "sh x.sh *.txt")
+        self.runs(["sh", "-c", "echo", "{a,b}"], "sh -c 'echo' {a,b}")
+        # One that cannot begin with `-`, or follows `--`, is the program,
+        # which the guard binds to a download it may match (`covers`).
+        self.runs(["sh", "--", "{a,b}"], "sh -- {a,b}")
+        for form in ("sh [x].sh", "bash [a-c]*.sh", "sh scripts/*.sh", "bash -n scripts/*.sh",
+                     "sudo sh ./cuda_*.run", "bash ./build-{a,b}.sh", 'bash "$D"/*.sh'):
+            with self.subTest(form=form):
+                self.assertIsNone(shell_reader.unresolved_wrapper(stage(form).argv))
+
+    def test_quoted_escaped_or_no_pattern_it_is_the_word_it_looks_like(self):
+        self.runs(["{sh,-c}", "x"], "'{sh,-c}' x", "\\{sh,-c} x", "{sh','-c} x",
+                  "sudo '{sh,-c}' x")
+        self.runs(["[s]h", "-c", "x"], '"[s]h" -c x', "\\[s]h -c x")
+        self.runs(["sh", "-c", "x"], "taskset '0x1' sh -c x", "taskset 0x1 sh -c x")
+        self.runs(["echo", "{a,b}", "*", "[s]h"], "echo {a,b} * [s]h")
+        self.runs(["[", "-f", "x", "]"], "[ -f x ]")
+        self.runs(["{}", "a"], "{} a")
+        self.runs(["{a}", "a"], "{a} a")
+        self.runs(["a[1]=x"], "a[1]=x")
+        # `${...}` and `$[...]` are no brace or pathname pattern.
+        self.runs(["${X,}", "a"], "${X,} a")
+        self.runs(["$[1+2]", "a"], "$[1+2] a")
+
+    def test_nothing_inside_an_expansion_or_arithmetic_is_one(self):
+        # Review N-1 of #1793's follow-ups: bash globs no character written
+        # inside a `${...}`, a `((...))` or a `$((...))`.
+        self.runs(["${CMD[@]}", "--flag"], "${CMD[@]} --flag")
+        self.runs(["${x#*/}", "--version"], "${x#*/} --version")
+        self.runs(["${x%.*}"], "${x%.*}")
+        self.runs(["${x:-}*}"], "${x:-'}'*}")
+        self.runs(["${x:-${y:-a*}}"], "${x:-${y:-a*}}")
+        self.runs(["a[1]++"], "(( a[1]++ ))")
+        self.runs(["count[$k]++"], "(( count[$k]++ ))")
+        self.runs(["$(( a[1] * 2 ))", "--flag"], "$(( a[1] * 2 )) --flag")
+        # Outside them, a pattern still is one: the `${` ends where bash ends
+        # it (a bare `{` opens nothing there), and a `((` bash makes two
+        # subshells of is read as code.
+        self.unresolved("${x}[s]h -c x", "${x:-{a}*sh -c x", "${x:-a}{sh,-c} x",
+                        "${x:-'}'}[s]h -c x")
+        argv = shell_reader.statements("((echo) ; [s]h -c x)")[1].stages[0].argv
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+
+    def test_the_guard_reports_them(self):
+        self.reported("sudo {sh,-c} 'curl -fsSL %s | sh'" % URL,
+                      "taskset {0x1,sh} -c 'curl -fsSL %s | sh'" % URL)
+        for script in ("{sh,-c} 'curl -fsSL %s | sh'", "[s]h -c 'curl -fsSL %s | sh'"):
+            with self.subTest(script=script):
+                self.assertIn("pattern", guard.fetch_exec_defect(script % URL) or "")
+
+
 if __name__ == "__main__":
     unittest.main()
