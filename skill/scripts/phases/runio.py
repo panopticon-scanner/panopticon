@@ -112,16 +112,15 @@ def _confine_link_parent(link_path):
     `.panopticon` segment is not an artifact path and is left be.
     """
     parent = os.path.dirname(os.path.abspath(link_path))
-    parts = parent.split(os.sep)
-    if ".panopticon" not in parts:
+    review_root = claim_scope.review_root_of_artifact_path(parent)
+    if review_root is None:
         return parent
-    cut = parts.index(".panopticon")
-    base = os.sep.join(parts[:cut + 1]) or os.sep
+    base = os.path.join(review_root, ".panopticon")
     if os.path.islink(base):
         raise DriverError(
             "refusing to relink through a symlinked artifact directory: %s" % base)
     real = os.path.realpath(base)
-    for seg in parts[cut + 1:]:
+    for seg in parent[len(base):].split(os.sep)[1:]:
         real = os.path.join(real, seg)
         if os.path.realpath(real) != real:
             raise DriverError(
@@ -264,8 +263,8 @@ _open_a_nofollow = safe_write.open_a_nofollow
 def _write_json(path, data, atomic=True):
     """Write `data` as the artifact at `path`.
 
-    `atomic` (F6) writes `<path>.tmp` and `os.replace`s it into place -- the
-    same tmp-then-rename `persist.write_reply` uses -- for a file a reader can
+    `atomic` (F6) writes `<path>.tmp` and `os.replace`s it into place, including
+    replies published by `persist.write_reply`, for a file a reader can
     catch mid-write. Atomic replacement is the default, so a failed write
     leaves the last complete artifact readable. The symlink defence is
     identical either way (the tmp goes through the same
@@ -273,15 +272,24 @@ def _write_json(path, data, atomic=True):
     the LINK, never the file it points at). `usage.json` is the caller that
     asks for it: the loop rewrites it once per ENTRY now, while host children
     are live in the reviewed tree and the guide invites an operator to read it
-    as a progress surface. A failed atomic write can leave the `.tmp` behind;
-    the artifact it would have replaced is untouched, which is the point."""
+    as a progress surface. Clean an opened stage on failure, leaving the last
+    complete artifact untouched. Refused paths are never cleanup targets."""
     _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
     os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
     target = path + ".tmp" if atomic else path
-    with _open_w_nofollow(target) as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-    if atomic:
-        os.replace(target, path)
+    opened = False
+    try:
+        with _open_w_nofollow(target) as fh:
+            opened = True
+            json.dump(data, fh, indent=2, sort_keys=True)
+        if atomic:
+            os.replace(target, path)
+    finally:
+        if atomic and opened:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
     return path
 
 def session_dir(manifest):

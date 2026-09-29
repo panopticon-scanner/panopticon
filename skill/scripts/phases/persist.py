@@ -651,18 +651,9 @@ def write_reply(entry, text):
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)
     out_file = entry["out_file"]
-    tmp = out_file + ".tmp"
     try:
-        runio._confine_artifact_path(out_file)
-        os.makedirs(os.path.dirname(out_file), exist_ok=True)
-        with runio._open_w_nofollow(tmp) as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
-        os.replace(tmp, out_file)
+        runio._write_json(out_file, data)
     except (OSError, ValueError) as exc:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
         return False, "could not write %s: %s" % (out_file, exc)
     return True, ""
 

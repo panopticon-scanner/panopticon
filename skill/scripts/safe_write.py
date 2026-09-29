@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""No-follow `.panopticon` artifact writes and staged publication. Stdlib-only.
+"""No-follow `.panopticon` artifact writes and staged publication.
 
 `.panopticon/` lives INSIDE the reviewed tree, so under redteam every artifact
 path is a name an untrusted target can pre-commit as a symlink to any file the
 invoking user can write. A plain `open(path, "w")` follows that link and
 clobbers the victim; `os.makedirs` traverses a symlinked intermediate
-directory the same way. These three functions are the answer, and they are the
-ONLY spelling of it on the driver side.
+directory the same way. The three guards below own this defence on the driver
+side; `publish_texts` uses them for staged report publication.
 
 They started in `phases/runio` (#1095, #run9 SEC-X0X) and moved down here
 whole in #1735, because the module that needed them next could not reach them:
 `run_manifest._rewrite` stages the manifest at `<manifest>.tmp` with a plain
 write, and `run_manifest` may not import `phases` -- `phases/*` imports
 `run_manifest`, and layout rule 3 (tests/test_layout.py) keeps that arrow
-pointing one way. `synth/*` may not reach `phases` either. A leaf module that
-imports nothing of ours is reachable from all three sides, so the guard is
+pointing one way. `synth/*` may not reach `phases` either. This module depends
+only on stdlib and the stdlib-only `claim_scope`, so it is reachable from all
+three sides. The guard is
 written once rather than copied per caller (the copy is what #1735 was: the
 sibling guard hooks carry their own O_EXCL|O_NOFOLLOW write -- deliberately,
 since a hook subprocess has no package on sys.path -- and `_rewrite` was
@@ -32,6 +33,12 @@ No makedirs in `open_w_nofollow`: a caller that must create the parent calls
 the makedirs would mean the traversal had already happened.
 """
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING or __package__:
+    from scripts import claim_scope
+else:  # flat consumers put skill/scripts itself on sys.path
+    import claim_scope
 
 
 def confine_artifact_path(path):
@@ -47,10 +54,10 @@ def confine_artifact_path(path):
     the intentional `runs/latest` link (which points WITHIN `.panopticon`) passes.
     A path with no `.panopticon` segment is not an artifact path and is left be."""
     apath = os.path.abspath(path)
-    parts = apath.split(os.sep)
-    if ".panopticon" not in parts:
+    review_root = claim_scope.review_root_of_artifact_path(apath)
+    if review_root is None:
         return
-    root = os.sep.join(parts[:parts.index(".panopticon") + 1]) or os.sep
+    root = os.path.join(review_root, ".panopticon")
     real_root = os.path.realpath(root)
     real = os.path.realpath(apath)
     if not (real == real_root or real.startswith(real_root + os.sep)):
