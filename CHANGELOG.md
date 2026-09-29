@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The reinforced survivor inherits the aggregated tool finding's `occurrences` and
+  `additional_loci` (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review
+  reproduced -- that PR's parity fixture had to pick two lines no agent claimed to keep the key
+  reachable at all. `synth/findings.aggregate_tool_findings` deliberately parks an aggregated
+  survivor on a locus an agent also flagged, so `synth/corroborate.dedupe` reinforces the pair --
+  and dedupe keeps the MORE SEVERE member, usually the agent finding, whose `_reinforce_merge`
+  copied cvss, scenario, impact, remediation, references and citations but not the aggregation. So
+  an agent flagging one of a rule's lines silently retired that rule's other loci and its count:
+  nothing in the report said the rule had fired more than once, and `scripts/file_issues.py`,
+  which renders both, had nothing to render. Both of dedupe's branches carry them now -- the
+  exactly-two tool+agent cluster and the per-category path's representative-tool merge -- and a
+  survivor already carrying its own aggregation keeps it, never a sum (#2225: two artifacts at one
+  manifest locus are two issues). Honest limit, unchanged here: the merged tool member's rule id
+  is still disclosed only through `merged_ids`.
 - **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
   Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
   got a schema entry and a fixture value, `additional_loci` got neither.

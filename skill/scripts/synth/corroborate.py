@@ -41,7 +41,9 @@ def _reinforce_merge(best, other):
     """Pull missing enrichment from other into best. The agent's cvss and
     exploit_scenario are preferred when either finding has them; other text
     fields are filled only if best lacks them; citations are merged rather
-    than overwritten."""
+    than overwritten. An aggregated tool finding's `occurrences` and
+    `additional_loci` come across too, since those are the other loci of the
+    same issue rather than enrichment (#2361)."""
     # Prefer agent-authored cvss/exploit_scenario ONLY when best and other are
     # the SAME issue (category match). _reinforce_merge fires for any same-LOCUS
     # tool+agent pair, so without this gate an agent finding about issue X could
@@ -58,6 +60,21 @@ def _reinforce_merge(best, other):
         if not best.get(field) and other.get(field):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
+    # #2361: an aggregated tool finding's other loci are part of the issue, not
+    # enrichment; when it is the dropped member, the survivor inherits them.
+    # `aggregate_tool_findings` deliberately parks the survivor on a locus an
+    # agent also flagged so the pair reinforces here -- and the agent finding is
+    # usually the more severe member, so without this the rule's other lines and
+    # its count left the report with the dropped member, disclosed nowhere. A
+    # survivor carrying its OWN aggregation keeps it: two aggregated findings at
+    # one locus are two issues (#2225, distinct artifacts), never one sum.
+    # A rule-carrying tool finding is stamped `occurrences: 1` even when it
+    # aggregated nothing, so only a count ABOVE one is an aggregation to carry.
+    if other.get("additional_loci") and not best.get("additional_loci"):
+        best["additional_loci"] = list(other["additional_loci"])
+    if isinstance(other.get("occurrences"), int) and other["occurrences"] > 1 \
+            and not (isinstance(best.get("occurrences"), int) and best["occurrences"] > 1):
+        best["occurrences"] = other["occurrences"]
 
 def _by_package(members):
     """One rule bucket split by `tool_evidence.package_name`, in first-seen order.

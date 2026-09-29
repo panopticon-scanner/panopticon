@@ -537,6 +537,139 @@ class TestReinforceMerge(unittest.TestCase):
         corroborate_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "AGENT")
 
+    def test_carries_the_dropped_members_aggregation(self):
+        # #2361: an aggregated tool finding's `occurrences` and `additional_loci`
+        # are the OTHER LOCI OF THE SAME ISSUE, not enrichment. When the agent
+        # finding wins the reinforce, the survivor has to inherit them or every
+        # other line that rule fired at is retired with no trace in the report but
+        # the dropped member's id in `merged_ids`.
+        agent_best = {
+            "source": "agent:security-reviewer",
+            "category": "known_vulns",
+            "location": {"file": "src/app.py", "line_start": 10},
+        }
+        loci = [{"file": "src/app.py", "line_start": 12}]
+        aggregated_other = {
+            "source": "tool:bandit",
+            "category": "known_vulns",
+            "location": {"file": "src/app.py", "line_start": 10},
+            "occurrences": 2,
+            "additional_loci": loci,
+            "provenance": {"discovered_by": "tool:bandit",
+                           "confirmation_status": "TOOL"},
+        }
+        corroborate_mod._reinforce_merge(agent_best, aggregated_other)
+        self.assertEqual(agent_best["occurrences"], 2)
+        self.assertEqual(agent_best["additional_loci"], loci)
+        self.assertIsNot(agent_best["additional_loci"], loci,
+                         "the survivor must own its list, not alias the dropped"
+                         " member's")
+
+    def test_leaves_an_aggregated_survivors_own_loci_alone(self):
+        # Two aggregated tool findings meeting at one locus (#2225: two artifacts
+        # under one advisory at one manifest): the survivor's own count and loci
+        # stand -- neither replaced by the member it absorbed nor summed with it.
+        own = [{"file": "pom.xml", "line_start": 1}]
+        tool_best = {
+            "source": "tool:dependency-check",
+            "category": "known_vulns",
+            "occurrences": 3,
+            "additional_loci": own,
+            "provenance": {"discovered_by": "tool:dependency-check",
+                           "confirmation_status": "TOOL"},
+        }
+        tool_other = {
+            "source": "tool:dependency-check",
+            "category": "known_vulns",
+            "occurrences": 2,
+            "additional_loci": [{"file": "pom.xml", "line_start": 9}],
+            "provenance": {"discovered_by": "tool:dependency-check",
+                           "confirmation_status": "TOOL"},
+        }
+        corroborate_mod._reinforce_merge(tool_best, tool_other)
+        self.assertEqual(tool_best["occurrences"], 3)
+        self.assertEqual(tool_best["additional_loci"], own)
+
+class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
+    """#2361: `aggregate_tool_findings` deliberately parks an aggregated tool
+    finding on a line an agent also flagged, so dedupe reinforces the pair -- and
+    dedupe then keeps the more severe member. Everything the aggregation recorded
+    has to survive that, on both of dedupe's branches."""
+
+    def _tool_hit(self, fid, line):
+        return {
+            "id": fid,
+            "title": "subprocess call with shell=True",
+            "severity": "MEDIUM",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "known_vulns",
+            "source": "tool:bandit",
+            "tool_evidence": {"rule_id": "B602"},
+            "location": {"file": "src/app.py", "line_start": line},
+            "provenance": {"discovered_by": "tool:bandit",
+                           "confirmation_status": "TOOL"},
+        }
+
+    def _agent(self, fid, sev):
+        return {
+            "id": fid,
+            "title": "shell injection reachable from the request path",
+            "severity": sev,
+            "confidence": "LIKELY",
+            "panel": "security",
+            "category": "known_vulns",
+            "source": "agent:security-reviewer",
+            "location": {"file": "src/app.py", "line_start": 10},
+        }
+
+    def test_agent_survivor_inherits_the_tool_members_loci(self):
+        # The parity-fixture shape (#2353 had to avoid it): one rule at lines 10
+        # and 12, an agent HIGH at 10. The pair collapses onto the agent finding,
+        # and line 12 must still be in the report.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "HIGH")])
+        self.assertEqual(len(out), 1)
+        survivor = first(out)
+        self.assertEqual(survivor["id"], "AG-1")
+        self.assertEqual(survivor["location"]["line_start"], 10)
+        self.assertTrue(survivor["reinforced"])
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        self.assertIn("BN-1", evidence_mod.merged_ids(survivor))
+
+    def test_tool_survivor_keeps_its_own_unchanged(self):
+        # The control: the agent finding is a LOW, so the tool MEDIUM wins the
+        # same cluster and carries exactly what it already carried.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "LOW")])
+        self.assertEqual(len(out), 1)
+        survivor = first(out)
+        self.assertEqual(survivor["id"], "BN-1")
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+
+    def test_the_larger_cluster_branch_carries_them_too(self):
+        # THREE members at the locus, so dedupe's exactly-two shortcut never
+        # fires: the carry has to hold on the per-category path as well, where the
+        # agent survivor absorbs a representative tool finding.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
+             self._agent("AG-1", "HIGH"), self._agent("AG-2", "MEDIUM")])
+        by_id = {f["id"]: f for f in out}
+        self.assertEqual(sorted(by_id), ["AG-1", "BN-1"],
+                         "one survivor per rule bucket: the agent pair and the"
+                         " aggregated tool finding")
+        agent_survivor = by_id["AG-1"]
+        self.assertTrue(agent_survivor["reinforced"])
+        self.assertEqual(agent_survivor["occurrences"], 2)
+        self.assertEqual(agent_survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+
 class TestReinforce(unittest.TestCase):
     def test_tool_and_agent_reinforce(self):
         findings = [
