@@ -1,12 +1,14 @@
 """OWASP dependency-check adapter for Java dependency CVEs."""
 from __future__ import annotations
+import contextvars
 import os
 import shutil
 import sys
 import tempfile
-from .base import (OutputCapExceeded, has_any_file, make_finding,
-                   normalize_severity, omit_none, parse_json_bytes,
-                   read_capped_report, run_tool, scratch_cwd)
+from .base import (INERT_CUT, OutputCapExceeded, has_any_file, inert_text,
+                   make_finding, normalize_severity, omit_none,
+                   parse_json_bytes, read_capped_report, run_tool, scratch_cwd,
+                   target_root_cv)
 
 
 # #1576 (run-13 OPS-3272189615): rc returned when the scanner was killed for
@@ -14,6 +16,94 @@ from .base import (OutputCapExceeded, has_any_file, make_finding,
 # ok_codes (0, 1), so the coverage manifest records the tool as missing
 # (-> INCONCLUSIVE) instead of reading the empty output as a clean scan.
 _OUTPUT_CAP_RC = 2
+
+# The JVM build manifests, in resolution order. ONE tuple, used by
+# `is_applicable` to select the scanner and by the resolver below to locate its
+# findings, so the file that admitted a scan cannot disagree with the file that
+# scan is reported against.
+BUILD_MANIFESTS = ("pom.xml", "build.gradle", "build.gradle.kts")
+
+# The manifest THIS invocation audited, TARGET-RELATIVE (pip_audit's shape,
+# ARC-2852754506).
+#
+# #2225 (ARC-1020240040), owner ruling 2026-09-28 -- MANIFEST PROXY. This
+# scanner analyses ARTIFACTS, so what it reports against is a jar under the
+# build output: `location.file` was `angus-activation-2.0.1.jar`, a name that
+# exists nowhere in the reviewed repository, and the absolute `filePath` beside
+# it names the scanner host's layout. Neither can be placed, and placing a
+# finding is what that field is for -- the delta/`--pr` gate matches it against
+# `diff-hunks.json`, the tool-verify advisor's read grant resolves it, grading
+# attributes findings to groups by it, every exclude glob matches it. The build
+# manifest that declared the dependency is the repo file that stands in for the
+# jar, and the shape every sibling dependency adapter already emits.
+#
+# One window stays open, and it is `tools/pip_audit.py`'s identical ContextVar's
+# too: a `parse` in the SAME process after an `invoke` reads THAT invocation's
+# manifest, so a caller that invoked target A and then parsed bytes from target B
+# would locate B's findings at A's manifest. No caller does that today
+# (`capture_goldens` invokes and parses one target at a time, and the
+# container/ingest split never shares a process), and closing it belongs to both
+# adapters at once rather than to one of them.
+_manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "dependency_check_manifest_path", default=None)
+
+# The last resort, for a caller that hands over bytes and NO tree (#1649, and
+# the goldens, which are captured bytes). Every real route names one: the
+# in-process one through `invoke`, ingest through `target_root_cv`.
+DEFAULT_MANIFEST = "pom.xml"
+
+
+def _first_manifest(root: str) -> str | None:
+    """The first of BUILD_MANIFESTS that is a file directly under `root`."""
+    for name in BUILD_MANIFESTS:
+        if os.path.isfile(os.path.join(root, name)):
+            return name
+    return None
+
+
+# How many `includedBy` references travel with one finding, and how a cut list
+# says so. The strings are bounded one at a time by `inert_text`, but their
+# COUNT is the target's to choose, and every reference is carried in the
+# finding's envelope into `report.json` -- whose size the split writer measures
+# in BYTES -- so the list is bounded too. (Not for the terminal's sake: nothing
+# in `synth/render` reads `tool_evidence`.) The marker ends in `INERT_CUT`, the
+# same mark a cut string wears, so a shortened list cannot read as a whole one.
+INCLUDED_BY_MAX = 16
+
+
+def _included_by(dep: dict) -> list[str] | None:
+    """The `reference` of each `includedBy` entry, inert and bounded, or None.
+
+    What pulled the vulnerable jar in: Maven coordinates
+    (`org.owasp.webgoat:webgoat-container:2023.4`) or pURLs. The guarantee here
+    is STRUCTURAL, not a claim about what this scanner will always put in the
+    field: these values are surfaced as evidence ONLY and are never used as a
+    location, whatever the tool emits in them -- `location.file` comes from
+    `_located_at` and from nothing else.
+
+    Each reference is neutralized on the way in (`inert_text`, the one
+    neutralizer for target-authored text, #1829 SEC-4277410777): `make_finding`
+    inerts `rule_id`, `location.file` and the prose, and a per-adapter evidence
+    key it has never heard of has to do its own. The filter tests the INERTED
+    value, so a whitespace-only reference leaves nothing rather than an empty
+    string. A non-string reference is dropped rather than coerced: `inert_text`
+    stringifies, and `str(None)` is the forged `"None"`
+    `test_a_result_without_a_rule_id_keeps_a_null_rule_id` refuses for a rule id.
+    None rather than `[]` so `omit_none` drops the key -- an empty list would
+    read as "nothing pulled this in" rather than "the tool did not say".
+    """
+    entries = dep.get("includedBy")
+    if not isinstance(entries, list):
+        return None
+    refs = [t for e in entries
+            if isinstance(e, dict) and isinstance(e.get("reference"), str)
+            and (t := inert_text(e["reference"]))]
+    if not refs:
+        return None
+    if len(refs) <= INCLUDED_BY_MAX:
+        return refs
+    cut = len(refs) - INCLUDED_BY_MAX
+    return refs[:INCLUDED_BY_MAX] + ["%d more%s" % (cut, INERT_CUT)]
 
 
 class DependencyCheckAdapter:
@@ -40,8 +130,7 @@ class DependencyCheckAdapter:
         Declining is the correct outcome: a disclosed `requested_unavailable`
         is non-gating (#1031) and honest, where a silent clean scan is neither.
         """
-        markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
-        if not has_any_file(target, *markers):
+        if not has_any_file(target, *BUILD_MANIFESTS):
             return False
         return self._has_scannable_artifacts(target)
 
@@ -72,6 +161,11 @@ class DependencyCheckAdapter:
         return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
+        # #2225: record the manifest this scan's findings are located at, while
+        # the target tree is in hand. `is_applicable` guarantees one of the
+        # three is here; the fallback is for a caller that skipped that gate,
+        # and keeps this invocation from publishing an earlier target's answer.
+        _manifest_path_cv.set(_first_manifest(target) or DEFAULT_MANIFEST)
         out_dir = tempfile.mkdtemp(prefix="dc-")
         try:
             dc_home = os.environ.get("DEPENDENCY_CHECK_HOME", "/opt/dependency-check")
@@ -155,11 +249,41 @@ class DependencyCheckAdapter:
                 return f"CWE-{cwe}"
         return None
 
+    def _located_at(self) -> str:
+        """The build manifest this parse's findings are located at (#2225).
+
+        Two routes and a last resort, because a real scan runs `invoke` and
+        `parse` in DIFFERENT PROCESSES (#1649): run_tools dispatches the adapter
+        as `docker run ... _run_adapter.py`, which only invokes, and
+        `ingest_tools` parses the captured bytes back on the host. `invoke`'s own
+        choice is used when the two share a process (capture_goldens); otherwise
+        the same choice is made again from the target root ingest names around
+        its parse. The last resort is for a caller with bytes and no tree at all.
+        All three answers are repo-relative, which is the shape `location.file`
+        carries everywhere downstream.
+        """
+        chosen = _manifest_path_cv.get()
+        if chosen:
+            return chosen
+        root = target_root_cv.get()
+        if root:
+            return _first_manifest(root) or DEFAULT_MANIFEST
+        return DEFAULT_MANIFEST
+
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
+        # Resolved ONCE per parse, not per finding: it stats the target root.
+        # Every finding this adapter emits therefore shares one locus, so the
+        # ARTIFACT is what keeps two advisories about DIFFERENT jars apart
+        # downstream -- and BOTH stages that collapse tool findings key on
+        # `tool_evidence.package_name` for it (#2225):
+        # `synth/findings.aggregate_tool_findings` first, then
+        # `synth/corroborate.dedupe`.
+        manifest = self._located_at()
         out = []
         n = 1
         for dep in data.get("dependencies", []):
+            included_by = _included_by(dep)
             for vuln in dep.get("vulnerabilities", []):
                 cwe_list = [
                     normalized
@@ -179,7 +303,7 @@ class DependencyCheckAdapter:
                     title=f"{file_name}: {cve}",
                     severity=normalize_severity(vuln.get("severity")),
                     category="dependency_vulnerability",
-                    location={"file": file_name, "line_start": 1},
+                    location={"file": manifest, "line_start": 1},
                     description=vuln.get("description", "No description provided."),
                     impact=impact,
                     remediation="Upgrade to a fixed version per the advisory.",
@@ -190,6 +314,7 @@ class DependencyCheckAdapter:
                     tool_evidence=omit_none({
                         "rule_id": cve,
                         "package_name": dep.get("fileName"),
+                        "included_by": included_by,
                     }),
                 ))
                 n += 1
