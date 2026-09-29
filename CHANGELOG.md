@@ -21,6 +21,66 @@ evidence exposed.
   A script given to a shell inside `$(...)` is reported if it fetches or its job downloads anything.
   `env A=$X sh` reads through to `sh`; `env $(x)=1 sh` and `env A=$X -c …` are reported.
   `sh {-c,'…'}` and `sh [-]c` are reported, and `sh ./x_*.run` as running a download `x_1.run`.
+- **Catalog rows for `.bandit` and two unlisted eslint spellings (#2330, #1784, ARC-G1B).** Owner
+  ruling 2026-09-28 on #2274: a root dot-file no shipped catalog NAMES stays invisible BY DESIGN,
+  and the remedy for a wanted one is a catalog row per spelling -- never a widened stem.
+  `skill/data/commons_catalog.yml` `Config` gains `.bandit`, `.eslintrc.cjs` and `.eslintrc.yaml`,
+  and `skill/scripts/dot_paths.py` `FILES` gains the same three, so this repository's own `.bandit`
+  -- named by neither the catalogs nor the SEC floor, and therefore reaching no group at all -- is
+  reviewable surface; with no committed `Config` group in `panopticon.yml` it is claimed by the
+  Commons catalog's `Config` category, which in this repo folds into the reported `Commons` group,
+  so the next self-scan carries one more file there and a reviewer may now question this repo's own
+  bandit `skips=`. The ruling named `.eslintrc.mjs` too; it is not a spelling the legacy cascade
+  reads (`.mjs` is flat config, already claimed as `eslint.config.mjs`), so no row. `.eslintcache`
+  stays out: the family is still spelled name by name (now seven) precisely to keep generated state
+  pruned.
+- **The zero-hunk delta gate counts only what the gate would have judged (#1783, #2222, follow-up to
+  #2178).** Owner ruling 2026-09-28: the refusal is a statement about findings the empty hunk map
+  hid FROM THE GATE, so `delta.zero_hunk_population` re-applies this run's own two policies to the
+  active set -- the evidence policy `verdicts._partition_gate` applies, then the `--fail-on` floor,
+  which becomes `findings.severity_floor_admits` so the gate and this count have ONE spelling of it
+  (`grading.gate_verdict` is now that predicate under `any()`) -- and never the delta scoping that
+  empty map broke. Two runs that read INCONCLUSIVE now PASS: an empty `--changes` map whose only
+  active findings sit below `--fail-on`, and one whose findings are all unverified under the default
+  `confirmed_only` policy. A CONFIRMED finding at or above the floor still reads INCONCLUSIVE, an
+  OFF gate is still preserved, and the `coverage_note` clause now says `gate-eligible` instead of
+  `active`.
+- **dependency-check locates a finding at the build manifest, not the jar (#2225, #1768,
+  ARC-1020240040).** The scanner analyses ARTIFACTS, so `location.file` was
+  `angus-activation-2.0.1.jar` -- a name that exists nowhere in the reviewed repository, and the
+  delta/`--pr` gate, the tool-verify advisor's read grant, grading's group attribution and every
+  exclude glob all resolve that against the repo root. Owner ruling: MANIFEST PROXY. The location is
+  now the build manifest the scan audited, resolved `pom.xml` -> `build.gradle` ->
+  `build.gradle.kts` (`BUILD_MANIFESTS`, the same tuple `is_applicable` selects on) through the
+  two routes and the last resort `tools/pip_audit.py` already uses -- the manifest `invoke`
+  recorded, else the first one under the root `ingest_tools` names around its parse, else
+  `DEFAULT_MANIFEST` ("pom.xml") for a caller holding bytes and no tree. The jar still names the
+  vulnerable artifact in `title`, `impact` and `tool_evidence.package_name`; a dependency's
+  `includedBy` references are surfaced as `tool_evidence.included_by`, which is EVIDENCE ONLY and is
+  never used as a location whatever the tool emits in it -- inert (`inert_text`, like every other
+  target-authored string) and bounded to 16 entries with a marked cut, and described in
+  `report-schema.json`. Two vulnerable artifacts that share one advisory used to collapse to ONE
+  finding once they arrived at the same manifest locus, and BOTH stages that collapse tool findings
+  now carry the artifact: `tool_evidence.package_name` joins the aggregate key in
+  `synth/findings.aggregate_tool_findings` (which ran first and merged the pair into one
+  `occurrences: 2` finding) and splits the rule bucket in `synth/corroborate.dedupe`. Findings
+  naming no artifact keep their single bucket at both stages -- every SARIF-path and agent finding.
+  `line_start` stays 1 and no argv byte, cwd or `-w` changed, so no real-image round is owed. The
+  `PATH_DEBT` register in `tests/tools/test_normalization_contract.py` is empty again: the entry and
+  the self-liquidating expiry test that owed it are gone, its meta-tests hold on the empty register.
+- **The virtualenv scope leaves `run_tools.py` (#1762, #2306, ARC-2609514778; part 4).** Finding the
+  virtualenvs under the target (`pyvenv.cfg` plus the SHAPE of an environment, depth-bounded and
+  confined), deciding which of them a scanner's exclusion knob may be handed (the security mode, the
+  name allowlist) and rendering that onto each tool's argv move to `skill/scripts/venv_scope.py`
+  whole; the rows it produces are still published by `tools_manifest.write_manifest`, and
+  `ingest_tools` imports its `has_venv_shape` and `VENV_MARKER` so the scan side and the ingest side
+  cannot drift. `run_tools.py` goes from 1136 to 838 lines and the new module is 376, under the
+  700-line ceiling; the pin STAYS in `tests/test_flat_module_ceiling.py`, lowered to 838, holding
+  docker detection, language detection, selection, the argv and the CLI. No argv byte, no manifest
+  row and no message changed -- `tests/test_venv_scope.py` compares the walk, both partitions and
+  twenty-four argv shapes (every tool with a repeatable knob, bandit's comma-joined value, a tool
+  with none; zero, one and two directories; `target` set and unset) against a golden captured before
+  the move, and the patch-rule guard derives all four modules' names from their own ASTs.
 - **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
   findings remain available to reports and the security gate. Bounded diagnostics and coverage
   facts distinguish malformed records, including those without an identifiable source file,

@@ -93,6 +93,15 @@
 #     is what `security_gate.py` -- already in this cell -- reads, so the schema
 #     and its gate belong to one reviewer. `Core` reaches 30 of the 48 cap and the
 #     six files the #1762 split owed have all landed.
+#   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
+#     `venv_scope.py` (finding the virtualenvs under the target, deciding which
+#     of them a scanner's exclusion knob may be handed, and rendering that onto
+#     each tool's argv) and `tests/test_venv_scope.py` on `Core`, for the same
+#     reason as parts 2 and 3: the exclusion the runner applies and the ingest
+#     rule that drops what a scanner still reports from a virtualenv
+#     (`ingest_tools.py`, in this cell) are one reviewer's question. Measured
+#     with discovery's own assignment, `Core` goes from 31 to 33 of the 48 cap
+#     (the #2289 line above says 30; it undercounted by one).
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -145,6 +154,7 @@ groups:
       - skill/scripts/scanner_config.py
       - skill/scripts/tool_capture.py
       - skill/scripts/tools_manifest.py
+      - skill/scripts/venv_scope.py
       - skill/scripts/ingest_tools.py
       - skill/scripts/_run_adapter.py
       - skill/scripts/smoke_adapters.py
@@ -162,6 +172,7 @@ groups:
       - tests/test_scanner_config.py
       - tests/test_tool_capture.py
       - tests/test_tools_manifest.py
+      - tests/test_venv_scope.py
       - tests/test_ingest_tools.py
       - tests/test_run_adapter.py
       - tests/test_smoke_adapters.py

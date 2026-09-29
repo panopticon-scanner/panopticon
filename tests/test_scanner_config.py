@@ -8,9 +8,9 @@ extraction that changes one flag, one path or one flag's POSITION is not a pure
 extraction, and nothing else in the suite compares a whole argv.
 
 It also holds the patch-rule guard for the WHOLE split family (part 2 added
-`tool_capture` to `_SPLITS` and part 3 `tools_manifest`): the rule is about what
-`run_tools` re-binds, so one derivation covers every module lifted out of it, and
-each part added a row rather than a file.
+`tool_capture` to `_SPLITS`, part 3 `tools_manifest` and part 4 `venv_scope`):
+the rule is about what `run_tools` re-binds, so one derivation covers every
+module lifted out of it, and each part added a row rather than a file.
 """
 import ast
 import contextlib
@@ -25,6 +25,7 @@ import scripts.run_tools as rt
 import scripts.scanner_config as sc
 import scripts.tool_capture as tc
 import scripts.tools_manifest as tm
+import scripts.venv_scope as vs
 
 from tests._test_helpers import REPO_ROOT
 from tests.run_tools_test_helpers import _FakeResult
@@ -196,7 +197,7 @@ GOLDEN = {
 
 
 class TestTheDockerArgvSurvivesTheExtraction(unittest.TestCase):
-    """#1762 split 1/3 is a pure move, and this is what "pure" is allowed to
+    """#1762 split 1/4 is a pure move, and this is what "pure" is allowed to
     mean: every scanner-owned config launch builds the same argv it built
     before the block left `run_tools`.
 
@@ -286,20 +287,26 @@ RE_EXPORTED_TOOL_CAPTURE = frozenset({
 RE_EXPORTED_TOOLS_MANIFEST = frozenset({
     "VENV_MAX_DEPTH", "_IGNORE_FILE_POSTURE", "_NETWORK_POSTURE",
 })
+# #1762 part 4 (`venv_scope`): the marker token the walk keys on, which two
+# run_tools test files plant. Nothing else -- `ingest_tools` imports it, and the
+# shape predicate, from `venv_scope` itself.
+RE_EXPORTED_VENV_SCOPE = frozenset({"VENV_MARKER"})
 _ROOT = pathlib.Path(REPO_ROOT)          # `_test_helpers` exports it as a str
 _RUN_TOOLS = _ROOT / "skill" / "scripts" / "run_tools.py"
 _SCANNER_CONFIG = _ROOT / "skill" / "scripts" / "scanner_config.py"
 _TOOL_CAPTURE = _ROOT / "skill" / "scripts" / "tool_capture.py"
 _TOOLS_MANIFEST = _ROOT / "skill" / "scripts" / "tools_manifest.py"
+_VENV_SCOPE = _ROOT / "skill" / "scripts" / "venv_scope.py"
 _TESTS = _ROOT / "tests"
 # One row per module `run_tools` has been split into (#1762): the module object,
 # the file its names are DERIVED from, and the allowlist of names `run_tools`
-# still re-binds out of it. All three parts have landed; a fourth split would
-# add a row and nothing else here.
+# still re-binds out of it. All four parts have landed; a fifth split would add a
+# row and nothing else here.
 _SPLITS = (
     ("scanner_config", sc, _SCANNER_CONFIG, RE_EXPORTED),
     ("tool_capture", tc, _TOOL_CAPTURE, RE_EXPORTED_TOOL_CAPTURE),
     ("tools_manifest", tm, _TOOLS_MANIFEST, RE_EXPORTED_TOOLS_MANIFEST),
+    ("venv_scope", vs, _VENV_SCOPE, RE_EXPORTED_VENV_SCOPE),
 )
 # The aliases the run_tools tests bind, as a FLOOR. The set actually used is
 # read from each file's own bindings as well, because a fixed list missed both
@@ -471,7 +478,7 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
 
     Derived from each module's own AST rather than from a list, because a list
     stops growing: part 2 (`tool_capture`) is covered by adding one row to
-    `_SPLITS`, and part 3 (`tools_manifest`) was.
+    `_SPLITS`, and parts 3 (`tools_manifest`) and 4 (`venv_scope`) were.
     """
 
     def test_the_allowlist_is_exactly_what_run_tools_re_exports(self):
@@ -499,7 +506,8 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
             functions = _functions_in(path)
             self.assertIn({"scanner_config": "_scanner_owned_config",
                            "tool_capture": "_stream_and_write",
-                           "tools_manifest": "write_manifest"}[module], functions)
+                           "tools_manifest": "write_manifest",
+                           "venv_scope": "find_virtualenvs"}[module], functions)
             for name in functions:
                 with self.subTest(module=module, function=name):
                     self.assertNotIn(name, allowed,
@@ -548,14 +556,16 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                        "from scripts import run_tools as weird\n"
                        "import scripts.scanner_config as sc\n"
                        "import scripts.tool_capture as tc\n"
-                       "import scripts.tools_manifest as tm\n")
+                       "import scripts.tools_manifest as tm\n"
+                       "import scripts.venv_scope as vs\n")
 
     def test_the_patch_walk_catches_a_planted_offender(self):
         # Non-vacuity, on a synthetic file: the scan above asserts an EMPTY
         # list, which a detector that sees nothing also satisfies.
         watched = {"SCANNER_OWNED_CONFIG", "_scanner_owned_config",
                    "MAX_TOOL_OUTPUT_BYTES", "_stream_and_write",
-                   "_NETWORK_POSTURE", "write_manifest"}
+                   "_NETWORK_POSTURE", "write_manifest",
+                   "VENV_MARKER", "_with_venv_excludes"}
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d) / "test_planted.py"
             for source in (
@@ -575,7 +585,11 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                     # part 3's names: the ledger the manifest reads back, and
                     # the writer itself.
                     'mock.patch.object(rt, "_NETWORK_POSTURE", {})',
-                    'monkeypatch.setattr(rt, "write_manifest", None)'):
+                    'monkeypatch.setattr(rt, "write_manifest", None)',
+                    # part 4's names: the re-exported marker token and the argv
+                    # builder, which is not bound on `run_tools` at all.
+                    'mock.patch.object(rt, "VENV_MARKER", "x")',
+                    'mock.patch("scripts.run_tools._with_venv_excludes")'):
                 with self.subTest(source=source):
                     path.write_text(self.PLANTED_IMPORTS + "x = %s\n" % source,
                                     encoding="utf-8")
@@ -596,6 +610,8 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
                     'mock.patch("scripts.scanner_config.SCANNER_OWNED_CONFIG")',
                     'monkeypatch.setattr(tc, "_stream_and_write", None)',
                     'mock.patch.object(tm, "write_manifest", None)',
+                    'mock.patch.object(vs, "VENV_MARKER", "x")',
+                    'monkeypatch.setattr(vs, "_with_venv_excludes", None)',
                     # not a patch at all.
                     'mock.patch.dict(os.environ, {"SCANNER_OWNED_CONFIG": "1"})'):
                 with self.subTest(source=source):
@@ -620,7 +636,7 @@ class TestThePatchRuleIsOneRule(unittest.TestCase):
     def test_the_patch_walk_visits_the_whole_test_tree(self):
         # Including `tests/tools/`, which is where an adapter-side patch would
         # land, and which the brief's pytest set does not otherwise reach.
-        # 289 files today, 180 of them at the top level: a floor under 180
+        # 294 files today, 184 of them at the top level: a floor under 184
         # would still be cleared by a walk that stopped recursing, which is the
         # collapse this guards against.
         visited = sorted(_TESTS.rglob("*.py"))

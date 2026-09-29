@@ -350,6 +350,36 @@ def load_findings_detailed(paths):
 _sev_rank = evidence_mod.sev_rank
 
 
+def severity_floor_rank(fail_on):
+    """The rank `--fail-on` names; raises `ValueError` on an unknown name (#2222).
+
+    Resolved on its own so `grading.gate_verdict` can fail closed BEFORE any
+    verdict: under `any()` an empty findings list never enters the predicate,
+    and an uninterpretable threshold must not read as PASS on a clean run."""
+    return SEV_ORDER.index(str(fail_on).upper())
+
+
+def severity_floor_admits(finding, fail_on):
+    """Is `finding` at or above the `--fail-on` severity floor? (#2222)
+
+    THE definition of that floor, for the same #688 reason the rank above is
+    aliased rather than copied. Two readers: `grading.gate_verdict`, which is
+    this predicate under `any()` once the gate is armed, and
+    `delta.zero_hunk_population`, which counts the findings a zero-hunk run's
+    gate WOULD have judged. Those two disagreeing about the threshold is exactly
+    the drift #2222 was filed about, so there is one spelling of it.
+
+    A falsy `fail_on` admits everything: `gate_verdict` returns OFF before
+    reading a severity at all, and the zero-hunk population then narrows by the
+    evidence policy alone (owner ruling 2026-09-28). An unknown severity NAME
+    raises `ValueError` here exactly as the inline threshold this replaces did;
+    argparse constrains the flag to the four real ones.
+    """
+    if not fail_on:
+        return True
+    return _sev_rank(finding) <= severity_floor_rank(fail_on)
+
+
 def _norm_line(v):
     try:
         return int(v)
@@ -429,7 +459,11 @@ def aggregate_tool_findings(findings):
     """Collapse repeated tool hits of one rule in one file into a single finding.
 
     A scanner rule that fires 18 times in a workflow file is ONE issue with 18
-    loci, not 18 issues. Only tool-sourced findings aggregate; agent findings
+    loci, not 18 issues. One rule against two different ARTIFACTS at one locus
+    is two issues, though (#2225: a manifest-located dependency scanner reports
+    every jar at `pom.xml:1`), so `tool_evidence.package_name` is part of the
+    key -- findings naming no artifact share one bucket, as they always did.
+    Only tool-sourced findings aggregate; agent findings
     are distinct judgements and pass through untouched. The survivor keeps the
     lowest line as its primary locus and records the rest in `additional_loci`
     — except where an agent independently flagged one of the other lines, in
@@ -453,16 +487,26 @@ def aggregate_tool_findings(findings):
         return (0 if corroborated else 1, line if isinstance(line, int) else 0)
 
     out = []
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str | None],
+                 list[dict[str, Any]]] = {}
     order = []
     for f in findings:
         rule = evidence_mod.tool_rule_id(f)
         if not evidence_mod.is_tool_sourced(f) or not rule:
             out.append(f)
             continue
+        # #2225: the ARTIFACT the advisory is about, on exactly the terms
+        # `corroborate._by_package` uses one stage later. dependency-check is
+        # located at the build manifest it audited, so two DIFFERENT vulnerable
+        # jars sharing one CVE reach one (panel, category, file, rule) key --
+        # and aggregated into ONE finding carrying `occurrences: 2` before
+        # dedupe ever saw them, which is the same lost vulnerability one stage
+        # earlier. Absent or non-string means one bucket, so every SARIF-path
+        # finding (no `package_name`) behaves exactly as before.
+        pkg = (f.get("tool_evidence") or {}).get("package_name")
         key = (f.get("panel"), f.get("category"),
                evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
-               str(rule))
+               str(rule), pkg if isinstance(pkg, str) and pkg else None)
         if key not in groups:
             groups[key] = []
             order.append(key)
