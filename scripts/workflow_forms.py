@@ -106,9 +106,10 @@ def same_file(token, path):
 BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
             "/opt/bin", "/bin", "/sbin")
 # Where `may_run` looks a bare command name up (#2308): those, and the runner
-# user's `~/.local/bin` in the three spellings a step writes it. A directory
-# a step puts on PATH itself (`PATH=…`, `$GITHUB_PATH`) is not read.
-PATH_DIRS = BIN_DIRS + ("$HOME/.local/bin", "${HOME}/.local/bin", "~/.local/bin")
+# user's `~/.local/bin` in the four spellings a step writes it (review N-4).
+# The rest of a runner's PATH, and what a step puts on it, are the gap list's.
+PATH_DIRS = BIN_DIRS + ("$HOME/.local/bin", "${HOME}/.local/bin", "~/.local/bin",
+                        "/home/runner/.local/bin")
 
 
 def may_run(word, dest):

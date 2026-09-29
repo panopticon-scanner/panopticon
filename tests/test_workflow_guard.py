@@ -622,7 +622,11 @@ class TestADownloadWrittenIntoADirectoryOnPath(unittest.TestCase):
         for dest in ("/usr/local/bin/tool", "/usr/bin/tool", "/bin/tool",
                      "/usr/local/sbin/tool", '"$HOME/.local/bin/tool"',
                      '"${HOME}/.local/bin/tool"', "~/.local/bin/tool",
-                     "/usr/local/bin/./tool"):
+                     "/usr/local/bin/./tool",
+                     # review N-4: the runner's `~/.local/bin`, spelled out
+                     "/home/runner/.local/bin/tool",
+                     # not on a hosted runner's PATH, and kept: fail-closed
+                     "/opt/bin/tool"):
             with self.subTest(dest=dest):
                 self.assertIn("running it with nothing verifying",
                               self.defect(dest, "tool --version\n") or "")
@@ -2176,8 +2180,9 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             wg.Step("flip", 'echo "NEED=no" >> "$GITHUB_ENV"\n'),
             wg.Step("run", "chmod +x /tmp/p\n/tmp/p\n", None, when))
 
-    # 11. a directory a step puts on PATH itself (#2308, which closed the
-    # fixed directories: `TestADownloadWrittenIntoADirectoryOnPath`).
+    # 11. a directory on the runner's PATH past `PATH_DIRS`, or one a step
+    # puts there itself (#2308 closed the fixed ones:
+    # `TestADownloadWrittenIntoADirectoryOnPath`; review N-4 named the rest).
     def test_a_directory_a_step_puts_on_path(self):
         fetch = ("get", "curl -sfL https://example.test/p -o bin/payload\n")
         self.accepted(fetch, ("path", 'echo "$PWD/bin" >> "$GITHUB_PATH"\n'),
@@ -2185,6 +2190,11 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(fetch, ("run", 'export PATH="$PWD/bin:$PATH"\npayload --version\n'))
         self.flagged(("get", "curl -sfL https://example.test/p -o /usr/local/bin/payload\n"),
                      ("run", "payload --version\n"))
+        # ... and the runner image's own directories past `PATH_DIRS` (review
+        # N-4), which bash 3.2 and 5.2 find a bare name in when on PATH.
+        for dest in ('"$HOME/.cargo/bin/payload"', "/snap/bin/payload"):
+            self.accepted(("get", "curl -sfL https://example.test/p -o %s\n" % dest),
+                          ("run", "payload --version\n"))
 
 
 class TestRunSteps(unittest.TestCase):

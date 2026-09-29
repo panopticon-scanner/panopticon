@@ -81,10 +81,11 @@ that starts catching one fails there, and this list is edited with it.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
-* a directory a step puts on PATH (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name
-  finds a download only in `workflow_forms.PATH_DIRS` (#2308), never there.
-  KEPT: the directory is a VALUE, of `PATH` or in a file Actions reads, which
-  is evaluating the shell again; no workflow here touches PATH at all.
+* directories on the runner's PATH not in `workflow_forms.PATH_DIRS` (#2308),
+  `$HOME/.cargo/bin` and `/snap/bin` among them, or one a step puts there
+  (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name finds a download in neither.
+  KEPT: the first differ by image (review N-4); the other is a VALUE, which
+  is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
   KEPT: it is the entry above wearing a checksum -- refusing it means
@@ -123,11 +124,10 @@ that starts catching one fails there, and this list is edited with it.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* a heredoc body consumed inside a command substitution, `EOF` and `)` each on
-  a line: `eval "$(cat <<'EOF' … EOF)"`, and `x=$(bash -s <<'EOF' … EOF)` too
-  (review I-4). The OUTER parse lifts the body into its own table and leaves a
-  marker, so a re-read sees a word that means nothing to it: what the `eval`
-  or `bash` runs is unread, and nothing there says it is a program.
+* a heredoc body read inside a command substitution, `EOF` and `)` each on a
+  line (`eval "$(cat <<'EOF' … EOF)"`; `x=$(bash -s <<'EOF' … EOF)`, review
+  I-4). The OUTER parse lifts the body and leaves a marker: a re-read sees a
+  word meaning nothing to it, and what `eval` or `bash` runs is unread.
   KEPT: resolving it means handing one parse's tables to another, or teaching
   the reader that a heredoc read by `cat` inside a substitution is a SCRIPT --
   a second expansion model. The fleet writes one heredoc-ish construct (a
