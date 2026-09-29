@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share staged report publication (#2316, #1820).** Clean partial staging writes before
+  propagating failures; publish report siblings before the main report.
 - **A HIGH a verbatim extraction MOVES is pre-existing (moved), not new (#2309).** The pre-merge
   gate's delta pass keys on the path, so a refactor that relocated a `docker kill` call reddened the
   required `scan` check on a diff that changed no behaviour (#2305). After the exact pass, a head
