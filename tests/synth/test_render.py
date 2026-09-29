@@ -459,6 +459,45 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
                 render_mod.write_report(report, out, max_bytes=8000)
             self.assertIn("report base is", err.getvalue())   # loud, not silent floor
 
+    def test_failed_staging_cleans_partial_files_and_preserves_the_previous_report(self):
+        real_open = render_mod.safe_write.open_w_nofollow
+        for findings, discarded, limit, failed_at in ((1, 0, 8000, 1),
+                                                      (1, 30, 2000, 2),
+                                                      (12, 10, 2000, 2)):
+            for failure in ("write", "close"):
+                with self.subTest(findings=findings, failure=failure):
+                    with tempfile.TemporaryDirectory() as directory:
+                        out = os.path.join(directory, "report.json")
+                        with open(out, "w", encoding="utf-8") as stream:
+                            stream.write("previous report")
+                        opened = []
+
+                        @contextlib.contextmanager
+                        def failing_open(path):
+                            opened.append(path)
+                            with real_open(path) as stream:
+                                if len(opened) != failed_at:
+                                    yield stream
+                                    return
+                                if failure == "write":
+                                    def partial_write(text):
+                                        stream.write(text[:1])
+                                        raise OSError("staging write failed")
+                                    yield mock.Mock(write=partial_write)
+                                else:
+                                    yield stream
+                                    raise OSError("staging close failed")
+
+                        with mock.patch.object(render_mod.safe_write, "open_w_nofollow",
+                                               side_effect=failing_open):
+                            with self.assertRaisesRegex(OSError, "staging .* failed"):
+                                render_mod.write_report(self._report(findings, discarded),
+                                                        out, max_bytes=limit)
+                        self.assertEqual(len(opened), failed_at)
+                        with open(out, encoding="utf-8") as stream:
+                            self.assertEqual(stream.read(), "previous report")
+                        self.assertEqual(os.listdir(directory), ["report.json"])
+
 
 class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
     """#1578: what the vendored-path exclusion dropped is named in the markdown
