@@ -600,27 +600,35 @@ class TestHardenedXmlParser(unittest.TestCase):
         from defusedxml.common import EntitiesForbidden
         self._assert_external_entities_refused_without_io(sb.SpotBugsAdapter(), EntitiesForbidden)
 
-    def test_missing_dependency_fallback_parses_benign_xml_and_refuses_external_entities(self):
+    def test_missing_defusedxml_fails_the_import_loudly(self):
+        # #2363: `defusedxml` is a declared dependency the gating readiness row
+        # already checks, so the adapter imports it unconditionally and there is
+        # no stdlib fallback left to exercise. A missing package has to fail
+        # HERE, at import, naming itself, on every path -- including the ones
+        # that never run readiness (the CI gate's ingest, a resumed run whose
+        # readiness.json already says ready, an adapter imported directly).
         # Fresh isolated module namespace; do not rebind the imported adapter
-        # used by other tests. This documents the current fallback, not a claim
-        # that it offers defusedxml's internal-entity protection.
+        # used by other tests.
         import builtins
         import importlib.util
         original_import = builtins.__import__
 
         def without_defusedxml(name, *args, **kwargs):
             if name.startswith("defusedxml"):
-                raise ImportError("forced missing optional import")
+                # CPython's own message shape, so the assertion below is about
+                # the line an operator actually reads.
+                raise ModuleNotFoundError("No module named %r" % name, name=name)
             return original_import(name, *args, **kwargs)
 
-        spec = importlib.util.spec_from_file_location("scripts.tools._spotbugs_fallback_test", sb.__file__)
-        fallback = importlib.util.module_from_spec(spec)
+        spec = importlib.util.spec_from_file_location("scripts.tools._spotbugs_no_defusedxml", sb.__file__)
+        module = importlib.util.module_from_spec(spec)
         with mock.patch.object(builtins, "__import__", side_effect=without_defusedxml):
-            spec.loader.exec_module(fallback)
-        adapter = fallback.SpotBugsAdapter()
-        finding = only(adapter.parse(SPOTBUGS_SAMPLE, "g1"))
-        self.assertEqual(finding["title"], "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE")
-        self._assert_external_entities_refused_without_io(adapter, ParseError)
+            with self.assertRaises(ImportError) as raised:
+                spec.loader.exec_module(module)
+        self.assertIn("defusedxml", str(raised.exception))
+        # No silent downgrade: execution stopped at that import, so the module
+        # never bound `ET` -- not to `xml.etree.ElementTree`, not to anything.
+        self.assertNotIn("ET", vars(module))
 
 
 class TestOfflineLogPrefix(unittest.TestCase):

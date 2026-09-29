@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
+  (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
+  rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in
+  `pyproject.toml`'s `[project] dependencies`, pinned in `requirements-tools.txt` and gated by
+  `readiness_checks.RUNTIME_PACKAGES` -- was in practice optional hardening, downgraded with no
+  stderr line, no manifest row and a `nosec` that silenced the scanner along with it. The paths that
+  never run readiness were the exposure: the CI gate `security_gate.py`, which imports
+  `ingest_tools` and through it every adapter, and a resumed run whose `readiness.json` already
+  recorded `ready: true`, both parsed an untrusted scanner report with internal-entity expansion
+  enabled. The import is bare now, so a missing package fails at import naming `defusedxml` on every
+  path -- readiness included, because the driver reaches the adapter package through its host
+  probes, so the gating `dependencies` row is reached only for `jsonschema` until #2369 makes it
+  reachable for all three; SKILL.md and the `RUNTIME_PACKAGES` comment say so rather than crediting
+  the row. Only one environment had to learn the package: the tools image already ships
+  `defusedxml==0.7.1`, and `.github/requirements-gate.txt` now pins it too, so the `scan`,
+  `fork-scan` and adapter-integration steps that import the adapter package under
+  `--require-hashes --no-deps` keep importing -- with a new `tests/test_workflow_pins.py` guard
+  holding every `RUNTIME_PACKAGES` pip name to that closure. The `# nosec B314` on `ET.fromstring`
+  went with the fallback, since bandit does not flag the defused call, and the adapter test that
+  pinned the fallback as working now asserts the import raises instead.
 - **A dropped tool member's `occurrences` and `additional_loci` move onto the surviving finding
   (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review reproduced -- that PR's
   parity fixture had to pick two lines no agent claimed to keep the key reachable at all.

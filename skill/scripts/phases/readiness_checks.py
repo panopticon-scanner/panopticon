@@ -110,12 +110,20 @@ SESSION_REMEDY = (
 # #1639 P15 I2: declared Python runtime packages, as (import name, pip name).
 # All are declared in `pyproject.toml`'s `[project] dependencies` and
 # `tests/phases/test_readiness_verb.py` holds this tuple to that list, so the
-# two cannot drift. Checked HERE, before the first paid dispatch. `jsonschema` is
-# imported by the completion path's artifact validation, which is deliberately fail-closed,
-# so an install without it does not quietly stop validating -- it exits
-# `artifact invalid` after the whole review has been paid for. PyYAML is a hard
-# import in discovery and takes the run down with a traceback. defusedxml
-# hardens the XML golden-capture path against DTD and entity expansion.
+# two cannot drift. Checked HERE, before the first paid dispatch -- but reached
+# only for `jsonschema` today, because the driver's own import chain fails first
+# for the other two: `scripts.setup_flow` (discovery) imports `yaml` directly,
+# and this module reaches `scripts.tools` -- every adapter body, so `defusedxml`
+# -- twice over, through `setup_flow`'s host probes and directly for `egress`,
+# as does `driver.py`. So an absent `pyyaml` or `defusedxml` is a traceback
+# naming the package before any row is printed (#2369 tracks making the row
+# reachable for all three). `jsonschema` is imported by the completion path's
+# artifact validation, which is deliberately fail-closed, so an install without
+# it does not quietly stop validating -- it exits `artifact invalid` after the
+# whole review has been paid for. defusedxml is the XML parser for the spotbugs
+# adapter and the golden-capture path; both refuse entity definitions -- the
+# internal ones the stdlib parser expands, and the external references it
+# leaves undefined -- and neither falls back.
 RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("defusedxml", "defusedxml"),
                     ("jsonschema", "jsonschema"))
 
