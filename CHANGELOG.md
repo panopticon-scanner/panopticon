@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard closes eight LOW follow-ups from its 5.2 reviews (#1793).**
+  `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
+  `sh <<< '…'` is read as its script; an interpreter's here-string bash expands is reported (#2293).
+  A brace or glob word where a command starts (`{sh,-c}`, `[s]h`) is reported, not read (#2294).
+  Globs in `[[ … ]]`, array literals and extglob groups are not commands; `@(sh) -c …` is reported.
+  `"$PWD/tool"` and `"$(pwd)/tool"` are read as running a download called `tool` (#2310).
+  A bare `tool` is read as running a download written to `/usr/local/bin/tool` (#2308).
+  A checksum must precede each use of a download, not only its first (172 pre-existing fail-opens).
+  A checksum in a script given to `sh -c`, `eval` or a shell's stdin must stop the step to count.
+  Its own pipefail (`bash -o pipefail -c`, a plain `set -o pipefail`) is read as its `-e` is.
+  Such a script sits in its runner's branch, and its own `fi` or `done` ends none of the step's.
+  A script given to a shell inside `$(...)` is reported if it fetches or its job downloads anything.
+  `env A=$X sh` reads through to `sh`; `env $(x)=1 sh` and `env A=$X -c …` are reported.
+  `sh {-c,'…'}` and `sh [-]c` are reported, and `sh ./x_*.run` as running a download `x_1.run`.
 - **Catalog rows for `.bandit` and two unlisted eslint spellings (#2330, #1784, ARC-G1B).** Owner
   ruling 2026-09-28 on #2274: a root dot-file no shipped catalog NAMES stays invisible BY DESIGN,
   and the remedy for a wanted one is a catalog row per spelling -- never a widened stem.
