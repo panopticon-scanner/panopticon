@@ -5,6 +5,7 @@ import sys
 
 from . import artifacts as artifacts_mod
 import scripts.diff_map as diff_map
+import scripts.evidence as evidence_mod
 
 
 # The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
@@ -132,7 +133,43 @@ def _disclose_load(ctx, path):
               "from %s" % (report.ranges_dropped, path), file=sys.stderr)
 
 
-def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
+def zero_hunk_population(active, fail_on, gate_unverified) -> list:
+    """The findings in `active` this run's GATE would have judged, which is the
+    population `zero_hunk_gate_gap` counts (#2222, owner ruling 2026-09-28,
+    NARROWING #2178 from every active finding).
+
+    Two filters, the gate's own two and in the gate's own order:
+
+    - the EVIDENCE policy `verdicts._partition_gate` applies -- every active
+      finding under `--gate-unverified`, else the ones whose
+      `evidence.status` is in `evidence.GATE_ELIGIBLE_DEFAULT`;
+    - then the SEVERITY floor `grading.gate_verdict` applies -- `sev_rank` at or
+      above `--fail-on`. `SEV_ORDER` and `sev_rank` are read from
+      `scripts.evidence`, which is where `synth.findings` (and so
+      `gate_verdict`) gets them, rather than restated here.
+
+    Deliberately NOT applied: the DELTA scoping. That is the filter the empty
+    hunk map broke, so the count is what the gate WOULD have judged under the
+    wider scope -- exactly the findings the zero-range map hid from it.
+
+    RULING: with no `--fail-on` the floor admits EVERY severity, because
+    `gate_verdict` reads no severity at all before returning OFF. An OFF gate
+    over a zero-hunk map therefore still reports a gap, and `certify` keeps the
+    OFF while refusing to certify -- the behaviour
+    `test_grading.TestAZeroHunkDeltaGateCannotReadPass::test_off_is_preserved`
+    pins. `test_delta.TestTheZeroHunkPopulation` asserts this function equals
+    what `_partition_gate` and `gate_verdict` actually judge for a mixed
+    fixture, so a change to either policy cannot leave this count behind."""
+    eligible = (list(active) if gate_unverified else
+                [f for f in active
+                 if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
+    if not fail_on:
+        return eligible
+    threshold = evidence_mod.SEV_ORDER.index(str(fail_on).upper())
+    return [f for f in eligible if evidence_mod.sev_rank(f) <= threshold]
+
+
+def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     """The certification reason when this run's GATE scoped against a hunk map
     carrying no ranges, else None (#2178, owner ruling 2026-09-27).
 
@@ -145,7 +182,9 @@ def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
     All four conditions are load-bearing. An INACTIVE delta degrades to the
     WIDER gate, which fails closed, so nothing was scoped away. A run that ASKED
     for `--gate-scope all` already gates on every active finding. An empty change
-    with no active findings is not a defect and still passes. And `ranges == 0`
+    with nothing this gate would have judged -- no findings at all, or none that
+    survive `zero_hunk_population`'s two policies (#2222) -- is not a defect and
+    still passes; `eligible_count` is that population's size. And `ranges == 0`
     is the measure, not `files == 0`: a map that names a file and gives it no
     range scopes the gate by `diff_map.classify`'s two FAIL-OPEN arms, which is
     not a measured diff either.
@@ -157,7 +196,7 @@ def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
     """
     report = ctx.report
     if not (ctx.active and report is not None and report.ranges == 0
-            and active_count > 0 and gate_scope == "on-diff"):
+            and eligible_count > 0 and gate_scope == "on-diff"):
         return None
     # The same split `_disclose_load` makes, for the same reason: the
     # two-readings ambiguity holds only while the reason is UNKNOWN, and a
@@ -171,14 +210,18 @@ def zero_hunk_gate_gap(ctx, active_count, gate_scope) -> str | None:
                  "and dropped, not because the change was" % report.ranges_dropped)
     else:
         cause = "an empty change and a broken artifact look identical from here"
-    # The count is the ACTIVE set, the ruling's population; it is qualified so
-    # a reader does not take it for the number the gate would have judged.
+    # The count is what the GATE would have judged (#2222): `zero_hunk_population`
+    # above, i.e. the active set past the gate's own evidence and severity
+    # policies but before the delta scoping the empty map broke. It is qualified
+    # so a reader does not take it for the reported `active` tally, which is
+    # wider.
     return ("zero-hunk delta gate — the diff-hunks map resolved a base and "
             "carries no diff ranges, so the --gate-scope on-diff source set "
-            "for this run's %d active finding(s) (counted before the gate's "
-            "evidence and severity policy) is not a measured diff; "
+            "for this run's %d gate-eligible finding(s) (the active set after "
+            "the gate's evidence and severity policy, before delta scoping) is "
+            "not a measured diff; "
             "%s: regenerate the diff-hunks artifact (the "
-            "driver's discovery phase writes it)" % (active_count, cause))
+            "driver's discovery phase writes it)" % (eligible_count, cause))
 
 
 def count_hunks(hunks):

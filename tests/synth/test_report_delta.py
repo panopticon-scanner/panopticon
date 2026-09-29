@@ -10,6 +10,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+import scripts.evidence as evidence_mod
 from tests.synth.helpers import _cli_args
 
 
@@ -274,7 +275,9 @@ class TestDeltaGate(unittest.TestCase):
         self.assertIs(rep["summary"]["coverage_certified"], False)
         note = rep["summary"]["coverage_note"]
         self.assertIn("zero-hunk delta gate", note)
-        self.assertIn("2 active finding(s)", note)
+        # #2222: the note counts the GATE-ELIGIBLE population, which this run
+        # (`--gate-unverified`, two HIGHs, `--fail-on high`) makes both of them.
+        self.assertIn("2 gate-eligible finding(s)", note)
         self.assertIn("regenerate the diff-hunks artifact", note)
         # The disclosure: the report says the delta was scoped to nothing...
         cov = rep["meta"]["coverage"]["delta"]
@@ -291,15 +294,21 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
     """#2178 (owner ruling 2026-09-27), end to end through `build_report`: the
     zero-hunk refusal fires only where the ruling says it does. Its three
     neighbours -- an empty change with nothing to report, a run that ASKED for
-    the wider scope, and a map with real ranges -- keep the gate they had."""
+    the wider scope, and a map with real ranges -- keep the gate they had. #2222
+    (owner ruling 2026-09-28) adds the fourth and fifth: a run whose active
+    findings are ones this gate would never have judged keeps its PASS too."""
 
-    def _findings(self, n):
-        return [{"id": "A-%d" % i, "title": "t%d" % i, "severity": "HIGH",
+    def _findings(self, n, sev="HIGH"):
+        # Off-diff lines (the (10, 12) hunk this class also uses reaches 17 at
+        # `diff_context` 5), one per finding: two claims at the SAME locus dedupe
+        # into one, and a count these tests assert must mean what it says.
+        return [{"id": "A-%d" % i, "title": "t%d" % i, "severity": sev,
                  "confidence": "POSSIBLE", "panel": "code", "category": "x",
-                 "location": {"file": "a.py", "line_start": 90}}
+                 "location": {"file": "a.py", "line_start": 90 + i}}
                 for i in range(1, n + 1)]
 
-    def _report(self, hunks, findings, gate_scope="on-diff"):
+    def _report(self, hunks, findings, gate_scope="on-diff",
+                gate_unverified=True, verdicts=None):
         with tempfile.TemporaryDirectory() as d:
             hp = os.path.join(d, "diff-hunks.json")
             with open(hp, "w", encoding="utf-8") as fh:
@@ -312,8 +321,9 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
             return report_mod.build_report(report_mod.ReportInputs(
                 run=report_mod.RunConfig(
                     target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
-                    gate_unverified=True, gate_scope=gate_scope),
-                findings=findings_mod.FindingSet(findings=findings),
+                    gate_unverified=gate_unverified, gate_scope=gate_scope),
+                findings=findings_mod.FindingSet(findings=findings,
+                                                 verdicts=verdicts),
                 delta=delta,
                 plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
             ))
@@ -368,3 +378,59 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
                       rep["summary"]["coverage_note"])
         self.assertEqual(rep["meta"]["coverage"]["delta"]["payload_malformed"],
                          delta_mod.MALFORMED_HUNKS_NOT_OBJECT)
+
+    # #2222 (owner ruling 2026-09-28), NARROWING #2178: the refusal is a
+    # statement about what the empty map hid FROM THE GATE, so the population it
+    # counts is the active set the gate would actually have judged -- the
+    # evidence policy, then the `--fail-on` floor. A finding the gate would have
+    # ignored at any scope was never scoped away by the empty map, so a run
+    # carrying only those keeps the PASS it earned.
+
+    def test_findings_below_the_fail_on_floor_keep_the_pass(self):
+        """Two active INFO findings under `--fail-on high`: the floor admits
+        neither, so nothing the gate would have judged was scoped away and the
+        run is not INCONCLUSIVE. Before #2222 the count was `len(active)` and
+        this same run refused to certify over findings that cannot gate."""
+        rep = self._report({}, self._findings(2, sev="INFO"))
+        self.assertEqual(rep["summary"]["counts"]["active"], 2)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIs(rep["summary"]["coverage_certified"], True)
+        self.assertIsNone(rep["summary"]["coverage_note"])
+
+    def test_unverified_findings_keep_the_pass_under_the_default_policy(self):
+        """The evidence half of the same ruling: two active HIGHs with no
+        verdict are `unverified`, which the default `confirmed_only` policy
+        keeps out of the gate at every scope."""
+        rep = self._report({}, self._findings(2), gate_unverified=False)
+        self.assertEqual(rep["summary"]["gate_policy"], "confirmed_only")
+        self.assertEqual(rep["summary"]["counts"]["active"], 2)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIs(rep["summary"]["coverage_certified"], True)
+        self.assertIsNone(rep["summary"]["coverage_note"])
+
+    def test_one_confirmed_high_over_an_empty_map_is_still_inconclusive(self):
+        """#2222 narrows the population; it does not retire the refusal. A
+        CONFIRMED HIGH under `--fail-on high` is exactly what this gate would
+        have judged, and the zero-range map is what kept it out of the on-diff
+        source set -- so the run still refuses to certify, and the note counts
+        the ONE gate-eligible finding, not the three active ones."""
+        findings = [
+            {"id": "A-1", "title": "confirmed high", "severity": "HIGH",
+             "confidence": "POSSIBLE", "panel": "code", "category": "x",
+             "location": {"file": "a.py", "line_start": 90}},
+            {"id": "A-2", "title": "unverified high", "severity": "HIGH",
+             "confidence": "POSSIBLE", "panel": "code", "category": "x",
+             "location": {"file": "a.py", "line_start": 95}},
+            {"id": "A-3", "title": "unverified info", "severity": "INFO",
+             "confidence": "POSSIBLE", "panel": "code", "category": "x",
+             "location": {"file": "a.py", "line_start": 99}},
+        ]
+        verdicts = {evidence_mod.finding_fingerprint(findings[0]): {
+            "finding_id": "A-1", "verdict": "CONFIRMED", "reasoning": "v"}}
+        rep = self._report({}, findings, gate_unverified=False, verdicts=verdicts)
+        self.assertEqual(rep["summary"]["counts"]["active"], 3)
+        self.assertEqual(rep["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIs(rep["summary"]["coverage_certified"], False)
+        note = rep["summary"]["coverage_note"]
+        self.assertIn("zero-hunk delta gate", note)
+        self.assertIn("1 gate-eligible finding(s)", note)

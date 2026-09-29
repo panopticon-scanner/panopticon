@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The zero-hunk delta gate counts only what the gate would have judged (#1783, #2222, follow-up to
+  #2178).** Owner ruling 2026-09-28: the refusal is a statement about findings the empty hunk map
+  hid FROM THE GATE, so `delta.zero_hunk_population` re-applies this run's own two policies to the
+  active set -- the evidence policy `verdicts._partition_gate` applies, then the `--fail-on` floor
+  `grading.gate_verdict` applies -- and never the delta scoping that empty map broke. Two runs that
+  read INCONCLUSIVE now PASS: an empty `--changes` map whose only active findings sit below
+  `--fail-on`, and one whose findings are all unverified under the default `confirmed_only` policy.
+  A CONFIRMED finding at or above the floor still reads INCONCLUSIVE, an OFF gate is still
+  preserved, and the `coverage_note` clause now says `gate-eligible` instead of `active`.
 - **The virtualenv scope leaves `run_tools.py` (#1762, #2306, ARC-2609514778; part 4).** Finding the
   virtualenvs under the target (`pyvenv.cfg` plus the SHAPE of an environment, depth-bounded and
   confined), deciding which of them a scanner's exclusion knob may be handed (the security mode, the

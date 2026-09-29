@@ -1,13 +1,18 @@
 """Tests for scripts.synth.delta: diff hunks and on-diff classification.
 """
 import contextlib
+import copy
 import io
 import os
 import json
 import tempfile
+import types
 import unittest
 
+import scripts.evidence as evidence_mod
 import scripts.synth.delta as delta_mod
+import scripts.synth.grading as grading_mod
+import scripts.synth.verdicts as verdicts_mod
 
 from tests.synth.helpers import _cli_args
 
@@ -316,7 +321,7 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertIn("zero-hunk delta gate", gap)
         self.assertIn("no diff ranges", gap)
         self.assertIn("on-diff", gap)
-        self.assertIn("2 active finding(s)", gap)
+        self.assertIn("2 gate-eligible finding(s)", gap)   # #2222: the population
         # The remedy, in the disclosure's words: this artifact is written by a
         # phase the operator can re-run, which is the whole point of naming it.
         self.assertIn("regenerate the diff-hunks artifact", gap)
@@ -352,13 +357,16 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertNotIn("was rejected", gap)
         self.assertIn("regenerate the diff-hunks artifact", gap)
 
-    def test_the_count_is_qualified_as_the_active_set(self):
-        # The ruling's population is "active findings"; the clause says so, so a
-        # reader does not take the number for what the gate would have judged.
+    def test_the_count_is_qualified_as_the_gate_eligible_set(self):
+        # #2222 (owner ruling 2026-09-28): the population is what the GATE would
+        # have judged, and the clause says which filters made it -- so a reader
+        # does not take the number for the wider `active` tally the same summary
+        # reports.
         gap = delta_mod.zero_hunk_gate_gap(
             self._ctx({"base": "main", "hunks": {}}), 3, "on-diff")
-        self.assertIn("3 active finding(s) (counted before the gate's "
-                      "evidence and severity policy)", gap)
+        self.assertIn("3 gate-eligible finding(s) (the active set after the "
+                      "gate's evidence and severity policy, before delta "
+                      "scoping)", gap)
 
     def test_a_named_file_with_no_range_is_still_a_gap(self):
         # ranges == 0 is the condition, not files == 0: a map that names a file
@@ -368,7 +376,10 @@ class TestZeroHunkGateGap(unittest.TestCase):
             self._ctx({"base": "main", "hunks": {"a.py": []}}), 1, "on-diff"))
 
     def test_no_active_findings_is_no_gap(self):
-        # The owner's carve-out: an empty legitimate change still passes.
+        # The owner's carve-out: an empty legitimate change still passes. #2222
+        # WIDENS it -- the zero the caller passes is now the gate-eligible
+        # population, so a run whose only findings could never gate lands here
+        # too (`TestTheZeroHunkPopulation` below is where that is decided).
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(
             self._ctx({"base": "main", "hunks": {}}), 0, "on-diff"))
 
@@ -396,3 +407,103 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertTrue(ctx.active)
         self.assertIsNone(ctx.report)
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+
+
+class TestTheZeroHunkPopulation(unittest.TestCase):
+    """#2222 (owner ruling 2026-09-28), narrowing #2178: which findings the
+    zero-hunk refusal is a statement ABOUT. The empty hunk map hid findings from
+    the GATE, so the population is the active set the gate would actually have
+    judged -- the evidence policy, then the `--fail-on` floor -- and a run
+    carrying only findings the gate would have ignored anyway keeps its PASS."""
+
+    def _f(self, sev, status="advisor_confirmed", fid="A-1"):
+        return {"id": fid, "severity": sev, "evidence": {"status": status}}
+
+    def test_the_fail_on_floor_excludes_what_cannot_gate(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", fid="A-1"), self._f("LOW", fid="A-2"),
+             self._f("INFO", fid="A-3")], "high", False)
+        self.assertEqual([f["id"] for f in pop], ["A-1"])
+
+    def test_the_floor_admits_everything_at_or_above_it(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("CRITICAL", fid="A-1"), self._f("HIGH", fid="A-2"),
+             self._f("MEDIUM", fid="A-3")], "medium", False)
+        self.assertEqual([f["id"] for f in pop], ["A-1", "A-2", "A-3"])
+
+    def test_an_unverified_finding_is_out_under_the_default_policy(self):
+        # `confirmed_only`: an unverified HIGH is active but does not gate, so
+        # the empty map scoped nothing away from the gate by hiding it.
+        self.assertEqual(delta_mod.zero_hunk_population(
+            [self._f("HIGH", status="unverified")], "high", False), [])
+
+    def test_gate_unverified_takes_the_whole_active_set(self):
+        # The opt-in policy gates on unverified findings, so they are exactly
+        # what the map hid.
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", status="unverified", fid="A-1"),
+             self._f("HIGH", status="needs_more_info", fid="A-2")], "high", True)
+        self.assertEqual([f["id"] for f in pop], ["A-1", "A-2"])
+
+    def test_every_gate_eligible_status_counts(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", status=s, fid=s) for s in
+             sorted(evidence_mod.GATE_ELIGIBLE_DEFAULT)], "high", False)
+        self.assertEqual({f["id"] for f in pop},
+                         set(evidence_mod.GATE_ELIGIBLE_DEFAULT))
+
+    def test_no_fail_on_admits_every_severity(self):
+        # RULING: the floor reads nothing when there is no threshold, because
+        # `gate_verdict` returns OFF before reading a severity -- so an OFF gate
+        # over a zero-hunk map still reports the gap it has always reported
+        # (`test_grading.py::...::test_off_is_preserved`), and only the evidence
+        # policy narrows the count.
+        active = [self._f("INFO", fid="A-1"), self._f("CRITICAL", fid="A-2"),
+                  self._f("HIGH", status="unverified", fid="A-3")]
+        self.assertEqual([f["id"] for f in
+                          delta_mod.zero_hunk_population(active, None, False)],
+                         ["A-1", "A-2"])
+        self.assertEqual(len(delta_mod.zero_hunk_population(active, None, True)), 3)
+
+    def test_an_empty_active_set_is_an_empty_population(self):
+        for fail_on in ("high", None):
+            for unverified in (False, True):
+                with self.subTest(fail_on=fail_on, gate_unverified=unverified):
+                    self.assertEqual(
+                        delta_mod.zero_hunk_population([], fail_on, unverified), [])
+
+    def test_it_equals_what_the_gate_itself_judges(self):
+        # META-TEST: the two policies are the GATE's, not copies of them. The
+        # evidence half comes from `verdicts._partition_gate` (on an INACTIVE
+        # delta, which is scope `all` -- the wider scope this count is about) and
+        # the severity half from `grading.gate_verdict`, one finding at a time:
+        # a finding the gate would FAIL on is one the empty map hid from it.
+        # Whichever policy moves, this equality moves with it.
+        findings = [self._f("CRITICAL", fid="A-1"),
+                    self._f("HIGH", status="tool_confirmed", fid="A-2"),
+                    self._f("HIGH", status="backup_scope_limited", fid="A-3"),
+                    self._f("HIGH", status="unverified", fid="A-4"),
+                    self._f("MEDIUM", fid="A-5"),
+                    self._f("LOW", status="tool_reported", fid="A-6"),
+                    self._f("INFO", fid="A-7"),
+                    self._f("CRITICAL", status="rejected", fid="A-8")]
+        for fail_on in ("critical", "high", "medium", "low", "info"):
+            for unverified in (False, True):
+                with self.subTest(fail_on=fail_on, gate_unverified=unverified):
+                    run = types.SimpleNamespace(gate_scope="all", fail_on=fail_on,
+                                                gate_unverified=unverified)
+                    parts = verdicts_mod._partition_gate(
+                        copy.deepcopy(findings), delta_mod.DeltaContext(), run)
+                    expected = [f["id"] for f in parts.gate_eligible
+                                if grading_mod.gate_verdict([f], fail_on) == "FAIL"]
+                    pop = delta_mod.zero_hunk_population(parts.active, fail_on,
+                                                         unverified)
+                    self.assertEqual([f["id"] for f in pop], expected)
+                    # The fixture must actually exercise whichever filter is in
+                    # force, or the equality above would hold vacuously. Under
+                    # `--gate-unverified` the evidence filter is a no-op by
+                    # design, and at `--fail-on info` so is the floor.
+                    if not unverified:
+                        self.assertLess(len(parts.gate_eligible), len(parts.active))
+                    if fail_on != "info":
+                        self.assertLess(len(pop), len(parts.gate_eligible))

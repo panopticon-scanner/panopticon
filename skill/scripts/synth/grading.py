@@ -603,10 +603,17 @@ def grade_report(run, resolved, reconciled, delta=None):
     overall = health_grade(health["score"])
     # #2178: computed HERE, from the same delta context `resolve_findings`
     # classified against, the same active list it partitioned, and this run's own
-    # `gate_scope` -- the three inputs the refusal is a statement about.
-    delta_zero_hunks = (delta_mod.zero_hunk_gate_gap(delta, len(resolved.active),
-                                                     run.gate_scope)
-                        if delta is not None else None)
+    # `gate_scope` -- the three inputs the refusal is a statement about. #2222
+    # narrows the count to the population the GATE would have judged:
+    # `zero_hunk_population` re-applies this run's evidence policy and
+    # `--fail-on` floor to that active list, minus the delta scoping the empty
+    # map broke.
+    delta_zero_hunks = None
+    if delta is not None:
+        would_have_judged = delta_mod.zero_hunk_population(
+            resolved.active, run.fail_on, run.gate_unverified)
+        delta_zero_hunks = delta_mod.zero_hunk_gate_gap(
+            delta, len(would_have_judged), run.gate_scope)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,
