@@ -20,7 +20,7 @@ every timeout.
 
 Separate from `run_tools` because that module was 2215 lines, outside this
 repo's own 700-line ratchet, and absorbing every new scanner policy because
-nothing pushed back (#1762, ARC-2609514778). This is part 2 of 3 of that split
+nothing pushed back (#1762, ARC-2609514778). This is part 2 of 4 of that split
 and it moved the block whole: no string, flag, path, byte, message or exception
 changed, and `tests/test_tool_capture.py` compares the bytes this module
 writes, the rows the entry point returns and the lines it prints against a

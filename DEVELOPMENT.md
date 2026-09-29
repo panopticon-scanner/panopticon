@@ -87,6 +87,10 @@ summary + JSON artifact) with standards citations and CI gating.
   missing, the excluded scope and globs, the pruned virtualenv rows and depth bound, the eslint
   file-coverage read, and the network and ignore-file posture ledgers. Not `run_manifest.py`,
   which writes the review RUN's manifest and has a `write_manifest` of its own.
+- `skill/scripts/venv_scope.py` — the virtualenv scope: the depth-bounded, confinement-checked
+  walk that finds them, the security-mode and name-allowlist decision about which may be handed to
+  a scanner's exclusion knob, and each tool's exclusion argv. The rows it returns are published by
+  `tools_manifest.py`; `ingest_tools.py` shares its shape predicate and marker token.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/

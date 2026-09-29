@@ -9,6 +9,19 @@ evidence exposed.
 
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
   report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
+- **The virtualenv scope leaves `run_tools.py` (#1762, #2306, ARC-2609514778; part 4).** Finding the
+  virtualenvs under the target (`pyvenv.cfg` plus the SHAPE of an environment, depth-bounded and
+  confined), deciding which of them a scanner's exclusion knob may be handed (the security mode, the
+  name allowlist) and rendering that onto each tool's argv move to `skill/scripts/venv_scope.py`
+  whole; the rows it produces are still published by `tools_manifest.write_manifest`, and
+  `ingest_tools` imports its `has_venv_shape` and `VENV_MARKER` so the scan side and the ingest side
+  cannot drift. `run_tools.py` goes from 1136 to 838 lines and the new module is 376, under the
+  700-line ceiling; the pin STAYS in `tests/test_flat_module_ceiling.py`, lowered to 838, holding
+  docker detection, language detection, selection, the argv and the CLI. No argv byte, no manifest
+  row and no message changed -- `tests/test_venv_scope.py` compares the walk, both partitions and
+  twenty-four argv shapes (every tool with a repeatable knob, bandit's comma-joined value, a tool
+  with none; zero, one and two directories; `target` set and unset) against a golden captured before
+  the move, and the patch-rule guard derives all four modules' names from their own ASTs.
 - **Malformed OSV and Roslyn records disclose partial coverage (#2105).** Usable sibling
   findings remain available to reports and the security gate. Bounded diagnostics and coverage
   facts distinguish malformed records, including those without an identifiable source file,
