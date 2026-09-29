@@ -484,7 +484,8 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         if errexit is None:
             out.append(statement)
             continue
-        why = _UNGATED % shell if not stops else None if on[index] or index == last else _RUNS_ON % shell
+        why = (_UNGATED % shell if not stops
+               else None if on[index] or index == last else _RUNS_ON % shell)
         out.append(Inlined(statement.stages, statement.separator, region,
                            (why, why or (None if pipefail else _PIPED % shell))))
     return out
@@ -538,6 +539,17 @@ def stdin_scripts(argv, stage):
     if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
         return []
     return [here[0]]
+
+
+def substitution_script(argv, stage):
+    """Why the script this stage hands a shell goes unread in a command
+    substitution, which `flattened` does not reach (review I-4), or None."""
+    if not scripts(argv) + stdin_scripts(argv, stage):
+        return None
+    return ("hands a script to `%s` inside a command substitution, where this guard "
+            "reads none -- it cannot say whether that script downloads and executes "
+            "anything; run it outside the substitution, or exempt the step with a "
+            "reason" % os.path.basename(argv[0]))
 
 
 # --- whether a command's failure is allowed to matter -------------------------

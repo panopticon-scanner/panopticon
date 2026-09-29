@@ -123,18 +123,19 @@ that starts catching one fails there, and this list is edited with it.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* a heredoc body consumed inside a command substitution:
-  `eval "$(cat <<'EOF' … EOF)"`. The OUTER parse lifts the body into its own
-  table and leaves a marker behind, so the text a re-read sees carries a word
-  that means nothing to it -- what the `eval` runs is unread.
+* a heredoc body consumed inside a command substitution, `EOF` and `)` each on
+  a line: `eval "$(cat <<'EOF' … EOF)"`, and `x=$(bash -s <<'EOF' … EOF)` too
+  (review I-4). The OUTER parse lifts the body into its own table and leaves a
+  marker, so a re-read sees a word that means nothing to it: what the `eval`
+  or `bash` runs is unread, and nothing there says it is a program.
   KEPT: resolving it means handing one parse's tables to another, or teaching
   the reader that a heredoc read by `cat` inside a substitution is a SCRIPT --
   a second expansion model. The fleet writes one heredoc-ish construct (a
   `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
   longer CRASHES, which is what it did until #1697's review.
-  CLOSED for the OTHER heredoc spelling, the body handed to an interpreter as
-  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`, `python3 - <<'EOF'` --
-  #1839 and #2293; run-14 SEC-3915165799 found it neither read nor reported).
+  CLOSED outside a substitution for the OTHER heredoc spelling, the body handed
+  to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
+  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
   Two facts decide it and both are already parsed: whether a command's program
   is its standard input at all (`workflow_forms.stdin_program`, an operand walk
   -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
@@ -186,9 +187,9 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
-                            chmod_executable, chmod_targets, covers, described,
-                            flattened, in_container, may_run, names_file, parse_fetch,
-                            regions, same_file, stdin_program, streamed_fetch, swallowed)
+                            chmod_executable, chmod_targets, covers, described, flattened,
+                            in_container, may_run, names_file, parse_fetch, regions, same_file,
+                            stdin_program, streamed_fetch, substitution_script, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -219,7 +220,7 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _walk(stmts, stream_exec=False):
+def _walk(stmts, stream_exec=False, inside=False):
     """([(statement index, Fetch)], [(statement index, why it is unread)]).
 
     Every download in the script, and every command this module cannot read,
@@ -229,11 +230,10 @@ def _walk(stmts, stream_exec=False):
 
     A fetch in a substitution is credited to the command that CONSUMES it --
     `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
-    the downloaded bytes become behaviour. Two forms are unread, and both get
-    this module's standing answer: REPORTED, never accepted. A command that
-    cannot be resolved -- behind a wrapper, or a pattern bash expands where it
-    starts (`shell_reader.unresolved_wrapper`) -- and a program handed to an
-    interpreter on stdin that cannot be read as written (`_unread_stdin`).
+    the downloaded bytes become behaviour. Three forms are REPORTED unread: a
+    command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
+    stdin program not readable as written (`_unread_stdin`) and, `inside` a
+    substitution, a script handed to a shell (`substitution_script`, review I-4).
     """
     found, unread = [], []
     for index, statement in enumerate(stmts):
@@ -255,13 +255,13 @@ def _walk(stmts, stream_exec=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage)
+            reason = _unread_stdin(stage) or inside and substitution_script(argv, stage)
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             for inner in stage.substitutions:
-                fetched, nested = _walk(statements(inner), stream_exec)
+                fetched, nested = _walk(statements(inner), stream_exec, True)
                 unread.extend((index, why) for _index, why in nested)
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)

