@@ -350,6 +350,27 @@ def load_findings_detailed(paths):
 _sev_rank = evidence_mod.sev_rank
 
 
+def severity_floor_admits(finding, fail_on):
+    """Is `finding` at or above the `--fail-on` severity floor? (#2222)
+
+    THE definition of that floor, for the same #688 reason the rank above is
+    aliased rather than copied. Two readers: `grading.gate_verdict`, which is
+    this predicate under `any()` once the gate is armed, and
+    `delta.zero_hunk_population`, which counts the findings a zero-hunk run's
+    gate WOULD have judged. Those two disagreeing about the threshold is exactly
+    the drift #2222 was filed about, so there is one spelling of it.
+
+    A falsy `fail_on` admits everything: `gate_verdict` returns OFF before
+    reading a severity at all, and the zero-hunk population then narrows by the
+    evidence policy alone (owner ruling 2026-09-28). An unknown severity NAME
+    raises `ValueError` here exactly as the inline threshold this replaces did;
+    argparse constrains the flag to the four real ones.
+    """
+    if not fail_on:
+        return True
+    return _sev_rank(finding) <= SEV_ORDER.index(str(fail_on).upper())
+
+
 def _norm_line(v):
     try:
         return int(v)

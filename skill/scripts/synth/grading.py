@@ -35,14 +35,15 @@ def risk_level(findings):
     return "LOW"
 
 def gate_verdict(findings, fail_on):
-    """Return CI gate verdict (PASS/FAIL/OFF) based on findings and threshold."""
+    """Return CI gate verdict (PASS/FAIL/OFF) based on findings and threshold.
+
+    The threshold itself is `findings.severity_floor_admits` (#2222), shared with
+    `delta.zero_hunk_population` -- the count of what this gate WOULD have judged
+    on a zero-hunk delta run -- so the two cannot disagree about the floor."""
     if not fail_on:
         return "OFF"
-    threshold = findings_mod.SEV_ORDER.index(str(fail_on).upper())
-    for f in findings:
-        if findings_mod._sev_rank(f) <= threshold:
-            return "FAIL"
-    return "PASS"
+    return ("FAIL" if any(findings_mod.severity_floor_admits(f, fail_on)
+                          for f in findings) else "PASS")
 
 def gate_severity_roles(gate_eligible, fail_on):
     """Which severities the `--fail-on` threshold puts IN PLAY, and which of
@@ -131,9 +132,12 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     provenance and nothing the findings depend on.
 
     `delta_zero_hunks` (#2178, owner ruling 2026-09-27) is the REASON an ACTIVE
-    delta review's diff-hunks map carried no ranges while active findings existed
-    under `--gate-scope on-diff`: the gate scoped against something that is not a
-    measured diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
+    delta review's diff-hunks map carried no ranges while GATE-ELIGIBLE findings
+    existed under `--gate-scope on-diff` -- `delta.zero_hunk_population`, i.e.
+    active past the evidence policy and any `--fail-on` floor, which is the
+    population this gate would have judged under the wider scope (#2222, owner
+    ruling 2026-09-28): the gate scoped against something that is not a measured
+    diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
     that decision and this is only its answer; None means no gap. Unlike the two
     reasons above it is a ONE-channel fact -- nothing else in the report moves the
     gate for it -- so it joins `gate_relevant_gap` directly (PASS -> INCONCLUSIVE,

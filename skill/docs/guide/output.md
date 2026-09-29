@@ -7,9 +7,10 @@ own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findi
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
 NOT certified, distinct from a real `FAIL`. Another cause (#2178, narrowed by #2222): under the
 default `--gate-scope on-diff`, an ACTIVE delta review whose hunk map has no ranges while
-gate-eligible findings exist (active, at or above `--fail-on`, admitted by the evidence policy)
-reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change with no such
-finding passes, and the gate never falls back to the wider scope. `summary.coverage_certified` and
+gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on` when one
+is set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change
+with no such finding passes, and the gate never falls back to the wider scope.
+`summary.coverage_certified` and
 `meta.coverage.divergence` carry the detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when
 an artifact it wrote fails its own published schema (next paragraph), `3` on an unreadable OCRDb
 bundle, `0` otherwise. Exit `2` is also argparse's usage-error code and `main`'s own precondition

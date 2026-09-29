@@ -300,9 +300,11 @@ class TestZeroHunkGateGap(unittest.TestCase):
     """#2178 (owner ruling 2026-09-27): the gate consequence of the shape #1783
     only disclosed. A based artifact with no diff ranges leaves a `--gate-scope
     on-diff` gate scoping against something that is not a measured diff, so a
-    run carrying active findings must not read PASS. The reason string this
-    function returns is what `certify` puts in `coverage_note`; None means
-    there is no gap, and every arm below is one of the four conditions."""
+    run carrying findings the gate would have judged must not read PASS (#2222
+    narrowed that population from any active finding; `TestTheZeroHunkPopulation`
+    below is where it is decided). The reason string this function returns is
+    what `certify` puts in `coverage_note`; None means there is no gap, and every
+    arm below is one of the four conditions."""
 
     def _ctx(self, payload):
         with tempfile.TemporaryDirectory() as d:
@@ -365,8 +367,8 @@ class TestZeroHunkGateGap(unittest.TestCase):
         gap = delta_mod.zero_hunk_gate_gap(
             self._ctx({"base": "main", "hunks": {}}), 3, "on-diff")
         self.assertIn("3 gate-eligible finding(s) (the active set after the "
-                      "gate's evidence and severity policy, before delta "
-                      "scoping)", gap)
+                      "gate's evidence policy and any --fail-on floor, before "
+                      "delta scoping)", gap)
 
     def test_a_named_file_with_no_range_is_still_a_gap(self):
         # ranges == 0 is the condition, not files == 0: a map that names a file

@@ -323,7 +323,7 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
                     target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
                     gate_unverified=gate_unverified, gate_scope=gate_scope),
                 findings=findings_mod.FindingSet(findings=findings,
-                                                 verdicts=verdicts),
+                                                 verdicts=verdicts or {}),
                 delta=delta,
                 plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
             ))
@@ -348,9 +348,10 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
         self.assertIsNone(rep["summary"]["coverage_note"])
 
     def test_a_populated_map_is_untouched(self):
-        # Both findings sit at `line_start` 90, outside the (10, 12) hunk, so
-        # the on-diff gate has nothing to fail on -- and that is a MEASURED empty
-        # scope, which passes exactly as it did before this ruling.
+        # Both findings sit past line 90 -- at 91 and 92 -- outside the (10, 12)
+        # hunk, which reaches 17 at `diff_context` 5, so the on-diff gate has
+        # nothing to fail on -- and that is a MEASURED empty scope, which passes
+        # exactly as it did before this ruling.
         rep = self._report({"a.py": [[10, 12]]}, self._findings(2))
         self.assertEqual(rep["summary"]["gate"], "PASS")
         self.assertIs(rep["summary"]["coverage_certified"], True)

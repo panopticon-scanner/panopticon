@@ -4,6 +4,7 @@ import os
 import sys
 
 from . import artifacts as artifacts_mod
+from . import findings as findings_mod
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence_mod
 
@@ -138,15 +139,25 @@ def zero_hunk_population(active, fail_on, gate_unverified) -> list:
     population `zero_hunk_gate_gap` counts (#2222, owner ruling 2026-09-28,
     NARROWING #2178 from every active finding).
 
-    Two filters, the gate's own two and in the gate's own order:
+    Two filters, the gate's own two and in the gate's own order. One of them is
+    SHARED with the gate and the other is MIRRORED, and that asymmetry is a
+    consequence of the import graph, not a preference:
 
-    - the EVIDENCE policy `verdicts._partition_gate` applies -- every active
-      finding under `--gate-unverified`, else the ones whose
-      `evidence.status` is in `evidence.GATE_ELIGIBLE_DEFAULT`;
-    - then the SEVERITY floor `grading.gate_verdict` applies -- `sev_rank` at or
-      above `--fail-on`. `SEV_ORDER` and `sev_rank` are read from
-      `scripts.evidence`, which is where `synth.findings` (and so
-      `gate_verdict`) gets them, rather than restated here.
+    - the EVIDENCE policy is mirrored -- every active finding under
+      `--gate-unverified`, else the ones whose `evidence.status` is in
+      `evidence.GATE_ELIGIBLE_DEFAULT`, which is how `verdicts._partition_gate`
+      spells it. `verdicts` imports THIS module, so its function cannot be
+      called from here and the policy cannot move here either; what is shared is
+      the frozenset both read, and the mirror is the one predicate over it.
+    - the SEVERITY floor is shared: `findings.severity_floor_admits` is its one
+      definition, and `grading.gate_verdict` is that same predicate under
+      `any()`. `grading` imports this module too, so `gate_verdict` is no more
+      callable from here than `_partition_gate` is -- but a helper in a module
+      BOTH sides import is, and the floor is the half small enough to be one.
+
+    `test_delta.TestTheZeroHunkPopulation` asserts the result equals what the
+    REAL `_partition_gate` and `gate_verdict` judge for a mixed fixture, which is
+    what keeps the mirrored half from drifting silently.
 
     Deliberately NOT applied: the DELTA scoping. That is the filter the empty
     hunk map broke, so the count is what the gate WOULD have judged under the
@@ -157,16 +168,12 @@ def zero_hunk_population(active, fail_on, gate_unverified) -> list:
     over a zero-hunk map therefore still reports a gap, and `certify` keeps the
     OFF while refusing to certify -- the behaviour
     `test_grading.TestAZeroHunkDeltaGateCannotReadPass::test_off_is_preserved`
-    pins. `test_delta.TestTheZeroHunkPopulation` asserts this function equals
-    what `_partition_gate` and `gate_verdict` actually judge for a mixed
-    fixture, so a change to either policy cannot leave this count behind."""
+    pins, note clause included."""
     eligible = (list(active) if gate_unverified else
                 [f for f in active
                  if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
-    if not fail_on:
-        return eligible
-    threshold = evidence_mod.SEV_ORDER.index(str(fail_on).upper())
-    return [f for f in eligible if evidence_mod.sev_rank(f) <= threshold]
+    return [f for f in eligible
+            if findings_mod.severity_floor_admits(f, fail_on)]
 
 
 def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
@@ -211,15 +218,16 @@ def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     else:
         cause = "an empty change and a broken artifact look identical from here"
     # The count is what the GATE would have judged (#2222): `zero_hunk_population`
-    # above, i.e. the active set past the gate's own evidence and severity
-    # policies but before the delta scoping the empty map broke. It is qualified
-    # so a reader does not take it for the reported `active` tally, which is
-    # wider.
+    # above, i.e. the active set past the gate's evidence policy and any
+    # `--fail-on` floor but before the delta scoping the empty map broke. The
+    # clause says "any" because `certify` composes this note for an OFF gate too,
+    # where no floor is applied at all. It is qualified so a reader does not take
+    # the number for the reported `active` tally, which is wider.
     return ("zero-hunk delta gate — the diff-hunks map resolved a base and "
             "carries no diff ranges, so the --gate-scope on-diff source set "
             "for this run's %d gate-eligible finding(s) (the active set after "
-            "the gate's evidence and severity policy, before delta scoping) is "
-            "not a measured diff; "
+            "the gate's evidence policy and any --fail-on floor, before delta "
+            "scoping) is not a measured diff; "
             "%s: regenerate the diff-hunks artifact (the "
             "driver's discovery phase writes it)" % (eligible_count, cause))
 
