@@ -48,6 +48,17 @@ Homepage = "https://github.com/panopticon-scanner/panopticon"
 Repository = "https://github.com/panopticon-scanner/panopticon"
 Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 
+[tool.setuptools]
+# The packaging intent, declared rather than left to auto-discovery (#2239):
+# this project ships NO importable modules. The skill directory and the tools
+# image are the delivery vehicles -- README tells an operator to install the
+# three runtime dependencies directly and the code runs from the checkout, every
+# CI install OF THIS PROJECT is `pip install -e ".[dev]"`/`".[test]"` for the
+# dev tooling, and nothing anywhere builds a wheel. So an empty `py-modules` is
+# the truthful answer, and a build that ever needs to ship code has to say so
+# here on purpose.
+py-modules = []
+
 [tool.pytest.ini_options]
 pythonpath = ["skill", "skill/scripts", "scripts", "."]
 addopts = ["--import-mode=importlib"]
@@ -75,7 +86,12 @@ namespace_packages = true
 explicit_package_bases = true
 check_untyped_defs = true
 warn_unused_ignores = true
-# Temporary until #1516 consolidates flat imports and declares third-party stubs.
+# Two classes of unresolvable import, measured with the flag OFF, and neither is
+# a type error this repo can fix here: the flat imports of our OWN modules
+# (`import discovery` beside `import scripts.discovery` -- the second of the two
+# import modes DEVELOPMENT.md describes, whose retirement #1516 tracks), and
+# third-party packages that ship no stubs (defusedxml, jsonschema, bandit).
+# Nothing else appears, so the flag suppresses no finding of ours.
 ignore_missing_imports = true
 
 [tool.ruff]

@@ -475,10 +475,9 @@ def redact_report_secrets(report):
 
 def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes.
-    Writes all files atomically using staging temp files (#1124).
+    Stage every file before publishing siblings, then the main report (#1124).
     """
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
-    os.makedirs(out_dir, exist_ok=True)
     stem, ext = os.path.splitext(out_path)
 
     # #15: discarded_claims carries every rejected claim's full advisor prose and
@@ -500,35 +499,12 @@ def write_report(report, out_path, max_bytes=800000):
     blob = json.dumps(report, indent=2)
     findings = list(report.get("findings") or [])
     if len(blob.encode("utf-8")) <= max_bytes or len(findings) <= 1:
-        # #run7 COD-F1A: stage ALL temps first, then os.replace them, committing
-        # the pointed-to discarded sibling BEFORE the main report (the pointer).
-        # The old per-target write+replace loop committed the main report first,
-        # so a failed sibling write left the main report pointing at a
-        # discarded_claims_file that never existed (a dangling pointer). This
-        # mirrors the chunked branch's write-all-then-replace discipline.
         targets = [(out_path, blob)]
         if discarded_sibling:
             targets.append((discarded_sibling[0], json.dumps(discarded_sibling[1], indent=2)))
-        temp_files = []
-        try:
-            for _fp, _txt in targets:
-                tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
-                # #1735: the uuid leaves no plantable leaf name, but the staging
-                # file still lands in the reviewed tree's `.panopticon` -- the
-                # no-follow open is also what confines a symlinked intermediate.
-                with safe_write.open_w_nofollow(tmp) as fh:
-                    fh.write(_txt)
-                temp_files.append((tmp, _fp))
-            for tmp, _fp in reversed(temp_files):   # sibling first, main last
-                os.replace(tmp, _fp)
-        finally:
-            for tmp, _ in temp_files:
-                if os.path.exists(tmp):
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
-        return [t[0] for t in targets]
+        return safe_write.publish_texts(
+            (path, os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex), text)
+            for path, text in targets)
     main_report = dict(report)
     main_report["meta"] = dict(report.get("meta") or {})
 
@@ -588,31 +564,10 @@ def write_report(report, out_path, max_bytes=800000):
     if discarded_sibling:
         all_targets.append(discarded_sibling)
 
-    temp_files = []
-    try:
-        for final_path, content in all_targets:
-            parent = os.path.dirname(os.path.abspath(final_path)) or "."
-            os.makedirs(parent, exist_ok=True)
-            tmp_p = os.path.join(parent, ".part-%s.tmp" % uuid.uuid4().hex)
-            with safe_write.open_w_nofollow(tmp_p) as fh:   # #1735, as above
-                json.dump(content, fh, indent=2)
-            temp_files.append((tmp_p, final_path))
+    return safe_write.publish_texts(
+        (path, os.path.join(out_dir, ".part-%s.tmp" % uuid.uuid4().hex),
+         json.dumps(content, indent=2)) for path, content in all_targets)
 
-        # #run7 COD-F1A: commit the main report LAST -- its meta.parts and
-        # meta.discarded_claims_file only go live after every part + sibling they
-        # point at already exists on disk, so a mid-replace failure can never
-        # leave the main report referencing a missing artifact.
-        for tmp_p, final_path in reversed(temp_files):
-            os.replace(tmp_p, final_path)
-    finally:
-        for tmp_p, _ in temp_files:
-            if os.path.exists(tmp_p):
-                try:
-                    os.remove(tmp_p)
-                except OSError:
-                    pass
-
-    return [t[0] for t in all_targets]
 
 def _derive_html_path(json_path):
     if json_path.lower().endswith(".json"):

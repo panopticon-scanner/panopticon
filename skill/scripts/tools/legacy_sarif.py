@@ -43,7 +43,7 @@ TOOL_CMD = {
     #                 -> `ruleId`, `message.text`, `physicalLocation`; so the
     #                 masked field is exactly the snippet, and the rule and
     #                 location the tool axis reads come through intact.
-    # Defence in depth, not a substitute: run_tools._redact_capture still runs
+    # Defence in depth, not a substitute: tool_capture._redact_capture still runs
     # over this capture like every other.
     "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
                  "--report-path", "/dev/stdout", "--no-banner", "--redact"],

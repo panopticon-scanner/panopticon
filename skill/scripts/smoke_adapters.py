@@ -205,7 +205,7 @@ def check_writable(path, why):
 def _read_capped(stream, cap=PROBE_OUTPUT_MAX_BYTES):
     """Read `stream` to EOF keeping at most `cap` bytes; return (kept, truncated).
 
-    The same bounded-sink shape as `run_tools._stream_and_write` (#1111/#1510):
+    The same bounded-sink shape as `tool_capture._stream_and_write` (#1111/#1510):
     stop ACCUMULATING at the cap but keep READING, because a producer left with
     a full pipe blocks on write and the probe then burns its whole timeout for
     nothing. The head is what is kept -- a scanner that cannot start says so
