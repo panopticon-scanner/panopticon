@@ -216,12 +216,14 @@ def dedupe(findings):
                             for m in sub:
                                 if m is not best:
                                     _reinforce_merge(best, m)
-                                    _carry_aggregation(best, m)
                         # #1476: alias EVERY collapsed member -- the
                         # corroboration branch above is conditional, the drop is not.
+                        # #2361: the carry belongs to the DROP, not to corroboration,
+                        # so a tool-only sub-bucket keeps its aggregation too.
                         for m in sub:
                             if m is not best:
                                 evidence_mod.record_merged_id(best, m)
+                                _carry_aggregation(best, m)
                         result.append(best)
     return result + passthrough
 

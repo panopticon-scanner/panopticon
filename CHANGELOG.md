@@ -18,7 +18,9 @@ evidence exposed.
   said the rule had fired more than once, and `scripts/file_issues.py`, which renders both, had
   nothing to render. A new `_carry_aggregation` moves the pair, and only where the aggregated
   member actually LEAVES the report: dedupe's exactly-two tool+agent merge and its per-category
-  sub-bucket drop loop carry it, while the per-category representative merge does NOT -- that tool
+  sub-bucket drop loop (which runs whether or not the category has an agent member -- the carry
+  is a property of the drop, not of corroboration) carry it, while the per-category
+  representative merge does NOT -- that tool
   finding survives its own rule bucket and reaches the report, so carrying there would have two
   entries claim one pair of hits, on an entry that does not even alias the source. It carries only
   when the dropped member is tool-sourced (an agent finding can declare either key) and in the

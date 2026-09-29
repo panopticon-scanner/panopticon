@@ -679,6 +679,23 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
                          [{"file": "src/app.py", "line_start": 12}])
         self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
 
+    def test_the_drop_loop_carries_without_an_agent_member(self):
+        # The same two-panel cluster with NO agent finding: the category is not
+        # corroborated, nothing is marked reinforced, but the sub-bucket still
+        # drops the aggregated member -- and the carry is a property of the
+        # drop, not of corroboration, so the loci still travel.
+        out, _integration = corroborate_mod.prepare_for_queue(
+            [self._tool_hit("TA-1", 10, sev="HIGH", panel="security"),
+             self._tool_hit("TB-1", 10, panel="redteam"),
+             self._tool_hit("TB-2", 12, panel="redteam")])
+        survivor = only(out)
+        self.assertEqual(survivor["id"], "TA-1")
+        self.assertFalse(survivor.get("reinforced"))
+        self.assertEqual(survivor["occurrences"], 2)
+        self.assertEqual(survivor["additional_loci"],
+                         [{"file": "src/app.py", "line_start": 12}])
+        self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
+
     def test_no_carry_across_categories(self):
         # dedupe's exactly-two branch collapses a tool+agent pair at one locus
         # "even across categories" -- which is why cvss is gated on a category
