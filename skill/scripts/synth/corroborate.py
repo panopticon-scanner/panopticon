@@ -59,6 +59,42 @@ def _reinforce_merge(best, other):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
 
+# `findings.aggregate_tool_findings` deliberately parks an aggregated survivor on
+# a locus an agent also flagged so the pair still reinforces in `dedupe` -- which
+# then keeps the more severe member, usually the agent finding. Without the carry
+# below, that rule's other lines and its count left the report with the dropped
+# member, disclosed nowhere.
+def _carry_aggregation(best, other):
+    """Carry a DROPPED tool member's aggregation onto the survivor (#2361).
+
+    Called only where `other` leaves the report. Its `occurrences` and
+    `additional_loci` are the other loci of the same issue, not enrichment,
+    so they move as ONE unit and only when: `other` is tool-sourced (agent
+    findings declare neither), it is the same issue (category match -- the
+    gate `_reinforce_merge` already applies to cvss), its loci are a well-
+    typed non-empty list with a count above one (a rule-carrying tool
+    finding is stamped `occurrences: 1` when it aggregated nothing), and
+    `best` carries no aggregation of its own. A survivor with its own
+    aggregation keeps it: two aggregated findings at one locus are two
+    issues (#2225, distinct artifacts), never one sum."""
+    if not _is_tool_sourced(other):
+        return
+    if str(best.get("category")) != str(other.get("category")):
+        return
+    loci = other.get("additional_loci")
+    count = other.get("occurrences")
+    if not (isinstance(loci, list) and loci and isinstance(count, int) and count > 1):
+        return
+    if best.get("additional_loci") or (
+        isinstance(best.get("occurrences"), int) and best["occurrences"] > 1
+    ):
+        return
+    carried = [dict(locus) for locus in loci if isinstance(locus, dict)]
+    if not carried:
+        return  # a list with no locus dicts is no aggregation: the count stays with it
+    best["additional_loci"] = carried
+    best["occurrences"] = count
+
 def _by_package(members):
     """One rule bucket split by `tool_evidence.package_name`, in first-seen order.
 
@@ -130,6 +166,7 @@ def dedupe(findings):
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             _reinforce_merge(best, other)
+            _carry_aggregation(best, other)
             evidence_mod.record_merged_id(best, other)
             result.append(best)
         else:
@@ -178,14 +215,18 @@ def dedupe(findings):
                                     key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)),
                                 )
                                 _reinforce_merge(best, best_tool)
+                                # no _carry_aggregation: best_tool stays in the report (#2361)
                             for m in sub:
                                 if m is not best:
                                     _reinforce_merge(best, m)
                         # #1476: alias EVERY collapsed member -- the
                         # corroboration branch above is conditional, the drop is not.
+                        # #2361: the carry belongs to the DROP, not to corroboration,
+                        # so a tool-only sub-bucket keeps its aggregation too.
                         for m in sub:
                             if m is not best:
                                 evidence_mod.record_merged_id(best, m)
+                                _carry_aggregation(best, m)
                         result.append(best)
     return result + passthrough
 

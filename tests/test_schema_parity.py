@@ -442,8 +442,8 @@ class TestSchemaParity(unittest.TestCase):
         self.assertTrue(aggregated,
                         "no aggregated finding: additional_loci is unwalked")
         self.assertEqual(len(aggregated), 1,
-                         "the fixture aggregates exactly one rule; a second makes"
-                         " the pin below arbitrary")
+                         "the fixture aggregates or carries exactly one rule; a"
+                         " second makes the pin below arbitrary")
         drifted = "additional_loci drifted: expected the src/app.py:12 sibling" \
                   " and occurrences 2"
         self.assertEqual(aggregated[0]["additional_loci"][0]["file"], "src/app.py",

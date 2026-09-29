@@ -7,6 +7,29 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A dropped tool member's `occurrences` and `additional_loci` move onto the surviving finding
+  (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review reproduced -- that PR's
+  parity fixture had to pick two lines no agent claimed to keep the key reachable at all.
+  `synth/findings.aggregate_tool_findings` deliberately parks an aggregated survivor on a locus an
+  agent also flagged, so `synth/corroborate.dedupe` reinforces the pair -- and dedupe keeps the
+  MORE SEVERE member, usually the agent finding, whose `_reinforce_merge` copied cvss, scenario,
+  impact, remediation, references and citations but not the aggregation. So an agent flagging one
+  of a rule's lines silently retired that rule's other loci and its count: nothing in the report
+  said the rule had fired more than once, and `scripts/file_issues.py`, which renders both, had
+  nothing to render. A new `_carry_aggregation` moves the pair, and only where the aggregated
+  member actually LEAVES the report: dedupe's exactly-two tool+agent merge and its per-category
+  sub-bucket drop loop (which runs whether or not the category has an agent member -- the carry
+  is a property of the drop, not of corroboration) carry it, while the per-category
+  representative merge does NOT -- that tool
+  finding survives its own rule bucket and reaches the report, so carrying there would have two
+  entries claim one pair of hits, on an entry that does not even alias the source. It carries only
+  when the dropped member is tool-sourced (an agent finding can declare either key) and in the
+  survivor's category (one rule's loci are not another issue's), only a well-typed non-empty locus
+  list and a count above one moving as ONE unit, and only onto a survivor with no aggregation of
+  its own -- which keeps it, never a sum (#2225: two artifacts at one manifest locus are two
+  issues). Honest limit, unchanged here: the absorbed tool member's rule id is not disclosed
+  anywhere in the report -- `_merged_ids` carries its finding id for verdict binding only and is
+  stripped before the artifact is written.
 - **One guarded reader for `tool_evidence`, so a malformed stored finding cannot abort `reconcile`
   through the rule id (#2359, #1768, ARC-A4A).** The low follow-up #2358 left behind: that change
   guarded the field's read in `artifact_term`, while `tool_rule_id` still read the same field --

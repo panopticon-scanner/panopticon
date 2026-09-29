@@ -1129,11 +1129,11 @@
           },
           "occurrences": {
             "type": "integer",
-            "description": "How many tool findings sharing this panel, category, file, rule id and artifact (`tool_evidence.package_name`) were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings."
+            "description": "How many tool findings sharing this panel, category, file, rule id and artifact (`tool_evidence.package_name`) were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings, or carried onto the surviving finding in `synth/corroborate.dedupe` when that aggregated tool finding is the member DROPPED in favour of a same-category survivor (#2361)."
           },
           "additional_loci": {
             "type": "array",
-            "description": "The other loci of the tool findings sharing this finding's panel, category, file, rule id and artifact (`tool_evidence.package_name`) that synth/findings.aggregate_tool_findings collapsed into this one (see `occurrences`): the survivor keeps the primary locus in `location` and lists the rest here, lowest line first (a locus with no line first of all), an agent-corroborated locus winning the primary slot. Absent on a finding that aggregated nothing.",
+            "description": "The other loci of the tool findings sharing this finding's panel, category, file, rule id and artifact (`tool_evidence.package_name`) that synth/findings.aggregate_tool_findings collapsed into this one (see `occurrences`): the survivor keeps the primary locus in `location` and lists the rest here, lowest line first (a locus with no line first of all), an agent-corroborated locus winning the primary slot -- or carried onto the surviving finding in `synth/corroborate.dedupe` when that aggregated tool finding is the member DROPPED in favour of a same-category survivor (#2361). Absent on a finding that neither aggregated nor absorbed one.",
             "items": {
               "type": "object",
               "required": [
