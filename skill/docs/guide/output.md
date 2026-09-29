@@ -78,6 +78,22 @@ security HIGH with no CVSS score or no exploit scenario, two findings sharing an
 `evidence.status` — are checked alongside it and stay advisory: they print as `SCHEMA:` lines and
 are counted in `meta.schema_errors`, and they do not change the exit status.
 
+**Malformed OSV and Roslyn captures (#2105).** Invalid top-level containers fail ingestion.
+Malformed child containers or records retain usable sibling findings and disclose partial coverage
+in the adapter's `file_coverage` facts and `meta.coverage.tools_file_partial`. The report sets
+`summary.coverage_certified: false`; the finding-based security gate and usable delta baseline
+remain available, with a partial-coverage diagnostic. Valid empty arrays stay complete. Roslyn's
+intentional compiler and location-less diagnostic drops retain their existing policy.
+
+These adapters count distinct identifiable paths in the capture, not every file the scanner read.
+A path with any malformed record counts as `unparsed_files` even when other findings from that path
+survive. `malformed_records` counts malformed entries or fields; `unlocated_records` counts those
+without an identifiable source path, including malformed Roslyn runs. No filename is invented for
+them. `files` and structural `records` examples are capped at 100 each, with omitted counts; file
+display text is bounded and escaped. One stderr summary reports the malformed and unlocated counts
+without quoting scanner values or exceptions. Optional OSV severity metadata keeps its fallback
+behavior; these facts describe malformed finding containers and required identifiers or paths.
+
 **Per-run folders (5.1).** Each run's working artifacts — findings, verdicts, coverage, scout
 profiles, tool output, dispatch plans, hashes — live under `.panopticon/runs/<tag>/`, where `<tag>`
 = `<host>-<mode>-<scope>-<yyyymmdd>-<run-id8>`, derived from the write-once run-manifest so it is

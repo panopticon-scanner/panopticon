@@ -5,7 +5,7 @@ import os
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
                    omit_none, parse_json_bytes, run_tool, scratch_cwd,
                    _cvss_v3_score)
-from .sarif_utils import _norm_uri
+from .sarif_utils import CaptureCoverage, _norm_uri
 
 
 _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
@@ -90,17 +90,38 @@ class OsvScannerAdapter:
         CVSS vector dicts, not a label). source.path carries the container
         mount prefix and is normalized like SARIF artifact URIs.
         """
+        return self.parse_with_file_coverage(raw, group)[0]
+
+    def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict]:
         data = parse_json_bytes(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+            raise ValueError("osv-scanner: expected an object with a results array")
+        coverage = CaptureCoverage()
         out = []
         n = 1
-        for result in data.get("results", []):
-            src_path = _norm_uri((result.get("source") or {}).get("path") or "")
-            for pkg_entry in result.get("packages", []) or []:
-                if not isinstance(pkg_entry, dict):
+        for ri, result in enumerate(data["results"]):
+            record = "results[%d]" % ri
+            result = coverage.object(result, record)
+            if result is None:
+                continue
+            source = coverage.object(result.get("source"), record + ".source")
+            path = source.get("path") if source is not None else None
+            if source is not None and (not isinstance(path, str) or not path):
+                coverage.malformed(record + ".source.path", "expected_path")
+            coverage.seen(path)
+            src_path = _norm_uri(path) if isinstance(path, str) else ""
+            packages = coverage.array(result.get("packages"), record + ".packages", path)
+            for pi, pkg_entry in enumerate(packages):
+                package_record = record + ".packages[%d]" % pi
+                pkg_entry = coverage.object(pkg_entry, package_record, path)
+                if pkg_entry is None:
                     continue
-                pkg = pkg_entry.get("package", {}) or {}
+                pkg = coverage.object(pkg_entry.get("package"), package_record + ".package", path)
+                if pkg is None:
+                    continue
                 sev_by_id: dict[str, float] = {}
-                for grp in pkg_entry.get("groups", []) or []:
+                groups = pkg_entry.get("groups")
+                for grp in groups if isinstance(groups, list) else []:
                     if not isinstance(grp, dict):
                         continue
                     score = _group_score(grp.get("max_severity"))
@@ -110,10 +131,17 @@ class OsvScannerAdapter:
                     for vid in ids if isinstance(ids, list) else []:
                         if isinstance(vid, str):
                             sev_by_id[vid] = max(score, sev_by_id.get(vid, score))
-                for vuln in pkg_entry.get("vulnerabilities", []) or []:
-                    if not isinstance(vuln, dict):
+                vulnerabilities = coverage.array(pkg_entry.get("vulnerabilities"),
+                    package_record + ".vulnerabilities", path)
+                for vi, vuln in enumerate(vulnerabilities):
+                    vuln_record = package_record + ".vulnerabilities[%d]" % vi
+                    vuln = coverage.object(vuln, vuln_record, path)
+                    if vuln is None:
                         continue
                     vuln_id = vuln.get("id")
+                    if not isinstance(vuln_id, str) or not vuln_id:
+                        coverage.malformed(vuln_record + ".id", "expected_identifier", path)
+                        continue
                     vuln_score = sev_by_id.get(vuln_id) if isinstance(vuln_id, str) else None
                     if vuln_score is not None:
                         severity = cvss_bucket(vuln_score)
@@ -135,18 +163,23 @@ class OsvScannerAdapter:
                         # INFO -- a real vuln with no CVSS stays a visible
                         # finding the agent can downgrade, not dismissed noise.
                         severity = "LOW"
+                    description = vuln.get("summary") or vuln.get("details")
+                    if not isinstance(description, str):
+                        description = "No description provided."
+                    aliases = vuln.get("aliases")
+                    ecosystem = pkg.get("ecosystem")
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
                         severity=severity,
                         category="dependency_vulnerability",
-                        location={"file": src_path or pkg.get("ecosystem", "manifest"),
+                        location={"file": src_path or (ecosystem if isinstance(ecosystem, str)
+                                                       else "manifest"),
                                   "line_start": 1},
-                        description=vuln.get("summary")
-                        or (vuln.get("details") or "No description provided.")[:500],
+                        description=description if vuln.get("summary") else description[:500],
                         impact=f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
                         remediation="Upgrade to a patched version or see the OSV advisory.",
-                        citations={"cve": cve_ids(vuln.get("aliases"))},
+                        citations={"cve": cve_ids(aliases if isinstance(aliases, list) else None)},
                         tool_evidence=omit_none({
                             "rule_id": vuln.get("id"),
                             "package_name": pkg.get("name"),
@@ -156,4 +189,4 @@ class OsvScannerAdapter:
                         }),
                     ))
                     n += 1
-        return out
+        return out, coverage.finish(self.name)
