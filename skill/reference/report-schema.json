@@ -996,7 +996,7 @@
           },
           "fingerprint": {
             "type": "string",
-            "description": "Stable identity of the CLAIM (panel/category/file/title-derived), the same identity the verify queue keys a verdict on. Exported so a consumer can bind a finding across runs and across the queue. KNOWN DIVERGENCE: the queue disambiguates a collision with a `-<n>` suffix that never appears here, so a fingerprint -> queue_id lookup is ambiguous for a colliding pair."
+            "description": "Stable identity of the CLAIM (panel/category/file/title-derived, and, for a tool finding naming an artifact, `tool_evidence.package_name`), the same identity the verify queue keys a verdict on. Exported so a consumer can bind a finding across runs and across the queue. KNOWN DIVERGENCE: the queue disambiguates a collision with a `-<n>` suffix that never appears here, so a fingerprint -> queue_id lookup is ambiguous for a colliding pair."
           },
           "delta": {
             "type": ["object", "null"],
@@ -1129,7 +1129,7 @@
           },
           "occurrences": {
             "type": "integer",
-            "description": "How many tool findings sharing this panel, category, file and rule id were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings."
+            "description": "How many tool findings sharing this panel, category, file, rule id and artifact (`tool_evidence.package_name`) were collapsed into this one, stamped on every tool finding with a rule id by synth/findings.aggregate_tool_findings."
           },
           "corroborated": {
             "type": "boolean"

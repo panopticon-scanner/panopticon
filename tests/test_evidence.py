@@ -318,11 +318,9 @@ class TestArtifactTerm(unittest.TestCase):
 
     def test_only_a_non_empty_string_names_an_artifact(self):
         self.assertEqual(ev.artifact_term(self._f("a.jar")), "a.jar")
-        # A non-dict `tool_evidence` is out of scope: the report schema makes it
-        # an object, and both inline copies this helper replaces read it the
-        # same way, so behaviour there is unchanged rather than pinned here.
         for absent in (self._f(), self._f(""), self._f(None), self._f(["a.jar"]),
-                       self._f(0), {}, {"tool_evidence": None}):
+                       self._f(0), {}, {"tool_evidence": None},
+                       {"tool_evidence": "a.jar"}):
             with self.subTest(finding=absent):
                 self.assertIsNone(ev.artifact_term(absent))
 
@@ -345,6 +343,45 @@ class TestArtifactTerm(unittest.TestCase):
         self.assertEqual(ev.finding_fingerprint(self._f()), expected)
         self.assertEqual(ev.reconcile_key(self._f()),
                          ("pom.xml", "security", "vulnerable-dependency"))
+
+    def test_an_agent_finding_cannot_choose_its_own_artifact(self):
+        # #914 guard: `tool_evidence` is not in AGENT_FORBIDDEN_FIELDS and the
+        # report schema permits `package_name` on any finding regardless of
+        # `source`, so an ungated read would let an agent-authored payload pick
+        # part of its own fingerprint -- and with it its queue_id, the advisor
+        # verdict it answers to, and the cross-run identity a filed issue is
+        # keyed on. Only a tool-sourced finding names an artifact.
+        forged = self._f("forged.jar", title="Missing role check")
+        clean = self._f(title="Missing role check")
+        del forged["source"], clean["source"]
+        self.assertIsNone(ev.artifact_term(forged))
+        self.assertEqual(ev.finding_fingerprint(forged),
+                         ev.finding_fingerprint(clean))
+        self.assertEqual(ev.reconcile_key(forged), ev.reconcile_key(clean))
+        self.assertEqual(ev.reconcile_key(dict(forged, code="SEC-A1A")),
+                         ev.reconcile_key(dict(clean, code="SEC-A1A")))
+
+    def test_a_non_dict_tool_evidence_names_nothing_and_does_not_raise(self):
+        # `reconcile.load_report` is a plain json.load with no schema check and
+        # `iter_records` calls reconcile_key on every record of a PRIOR run's
+        # report read off disk, so one malformed finding there must not abort
+        # the reconcile with a traceback.
+        agent = {"tool_evidence": "a.jar", "panel": "security",
+                 "category": "authz", "title": "t",
+                 "location": {"file": "auth.py"}}
+        self.assertIsNone(ev.artifact_term(agent))
+        self.assertEqual(len(ev.finding_fingerprint(agent)), 16)
+        self.assertEqual(ev.reconcile_key(agent), ("auth.py", "security", "authz"))
+        self.assertEqual(ev.reconcile_key(dict(agent, code="SEC-A1A")),
+                         ("auth.py", "code", "SEC-A1A"))
+        # On a TOOL finding the tool-sourcing gate does not short-circuit, so
+        # the isinstance guard is the only thing standing between a malformed
+        # `tool_evidence` and an AttributeError out of reconcile_key.
+        tool = dict(agent, source="tool:dependency-check")
+        self.assertIsNone(ev.artifact_term(tool))
+        self.assertEqual(ev.reconcile_key(tool), ("auth.py", "security", "authz"))
+        self.assertEqual(ev.reconcile_key(dict(tool, code="SEC-A1A")),
+                         ("auth.py", "code", "SEC-A1A"))
 
     def test_an_empty_package_name_keys_like_no_package_name_at_all(self):
         bare, empty = self._f(), self._f("")

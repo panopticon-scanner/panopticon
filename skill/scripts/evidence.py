@@ -225,12 +225,16 @@ def norm_path(p):
 def artifact_term(finding):
     """`tool_evidence.package_name` when it names an artifact, else None.
 
-    The ONE rule every identity and collapse stage uses (#2225/#2352): a
-    non-empty string splits two findings at one locus; absent, empty or
-    non-string means "no artifact" and the finding keys exactly as it did
-    before the term existed (absent-means-unchanged).
+    The ONE rule every identity and collapse stage uses (#2225/#2352): a non-empty
+    string splits two findings at one locus; absent, empty, a non-string or a non-dict
+    `tool_evidence` means "no artifact" and the finding keys exactly as it did before
+    the term existed (absent-means-unchanged). Only a tool-sourced finding names an
+    artifact; an agent-authored `tool_evidence` never reaches an identity (#914 guard).
     """
-    pkg = (finding.get("tool_evidence") or {}).get("package_name")
+    if not is_tool_sourced(finding):
+        return None
+    te = finding.get("tool_evidence")
+    pkg = te.get("package_name") if isinstance(te, dict) else None
     return pkg if isinstance(pkg, str) and pkg else None
 
 
@@ -254,7 +258,7 @@ def finding_fingerprint(finding):
     parts = [str(finding.get("panel") or ""),
              str(finding.get("category") or ""), fpath, discriminator]
     pkg = artifact_term(finding)
-    if pkg:
+    if pkg is not None:
         parts.append(pkg)
     payload = "|".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
@@ -302,7 +306,7 @@ def reconcile_key(finding):
         key = (norm_path(loc.get("file")), str(finding.get("panel") or ""),
                str(finding.get("category") or ""))
     pkg = artifact_term(finding)
-    return key + (pkg,) if pkg else key
+    return (key + (pkg,)) if pkg is not None else key
 
 
 def sev_rank(finding):
@@ -317,12 +321,10 @@ def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
     Precedence (P2, #446): an advisor VERDICT decides first, whatever the
-    source — previously tool-sourcing short-circuited ahead of verdicts, so an
-    advisor could never refute a scanner. Without a verdict, a tool-sourced or
-    reinforced finding is `tool_reported`: reported, not verified, and NOT
-    gate-eligible. Never mutates the finding. Self-asserted
-    provenance.confirmation_status is deliberately ignored — a reviewer cannot
-    confirm its own finding.
+    source. Without a verdict, a tool-sourced or reinforced finding is
+    `tool_reported`: reported, not verified, and NOT gate-eligible. Never
+    mutates the finding. Self-asserted provenance.confirmation_status is
+    deliberately ignored — a reviewer cannot confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
@@ -419,10 +421,8 @@ def build_verify_queue(findings, max_verify=None):
     """Return (entries, cut) for ALL findings, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
-    must mutate the real objects).
-
-    P2 (#446): tool-sourced and reinforced findings queue too — they are claims
-    like any other, and `tool_confirmed` now requires an advisor verdict.
+    must mutate the real objects); tool-sourced and reinforced findings queue
+    too, as claims like any other (P2, #446).
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the
