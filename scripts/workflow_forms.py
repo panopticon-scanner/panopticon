@@ -368,7 +368,9 @@ def substitution_script(argv, stage, walk):
            "follows no download -- it cannot say whether that script fetches or runs "
            "one unchecked; run it outside the substitution, or exempt the step with a "
            "reason" % os.path.basename(argv[0]))
-    return why if any(any(walk(flattened(statements(text)))) for text in handed) else Idle(why)
+    live = [walk(flattened(statements(text))) for text in handed]
+    return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
+                      for found, unread in live) else Idle(why)
 
 
 def kept(unread, fetched):
