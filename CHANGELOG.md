@@ -10,6 +10,10 @@ evidence exposed.
 - **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
   fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
   rollback prose already describes termination of registered child process groups.
+- **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
+  `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
+  stderr line name only roots pruned from the surface the run reviewed, like every other
+  disclosure on a delta run.
 - **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
   domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
   of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
