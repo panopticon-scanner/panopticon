@@ -331,12 +331,58 @@ class TestGitAwareDiscovery(unittest.TestCase):
             isfile=lambda rel: True)
         self.assertEqual(filtered, ["src/app.py"])
 
+    def test_the_filter_counts_what_it_pruned_by_class(self):
+        # #2377: dot-path, exclude-dir and `.git`-segment drops were silent on
+        # BOTH discovery paths -- only the fixture prefix was disclosed. Counted
+        # in ONE place, so both paths get it, with `.git` taking precedence over
+        # the dot-path policy that would also refuse it: a path that could count
+        # twice counts once.
+        info = {}
+        kept = orchestrator._filter_reviewable(
+            [".git/config", "a/.git/x", ".hidden/x.py", "node_modules/y.js",
+             "src/ok.py"],
+            include_fixtures=True, pruned_fixtures=None,
+            isfile=lambda rel: True, info=info)
+        self.assertEqual(kept, ["src/ok.py"])
+        self.assertEqual(info["pruned"],
+                         {"git_segment": 2, "dot_path": 1, "exclude_dir": 1})
+
+    def test_a_second_filter_pass_sets_zeros_and_never_accumulates(self):
+        # A FRESH dict per call: the last pass wins, so the block a delta run
+        # publishes carries the changed set's counts and not the whole-repo
+        # listing's added to them.
+        info = {}
+        orchestrator._filter_reviewable(
+            [".hidden/x.py"], include_fixtures=True, pruned_fixtures=None,
+            isfile=lambda rel: True, info=info)
+        self.assertEqual(info["pruned"]["dot_path"], 1)
+        orchestrator._filter_reviewable(
+            ["src/ok.py"], include_fixtures=True, pruned_fixtures=None,
+            isfile=lambda rel: True, info=info)
+        self.assertEqual(info["pruned"],
+                         {"dot_path": 0, "exclude_dir": 0, "git_segment": 0})
+
     def test_non_git_target_falls_back_to_walk(self):
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")
             out, _ = run_scan_with_err(d)
             self.assertIn("src/app.py", grouped(out))
             self.assertEqual(out["discovery"]["method"], "walk")
+
+    def test_the_walk_publishes_pruned_as_not_measured_not_as_zeros(self):
+        # Fix round 1 on #2377: the walk prunes inline and never calls
+        # `_filter_reviewable`, so it counts nothing. Publishing zeros there would
+        # claim a measurement nobody took -- null is this tree's "not measured",
+        # the reading `meta.tools` gives an absent manifest -- and the one stderr
+        # line stays silent rather than saying "0 dot-path, 0 excluded-dir".
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            self._touch(d, "node_modules/x.js")
+            out, err = run_scan_with_err(d)
+        self.assertEqual(out["discovery"]["method"], "walk")
+        self.assertNotIn("node_modules/x.js", grouped(out))   # it DID prune
+        self.assertIsNone(out["discovery"]["pruned"])
+        self.assertNotIn("discovery pruned", err)
 
 
 class TestDiscoveryResultCap(unittest.TestCase):
@@ -391,6 +437,14 @@ class TestDiscoveryResultCap(unittest.TestCase):
             out, _ = run_scan_with_err(d)
         self.assertEqual(out["discovery"]["files_truncated"], 0)
         self.assertGreaterEqual(out["discovery"]["files_seen"], 1)
+
+    def test_the_block_publishes_the_pruned_classes_and_the_surface(self):
+        # #2376/#2377: all three pruning counts on every scan, 0 included, and
+        # the one word saying whose surface the block's numbers describe.
+        block = discovery._discovery_block({})
+        self.assertEqual(block["pruned"],
+                         {"dot_path": 0, "exclude_dir": 0, "git_segment": 0})
+        self.assertEqual(block["surface"], "repo")
 
     def test_the_cap_clears_every_tree_the_corpus_has(self):
         # The largest repo in the calibration pool is ~35k files. A cap that a

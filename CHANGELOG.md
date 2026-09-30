@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Delta runs are capped and disclosed like whole-repo runs (#2376, #2377, #1784).** The
+  `--scope-changed` surface is bounded by `DISCOVERED_FILES_MAX`, the `discovery` block says which
+  surface its numbers describe (`surface`), and both paths publish what the policy pruned by class
+  (`pruned`: dot-path, excluded-dir, `.git` segment; null on the non-git walk, which counts nothing)
+  with one stderr line when any count is non-zero.
 - **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
   requires `location` (the report schema never did), `validate_report` warns only on a missing
   `location.file` rather than on every finding without a line, and the security gate prints `?`

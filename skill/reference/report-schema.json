@@ -759,7 +759,7 @@
             },
             "discovery_files_truncated": {
               "type": ["integer", "null"],
-              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
+              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; on a delta run this counts the changed set, not the repository listing, and `groups.json`'s `discovery.surface` says which; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
             }
           }
         },
