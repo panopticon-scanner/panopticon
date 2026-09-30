@@ -38,12 +38,24 @@ class HunksLoad:
     the map keeps the file, merely narrower. `paths_dropped` is a path whose
     value was not a list at all: that file leaves the map, so every finding in
     it classifies off-diff. Counting the second as one of the first published a
-    lost file as a lost line range."""
+    lost file as a lost line range.
+
+    `paths_without_ranges` is not a loss at all (#2381): it counts a path the map
+    NAMES whose (well-formed) list is empty after cleaning. The file STAYS in the
+    map and every finding in it classifies ON-diff, by `diff_map.classify`'s
+    changed-file fail-open. A deletion-only, binary, mode-only or same-content
+    rename change legitimately looks like this -- `diff_map.parse` emits such a
+    key on purpose -- and so does a truncated map, which is why the shape is
+    counted rather than refused. A path whose EVERY range was malformed lands
+    here too, and in `ranges_dropped` as well: those are two different facts
+    about one path -- the artifact is broken, AND the map still admits that file
+    on-diff -- and a reader needs both."""
     payload_malformed: str | None = None
     files: int = 0
     ranges: int = 0
     ranges_dropped: int = 0
     paths_dropped: int = 0
+    paths_without_ranges: int = 0
 
 
 @dataclass(frozen=True)
@@ -154,7 +166,11 @@ def _disclose_load(ctx, path):
         print("synthesize: DELTA REVIEW WITH ZERO HUNKS -- %s resolved a base "
               "but carries no diff ranges: %s. %s"
               % (path, shape, cause), file=sys.stderr)
-    if report.ranges_dropped or report.paths_dropped:
+    # #2381 review: both consequence lines below speak of how findings
+    # classify, which only an ACTIVE delta does -- a read with no `base` never
+    # reaches `classify_findings` -- so an inactive read keeps the MALFORMED
+    # line above alone rather than a warning about a gate it never scoped.
+    if ctx.active and (report.ranges_dropped or report.paths_dropped):
         # #2169: ONE line carrying both numbers -- two lines for one read have
         # the operator reconciling what looks like two problems -- and the
         # consequence in a sentence of its OWN (review F1): embedded in the count
@@ -168,6 +184,29 @@ def _disclose_load(ctx, path):
               % (" and ".join(counts), path,
                  " -- a dropped path leaves the map, so every finding in that "
                  "file classifies off-diff." if report.paths_dropped else ""),
+              file=sys.stderr)
+    if ctx.active and report.paths_without_ranges and report.ranges:
+        # #2381: the one FAIL-OPEN shape in this family, and the one nothing said
+        # a word about. An empty list under a path is WELL FORMED, so neither drop
+        # counter sees it, and the ZERO HUNKS arm above needs `ranges == 0` across
+        # the WHOLE map -- one real range anywhere silences it. Hence the second
+        # condition: the whole-map case belongs to that arm, which says the same
+        # thing in more detail, and two lines for one read leave the operator
+        # reconciling what looks like two problems (#2169's F1 lesson).
+        #
+        # DISCLOSED, NOT RECLASSIFIED (ruling 2026-09-30). `diff_map.parse` emits
+        # a rangeless key on purpose for a file the diff changed without adding a
+        # line, and deleting a line can introduce a finding, so classifying it
+        # on-diff is that module's documented contract. What is wrong is that a
+        # truncated or hand-edited map is indistinguishable from that legitimate
+        # shape, and the counter this line reads is what a later gate rule would
+        # need to make a verdict out of the difference.
+        print("synthesize: DELTA ARTIFACT: %d named path(s) in %s carry no range "
+              "-- every finding in those file(s) classifies on-diff (the "
+              "changed-file fail-open), so a --gate-scope on-diff gate admits "
+              "them on the artifact's word: a deletion-only, binary, mode-only "
+              "or same-content rename change looks exactly like a truncated map "
+              "from here." % (report.paths_without_ranges, path),
               file=sys.stderr)
 
 
@@ -185,7 +224,8 @@ def artifact_facts(ctx) -> dict | None:
         return None
     return {"payload_malformed": report.payload_malformed,
             "ranges_dropped": report.ranges_dropped,
-            "paths_dropped": report.paths_dropped}
+            "paths_dropped": report.paths_dropped,
+            "paths_without_ranges": report.paths_without_ranges}
 
 
 def zero_hunk_population(active, fail_on, gate_unverified) -> list:
@@ -333,6 +373,7 @@ def load_diff_hunks_report(path):
         raw = {}
     dropped = 0
     dropped_paths = 0
+    rangeless_paths = 0
     hunks = {}
     for p, rs in raw.items():
         if not isinstance(rs, list):
@@ -346,12 +387,21 @@ def load_diff_hunks_report(path):
                 cleaned.append((r[0], r[1]))
             else:
                 dropped += 1
+        if not cleaned:
+            # #2381: well formed and NOT dropped -- the path stays in the map, so
+            # every finding in it classifies on-diff. Counted whether the list
+            # arrived empty (a legitimate deletion-only, binary, mode-only or
+            # same-content rename change) or was emptied above (a broken
+            # artifact): the fail-open is the same either way, and the two facts
+            # are told apart by `ranges_dropped`, which is why both are kept.
+            rangeless_paths += 1
         hunks[str(p)] = cleaned
     data["hunks"] = hunks
     files, ranges = count_hunks(hunks)
     return data, HunksLoad(payload_malformed=malformed, files=files,
                            ranges=ranges, ranges_dropped=dropped,
-                           paths_dropped=dropped_paths)
+                           paths_dropped=dropped_paths,
+                           paths_without_ranges=rangeless_paths)
 
 def classify_findings(findings, hunks, tolerance):
     """Stamp each finding with delta = {on_diff, hunk, distance}."""

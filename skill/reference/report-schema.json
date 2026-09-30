@@ -468,6 +468,13 @@
                   ],
                   "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Null when this context was not built by reading a file."
                 },
+                "paths_without_ranges": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; it is the input a gate rule would need to make a verdict out of the difference. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path. Null when this context was not built by reading a file."
+                },
                 "payload_malformed": {
                   "type": [
                     "string",
@@ -506,6 +513,10 @@
                 "paths_dropped": {
                   "type": "integer",
                   "description": "Whole paths the loader discarded, as `delta.paths_dropped`; never null here, for the same reason."
+                },
+                "paths_without_ranges": {
+                  "type": "integer",
+                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings."
                 }
               }
             },
