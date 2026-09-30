@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`ToolAdapters` gains a `Contract` layer (#2315, #1784).** The adapter base, SARIF
+  normalization and their contract tests move out of `Integration`, which sat at the 48-file
+  cap; a headroom guard now reds any `ToolAdapters` leaf above 40 before the cap does.
 - **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
   `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
   stderr line name only roots pruned from the surface the run reviewed, like every other
