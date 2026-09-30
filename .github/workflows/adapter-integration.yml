@@ -100,6 +100,18 @@ jobs:
       - name: Build the fixtures image
         run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 
+      # #2150 (ARC-A3A): every `docker run` in this file carries the privilege drop
+      # every panopticon container gets -- `--cap-drop=ALL` and
+      # `--security-opt=no-new-privileges` -- spelled out here because a workflow
+      # cannot call `scanner_config.privilege_drop_flags`, the module that owns them.
+      # The resource ceilings that travel with those flags in Python are EXEMPT here,
+      # on purpose: they size ONE scanner against one target, while a lane below runs
+      # EVERY adapter's real scanner in a single container, over corpora the fixtures
+      # image already holds -- a footprint 6g/4cpu/1024pid was never tuned for, so a
+      # ceiling here would fail the lane rather than contain a scanner. The corpora
+      # themselves (WebGoat/maven, AspGoat/dotnet, cargo, bundler) are built by the
+      # `docker build` step above, which these flags deliberately do not reach.
+
       # The posture, asserted rather than assumed (ARC-2930403871). `--user` is
       # the intent; `id -u` inside the container is the proof, and it runs
       # BEFORE the probes so a lane that lost the flag -- or an image whose
@@ -110,6 +122,8 @@ jobs:
         run: |
           docker run --rm \
             --user "$SCANNER_USER" \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
             -e HOME="$SCANNER_HOME" \
             -e EXPECTED_UID="$SCANNER_UID" \
             --entrypoint sh panopticon-fixtures:latest \
@@ -123,6 +137,8 @@ jobs:
         run: |
           docker run --rm \
             --user "$SCANNER_USER" \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
             -v "$PWD:/work:ro" -w /work \
             -e HOME="$SCANNER_HOME" \
             -e FIXTURE_ROOT=/opt/panopticon-fixtures \
@@ -237,6 +253,8 @@ jobs:
         run: |
           docker run --rm \
             --user "$SCANNER_USER" \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
             -e HOME="$SCANNER_HOME" \
             -e EXPECTED_UID="$SCANNER_UID" \
             --entrypoint sh panopticon-fixtures:latest \
@@ -252,6 +270,8 @@ jobs:
           docker run --rm \
             --network none \
             --user "$SCANNER_USER" \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
             -v "$PWD:/work:ro" -w /work \
             -e HOME="$SCANNER_HOME" \
             -e FIXTURE_ROOT=/opt/panopticon-fixtures \

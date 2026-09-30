@@ -373,11 +373,42 @@ class TestAdapterSelection(unittest.TestCase):
                 self.assertLess(cmd.index("--pids-limit"),
                                 cmd.index("panopticon-tools"))
 
+    def test_a_patch_of_the_privilege_drop_owner_reaches_both_launch_paths(self):
+        # #2150 (ARC-A3A): both `docker run` builders spelled the PRIVATE alias
+        # `rt._privilege_drop_flags`, so `mock.patch` of the public helper
+        # reached neither -- a test that tried it passed while changing nothing.
+        # The aliases are gone and `scanner_config` owns the flags, so one patch
+        # has to move BOTH argvs: the legacy SARIF path and the adapter path.
+        class FakeAdapter:
+            name = "fake"
+            def is_applicable(self, target): return True
+            def invoke(self, target): return (b'{"findings":[]}', 0)
+        fake = _FakeResult(returncode=0, stdout=b'{"findings":[]}', stderr=b'')
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(sc, "privilege_drop_flags",
+                                   return_value=["--marker"]), \
+                    mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()},
+                                    clear=False):
+                rt.run_tools(d, ["semgrep", "fake"], os.path.join(d, "out"),
+                             image="panopticon-tools", runner=runner)
+        self.assertEqual(len(calls), 2)   # legacy + adapter both dispatched
+        for cmd in calls:
+            self.assertIn("--marker", cmd)
+            self.assertNotIn("--cap-drop=ALL", cmd)
+            self.assertNotIn("--security-opt=no-new-privileges", cmd)
+            # docker reads options only BEFORE the image operand.
+            self.assertLess(cmd.index("--marker"), cmd.index("panopticon-tools"))
+
     def test_resource_ceiling_flag_can_be_disabled_via_env(self):
         # An operator on a cgroup that rejects --pids-limit can drop just that
         # flag by exporting an empty value; the others stay applied.
         with mock.patch.object(rt, "CONTAINER_PIDS_LIMIT", ""):
-            flags = rt._resource_limit_flags()
+            flags = rt.resource_limit_flags()
         self.assertNotIn("--pids-limit", flags)
         self.assertIn("--memory", flags)
         self.assertIn("--cpus", flags)

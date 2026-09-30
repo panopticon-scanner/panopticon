@@ -23,6 +23,8 @@ from unittest import mock
 import yaml
 import shell_reader
 
+from scripts import scanner_config
+
 from tests._test_helpers import REPO_ROOT
 import tests._test_helpers as helpers
 
@@ -343,18 +345,32 @@ def _standalone_argv(script):
     return list(stage.argv)
 
 
-def _strict_pytest_containers(script):
+def _strict_pytest_containers(script, why=None):
     """Read the current standalone docker/sh invocation, without expansion.
     Raw argv preserves assignments/wrappers that could change pytest's env.
     Unknown Docker options or extra shell commands cannot prove this contract.
+
+    *why* is an optional list this appends one sentence to when a step LOOKED
+    like the lane and then failed the contract. The reader is a predicate -- it
+    returns `[]` with no reason -- so the only thing the count assertion below
+    could say on its own was `0 != 1` (fix round 1 nit 5).
     """
     argv = _standalone_argv(script)
     if argv[:2] != ["docker", "run"]:
         return []
-    options, i = {}, 2
+    options, attached, i = {}, [], 2
     while i < len(argv) and argv[i].startswith("-"):
         flag = argv[i]
         if flag == "--rm":
+            i += 1
+            continue
+        # #2150: the privilege drop is written `--flag=value`, which consumes no
+        # further token -- the reading `docker_image_index` in
+        # `tests/test_workflow_pins.py` gives an `=`-attached flag too. Collected
+        # raw and compared as a whole set below, so an UNRECOGNISED `=` flag is
+        # still a lane this reader refuses to credit, exactly as before.
+        if "=" in flag:
+            attached.append(flag)
             i += 1
             continue
         if flag not in ("-v", "-w", "-e", "-u", "--user",
@@ -382,15 +398,32 @@ def _strict_pytest_containers(script):
     # supported and failed the equality instead. A SECOND `--user` still fails
     # it -- `setdefault(...).append(...)` makes the list two long -- which is the
     # ambiguity docker resolves by honouring the last flag.
+    #
+    # #2150 (ARC-A3A): and the privilege drop, read from the module that OWNS it
+    # rather than restated. A workflow cannot call a Python function, so these
+    # two flags are a COPY in the YAML; comparing the copy to
+    # `scanner_config.privilege_drop_flags` is what keeps it from drifting. The
+    # resource CEILINGS are deliberately not here -- this lane runs EVERY
+    # adapter's real scanner in one container over corpora the fixtures image
+    # already holds, not one scanner against one target, and the corpus build
+    # itself is a `docker build` these flags never reach; the workflow states
+    # the exemption above its first lane. Sorted, so flag ORDER is free and a
+    # missing or extra one is not.
     if (options.get("--entrypoint") == ["sh"]
             and options.get("-v") == ["$PWD:/work:ro"]
             and options.get("-w") == ["/work"]
             and (options.get("--user") or options.get("-u")) == ["$SCANNER_USER"]
+            and sorted(attached) == sorted(scanner_config.privilege_drop_flags())
             and set(options.get("-e", [])) == {
                 "FIXTURE_ROOT=/opt/panopticon-fixtures",
                 "PANOPTICON_REQUIRE_INTEGRATION=1", "PYTHONDONTWRITEBYTECODE=1",
                 "HOME=$SCANNER_HOME"}):
         return [argv]
+    if why is not None:
+        why.append("the lane's `=`-attached flags are %s; "
+                   "`scanner_config.privilege_drop_flags` writes %s"
+                   % (sorted(attached),
+                      sorted(scanner_config.privilege_drop_flags())))
     return []
 
 
@@ -440,8 +473,10 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
         self.scripts = [step.get("run", "") for step in self.steps]
 
     def test_strict_mode_mounts_image_and_whole_suite_are_on_the_same_invocation(self):
-        runs = [argv for script in self.scripts for argv in _strict_pytest_containers(script)]
-        self.assertEqual(len(runs), 1)
+        why = []
+        runs = [argv for script in self.scripts
+                for argv in _strict_pytest_containers(script, why)]
+        self.assertEqual(len(runs), 1, "; ".join(why))
 
     def test_host_gitleaks_regression_is_selected_opted_in_and_strict(self):
         runs = [argv for script in self.scripts
@@ -472,6 +507,13 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
     @staticmethod
     def _pytest_script():
         return ('docker run --rm --user "$SCANNER_USER" '
+                  # #2150: the lane's privilege drop, in the lane's spelling. A
+                  # hand-written COPY of the owner's list, like every other
+                  # literal in this template (the `-v`, the `-e` set, the
+                  # selector): the template is the FIXTURE the mutations below
+                  # are cut from, so deriving one flag set from production and
+                  # leaving the rest copied would make it neither.
+                  '--cap-drop=ALL --security-opt=no-new-privileges '
                   '-v "$PWD:/work:ro" -w /work '
                   '-e HOME="$SCANNER_HOME" '
                   '-e FIXTURE_ROOT=/opt/panopticon-fixtures '
@@ -490,6 +532,11 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
                     script.replace('--user "$SCANNER_USER" ', ""),
                     script.replace('--user "$SCANNER_USER"', "--user root"),
                     script.replace('-e HOME="$SCANNER_HOME" ', ""),
+                    # #2150: either half of the privilege drop, and a value the
+                    # owner does not name.
+                    script.replace("--cap-drop=ALL ", ""),
+                    script.replace("--security-opt=no-new-privileges ", ""),
+                    script.replace("--cap-drop=ALL", "--cap-drop=NET_RAW"),
                     script.replace("-v ", "-e "),
                     script.replace("tests/tools/", "tests/tools/test_one.py"),
                     script.replace(" -q -rs", " -k integration -q -rs"),
