@@ -36,9 +36,8 @@ _BRAKEMAN_CWE = {
     # Every remaining warning_type _BRAKEMAN_SEVERITY knows about, plus the
     # types railsgoat actually produces. The fixture asserts a CWE on EVERY
     # finding, and it was failing: railsgoat's top two types (Weak Hash x5,
-    # Remote Code Execution x4) had a severity but no CWE, so those findings
-    # reached synthesis uncitable -- and citation quality feeds both the report
-    # grade and the OCRDb crosswalk.
+    # Remote Code Execution x4) had a severity but no fallback CWE, so a capture
+    # that omitted `cwe_id` could not give those findings a CWE citation.
     "Weak Hash": "CWE-328",
     "Remote Code Execution": "CWE-94",
     "Unscoped Find": "CWE-639",

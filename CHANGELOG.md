@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
+  fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
+  rollback prose already describes termination of registered child process groups.
 - **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
   domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
   of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
