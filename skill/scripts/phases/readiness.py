@@ -335,8 +335,8 @@ def _guide_row():
 
 
 def _with_remedy(error):
-    """One `repo_config` refusal, with the setup remedy appended unless the
-    refusal already carries its own (#2384).
+    """One `repo_config` refusal, with the setup remedy appended unless it is
+    the missing-pyyaml refusal, which names its own install (#2384).
 
     `driver setup` is where a config problem is addressed: `setup_flow.provision`
     refuses a config it cannot read -- with its own "fix it or delete it;
@@ -390,7 +390,8 @@ def _matrix_row(review_root):
     except ValueError as exc:
         # Through `_with_remedy` as well, so the tail literal has ONE owner
         # (#2384). `_matrix_catalog` re-reads the document and re-raises its
-        # refusals, so the same self-remedying refusal can arrive here.
+        # refusals; the ones that reach here are ordinary refusals (the first
+        # read already proved yaml imports), and they get the same tail.
         return dict(counts, ok=False, detail=_with_remedy(str(exc)))
     code_files, _commons, tests_files = grouping_engine.count_code_files(
         discovery.discover_repo_files(review_root))
