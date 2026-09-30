@@ -267,8 +267,8 @@ class TestRunTools(unittest.TestCase):
             # #1877: and the working directory sits with them, so the container
             # starts OUTSIDE the `/src` mount rather than on the image's
             # `WORKDIR /src` -- the target's own tree.
-            self.assertEqual(cmd0[4:], (["--rm"] + rt._resource_limit_flags()
-                        + rt._privilege_drop_flags()
+            self.assertEqual(cmd0[4:], (["--rm"] + rt.resource_limit_flags()
+                        + sc.privilege_drop_flags()
                         + ["-w", rt.ADAPTER_EMPTY_CWD]
                         + ["--network", "none",
                            "-v", "%s:/src:ro" % os.path.abspath(d),

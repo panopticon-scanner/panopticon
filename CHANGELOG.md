@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One owner for the container privilege drop (#2150, #1767).** The tool runner, the fixture
+  runner and the egress sidecar all splice `scanner_config.privilege_drop_flags`. The daily fixture
+  lanes spell the same two flags out, keeping the ceilings exemption the workflow now states. The
+  runner's private aliases are gone, so one patch of the owner reaches every launch.
 - **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
   records the repo root the scrubbed comment was built under, every body on that plan is built
   under that root, so a resume from another checkout confirms the posted comment instead of

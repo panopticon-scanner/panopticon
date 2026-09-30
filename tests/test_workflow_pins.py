@@ -25,6 +25,7 @@ from unittest import mock
 
 import yaml
 
+from scripts import scanner_config
 from tests._test_helpers import REPO_ROOT
 from workflow_guard import UNNAMED, Step, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
@@ -2153,6 +2154,110 @@ def user_defect(script, env):
     return None
 
 
+def _flag_values(argv, name):
+    """Every value written for *name* on *argv*, in both spellings docker takes.
+
+    `_flag_value` above answers "what did the FIRST one say", which is the right
+    question for a flag docker resolves by taking one of them (`--user`). These
+    are flags docker ACCUMULATES, so the question is which values are present.
+    """
+    values = []
+    for index, token in enumerate(argv):
+        if token == name and index + 1 < len(argv):
+            values.append(argv[index + 1])
+        elif token.startswith(name + "="):
+            values.append(token.split("=", 1)[1])
+    return values
+
+
+# #2150 (ARC-A3A): the privilege drop these lanes carry, read from the module
+# that OWNS it rather than restated here. A workflow cannot call a Python
+# function, so the flags are spelled out in the YAML -- which is a COPY, and this
+# pin is the reason the copy is safe: a flag added to
+# `scanner_config.privilege_drop_flags` reds every lane until it carries that
+# flag too. The resource CEILINGS are deliberately NOT asked for: a lane runs
+# EVERY adapter's real scanner in one container over corpora the fixtures image
+# already holds, which is not the one-scanner-against-one-target footprint those
+# ceilings tune, and the corpus build itself is a `docker build` these flags never
+# reach. The workflow states that exemption above its first lane.
+def privilege_drop_defect(script):
+    """Why a step's run of the fixtures image is not the owner's privilege drop,
+    or None.
+
+    Read by flag NAME, and every value the owner writes for that name has to be
+    present -- both `--cap-drop` and `--security-opt` are flags docker
+    accumulates, so a `name: value` expectation would keep only the last of a
+    repeated name and then red a correct lane naming the wrong flag (fix round 1
+    nit 4). Either spelling is credited, the way `user_defect` reads `--user`.
+
+    What this does NOT claim: it says the owner's flags are THERE with the
+    owner's values. That they are still in FORCE is the sibling rule below.
+    """
+    expected = {}
+    for token in scanner_config.privilege_drop_flags():
+        name, sep, value = token.partition("=")
+        if not sep:
+            return ("`scanner_config.privilege_drop_flags` returned %r, which "
+                    "carries no `=`; this pin compares flag VALUES and cannot "
+                    "read that shape -- teach it the new shape rather than "
+                    "leaving the lanes unpinned (#2150)" % token)
+        expected.setdefault(name, []).append(value)
+    for flags, _argv, why in fixtures_runs(script):
+        if why is not None:
+            return why
+        for name, values in sorted(expected.items()):
+            missing = sorted(set(values) - set(_flag_values(flags, name)))
+            if missing:
+                return ("this `docker run %s` does not carry `%s` with %s; "
+                        "every other panopticon container gets the privilege "
+                        "drop from `scanner_config.privilege_drop_flags`, and "
+                        "these lanes run the hostile fixture corpus (#2150, "
+                        "#1767)" % (FIXTURES_IMAGE, name,
+                                    ", ".join(repr(v) for v in missing)))
+    return None
+
+
+# Fix round 1 (review finding 2): the drop above is only in FORCE if nothing on
+# the same argv hands the capability straight back. docker applies `--cap-add`
+# AFTER `--cap-drop`, and `--privileged` overrides both, so either one turns the
+# lane's privilege drop into decoration that the presence pin still credits. A
+# SECOND `--security-opt` is the same shape one flag over: `no-new-privileges`
+# stays written while a security option nobody reviewed rides in beside it.
+_WIDENING_FLAGS = ("--privileged", "--cap-add")
+
+
+def widened_privileges_defect(script):
+    """Why a step's run of the fixtures image gives back what it dropped, or None.
+
+    The `--security-opt` count is DERIVED from the owner's own list rather than
+    pinned at one, so the day the owner writes a second one the lanes are
+    required to carry two instead of being refused for it.
+    """
+    allowed = len([token for token in scanner_config.privilege_drop_flags()
+                   if token.partition("=")[0] == "--security-opt"])
+    for flags, _argv, why in fixtures_runs(script):
+        if why is not None:
+            return why
+        for name in _WIDENING_FLAGS:
+            written = [token for token in flags
+                       if token == name or token.startswith(name + "=")]
+            if written:
+                return ("this `docker run %s` carries %s beside the privilege "
+                        "drop; docker applies `--cap-add` after `--cap-drop` "
+                        "and `--privileged` overrides both, so the drop on the "
+                        "line above it is decoration (#2150, #1767)"
+                        % (FIXTURES_IMAGE, ", ".join(repr(t) for t in written)))
+        options = [token for token in flags if token == "--security-opt"
+                   or token.startswith("--security-opt=")]
+        if len(options) != allowed:
+            return ("this `docker run %s` carries %d `--security-opt` flags; "
+                    "`scanner_config.privilege_drop_flags` writes %d, and an "
+                    "extra one is a security option nobody reviewed riding in "
+                    "beside `no-new-privileges` (#2150)"
+                    % (FIXTURES_IMAGE, len(options), allowed))
+    return None
+
+
 # A shell test expression: `[ ... ]` or `test ...`, up to the `;`/`&&`/`||` that
 # ends it. The COMPARISON is the subject, not the command: the shipped payload
 # names `EXPECTED_UID` twice -- once where it is compared and once in the
@@ -2407,6 +2512,59 @@ class TestBothAdapterLanesRunAsProductionsUser(unittest.TestCase):
                      for run in fixtures_runs(script)],
                     "no `docker run %s` in %s / %s" % (FIXTURES_IMAGE,
                                                        ADAPTER_WORKFLOW, job))
+
+    def test_every_run_of_the_fixtures_image_carries_the_privilege_drop(self):
+        # #2150 (ARC-A3A): the same four lanes, asked about the OTHER half of
+        # the launch posture. `_rows` and `fixtures_runs` are shared with the
+        # `--user` pin above, so a fifth lane is covered by both the moment it
+        # lands.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, _env in self._rows(job):
+                with self.subTest(job=job, step=name):
+                    why = privilege_drop_defect(script)
+                    self.assertIsNone(why, "%s / %s: %s" % (job, name, why or ""))
+
+    def test_the_privilege_drop_rule_would_speak_if_a_lane_lost_a_flag(self):
+        # Non-vacuity, on this workflow's own steps: the answer above asserts
+        # None, which a reader that sees no lane also returns.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, _env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                for flag in scanner_config.privilege_drop_flags():
+                    with self.subTest(job=job, step=name, flag=flag):
+                        self.assertIsNotNone(
+                            privilege_drop_defect(script.replace(flag + " ", "")),
+                            "%s / %s stayed clean without %s" % (job, name, flag))
+
+    def test_no_run_of_the_fixtures_image_widens_what_it_dropped(self):
+        # Fix round 1 (finding 2): the other half of ruling 4's posture. The
+        # presence pin above credits a lane that writes `--cap-drop=ALL` and
+        # then hands the capabilities back on the next line; this one does not.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, _env in self._rows(job):
+                with self.subTest(job=job, step=name):
+                    why = widened_privileges_defect(script)
+                    self.assertIsNone(why, "%s / %s: %s" % (job, name, why or ""))
+
+    def test_the_widening_rule_speaks_for_every_way_back_in(self):
+        # Red first is by MUTATION here, not by history: the shipped lanes carry
+        # none of these flags, so the rule above could never have been red on
+        # this tree. Each widening is inserted into each shipped lane, beside
+        # the drop it undoes, and has to be refused BY NAME.
+        for job in EXPECTED_ADAPTER_JOBS:
+            for name, script, _env in self._rows(job):
+                if not fixtures_runs(script):
+                    continue
+                for widening in ("--privileged", "--cap-add=SYS_ADMIN",
+                                 "--security-opt=seccomp=unconfined"):
+                    with self.subTest(job=job, step=name, widening=widening):
+                        why = widened_privileges_defect(script.replace(
+                            "--cap-drop=ALL", "--cap-drop=ALL " + widening))
+                        self.assertIsNotNone(
+                            why, "%s / %s stayed clean with %s"
+                            % (job, name, widening))
+                        self.assertIn(widening.partition("=")[0], why)
 
     def test_the_rule_would_speak_if_a_lane_lost_the_flag(self):
         # ...and that it is this workflow the rule is reading: the same steps,
