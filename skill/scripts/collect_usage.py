@@ -303,11 +303,11 @@ def scan(path, since=None, until=None, info=None):
 
     `info`, when a dict, collects what this transcript made the collector drop,
     for the caller to publish beside the total it qualifies (ARC-2134807886).
-    The counters do NOT cover every loss, and the boundary is deliberate: a
-    record whose `usage` is present but is not a dict is skipped here uncounted
-    (follow-up #2171), an explicit `null` field reads as absent to `_add`'s
-    `.get`, and a non-integer field on a record outside [since, until] is
-    filtered out below before `_add` ever sees it.
+    The counters do NOT cover every loss, and the boundary is deliberate:
+    `non_integer_usage_fields` counts one whole `usage` value when it is present
+    but not a mapping, or each present non-integer field inside a mapping. An
+    explicit `null` field inside a mapping reads as absent to `_add`'s `.get`.
+    Records outside [since, until] are filtered before either count.
 
     #1494: `until` bounds the END of the window. A floor alone is not enough when
     several runs share one session transcript -- re-collecting an earlier run after
@@ -322,13 +322,16 @@ def scan(path, since=None, until=None, info=None):
         msg = rec.get("message")
         if not isinstance(msg, dict):
             continue
-        usage = msg.get("usage")
-        if not isinstance(usage, dict):
-            continue
         ts = rec.get("timestamp") or ""
         if since and ts < since:
             continue
         if until and ts > until:
+            continue
+        if "usage" not in msg:
+            continue
+        usage = msg["usage"]
+        if not isinstance(usage, dict):
+            _bump(info, "non_integer_usage_fields")
             continue
         _add(totals, usage, info)
         n += 1
@@ -435,10 +438,11 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
             # its timestamp can be read, and an OSError loses the file entire.
             # So in a long-lived session (the world `later_run_started` exists
             # for) either can be non-zero for a run whose own total is exact.
-            # `non_integer_usage_fields` is window-scoped: `_add` runs after the
-            # filters. A candidate that is not a regular file is not in any of
-            # them -- `find_task_transcripts` excludes it with `os.path.isfile`
-            # before a read is attempted, so it is filtered out, not counted.
+            # `non_integer_usage_fields` is window-scoped: one whole non-mapping
+            # `usage` value or each present non-integer field in a mapping,
+            # counted after the filters. A candidate that is not a regular file
+            # is not in any counter -- `find_task_transcripts` excludes it with
+            # `os.path.isfile` before a read is attempted.
             **{k: found.get(k, 0) for k in DROP_COUNTERS},
         },
     }
@@ -602,7 +606,7 @@ def main(argv=None):
         # travels: this line is what a DIRECT run of the script shows, while
         # under synthesize the child's stderr is captured (follow-up #2171).
         print("collect-usage: dropped input -- %d unreadable transcript(s), %d "
-              "undecodable line(s), %d non-integer usage field(s); the first "
+              "undecodable line(s), %d non-integer usage field/value(s); the first "
               "two count across every transcript read, not only this run's "
               "window, and the reported total is a FLOOR" % tuple(dropped),
               file=sys.stderr)

@@ -667,6 +667,23 @@ class TestDroppedInputIsCounted(unittest.TestCase):
         # four fields were summed.
         self.assertEqual(doc["sources"]["controller_usage_records"], 1)
 
+    def test_each_present_non_mapping_usage_value_is_counted_once(self):
+        scalar = _rec()
+        scalar["message"]["usage"] = "nine"
+        null = _rec()
+        null["message"]["usage"] = None
+        with tempfile.TemporaryDirectory() as d:
+            ctl = _write(os.path.join(d, "ctl.jsonl"), [
+                scalar,
+                null,
+                _rec(usage={"output_tokens": 4}),
+            ])
+            doc = cu.collect(d, d, transcript=ctl,
+                             tasks_dir=os.path.join(d, "none"))
+        self.assertEqual(doc["sources"]["non_integer_usage_fields"], 2)
+        self.assertEqual(doc["sources"]["controller_usage_records"], 1)
+        self.assertEqual(doc["total"], 4)
+
     def test_an_absent_usage_field_is_not_a_drop(self):
         # The module's own promise -- "an absent number stays absent rather than
         # becoming a fabricated zero" -- means absence is normal, not a drop.

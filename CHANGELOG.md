@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
+  non-object `usage` value in its existing drop tally, and successful driver-side collection
+  forwards the bounded collector disclosure to stderr.
 - **Share reply publication and artifact roots (#2346, #1820).** Reply persistence uses the
   common atomic JSON writer, which cleans opened staging files after failures and leaves
   rejected paths untouched. Writers and reply placement share lexical root discovery while

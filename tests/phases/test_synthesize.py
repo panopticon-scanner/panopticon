@@ -115,6 +115,16 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertIn("/somewhere/session", err)
         self.assertIn("--session-dir", err)
 
+    def test_successful_collection_forwards_the_collectors_disclosure(self):
+        disclosure = "collect-usage: dropped input; reported total is a FLOOR\n"
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.phases.child._run_child") as run, \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            write_host_evidence(d, _UL_PROVEN)
+            run.return_value = mock.Mock(returncode=0, stderr=disclosure)
+            synthesize._collect_host_usage(d, self._manifest())
+        self.assertEqual(err.getvalue(), disclosure)
+
     def test_run_parser_accepts_session_dir(self):
         args = driver.build_parser().parse_args(
             ["run", ".", "--session-dir", "/s"])
