@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
+  interpreter check and the adjudication inside the read guard's never-crash envelope, so an
+  unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
+  treats as a non-blocking error -- which let the Write it exists to deny proceed.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
   it isolated (#2161, #2163, #1777).** `write_guard_hook`'s registered `PreToolUse` command began
   with the bare word `python3`, and nothing resolved it: the CHILD looks that name up in ITS PATH,
