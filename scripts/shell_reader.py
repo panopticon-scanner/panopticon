@@ -111,6 +111,10 @@ _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 # The shells whose options and program word a pattern may rewrite into a `-c`
 # and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
 _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
+# A command word that is a parameter's default or alternate (#2337): `${X:-sh}`,
+# `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
+# that shell, which bash runs wherever `X` leaves the word to it.
+_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
@@ -524,7 +528,8 @@ def statements(script):
 def _command_result(argv):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
-    the words read as wrappers, as written."""
+    the words read as wrappers, as written. A command word that is a shell's
+    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -550,6 +555,9 @@ def _command_result(argv):
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
             del argv[0:2]
             continue
+        default = None if heads else _DEFAULTS.fullmatch(argv[0])
+        if default and os.path.basename(default[1]) in _SHELLS:
+            argv[0] = default[1]
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads

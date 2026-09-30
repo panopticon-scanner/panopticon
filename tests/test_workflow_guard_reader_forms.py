@@ -123,5 +123,27 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         self.assertTrue(defects("sh -c '%s'\n" % PIPE))
 
 
+class TestADynamicCommandWord(unittest.TestCase):
+    """#2337: a command word that may expand to a shell."""
+
+    def test_each_is_read(self):
+        # A default that spells a shell is that shell; another dynamic word
+        # handed `-c` makes the program after it a candidate (`candidates`).
+        for script in ("${X:-sh} -c '%s'\n" % PIPE, '"${X:-bash}" -c \'%s\'\n' % PIPE,
+                       "$CMD -c '%s'\n" % PIPE, "${X:-[s]h} -c '%s'\n" % PIPE,
+                       GET + "${X:-sh} tool\n", GET + "CMD=sh\n$CMD -c 'sh tool'\n"):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+
+    def test_the_controls_read_as_they_did(self):
+        for script in ("${X:-sh} -c 'echo hi'\n", "$CMD --flag\n", "$CMD -c 'echo hi'\n",
+                       "$PYTHON -c 'import sys'\n", GET + "$CMD --flag\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # Fail-closed: in a job that downloads, a program no word here names
+        # is reported, as a script in a substitution is (`Idle`).
+        self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

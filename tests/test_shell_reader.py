@@ -1134,3 +1134,27 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn("looks for `-c` or a script",
                               shell_reader.unresolved_wrapper(stage(script).argv) or "")
+
+
+class TestADefaultThatIsAShell(unittest.TestCase):
+    """#2337: a command word that is a parameter's default or alternate --
+    `${X:-sh}`, `"${X-bash}"`, `${X:=sh}`, `${X:+sh}` -- is the shell it
+    spells wherever `X` leaves that word, and bash 3.2.57 and 5.2.21 run the
+    program handed it (with `X=true`, `${X:-sh}` runs `true`, and nothing)."""
+
+    def test_the_default_is_read_as_the_shell(self):
+        for word in ("${X:-sh}", "${X-bash}", "${X:=sh}", "${X=dash}", "${X:+sh}",
+                     "${X+bash}", "${SHELL:-/bin/sh}"):
+            with self.subTest(word=word):
+                argv = shell_reader.command(stage(word + " -c P").argv)
+                self.assertEqual(["-c", "P"], argv[1:])
+                self.assertIn(argv[0], ("sh", "bash", "dash", "/bin/sh"))
+
+    def test_any_other_word_is_what_it_was(self):
+        # Not a shell, not a default, a default bash expands further, or
+        # behind a wrapper, where a dynamic operand is unresolved (#2227).
+        for word in ("${X:-true}", "${X:?sh}", "$X", "${X:-$Y}", "${X:-[s]h}", "${X}"):
+            with self.subTest(word=word):
+                self.assertEqual(word, shell_reader.command(stage(word + " -c P").argv)[0])
+        self.assertIn("dynamic command operand",
+                      shell_reader.unresolved_wrapper(stage("sudo ${X:-sh} -c P").argv) or "")

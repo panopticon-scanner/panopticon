@@ -11,6 +11,7 @@ evidence exposed.
   The command behind an `A+=x`, `a[1]=x` or `arr=(a b)` prefix is now read, as `X=1`'s is (#2348).
   The program after option words that follow `-c` is read: `sh -c -e P`, `sh -c -- P` (#2332).
   Values before a shell's program are read: `sh $X 'P'`, `sh $'-c' P`, `-eo pipefail [-]c` (#2344).
+  A `$` command word that may be a shell is read: `${X:-sh} -c P`, `$CMD -c P` (#2337).
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).

@@ -364,14 +364,23 @@ def unread_program(argv, stage, walk, inside):
     """Why a program this stage hands a shell goes unread, or None: a script
     handed to one `inside` a command substitution (`substitution_script`), or
     the words a value where it reads its options may make its program
-    (`candidates`, #2344), weighed alike -- so `X=-c; sh $X 'echo hi'` is
-    `Idle`, and `sh $X`, with no word after the value, hands none."""
+    (`candidates`, #2344, #2337), weighed alike -- so `X=-c; sh $X 'echo hi'`
+    is `Idle`, and `sh $X`, with no word after the value, hands none. A
+    command the guard reports unresolved (`sudo $CMD -c …`) is not read
+    again here."""
+    handed = inside and substitution_script(argv, stage, walk)
     value, words = candidates(argv)
-    return (inside and substitution_script(argv, stage, walk) or words and _weighed(
-        "passes `%s` `%s` where it reads its options, a value this guard does not follow "
-        "-- any word after it may be the program the shell runs, and one here may fetch or "
-        "run a download unchecked; write the options out, or exempt the step with a reason"
-        % (os.path.basename(argv[0]), shell_reader.readable(value)), words, walk) or None)
+    if handed or not words or shell_reader.unresolved_wrapper(stage.argv):
+        return handed or None           # an unresolved command is reported whole
+    return _weighed((
+        "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
+        "the word after its options is a program that may fetch or run a download unchecked; "
+        "name the command, or exempt the step with a reason" % shell_reader.readable(value)
+        if value is argv[0] else
+        "passes `%s` `%s` where it reads its options, a value this guard does not follow -- "
+        "any word after it may be the program the shell runs, and one here may fetch or run a "
+        "download unchecked; write the options out, or exempt the step with a reason"
+        % (os.path.basename(argv[0]), shell_reader.readable(value))), words, walk)
 
 
 INSIDE = " inside a command substitution"

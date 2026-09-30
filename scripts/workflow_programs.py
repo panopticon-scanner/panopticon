@@ -111,8 +111,13 @@ def candidates(argv):
     … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
     -I{} sh {} '…'` do. This module follows no value, so every literal word
     after it may be the program; (None, []) where the options end first, at
-    a program, a `-c` whose string `scripts` reads, or a `--`.
+    a program, a `-c` whose string `scripts` reads, or a `--`. A value that
+    is the command word, handed a `-c` cluster, may be a shell itself (#2337,
+    `CMD=sh; $CMD -c '…'`): the program after the options is the candidate.
     """
+    if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
+        return argv[0], [w for w in _past_options(argv, 1)
+                         if not shell_reader.dynamic(w, shell_reader.has_substitution)]
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
     owed = 0

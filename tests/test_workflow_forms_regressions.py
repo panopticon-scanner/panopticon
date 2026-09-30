@@ -334,3 +334,28 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
+
+
+class TestADynamicCommandWordHandedDashC(unittest.TestCase):
+    """#2337: any other dynamic command word handed a `-c` cluster may be a
+    shell (`CMD=sh; $CMD -c P` runs `P`), so the program after the options
+    is a candidate, read as #2344's are; with no `-c` it is the value gap
+    `$CMD --flag` has."""
+
+    @staticmethod
+    def argv(script):
+        stmts = shell_reader.statements(script)
+        assert len(stmts) == 1 and len(stmts[0].stages) == 1, stmts
+        return shell_reader.command(stmts[0].stages[0].argv)
+
+    def test_the_program_after_dash_c_is_a_candidate(self):
+        for script, value in (("$CMD -c P", "$CMD"), ('"$PYTHON" -c P', "$PYTHON"),
+                              ("$(which sh) -ec -- P", "$(...)"), ("${X:-true} -c -x P", "${X:-true}")):
+            with self.subTest(script=script):
+                found, words = forms.candidates(self.argv(script))
+                self.assertEqual((value, ["P"]), (shell_reader.readable(found), words))
+
+    def test_none_without_a_dash_c(self):
+        for script in ("$CMD --flag", "$CMD -x P", "$CMD", '$CMD -c "$P"', "$HOME/bin/tool -c P"):
+            with self.subTest(script=script):
+                self.assertEqual([], forms.candidates(self.argv(script))[1])

@@ -84,6 +84,8 @@ that starts catching one fails there, and this list is edited with it.
   and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
   A value in a shell's options (`sh $X '…'`) is not followed; the literal words after it
   are read as programs it may make (`candidates`, #2344), a `$` program (`sh -c "$P"`) not.
+  Nor is a `$` command word: `${X:-sh}` reads as the shell it defaults to, and another one
+  handed `-c` makes its program a candidate (#2337); `$CMD --flag` is read as nothing.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -347,8 +349,7 @@ def _checked_text(statement, position, stage, argv, written):
     Three ways a step says what it expects, and each is BOUND to a source: a
     heredoc body, a sums file this same step wrote, or the previous pipeline
     stage (`echo "<sha>  <file>" | sha256sum -c -`). A `sha256sum -c` over a
-    file nothing in the step produced ties this check to no download.
-    """
+    file nothing in the step produced ties this check to no download."""
     if stage.heredoc:
         return stage.heredoc
     files = [f for f in _operands(argv) + stage.reads if f not in STDOUT]
@@ -428,8 +429,7 @@ def _copies(statement, names):
     `cp payload alias`, `mv`, `ln -s`, `cat payload > alias`: renaming is not
     executing, but it LAUNDERS -- run `alias` and the bytes are the download's,
     under a name the guard never heard of. So the alias inherits, and the copy
-    itself stays innocent (copying a fetched JSON is still just a copy).
-    """
+    itself stays innocent (copying a fetched JSON is still just a copy)."""
     new = set()
     for stage in statement.stages:
         argv = command(stage.argv)
