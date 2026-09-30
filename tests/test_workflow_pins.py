@@ -886,20 +886,22 @@ def third_party_names(node):
             and not _is_local_module(name)]
 
 
-#: The only statements whose body does NOT run when the module is imported.
+#: The only statements whose body is NOT executed as part of importing the
+#: module: a function body is the one place an import is deferred to call time.
 #: `Lambda` is named for completeness and can never match: it is an expression,
 #: and an import is a statement, so no import can sit inside one.
 _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _module_level_import_nodes(body):
-    """Every import statement that RUNS when the module is imported.
+    """Every import statement that MAY run when the module is imported.
 
     Written as a REFUSAL rather than as a list of shapes worth descending into:
-    everything that is not inside a function body runs at import, so the walk
-    follows every child statement -- `try`/`except`/`except*`/`finally`, `if`/
-    `else`, `with`, `for`, `while`, `match`/`case`, `class` -- and stops only at
-    `def` and `async def`.
+    everything not inside a function body may run at import (a `try:` arm, an
+    `if:` arm, an `except` arm that never fires), so the guard refuses all of
+    it: the walk follows every child statement -- `try`/`except`/`except*`/
+    `finally`, `if`/`else`, `with`, `for`, `while`, `match`/`case`, `class` --
+    and stops only at `def` and `async def`.
 
     The first version descended into `try:` and `if:` alone, and six other
     shapes read as clean: `with contextlib.suppress(ImportError):`, which is the
@@ -982,8 +984,10 @@ def files_reached_by(*roots):
 
     The environment is STATED, not inherited, the way the sibling child-process
     case in `tests/phases/test_readiness_verb.py` states its own: an empty PATH
-    and a HOME with nothing under them, `PYTHONPATH` exactly `skill/`, and no
-    other `PYTHON*` variable the developer happens to have set. Nothing here
+    and a HOME with nothing under them, `PYTHONPATH` exactly `skill/`, the user
+    site-packages excluded on purpose (`PYTHONNOUSERSITE=1`, not merely by the
+    relocated HOME), and no other `PYTHON*` variable the developer happens to
+    have set. Nothing here
     launches a binary -- it only imports -- but a census of what the product
     imports must not be a reading of whoever ran it.
     """
@@ -991,6 +995,7 @@ def files_reached_by(*roots):
         env = {"PATH": os.path.join(elsewhere, "empty-path"),
                "HOME": os.path.join(elsewhere, "home"),
                "PYTHONPATH": os.path.join(REPO_ROOT, "skill"),
+               "PYTHONNOUSERSITE": "1",
                "PYTHONDONTWRITEBYTECODE": "1"}
         for path in (env["PATH"], env["HOME"]):
             os.makedirs(path, exist_ok=True)
@@ -1180,11 +1185,13 @@ class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
                           for line, module in module_level_third_party(source, path)]
         self.assertEqual(
             [], offenders,
-            "these imports run when the driver is imported, so an install "
-            "without one of them is a traceback instead of the `dependencies` "
-            "row that names its `pip install` (#2369):\n  %s\nMove each into "
-            "the function that uses it. Not into a module-level `try:` / "
-            "`except ImportError:`: an except arm that rebinds the name is the "
+            "these imports are attempted when the driver is imported, so an "
+            "install without one of them is a traceback (or a silently swallowed "
+            "one) instead of the `dependencies` row that names its "
+            "`pip install` (#2369):\n  %s\nMove each into the function that "
+            "uses it. Not into a module-level `try:` / `except ImportError:` -- "
+            "or a `with contextlib.suppress(ImportError):`, which is the same "
+            "statement in fewer words: an except arm that rebinds the name is the "
             "fallback #2363 forbids, one that passes leaves the name unbound "
             "for a NameError at first use, and an unguarded one takes the row "
             "down. The function body is the only place that is none of those."
