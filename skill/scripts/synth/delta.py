@@ -12,7 +12,7 @@ import scripts.evidence as evidence_mod
 # The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
 # here because `meta.coverage.delta`'s published description enumerates these
 # exact strings, so a literal typed in a second place can drift from the
-# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach a report: the other three
+# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other three
 # leave the payload with no `base`, so the review is not a delta one and the
 # whole `meta.coverage.delta` block is null.
 MALFORMED_UNREADABLE = "unreadable"

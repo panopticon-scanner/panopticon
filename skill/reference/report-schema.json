@@ -426,7 +426,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one. Never null here: a `base` the artifact omitted or that was repaired at the read (see `delta_artifact.keys_repaired`) makes the review a non-delta one, and this whole block is null instead."
                 },
                 "base_source": {
                   "type": [
