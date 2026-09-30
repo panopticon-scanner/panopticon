@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
+  every truthy certification-sinking reason from the shared integrity table.
 - **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
   interpreter check and the adjudication inside the read guard's never-crash envelope, so an
   unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
