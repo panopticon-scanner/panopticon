@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
+  entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
+  statement read from either side": an enforced entry whose agent is not the checkpoint's shell,
+  and an UNENFORCED entry that names a shell at all — the phases set `agent` to null on those, so
+  a name on one is a claim the run never made. B7 (#2154) taught the session-mode Workflow script
+  only the first half, so `{enforced: false, agent: "panopticon-domain-panel", model: "opus"}`
+  hand-copied into `args.entries` ran on `model` with no refusal and no log line. The validation
+  loop now refuses it too, beside the other half and before any `agent()` call, so no entry in
+  the batch launches. The same loop's refusals also interpolated `e.id` raw where
+  `loop_batch.misroute_refusal` deliberately uses `%r`: the id is read out of the dispatch
+  request, a file in the reviewed tree, so a control character, an ANSI escape or an embedded
+  newline in it reached the operator's terminal as bytes the terminal acts on. Every refusal in
+  the loop that prints an id now prints it through `JSON.stringify`. The enforced/unenforced
+  dispatch branch itself is unchanged: validation now leaves it reachable only by the two shapes
+  it was written for. The workflow checks SHAPES only — which shell a checkpoint may name is
+  `refuse_misrouted`'s check, one level up — and `agent: ""` reads as absent on both halves of the
+  JS statement, where `refuse_misrouted` treats it as a claim.
 - **`--scope-changed` asks the same dot-path policy `--repo-scan` asks (#2272, #1784, ARC-F2E).**
   The delta path built its reviewed set from git-diff output, pruned fixture corpora and committed
   `exclude_paths`, and stopped -- it never asked `dot_paths.allowed`. So a tracked, CHANGED
