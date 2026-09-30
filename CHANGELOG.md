@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Read the committed config once per discovery run (#2269, #1761).** Exclusion and group
+  readers share per-call snapshots, so one resolver disclosure reaches the operator once.
 - **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
   now offers direct repair before the setup command that refuses an invalid committed config.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
