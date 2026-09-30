@@ -562,6 +562,12 @@ def reconcile(plan, tools, resolved, run=None):
         "git_drivers_suppressed": suppressed_drivers,
         "resume": plan.resume,
         "delta": resolved.delta_meta,
+        # #2169: the SIBLING of `delta` -- what reading `diff-hunks.json` cost,
+        # emitted whenever a file was read and null only when none was. `delta`
+        # above is null for a rejected payload too (no `base`, so not a delta
+        # review), which made a broken artifact indistinguishable from a run
+        # that was never given one. Both keys, one loader record.
+        "delta_artifact": resolved.delta_artifact,
     }
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       delta_scope_suppressed_git_drivers=delta_scope_suppressed,

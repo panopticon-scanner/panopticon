@@ -469,6 +469,51 @@ class TestSchemaParity(unittest.TestCase):
                          "proxied:pypi.org",
                          "no egress posture: that value is unwalked")
 
+    def test_the_delta_blocks_are_property_pinned_so_the_walk_descends(self):
+        """#2169: `meta.coverage.delta` was `{"type": ["object","null"]}` with no
+        `properties`, so `_undescribed` above treated it as a deliberately open
+        leaf and never descended -- its fourteen keys had no schema entry and no
+        parity coverage, which is #1602 in miniature inside a node #1602's own
+        guard walks past. The walk below cannot catch that regression: an open
+        leaf has nothing to be undescribed.
+
+        So assert the descent itself, from both ends. The schema's pinned key set
+        for each block must EQUAL the key set the fixture's report emits there --
+        a producer key with no schema entry fails here, and a schema entry no
+        producer writes fails here too, which is the half a one-directional walk
+        can never see."""
+        cov = self.report["meta"]["coverage"]
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            pinned = set((node[key].get("properties") or {}))
+            self.assertTrue(pinned, "%s is an open leaf again: the walk in "
+                                    "test_no_report_key_is_undescribed_by_the_"
+                                    "schema descends into `properties` only, so "
+                                    "an unpinned object is never checked" % key)
+            self.assertEqual(pinned, set(cov[key] or {}),
+                             "meta.coverage.%s: the schema pins %s and the "
+                             "fixture's report emits %s"
+                             % (key, sorted(pinned), sorted(cov[key] or {})))
+        # Vacuity: an empty `delta` block would satisfy the equality above only
+        # by making both sides empty, and the fixture DOES run `--diff-hunks`.
+        self.assertIsNotNone(cov["delta"], "the fixture ran no delta review")
+        self.assertIsNotNone(cov["delta_artifact"],
+                             "the fixture read no diff-hunks file")
+
+    def test_every_pinned_delta_key_is_described(self):
+        """#2169: a `properties` entry with a type and no prose is a pin, not a
+        contract -- and the walk that fails on an UNDESCRIBED key cannot see it,
+        because the key is described the moment it is listed."""
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            for name, sub in sorted((node[key].get("properties") or {}).items()):
+                self.assertTrue((sub.get("description") or "").strip(),
+                                "meta.coverage.%s.%s has no description: a "
+                                "consumer cannot tell what the value means"
+                                % (key, name))
+
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)
         self.assertEqual(

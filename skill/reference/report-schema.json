@@ -419,7 +419,95 @@
                 "object",
                 "null"
               ],
-              "description": "Delta-review disclosure (#449): {base, base_source, base_commit, delta_start, delta_end, includes_uncommitted, files_changed, diff_context, hunks_files, hunks_ranges, ranges_dropped, payload_malformed, on_diff_total, pre_existing_total}; null outside delta mode. #1783: `files_changed` is the artifact's own count, `hunks_files`/`hunks_ranges` the map this run classified against -- an active delta whose map is empty (`hunks_files: 0`) matched no finding, so every one classified off-diff and an on-diff gate had nothing to fail on; a map that names a file with no range instead fails OPEN for a lined finding there. `ranges_dropped` counts the malformed hunk entries the loader discarded -- one per range that was not a two-integer pair, and ONE for a path whose value was not a list at all, although that path is dropped entirely and every finding in that file then classifies off-diff. `payload_malformed` names why a payload was rejected in whole or in part; the only value that can reach a report is `hunks not an object`, because the loader's other two outcomes (`unreadable`, `not an object`) leave no `base`, hence a non-delta review where this whole block is null and only synthesize's stderr names them. Both are null when the context was not built by reading the file."
+              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven artifact-carried keys are described but NOT type-pinned, because their values are copied verbatim out of `.panopticon/diff-hunks.json` with nothing normalizing them at the read, and a schema error is terminal -- so pinning them would let a hand-supplied artifact end a paid-for run. The driver's discovery phase rewrites or removes that file, so the exposure is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`. #2382 is the follow-up: normalize those seven at the read, then pin them.",
+              "properties": {
+                "base": {
+                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one."
+                },
+                "base_source": {
+                  "description": "How the artifact says it chose that base (`explicit`, `fallback`, ...), copied verbatim from it."
+                },
+                "base_commit": {
+                  "description": "The artifact's own anchor commit for the base, so a later reader can reconstruct the delta after branch tips move; null when it resolved none."
+                },
+                "delta_start": {
+                  "description": "The artifact's own anchor commit for the start of the delta; null when it resolved none."
+                },
+                "delta_end": {
+                  "description": "The artifact's own anchor commit for the end of the delta; null when it resolved none."
+                },
+                "includes_uncommitted": {
+                  "description": "Whether the artifact says the diff it measured included uncommitted worktree changes."
+                },
+                "files_changed": {
+                  "description": "The ARTIFACT's own count of changed files, which is not the size of the map this run classified against -- compare `hunks_files` below."
+                },
+                "diff_context": {
+                  "type": "integer",
+                  "description": "Lines of tolerance this run allowed around a hunk when classifying a finding on-diff (`--diff-context`, default 5)."
+                },
+                "hunks_files": {
+                  "type": "integer",
+                  "description": "Files in the hunk map this run actually classified against; 0 on an ACTIVE delta means the map matched no finding, so every one classified off-diff and a `--gate-scope on-diff` gate had nothing left to fail on."
+                },
+                "hunks_ranges": {
+                  "type": "integer",
+                  "description": "Line ranges in that same map. 0 on an ACTIVE delta with gate-eligible findings present under `--gate-scope on-diff` makes that run read INCONCLUSIVE rather than PASS (#2178, narrowed by #2222); with no such finding it keeps its PASS, because a legitimately empty change is not a defect. A named file with no range of its own is a separate hazard: a finding there fails OPEN to on-diff."
+                },
+                "ranges_dropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Null when this context was not built by reading a file."
+                },
+                "paths_dropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Null when this context was not built by reading a file."
+                },
+                "payload_malformed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object`. Only `hunks not an object` can reach this block, because the other two leave no `base` and hence no delta review -- there the sibling `delta_artifact` carries the reason. Null when nothing was rejected, and null when this context was not built by reading a file."
+                },
+                "on_diff_total": {
+                  "type": "integer",
+                  "description": "Active findings this run classified as on-diff."
+                },
+                "pre_existing_total": {
+                  "type": "integer",
+                  "description": "Active findings this run classified as pre-existing (off-diff)."
+                }
+              }
+            },
+            "delta_artifact": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "What ATTEMPTING to read `.panopticon/diff-hunks.json` cost: an object whenever a `--diff-hunks` path was given and a read was attempted -- whether or not it succeeded, and whether or not the resulting delta was active -- and null when none was given (a direct caller, or a run never passed the flag), so the block's presence alone is the fact (#2169). That is what it publishes: a rejected payload carries no `base`, so `delta` above is null exactly as it is for a run given no artifact at all, and rather than dressing a rejection up as an active delta, `delta` is left alone for consumers that read its truthiness as \"this was a delta review\".",
+              "properties": {
+                "payload_malformed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all three values can appear here, including the two (`unreadable` -- which covers a path that does not exist -- and `not an object`) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                },
+                "ranges_dropped": {
+                  "type": "integer",
+                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped`; never null here, because this block is written only when a read was attempted."
+                },
+                "paths_dropped": {
+                  "type": "integer",
+                  "description": "Whole paths the loader discarded, as `delta.paths_dropped`; never null here, for the same reason."
+                }
+              }
             },
             "ocrdb": {
               "type": ["object", "null"],
