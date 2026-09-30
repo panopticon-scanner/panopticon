@@ -34,11 +34,13 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from tests._test_helpers import REPO_ROOT
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT
 import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
@@ -272,6 +274,78 @@ class TestTheDependenciesRow(_VerbCase):
         # the interpreter, not from a constant that can go stale.
         self.assertTrue(readiness_checks._installed("json"))
         self.assertFalse(readiness_checks._installed("no_such_module_anywhere_12345"))
+
+    # #2369: an install without one of these packages must READ the row, not a
+    # traceback. `_installed` is a seam, so the in-process cases above state a
+    # missing package without one actually being missing -- which cannot see the
+    # failure this test is about, because that failure happens at
+    # `import scripts.driver`, before `main` is called at all. So this one runs
+    # a child interpreter whose import system genuinely does not have the
+    # package, and the child is the only place the property is observable.
+    #
+    # `jsonschema` is the CONTROL: it was always imported lazily (the artifact
+    # validation imports it when it validates), so this case was GREEN before
+    # #2369 and is what a reached row looks like. `pyyaml` and `defusedxml` were
+    # RED -- `setup_flow`, `discovery`, `setup_proposal` and `tools/spotbugs`
+    # imported them at module level, so `import scripts.driver` raised
+    # ModuleNotFoundError and printed no document.
+    # `tests/test_workflow_pins.py`'s AST guard is what keeps those imports
+    # inside the functions that need them.
+    _WITHOUT_PACKAGE = '''
+import sys
+_absent = sys.argv[1]
+
+class _Missing:
+    """An install without `_absent`: that name and its submodules are gone.
+
+    A meta_path finder rather than an edited sys.path, because the package may
+    sit anywhere the child would look, and rather than a `sys.modules` entry,
+    because the driver's import chain has not imported it yet.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == _absent or fullname.startswith(_absent + "."):
+            raise ModuleNotFoundError("No module named %r" % fullname,
+                                      name=fullname)
+        return None
+
+sys.meta_path.insert(0, _Missing())
+sys.path.insert(0, sys.argv[2])
+import scripts.driver
+raise SystemExit(scripts.driver.main(["readiness", sys.argv[3], "--json"]))
+'''
+
+    def test_each_missing_runtime_package_reaches_the_row_not_a_traceback(self):
+        for module, pip_name in readiness_checks.RUNTIME_PACKAGES:
+            with self.subTest(package=pip_name):
+                d = self._repo(groups_yml=GROUPS_YML)
+                # The same DECLARED environment `_run` states, passed through
+                # `env=` because a patch does not cross a process boundary: an
+                # empty PATH and a HOME with no skills under it. The empty PATH
+                # is also what keeps this case from launching anything -- the
+                # docker probe's `docker version` finds no binary and the row
+                # reads unavailable -- and since the probe cannot be stubbed
+                # here, the assertions below are about the `dependencies` row
+                # and stderr only.
+                env = {"PATH": self._tmpdir(), "HOME": self._tmpdir(),
+                       "PYTHONDONTWRITEBYTECODE": "1"}
+                proc = subprocess.run(  # nosec B603
+                    [sys.executable, "-c", self._WITHOUT_PACKAGE, module,
+                     SKILL_ROOT, d],
+                    capture_output=True, text=True, env=env, timeout=180)
+                self.assertNotIn(
+                    "Traceback", proc.stderr,
+                    "an install without `%s` takes the driver down at import "
+                    "instead of reaching the preflight row that names it:\n%s"
+                    % (pip_name, proc.stderr))
+                self.assertEqual(1, proc.returncode,
+                                 proc.stdout + "\n" + proc.stderr)
+                body = json.loads(proc.stdout)
+                self.assertEqual([pip_name], body["dependencies"]["missing"])
+                self.assertIs(False, body["dependencies"]["ok"])
+                self.assertIn("dependencies", body["failed"])
+                self.assertIn("pip install %s" % pip_name,
+                              body["dependencies"]["detail"])
 
 
 class TestTheReadyMachine(_VerbCase):
