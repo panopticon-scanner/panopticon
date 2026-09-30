@@ -1620,6 +1620,14 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
         self.assertIn("runs under `shell: bash -O extglob {0}`, which this guard reads as starting "
                       "without errexit", found[0][1])
 
+    def test_a_set_line_takes_no_value_after_O(self):
+        # Only a template's `-O` takes one: bash's `set` rejects `-O` outright
+        # (rc 2) and leaves errexit off, so the check after it stops nothing.
+        found = self.job("set +e\nset -O foo -e\n%s\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs after a `set +e`", found[0][1])
+        self.assertEqual([], self.job("set +e\nset -e\n%s\n"))
+
     def test_the_script_twins_take_the_steps_pipefail(self):
         # The child's own pipefail covers its inner pipe, not the outer one
         # whose status `tee` sets; `eval` runs in the step's shell and so

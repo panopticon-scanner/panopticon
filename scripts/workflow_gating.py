@@ -44,9 +44,10 @@ from shell_reader import command, conditional, negated
 Inlined = collections.namedtuple("Inlined", "stages separator region credit")
 
 
-def _errexit(words, state=False, name="errexit"):
+def _errexit(words, state=False, name="errexit", template=False):
     """Whether these shell or `set` options leave `-e` on, from `state` -- or
-    the option `-o name` sets, for `pipefail`, which no letter spells."""
+    the option `-o name` sets, for `pipefail`, which no letter spells. Only a
+    `shell:` `template` takes a value after `-O`: bash's `set` rejects `-O`."""
     words = iter(words)
     for word in words:
         if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
@@ -56,7 +57,7 @@ def _errexit(words, state=False, name="errexit"):
                 state = word[0] == "-"
             if "o" in word[1:] and next(words, None) == name:
                 state = word[0] == "-"
-            if "O" in word[1:]: next(words, None)   # bash's `-O shopt_option` (review N-3)
+            if template and "O" in word[1:]: next(words, None)   # `bash -O extglob {0}`
     return state
 
 
@@ -72,7 +73,7 @@ def seed(shell):
     words = (shell or "").split()
     if len(words) < 2:
         return True, words == ["bash"]
-    return _errexit(words[1:]), _errexit(words[1:], False, "pipefail")
+    return _errexit(words[1:], template=True), _errexit(words[1:], False, "pipefail", True)
 
 
 # --- whether a command's failure is allowed to matter -------------------------
