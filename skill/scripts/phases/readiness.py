@@ -378,7 +378,7 @@ def _matrix_row(review_root):
                        if not (group or {}).get("match"))
     if unmatched:
         return dict(counts, ok=False,
-                    detail="group(s) with no match patterns: %s — run "
+                    detail="group(s) with no match patterns: %s — fix it or re-run "
                            "`driver setup`" % ", ".join(map(str, unmatched)))
     return dict(counts, ok=True,
                 detail="%d group(s), %d code file(s), %d test file(s)"

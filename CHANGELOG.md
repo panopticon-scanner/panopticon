@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
+  now offers direct repair before the setup command that refuses an invalid committed config.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
   and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
   so those three malformed shapes no longer abort the filing run. `reconcile.load_report` refuses
