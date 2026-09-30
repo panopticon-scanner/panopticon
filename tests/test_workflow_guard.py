@@ -701,6 +701,126 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
                     self.assertEqual([], self.job(dest, use))
 
 
+class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
+    """#2345 (a), (b): after `curl -o cuda_1.run`, `sh "$PWD/cuda_1.run"` read
+    clean -- #2310 read a word bash expands only where the COMMAND stands --
+    and so did `sh ./cuda_*.run` after `curl -o "$PWD/cuda_1.run"`; bash 3.2
+    and 5.2 run the download through each spelling. An operand bash expands
+    whose last part is the download's basename is now the download, as a
+    command word is, and a glob is matched against a download written to a
+    `$`-spelled path by its last part. Loose on the side that RUNS only: a
+    checksum still binds by its spelling."""
+
+    GET = "curl -fsSLo %s https://example.test/cuda_1.run\n"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _n, why in wg.job_defects([("step", script)])]
+
+    def test_an_operand_ending_in_its_basename_is_the_download(self):
+        get = self.GET % "cuda_1.run"
+        for use, how in (("sh $PWD/cuda_1.run\n", "running it under `sh`"),
+                         ('sh "$PWD/cuda_1.run"\n', "running it under `sh`"),
+                         ('sh "${PWD}/cuda_1.run" --silent\n', "running it under `sh`"),
+                         ('sh "$(pwd)/cuda_1.run"\n', "running it under `sh`"),
+                         ('D=$PWD\nsh "$D/cuda_1.run"\n', "running it under `sh`"),
+                         ('sudo bash "`pwd`/cuda_1.run"\n', "running it under `bash`"),
+                         ('chmod +x "$PWD/cuda_1.run"\n', "making it executable"),
+                         ('install -m 755 "$PWD/cuda_1.run" /usr/local/bin/c\n', "installing it"),
+                         ('cp "$PWD/cuda_1.run" /usr/local/bin/\n', "putting it on PATH")):
+            with self.subTest(use=use):
+                why = self.job(get + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> cuda_1.run and %s" % how, why[0])
+
+    def test_wherever_the_fetch_put_it(self):
+        # What `$HOME` expands to is not evaluated, so this is read as running
+        # the download too, which bash does not do from the checkout: the
+        # fail-closed side to be wrong on, as for a command word (#2310).
+        self.assertIn("running it under `bash`", "".join(
+            self.job(self.GET % "cuda_1.run" + 'bash "$HOME/cuda_1.run"\n')))
+
+    def test_a_check_before_it_clears_it_and_binds_by_its_spelling(self):
+        get = self.GET % "cuda_1.run"
+        self.assertEqual([], self.job(get + self.CHECK % "cuda_1.run" + 'sh "$PWD/cuda_1.run"\n'))
+        self.assertIn("no checksum in the job names cuda_1.run", "".join(
+            self.job(get + self.CHECK % "$PWD/cuda_1.run" + 'sh "$PWD/cuda_1.run"\n')))
+
+    def test_another_last_part_or_an_option_is_not_the_download(self):
+        get = self.GET % "cuda_1.run"
+        for use in ('sh "$PWD/other.run"\n', 'sh "$PWD/cuda_1.run.sig"\n',
+                    'sh "$PWD/cuda_1.run/.."\n', 'echo "$PWD/cuda_1.run"\n',
+                    'sh ./x.sh --file="$PWD/cuda_1.run"\n', 'sh "$PWD/${NAME}"\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(get + use))
+        # Its directory, walked, still covers what is in it.
+        self.assertIn("making it executable", "".join(self.job(
+            self.GET % '"$PWD/cuda_1.run"' + 'chmod -R +x "$PWD"\n')))
+
+    def test_a_glob_binds_a_download_written_to_a_dollar_spelled_path(self):
+        get = self.GET % '"$PWD/cuda_1.run"'
+        for use, how in (("sh ./cuda_*.run\n", "running it under `sh`"),
+                         ("sh cuda_*.run\n", "running it under `sh`"),
+                         ("chmod +x ./cuda_*.run\n", "making it executable")):
+            with self.subTest(use=use):
+                why = self.job(get + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> $PWD/cuda_1.run and %s" % how, why[0])
+        for script in (get + "sh ./other_*.run\n",
+                       get + self.CHECK % "$PWD/cuda_1.run" + "sh ./cuda_*.run\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+
+
+class TestAUseInsideACommandSubstitution(unittest.TestCase):
+    """#2345 (c): `curl -o t.sh …; x=$(bash t.sh)` read clean, because a use
+    was looked for in each command's own argv and never in the script a
+    substitution runs; bash 3.2 and 5.2 run the download there. The guard's
+    walk already reads every substitution as a script of its own for what it
+    FETCHES; a use written there is now read the same way, at the statement
+    that holds it, and the sentence says where it is."""
+
+    GET = "curl -fsSLo t.sh https://example.test/t.sh\n"
+    CHECK = 'echo "%s  t.sh" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _n, why in wg.job_defects([("step", script)])]
+
+    def test_a_use_inside_a_substitution_is_a_use(self):
+        for use, how in (("x=$(bash t.sh)\n", "running it under `bash`"),
+                         ('echo "$(sh t.sh)"\n', "running it under `sh`"),
+                         ("x=`bash t.sh`\n", "running it under `bash`"),
+                         ("diff <(bash t.sh) <(echo ok)\n", "running it under `bash`"),
+                         ("x=$(echo $(sh ./t.sh))\n", "running it under `sh`"),
+                         ("x=$(cat t.sh | sh)\n", "piping it into `sh`"),
+                         ('if [ "$(bash t.sh)" = ok ]; then :; fi\n', "running it under `bash`"),
+                         ("cat <<EOF\n$(bash t.sh)\nEOF\n", "running it under `bash`")):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> t.sh and %s inside a command substitution with nothing"
+                              % how, why[0])
+
+    def test_run_by_its_path_inside_one(self):
+        # An execute bit set before the fetch survives it, so `./t.sh` runs the
+        # download with no `chmod` after it; with one, that is the first use.
+        why = self.job("touch t.sh && chmod +x t.sh && " + self.GET + "v=$(./t.sh)\n")
+        self.assertIn("-> t.sh and running it inside a command substitution", "".join(why))
+        why = self.job(self.GET + "chmod +x t.sh\nv=$(./t.sh)\n")
+        self.assertIn("-> t.sh and making it executable", "".join(why))
+
+    def test_a_check_before_it_clears_it_and_one_after_it_does_not(self):
+        self.assertEqual([], self.job(self.GET + self.CHECK + "x=$(bash t.sh)\n"))
+        self.assertIn("verifies t.sh only AFTER running it under `bash` inside a command "
+                      "substitution", "".join(self.job(self.GET + "x=$(bash t.sh)\n" + self.CHECK)))
+
+    def test_reading_it_or_running_another_file_there_is_not_a_use(self):
+        for use in ("x=$(cat t.sh)\n", "x=$(bash other.sh)\n", "x=$(wc -l < t.sh)\n",
+                    "x=$(sha256sum t.sh | cut -d' ' -f1)\n", 'x="$(grep -c . t.sh)"\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(self.GET + use))
+
+
 class TestASpacedCaseArmIsOnePattern(unittest.TestCase):
     """#2345 (d): bash and dash read `a | x)` as the arm `a|x)`, the spaces
     around `|` and inside `( ... )` separating nothing, and run its body when
@@ -741,6 +861,41 @@ class TestASpacedCaseArmIsOnePattern(unittest.TestCase):
         same = (self.FETCH + 'case "$X" in\n  a | b) %s; chmod +x /tmp/payload;;\nesac\n'
                 % self.CHECK)
         self.assertIsNone(wg.fetch_exec_defect(same))
+
+
+class TestAGlobFromAnotherDirectoryReachesABareDownload(unittest.TestCase):
+    """#2345 (e): the guard follows no `cd`, so `curl -o cuda_1.run …; cd s;
+    sh ../cuda_*.run` read clean -- `../cuda_*.run` does not match the path
+    `cuda_1.run` -- and bash 3.2 and 5.2 run the download from `s`. A glob
+    whose directory part a bare download's name does not have is now matched
+    by its last part; the same `../` on both sides was already a use."""
+
+    GET = "curl -fsSLo %s https://example.test/cuda_1.run\n"
+    CHECK = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _n, why in wg.job_defects([("step", script)])]
+
+    def test_a_glob_from_another_directory_is_a_use(self):
+        get = self.GET % "cuda_1.run"
+        for use, how in (("mkdir -p s\ncd s\nsh ../cuda_*.run\n", "running it under `sh`"),
+                         ("mkdir -p s\ncd s\nchmod +x ../cuda_*.run\n", "making it executable"),
+                         ("mkdir -p s\nsh s/../cuda_*.run\n", "running it under `sh`")):
+            with self.subTest(use=use):
+                why = self.job(get + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> cuda_1.run and %s" % how, why[0])
+        self.assertIn("-> ../cuda_1.run and running it under `sh`", "".join(
+            self.job(self.GET % "../cuda_1.run" + "sh ../cuda_*.run\n")))
+
+    def test_a_checksum_clears_it_and_another_name_is_not_it(self):
+        # Quoted, the glob is no glob: bash names a file called `cuda_*.run`.
+        get = self.GET % "cuda_1.run"
+        for script in (get + self.CHECK + "mkdir -p s\ncd s\nsh ../cuda_*.run\n",
+                       get + "mkdir -p s\ncd s\nsh ../other_*.run\n",
+                       get + 'mkdir -p s\ncd s\nsh "../cuda_*.run"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
 
 
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
@@ -2485,13 +2640,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
 
     def test_a_use_spelled_another_way_off_the_command_word(self):
         # #2310 closed a command word with a `$` ending in the download's
-        # basename (`TestADownloadRunThroughAnExpandedPath`); an operand, a
+        # basename (`TestADownloadRunThroughAnExpandedPath`), and #2345 an
+        # operand (`TestADollarSpelledPathOnEitherSideBindsByItsLastPart`); a
         # word whose last part expands and a tilde still name nothing fetched.
         fetch = ("get", "curl -sfL https://example.test/p -o payload\n")
-        for run in ('sh "$PWD/payload"\n', 'P=./payload\n"$P" 9\n', "~/payload 9\n"):
+        for run in ('P=./payload\n"$P" 9\n', 'P=./payload\nsh "$P"\n', "~/payload 9\n"):
             with self.subTest(run=run):
                 self.accepted(fetch, ("run", run))
-        self.flagged(fetch, ("run", '"$PWD/payload" 9\n'))
+        for run in ('"$PWD/payload" 9\n', 'sh "$PWD/payload"\n'):
+            with self.subTest(run=run):
+                self.flagged(fetch, ("run", run))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):

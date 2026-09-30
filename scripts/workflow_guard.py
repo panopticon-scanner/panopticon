@@ -75,9 +75,10 @@ that starts catching one fails there, and this list is edited with it.
   `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
-  path spelled differently at fetch and at use matches nothing, including its
-  own use, so that download goes unseen. A COMMAND word with a `$` or `$(...)`
-  that ends in the download's basename is the exception: running it (#2310).
+  path spelled differently at fetch and at use matches nothing, so that
+  download goes unseen -- but the side that RUNS compares last parts where a
+  `$` spells the use's directory (`may_run` #2310, `covers` #2345), and for a
+  glob where one spells the download's or the download is a bare name.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -190,7 +191,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOU
                             chmod_executable, chmod_targets, clears, covers, described,
                             flattened, in_container, kept, may_run, names_file, parse_fetch,
                             regions, same_file, stdin_program, step_credit, streamed_fetch,
-                            substitution_script, swallowed)
+                            substitution_script, swallowed, within)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -439,23 +440,22 @@ def _copies(statement, names):
 
 
 def _uses(stmts, dest, after):
-    """(names the file goes by, [(statement index, what it does)]).
-
-    Walked in order from the fetch, so a name only counts once the statement
-    that created it has run.
-    """
+    """(names the file goes by, [(statement index, what it does)]), walked in
+    order from the fetch, so a name only counts once the statement that
+    created it has run; a use in a statement's substitutions (`within`) is
+    that statement's."""
     names, out = {dest}, []
     for index, statement in enumerate(stmts[after:], after):
-        for position, stage in enumerate(statement.stages):
+        for inner, position, stage, where in within(statement):
             argv, how = command(stage.argv), None
             for name in sorted(names):
-                how = _use(statement, position, stage, argv, name)
+                how = _use(inner, position, stage, argv, name)
                 if how:
                     if not same_file(name, dest):
                         how += " (as `%s`, copied from it earlier)" % name
                     break
             if how:
-                out.append((index, how))
+                out.append((index, how + where))
                 break
         names |= _copies(statement, names)
     return names, out

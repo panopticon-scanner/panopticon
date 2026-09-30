@@ -24,6 +24,8 @@ Three questions live here, each one a shape a step writes down:
                                REDIRECTION away (`bash -s <<'EOF'`), whose
                                quoted body is `stdin_scripts`; `flattened`
                                reads both in place of the command handed them;
+                               `within` the scripts a statement's command
+                               substitutions run, where a use may be (#2345);
                                and `in_container` the operand a `docker run`
                                hands to a shell on the far side of a bind mount
     whether a failure matters  `regions` reads the branch bodies a command was
@@ -455,6 +457,23 @@ def substitution_script(argv, stage, walk):
     live = [walk(flattened(statements(text))) for text in handed]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else Idle(why)
+
+
+INSIDE = " inside a command substitution"
+
+
+def within(statement, where=""):
+    """(statement, position, stage, where) for each stage of `statement` and,
+    under each, of the scripts it runs in a command substitution -- `$(...)`,
+    backquotes, `<(...)` -- read as scripts of their own (#2345), as the
+    guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
+    those. A script handed to a shell there as a string (`sh -c '...'`) is
+    not read: `substitution_script` reports it where the job downloads."""
+    for position, stage in enumerate(statement.stages):
+        yield statement, position, stage, where
+        for text in stage.substitutions:
+            for inner in statements(text):
+                yield from within(inner, INSIDE)
 
 
 def kept(unread, fetched):

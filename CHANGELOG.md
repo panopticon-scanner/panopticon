@@ -12,6 +12,7 @@ evidence exposed.
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
   A check ahead of `&&` now clears only what its list runs, unless the list fails the step (#2334).
   `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
+  The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
   statement read from either side": an enforced entry whose agent is not the checkpoint's shell,
