@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One `setup_proposal` in a driver-shaped process, at call time too (#2413, #1766).** The
+  six lazy sites in `setup_flow` import it through the package inside their function bodies --
+  that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
+  its own flat mode needs, so the grouping engine imports it the same way and the call-time
+  census keeps its three named residuals.
 - **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
   fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
   rollback prose already describes termination of registered child process groups.
