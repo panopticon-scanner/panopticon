@@ -30,7 +30,8 @@ Three questions live here, each one a shape a step writes down:
                                the `if`/`while` around a command, and `regions`
                                the branch bodies it was written inside -- the
                                two ways the shell says an exit status will not
-                               stop the script
+                               stop the script -- and `step_credit` the step's
+                               own `-e`, which a `set +e` turns off
 
 Stdlib only, like everything under it.
 """
@@ -252,19 +253,21 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
 
     Hardened means the checksum's failure stops the STEP (review I-2 of #1793):
     it stops the script (`-e` holds, or it is the last command) and every
-    command running a script around it passes that on, up to the step's own
-    shell, where `swallowed` decides. A child shell has `-e` only from its
+    command running a script around it passes that on, up to the command the
+    step's own shell runs, whose failure `swallowed` and `step_credit` judge
+    as they judge a check written there. A child shell has `-e` only from its
     options or a `set`, and `pipefail` so too (re-review N-D); `eval` keeps
-    the step's, but not `-e` ahead of `||`/`&&`, where bash suspends it.
-    `stops`: this script's failure stops the step; `errexit`: `-e` at its
-    top (None: the step's own shell); `pipefail`: a pipeline there fails on
-    any of its commands; `shell`: the script's runner;
+    the step's -- whose `set`s are read the same way (#2335) -- but not `-e`
+    ahead of `||`/`&&`, where bash suspends it.
+    `stops`: this script's failure reaches the step's own shell; `errexit`:
+    `-e` at its top (None: the step's own shell); `pipefail`: a pipeline
+    there fails on any of its commands; `shell`: the script's runner;
     `outer`: the bodies of the command running it, below the step's own, and
     `key` a name for the script, unique in the step, for its own bodies.
     """
-    out, last = [], len(stmts) - 1
-    inner = {} if errexit is None else regions(stmts)
-    on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit, inner)
+    out, last, where = [], len(stmts) - 1, regions(stmts)
+    inner = {} if errexit is None else where    # a step's own: `regions` over its read
+    on = _errexit_states(stmts, True if errexit is None else errexit, where)
     fails = [pipefail] * len(stmts) if errexit is None else _errexit_states(
         stmts, pipefail, inner, "pipefail")
     for index, statement in enumerate(stmts):
@@ -274,7 +277,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             for text in scripts(argv) + stdin_scripts(argv, stage):
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
-                         and (on[index] or index == last)
+                         and (errexit is None or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(statements(text), gates, on[index] and statement.separator
@@ -308,14 +311,16 @@ def _errexit(words, state=False, name="errexit"):
 
 def _errexit_states(stmts, state, where, name="errexit"):
     """Whether `-e` (or `-o name`) holds as each of `stmts` runs, from `state`
-    at the top: a `set` turns it on only as a plain statement outside every
-    branch (`where`, their `regions`), group, list and background job, and
-    off wherever it is."""
+    at the top, and after the last: a `set` turns it on only as a plain
+    statement outside every branch (`where`, their `regions`), group, list
+    and background job, and off wherever it is -- `eval`'s too (#2335), which
+    runs in this shell: `eval set +e`, and a `set` in the script it runs."""
     depth, states = 0, []
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
             argv = command(stage.argv)
+            argv = argv[1:] if argv[:2] == ["eval", "set"] else argv
             if argv and argv[0] == "set":
                 plain = (not depth and not stage.group_open and stage.argv[0] == "set"
                          and index not in where and len(statement.stages) == 1
@@ -323,9 +328,12 @@ def _errexit_states(stmts, state, where, name="errexit"):
                          and not (index and stmts[index - 1].separator in ("&&", "||")))
                 state = (_errexit(argv[1:], state, name) if plain
                          else state and _errexit(argv[1:], state, name))
+            for text in scripts(argv) if argv[:1] == ["eval"] else ():
+                inner = statements(text)
+                state = state and _errexit_states(inner, state, regions(inner), name)[-1]
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
-    return states
+    return states + [state]
 
 
 def stdin_scripts(argv, stage):
@@ -418,7 +426,7 @@ def in_container(argv, dest, interpreters):
 # shell around the command decides whether that survives. `&` detaches it;
 # `||` hands the failure to a branch, which rescues it ONLY if that branch
 # ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
-# a test.
+# a test; a `set +e` ahead of it turns errexit off (`step_credit`).
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
@@ -442,12 +450,14 @@ def _known_status(argv, inherited):
     return None
 
 
-def _stops_the_job(stmts, index):
+def _stops_the_job(stmts, index, errexit=True):
     """True if the `||` branch after `stmts[index]` fails the step.
 
     `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
     gates, not swallows -- and they are the cheap hardened spellings, so
     refusing them would push authors toward the exemption list instead.
+    Where `errexit` is off a branch that only FAILS stops nothing (`|| false`
+    sets a status the step carries on past), so there it has to `exit`.
     """
     following = stmts[index + 1:index + 11]
     if not following:
@@ -459,7 +469,7 @@ def _stops_the_job(stmts, index):
     status = 1  # The rescue is entered only after the checksum fails.
     depth = subshell_depth = 0
     exited_subshell = None
-    stopped_job = False
+    stopped_job = exited = False
     for statement in following:
         if (statement.separator == "&" or len(statement.stages) != 1 or
                 any(negated(stage.argv) for stage in statement.stages)):
@@ -483,7 +493,7 @@ def _stops_the_job(stmts, index):
                                 return False
                             exited_subshell = subshell_depth
                         else:
-                            stopped_job = True
+                            stopped_job, exited = True, name == "exit"
             depth -= stage.group_close + stage.argv.count("}")
             subshell_depth -= stage.group_close
             if depth < 0 or subshell_depth < 0:
@@ -496,15 +506,19 @@ def _stops_the_job(stmts, index):
             break
         if statement.separator in ("&&", "||"):
             return False
-    return (not grouped or depth == 0) and status is not None and status != 0
+    return ((not grouped or depth == 0) and status is not None and status != 0
+            and (errexit or exited))
 
 
-def swallowed(stmts, index, statement, stage):
+def swallowed(stmts, index, statement, stage, credit=None):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
     sentence a reader gets when the check they wrote did not clear the fetch
-    they wrote it for.
+    they wrote it for. What is read here is the shell right around the check
+    -- an `Inlined` statement's `credit` first, then its separator, `!` and
+    `if` -- and `credit` is the step's own answer for the statement, read
+    last: `step_credit`'s, or None where it has none.
     """
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
@@ -522,4 +536,35 @@ def swallowed(stmts, index, statement, stage):
         return "is negated, so the failing path is the THEN branch"
     if conditional(head) or conditional(stage.argv):
         return "is an `if`/`while` test, which errexit does not apply to"
-    return None
+    return credit[stage is not statement.stages[-1]] if credit else None
+
+
+# Why a check the step's own shell runs does not stop the step, as
+# `step_credit` finds it.
+_SET_E = ("runs after a `set +e` (or `set +o errexit`) turned errexit off and is not in "
+          "the step's last command, so the step carries on past its failure")
+
+
+def step_credit(flat):
+    """{index: (why, why)} for the statements of one step's `read` in which
+    a failing check does not stop the step, in `Inlined.credit`'s shape;
+    `swallowed` reads it last.
+
+    `flattened` credits a script handed on only as far as the command that
+    runs it, and the step's own shell decides the rest, for that command and
+    for a check written at the top alike: its `-e`, read as `_errexit_states`
+    reads a child script's. Where `-e` is off, a failure stops the step only
+    in its last command or through an `||` branch that exits; a check ahead
+    of `&&`, where bash suspends `-e` anyway, keeps the answer it has with it.
+    """
+    at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
+    stmts = [flat[index] for index in at]
+    on, start = _errexit_states(stmts, True, regions(stmts)), 0
+    credit: dict[int, tuple[str, str]] = {}
+    for position, index in enumerate(at):
+        separator = stmts[position].separator
+        if not (on[position] or position == len(stmts) - 1 or separator == "&&" or
+                separator == "||" and _stops_the_job(stmts, position, False)):
+            credit.update((inner, (_SET_E, _SET_E)) for inner in range(start, index + 1))
+        start = index + 1
+    return credit

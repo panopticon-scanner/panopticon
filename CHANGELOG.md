@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard credits a checksum only where its failure stops the step (#2331).**
+  A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
   statement read from either side": an enforced entry whose agent is not the checkpoint's shell,

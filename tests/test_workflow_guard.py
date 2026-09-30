@@ -1132,6 +1132,71 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
                             "piped into a command whose status the pipeline takes")
 
 
+class TestASetPlusEAtTheStepsTopLevel(unittest.TestCase):
+    """#2335: a `set +e` at the step's top level turns errexit off from there
+    on, so a failing check no longer stops the step and bash 3.2 and 5.2 run
+    the later use -- but the guard credited the check, reading `-e` as always
+    on outside a child script. The step's own statements now carry `-e` the
+    way a child script's do (`workflow_forms._errexit_states`): a `set` turns
+    it on only as a plain statement outside every branch, group and list, and
+    off wherever it is -- `eval`'s too, which runs in the step's own shell.
+    Where it is off, a check still stops the step in its last command, or
+    through an `||` branch that exits (an `exit` ends the step whatever `-e`
+    says; a `false` does not)."""
+
+    FETCH = "curl -fsSLo /tmp/payload https://example.test/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -' % HEX
+    USE = "chmod +x /tmp/payload && /tmp/payload\n"
+
+    def job(self, body, shell=None, use=USE):
+        return wg.job_defects([wg.Step("step", self.FETCH + body % self.CHECK + use, shell)])
+
+    def test_a_check_after_set_plus_e_is_reported_under_every_shell(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("set +e\n%s\n", "set +o errexit\n%s\n", "set -e\nset +e\n%s\n",
+                         "if true; then set +e; fi\n%s\n", "set +e\n%s || false\n",
+                         "eval 'set +e'\n%s\n", "eval set +e\n%s\n"):
+                with self.subTest(shell=shell, body=body):
+                    found = self.job(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload runs after a `set +e`",
+                                  found[0][1])
+
+    def test_a_script_handed_on_after_set_plus_e_is_reported(self):
+        # `flattened` credits the script as far as the command running it;
+        # that command runs after the `set +e`, so its failure goes nowhere.
+        for body in ("set +e\nsh -c '%s'\n", "set +e\neval '%s'\n",
+                     "set +e\nbash <<'EOF'\n%s\nEOF\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_a_set_plus_e_that_eval_runs_inside_a_script_is_read_there(self):
+        found = self.job("sh -ec 'eval \"set +e\"; %s; echo ok'\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("carries on past its failure", found[0][1])
+
+    def test_what_still_stops_the_step_with_errexit_off(self):
+        for body in ("set +e\n%s || exit 1\n", 'set +e\n%s || { echo "::error::bad"; exit 1; }\n',
+                     "set +e\nset -e\n%s\n", "%s\nset +e\n", "set +e\nsh -c '%s' || exit 1\n",
+                     "sh -c 'set +e'\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        # The use inside the list the check heads is skipped when it fails.
+        self.assertEqual([], self.job("set +e\n%s && "))
+        # As the step's last command its failure is the step's: the job stops.
+        self.assertEqual([], wg.job_defects([wg.Step("get", self.FETCH + "set +e\n" + self.CHECK),
+                                             wg.Step("run", self.USE)]))
+
+    def test_the_top_level_controls_read_as_before(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.job("%s\n", shell))
+                self.assertIn("hands its failure to a `||` branch",
+                              self.job("%s || true\n", shell)[0][1])
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"

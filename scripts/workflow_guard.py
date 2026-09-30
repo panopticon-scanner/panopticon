@@ -189,8 +189,8 @@ from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
                             chmod_executable, chmod_targets, covers, described, flattened,
                             in_container, kept, may_run, names_file, parse_fetch, regions,
-                            same_file, stdin_program, streamed_fetch, substitution_script,
-                            swallowed)
+                            same_file, stdin_program, step_credit, streamed_fetch,
+                            substitution_script, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -393,7 +393,7 @@ def _unshared(conditions, check, use):
     return _UNSHARED_IF
 
 
-def _checks(stmts, soft=()):
+def _checks(stmts, credit=None):
     """[(statement index, checked text, why it clears nothing or None)]."""
     found = []
     written: dict[str, str] = {}
@@ -405,9 +405,7 @@ def _checks(stmts, soft=()):
             if not _has_check_flag(argv):
                 continue
             text = _checked_text(statement, position, stage, argv, written) or ""
-            why = swallowed(stmts, index, statement, stage)
-            if why is None and index in soft:
-                why = _SOFT_STEP
+            why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
             if why is None and not _DIGEST.search(text):
                 why = _NO_DIGEST
             found.append((index, text, why))
@@ -602,18 +600,20 @@ def _defect(fetch, index, stmts, checks, conditions=None):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, soft=(), walked=None):
+def _defects(stmts, conditions=None, credit=None, walked=None):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the PAIR that decides whether it
     runs -- the `if:` of the step it came from, and the shell branch it was
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
-    `soft` holds the indexes whose step carries `continue-on-error: true`,
-    whose checks clear nothing at all. `walked` is `_walk`'s answer for
-    `stmts`, which `job_defects` has from each step's own read.
+    `credit` maps an index to its step's own answer for a check there, which
+    `workflow_forms.swallowed` reads last: `workflow_forms.step_credit`'s, or
+    `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
+    checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
+    which `job_defects` has from each step's own read.
     """
-    checks = _checks(stmts, soft)
+    checks = _checks(stmts, credit)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     found = kept(unread, fetched)
@@ -629,7 +629,7 @@ def fetch_exec_defects(script):
     stmts = read(script)
     branches = regions(stmts)
     return [why for _index, why in
-            _defects(stmts, {i: (None, b) for i, b in branches.items()})]
+            _defects(stmts, {i: (None, b) for i, b in branches.items()}, step_credit(stmts))]
 
 
 def fetch_exec_defect(script):
@@ -662,7 +662,7 @@ def job_defects(steps):
     stmts: list[shell_reader.Statement] = []
     owner = []
     conditions = {}
-    soft = set()
+    credit = {}
     found, fetched, unread = [], [], []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
@@ -678,19 +678,18 @@ def job_defects(steps):
             continue
         fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
         unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
-        # Per step, because each one is its own shell invocation: an `if`
-        # left open at the end of step A must not make step B conditional.
-        branches = regions(here)
+        # Per step, because each one is its own shell invocation: neither an
+        # `if` left open nor a `set +e` in step A reaches step B.
+        branches, own = regions(here), step_credit(here)
         for local, statement in enumerate(here):
             when = (step.condition, branches.get(local))
             if any(when):
                 conditions[len(stmts)] = when
-            if step.soft:
-                soft.add(len(stmts))
+            credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions, soft, (fetched, unread)))
+                 for index, why in _defects(stmts, conditions, credit, (fetched, unread)))
     return found
 
 
