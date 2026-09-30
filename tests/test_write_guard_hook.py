@@ -1032,6 +1032,9 @@ class TestMain(unittest.TestCase):
         self.assertEqual(body["permissionDecision"], "deny")
         self.assertIn("write guard crashed", body["permissionDecisionReason"])
         self.assertIn("unhashable", body["permissionDecisionReason"])
+        # The relocated roster return is still PERMISSIVE for a non-roster name.
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "x"}})
+        self.assertEqual((0, ""), self._run_main(payload))
 
 
 class TestInstallUninstall(unittest.TestCase):

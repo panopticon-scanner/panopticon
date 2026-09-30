@@ -762,10 +762,10 @@ def main(argv=None):
     if not isinstance(payload, dict):
         return 0
     try:
-        # #2006/#2394: the roster test and the interpreter check, INSIDE the
-        # envelope. The check used to run at import, where its RuntimeError
-        # crashed the hook -- and a crashed hook is a permitted read. Here the
-        # same conditions, with the same diagnostic, become the deny below.
+        # #2006: the interpreter check, INSIDE the envelope -- it used to run at
+        # import, where its RuntimeError crashed the hook, and a crashed hook is
+        # a permitted read; here it becomes the deny below. #2394: the roster
+        # test sits inside too, so a non-hashable tool_name denies, never crashes.
         if payload.get("tool_name", "") not in _READ_TOOLS:
             return 0
         _trusted_hook_argv()

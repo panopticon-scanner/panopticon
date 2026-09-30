@@ -878,6 +878,9 @@ class TestMain(unittest.TestCase):
             self.assertEqual("deny", body["permissionDecision"])
             self.assertIn("read guard crashed", body["permissionDecisionReason"])
             self.assertIn("unhashable", body["permissionDecisionReason"])
+            # The relocated roster return is still PERMISSIVE for a non-roster name.
+            payload["tool_name"] = "Bash"
+            self.assertEqual((0, ""), self._run(payload, [scope_path]))
 
     def test_malformed_and_non_dict_stdin_are_tolerated(self):
         for raw in ("{not json", "[1, 2]"):
