@@ -541,12 +541,20 @@ def carried(stmts, executors):
     a shell of its own, so the guard asks of each step's statements apart,
     and of each script a substitution runs for what it assigns itself.
 
-    A download assigned anywhere is held. A reassignment empties the name
-    only where the step's own shell always runs it (review I-1): not in a
-    script `flattened` inlined, which `sh -c 'x=1'` runs in a child shell,
-    not in a branch (`regions`) and not behind `&&` or `||`, which bash may
-    skip, and not in a pipeline, whose stages are subshells. So `eval 'x=:'`,
-    which does run here, leaves it held: fail-closed.
+    A download is held wherever a statement of its own assigns it. A
+    reassignment empties the name only where the step's own shell always
+    runs it, in the step's own scope (review I-1, I-2): not in a script
+    `flattened` inlined, which `sh -c 'x=1'` runs in a child shell; not in
+    a branch (`regions`) or behind `&&` or `||`, which bash may skip; not in
+    a pipeline or a background job (`&`), which run in subshells; and not in
+    a `( )` or `{ }` group or a function body, read as `_errexit_states`
+    reads them: a subshell, or a body that runs only when called, with its
+    `local` in a scope of its own. Where bash does run it in the step's
+    scope, the name stays held, which is fail-closed: `eval 'x=:'`,
+    `{ x=1; }` and a called `f() { x=1; }`, and any reassignment after an
+    argument `{` (`echo {`) or after a `( ...` whose `)` stands alone on its
+    line. The reader drops a line holding only `(` or `)`, so a subshell
+    opened on one reads as the step's own scope: the guard's gap list.
 
     More readings fail closed. The reader drops quotes, so `eval '$x'` and
     `sh -c '$x'` read as `"$x"`: bash runs the first as one command made of
@@ -566,7 +574,7 @@ def carried(stmts, executors):
     echo or printf (`cat <<< "$x" | sh`, a heredoc naming `$x` piped to
     `sh`), and `$x` inside a longer word (`eval "echo $x"`)."""
     held: dict[str, Fetch | None] = {}
-    out, branches = [], regions(stmts)
+    out, branches, depth = [], regions(stmts), 0
     for index, statement in enumerate(stmts):
         for inner, position, stage, where in within(statement):
             argv = command(stage.argv)
@@ -586,10 +594,15 @@ def carried(stmts, executors):
                         " ".join(shell_reader.readable(w) for w in consumer), where)))
                     break
         if len(statement.stages) == 1:
-            now = _assigned(statement.stages[0], held)
-            sure = not (isinstance(statement, Inlined) or branches.get(index)
+            stage = statement.stages[0]
+            now = _assigned(stage, held)
+            sure = not (isinstance(statement, Inlined) or branches.get(index) or depth
+                        or stage.group_open or "{" in stage.argv or statement.separator == "&"
                         or index and stmts[index - 1].separator in ("&&", "||"))
             held.update(now if sure else {k: v for k, v in now.items() if v})
+        for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
+            depth = max(0, depth + stage.group_open + stage.argv.count("{")
+                        - stage.group_close - stage.argv.count("}"))
     return out
 
 

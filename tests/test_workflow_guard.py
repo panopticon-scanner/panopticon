@@ -1008,6 +1008,26 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                 self.assertEqual(1, len(why), why)
                 self.assertIn(self.SAID % ("eval", ""), why[0])
 
+    def test_a_reassignment_outside_the_steps_own_scope_keeps_it_held(self):
+        # Review I-2: bash runs `x=1 &` and `( x=1 )` in subshells, a function
+        # body only when the function is called, and `local`/`declare` there in
+        # the function's own scope, so each of these still runs the download.
+        # A `{ }` group and a function body are read as `_errexit_states` reads
+        # them, not as the step's own scope, though bash runs `{ x=1; }` and a
+        # called `f() { x=1; }` in it and then runs nothing: accepted
+        # over-reports. A group closed before the reassignment is out of the way.
+        for between in ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
+                        "f() { x=1; }\n", "f() {\n  x=1\n}\n", "function f { x=1; }\n",
+                        "f() { local x=1; }\nf\n", "f() { declare x=1; }\nf\n",
+                        "f() { x=1; }\nf\n", "{ x=1; }\n"):
+            with self.subTest(between=between):
+                why = self.job(self.GET + between + 'eval "$x"\n')
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.SAID % ("eval", ""), why[0])
+        for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "f() { :; }\nx=1\n"):
+            with self.subTest(between=between):
+                self.assertEqual([], self.job(self.GET + between + 'eval "$x"\n'))
+
 
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
@@ -2790,13 +2810,14 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(("run", run))
 
-    def test_a_subshell_reassignment_empties_a_carried_download(self):
-        # Review I-1: the reader keeps no subshell, so `( x=1 )` reads as the
-        # step's own reassignment and empties the variable, though bash runs
-        # the download; a child shell's twin is read, and keeps it held.
+    def test_a_subshell_whose_paren_is_alone_on_its_line_empties_a_carried_download(self):
+        # Review I-2: the reader drops a line holding only `(` or `)`, so the
+        # reassignment inside reads as the step's own and empties the variable,
+        # though bash runs the download; on one line the group is read, and
+        # keeps it held.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        self.accepted(("run", get + '( x=1 )\neval "$x"\n'))
-        self.flagged(("run", get + "sh -c 'x=1'\neval \"$x\"\n"))
+        self.accepted(("run", get + '(\n  x=1\n)\neval "$x"\n'))
+        self.flagged(("run", get + '( x=1 )\neval "$x"\n'))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):

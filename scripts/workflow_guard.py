@@ -81,7 +81,7 @@ that starts catching one fails there, and this list is edited with it.
   and for a glob where one spells the download's or the download is a bare name.
   A download kept in a variable is followed to a shell whole (`carried`, #2341),
   not through a cut (`${x%%#*}`), a command's output (`y=$(echo "$x")`) or `> f`,
-  and a subshell's `( x=1 )` empties it: the reader keeps no subshell.
+  and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
