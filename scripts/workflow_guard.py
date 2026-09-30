@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#1647 (ARC-F2C): what a workflow `run:` step FETCHES, and whether what it
+r"""#1647 (ARC-F2C): what a workflow `run:` step FETCHES, and whether what it
 then runs was checked against a digest bound to the file it downloaded.
 
 The rule is #1529's: a workflow can step outside the supply chain that
@@ -76,11 +76,11 @@ that starts catching one fails there, and this list is edited with it.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, and no `cd` is
-  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last
-  parts where a `$` spells the use's directory (`may_run` #2310, `covers` #2345),
+  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last parts
+  where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv only),
   and for a glob where one spells the download's or the download is a bare name.
   A download kept in a variable is followed to a shell whole (`carried`, #2341),
-  not through a cut (`${x%%#*}`), a command's output (`y=$(echo "$x")`) or `> f`,
+  not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
   and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
@@ -151,7 +151,7 @@ that starts catching one fails there, and this list is edited with it.
   is the defect it is at the top level. An EXPANDING one is REPORTED unread
   (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
   were lifted into the enclosing parse's table before this text was reached
-  -- the entry above, one redirection over. A program in a language this
+  -- this entry's own gap, one redirection over. A program in a language this
   module has no grammar for is reported too, the answer `unparseable` gives a
   `shell: python` step. What that leaves unread: an interpreter whose program
   is on stdin in a spelling the operand walk does not resolve -- behind an

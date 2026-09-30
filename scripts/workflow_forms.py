@@ -549,12 +549,14 @@ def carried(stmts, executors):
     a pipeline or a background job (`&`), which run in subshells; and not in
     a `( )` or `{ }` group or a function body, read as `_errexit_states`
     reads them: a subshell, or a body that runs only when called, with its
-    `local` in a scope of its own. Where bash does run it in the step's
-    scope, the name stays held, which is fail-closed: `eval 'x=:'`,
-    `{ x=1; }` and a called `f() { x=1; }`, and any reassignment after an
-    argument `{` (`echo {`) or after a `( ...` whose `)` stands alone on its
-    line. The reader drops a line holding only `(` or `)`, so a subshell
-    opened on one reads as the step's own scope: the guard's gap list.
+    `local` in a scope of its own. Where bash does empty it before the use,
+    the name stays held, which is fail-closed: `eval 'x=:'`, `{ x=1; }`, a
+    called `f() { x=1; }`, a use inside the same `( )` as its reassignment
+    (`(x=1; eval "$x")`), bash's arithmetic `((x=1))` (dash runs it as two
+    subshells), and any reassignment after an argument `{` (`echo {`) or
+    after a `( ...` whose `)` stands alone on its line. The reader drops a
+    line holding only `(` or `)`, so a subshell opened on one reads as the
+    step's own scope: the guard's gap list.
 
     More readings fail closed. The reader drops quotes, so `eval '$x'` and
     `sh -c '$x'` read as `"$x"`: bash runs the first as one command made of
@@ -564,15 +566,18 @@ def carried(stmts, executors):
     inlines the child's assignment; `local x`, `read -r x` or `for x in ...`
     in between, which leave the name held; a printing substitution anywhere
     in an executor's argv (`bash other.sh "$(echo "$x")"`, read as
-    `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"` or
-    `sh file`, read as `curl ... | sh x.sh` is.
+    `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"`,
+    `sh -c '...'` or `sh file`, read as `curl ... | sh x.sh` is.
 
-    Not followed, beside the gap list's cut, command output and file: a
-    substitution holding more than the fetch (`x=$(curl ... || true)`,
-    `x=$(curl ... | tr ...)`) or not alone in its stage
-    (`x=$(curl ...) y=$(date)`), `x+=$(curl ...)`, a printer other than
-    echo or printf (`cat <<< "$x" | sh`, a heredoc naming `$x` piped to
-    `sh`), and `$x` inside a longer word (`eval "echo $x"`)."""
+    Not followed, beside the gap list's cut, command output and file
+    (`echo "$x" > f; sh f`, `| tee f; sh f`): a substitution holding more
+    than the fetch (`x=$(curl ... || true)`, `x=$(curl ... | tr ...)`) or
+    not alone in its stage (`x=$(curl ...) y=$(date)`), `x+=$(curl ...)`,
+    a printer other than echo or printf (`cat <<< "$x" | sh`, a heredoc
+    naming `$x` piped to `sh`), a printer inside a `{ }` group or a
+    multi-line subshell whose closing line is piped (`{ echo "$x"; } | sh`),
+    which the stream walk does not read for a fetch either, and `$x` inside
+    a longer word (`eval "echo $x"`)."""
     held: dict[str, Fetch | None] = {}
     out, branches, depth = [], regions(stmts), 0
     for index, statement in enumerate(stmts):

