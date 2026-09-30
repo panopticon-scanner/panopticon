@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
+  `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
+  stderr line name only roots pruned from the surface the run reviewed, like every other
+  disclosure on a delta run.
 - **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
   records the repo root the scrubbed comment was built under, every body on that plan is built
   under that root, so a resume from another checkout confirms the posted comment instead of

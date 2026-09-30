@@ -936,6 +936,58 @@ def test_scope_changed_publishes_the_changed_surface_not_the_listing(tmp_path):
     assert scoped_block["pruned"]["dot_path"] >= 1
 
 
+def test_scope_changed_fixture_disclosure_describes_the_changed_set(tmp_path, capsys):
+    # #2410: `_repo_scan` handed ONE `pruned_fixtures` list to the whole-repo
+    # listing pass and to the changed-set pass, so a fixture root the LISTING
+    # pruned reached the artifact of a delta run that never considered it -- the
+    # last disclosure describing the other surface, after #2376 gave the rest of
+    # the block the changed set. `tests/fixtures/x.rb` is tracked and UNCHANGED
+    # here, so this run's own pass prunes no fixture root: the key is absent (the
+    # publish guard is `if pruned_fixtures:`) and stderr carries no line either.
+    tree = ["src/app.py", "tests/fixtures/x.rb"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, ["src/app.py"])
+    out = repo / ".panopticon" / "groups.json"
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    assert _reviewed_files(out) == {"src/app.py"}
+    assert "excluded" not in json.loads(out.read_text())
+    assert "fixture exclusion" not in capsys.readouterr().err
+
+
+def test_scope_changed_keeps_the_changed_sets_own_fixture_prune(tmp_path, capsys):
+    # The other half of #2410: starting the changed-set pass from an empty list
+    # must not lose the roots THAT pass prunes. `tests/fixtures/x.rb` is in the
+    # changed set here, so the delta run reviews only the real file and still
+    # names the root it dropped itself.
+    tree = ["src/app.py", "tests/fixtures/x.rb"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, tree)
+    out = repo / ".panopticon" / "groups.json"
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    assert _reviewed_files(out) == {"src/app.py"}
+    assert json.loads(out.read_text())["excluded"]["fixture_dirs"] == [
+        "tests/fixtures"]
+    assert "fixture exclusion" in capsys.readouterr().err
+
+
+def test_scope_dir_fixture_disclosure_keeps_the_listings_roots(tmp_path, capsys):
+    # The branch asymmetry #2410 leaves in place, pinned on the tree the two
+    # tests above use: a NARROWING scope keeps the LISTING's fixture roots,
+    # because it narrows the already-pruned `allf` instead of rebuilding a
+    # surface -- the same reason its block still says `surface: "repo"`.
+    repo = _repo_tracking(tmp_path, ["src/app.py", "tests/fixtures/x.rb"])
+    out = repo / ".panopticon" / "dir.json"
+    assert orchestrator.main(["--repo-scan", "--scope-dir", "src",
+                              str(repo), "--out", str(out)]) == 0
+    doc = json.loads(out.read_text())
+    assert _reviewed_files(out) == {"src/app.py"}
+    assert doc["excluded"]["fixture_dirs"] == ["tests/fixtures"]
+    assert doc["discovery"]["surface"] == "repo"
+    assert "fixture exclusion" in capsys.readouterr().err
+
+
 def test_scope_changed_is_bounded_by_the_discovery_cap(tmp_path, capsys):
     # #2376: `--repo-scan` wrapped the filter in `_cap_discovered` and the delta
     # path did not, so a truncation of the reviewed delta was neither bounded nor
