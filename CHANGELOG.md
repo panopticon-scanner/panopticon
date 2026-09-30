@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
+  non-object `usage` value in its existing drop tally, and successful driver-side collection
+  forwards the bounded collector disclosure to stderr.
 - **A diff-hunks path with no ranges is disclosed (#2381, #1783, ARC-B8 follow-up).** A map that
   NAMES a path and gives it no range -- `{"a.py": [[1, 5]], "c.py": []}` -- classified every
   finding in `c.py` as on-diff and nothing anywhere said so: the loader drops nothing (an empty

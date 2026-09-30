@@ -107,6 +107,9 @@ def _collect_host_usage(review_root, manifest):
         print("driver: usage collection skipped (%s); meta.cost.tokens stays null"
               % exc, file=sys.stderr, flush=True)
         return None
+    if proc.returncode == 0 and proc.stderr:
+        print(proc.stderr, file=sys.stderr,
+              end="" if proc.stderr.endswith("\n") else "\n", flush=True)
     if proc.returncode != 0:
         # rc 1 is the documented "no transcript found, wrote nothing" path. Name
         # the directory that was searched and the flag that changes it: the most
