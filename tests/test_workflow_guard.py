@@ -1475,7 +1475,11 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     statement up to the check opened read as "the list ends its own
     subshell": either way the check was credited for the whole step, where
     bash 5.2.21 and dash skip the subshell and run the use after it. A list
-    whose end the count cannot place now clears nothing after the check."""
+    whose end the count cannot place now clears nothing after the check.
+    Review I-3: nor does a list followed by a `)` that no statement up to
+    the check opened -- `CHECK && (` ending its line, which the reader drops,
+    then `echo b` and `) 2>&1 | tee log` -- which read as a list ending its
+    own subshell, whose failure pipefail hands the step."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -1515,6 +1519,34 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                      "( echo a; %s && echo ok )\n", "( ( %s && echo ok ) )\n"):
             with self.subTest(body=body):
                 self.assertEqual([], self.both(body))
+
+    def test_a_paren_the_reader_dropped_after_and_ends_no_group(self):
+        # Under pipefail each read as a list ending its own subshell; bash
+        # skips the subshell after `&&` and runs the use.
+        for shell, body in (("bash", "%s && (\n  echo b\n) 2>&1 | tee log\n"),
+                            ("bash", "%s &&\n(\n  echo b\n) 2>&1 | tee log\n"),
+                            ("bash", "%s && (\n  cd / && echo b\n) 2>&1 | tee log\n"),
+                            ("bash", "%s && echo ok && (\n  echo b\n) | tee log\n"),
+                            (None, "set -o pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n"),
+                            (None, "shopt -so pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n")):
+            with self.subTest(shell=shell, body=body):
+                self.assertAhead(body, shell)
+        # The controls, reported before and after: the subshell on one line,
+        # its `(` kept on the next statement, a `{ }` group after `&&`, and
+        # the dropped `(` where pipefail is off.
+        for shell in (None, "sh", "bash"):
+            for body in ("%s && ( echo b ) 2>&1 | tee log\n", "%s && ( echo b\n) 2>&1 | tee log\n",
+                         "%s && {\n  echo b\n} 2>&1 | tee log\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                self.assertAhead("%s && (\n  echo b\n) 2>&1 | tee log\n", shell)
+        # The fail-closed price: `(` alone before the check gives the reader
+        # the same statements, so it is refused too, though bash stops the step
+        # there; a `{`, which the reader keeps, still reads as the group.
+        self.assertAhead("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
+        self.assertEqual([], self.job("{\n  %s && echo b\n} 2>&1 | tee log\n", "bash"))
 
 
 class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):

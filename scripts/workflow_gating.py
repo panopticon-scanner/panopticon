@@ -325,11 +325,12 @@ def _stops_step(stmts, position, on, fails):
     plain `{ ...; }` group's, which `-e` lets pass, and not from a group
     detached with `&`, or piped where pipefail is off (`fails`).
 
-    A count of compound commands that never balances, or that closes a
-    subshell no statement up to the check opened, is a paren the reader lost
-    -- it drops a line holding only `(` or `)`, and ends a `$(...)` at a
-    `case` pattern's `)` -- and there the list's end is unknown: the failure
-    stops only its own statement (review I-1)."""
+    A count of compound commands that never balances, or a list that closes
+    a subshell no statement up to the check opened, or is followed by the
+    `)` of one (review I-3), is a paren the reader lost -- it drops a `(`
+    that ends a line and a `)` alone on one, and ends a `$(...)` at a `case`
+    pattern's `)` -- and there the list's end is unknown: the failure stops
+    only its own statement (review I-1)."""
     last, close = len(stmts) - 1, position
     while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
             stmts[close + 1]):
@@ -351,12 +352,15 @@ def _stops_step(stmts, position, on, fails):
     while end < last and (depth > 0 or not depth and stmts[end].separator == "&&"):
         end += 1
         depth += _nesting(stmts[end])
-    if depth > 0 or depth < 0 and sum(stage.group_open - stage.group_close for statement
-                                      in stmts[:position + 1] for stage in statement.stages) < 1:
+    opened = sum(stage.group_open - stage.group_close for statement in stmts[:position + 1]
+                 for stage in statement.stages)
+    if depth > 0 or depth < 0 and opened < 1:
         return position                         # a lost paren: the list's end is unknown
     if not depth and end < last and stmts[end].separator not in ("&", "||") and _closes(
             stmts[end + 1]):
         end, depth = end + 1, -1                # the list ends its group
+        if stmts[end].stages[0].argv != ["}"] and opened < 1:
+            return position                     # a `)` whose `(` the reader dropped
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere
