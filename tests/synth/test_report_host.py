@@ -23,7 +23,7 @@ class TestSynthesizeLoadsHostCapabilities(unittest.TestCase):
         gj = os.path.join(d, "groups.json")
         with open(gj, "w") as fh:
             json.dump({"mode": "repo", "groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
-        fpath = os.path.join(d, "findings-g1-code.json")
+        fpath = os.path.join(d, "findings-g1-COD.json")
         with open(fpath, "w") as fh:
             json.dump({"findings": []}, fh)
         for name, content in groups_extra_files:
@@ -128,11 +128,11 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
 
     def _synth(self, argv):
         """Run synthesize in the CURRENT directory and return the report."""
-        with open("findings-g1-code.json", "w") as fh:
+        with open("findings-g1-COD.json", "w") as fh:
             json.dump({"findings": []}, fh)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            syn.main(argv + ["findings-g1-code.json"])
+            syn.main(argv + ["findings-g1-COD.json"])
         with open("report.json") as fh:
             return json.load(fh)
 

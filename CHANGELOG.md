@@ -11,6 +11,8 @@ evidence exposed.
   common atomic JSON writer, which cleans opened staging files after failures and leaves
   rejected paths untouched. Writers and reply placement share lexical root discovery while
   preserving their distinct symlink policies.
+- **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
+  use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
   report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
 - **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,

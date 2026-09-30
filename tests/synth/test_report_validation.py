@@ -34,7 +34,7 @@ class TestReconciliation(unittest.TestCase):
 
     def test_main_survives_malformed_citation_and_writes_report(self):
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-g1-security.json")
+            p = os.path.join(d, "findings-g1-SEC.json")
             with open(p, "w") as fh:
                 json.dump(
                     {

@@ -279,7 +279,7 @@ class TestOutFileContentHashes(unittest.TestCase):
     def test_snapshot_and_verify_roundtrip_then_tamper(self):
         import tempfile, os, json as _json
         with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "findings-g1-code-panel_review.json")
+            out = os.path.join(d, "findings-g1-COD.json")
             with open(out, "w") as fh:
                 _json.dump({"findings": []}, fh)
             hashes_path = os.path.join(d, "out-file-hashes.json")

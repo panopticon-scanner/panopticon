@@ -393,7 +393,7 @@ class TestResumeDisclosure(unittest.TestCase):
                 json.dump({"entries": 42}, fh)
             with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
                 json.dump({"mode": "repo", "groups": self.G}, fh)
-            fpath = os.path.join(d, "findings-g1-code.json")
+            fpath = os.path.join(d, "findings-g1-COD.json")
             with open(fpath, "w") as fh:
                 json.dump(
                     {

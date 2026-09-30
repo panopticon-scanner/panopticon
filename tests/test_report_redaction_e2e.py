@@ -123,7 +123,7 @@ def _run(tmpdir, max_bytes=None):
     v_dir = os.path.join(tmpdir, "verdicts")
     for path in (src_dir, run_dir, out_dir, v_dir):
         os.makedirs(path)
-    fp = os.path.join(src_dir, "findings-app-security.json")
+    fp = os.path.join(src_dir, "findings-app-SEC.json")
     with open(fp, "w", encoding="utf-8") as fh:
         json.dump(_findings_doc(), fh)
     groups = os.path.join(src_dir, "groups.json")
@@ -451,7 +451,7 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
             v_dir = os.path.join(d, "verdicts")
             for p in (src, run, out_dir, v_dir):
                 os.makedirs(p)
-            fp = os.path.join(src, "findings-app-security.json")
+            fp = os.path.join(src, "findings-app-SEC.json")
             with open(fp, "w", encoding="utf-8") as fh:
                 json.dump(self._finding(), fh)
 
