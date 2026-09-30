@@ -70,5 +70,31 @@ class TestAssignmentPrefixes(unittest.TestCase):
                 self.assertTrue(defects(GET + body % ("a" * 64, prefix, " || true")))
 
 
+class TestOptionsAfterDashC(unittest.TestCase):
+    """#2332: the option words after `-c` are the shell's, and the program
+    it runs is the first word after them."""
+
+    def test_the_program_after_the_options_is_read(self):
+        for script in ("sh -c -e 'curl -fsSLo t %stool; chmod +x t; ./t'\n" % URL,
+                       "bash -c -x '%s'\n" % PIPE, "sh -c -- '%s'\n" % PIPE,
+                       "bash -ec -- '%s'\n" % PIPE, "bash -c -- '%s'\n" % PIPE,
+                       "bash -c -o pipefail '%s'\n" % PIPE,
+                       'x=$(curl -fsSL %si.sh)\nsh -c -- "$x"\n' % URL):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+
+    def test_the_controls_read_as_they_did(self):
+        for script in ("sh -c '%s'\n" % PIPE, "sh -ec '%s'\n" % PIPE,
+                       'x=$(curl -fsSL %si.sh)\nsh -c "$x"\n' % URL):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # The options change nothing where the program fetches nothing, and a
+        # `--long` word after `-c` is one bash and dash refuse: nothing runs.
+        for script in ("sh -c -e 'echo hi'\n", "bash -c -x -- 'echo hi'\n",
+                       "bash -c --norc '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 if __name__ == "__main__":
     unittest.main()

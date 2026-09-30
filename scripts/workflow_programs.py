@@ -55,16 +55,36 @@ def _after_dash_c(argv):
 
     `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
     obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
-    no shell spells anything else that way, and `-c` consumes the next word
-    whatever else rides along with it. Requiring `-c` as its own token let
-    every clustered spelling through.
+    no shell spells anything else that way. Requiring `-c` as its own token
+    let every clustered spelling through. The script is the first operand
+    after the options, which need not be the next word: `_past_options`.
     """
     for position, token in enumerate(argv[1:], start=1):
         if token == "--":
             break
         if token.startswith("-") and not token.startswith("--") and "c" in token:
-            return argv[position + 1:][:1]
+            return _past_options(argv, position)
     return []
+
+
+def _past_options(argv, at):
+    """The first operand after `argv[at]`, the cluster that carries `-c`.
+
+    Bash and dash read on through the option words after `-c` (#2332): `sh
+    -c -e P`, `bash -c -x P` and `sh -c +x P` all run `P`. Each `o` or `O`
+    in a word takes the next word as its value (`-c -o pipefail P`, `-co
+    pipefail P`); a `-` or `--` ends the options, and the word after it is
+    the program even if it begins with `-`; a `--long` word after `-c` is
+    one both shells refuse, and nothing runs.
+    """
+    while True:
+        at += 1 + sum(letter in _VALUE_OPTIONS for letter in argv[at][1:])
+        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
+            return []
+        if argv[at] in ("-", "--"):
+            return argv[at + 1:at + 2]
+        if not argv[at].startswith(("-", "+")):
+            return [argv[at]]
 
 
 # An interpreter given no program to run reads one from its STANDARD INPUT, and

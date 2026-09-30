@@ -262,3 +262,36 @@ class TestReviewRoundOne(unittest.TestCase):
         for command in ('find other -exec chmod u+x {} \\;',
                         'echo other | xargs chmod u+x', 'chmod -R u+x other'):
             self.assertEqual([], guard.fetch_exec_defects(f'curl -o u+x {URL}; {command}'))
+
+
+class TestTheProgramAfterDashC(unittest.TestCase):
+    """#2332: a shell reads on past the option words after `-c` to its program.
+
+    Bash 3.2.57 and 5.2.21 run `P` in every spelling below, and so does dash,
+    but for the `-o`/`-O` ones: it has no `pipefail` or `extglob`, and refuses
+    them with nothing run. A `--long` word after `-c` all three refuse.
+    """
+
+    @staticmethod
+    def program(script):
+        stmts = shell_reader.statements(script)
+        assert len(stmts) == 1 and len(stmts[0].stages) == 1, stmts
+        return forms.scripts(stmts[0].stages[0].argv)
+
+    def test_the_option_words_after_dash_c_are_skipped(self):
+        for spelling in ("sh -c -e", "bash -c -x", "sh -c +x", "sh -c --", "sh -c -",
+                         "bash -c -e --", "bash -ec --", "bash -c -o pipefail",
+                         "bash -c -O extglob", "bash -co pipefail", "bash -oc pipefail",
+                         "bash -c -ex +o pipefail --", "bash -c -s"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+
+    def test_the_first_operand_is_the_program_as_it_was(self):
+        self.assertEqual(["P"], self.program("sh -c P x"))
+        self.assertEqual(["P"], self.program("bash -euc P"))
+        # A dynamic program reads as `sh -c "$P"` does; after `--` a word
+        # that begins with `-` is the program; with none, there is none.
+        self.assertEqual(["$P"], self.program('sh -c -x "$P"'))
+        self.assertEqual(["-P"], self.program("sh -c -- -P"))
+        self.assertEqual([], self.program("sh -c -x"))
+        self.assertEqual([], self.program("bash -c --norc P"))
