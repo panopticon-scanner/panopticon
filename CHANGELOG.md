@@ -12,6 +12,14 @@ evidence exposed.
   surface its numbers describe (`surface`), and both paths publish what the policy pruned by class
   (`pruned`: dot-path, excluded-dir, `.git` segment; null on the non-git walk, which counts nothing)
   with one stderr line when any count is non-zero.
+- **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
+  requires `location` (the report schema never did), `validate_report` warns only on a missing
+  `location.file` rather than on every finding without a line, and the security gate prints `?`
+  for a missing line like the other renderers.
+- **A non-hashable tool_name denies instead of crashing the guard (#2394, #1777).** The write
+  and read guards test the tool roster inside their never-crash envelope, so a list or dict
+  `tool_name` prints a deny instead of escaping `main` with a non-blocking exit; the read
+  guard's envelope comment now calls its early returns permissive.
 - **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
   `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
   `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
