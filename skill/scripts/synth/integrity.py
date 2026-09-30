@@ -218,7 +218,8 @@ def evidence_text(key, value):
                 pair = (row.get("cell_domain"), row.get("finding_domain"))
                 by[pair] = by.get(pair, 0) + 1
         text = "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
-            "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items())))
+            "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(
+                by.items(), key=lambda item: (item[0][0] or "", item[0][1] or ""))))
     elif isinstance(value, list):
         text = ", ".join(_row_evidence(key, row) for row in value)
     else:

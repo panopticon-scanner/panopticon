@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
+  missing and named cell domains deterministically instead of raising before the report renders.
 - **Keep HTML evidence disclosures fail closed (#2195, #1774).** The coverage header counts
   the same active findings as its collapsed unverified section, and malformed evidence values
   render there without crashing.
