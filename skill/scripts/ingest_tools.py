@@ -472,9 +472,10 @@ SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
 def _rule_id(finding):
     """The finding's scanner rule as a STRING -- all `_cwe_tags` needs (#2366).
 
-    `evidence.tool_rule_id` is total since #2359 / #2372: it reads `tool_evidence`
-    and `provenance` through accessors that answer `{}` for a non-dict. But it
-    returns the rule UNCONVERTED, and `CWE_TAG.finditer` takes only a string.
+    `evidence.tool_rule_id` answers for any shape of the two fields it reads
+    (#2359 / #2372: `tool_evidence` and `provenance` go through accessors that
+    answer `{}` for a non-dict). But it returns the rule UNCONVERTED, and
+    `CWE_TAG.finditer` takes only a string; an empty or absent rule is `""`.
     """
     return str(evidence_mod.tool_rule_id(finding) or "")
 

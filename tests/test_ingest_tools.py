@@ -1886,6 +1886,8 @@ class TestGatesWhenSuppressed(unittest.TestCase):
                     {"tool_evidence": {"rule_id": 5}}):
             with self.subTest(bad=bad):
                 self.assertFalse(it.gates_when_suppressed(bad))
+        # The string boundary itself: an absent rule is "", never "None" (#2366).
+        self.assertEqual(it._rule_id({}), "")
 
 
 class TestInSourceSuppressionIsAnIngestPolicy(unittest.TestCase):
