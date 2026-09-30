@@ -307,6 +307,22 @@ def _closes(statement):
     return first is not None and (first.argv == ["}"] or not first.argv and first.group_close > 0)
 
 
+def _lost_case(stmts):
+    """Whether these statements close a `case` they never open: the `esac`
+    of a `$(case ...)` whose substitution the reader ended at the pattern's
+    `)`, which leaves every count read across it short (review I-4)."""
+    opened = 0
+    for statement in stmts:
+        for stage in statement.stages:
+            for token in stage.argv:
+                if token not in shell_reader.KEYWORDS:
+                    break
+                opened += (token == "case") - (token == "esac")
+                if opened < 0:
+                    return True
+    return False
+
+
 def _stops_step(stmts, position, on, fails):
     """How much of the step a failure in its top-level statement `position`
     stops: None for all of it, -1 for none of it, the refusal where a group it
@@ -328,9 +344,10 @@ def _stops_step(stmts, position, on, fails):
     A count of compound commands that never balances, or a list that closes
     a subshell no statement up to the check opened, or is followed by the
     `)` of one (review I-3), is a paren the reader lost -- it drops a `(`
-    that ends a line and a `)` alone on one, and ends a `$(...)` at a `case`
-    pattern's `)` -- and there the list's end is unknown: the failure stops
-    only its own statement (review I-1)."""
+    that ends a line and a `)` alone on one -- and a list that closes a
+    `case` it never opened is a `$(...)` it ended at a `case` pattern's `)`,
+    whatever the count says (`_lost_case`, review I-4): there the list's end
+    is unknown, and the failure stops only its own statement (review I-1)."""
     last, close = len(stmts) - 1, position
     while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
             stmts[close + 1]):
@@ -354,7 +371,7 @@ def _stops_step(stmts, position, on, fails):
         depth += _nesting(stmts[end])
     opened = sum(stage.group_open - stage.group_close for statement in stmts[:position + 1]
                  for stage in statement.stages)
-    if depth > 0 or depth < 0 and opened < 1:
+    if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
         return position                         # a lost paren: the list's end is unknown
     if not depth and end < last and stmts[end].separator not in ("&", "||") and _closes(
             stmts[end + 1]):

@@ -1479,7 +1479,10 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     Review I-3: nor does a list followed by a `)` that no statement up to
     the check opened -- `CHECK && (` ending its line, which the reader drops,
     then `echo b` and `) 2>&1 | tee log` -- which read as a list ending its
-    own subshell, whose failure pipefail hands the step."""
+    own subshell, whose failure pipefail hands the step. Review I-4: a
+    `$(case ...)` is now read by its signature -- the list closes a `case`
+    it never opened -- not by the count, which a `(` the reader kept without
+    its `)` balanced, and which the `esac` could leave at 0 inside the list."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -1547,6 +1550,42 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
         # there; a `{`, which the reader keeps, still reads as the group.
         self.assertAhead("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
         self.assertEqual([], self.job("{\n  %s && echo b\n} 2>&1 | tee log\n", "bash"))
+
+    def test_a_case_closed_inside_a_substitution_fails_closed_whatever_the_count(self):
+        # A `(` kept without its `)` -- a multi-line array, a subshell whose
+        # `)` stands alone, the subshell holding the check -- vouched for the
+        # `)` the `esac` carries; an `esac` inside two `if`s left the count at
+        # 0 there, and the list read as ending at its `||` or at the `)` after
+        # it. Bash 5.2.21 runs each use, and dash each it can parse.
+        sub = "if true; then echo $(case x in x) echo y;; esac); fi"
+        every = (None, "sh", "bash")
+        for shells, body in (((None, "bash"), "arr=(\n  a\n)\n%s && " + sub + "\n"),
+                             (every, "( echo a\n)\n%s && " + sub + "\n"),
+                             (every, "( echo a; %s && " + sub + "; echo more )\n"),
+                             (every, "( echo a\n  %s && " + sub + "\n  echo more\n)\n"),
+                             (every, "%s && if true; then if true; then echo $(case x in x) "
+                                     "echo y;; esac) || exit 1; fi; fi\n"),
+                             (("bash",), "( echo a\n)\n%s && if true; then ( " + sub
+                              + "\n) | tee log\nfi\n")):
+            for shell in shells:
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
+        # The controls, reported before and after: the same lists with no `(`
+        # before them, and the same prefixes with no `$(case ...)`.
+        for shell in every:
+            for body in ("%s && " + sub + "\n", "( echo a\n)\n%s && echo ok\n",
+                         "%s && if true; then if true; then echo y || exit 1; fi; fi\n",
+                         "( echo a\n)\n%s && if true; then ( echo y\n) | tee log\nfi\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
+        for shell in (None, "bash"):
+            with self.subTest(shell=shell):
+                self.assertAhead("arr=(\n  a\n)\n%s && echo ok\n", shell)
+        # The price (fail-closed): a subshell that does hold the list reads the
+        # same, though bash and dash stop the step on its failure.
+        for shell in every:
+            with self.subTest(shell=shell):
+                self.assertAhead("( %s && " + sub + " )\n", shell)
 
 
 class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
