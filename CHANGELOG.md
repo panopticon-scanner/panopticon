@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Share reply publication and artifact roots (#2346, #1820).** Reply persistence uses the
+  common atomic JSON writer, which cleans opened staging files after failures and leaves
+  rejected paths untouched. Writers and reply placement share lexical root discovery while
+  preserving their distinct symlink policies.
 - **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
   use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
