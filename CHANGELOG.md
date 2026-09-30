@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer
+  re-filters the fields `evidence.tool_rule_id` already reads totally, and coerces a non-string
+  rule id to text before the CWE regex sees it.
 - **Escape request-sourced strings that reach a terminal (#2379, #1783).** The dispatch script
   escapes any request-sourced string outside a safe charset (the checkpoint, the progress label,
   the missing-id line), and the driver loop renders its pending-id lists with `%r`.
