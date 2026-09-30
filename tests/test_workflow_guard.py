@@ -1040,9 +1040,18 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
         self.assertIsNone(
             self.swallowed('echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))
 
-    def test_a_check_joined_with_and_still_counts(self):
-        self.assertIsNone(self.swallowed(
-            'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
+    def test_a_check_joined_with_and_counts_only_inside_its_list(self):
+        # #2334: bash suspends `-e` for a command ahead of `&&`, so a failing
+        # check skips the rest of its list and the step carries on -- bash
+        # 3.2 and 5.2 run the later `chmod +x` with the check failing, and
+        # skip one written inside the list.
+        check = 'echo "%s  /tmp/payload" | sha256sum -c -' % HEX
+        found = wg.job_defects([("s", self.FETCH + check + " && echo verified\n" + self.EXEC)])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names /tmp/payload runs ahead of `&&`", found[0][1])
+        self.assertEqual([], wg.job_defects([("s", self.FETCH + check + " && " + self.EXEC)]))
+        self.assertIn("runs ahead of `&&`", self.swallowed(check + " && echo verified\n"))
+        self.assertIsNone(self.swallowed(check + " && "))
 
 
 class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
@@ -1257,6 +1266,126 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
         for shell in ("bash -e {0}", "bash -eo pipefail {0}", "sh -e {0}"):
             with self.subTest(shell=shell):
                 self.assertEqual([], self.job("%s\n", shell))
+
+
+class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
+    """#2334: bash suspends `-e` for every command of an `&&`/`||` list but
+    the last, so a failing check ahead of `&&` only skips the rest of its
+    list and the step carries on: bash 3.2 and 5.2 run a later use with the
+    check failing, and skip one written inside the list. The guard credited
+    such a check as gating the whole job, and its carrier twins too (`sh -c
+    'CHECK' && ...`, `eval 'CHECK' && ...`). It now clears only what the list
+    runs -- up to the first `||` or the end of the list, a compound command
+    in it taken whole -- unless the list's failure is still the step's: as
+    its last command, through an `||` branch that exits, or through the
+    group it ends -- a subshell's failure, which `-e` does not let pass, or a
+    `{ ...; }` group's as the step's last command or through its own `||`."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def both(self, body, shell=None, use=USE):
+        """`job_defects`' reasons, which `fetch_exec_defects` gives too where
+        the step has no `shell:`."""
+        found = [why for _step, why in self.job(body, shell, use)]
+        if shell is None:
+            self.assertEqual(found, wg.fetch_exec_defects(self.FETCH + body % self.CHECK + use))
+        return found
+
+    def test_a_use_after_the_list_is_reported(self):
+        for shell in (None, "bash"):
+            for body in ("%s && echo verified\n", "%s && echo ok || echo failed\n",
+                         "true && %s && echo ok\n", "%s && echo ok &\n", "{ %s && echo ok; }\n",
+                         "if true; then %s && echo ok; fi\n", "set +e\n%s && echo ok\n",
+                         "sh -c '%s' && echo ok\n", "eval '%s' && echo ok\n",
+                         "{ %s && echo ok; } && echo more\n", "{ %s && echo ok; } || true\n",
+                         "( %s && echo ok ) || true\n", "( %s && echo ok ) &\nwait\n"):
+                with self.subTest(shell=shell, body=body):
+                    found = self.both(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload runs ahead of `&&`, "
+                                  "where bash suspends `-e`", found[0])
+        # A subshell piped into `tee` hands its failure to the pipeline, which
+        # takes `tee`'s status unless pipefail holds.
+        self.assertEqual(1, len(self.both("( %s && echo ok ) | tee log\n")))
+        self.assertEqual([], self.job("( %s && echo ok ) | tee log\n", "bash"))
+
+    def test_a_use_the_list_runs_after_an_or_is_reported(self):
+        # The list's `||` branch runs BECAUSE the check failed: a use there
+        # is the failing path, not a verified one.
+        found = self.both("%s && echo ok || sh /tmp/payload\n", use="")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs ahead of `&&`", found[0])
+
+    def test_a_use_inside_the_list_is_cleared(self):
+        for body in ("%s && chmod +x /tmp/payload && /tmp/payload\necho done\n",
+                     "%s && { chmod +x /tmp/payload; /tmp/payload; }\necho done\n",
+                     "%s && if true; then chmod +x /tmp/payload; fi\necho done\n",
+                     "true && %s && chmod +x /tmp/payload\necho done\n",
+                     "set +e\n%s && chmod +x /tmp/payload\necho done\n",
+                     "sh -c '%s' && chmod +x /tmp/payload && /tmp/payload\necho done\n",
+                     "eval '%s' && chmod +x /tmp/payload\necho done\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.both(body, use=""))
+        self.assertEqual([], self.job("%s && chmod +x /tmp/payload\necho done\n", "bash {0}", ""))
+
+    def test_where_the_lists_failure_still_stops_the_step(self):
+        for body in ("true && %s\n", "%s && echo ok || exit 1\n", "( %s && echo ok )\n",
+                     "(cd /tmp && %s && echo ok)\n", "eval '%s && echo ok'\n",
+                     "( %s && echo ok ) || exit 1\n", "{ %s && echo ok; } || exit 1\n",
+                     "{\n  %s && echo ok\n} || exit 1\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.both(body))
+        # As the step's last command, the list's status is the step's -- and a
+        # `{ ...; }` group's, when the list is that group's last command.
+        for body in (" && echo verified\n", " && echo verified; }\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], wg.job_defects([
+                    wg.Step("check", self.FETCH + ("{ " if "}" in body else "") + self.CHECK
+                            + body), wg.Step("run", self.USE)]))
+
+    def test_the_lists_own_controls_read_as_before(self):
+        # A check piped into `tee` has lost its status before `&&` reads it,
+        # one with no digest checks nothing, and a step carrying
+        # `continue-on-error: true` lets the job carry on past its failure
+        # even where the list ends the step.
+        piped = self.job("%s | tee log && chmod +x /tmp/payload\necho done\n", use="")
+        self.assertEqual(1, len(piped), piped)
+        self.assertIn("where `pipefail` is off", piped[0][1])
+        bare = wg.job_defects([("s", self.FETCH + 'echo "/tmp/payload" | sha256sum -c - && '
+                                "chmod +x /tmp/payload\necho done\n")])
+        self.assertEqual(1, len(bare), bare)
+        self.assertIn("carries no digest", bare[0][1])
+        soft = wg.job_defects([wg.Step("s", self.FETCH + self.CHECK + " && echo verified\n",
+                                       None, None, True), wg.Step("u", "sh /tmp/payload\n")])
+        self.assertEqual(1, len(soft), soft)
+        self.assertIn("continue-on-error", soft[0][1])
+
+    def test_the_batchs_controls_keep_their_verdicts_under_every_shell(self):
+        # #2335, #2338 and #2334 read the step's shell; none of them moves a
+        # plain check or its exiting rescues (cleared), `|| true`, `!` or an
+        # `if` test (refused), a fetch-and-run with no check (reported), or a
+        # job that downloads nothing (clean), under any `shell:` a step names.
+        for shell in (None, "sh", "bash"):
+            for body in ("%s\n", "%s || exit 1\n", '%s || { echo "::error::bad"; exit 1; }\n'):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.job(body, shell))
+            for body, why in (("%s || true\n", "hands its failure to a `||` branch"),
+                              ("! %s\n", "is negated"),
+                              ("if %s; then echo ok; fi\n", "is an `if`/`while` test")):
+                with self.subTest(shell=shell, body=body):
+                    found = self.job(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload " + why, found[0][1])
+            with self.subTest(shell=shell, body="no check"):
+                found = wg.job_defects([wg.Step("s", self.FETCH + self.USE, shell)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn("with nothing verifying what arrived", found[0][1])
+            for idiom in ("make\n", "npm ci\n", "sh scripts/build.sh\n"):
+                with self.subTest(shell=shell, body=idiom):
+                    self.assertEqual([], wg.job_defects([wg.Step("s", idiom, shell)]))
 
 
 class TestChecksumRescueStatus(unittest.TestCase):

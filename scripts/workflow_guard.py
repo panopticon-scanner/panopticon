@@ -186,10 +186,10 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
-                            chmod_executable, chmod_targets, covers, described, flattened,
-                            in_container, kept, may_run, names_file, parse_fetch, regions,
-                            same_file, stdin_program, step_credit, streamed_fetch,
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Reach,
+                            chmod_executable, chmod_targets, clears, covers, described,
+                            flattened, in_container, kept, may_run, names_file, parse_fetch,
+                            regions, same_file, stdin_program, step_credit, streamed_fetch,
                             substitution_script, swallowed)
 
 
@@ -406,7 +406,7 @@ def _checks(stmts, credit=None):
                 continue
             text = _checked_text(statement, position, stage, argv, written) or ""
             why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
-            if why is None and not _DIGEST.search(text):
+            if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
                 why = _NO_DIGEST
             found.append((index, text, why))
         _record_writes(statement, written)
@@ -573,7 +573,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     naming = [(i, why) for i, text, why in checks if i > index
               and any(names_file(text, name) for name in sorted(names))]
     first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
-        why is None and i < u and _binds(conditions, i, u) for i, why in naming)), (None, None))
+        clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
     if first_use is None:
         return None
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]

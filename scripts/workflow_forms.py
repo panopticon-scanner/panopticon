@@ -32,7 +32,8 @@ Three questions live here, each one a shape a step writes down:
                                two ways the shell says an exit status will not
                                stop the script -- and `step_credit` the step's
                                own `-e` and `pipefail`, which its `shell:`
-                               starts (`seed`) and a `set` moves
+                               starts (`seed`) and a `set` moves, and how far
+                               a check ahead of `&&` reaches (`Reach`)
 
 Stdlib only, like everything under it.
 """
@@ -256,7 +257,8 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     it stops the script (`-e` holds, or it is the last command) and every
     command running a script around it passes that on, up to the command the
     step's own shell runs, whose failure `swallowed` and `step_credit` judge
-    as they judge a check written there. A child shell has `-e` only from its
+    as they judge a check written there -- where one ahead of `&&` reaches
+    only the rest of its list (#2334). A child shell has `-e` only from its
     options or a `set`, and `pipefail` so too (re-review N-D); the step's own
     shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
     moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
@@ -538,7 +540,8 @@ def swallowed(stmts, index, statement, stage, credit=None):
     they wrote it for. What is read here is the shell right around the check
     -- an `Inlined` statement's `credit` first, then its separator, `!` and
     `if` -- and `credit` is the step's own answer for the statement, read
-    last: `step_credit`'s, or None where it has none.
+    last: `step_credit`'s, or None where it has none. A `Reach` answer is a
+    check ahead of `&&`, which still stops what its list runs (`clears`).
     """
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
@@ -568,6 +571,8 @@ _NO_E = ("runs under `shell: %s`, which starts without errexit, and is not in th
 _NO_PIPEFAIL = ("is piped into another command where `pipefail` is off, so the pipeline "
                 "takes that command's status and the step carries on past its failure "
                 "(`shell: bash`, or `set -o pipefail` before it, turns pipefail on)")
+_AHEAD = ("runs ahead of `&&`, where bash suspends `-e`, so its failure skips only the rest "
+          "of that list and the step carries on past it")
 
 
 def step_credit(flat, shell=None):
@@ -584,8 +589,8 @@ def step_credit(flat, shell=None):
     `_errexit_states` reads a child script. Without pipefail a piped check's
     status is lost to the command after it. Where `-e` is off, a failure
     stops the step only in its last command or through an `||` branch that
-    exits; a check ahead of `&&`, where bash suspends `-e` anyway, keeps the
-    answer it has with it.
+    exits. Ahead of `&&` bash suspends `-e`, so a failure there stops only
+    the rest of its list (`_stops_step`), a `Reach` of that many statements.
     """
     at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
     stmts = [flat[index] for index in at]
@@ -594,12 +599,80 @@ def step_credit(flat, shell=None):
         stmts, pipefail, where, "pipefail")
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
-        separator = stmts[position].separator
-        why = None if (on[position] or position == len(stmts) - 1 or separator == "&&" or
-                       separator == "||" and _stops_the_job(stmts, position, False)) else (
-            _SET_E if errexit else _NO_E % shell)
-        credit.update((inner, (why, why)) for inner in range(start, index) if why)
-        if why or not fails[position]:
-            credit[index] = (why, why if fails[position] else _NO_PIPEFAIL)
+        stops = _stops_step(stmts, position, on, fails)
+        for inner in range(start, index + 1):
+            why = (None if stops is None else Reach(at[stops] - inner) if stops >= 0
+                   else _SET_E if errexit else _NO_E % shell)
+            piped = why if inner < index or fails[position] else _NO_PIPEFAIL
+            if why or piped:
+                credit[inner] = (why, piped)
         start = index + 1
     return credit
+
+
+class Reach(str):
+    """A check's refusal that still clears the `span` statements after it:
+    the rest of the `&&` list its failure skips (`step_credit`, `clears`)."""
+
+    span: int
+
+    def __new__(cls, span):
+        reach = str.__new__(cls, _AHEAD)
+        reach.span = span
+        return reach
+
+
+def clears(why, check, use):
+    """Whether a check at statement `check`, refused for `why` (None: it
+    stops the step), stops the use at statement `use`."""
+    return check < use and (why is None or isinstance(why, Reach) and use - check <= why.span)
+
+
+# The keywords that open a compound command, and the ones that close it.
+_OPENS, _CLOSES = ("if", "while", "until", "for", "case", "{"), ("fi", "done", "esac", "}")
+
+
+def _nesting(statement):
+    """The compound commands this statement opens, less those it closes: its
+    subshell parentheses, and the keywords that lead its commands."""
+    depth = 0
+    for stage in statement.stages:
+        depth += stage.group_open - stage.group_close
+        for token in stage.argv:
+            if token not in shell_reader.KEYWORDS:
+                break
+            depth += (token in _OPENS) - (token in _CLOSES)
+    return depth
+
+
+def _stops_step(stmts, position, on, fails):
+    """How much of the step a failure in its top-level statement `position`
+    stops: None for all of it, -1 for none of it, else the index of the last
+    statement it still stops. Ahead of `&&` that is the end of its list -- the
+    first `||` or the list's own end, a compound command in it taken whole --
+    or of the `( )` or `{ }` group the list ends, whose status is the list's.
+    That status still stops the step as the step's last command, through an
+    `||` branch that stops the step, or as a subshell's where `-e` holds --
+    never a `{ ...; }` group's, which `-e` lets pass -- and not from a group
+    detached with `&`, or piped where pipefail is off (`fails`)."""
+    last, separator = len(stmts) - 1, stmts[position].separator
+    if separator != "&&":
+        stops = (on[position] or position == last or
+                 separator == "||" and _stops_the_job(stmts, position, False))
+        return None if stops else -1
+    end, depth = position, 0
+    while end < last and (depth > 0 or not depth and stmts[end].separator == "&&"):
+        end += 1
+        depth += _nesting(stmts[end])
+    if not depth and end < last and stmts[end].separator not in ("&", "||") and [
+            stage.argv for stage in stmts[end + 1].stages[:1]] == [["}"]]:
+        end, depth = end + 1, -1                # the list ends its `{ ...; }` group
+    here = stmts[end]
+    if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
+        return end                              # the group's failure goes nowhere
+    if depth < 0 and here.separator == "&&":
+        return _stops_step(stmts, end, on, fails)   # the group heads a list of its own
+    if here.separator == "||":
+        return None if _stops_the_job(stmts, end, all(on[position:end + 2])) else end
+    subshell = depth < 0 and on[end] and any(stage.group_close for stage in here.stages)
+    return None if subshell or end == last and here.separator != "&" else end
