@@ -600,17 +600,23 @@ class TestHardenedXmlParser(unittest.TestCase):
         from defusedxml.common import EntitiesForbidden
         self._assert_external_entities_refused_without_io(sb.SpotBugsAdapter(), EntitiesForbidden)
 
-    def test_missing_defusedxml_fails_the_import_loudly(self):
+    def test_missing_defusedxml_fails_the_parse_loudly(self):
         # #2363: `defusedxml` is a declared dependency the gating readiness row
         # already checks, so the adapter imports it unconditionally and there is
         # no stdlib fallback left to exercise. A missing package has to fail
-        # HERE, at import, naming itself, on every path -- including the ones
-        # that never run readiness (the CI gate's ingest, a resumed run whose
+        # loudly, naming itself, on every path -- including the ones that never
+        # run readiness (the CI gate's ingest, a resumed run whose
         # readiness.json already says ready, an adapter imported directly).
-        # Fresh isolated module namespace; do not rebind the imported adapter
-        # used by other tests.
+        #
+        # #2369 moved that import off module level into `parse`, its only user.
+        # `scripts.tools`'s package body imports every adapter and the driver
+        # imports that package through its host probes, so at module level it
+        # made an absent `defusedxml` a traceback out of `import scripts.driver`
+        # instead of the readiness `dependencies` row that names its
+        # `pip install`. The failure is the same failure one frame later --
+        # still an ImportError, still naming the package, still no fallback --
+        # so this case blocks the import and calls `parse`.
         import builtins
-        import importlib.util
         original_import = builtins.__import__
 
         def without_defusedxml(name, *args, **kwargs):
@@ -620,15 +626,16 @@ class TestHardenedXmlParser(unittest.TestCase):
                 raise ModuleNotFoundError("No module named %r" % name, name=name)
             return original_import(name, *args, **kwargs)
 
-        spec = importlib.util.spec_from_file_location("scripts.tools._spotbugs_no_defusedxml", sb.__file__)
-        module = importlib.util.module_from_spec(spec)
+        # The import statement calls `__import__` on every execution, cached
+        # package or not, so this needs no `sys.modules` surgery.
         with mock.patch.object(builtins, "__import__", side_effect=without_defusedxml):
             with self.assertRaises(ImportError) as raised:
-                spec.loader.exec_module(module)
+                sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")
         self.assertIn("defusedxml", str(raised.exception))
-        # No silent downgrade: execution stopped at that import, so the module
-        # never bound `ET` -- not to `xml.etree.ElementTree`, not to anything.
-        self.assertNotIn("ET", vars(module))
+        # No silent downgrade, and no module-level binding to downgrade TO: the
+        # adapter module holds no `ET` at all -- not `xml.etree.ElementTree`,
+        # not anything -- which is also what keeps it off the driver's path.
+        self.assertNotIn("ET", vars(sb))
 
 
 class TestOfflineLogPrefix(unittest.TestCase):
