@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
+  `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
+  stderr line name only roots pruned from the surface the run reviewed, like every other
+  disclosure on a delta run.
 - **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
   domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
   of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
