@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
+  active findings by adapter, the HTML scanner context renders those counts, and the adapter
+  contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
