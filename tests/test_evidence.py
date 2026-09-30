@@ -1,3 +1,5 @@
+import ast
+import hashlib
 import os
 import json
 import unittest
@@ -5,6 +7,34 @@ import unittest
 import scripts.evidence as evidence
 
 ev = evidence
+
+
+def _key_reads(tree, key):
+    """The enclosing function names (module level -> "<module>") of every
+    occurrence of `key` as a constant in `tree`, in ANY idiom -- `x[key]`,
+    `x.get(key)`, `x.pop(key)`, `x.setdefault(key)`, `key in x`, a constant
+    assigned to a name and read later -- except one: the slice of a Store-context
+    subscript, which is a write (#2365). Naming the KEY rather than a list of
+    read idioms is what makes the guard hold for idioms nobody has used yet.
+
+    A function's decorators and default arguments are attributed to that function
+    rather than to its enclosing scope, so the one shape this scan cannot see is
+    a read hidden in the decorator list or the defaults OF THE READER ITSELF.
+    """
+    written = {id(node.slice) for node in ast.walk(tree)
+               if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)}
+    found = set()
+
+    def visit(node, scope):
+        if (isinstance(node, ast.Constant) and node.value == key
+                and id(node) not in written):
+            found.add(scope)
+        for child in ast.iter_child_nodes(node):
+            visit(child, child.name if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope)
+
+    visit(tree, "<module>")
+    return found
 
 
 def _finding(**kw):
@@ -294,6 +324,214 @@ class TestReconcileKeyCollision(unittest.TestCase):
         b = ev.reconcile_key({"location": {"file": "a.py"},
                               "panel": "security", "category": "SEC-A1A"})
         self.assertNotEqual(a, b)   # only panel=="code" can collide
+
+
+class TestArtifactTerm(unittest.TestCase):
+    """#2352: `artifact_term` is the ONE reading of `tool_evidence.package_name`,
+    and both identity functions carry it. The manifest proxy (#2225) puts every
+    dependency-check finding at `pom.xml:1`, so the ARTIFACT is what tells two
+    vulnerable jars sharing one advisory apart."""
+
+    MISSING = object()
+
+    def _f(self, pkg=MISSING, **over):
+        f = {"id": "SEC-9", "panel": "security",
+             "category": "vulnerable-dependency", "title": "CVE-2021-1",
+             "source": "tool:dependency-check",
+             "location": {"file": "pom.xml", "line_start": 1},
+             "tool_evidence": {"rule_id": "CVE-2021-1"}}
+        if pkg is not self.MISSING:
+            f["tool_evidence"]["package_name"] = pkg
+        f.update(over)
+        return f
+
+    def test_only_a_non_empty_string_names_an_artifact(self):
+        self.assertEqual(ev.artifact_term(self._f("a.jar")), "a.jar")
+        for absent in (self._f(), self._f(""), self._f(None), self._f(["a.jar"]),
+                       self._f(0), {}, {"tool_evidence": None},
+                       {"tool_evidence": "a.jar"}):
+            with self.subTest(finding=absent):
+                self.assertIsNone(ev.artifact_term(absent))
+
+    def test_two_jars_at_one_locus_are_two_fingerprints(self):
+        self.assertNotEqual(ev.finding_fingerprint(self._f("a.jar")),
+                            ev.finding_fingerprint(self._f("b.jar")))
+
+    def test_two_jars_are_two_reconcile_keys_in_both_arms(self):
+        self.assertNotEqual(ev.reconcile_key(self._f("a.jar")),
+                            ev.reconcile_key(self._f("b.jar")))
+        self.assertNotEqual(ev.reconcile_key(self._f("a.jar", code="SEC-A1A")),
+                            ev.reconcile_key(self._f("b.jar", code="SEC-A1A")))
+
+    def test_a_finding_naming_no_artifact_keys_exactly_as_before(self):
+        # absent-means-unchanged, pinned against the pre-#2352 payload spelled
+        # out here rather than against the function that is being changed.
+        expected = hashlib.sha256("|".join(
+            ["security", "vulnerable-dependency", "pom.xml",
+             "CVE-2021-1"]).encode("utf-8")).hexdigest()[:16]
+        self.assertEqual(ev.finding_fingerprint(self._f()), expected)
+        self.assertEqual(ev.reconcile_key(self._f()),
+                         ("pom.xml", "security", "vulnerable-dependency"))
+
+    def test_an_agent_finding_cannot_choose_its_own_artifact(self):
+        # #914 guard: `tool_evidence` is not in AGENT_FORBIDDEN_FIELDS and the
+        # report schema permits `package_name` on any finding regardless of
+        # `source`, so an ungated read would let an agent-authored payload pick
+        # part of its own fingerprint -- and with it its queue_id, the advisor
+        # verdict it answers to, and the cross-run identity a filed issue is
+        # keyed on. Only a tool-sourced finding names an artifact.
+        forged = self._f("forged.jar", title="Missing role check")
+        clean = self._f(title="Missing role check")
+        del forged["source"], clean["source"]
+        self.assertIsNone(ev.artifact_term(forged))
+        self.assertEqual(ev.finding_fingerprint(forged),
+                         ev.finding_fingerprint(clean))
+        self.assertEqual(ev.reconcile_key(forged), ev.reconcile_key(clean))
+        self.assertEqual(ev.reconcile_key(dict(forged, code="SEC-A1A")),
+                         ev.reconcile_key(dict(clean, code="SEC-A1A")))
+
+    def test_a_non_dict_tool_evidence_names_nothing_and_does_not_raise(self):
+        # `reconcile.load_report` is a plain json.load with no schema check and
+        # `iter_records` calls reconcile_key on every record of a PRIOR run's
+        # report read off disk, so one malformed finding there must not abort
+        # the reconcile with a traceback.
+        agent = {"tool_evidence": "a.jar", "panel": "security",
+                 "category": "authz", "title": "t",
+                 "location": {"file": "auth.py"}}
+        self.assertIsNone(ev.artifact_term(agent))
+        self.assertEqual(len(ev.finding_fingerprint(agent)), 16)
+        self.assertEqual(ev.reconcile_key(agent), ("auth.py", "security", "authz"))
+        self.assertEqual(ev.reconcile_key(dict(agent, code="SEC-A1A")),
+                         ("auth.py", "code", "SEC-A1A"))
+        # On a TOOL finding the tool-sourcing gate does not short-circuit, so
+        # the isinstance guard is the only thing standing between a malformed
+        # `tool_evidence` and an AttributeError out of reconcile_key.
+        tool = dict(agent, source="tool:dependency-check")
+        self.assertIsNone(ev.artifact_term(tool))
+        # ...and #2359: finding_fingerprint reads the rule id too, so the same
+        # payload must survive that identity as well as this one.
+        self.assertEqual(len(ev.finding_fingerprint(tool)), 16)
+        self.assertEqual(ev.reconcile_key(tool), ("auth.py", "security", "authz"))
+        self.assertEqual(ev.reconcile_key(dict(tool, code="SEC-A1A")),
+                         ("auth.py", "code", "SEC-A1A"))
+
+    def test_an_empty_package_name_keys_like_no_package_name_at_all(self):
+        bare, empty = self._f(), self._f("")
+        self.assertEqual(ev.finding_fingerprint(bare),
+                         ev.finding_fingerprint(empty))
+        self.assertEqual(ev.reconcile_key(bare), ev.reconcile_key(empty))
+
+
+class TestMalformedToolEvidence(unittest.TestCase):
+    """#2359: nothing validates a report read off disk -- `reconcile.load_report`
+    is a plain json.load -- so a stored finding's `tool_evidence` or `provenance`
+    can be a non-dict, and `iter_records` fingerprints EVERY record of a prior
+    run. One guarded reader stands behind both reads, so a malformed finding
+    names no rule instead of aborting the reconcile with an AttributeError."""
+
+    def _f(self, **over):
+        f = {"id": "SEC-1", "panel": "security", "category": "injection",
+             "title": "t", "source": "tool:bandit",
+             "location": {"file": "a.py"}}
+        f.update(over)
+        return f
+
+    def test_a_non_dict_tool_evidence_still_falls_through_to_provenance(self):
+        f = self._f(tool_evidence="x",
+                    provenance={"confirmation_reasoning": "B105"})
+        self.assertEqual(ev.tool_rule_id(f), "B105")
+        fp = ev.finding_fingerprint(f)
+        self.assertEqual(len(fp), 16)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
+        self.assertEqual(ev.reconcile_key(f), ("a.py", "security", "injection"))
+        # the SARIF rule is the discriminator, exactly as on a well-formed payload
+        self.assertEqual(fp, ev.finding_fingerprint(
+            self._f(tool_evidence={"rule_id": "B105"})))
+
+    def test_a_rule_id_nowhere_readable_is_no_rule_and_no_raise(self):
+        for f in (self._f(tool_evidence="x", provenance="x"),
+                  self._f(tool_evidence={}, provenance=["x"]),
+                  self._f(tool_evidence={"package_name": "a.jar"})):
+            with self.subTest(finding=f):
+                self.assertIsNone(ev.tool_rule_id(f))
+                self.assertEqual(len(ev.finding_fingerprint(f)), 16)
+
+    def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
+        te = {"rule_id": "B105"}
+        self.assertIs(ev._tool_evidence({"tool_evidence": te}), te)
+        for bad in (None, "x", ["x"], 0):
+            with self.subTest(value=bad):
+                self.assertEqual(ev._tool_evidence({"tool_evidence": bad}), {})
+        self.assertEqual(ev._tool_evidence({}), {})
+
+
+class TestMalformedLocation(unittest.TestCase):
+    """#2365: `load_report` is a plain `json.load`, so a stored finding's
+    `location` can be any JSON value. A non-dict must key exactly like an absent
+    one instead of aborting the caller on `.get`."""
+
+    def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
+        loc = {"file": "a.py", "line_start": 3}
+        self.assertIs(ev.location_of({"location": loc}), loc)
+        for bad in (None, "a.py", ["a.py"], 7):
+            with self.subTest(value=bad):
+                self.assertEqual(ev.location_of({"location": bad}), {})
+        self.assertEqual(ev.location_of({}), {})
+
+    def test_a_string_location_keys_exactly_like_no_location_at_all(self):
+        absent = _finding(source="tool:bandit")
+        absent.pop("location")
+        for fn in (ev.finding_fingerprint, ev.matrix_finding_id, ev.reconcile_key,
+                   ev._queue_tiebreak):
+            with self.subTest(function=fn.__name__):
+                self.assertEqual(fn(_finding(source="tool:bandit", location="a.py")),
+                                 fn(absent))
+
+
+class TestOneReaderPerGuardedKey(unittest.TestCase):
+    """#2365: `tool_evidence` and `location` are both read off an unvalidated
+    stored report, and the unguarded idiom recurred four times for `location`
+    after #2359 fixed it for `tool_evidence`. So each key has exactly ONE reader
+    in `evidence.py`, and this guard fails on every occurrence of the key as a
+    constant, in any idiom, except a subscript write.
+
+    It covers `evidence.py` alone. `phases/review.py` and `security_gate.py` keep
+    the idiom on adapter-constructed findings, whose `location` is always a dict
+    an adapter built, so those are safe by construction; `scripts/file_issues.py`
+    -- the other consumer of the same `reconcile.load_report` -- still carries it
+    and is tracked as #2372. One layer up, a report whose top level is not an
+    object or whose `meta.parts` is not a list still aborts in `load_report`
+    itself (#2373)."""
+
+    def _tree(self):
+        with open(evidence.__file__, encoding="utf-8") as fh:
+            return ast.parse(fh.read())
+
+    def test_each_guarded_key_is_read_inside_its_reader_only(self):
+        tree = self._tree()
+        for key, reader in (("tool_evidence", "_tool_evidence"),
+                            ("location", "location_of")):
+            with self.subTest(key=key):
+                self.assertEqual(_key_reads(tree, key), {reader})
+
+    def test_the_walker_trips_on_every_read_idiom(self):
+        # Must-trip controls: each idiom in its own tiny module, each reporting
+        # its own function. A walker that missed one would make the assertion
+        # above vacuous for exactly that idiom -- which is how `.pop`,
+        # `.setdefault` and `in` went unmodelled in the first cut (#2365).
+        for body in ('return x.get("location")', 'return x["location"]["file"]',
+                     'return x.pop("location", {})',
+                     'return x.setdefault("location", {})',
+                     'return "location" in x'):
+            with self.subTest(idiom=body):
+                self.assertEqual(
+                    _key_reads(ast.parse("def f(x):\n    " + body + "\n"),
+                               "location"), {"f"})
+
+    def test_a_write_is_not_a_read(self):
+        self.assertEqual(
+            _key_reads(ast.parse('def h(q, v):\n    q["location"] = v\n'),
+                       "location"), set())
 
 
 class TestReportSectionPartition(unittest.TestCase):

@@ -756,8 +756,8 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
     """#1639 P11 fix round 1 (F1): a flat regex pass over a whole JSON capture
     is not structure-safe. Every pattern in `scripts/redact.py` is anchored to a
     character class that excludes `"` -- except the PEM rule, which was `.*?`
-    under DOTALL. A capture whose first BEGIN has no END of its own (the
-    committed gitleaks golden quotes exactly that: a truncated key snippet) runs
+    under DOTALL. A capture whose first BEGIN has no END of its own (the shape
+    the gitleaks golden quoted before #2313; pinned synthetically below) runs
     on until a LATER result's snippet supplies one, and everything in between --
     whole results, their rule ids and their locations -- collapses into one
     token. The output is still valid JSON, so ingest parses it happily and

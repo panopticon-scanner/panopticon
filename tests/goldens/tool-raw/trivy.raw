@@ -157,147 +157,137 @@
        }
       },
       {
-       "id": "CVE-2023-32681",
-       "name": "LanguageSpecificPackageVulnerability",
+       "id": "private-key",
+       "name": "Secret",
        "shortDescription": {
-        "text": "python-requests: Unintended leak of Proxy-Authorization header"
+        "text": "Asymmetric Private Key"
        },
        "fullDescription": {
-        "text": "Requests is a HTTP library. Since Requests 2.3.0, Requests has been leaking Proxy-Authorization headers to destination servers when redirected to an HTTPS endpoint. This is a product of how we use `rebuild_proxies` to reattach the `Proxy-Authorization` header to requests. For HTTP connections sent through the tunnel, the proxy will identify the header in the request itself and remove it prior to forwarding to the destination server. However when sent over HTTPS, the `Proxy-Authorization` header must be sent in the CONNECT request as the proxy has no visibility into the tunneled request. This results in Requests forwarding proxy credentials to the destination server unintentionally, allowing a malicious actor to potentially exfiltrate sensitive information. This issue has been patched in version 2.31.0."
-       },
-       "defaultConfiguration": {
-        "level": "warning"
-       },
-       "helpUri": "https://avd.aquasec.com/nvd/cve-2023-32681",
-       "help": {
-        "text": "Vulnerability CVE-2023-32681\nSeverity: MEDIUM\nPackage: requests\nFixed Version: 2.31.0\nLink: [CVE-2023-32681](https://avd.aquasec.com/nvd/cve-2023-32681)\nRequests is a HTTP library. Since Requests 2.3.0, Requests has been leaking Proxy-Authorization headers to destination servers when redirected to an HTTPS endpoint. This is a product of how we use `rebuild_proxies` to reattach the `Proxy-Authorization` header to requests. For HTTP connections sent through the tunnel, the proxy will identify the header in the request itself and remove it prior to forwarding to the destination server. However when sent over HTTPS, the `Proxy-Authorization` header must be sent in the CONNECT request as the proxy has no visibility into the tunneled request. This results in Requests forwarding proxy credentials to the destination server unintentionally, allowing a malicious actor to potentially exfiltrate sensitive information. This issue has been patched in version 2.31.0.",
-        "markdown": "**Vulnerability CVE-2023-32681**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|MEDIUM|requests|2.31.0|[CVE-2023-32681](https://avd.aquasec.com/nvd/cve-2023-32681)|\n\nRequests is a HTTP library. Since Requests 2.3.0, Requests has been leaking Proxy-Authorization headers to destination servers when redirected to an HTTPS endpoint. This is a product of how we use `rebuild_proxies` to reattach the `Proxy-Authorization` header to requests. For HTTP connections sent through the tunnel, the proxy will identify the header in the request itself and remove it prior to forwarding to the destination server. However when sent over HTTPS, the `Proxy-Authorization` header must be sent in the CONNECT request as the proxy has no visibility into the tunneled request. This results in Requests forwarding proxy credentials to the destination server unintentionally, allowing a malicious actor to potentially exfiltrate sensitive information. This issue has been patched in version 2.31.0."
-       },
-       "properties": {
-        "cvssv3_baseScore": 6.1,
-        "cvssv3_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
-        "precision": "very-high",
-        "security-severity": "6.1",
-        "tags": [
-         "vulnerability",
-         "security",
-         "MEDIUM"
-        ]
-       }
-      },
-      {
-       "id": "CVE-2024-35195",
-       "name": "LanguageSpecificPackageVulnerability",
-       "shortDescription": {
-        "text": "requests: subsequent requests to the same host ignore cert verification"
-       },
-       "fullDescription": {
-        "text": "Requests is a HTTP library. Prior to 2.32.0, when making requests through a Requests `Session`, if the first request is made with `verify=False` to disable cert verification, all subsequent requests to the same host will continue to ignore cert verification regardless of changes to the value of `verify`. This behavior will continue for the lifecycle of the connection in the connection pool. This vulnerability is fixed in 2.32.0."
-       },
-       "defaultConfiguration": {
-        "level": "warning"
-       },
-       "helpUri": "https://avd.aquasec.com/nvd/cve-2024-35195",
-       "help": {
-        "text": "Vulnerability CVE-2024-35195\nSeverity: MEDIUM\nPackage: requests\nFixed Version: 2.32.0\nLink: [CVE-2024-35195](https://avd.aquasec.com/nvd/cve-2024-35195)\nRequests is a HTTP library. Prior to 2.32.0, when making requests through a Requests `Session`, if the first request is made with `verify=False` to disable cert verification, all subsequent requests to the same host will continue to ignore cert verification regardless of changes to the value of `verify`. This behavior will continue for the lifecycle of the connection in the connection pool. This vulnerability is fixed in 2.32.0.",
-        "markdown": "**Vulnerability CVE-2024-35195**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|MEDIUM|requests|2.32.0|[CVE-2024-35195](https://avd.aquasec.com/nvd/cve-2024-35195)|\n\nRequests is a HTTP library. Prior to 2.32.0, when making requests through a Requests `Session`, if the first request is made with `verify=False` to disable cert verification, all subsequent requests to the same host will continue to ignore cert verification regardless of changes to the value of `verify`. This behavior will continue for the lifecycle of the connection in the connection pool. This vulnerability is fixed in 2.32.0."
-       },
-       "properties": {
-        "cvssv3_baseScore": 5.6,
-        "cvssv3_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:H/I:H/A:N",
-        "precision": "very-high",
-        "security-severity": "5.6",
-        "tags": [
-         "vulnerability",
-         "security",
-         "MEDIUM"
-        ]
-       }
-      },
-      {
-       "id": "CVE-2024-47081",
-       "name": "LanguageSpecificPackageVulnerability",
-       "shortDescription": {
-        "text": "requests: Requests vulnerable to .netrc credentials leak via malicious URLs"
-       },
-       "fullDescription": {
-        "text": "Requests is a HTTP library. Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to third parties for specific maliciously-crafted URLs. Users should upgrade to version 2.32.4 to receive a fix. For older versions of Requests, use of the .netrc file can be disabled with `trust_env=False` on one's Requests Session."
-       },
-       "defaultConfiguration": {
-        "level": "warning"
-       },
-       "helpUri": "https://avd.aquasec.com/nvd/cve-2024-47081",
-       "help": {
-        "text": "Vulnerability CVE-2024-47081\nSeverity: MEDIUM\nPackage: requests\nFixed Version: 2.32.4\nLink: [CVE-2024-47081](https://avd.aquasec.com/nvd/cve-2024-47081)\nRequests is a HTTP library. Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to third parties for specific maliciously-crafted URLs. Users should upgrade to version 2.32.4 to receive a fix. For older versions of Requests, use of the .netrc file can be disabled with `trust_env=False` on one's Requests Session.",
-        "markdown": "**Vulnerability CVE-2024-47081**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|MEDIUM|requests|2.32.4|[CVE-2024-47081](https://avd.aquasec.com/nvd/cve-2024-47081)|\n\nRequests is a HTTP library. Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to third parties for specific maliciously-crafted URLs. Users should upgrade to version 2.32.4 to receive a fix. For older versions of Requests, use of the .netrc file can be disabled with `trust_env=False` on one's Requests Session."
-       },
-       "properties": {
-        "cvssv3_baseScore": 5.3,
-        "cvssv3_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N",
-        "precision": "very-high",
-        "security-severity": "5.3",
-        "tags": [
-         "vulnerability",
-         "security",
-         "MEDIUM"
-        ]
-       }
-      },
-      {
-       "id": "CVE-2026-25645",
-       "name": "LanguageSpecificPackageVulnerability",
-       "shortDescription": {
-        "text": "requests: Requests: Security bypass due to predictable temporary file creation"
-       },
-       "fullDescription": {
-        "text": "Requests is a HTTP library. Prior to version 2.33.0, the `requests.utils.extract_zipped_paths()` utility function uses a predictable filename when extracting files from zip archives into the system temporary directory. If the target file already exists, it is reused without validation. A local attacker with write access to the temp directory could pre-create a malicious file that would be loaded in place of the legitimate one. Standard usage of the Requests library is not affected by this vulnerability. Only applications that call `extract_zipped_paths()` directly are impacted. Starting in version 2.33.0, the library extracts files to a non-deterministic location. If developers are unable to upgrade, they can set `TMPDIR` in their environment to a directory with restricted write access."
-       },
-       "defaultConfiguration": {
-        "level": "warning"
-       },
-       "helpUri": "https://avd.aquasec.com/nvd/cve-2026-25645",
-       "help": {
-        "text": "Vulnerability CVE-2026-25645\nSeverity: MEDIUM\nPackage: requests\nFixed Version: 2.33.0\nLink: [CVE-2026-25645](https://avd.aquasec.com/nvd/cve-2026-25645)\nRequests is a HTTP library. Prior to version 2.33.0, the `requests.utils.extract_zipped_paths()` utility function uses a predictable filename when extracting files from zip archives into the system temporary directory. If the target file already exists, it is reused without validation. A local attacker with write access to the temp directory could pre-create a malicious file that would be loaded in place of the legitimate one. Standard usage of the Requests library is not affected by this vulnerability. Only applications that call `extract_zipped_paths()` directly are impacted. Starting in version 2.33.0, the library extracts files to a non-deterministic location. If developers are unable to upgrade, they can set `TMPDIR` in their environment to a directory with restricted write access.",
-        "markdown": "**Vulnerability CVE-2026-25645**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|MEDIUM|requests|2.33.0|[CVE-2026-25645](https://avd.aquasec.com/nvd/cve-2026-25645)|\n\nRequests is a HTTP library. Prior to version 2.33.0, the `requests.utils.extract_zipped_paths()` utility function uses a predictable filename when extracting files from zip archives into the system temporary directory. If the target file already exists, it is reused without validation. A local attacker with write access to the temp directory could pre-create a malicious file that would be loaded in place of the legitimate one. Standard usage of the Requests library is not affected by this vulnerability. Only applications that call `extract_zipped_paths()` directly are impacted. Starting in version 2.33.0, the library extracts files to a non-deterministic location. If developers are unable to upgrade, they can set `TMPDIR` in their environment to a directory with restricted write access."
-       },
-       "properties": {
-        "cvssv3_baseScore": 4.4,
-        "cvssv3_vector": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:N/I:H/A:N",
-        "precision": "very-high",
-        "security-severity": "4.4",
-        "tags": [
-         "vulnerability",
-         "security",
-         "MEDIUM"
-        ]
-       }
-      },
-      {
-       "id": "CVE-2022-24713",
-       "name": "LanguageSpecificPackageVulnerability",
-       "shortDescription": {
-        "text": "Mozilla: Denial of Service via complex regular expressions"
-       },
-       "fullDescription": {
-        "text": "regex is an implementation of regular expressions for the Rust language. The regex crate features built-in mitigations to prevent denial of service attacks caused by untrusted regexes, or untrusted input matched by trusted regexes. Those (tunable) mitigations already provide sane defaults to prevent attacks. This guarantee is documented and it's considered part of the crate's API. Unfortunately a bug was discovered in the mitigations designed to prevent untrusted regexes to take an arbitrary amount of time during parsing, and it's possible to craft regexes that bypass such mitigations. This makes it possible to perform denial of service attacks by sending specially crafted regexes to services accepting user-controlled, untrusted regexes. All versions of the regex crate before or equal to 1.5.4 are affected by this issue. The fix is include starting from regex 1.5.5. All users accepting user-controlled regexes are recommended to upgrade immediately to the latest version of the regex crate. Unfortunately there is no fixed set of problematic regexes, as there are practically infinite regexes that could be crafted to exploit this vulnerability. Because of this, it us not recommend to deny known problematic regexes."
+        "text": "******************************************************************"
        },
        "defaultConfiguration": {
         "level": "error"
        },
-       "helpUri": "https://avd.aquasec.com/nvd/cve-2022-24713",
+       "helpUri": "https://github.com/aquasecurity/trivy/blob/main/pkg/fanal/secret/builtin-rules.go",
        "help": {
-        "text": "Vulnerability CVE-2022-24713\nSeverity: HIGH\nPackage: regex\nFixed Version: 1.5.5\nLink: [CVE-2022-24713](https://avd.aquasec.com/nvd/cve-2022-24713)\nregex is an implementation of regular expressions for the Rust language. The regex crate features built-in mitigations to prevent denial of service attacks caused by untrusted regexes, or untrusted input matched by trusted regexes. Those (tunable) mitigations already provide sane defaults to prevent attacks. This guarantee is documented and it's considered part of the crate's API. Unfortunately a bug was discovered in the mitigations designed to prevent untrusted regexes to take an arbitrary amount of time during parsing, and it's possible to craft regexes that bypass such mitigations. This makes it possible to perform denial of service attacks by sending specially crafted regexes to services accepting user-controlled, untrusted regexes. All versions of the regex crate before or equal to 1.5.4 are affected by this issue. The fix is include starting from regex 1.5.5. All users accepting user-controlled regexes are recommended to upgrade immediately to the latest version of the regex crate. Unfortunately there is no fixed set of problematic regexes, as there are practically infinite regexes that could be crafted to exploit this vulnerability. Because of this, it us not recommend to deny known problematic regexes.",
-        "markdown": "**Vulnerability CVE-2022-24713**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|HIGH|regex|1.5.5|[CVE-2022-24713](https://avd.aquasec.com/nvd/cve-2022-24713)|\n\nregex is an implementation of regular expressions for the Rust language. The regex crate features built-in mitigations to prevent denial of service attacks caused by untrusted regexes, or untrusted input matched by trusted regexes. Those (tunable) mitigations already provide sane defaults to prevent attacks. This guarantee is documented and it's considered part of the crate's API. Unfortunately a bug was discovered in the mitigations designed to prevent untrusted regexes to take an arbitrary amount of time during parsing, and it's possible to craft regexes that bypass such mitigations. This makes it possible to perform denial of service attacks by sending specially crafted regexes to services accepting user-controlled, untrusted regexes. All versions of the regex crate before or equal to 1.5.4 are affected by this issue. The fix is include starting from regex 1.5.5. All users accepting user-controlled regexes are recommended to upgrade immediately to the latest version of the regex crate. Unfortunately there is no fixed set of problematic regexes, as there are practically infinite regexes that could be crafted to exploit this vulnerability. Because of this, it us not recommend to deny known problematic regexes."
+        "text": "Secret Asymmetric Private Key\nSeverity: HIGH\nMatch: ******************************************************************",
+        "markdown": "**Secret Asymmetric Private Key**\n| Severity | Match |\n| --- | --- |\n|HIGH|******************************************************************|"
        },
        "properties": {
-        "cvssv3_baseScore": 7.5,
-        "cvssv3_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
         "precision": "very-high",
-        "security-severity": "7.5",
+        "security-severity": "8.0",
         "tags": [
-         "vulnerability",
+         "secret",
          "security",
          "HIGH"
+        ]
+       }
+      },
+      {
+       "id": "aws-access-key-id",
+       "name": "Secret",
+       "shortDescription": {
+        "text": "AWS Access Key ID"
+       },
+       "fullDescription": {
+        "text": "AWS_ACCESS_KEY_ID = \"********************\""
+       },
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "helpUri": "https://github.com/aquasecurity/trivy/blob/main/pkg/fanal/secret/builtin-rules.go",
+       "help": {
+        "text": "Secret AWS Access Key ID\nSeverity: CRITICAL\nMatch: AWS_ACCESS_KEY_ID = \"********************\"",
+        "markdown": "**Secret AWS Access Key ID**\n| Severity | Match |\n| --- | --- |\n|CRITICAL|AWS_ACCESS_KEY_ID = \"********************\"|"
+       },
+       "properties": {
+        "precision": "very-high",
+        "security-severity": "9.5",
+        "tags": [
+         "secret",
+         "security",
+         "CRITICAL"
+        ]
+       }
+      },
+      {
+       "id": "github-pat",
+       "name": "Secret",
+       "shortDescription": {
+        "text": "GitHub Personal Access Token"
+       },
+       "fullDescription": {
+        "text": "GITHUB_TOKEN = \"****************************************ABCD\""
+       },
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "helpUri": "https://github.com/aquasecurity/trivy/blob/main/pkg/fanal/secret/builtin-rules.go",
+       "help": {
+        "text": "Secret GitHub Personal Access Token\nSeverity: CRITICAL\nMatch: GITHUB_TOKEN = \"****************************************ABCD\"",
+        "markdown": "**Secret GitHub Personal Access Token**\n| Severity | Match |\n| --- | --- |\n|CRITICAL|GITHUB_TOKEN = \"****************************************ABCD\"|"
+       },
+       "properties": {
+        "precision": "very-high",
+        "security-severity": "9.5",
+        "tags": [
+         "secret",
+         "security",
+         "CRITICAL"
+        ]
+       }
+      },
+      {
+       "id": "slack-access-token",
+       "name": "Secret",
+       "shortDescription": {
+        "text": "Slack token"
+       },
+       "fullDescription": {
+        "text": "SLACK_TOKEN = \"*****************-000000000000-SyntheticSlackTokenAAAA\""
+       },
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "helpUri": "https://github.com/aquasecurity/trivy/blob/main/pkg/fanal/secret/builtin-rules.go",
+       "help": {
+        "text": "Secret Slack token\nSeverity: HIGH\nMatch: SLACK_TOKEN = \"*****************-000000000000-SyntheticSlackTokenAAAA\"",
+        "markdown": "**Secret Slack token**\n| Severity | Match |\n| --- | --- |\n|HIGH|SLACK_TOKEN = \"*****************-000000000000-SyntheticSlackTokenAAAA\"|"
+       },
+       "properties": {
+        "precision": "very-high",
+        "security-severity": "8.0",
+        "tags": [
+         "secret",
+         "security",
+         "HIGH"
+        ]
+       }
+      },
+      {
+       "id": "stripe-secret-token",
+       "name": "Secret",
+       "shortDescription": {
+        "text": "Stripe Secret Key"
+       },
+       "fullDescription": {
+        "text": "STRIPE_API_KEY = \"****************************************000000\""
+       },
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "helpUri": "https://github.com/aquasecurity/trivy/blob/main/pkg/fanal/secret/builtin-rules.go",
+       "help": {
+        "text": "Secret Stripe Secret Key\nSeverity: CRITICAL\nMatch: STRIPE_API_KEY = \"****************************************000000\"",
+        "markdown": "**Secret Stripe Secret Key**\n| Severity | Match |\n| --- | --- |\n|CRITICAL|STRIPE_API_KEY = \"****************************************000000\"|"
+       },
+       "properties": {
+        "precision": "very-high",
+        "security-severity": "9.5",
+        "tags": [
+         "secret",
+         "security",
+         "CRITICAL"
         ]
        }
       }
@@ -317,7 +307,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "tests/fixtures/vulnerable-node/package-lock.json",
+         "uri": "node/package-lock.json",
          "uriBaseId": "ROOTPATH"
         },
         "region": {
@@ -328,7 +318,7 @@
         }
        },
        "message": {
-        "text": "tests/fixtures/vulnerable-node/package-lock.json: lodash@4.17.20"
+        "text": "node/package-lock.json: lodash@4.17.20"
        }
       }
      ]
@@ -344,7 +334,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "tests/fixtures/vulnerable-node/package-lock.json",
+         "uri": "node/package-lock.json",
          "uriBaseId": "ROOTPATH"
         },
         "region": {
@@ -355,7 +345,7 @@
         }
        },
        "message": {
-        "text": "tests/fixtures/vulnerable-node/package-lock.json: lodash@4.17.20"
+        "text": "node/package-lock.json: lodash@4.17.20"
        }
       }
      ]
@@ -371,7 +361,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "tests/fixtures/vulnerable-node/package-lock.json",
+         "uri": "node/package-lock.json",
          "uriBaseId": "ROOTPATH"
         },
         "region": {
@@ -382,7 +372,7 @@
         }
        },
        "message": {
-        "text": "tests/fixtures/vulnerable-node/package-lock.json: lodash@4.17.20"
+        "text": "node/package-lock.json: lodash@4.17.20"
        }
       }
      ]
@@ -391,7 +381,7 @@
    "columnKind": "utf16CodeUnits",
    "originalUriBaseIds": {
     "ROOTPATH": {
-     "uri": "file:///mnt/panopticon/"
+     "uri": "file:///src/"
     }
    }
   }

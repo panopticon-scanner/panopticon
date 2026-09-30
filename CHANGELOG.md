@@ -11,6 +11,201 @@ evidence exposed.
   common atomic JSON writer, which cleans opened staging files after failures and leaves
   rejected paths untouched. Writers and reply placement share lexical root discovery while
   preserving their distinct symlink policies.
+- **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
+  entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
+  statement read from either side": an enforced entry whose agent is not the checkpoint's shell,
+  and an UNENFORCED entry that names a shell at all — the phases set `agent` to null on those, so
+  a name on one is a claim the run never made. B7 (#2154) taught the session-mode Workflow script
+  only the first half, so `{enforced: false, agent: "panopticon-domain-panel", model: "opus"}`
+  hand-copied into `args.entries` ran on `model` with no refusal and no log line. The validation
+  loop now refuses it too, beside the other half and before any `agent()` call, so no entry in
+  the batch launches. The same loop's refusals also interpolated `e.id` raw where
+  `loop_batch.misroute_refusal` deliberately uses `%r`: the id is read out of the dispatch
+  request, a file in the reviewed tree, so a control character, an ANSI escape or an embedded
+  newline in it reached the operator's terminal as bytes the terminal acts on. Every refusal in
+  the loop that prints an id now prints it through `JSON.stringify`. The enforced/unenforced
+  dispatch branch itself is unchanged: validation now leaves it reachable only by the two shapes
+  it was written for. The workflow checks SHAPES only — which shell a checkpoint may name is
+  `refuse_misrouted`'s check, one level up — and `agent: ""` reads as absent on both halves of the
+  JS statement, where `refuse_misrouted` treats it as a claim.
+- **`--scope-changed` asks the same dot-path policy `--repo-scan` asks (#2272, #1784, ARC-F2E).**
+  The delta path built its reviewed set from git-diff output, pruned fixture corpora and committed
+  `exclude_paths`, and stopped -- it never asked `dot_paths.allowed`. So a tracked, CHANGED
+  `.hidden/a.py`, `.venv/lib/x.py` or `.mypy_cache/b.py` -- and a changed `node_modules/c.js` in a
+  target that tracks it -- was reviewable surface under `--scope-changed` while `--repo-scan` pruned
+  it; #1136's comment at that caller already named this class of delta-path divergence. The branch
+  now goes through the SAME `_filter_reviewable` with the SAME arguments as the whole-repo listing,
+  so the one dot-path policy, `EXCLUDE_DIRS`/`EXCLUDE_DIR_GLOBS` on every ancestor segment, the
+  fixture prune (#434) and the `.git`-segment drop hold under delta review too -- and so does the
+  drop of a changed TRACKED symlink, which `--repo-scan` already dropped (`_is_confined_regular`
+  is the shared `isfile`), so a target that tracks symlinks loses those files from a delta review.
+  The instance a target hits unless it gitignores that directory: a delta run no longer reviews its
+  own untracked `.panopticon/` run artifacts, which used to arrive as an `Ungrouped` cell of nothing
+  but run output, with a scout checkpoint spent on it; the run now advances through the remaining
+  phases instead.
+  The delta path now feeds the same `pruned_fixtures` list, which stays whole-repo-scoped because
+  the listing runs first and the changed set is a subset of it: a delta run's
+  `excluded.fixture_dirs` equals the whole-repo prune, unlike `excluded_count`, which #1136
+  re-derives from the changed set. Two divergences remain and are NOT touched here -- the delta call
+  skips `_cap_discovered`, so the `discovery` block still describes the whole-repo listing on a
+  delta run (#2376), and prunes are silent on both paths (#2377). A parity test pins AGREEMENT
+  rather than a second copy of the policy: over one tree carrying every dot-path shape
+  `dot_paths` distinguishes, plus a tracked symlink, the delta set must equal `--repo-scan`'s OWN
+  output intersected with the changed set.
+- **Discovery's git failure and truncation reach the report (#2271, #1784, ARC-F2E).**
+  `discovery.py` records `method`, `files_seen`, `files_truncated` and `git_failure` in the
+  `discovery` block of `groups.json` and prints the last two on its OWN stderr. On the driver path
+  `phases/discovery.discovery_execute` runs the child through `child._run_child` -- both streams
+  into bounded buffers -- and reads that stderr only when `groups.json` is MISSING, and no synth
+  module, renderer or schema read the block. So on a successful `driver run` both disclosures were
+  captured and dropped: a git-listing failure was a silent downgrade to a raw walk that does NOT
+  honour the target's `.gitignore` ("this run's surface may be far larger than the target's own"),
+  visible only to whoever hand-ran `discovery.py`. Two new `meta.integrity` keys carry them now --
+  `discovery_git_failure` (the reason, else null) and `discovery_files_truncated` (an integer on
+  every scan, `0` included; null = no discovery block, not measured) -- threaded from the parsed
+  `groups.json` through `PlanInputs.load` on the same seam as `plan_owed` / `plan_sha256`, and
+  rendered by the existing `INTEGRITY_KEYS` loop as `**Note:**` lines. THE RULING: both are
+  NON-GATING, the same precedence the truncation disclosure already had, because the reviewed
+  surface is a SUPERSET (git failure) or a PREFIX (truncation) of the intended one and the artifacts
+  on disk are still what they claim to be, which is what this section measures. THE DISSENT,
+  recorded so the owner can flip either `sinks` in one line: a surface "far larger than the target's
+  own" is arguably not a run that should certify at all. Both values are isinstance-guarded at the
+  publish boundary (`groups.json` is target-writable, and a bool is not an integer where `integer`
+  is pinned), and the failure string is git's stderr, so it goes through `evidence_text`'s
+  `inert_text` wrap like every other free-text slot. `method`, `exclude_paths` and `ungrouped_files`
+  stay run artifacts in `groups.json` only; this surfaces the two that name a DEGRADED run.
+- **One guarded `location` reader in `evidence.py`, so a malformed stored finding no longer aborts
+  the cross-run diff (#2365, #1768, ARC-A4A).** `finding_fingerprint`, `matrix_finding_id`,
+  `reconcile_key` and `_queue_tiebreak` each carried their own `finding.get("location") or {}`, and
+  `reconcile.iter_records` a fifth copy. `load_report` is a plain `json.load` with no schema check,
+  so a stored report holding `"location": "a.py"` reached `.get("file")` and aborted the WHOLE
+  cross-run diff with `AttributeError` -- exactly the blast radius #2359 closed for `tool_evidence`,
+  in an idiom that had by then recurred four times. All five sites read `evidence.location_of` now,
+  which hands back the dict or `{}`, so a non-dict `location` keys precisely as an absent one does.
+  `iter_records` also skips a non-dict `findings[]` entry instead of raising on it, printing one
+  counted `reconcile: skipped N non-dict <key> entries` line to stderr per section, because a
+  silently dropped claim is a disclosure gap; and a `findings` or `discarded_claims` section that is
+  not a list reads as empty in `load_report` and in `iter_records`, and counts nothing. An AST guard
+  in `tests/test_evidence.py` walks `evidence.py` and fails if `location` or `tool_evidence` appears
+  as a constant anywhere outside its one reader, in any idiom -- subscript, `.get`, `.pop`,
+  `.setdefault`, `in`, or a constant bound to a name -- a subscript write excepted. The honest
+  limits: that guard covers `evidence.py` alone; `phases/review.py` and `security_gate.py` keep the
+  idiom on adapter-constructed findings, whose `location` is always a dict an adapter built, so
+  those are safe by construction, but `scripts/file_issues.py` -- the other consumer of this same
+  `load_report` -- still carries it and is tracked as #2372; and one layer up, a report whose top
+  level is not an object or whose `meta.parts` is not a list still aborts in `load_report` itself
+  (#2373).
+- **The spotbugs adapter imports `defusedxml` unconditionally; the silent stdlib fallback is gone
+  (#2363, #1784, ARC-F2E).** `tools/spotbugs.py` opened with a `try`/`except ImportError` that
+  rebound `ET` to `xml.etree.ElementTree`, so a declared, readiness-gated dependency -- listed in
+  `pyproject.toml`'s `[project] dependencies`, pinned in `requirements-tools.txt` and gated by
+  `readiness_checks.RUNTIME_PACKAGES` -- was in practice optional hardening, downgraded with no
+  stderr line, no manifest row and a `nosec` that silenced the scanner along with it. The paths that
+  never run readiness were the exposure: the CI gate `security_gate.py`, which imports
+  `ingest_tools` and through it every adapter, and a resumed run whose `readiness.json` already
+  recorded `ready: true`, both parsed an untrusted scanner report with internal-entity expansion
+  enabled. The import is bare now, so a missing package fails at import naming `defusedxml` on every
+  path -- readiness included, because the driver reaches the adapter package through its host
+  probes, so the gating `dependencies` row is reached only for `jsonschema` until #2369 makes it
+  reachable for all three; SKILL.md and the `RUNTIME_PACKAGES` comment say so rather than crediting
+  the row. Only one environment had to learn the package: the tools image already ships
+  `defusedxml==0.7.1`, and `.github/requirements-gate.txt` now pins it too, so the `scan`,
+  `fork-scan` and adapter-integration steps that import the adapter package under
+  `--require-hashes --no-deps` keep importing -- with a new `tests/test_workflow_pins.py` guard
+  holding every `RUNTIME_PACKAGES` pip name to that closure. The `# nosec B314` on `ET.fromstring`
+  went with the fallback, since bandit does not flag the defused call, and the adapter test that
+  pinned the fallback as working now asserts the import raises instead.
+- **A dropped tool member's `occurrences` and `additional_loci` move onto the surviving finding
+  (#2361).** Sub-issue of #1768 (ARC-A4A), and the bug the #2353 review reproduced -- that PR's
+  parity fixture had to pick two lines no agent claimed to keep the key reachable at all.
+  `synth/findings.aggregate_tool_findings` deliberately parks an aggregated survivor on a locus an
+  agent also flagged, so `synth/corroborate.dedupe` reinforces the pair -- and dedupe keeps the
+  MORE SEVERE member, usually the agent finding, whose `_reinforce_merge` copied cvss, scenario,
+  impact, remediation, references and citations but not the aggregation. So an agent flagging one
+  of a rule's lines silently retired that rule's other loci and its count: nothing in the report
+  said the rule had fired more than once, and `scripts/file_issues.py`, which renders both, had
+  nothing to render. A new `_carry_aggregation` moves the pair, and only where the aggregated
+  member actually LEAVES the report: dedupe's exactly-two tool+agent merge and its per-category
+  sub-bucket drop loop (which runs whether or not the category has an agent member -- the carry
+  is a property of the drop, not of corroboration) carry it, while the per-category
+  representative merge does NOT -- that tool
+  finding survives its own rule bucket and reaches the report, so carrying there would have two
+  entries claim one pair of hits, on an entry that does not even alias the source. It carries only
+  when the dropped member is tool-sourced (an agent finding can declare either key) and in the
+  survivor's category (one rule's loci are not another issue's), only a well-typed non-empty locus
+  list and a count above one moving as ONE unit, and only onto a survivor with no aggregation of
+  its own -- which keeps it, never a sum (#2225: two artifacts at one manifest locus are two
+  issues). Honest limit, unchanged here: the absorbed tool member's rule id is not disclosed
+  anywhere in the report -- `_merged_ids` carries its finding id for verdict binding only and is
+  stripped before the artifact is written.
+- **One guarded reader for `tool_evidence`, so a malformed stored finding cannot abort `reconcile`
+  through the rule id (#2359, #1768, ARC-A4A).** The low follow-up #2358 left behind: that change
+  guarded the field's read in `artifact_term`, while `tool_rule_id` still read the same field --
+  and its `provenance` fallback -- with `(finding.get(...) or {}).get(...)`, which raises
+  `AttributeError` on a string or a list. Nothing validates a report read off disk
+  (`reconcile.load_report` is a plain `json.load`) and `iter_records` fingerprints EVERY record of
+  a prior run through `finding_fingerprint`, which reads the rule id, so one schema-invalid finding
+  in a stored report aborted the whole cross-run diff with a traceback instead of keying as
+  rule-less. `evidence._tool_evidence` is now the single reading of the field for both functions
+  (`{}` for absent or malformed), the provenance fallback is guarded inline the same way, and a
+  dict-valued field reads exactly as before.
+- **SKILL.md's dependency list now matches the gating readiness row -- `defusedxml` was missing
+  (#2323, #1784, ARC-F2E).** SKILL.md's § Dependencies named `pyyaml` and `jsonschema`, so a
+  checkout that installed exactly what the doc listed failed `driver readiness`'s gating
+  `dependencies` row on `defusedxml`, one of the three packages
+  `readiness_checks.RUNTIME_PACKAGES` checks -- and a missing package is the one readiness failure
+  a fresh checkout meets first. The paragraph now names all three and says how each is absent
+  differently: `pyyaml` takes discovery down with a traceback, `jsonschema` fails closed after the
+  whole review has been paid for, and `defusedxml` is caught only by the readiness row itself --
+  which, being `PHASES[0]`, refuses to start the run -- because nothing in the scan would fail:
+  `tools/spotbugs.py` falls back to the stdlib XML parser, which expands the internal entities
+  `defusedxml` refuses, so an ingest driven outside the loop (the CI gate `security_gate.py`, which
+  imports `ingest_tools` and never runs the readiness phase, or a resumed run whose
+  `readiness.json` already recorded `ready: true`) parses an untrusted scanner report with the
+  hardening silently gone. Golden capture also imports it, unguarded, but runs outside a review
+  rather than in one. A new `tests/test_skill_md.py` case reads
+  `RUNTIME_PACKAGES` and asserts the section names every pip name in it, so a package added to the
+  gating row cannot skip the doc again.
+- **`additional_loci` described in the report schema and walked by the parity fixture (#2353).**
+  Sub-issue of #1768 (ARC-A4A), and the LOW the #2225 review left: the sibling key `occurrences`
+  got a schema entry and a fixture value, `additional_loci` got neither.
+  `synth/findings.aggregate_tool_findings` stamps it with the other loci one rule fired at in one
+  file before collapsing them into one finding, and nothing described it, so no consumer could
+  validate against it -- and #1602's parity walk stayed green because the fixture's SARIF had one
+  hit per rule per file, so no finding ever carried the key. That SARIF now fires B602 twice in
+  the reviewed file, at two lines no `_agentic` finding claims: an aggregated survivor sharing an
+  agent's locus meets dedupe's tool+agent reinforce-merge, whose survivor is the more severe
+  member (here the HIGH agentic finding), and the key would reach no artifact at all.
+  `discarded_claims[]` items `$ref` the findings item schema, so the one entry covers both
+  sections.
+- **The `bandit`, `gitleaks` and `trivy` goldens are re-captured, and the provenance ratchet is
+  empty (#2313, #1784, ARC-F2E).** Part (b) of ARC-168995033, and the half that needed docker: the
+  three were captured through `panopticon-tools` with `--network none` against a SYNTHETIC corpus
+  mounted at `/src` -- an `app/main.py` of textbook bandit offences, an `app/settings.py` of
+  invented tokens, a fake `app/deploy_key.pem`, and a known-vulnerable node lockfile for trivy --
+  so no committed golden names `/mnt/panopticon` or an operator worktree any more, and gitleaks'
+  snippets are the scanner's own `REDACTED`. `tests/test_goldens_provenance.py` `PENDING` is now
+  `frozenset()`; the ratchet's stale-entry half is what proved each re-capture, failing on all
+  three until the entries came out. The normalization contract, the legacy-SARIF severity tests
+  and the security gate's non-vendored/vendored pair all hold on the new bytes.
+- **`finding_fingerprint` and `reconcile_key` carry the artifact term (#2352, #1768, ARC-A4A).**
+  Follow-up to #2225: the two stages that COLLAPSE tool findings learned that one advisory against
+  two artifacts at one manifest locus is two issues, but the two IDENTITY functions did not. Two
+  vulnerable jars sharing one CVE at `pom.xml:1` hashed identically, so the verify queue handed the
+  second one a `<fingerprint>-1` suffix and logged a collision for a pair that is two real
+  vulnerabilities; `reconcile.py` recomputes both keys on both runs from today's algorithm, so a CVE
+  newly matched against a second jar in run 3 was read as the FIRST jar recurring from run 2 -- a
+  new vulnerability reported as a standing one. Both identities now append
+  `tool_evidence.package_name` when the finding names an artifact, and one definition,
+  `evidence.artifact_term`, is the only reading of that field: it serves both identities and
+  replaces the inline copy each collapse stage carried (`synth/findings.aggregate_tool_findings`
+  and `synth/corroborate._by_package`, behaviour unchanged). A finding naming no artifact -- every
+  SARIF-path and agent finding, and one carrying an empty or non-string value -- keys byte-for-byte
+  as it did before the term existed. The `--pr`/delta gate needed NO change and got none:
+  `security_gate.finding_identity`'s fourth element is the whitespace-collapsed TITLE, which
+  dependency-check starts with the jar name, so two artifacts were already two gate identities --
+  now pinned by a test. The same one-locus shape reaches `osv-scanner`, `pip-audit`, `npm-audit`,
+  `cargo-audit` and `bundler-audit`, which the one definition covers by construction.
 - **The workflow guard closes eight LOW follow-ups from its 5.2 reviews (#1793).**
   `env -- - sh` and `env x-y=1 sh` read through to `sh`, and `xargs -I{} {}` is reported (#2307).
   `sh <<< '…'` is read as its script; an interpreter's here-string bash expands is reported (#2293).

@@ -26,8 +26,14 @@ full scan. Every `meta.integrity` key that sinks certification is also NAMED on 
 `**Integrity:**` line saying what the key measured and that the run is not certified (#1761):
 `synth/integrity.INTEGRITY_KEYS` is the one table both the gate and the renderer read, so no sinking
 key reaches that summary as the bare word `incomplete`. The keys that report without gating — a
-cross-domain filing, the planned-file and hash counters, the unenforced-ack disclosure — print as a
-`**Note:**` or not at all.
+cross-domain filing, the planned-file and hash counters, the unenforced-ack disclosure, and the two
+discovery disclosures (`discovery_git_failure`, `discovery_files_truncated`, #2271) — print as a
+`**Note:**` or not at all. Those two name a DEGRADED surface: a raw walk that did not honour the
+target's `.gitignore` because its own Git listing failed, so the reviewed surface may be far larger
+than the target's own, and files past the discovery cap that were never reviewed. Discovery printed
+both on a stderr the driver buffers and discards on a successful run, so the report is the only
+place they reach a person; neither gates certification, because a superset or a prefix of the
+intended surface is not an artifact on disk that is other than what it claims to be.
 
 **Terminal completion, artifact validity and coverage certification are three different things
 (#1639 P15),** and the exit status names which one failed. *Terminal completion* is whether the run

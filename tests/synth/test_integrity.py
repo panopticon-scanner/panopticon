@@ -343,7 +343,11 @@ class IntegritySectionTest(unittest.TestCase):
             "invalid_verify_queue", "plans_seen",
             # SEC-377944137 (#1832): the guard on `plans_seen`, published
             # beside it -- always present, like every other key here.
-            "dispatch_plan_missing", "dispatch_plan_mismatched"]
+            "dispatch_plan_missing", "dispatch_plan_mismatched",
+            # #2271: discovery's own two degradation disclosures, threaded in
+            # from the run's groups.json rather than measured here -- published
+            # on every report like every other key, and non-gating.
+            "discovery_git_failure", "discovery_files_truncated"]
     # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
     # (which is the only caller that holds the tool axis), not from
     # integrity_section -- so the KEY ORDER pinned here is deliberately
@@ -462,6 +466,69 @@ class IntegritySectionTest(unittest.TestCase):
         self.assertEqual(sec["plans_seen"], 2)
         self.assertEqual(sec["invalid_dispatch_plans"], 3)
         self.assertEqual(sec["invalid_verify_queue"], "cannot read verify queue: x")
+
+
+class TestTheDiscoveryBlockReachesTheSection(unittest.TestCase):
+    """#2271: discovery records `git_failure` and `files_truncated` in
+    `groups.json` and the driver path dropped both.
+
+    `discovery.py` prints them on its OWN stderr and `phases/discovery`
+    reads the child's stderr only when `groups.json` is missing, so on a
+    SUCCESSFUL run a raw-walk fallback -- a surface that does not honour the
+    target's `.gitignore` -- and a truncated surface were captured and
+    dropped. The block is target-writable (`.panopticon/groups.json`), so
+    every field is read with an isinstance guard and anything else publishes
+    `None` rather than riding an unpinned type into the artifact.
+    """
+
+    def _section(self, discovery):
+        with tempfile.TemporaryDirectory() as d:
+            return integrity_mod.integrity_section([], [], d, 0, 0, None,
+                                                   discovery=discovery)
+
+    def test_the_two_disclosures_are_published(self):
+        sec = self._section({"method": "walk", "files_seen": 3,
+                             "files_truncated": 2,
+                             "git_failure": "exit 128: fatal: not a git repository"})
+        self.assertEqual(sec["discovery_git_failure"],
+                         "exit 128: fatal: not a git repository")
+        self.assertEqual(sec["discovery_files_truncated"], 2)
+
+    def test_no_block_is_not_measured(self):
+        # The default, and what a direct `synthesize.py` call over
+        # hand-collected findings publishes: null, never a zero nobody measured.
+        for block in (None, {}, "nope", [], 7):
+            with self.subTest(block=block):
+                sec = self._section(block)
+                self.assertIsNone(sec["discovery_git_failure"])
+                self.assertIsNone(sec["discovery_files_truncated"])
+
+    def test_a_clean_git_listing_publishes_a_measured_zero(self):
+        # `_discovery_block` publishes `files_truncated: 0` on every scan, and
+        # a measured zero must read apart from an unmeasured run.
+        sec = self._section({"method": "git", "files_seen": 3,
+                             "files_truncated": 0, "git_failure": None})
+        self.assertIsNone(sec["discovery_git_failure"])
+        self.assertEqual(sec["discovery_files_truncated"], 0)
+
+    def test_a_mistyped_field_publishes_nothing_rather_than_its_type(self):
+        # The file is target-writable and both values are type-pinned in the
+        # schema; a bool is not an integer for this purpose (`jsonschema`
+        # rejects `True` where `integer` is pinned).
+        sec = self._section({"files_truncated": True, "git_failure": ["boom"]})
+        self.assertIsNone(sec["discovery_git_failure"])
+        self.assertIsNone(sec["discovery_files_truncated"])
+        sec = self._section({"files_truncated": "2", "git_failure": 128})
+        self.assertIsNone(sec["discovery_git_failure"])
+        self.assertIsNone(sec["discovery_files_truncated"])
+
+    def test_an_empty_reason_and_a_negative_count_publish_nothing(self):
+        # #2271 review: an empty reason is the no-failure case `None` already
+        # means, and a negative count is not a measurement `_cap_discovered`
+        # can produce -- neither may become a third state or a false Note.
+        sec = self._section({"files_truncated": -5, "git_failure": ""})
+        self.assertIsNone(sec["discovery_git_failure"])
+        self.assertIsNone(sec["discovery_files_truncated"])
 
 
 class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):

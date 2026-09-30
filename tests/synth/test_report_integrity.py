@@ -12,6 +12,7 @@ import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.report as report_mod
+import scripts.tools.base as tool_base
 import scripts.synth.render as render_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -124,6 +125,10 @@ class TestIntegrity(unittest.TestCase):
         # guards, and stated on every report for the same reason as the two
         # reconcile appends below.
         "dispatch_plan_missing", "dispatch_plan_mismatched",
+        # #2271: threaded in from the run's `groups.json` discovery block, and
+        # published last by `integrity_section` -- so they land here, ahead of
+        # the two keys `reconcile` appends after it.
+        "discovery_git_failure", "discovery_files_truncated",
         "tools_manifest_invalid",
         # #2013 fix round 1: appended by reconcile beside the key above, and
         # stated on every report for the same reason.
@@ -299,7 +304,18 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     REPORTED = frozenset({
         "missing_planned_files", "cross_domain_findings", "ack_stale",
         "unenforced_acknowledged", "content_hashes_checked", "plans_seen",
-        "write_guard_covers_bash"})
+        "write_guard_covers_bash",
+        # #2271: discovery ran and degraded -- the surface is a SUPERSET (the
+        # target's git listing failed, so a raw walk ignored its `.gitignore`)
+        # or a PREFIX (the cap cut it) of the intended one. The artifacts on
+        # disk are still what they claim, which is what this section gates on,
+        # and the truncation disclosure did not gate before this change either.
+        "discovery_git_failure", "discovery_files_truncated"})
+    # The REPORTED keys that DO print a line: a non-gating `**Note:**`, never
+    # an `**Integrity:**`. Pinned against the table below so a key that gains
+    # or loses a sentence cannot quietly change which test covers it.
+    NOTED = frozenset({"cross_domain_findings", "discovery_git_failure",
+                       "discovery_files_truncated"})
     # `reconcile` appends these two to whatever section it was handed, so
     # `integrity_section` never publishes them and the table's membership test
     # below has to name them explicitly.
@@ -338,6 +354,9 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "write_guard_covers_bash": True,
         "tools_manifest_invalid": "tools-manifest.json is not an object",
         "delta_scope_suppressed_git_drivers": ["diff.external"],
+        # #2271: git's own stderr, which is target-influenced free text.
+        "discovery_git_failure": "exit 128: fatal: <ROOT>/.git: not a directory",
+        "discovery_files_truncated": 7,
     }
     SUPPRESSED_DRIVERS = [{"repo": ".", "key": "diff.external"}]
 
@@ -585,13 +604,83 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # own precedence rule ("an artifact-trust problem outranks a
         # disclosure") puts the failures first. Both still sit above the
         # host-capability disclosure, which is where this cluster landed.
-        md = self._summary("mislabeled_findings_files", "cross_domain_findings")
-        self.assertLess(md.index("**Integrity:**"), md.index("**Note:**"))
-        self.assertLess(md.index("**Note:**"), md.index("**Host capabilities:**"))
+        md = self._summary("mislabeled_findings_files", "cross_domain_findings",
+                           "discovery_git_failure", "discovery_files_truncated")
+        self.assertLess(md.rindex("**Integrity:**"), md.index("**Note:**"))
+        self.assertLess(md.rindex("**Note:**"), md.index("**Host capabilities:**"))
+        # Structurally too: every sinking key with a line sits AFTER the last
+        # non-gating entry in the table, so an insertion into the wrong block
+        # fails here rather than silently flipping the precedence.
+        order = list(integrity_mod.INTEGRITY_KEYS.items())
+        last_note = max(i for i, (_, s) in enumerate(order) if not s.sinks)
+        first_sink = min(i for i, (_, s) in enumerate(order) if s.sinks)
+        self.assertLess(last_note, first_sink)
 
     def test_a_key_with_no_line_of_its_own_prints_neither(self):
-        for key in sorted(self.REPORTED - {"cross_domain_findings"}):
+        # NOTED is not derived from the table here on purpose -- a test that
+        # asks the table which keys print would pass on a table that lost a
+        # sentence. It is pinned against it instead, so a key that gains or
+        # loses one fails HERE rather than silently moving between the two
+        # halves of this pair.
+        self.assertEqual(
+            {k for k in self.REPORTED if integrity_mod.INTEGRITY_KEYS[k].sentence},
+            set(self.NOTED))
+        for key in sorted(self.REPORTED - self.NOTED):
             with self.subTest(key=key):
                 md = self._summary(key)
                 self.assertNotIn("**Integrity:**", md)
                 self.assertNotIn("**Note:**", md)
+
+    def test_a_raw_walk_fallback_is_a_non_gating_note(self):
+        # #2271: the disclosure that named a DEGRADED surface and reached no
+        # human on the driver path. A superset of the intended surface is not
+        # an artifact-trust failure, so it must not carry `NOT CERTIFIED`.
+        md = self._summary("discovery_git_failure")
+        self.assertIn("**Note:** DISCOVERY FELL BACK TO A RAW WALK — exit 128: fatal: "
+                      "<ROOT>/.git: not a directory (the target's Git listing failed, "
+                      "so the surface does not honour its .gitignore and may be far "
+                      "larger than the target's own)", md)
+        self.assertNotIn("**Integrity:**", md)
+        self.assertNotIn("NOT CERTIFIED", md)
+
+    def test_a_truncated_surface_is_a_non_gating_note(self):
+        md = self._summary("discovery_files_truncated")
+        self.assertIn("**Note:** DISCOVERY TRUNCATED — 7 files beyond the cap were "
+                      "not reviewed", md)
+        self.assertNotIn("**Integrity:**", md)
+        self.assertNotIn("NOT CERTIFIED", md)
+
+    def test_a_clean_discovery_renders_neither_note(self):
+        # `_discovery_block` publishes `files_truncated: 0` on EVERY scan and a
+        # `git_failure` of null on every git-listed one, so the common case
+        # reaches the renderer as a falsy value and must print nothing. The
+        # table's own truthiness rule, asserted rather than assumed.
+        section = self._clean_section()
+        section["discovery_files_truncated"] = 0
+        section["discovery_git_failure"] = None
+        md = render_mod.render_summary(report_mod.build_report(
+            report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=section))))
+        self.assertNotIn("DISCOVERY", md)
+        self.assertNotIn("**Note:**", md)
+        self.assertNotIn("**Integrity:**", md)
+
+    def test_a_hostile_git_failure_string_is_neutralized_and_bounded(self):
+        # The string is git's stderr, and the path in it comes off the reviewed
+        # tree, so it is the same free text as `invalid_verify_queue`'s reason
+        # and goes through the same `inert_text` producer wrap (#1829).
+        self.assertEqual(
+            integrity_mod.evidence_text("discovery_git_failure", "boom\x1b[2K\n@"),
+            r"boom\x1b[2K @")
+        long_failure = "x" * 9000
+        bounded = integrity_mod.evidence_text("discovery_git_failure", long_failure)
+        # The cap plus `inert_text`'s one-character cut marker: a cap
+        # regression fails here, not at 8999.
+        self.assertEqual(len(bounded), tool_base.INERT_TEXT_MAX + 1)
+        self.assertTrue(bounded.startswith("x" * tool_base.INERT_TEXT_MAX))
+        # ...and the count is a plain integer, not a quoted or escaped one.
+        self.assertEqual(
+            integrity_mod.evidence_text("discovery_files_truncated", 7), "7")

@@ -1647,3 +1647,94 @@ class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
         self.assertFalse(report["summary"]["coverage_certified"])
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(rc, 2)
+
+
+class TestDiscoveryDisclosuresReachTheReport(unittest.TestCase):
+    """#2271: discovery's degradation disclosures, end to end through main().
+
+    `discovery.py` writes `method` / `files_seen` / `files_truncated` /
+    `git_failure` into the `discovery` block of `groups.json` and prints the
+    last two on its OWN stderr. On the driver path `phases/discovery` runs the
+    child through `child._run_child` (both streams into bounded buffers) and
+    reads that stderr only when `groups.json` is MISSING, and no synth module,
+    renderer or schema read the block -- so on a successful `driver run` a git
+    listing failure (a raw walk that does not honour the target's `.gitignore`,
+    "this run's surface may be far larger than the target's own") and a
+    truncated surface were captured and dropped.
+
+    End to end rather than through a hand-built `build_report` input: the
+    defect was a value that existed on disk and reached no seam, so only a run
+    that really reads the file can prove the thread.
+    """
+
+    DISCOVERY = {"method": "walk", "files_seen": 3, "files_truncated": 2,
+                 "git_failure": "exit 128: fatal: <ROOT>/.git: not a directory"}
+
+    def _run(self, d, discovery):
+        run_dir = os.path.join(d, ".panopticon", "runs", "tag")
+        os.makedirs(run_dir)
+        groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}
+        if discovery is not None:
+            groups["discovery"] = discovery
+        with open(os.path.join(run_dir, "groups.json"), "w", encoding="utf-8") as fh:
+            json.dump(groups, fh)
+        with open(os.path.join(run_dir, "tools-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "run_id": "rid-1", "selected": [],
+                       "produced": [], "missing": [], "excluded_scope": []}, fh)
+        fp = os.path.join(run_dir, "findings-g1-COD.json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = syn.main(["--target", "src",
+                           "--groups", os.path.join(run_dir, "groups.json"),
+                           "--run-id", "rid-1", "--fail-on", "critical",
+                           "--out", out, fp])
+        with open(out, encoding="utf-8") as fh:
+            report = json.load(fh)
+        return rc, report, render_mod.render_summary(report)
+
+    def test_a_degraded_discovery_is_published_and_rendered(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            rc, report, md = self._run(d, self.DISCOVERY)
+        integ = report["meta"]["integrity"]
+        self.assertEqual(integ["discovery_git_failure"],
+                         "exit 128: fatal: <ROOT>/.git: not a directory")
+        self.assertEqual(integ["discovery_files_truncated"], 2)
+        # Non-gating, and the same precedence the existing truncation
+        # disclosure already had: the reviewed surface is a SUPERSET (git
+        # failure) or a PREFIX (truncation) of the intended one, and the
+        # artifacts on disk are what they claim to be.
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertNotIn("NOT CERTIFIED", md)
+        self.assertIn("**Note:** DISCOVERY FELL BACK TO A RAW WALK — exit 128: "
+                      "fatal: <ROOT>/.git: not a directory", md)
+        self.assertIn("**Note:** DISCOVERY TRUNCATED — 2 files beyond the cap "
+                      "were not reviewed", md)
+
+    def test_no_discovery_block_publishes_null_and_renders_nothing(self):
+        # A pre-#1576 run folder, and a direct `synthesize.py` call over
+        # hand-collected findings: not measured, never a zero nobody measured.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            rc, report, md = self._run(d, None)
+        integ = report["meta"]["integrity"]
+        self.assertIsNone(integ["discovery_git_failure"])
+        self.assertIsNone(integ["discovery_files_truncated"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("DISCOVERY", md)
+
+    def test_a_clean_git_discovery_renders_neither_line(self):
+        # The COMMON case: `_discovery_block` publishes `files_truncated: 0` on
+        # every scan and `git_failure: null` on every git-listed one, so a
+        # healthy run must add no line at all -- and the measured zero still
+        # reaches the artifact, where it reads apart from the null above.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            _rc, report, md = self._run(d, {"method": "git", "files_seen": 3,
+                                            "files_truncated": 0,
+                                            "git_failure": None})
+        self.assertIsNone(report["meta"]["integrity"]["discovery_git_failure"])
+        self.assertEqual(report["meta"]["integrity"]["discovery_files_truncated"], 0)
+        self.assertNotIn("DISCOVERY", md)
