@@ -472,7 +472,11 @@ def within(statement, where=""):
     backquotes, `<(...)` -- read as scripts of their own (#2345), as the
     guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
     those. A script handed to a shell there as a string (`sh -c '...'`) is
-    not read: `substitution_script` reports it where the job downloads."""
+    not read: `substitution_script` reports it where the job downloads. Nor
+    is a check (the guard's `_checks` walks the outer stages only), so
+    `x=$(echo "<sha>  t" | sha256sum -c - && sh t)` reports its use though
+    the check gates it: fail-closed. Each fetch's `_uses` parses the later
+    substitutions again."""
     for position, stage in enumerate(statement.stages):
         yield statement, position, stage, where
         for text in stage.substitutions:
@@ -542,8 +546,25 @@ def carried(stmts, executors):
     script `flattened` inlined, which `sh -c 'x=1'` runs in a child shell,
     not in a branch (`regions`) and not behind `&&` or `||`, which bash may
     skip, and not in a pipeline, whose stages are subshells. So `eval 'x=:'`,
-    which does run here, leaves it held: fail-closed. What else is done to
-    the variable is not followed: the guard's gap list."""
+    which does run here, leaves it held: fail-closed.
+
+    More readings fail closed. The reader drops quotes, so `eval '$x'` and
+    `sh -c '$x'` read as `"$x"`: bash runs the first as one command made of
+    the payload's words -- a true positive -- and the second runs nothing
+    unless `x` is exported. These are reported where bash need not run the
+    download: `sh -c 'x=$(curl ...)'` then `eval "$x"`, as `flattened`
+    inlines the child's assignment; `local x`, `read -r x` or `for x in ...`
+    in between, which leave the name held; a printing substitution anywhere
+    in an executor's argv (`bash other.sh "$(echo "$x")"`, read as
+    `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"` or
+    `sh file`, read as `curl ... | sh x.sh` is.
+
+    Not followed, beside the gap list's cut, command output and file: a
+    substitution holding more than the fetch (`x=$(curl ... || true)`,
+    `x=$(curl ... | tr ...)`) or not alone in its stage
+    (`x=$(curl ...) y=$(date)`), `x+=$(curl ...)`, a printer other than
+    echo or printf (`cat <<< "$x" | sh`, a heredoc naming `$x` piped to
+    `sh`), and `$x` inside a longer word (`eval "echo $x"`)."""
     held: dict[str, Fetch | None] = {}
     out, branches = [], regions(stmts)
     for index, statement in enumerate(stmts):

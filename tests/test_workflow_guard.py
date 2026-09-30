@@ -897,6 +897,19 @@ class TestAGlobFromAnotherDirectoryReachesABareDownload(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], self.job(script))
 
+    def test_any_directory_part_binds_it_and_over_reports_so(self):
+        # Review N-5, kept: restricting the rule to `..` would reopen `cd ..;
+        # sh repo/cuda_*.run`, which bash runs from the checkout's parent. Its
+        # price: after a fetch of `install.sh`, `chmod +x scripts/*.sh` and
+        # `sh scripts/*.sh` are refused, though bash never touches it.
+        why = self.job(self.GET % "cuda_1.run" + "cd ..\nsh repo/cuda_*.run\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("-> cuda_1.run and running it under `sh`", why[0])
+        get = "curl -fsSLo install.sh https://example.test/install.sh\n"
+        for use in ("chmod +x scripts/*.sh\n", "sh scripts/*.sh\n"):
+            with self.subTest(use=use):
+                self.assertEqual(1, len(self.job(get + use)))
+
 
 class TestADownloadCarriedInAVariable(unittest.TestCase):
     """#2341: `x=$(curl -fsSL URL)` and then `eval "$x"`, `sh -c "$x"` or

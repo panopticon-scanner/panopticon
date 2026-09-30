@@ -164,8 +164,11 @@ def covers(token, dest, recursive=False):
     glob is matched against the whole path with a leading `./` on either
     dropped -- and, one bash expands, by the last parts where a `$` spells
     either directory or it has one a bare dest does not (`_GROUP`'s comment
-    says why). The run side only, as in `may_run`: a checksum binds by
-    `names_file`.
+    says why). The directory part over-reports: after a fetch of
+    `install.sh`, `chmod +x scripts/*.sh` or `sh scripts/*.sh` is refused,
+    though bash never touches `install.sh` -- kept, as restricting it to
+    `..` would reopen `cd ..; sh repo/cuda_*.run`, which bash runs. The run
+    side only, as in `may_run`: a checksum binds by `names_file`.
     """
     if same_file(token, dest):
         return True
