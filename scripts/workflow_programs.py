@@ -37,7 +37,9 @@ _SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 
 
 def scripts(argv):
-    """The shell scripts this command is handed as a string, in order.
+    """The shell scripts this command is handed as a string, in order, each
+    the text bash hands the shell: a double-quoted `\\$` or `` \\` `` without
+    its backslash (`shell_reader._stage`'s `spelled`, #2342).
 
     A lifted `$(...)` or heredoc marker is never one: it stands for text held
     in the parse it came from, and the guard's `_walk` already credits what
@@ -50,7 +52,7 @@ def scripts(argv):
         found = [t for t in argv[1:] if not t.startswith("-")]
     elif name in _SHELL_STRING:
         found = _after_dash_c(argv)
-    return [t for t in found if not shell_reader.is_marker(t)]
+    return [getattr(t, "spelled", t) for t in found if not shell_reader.is_marker(t)]
 
 
 def _after_dash_c(argv):

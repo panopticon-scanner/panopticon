@@ -145,5 +145,34 @@ class TestADynamicCommandWord(unittest.TestCase):
         self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
 
 
+class TestDoubleQuoteEscapes(unittest.TestCase):
+    """#2342: the program a double-quoted `-c` or `eval` string hands a shell
+    is the text bash makes of it, `\\$` and `` \\` `` without their backslash."""
+
+    def test_the_program_bash_hands_the_shell_is_read(self):
+        fetch = "curl -fsSL %si.sh" % URL
+        for script in ('bash -c "x=\\$(%s); eval \\"\\$x\\""\n' % fetch,
+                       'eval "x=\\$(%s); eval \\"\\$x\\""\n' % fetch,
+                       'bash -c "x=\\`%s\\`; eval \\"\\$x\\""\n' % fetch):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+
+    def test_the_controls_read_as_they_did(self):
+        self.assertTrue(defects('sh -c "%s"\n' % PIPE))
+        self.assertTrue(defects('bash -c "curl -fsSL \\"$URL\\" | sh"\n'))
+        for script in ('bash -c "echo \\$HOME"\n', "eval 'x=\\$(curl -fsSL %si.sh)'\n" % URL):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_a_string_with_another_dollar_in_it_is_read_as_written(self):
+        # The gap list's entry: bash runs both, but a live `$URL` makes the
+        # text the shell gets one the reader does not know, and a single-
+        # quoted `$` in the same word is counted as one.
+        for script in ('URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL,
+                       'bash -c "x=\\$(curl -fsSL %si.sh)"\'; eval "$x"\'\n' % URL):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 if __name__ == "__main__":
     unittest.main()

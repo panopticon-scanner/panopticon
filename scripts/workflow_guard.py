@@ -86,6 +86,7 @@ that starts catching one fails there, and this list is edited with it.
   are read as programs it may make (`candidates`, #2344), a `$` program (`sh -c "$P"`) not.
   Nor is a `$` command word: `${X:-sh}` reads as the shell it defaults to, and another one
   handed `-c` makes its program a candidate (#2337); `$CMD --flag` is read as nothing.
+  A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it (#2342).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -535,8 +536,7 @@ def _binds(conditions, check, use):
     condition (or under one at all, where the use has none) does not.
 
     Comparing as written assumes the expression is stable between the two
-    steps; see the module docstring's gap list for the cases where it is not.
-    """
+    steps; see the module docstring's gap list for the cases where it is not."""
     when = conditions.get(check)
     return when is None or when == conditions.get(use)
 

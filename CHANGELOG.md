@@ -12,6 +12,7 @@ evidence exposed.
   The program after option words that follow `-c` is read: `sh -c -e P`, `sh -c -- P` (#2332).
   Values before a shell's program are read: `sh $X 'P'`, `sh $'-c' P`, `-eo pipefail [-]c` (#2344).
   A `$` command word that may be a shell is read: `${X:-sh} -c P`, `$CMD -c P` (#2337).
+  A double-quoted `-c` or `eval` program is read as bash hands it, `\$` unescaped (#2342).
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).

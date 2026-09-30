@@ -116,6 +116,9 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # that shell, which bash runs wherever `X` leaves the word to it.
 _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+# Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
+# which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
+_ESCAPED = "\ue002"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -193,7 +196,9 @@ def _split(text, context):
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
     A `$'...'` whose escapes `shell_lex.ansi_c` decodes becomes the '...' of
-    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344).
+    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
+    double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
+    shlex, reading what is left, no longer knows the quote it was in.
     """
     statements = []
     stages = []
@@ -231,7 +236,7 @@ def _split(text, context):
     while i < n:
         ch = text[i]
         if quote:
-            buf.append(ch)
+            buf.append(_ESCAPED if quote == '"' and text[i:i + 2] in ("\\$", "\\`") else ch)
             if ch == "\\" and quote != "'" and i + 1 < n:   # "..." and $'...'
                 buf.append(text[i + 1])
                 i += 2
@@ -385,7 +390,9 @@ def _assigns(words):
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
     and an array literal as part of the word that assigns it where a command
-    follows it (#2348)."""
+    follows it (#2348). A word with a double-quoted `\\$` or `` \\` `` and no
+    expansion left live in it carries the text bash makes of it, `spelled`,
+    which is the program a shell handed it runs (#2342); it reads as before."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
@@ -425,10 +432,14 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        word = context.token(context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")))
+        plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, ""))
+        raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
             setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
+        elif plain.count(_ESCAPED) == plain.count("$") + plain.count("`") > 0 and not _markers(word):
+            word = _Token(word, {})
+            setattr(word, "spelled", plain.replace(_ESCAPED, ""))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":

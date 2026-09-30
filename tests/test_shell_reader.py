@@ -1158,3 +1158,32 @@ class TestADefaultThatIsAShell(unittest.TestCase):
                 self.assertEqual(word, shell_reader.command(stage(word + " -c P").argv)[0])
         self.assertIn("dynamic command operand",
                       shell_reader.unresolved_wrapper(stage("sudo ${X:-sh} -c P").argv) or "")
+
+
+class TestDoubleQuoteEscapesInAProgram(unittest.TestCase):
+    """#2342: inside "...", bash drops the backslash of `\\$` and `` \\` ``
+    (and of `\\"` and `\\\\`, which shlex drops too), so `bash -c "x=\\$(curl
+    ...)"` hands the inner shell `x=$(curl ...)` -- bash 3.2.57 and 5.2.21 run
+    it. The word keeps the text it always read as; `spelled` is bash's, the
+    program `workflow_programs.scripts` reads."""
+
+    def test_the_program_is_the_text_bash_hands_the_shell(self):
+        parsed = stage('bash -c "x=\\$(curl -fsSL u); eval \\"\\$x\\""')
+        self.assertEqual('x=\\$(curl -fsSL u); eval "\\$x"', parsed.argv[2])
+        self.assertEqual('x=$(curl -fsSL u); eval "$x"', parsed.argv[2].spelled)
+        inner = shell_reader.statements(parsed.argv[2].spelled)
+        self.assertEqual(2, len(inner))
+        self.assertEqual(["curl -fsSL u"], inner[0].stages[0].substitutions)
+        self.assertEqual(["eval", "$x"], inner[1].stages[0].argv)
+        for written, spelled in (('"a\\`b\\` c"', "a`b` c"), ('"\\$HOME"', "$HOME"),
+                                 ('"\\\\\\$x \\"y\\""', '\\$x "y"'), ('p"\\$x"q', "p$xq")):
+            with self.subTest(written=written):
+                self.assertEqual(spelled, stage("eval " + written).argv[1].spelled)
+
+    def test_a_word_bash_expands_or_single_quotes_is_as_it_was(self):
+        # A live `$URL` or `$(...)` beside the escape expands at the outer
+        # level, so the text the shell gets is not known; '\$' keeps it.
+        for script in ('bash -c "x=\\$(curl $URL)"', 'bash -c "\\$x $(date)"',
+                       "eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"'):
+            with self.subTest(script=script):
+                self.assertFalse(hasattr(stage(script).argv[-1], "spelled"))

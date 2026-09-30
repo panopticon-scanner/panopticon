@@ -512,7 +512,7 @@ def carried(stmts, executors):
             for word in words:
                 fetch = held.get(_held(word))
                 if fetch:
-                    consumer = to or [w for w in argv if w is not word
+                    consumer = to or [w for w in argv if getattr(w, "spelled", w) is not word
                                       and not shell_reader.is_marker(w)]
                     out.append((index, _CARRIES % (
                         shell_reader.readable(fetch.url), _held(word),
