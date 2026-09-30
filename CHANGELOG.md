@@ -21,6 +21,9 @@ evidence exposed.
   `sitecustomize` cannot choose code for a confinement decision (#1996), and their guard
   round-trip probe spawns the tokens of the armed command itself rather than a copy of them, so
   the evidence can no longer describe an argv the per-run config never registered (#2163).
+- **Keep HTML evidence disclosures fail closed (#2195, #1774).** The coverage header counts
+  the same active findings as its collapsed unverified section, and malformed evidence values
+  render there without crashing.
 - **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
   non-object `usage` value in its existing drop tally, and successful driver-side collection
   forwards the bounded collector disclosure to stderr.

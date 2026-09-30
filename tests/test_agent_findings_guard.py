@@ -20,6 +20,7 @@ RAW_READERS = {
 }
 OTHER_READERS = {
     "html_report.py::_render_dashboard", "html_report.py::_heatmap_grid",
+    "html_report.py::_render_header",
     "html_report.py::_render_findings", "html_report.py::render",
     "synthesize.py::main", "reconcile.py::load_report",
     "synth/render.py::render_summary", "synth/render.py::write_report",

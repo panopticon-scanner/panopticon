@@ -577,7 +577,8 @@ def _render_header(report):
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
-    unverified = int(ev.get("unverified", 0))
+    unverified = sum(evidence_sections.is_unverified_finding(f)
+                     for f in report.get("findings", []))
     tool_reported = int(ev.get("tool_reported", 0))
     cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
     policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
@@ -1138,8 +1139,8 @@ def _render_card(finding, delta=None):
     category = finding.get("category", "general")
     confidence = finding.get("confidence", "NOTE")
     provenance_html = _render_provenance(finding.get("provenance"))
-    quality_html = _render_citation_quality(
-        (finding.get("evidence") or {}).get("citation_quality"))
+    finding_evidence = evidence_sections.finding_evidence(finding)
+    quality_html = _render_citation_quality(finding_evidence.get("citation_quality"))
     delta_badge = ""
     if delta:
         delta_badge = (
@@ -1158,7 +1159,7 @@ def _render_card(finding, delta=None):
     # finding whose second opinion is silently missing. The paths are advisor-
     # supplied (already redacted upstream by render.redact_report_secrets) and
     # escaped here like every other agent string.
-    missing = [m for m in ((finding.get("evidence") or {}).get("missing_evidence") or [])
+    missing = [m for m in (finding_evidence.get("missing_evidence") or [])
                if isinstance(m, str) and m]
     if missing:
         details.append("<dt>Backup could not see</dt><dd>%s</dd>"
@@ -1445,9 +1446,8 @@ def _render_findings(report):
     file_to_group = _file_to_group(report)
     has_profile = len(file_to_group) > 0
     labels = _group_display_labels(report)
-    # #1774: one owner for the split, which is NOT the header's "verified" set.
-    main_list = [f for f in findings if not evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
-    unverified = [f for f in findings if evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
+    main_list = [f for f in findings if not evidence_sections.is_unverified_finding(f)]
+    unverified = [f for f in findings if evidence_sections.is_unverified_finding(f)]
 
     by_sev: dict[str, list[dict[str, Any]]] = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []
