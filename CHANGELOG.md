@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Pip-audit uses the shared path-confinement predicate (#2262, #1768).** Requirement
+  candidates become absolute before the shared check, so relative target roots still reject
+  escaping symlinks; the private duplicate is gone.
 - **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
   fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
   rollback prose already describes termination of registered child process groups.

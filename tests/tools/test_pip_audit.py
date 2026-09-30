@@ -16,6 +16,7 @@ import pytest
 
 import tests._test_helpers as helpers
 from tests._test_helpers import FakePopen, fake_aws_key, first, only
+import scripts.claim_scope as claim_scope
 import scripts.ingest_tools as ingest_tools
 import scripts.run_tools as run_tools
 import scripts.tools.pip_audit as pa
@@ -1213,6 +1214,32 @@ class TestTheRootFileIsConfinedToo(unittest.TestCase):
             pa.PipAuditAdapter().invoke(d)
         self.assertEqual(seen["content"], "ok==1\n")
         self.assertNotIn("secretline", seen["content"])
+
+
+class TestRequirementsUseSharedConfinement(unittest.TestCase):
+    def test_adapter_uses_the_canonical_predicate_without_a_private_copy(self):
+        self.assertIs(getattr(pa, "confined_to_root", None),
+                      claim_scope.confined_to_root)
+        self.assertFalse(hasattr(pa, "_within"))
+
+    def test_relative_target_rejects_an_escaping_root_manifest(self):
+        workspace = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
+        target = os.path.join(workspace, "review")
+        outside = os.path.join(workspace, "outside")
+        os.makedirs(target)
+        os.makedirs(outside)
+        secret = os.path.join(outside, "credentials")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("outside-only-marker = secret\n")
+        os.symlink(secret, os.path.join(target, "requirements.txt"))
+
+        with contextlib.chdir(workspace):
+            report = pa.PipAuditAdapter().sanitization_report("review")
+
+        self.assertIsNotNone(report)
+        self.assertNotIn("outside-only-marker", json.dumps(report))
+        self.assertIn("outside target", report["source"])
 
 
 class TestPublishedLinesAreBounded(unittest.TestCase):
