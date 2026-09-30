@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
+  interpreter check and the adjudication inside the read guard's never-crash envelope, so an
+  unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
+  treats as a non-blocking error -- which let the Write it exists to deny proceed.
 - **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
   missing and named cell domains deterministically instead of raising before the report renders.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
