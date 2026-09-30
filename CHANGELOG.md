@@ -11,6 +11,15 @@ evidence exposed.
   catalog imports take the guarded package-first shape its siblings use, so the flat copy every
   setup path reaches binds the same catalog modules the package side does and the import-time
   census's residual shrinks to the modules the flat `--repo-scan` entrypoint still owns.
+- **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
+  records the repo root the scrubbed comment was built under, every body on that plan is built
+  under that root, so a resume from another checkout confirms the posted comment instead of
+  dead-ending on a body it could never match.
+- **Delta runs are capped and disclosed like whole-repo runs (#2376, #2377, #1784).** The
+  `--scope-changed` surface is bounded by `DISCOVERED_FILES_MAX`, the `discovery` block says which
+  surface its numbers describe (`surface`), and both paths publish what the policy pruned by class
+  (`pruned`: dot-path, excluded-dir, `.git` segment; null on the non-git walk, which counts nothing)
+  with one stderr line when any count is non-zero.
 - **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
   requires `location` (the report schema never did), `validate_report` warns only on a missing
   `location.file` rather than on every finding without a line, and the security gate prints `?`
