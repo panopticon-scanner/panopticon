@@ -285,6 +285,18 @@ class TestReviewRootOfArtifactPath(unittest.TestCase):
             claim_scope.review_root_of_artifact_path("/.panopticon/q.json"),
             os.sep)
 
+    def test_only_the_first_complete_anchor_segment_selects_the_root(self):
+        cases = {
+            "/repo/.panopticon/runs/.panopticon/report.json": "/repo",
+            "/repo/.panopticon-old/report.json": None,
+            "/repo/.panopticon/runs/../report.json": "/repo",
+            "/repo/.panopticon/../report.json": None,
+            "/repo/.panopticon": "/repo",
+        }
+        for path, root in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(claim_scope.review_root_of_artifact_path(path), root)
+
 
 if __name__ == "__main__":
     unittest.main()

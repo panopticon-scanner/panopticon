@@ -2,9 +2,9 @@
 
 The primitive lived in `phases/runio`, which `run_manifest` may not import --
 `phases/*` imports `run_manifest`, so the arrow only goes one way (layout rule
-3) -- and neither may `synth/*`. A leaf module with no panopticon imports of
-its own is reachable from all three, so the guard is written once and every
-`.panopticon`-resident writer can have it.
+3) -- and neither may `synth/*`. Depending only on stdlib and the stdlib-only
+`claim_scope` makes the guard reachable from all three, so every
+`.panopticon`-resident writer can use the same guard.
 
 runio keeps its private spellings as aliases of these functions: ~15 call
 sites and the suite's one `mock.patch` target say `runio._open_w_nofollow`,
@@ -12,6 +12,8 @@ and a SECOND implementation behind that name is exactly the drift layout rule
 4 exists to prevent -- so the identity is pinned here.
 """
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -28,6 +30,15 @@ class TestOneImplementation(unittest.TestCase):
         self.assertIs(runio._open_a_nofollow, safe_write.open_a_nofollow)
         self.assertIs(runio._confine_artifact_path,
                       safe_write.confine_artifact_path)
+
+    def test_flat_consumers_can_import_the_guard_without_the_phases_package(self):
+        scripts = os.path.dirname(os.path.abspath(safe_write.__file__))
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); import safe_write; "
+                 "safe_write.confine_artifact_path('/repo/.panopticon/report.json'); "
+                 "assert not any(m.startswith('scripts.phases') for m in sys.modules)")
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run([sys.executable, "-I", "-c", probe, scripts], cwd=root,
+                           check=True, capture_output=True, timeout=30)
 
 
 class TestNoFollowOpen(unittest.TestCase):
@@ -87,6 +98,33 @@ class TestNoFollowOpen(unittest.TestCase):
                 os.path.join(self.pano, "runs", "tag", "report.json"))
         # a path with no `.panopticon` segment is not an artifact path
         safe_write.confine_artifact_path(os.path.join(self.root, "elsewhere.json"))
+
+    def test_internal_links_remain_valid_for_writes_but_not_for_relink_parents(self):
+        run = os.path.join(self.pano, "runs", "tag")
+        os.makedirs(run)
+        os.symlink("tag", os.path.join(self.pano, "runs", "latest"))
+        artifact = os.path.join(self.pano, "runs", "latest", "report.json")
+        safe_write.confine_artifact_path(artifact)
+        with self.assertRaises(runio.DriverError):
+            runio._confine_link_parent(artifact)
+
+    def test_an_ancestor_link_preserves_the_lexical_anchor_and_resolves_for_relink(self):
+        alias = os.path.join(self.root, "alias")
+        os.symlink(self.root, alias)
+        artifact = os.path.join(alias, ".panopticon", "runs", "report.json")
+        safe_write.confine_artifact_path(artifact)
+        self.assertEqual(runio._confine_link_parent(artifact),
+                         os.path.join(os.path.realpath(self.pano), "runs"))
+
+    def test_a_nested_anchor_cannot_reanchor_an_escaping_intermediate_link(self):
+        outside = os.path.join(self.root, "outside")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.pano, "escape"))
+        artifact = os.path.join(self.pano, "escape", ".panopticon", "report.json")
+        with self.assertRaises(ValueError):
+            safe_write.confine_artifact_path(artifact)
+        with self.assertRaises(runio.DriverError):
+            runio._confine_link_parent(artifact)
 
     def test_publication_stages_every_file_before_publishing_the_main_last(self):
         targets = [(os.path.join(self.pano, name), os.path.join(self.pano, name + ".tmp"),

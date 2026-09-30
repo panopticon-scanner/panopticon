@@ -22,6 +22,10 @@ evidence exposed.
   documented contract. What was wrong is that a truncated or hand-edited map is
   indistinguishable from that legitimate shape; the counter is the input a later gate rule would
   need to tell the two apart.
+- **Share reply publication and artifact roots (#2346, #1820).** Reply persistence uses the
+  common atomic JSON writer, which cleans opened staging files after failures and leaves
+  rejected paths untouched. Writers and reply placement share lexical root discovery while
+  preserving their distinct symlink policies.
 - **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
   use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
