@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A non-hashable tool_name denies instead of crashing the guard (#2394, #1777).** The write
+  and read guards test the tool roster inside their never-crash envelope, so a list or dict
+  `tool_name` prints a deny instead of escaping `main` with a non-blocking exit; the read
+  guard's envelope comment now calls its early returns permissive.
 - **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
   diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
   when they carry a value of the wrong type, lists them in

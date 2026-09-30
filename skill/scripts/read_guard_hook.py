@@ -761,19 +761,19 @@ def main(argv=None):
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
     if not isinstance(payload, dict):
         return 0
-    if payload.get("tool_name", "") not in _READ_TOOLS:
-        return 0
     try:
-        # #2006: the trusted-interpreter check, INSIDE the envelope. It used to
-        # run at import, where its RuntimeError crashed the hook -- and a
-        # crashed hook is a permitted read. Here the same condition, with the
-        # same diagnostic, becomes the deny below.
+        # #2006/#2394: the roster test and the interpreter check, INSIDE the
+        # envelope. The check used to run at import, where its RuntimeError
+        # crashed the hook -- and a crashed hook is a permitted read. Here the
+        # same conditions, with the same diagnostic, become the deny below.
+        if payload.get("tool_name", "") not in _READ_TOOLS:
+            return 0
         _trusted_hook_argv()
         allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so
         # an uncaught exception here would fail OPEN despite every tolerant
-        # early return above being deliberately fail-closed-on-purpose.
+        # early return above being deliberately permissive.
         print(_deny_response("read guard crashed: %s" % exc))
         return 0
     if allow:

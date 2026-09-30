@@ -586,13 +586,13 @@ def main(argv=None):
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
     if not isinstance(payload, dict):
         return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
-    if payload.get("tool_name", "") not in _WRITE_TOOLS:
-        return 0
-    argv_path = args[0] if args else None
     try:
-        # #2391: the interpreter check and the adjudication, INSIDE the envelope. A non-2 exit is
-        # NON-blocking in Claude Code (the Write proceeds), so an uncaught raise here would fail
-        # OPEN -- while every tolerant early return above is deliberately permissive.
+        # #2391/#2394: the roster test, the interpreter check and the adjudication, INSIDE the
+        # envelope. A non-2 exit is NON-blocking in Claude Code (the Write proceeds), so an
+        # uncaught raise here would fail OPEN -- while the tolerant returns above are permissive.
+        if payload.get("tool_name", "") not in _WRITE_TOOLS:
+            return 0
+        argv_path = args[0] if args else None
         _trusted_hook_argv()
         allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
