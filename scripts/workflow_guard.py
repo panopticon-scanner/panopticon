@@ -76,10 +76,16 @@ that starts catching one fails there, and this list is edited with it.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, including its
-  own use, so that download goes unseen.
+  own use, so that download goes unseen. A COMMAND word with a `$` or `$(...)`
+  that ends in the download's basename is the exception: running it (#2310).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
+* directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308),
+  `$HOME/.cargo/bin` and `/snap/bin` among them, or one a step puts there
+  (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name finds a download in neither.
+  KEPT: the first differ by image (review N-4); the other is a VALUE, which
+  is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
   KEPT: it is the entry above wearing a checksum -- refusing it means
@@ -118,31 +124,31 @@ that starts catching one fails there, and this list is edited with it.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* a heredoc body consumed inside a command substitution:
-  `eval "$(cat <<'EOF' … EOF)"`. The OUTER parse lifts the body into its own
-  table and leaves a marker behind, so the text a re-read sees carries a word
-  that means nothing to it -- what the `eval` runs is unread.
+* a heredoc body read inside a command substitution, `EOF` and `)` each on a
+  line (`eval "$(cat <<'EOF' … EOF)"`; `x=$(bash -s <<'EOF' … EOF)`, review
+  I-4). The OUTER parse lifts the body and leaves a marker: a re-read sees a
+  word meaning nothing to it, and what `eval` or `bash` runs is unread.
   KEPT: resolving it means handing one parse's tables to another, or teaching
   the reader that a heredoc read by `cat` inside a substitution is a SCRIPT --
   a second expansion model. The fleet writes one heredoc-ish construct (a
   `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
   longer CRASHES, which is what it did until #1697's review.
-  CLOSED for the OTHER heredoc spelling, the body handed to an interpreter as
-  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<'EOF'`, `python3 - <<'EOF'` --
-  #1839, run-14 SEC-3915165799, which found it neither read nor reported).
+  CLOSED outside a substitution for the OTHER heredoc spelling, the body handed
+  to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
+  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
   Two facts decide it and both are already parsed: whether a command's program
   is its standard input at all (`workflow_forms.stdin_program`, an operand walk
   -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
   then the body is that program's input DATA), and which body descriptor 0
   finally reads, with the flag saying whether it EXPANDED
   (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the
-  interpreter as the text it was written as, so `_stdin_scripts` reads it
-  exactly as `_flattened` reads an `eval` string -- a `curl … | sh` inside it
-  is the defect it is at the top level. An EXPANDING body is REPORTED unread
-  (`_unread_stdin`) instead of read, because its `$(...)` were lifted into the
-  enclosing parse's table before this text was reached: the entry above, one
-  redirection over. A program in a language this module has no grammar for is
-  reported too, which is the answer `unparseable` already gives a
+  interpreter as the text it was written as, so `workflow_forms.flattened`
+  reads it exactly as it reads an `eval` string -- a `curl … | sh` inside it
+  is the defect it is at the top level. An EXPANDING one is REPORTED unread
+  (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
+  were lifted into the enclosing parse's table before this text was reached
+  -- the entry above, one redirection over. A program in a language this
+  module has no grammar for is reported too, the answer `unparseable` gives a
   `shell: python` step. What that leaves unread: an interpreter whose program
   is on stdin in a spelling the operand walk does not resolve -- behind an
   option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
@@ -180,10 +186,11 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, chmod_executable, chmod_targets,
-                            covers, described, in_container, names_file,
-                            parse_fetch, regions, same_file, scripts,
-                            stdin_program, streamed_fetch, swallowed)
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
+                            chmod_executable, chmod_targets, covers, described, flattened,
+                            in_container, kept, may_run, names_file, parse_fetch, regions,
+                            same_file, stdin_program, streamed_fetch, substitution_script,
+                            swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -203,10 +210,6 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 # with a mode; `tar`/`unzip` write whatever the archive says.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
-# `mv`/`cp` of a fetched file into one of these is what makes it runnable by
-# name for the rest of the job.
-BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
-            "/opt/bin", "/bin", "/sbin")
 # An expected digest: a hex literal, or the variable a workflow pins one in
 # (`${HADOLINT_SHA256}`, `$SHA`). Naming a file is not checking it -- something
 # in the checked line has to BE the expectation -- and ANY expansion is not
@@ -218,17 +221,29 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _fetch_records(stmts, stream_exec=False):
-    """[(statement index, Fetch)] for every download in the script."""
-    found = []
+def _walk(stmts, stream_exec=False, inside=False):
+    """([(statement index, Fetch)], [(statement index, why it is unread)]).
+
+    Every download in the script, and every command this module cannot read,
+    asked of each stage in ONE walk -- the one read of each command
+    substitution as a script of its own, so a caller that walks inside a
+    catch (`job_defects`) has read every text anything here reads.
+
+    A fetch in a substitution is credited to the command that CONSUMES it --
+    `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
+    the downloaded bytes become behaviour. Three forms are REPORTED unread: a
+    command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
+    stdin program not readable as written (`_unread_stdin`) and, `inside` a
+    substitution, a script handed to a shell (`substitution_script`), which `kept` weighs.
+    """
+    found, unread = [], []
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
             argv = command(stage.argv)
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
-                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:],
-                                    stage, piped_to)
+                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         stream = streamed_fetch(os.path.basename(argv[0]), argv[1:],
@@ -236,43 +251,40 @@ def _fetch_records(stmts, stream_exec=False):
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
                                            else fetch)
                     found.append((index, fetch))
-            found.extend((index, f) for f in _substituted(argv, stage, stream_exec))
-    return found
-
-
-def _unread_records(stmts):
-    """[(statement index, reason)] even when no fetch can be extracted.
-
-    Two forms arrive here and both get the same answer, which is this module's
-    standing requirement: REPORTED, never accepted. A wrapper whose command
-    cannot be resolved (`shell_reader.unresolved_wrapper`), and a heredoc handed
-    to an interpreter as the PROGRAM it runs that cannot be read as written
-    (`_unread_stdin`).
-    """
-    for index, statement in enumerate(stmts):
-        for stage in statement.stages:
             reason = shell_reader.unresolved_wrapper(stage.argv)
             if reason:
-                yield index, ("cannot read command behind wrapper: %s; "
-                              "the guard cannot determine what it runs" % reason)
-            reason = _unread_stdin(stage)
+                behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
+                unread.append((index, "cannot read command%s: %s; the guard cannot "
+                               "determine what it runs" % (behind, reason)))
+            reason = _unread_stdin(stage) or inside and substitution_script(argv, stage, _walk)
             if reason:
-                yield index, reason
+                unread.append((index, reason))
+            consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
+            executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             for inner in stage.substitutions:
-                for _inner_index, nested in _unread_records(statements(inner)):
-                    yield index, nested
+                fetched, nested = _walk(statements(inner), stream_exec, True)
+                unread.extend((index, why) for _index, why in nested)
+                found.extend((index, fetch._replace(piped_to=consumer)
+                              if executes or fetch.piped_to is None else fetch)
+                             for _index, fetch in fetched)
+    return found, unread
+
+
+def _fetch_records(stmts, stream_exec=False):
+    """[(statement index, Fetch)] for every download in the script."""
+    return _walk(stmts, stream_exec)[0]
 
 
 def _unread_stdin(stage):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
-    A heredoc body handed to an interpreter is a program, not data
-    (`workflow_forms.stdin_program`), and two kinds of it cannot be read: one
-    written in a language this module has no grammar for, and one the shell
-    would EXPAND -- whose `$(...)` were lifted into the enclosing parse's table
-    before the body reached here, so what the interpreter runs is not the text
-    this module holds. Quoted shell is the third kind and is READ, in
-    `_stdin_scripts`.
+    A heredoc body or here-string handed to an interpreter is a program, not
+    data (`workflow_forms.stdin_program`), and two kinds of it cannot be read:
+    one in a language this module has no grammar for, and one the shell would
+    EXPAND -- a body whose `$(...)` were lifted into the enclosing parse's
+    table before it reached here, a here-string whose word bash expands first
+    (#2293) -- so what the interpreter runs is not the text this module holds.
+    Quoted shell is the third kind and is READ, in `workflow_forms.stdin_scripts`.
     """
     argv = command(stage.argv)
     here = stage.stdin_heredoc
@@ -281,76 +293,25 @@ def _unread_stdin(stage):
         return None
     name = os.path.basename(argv[0])
     if kind != SHELL_PROGRAM:
-        return ("hands a heredoc body to `%s` as the program to run, which this "
-                "guard does not parse -- it cannot say whether that program "
-                "downloads and executes anything; write it in bash/sh, or "
-                "exempt the step with a reason" % name)
+        return ("hands a heredoc body or here-string to `%s` as the program to "
+                "run, which this guard does not parse -- it cannot say whether "
+                "that program downloads and executes anything; write it in "
+                "bash/sh, or exempt the step with a reason" % name)
     if here[1]:
-        return ("hands an EXPANDING heredoc body to `%s` as the script to run: "
-                "its `$(...)` were lifted into the enclosing parse before this "
-                "text was read, so the guard cannot say what the script runs -- "
-                "quote the delimiter (`<<'EOF'`) and the body is read as "
-                "written; pass job values as arguments instead "
+        return ("hands an EXPANDING heredoc body or here-string to `%s` as the "
+                "script to run: it runs what bash expands it to -- values and "
+                "`$(...)` output this guard never sees -- so the guard cannot say "
+                "what the script runs; quote it (`<<'EOF'`, `<<< '...'`) and it is "
+                "read as written, pass job values as arguments instead "
                 "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
                 "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
                 % (name, name))
     return None
 
 
-def _substituted(argv, stage, stream_exec=False):
-    """Every fetch inside this stage's command substitutions, credited to the
-    command that CONSUMES it -- `eval`, `sh -c`, `bash <(...)` -- because that
-    is what decides whether the downloaded bytes become behaviour."""
-    consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
-    executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
-    found = []
-    for inner in stage.substitutions:
-        for _index, fetch in _fetch_records(statements(inner), stream_exec):
-            if fetch is None:
-                continue
-            if executes or fetch.piped_to is None:
-                fetch = fetch._replace(piped_to=consumer)
-            found.append(fetch)
-    return found
-
-
-def _flattened(stmts):
-    """`eval "<script>"` expanded, in place, into the statements it runs.
-
-    In place and in ORDER, rather than harvested separately, so the fetch, the
-    checksum and the `chmod` written inside one quoted script are read as the
-    sequence they are: a step hardened inside its own string must come out
-    hardened, not unread. The wrapper is kept -- its redirections and the stage
-    it pipes into are still the wrapper's.
-    """
-    out = []
-    for statement in stmts:
-        for stage in statement.stages:
-            argv = command(stage.argv)
-            for text in scripts(argv) + _stdin_scripts(argv, stage):
-                out.extend(_flattened(statements(text)))
-        out.append(statement)
-    return out
-
-
-def _stdin_scripts(argv, stage):
-    """The QUOTED heredoc script this stage hands an interpreter, if it does.
-
-    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
-    quoted delimiter the interpreter reads the body as the text it was written
-    as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level. An
-    EXPANDING body is read nowhere; `_unread_stdin` reports it instead.
-    """
-    here = stage.stdin_heredoc
-    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
-        return []
-    return [here[0]]
-
-
 def read(script):
     """Every statement a `run:` script runs, quoted scripts expanded."""
-    return _flattened(statements(script))
+    return flattened(statements(script))
 
 
 def fetches(script):
@@ -359,7 +320,6 @@ def fetches(script):
 
 
 # --- which statements check, and what they check -----------------------------
-
 
 def _has_check_flag(argv):
     for token in argv[1:]:
@@ -504,7 +464,7 @@ def _uses(stmts, dest, after):
 
 
 def _use(statement, position, stage, argv, dest):
-    if any(same_file(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
+    if any(may_run(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
         return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
     if not argv:
         return None
@@ -523,7 +483,7 @@ def _use(statement, position, stage, argv, dest):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
-    if same_file(argv[0], dest):
+    if may_run(argv[0], dest):
         return "running it"
     if not mentions:
         return None
@@ -610,15 +570,15 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     names, uses = _uses(stmts, fetch.dest, after=index)
     if not uses:
         return None                             # fetched and only read: not this rule
-    first_use, how = uses[0]
     # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
               and any(names_file(text, name) for name in sorted(names))]
-    cleared = [i for i, why in naming
-               if why is None and _binds(conditions, i, first_use)]
-    if any(i < first_use for i in cleared):
+    first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
+        why is None and i < u and _binds(conditions, i, u) for i, why in naming)), (None, None))
+    if first_use is None:
         return None
+    cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
         # made runnable is theatre.
@@ -642,7 +602,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, soft=()):
+def _defects(stmts, conditions=None, soft=(), walked=None):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the PAIR that decides whether it
@@ -650,12 +610,14 @@ def _defects(stmts, conditions=None, soft=()):
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
     `soft` holds the indexes whose step carries `continue-on-error: true`,
-    whose checks clear nothing at all.
+    whose checks clear nothing at all. `walked` is `_walk`'s answer for
+    `stmts`, which `job_defects` has from each step's own read.
     """
     checks = _checks(stmts, soft)
     conditions = conditions or {}
-    found = list(_unread_records(stmts))
-    for index, fetch in _fetch_records(stmts, stream_exec=True):
+    fetched, unread = walked or _walk(stmts, stream_exec=True)
+    found = kept(unread, fetched)
+    for index, fetch in fetched:
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:
             found.append((index, why))
@@ -701,20 +663,21 @@ def job_defects(steps):
     owner = []
     conditions = {}
     soft = set()
-    found = []
+    found, fetched, unread = [], [], []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
         if not why:
-            # Substitutions too: `_defects` reads them again with no step to name.
-            try:
+            try:                    # the one read of every text, substitutions too
                 here = read(step.script)
-                list(_unread_records(here))
+                walked = _walk(here, stream_exec=True)
             except shell_lex.Unreadable as error:
                 why = "cannot read this step: %s; nothing in it is accepted" % error
         if why:
             found.append((step.name, why))
             continue
+        fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
+        unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
         # Per step, because each one is its own shell invocation: an `if`
         # left open at the end of step A must not make step B conditional.
         branches = regions(here)
@@ -727,7 +690,7 @@ def job_defects(steps):
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions, soft))
+                 for index, why in _defects(stmts, conditions, soft, (fetched, unread)))
     return found
 
 

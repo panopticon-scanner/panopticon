@@ -118,6 +118,20 @@ def _resolve_review_type(main_declared, part_declared):
     return tuple(sorted(distinct, key=repr))
 
 
+def _section(value):
+    """A report document's findings / discarded-claims section value, as a list.
+
+    A non-list value is no list of claims: a dict would be merged as its KEYS
+    and announced downstream as skipped entries, and a scalar aborted the load
+    outright (`TypeError: 'int' object is not iterable`). Both read as EMPTY
+    here and count nothing -- the same rule `iter_records` applies to a section
+    handed to it directly, so the two layers cannot disagree (#2365). Takes the
+    VALUE, not (doc, key): the key stays a constant in its caller, where
+    `tests/test_agent_findings_guard.py` classifies every reader of it.
+    """
+    return list(value) if isinstance(value, list) else []
+
+
 def load_report(path):
     """Load a report, merging confined part and rejected-claim continuations.
 
@@ -135,8 +149,8 @@ def load_report(path):
     """
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
-    findings = list(report.get("findings") or [])
-    discarded = list(report.get("discarded_claims") or [])
+    findings = _section(report.get("findings"))
+    discarded = _section(report.get("discarded_claims"))
     reviewed_files = _stated_files(report)
     declared_main = _stated_review_type(report)
     declared_parts = []
@@ -152,8 +166,8 @@ def load_report(path):
         ppath = _resolve_part_path(base_dir, part)
         with open(ppath, encoding="utf-8") as fh:
             pdata = json.load(fh)
-        findings.extend(pdata.get("findings") or [])
-        discarded.extend(pdata.get("discarded_claims") or [])
+        findings.extend(_section(pdata.get("findings")))
+        discarded.extend(_section(pdata.get("discarded_claims")))
         # A part may WIDEN a claim the report already made, never supply one
         # the report omits -- the main document is the authority for both
         # coverage fields (see _resolve_review_type for the same rule).
@@ -168,7 +182,7 @@ def load_report(path):
     disc_file = (report.get("meta") or {}).get("discarded_claims_file")
     if disc_file:
         with open(_resolve_part_path(base_dir, disc_file), encoding="utf-8") as fh:
-            discarded.extend(json.load(fh).get("discarded_claims") or [])
+            discarded.extend(_section(json.load(fh).get("discarded_claims")))
     return {"findings": findings, "discarded_claims": discarded,
             "reviewed_files": reviewed_files,
             "review_type": _resolve_review_type(declared_main, declared_parts)}
@@ -184,8 +198,16 @@ def iter_records(report):
     """
     out = []
     for kind, key in (("finding", "findings"), ("rejected", "discarded_claims")):
-        for f in report.get(key) or []:
-            loc = f.get("location") or {}
+        entries = report.get(key)
+        # #2365: a non-list value is no list of claims at all -- a dict would
+        # otherwise iterate as its KEYS -- so it reads as empty and counts
+        # nothing skipped; only a real entry that is not a dict is a skip.
+        skipped = 0
+        for f in entries if isinstance(entries, list) else []:
+            if not isinstance(f, dict):
+                skipped += 1
+                continue
+            loc = evidence.location_of(f)
             out.append({
                 "id": f.get("id"),
                 "kind": kind,
@@ -197,6 +219,10 @@ def iter_records(report):
                 "fingerprint": evidence.finding_fingerprint(f),
                 "coarse_key": evidence.reconcile_key(f),
             })
+        if skipped:
+            # Never a silent skip: a dropped claim is a disclosure gap.
+            print("reconcile: skipped %d non-dict %s entries" % (skipped, key),
+                  file=sys.stderr)
     return out
 
 
@@ -360,8 +386,10 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     """Partition cross-run identities into recurring / closed / ambiguous / new.
 
     A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
-    (file, panel, category) appears in the other run -- the coarse tier catches
-    agent findings whose title was re-worded (#914); the coarse run3 side is
+    (file, panel, category[, artifact]) appears in the other run -- the artifact is
+    `tool_evidence.package_name`, present only on a tool finding that names one, so
+    two vulnerable jars at one manifest are two identities (#2352). The coarse tier
+    catches agent findings whose title was re-worded (#914); the coarse run3 side is
     populated from every record sharing that coarse key, so a re-worded run3
     finding is never silently dropped from the diff (#914 final-review F4).
     A non-recurring run2 finding is CLOSED only when ALL of the following hold:

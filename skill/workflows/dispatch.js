@@ -33,7 +33,17 @@
 // to keep out of the session's context). `agent` is REQUIRED whenever
 // `enforced` is true -- it names the registered shell that IS the enforcement,
 // so an enforced entry carrying no shell name is refused below rather than run
-// as an unenforced one (#1783).
+// as an unenforced one (#1783) -- and FORBIDDEN whenever `enforced` is false:
+// the loop sets `agent` to null on an unenforced entry, so a shell name on one
+// is a claim this run never made, and it is refused below too rather than run
+// on `model` in silence (#2166). The two refusals are one statement read from
+// either side: the same pair of SHAPES `loop_batch.refuse_misrouted` refuses
+// over the request one level up -- WHICH shell a checkpoint may name is
+// checked there, not here. Every refusal below that prints an id prints it
+// through `JSON.stringify`, for the reason `misroute_refusal` uses `%r`: the
+// id comes out of the request and reaches the operator's terminal, so a
+// control character, an ANSI escape or an embedded newline in it is rendered
+// as its escape sequence rather than executed by the terminal.
 export const meta = {
   name: 'panopticon-dispatch',
   description: 'Run one Panopticon session-mode checkpoint: one subagent per pending entry, in its registered shell, marker line first',
@@ -50,10 +60,10 @@ for (const e of entries) {
     throw new Error('panopticon-dispatch: every entry needs a string id')
   }
   if (typeof e.marker !== 'string' || e.marker !== 'panopticon-entry: ' + e.id) {
-    throw new Error('panopticon-dispatch: entry ' + e.id + ' carries no marker line for itself; the read guard would deny it every read')
+    throw new Error('panopticon-dispatch: entry ' + JSON.stringify(e.id) + ' carries no marker line for itself; the read guard would deny it every read')
   }
   if (typeof e.prompt_file !== 'string' || !e.prompt_file) {
-    throw new Error('panopticon-dispatch: entry ' + e.id + ' has no prompt_file; the loop stamps one on every entry and grants it to the read scope')
+    throw new Error('panopticon-dispatch: entry ' + JSON.stringify(e.id) + ' has no prompt_file; the loop stamps one on every entry and grants it to the read scope')
   }
   // A request-integrity refusal, in the register of `loop_batch.misroute_refusal`
   // and raised HERE, in the validation loop, so it precedes every agent() call:
@@ -61,7 +71,18 @@ for (const e of entries) {
   // to the unenforced branch below -- no registered shell, no host-enforced tool
   // grant, no log line -- while the run's accounting still called it enforced.
   if (e.enforced && (typeof e.agent !== 'string' || !e.agent)) {
-    throw new Error('panopticon-dispatch: entry ' + e.id + ' is marked enforced but names no registered shell; agent is part of the enforcement binding -- copy it from the dispatch request rather than reducing it away')
+    throw new Error('panopticon-dispatch: entry ' + JSON.stringify(e.id) + ' is marked enforced but names no registered shell; agent is part of the enforcement binding -- copy it from the dispatch request rather than reducing it away')
+  }
+  // The mirror of the refusal above -- the same statement read from the other
+  // side, the shape `loop_batch.refuse_misrouted` refuses as "unenforced but
+  // names a shell". The phases set `agent` to null on every unenforced entry,
+  // so a shell name on one is a claim this run never made. Without this refusal
+  // such an entry fell to the `e.model` branch below and ran with no refusal and
+  // no log line, on the same hand-copy path (#2166). `''` reads as absent here,
+  // exactly as the dispatch branch below reads it; `refuse_misrouted`, one
+  // level up, treats `""` as a claim -- that layer runs first over the request.
+  if (!e.enforced && typeof e.agent === 'string' && e.agent) {
+    throw new Error('panopticon-dispatch: entry ' + JSON.stringify(e.id) + ' is unenforced but names a shell ' + JSON.stringify(e.agent) + '; the loop sets agent to null on unenforced entries, so a name here is a claim this run never made -- copy the entry from the dispatch request rather than adding to it')
   }
 }
 
@@ -71,6 +92,10 @@ log('panopticon-dispatch: ' + entries.length + ' pending entr' + (entries.length
 
 const results = await parallel(entries.map(e => () => {
   const opts = { label: e.id, phase: 'Dispatch' }
+  // Unchanged by #2166: validation above refuses both mismatched shapes, so
+  // this branch yields only the two dispatch shapes it was written for --
+  // `agentType` only when enforced with a shell name, `model` otherwise (a
+  // non-string `agent` on an unenforced entry still lands here, on `model`).
   if (e.enforced && e.agent) {
     opts.agentType = e.agent          // the registered shell: tools + model host-enforced
   } else if (e.model) {

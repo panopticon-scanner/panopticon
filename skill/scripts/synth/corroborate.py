@@ -59,13 +59,81 @@ def _reinforce_merge(best, other):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
 
+# `findings.aggregate_tool_findings` deliberately parks an aggregated survivor on
+# a locus an agent also flagged so the pair still reinforces in `dedupe` -- which
+# then keeps the more severe member, usually the agent finding. Without the carry
+# below, that rule's other lines and its count left the report with the dropped
+# member, disclosed nowhere.
+def _carry_aggregation(best, other):
+    """Carry a DROPPED tool member's aggregation onto the survivor (#2361).
+
+    Called only where `other` leaves the report. Its `occurrences` and
+    `additional_loci` are the other loci of the same issue, not enrichment,
+    so they move as ONE unit and only when: `other` is tool-sourced (agent
+    findings declare neither), it is the same issue (category match -- the
+    gate `_reinforce_merge` already applies to cvss), its loci are a well-
+    typed non-empty list with a count above one (a rule-carrying tool
+    finding is stamped `occurrences: 1` when it aggregated nothing), and
+    `best` carries no aggregation of its own. A survivor with its own
+    aggregation keeps it: two aggregated findings at one locus are two
+    issues (#2225, distinct artifacts), never one sum."""
+    if not _is_tool_sourced(other):
+        return
+    if str(best.get("category")) != str(other.get("category")):
+        return
+    loci = other.get("additional_loci")
+    count = other.get("occurrences")
+    if not (isinstance(loci, list) and loci and isinstance(count, int) and count > 1):
+        return
+    if best.get("additional_loci") or (
+        isinstance(best.get("occurrences"), int) and best["occurrences"] > 1
+    ):
+        return
+    carried = [dict(locus) for locus in loci if isinstance(locus, dict)]
+    if not carried:
+        return  # a list with no locus dicts is no aggregation: the count stays with it
+    best["additional_loci"] = carried
+    best["occurrences"] = count
+
+def _by_package(members):
+    """One rule bucket split by `tool_evidence.package_name`, in first-seen order.
+
+    #2225: dependency-check reports against JARS and is located at the build
+    manifest it audited (the manifest-proxy ruling), so two DIFFERENT vulnerable
+    artifacts sharing one advisory arrive at the same (file, line, category, rule)
+    bucket -- `pom.xml:1` + one CVE -- where the most-severe-survivor rule below
+    discarded one of two real vulnerabilities. The ARTIFACT is what makes them
+    distinct issues, exactly as the rule id distinguishes advisories at one
+    lockfile (the calibration case the rule bucket exists for). npm-audit and
+    osv-scanner carry the same shape: every finding at one manifest locus.
+
+    Members that name no artifact stay in ONE bucket together, which is today's
+    behaviour unchanged -- a SARIF-path finding and an agent finding never carry
+    a package name, and an unnamed member must not be folded into an artifact it
+    was never reported against.
+    """
+    buckets: dict[str | None, list[dict[str, Any]]] = {}
+    order = []
+    for m in members:
+        # `evidence.artifact_term` is the one reading of the term, shared with
+        # both identity functions and `findings.aggregate_tool_findings` (#2352).
+        key = evidence_mod.artifact_term(m)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(m)
+    return [buckets[k] for k in order]
+
 def dedupe(findings):
     """Cluster findings by (file, line). An exactly-two cluster with one tool- and
     one agent-sourced finding is treated as the same issue seen twice (even across
     categories) -> collapse to one reinforced survivor. Larger clusters keep one
-    survivor per category AND per tool rule id — the most severe — never merging
-    across categories or across distinct rule ids (dependency scanners emit many
-    distinct advisories at one manifest locus; each is a distinct issue); a
+    survivor per category AND per tool rule id AND per named artifact — the most
+    severe — never merging across categories, across distinct rule ids
+    (dependency scanners emit many distinct advisories at one manifest locus;
+    each is a distinct issue) or across distinct `tool_evidence.package_name`
+    values (#2225: two vulnerable artifacts can share one advisory at one
+    manifest; members naming no artifact share one bucket as before); a
     category corroborated by BOTH a tool and an agent within such a cluster is
     still reinforced in place. Same file+line+category+rule findings are
     intentionally deduped to the most severe.
@@ -98,6 +166,7 @@ def dedupe(findings):
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             _reinforce_merge(best, other)
+            _carry_aggregation(best, other)
             evidence_mod.record_merged_id(best, other)
             result.append(best)
         else:
@@ -128,31 +197,37 @@ def dedupe(findings):
                         rorder.append(rk)
                     by_rule[rk].append(m)
                 for rk in rorder:
-                    sub = by_rule[rk]
-                    best = min(sub, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
-                    if cat_has_tool and cat_has_agent:
-                        # Category-level tool+agent corroboration still marks
-                        # every surviving member of the category reinforced;
-                        # enrichment merges stay within the same rule bucket.
-                        best["reinforced"] = True
-                        # If the surviving member is agent-sourced (rk is None),
-                        # merge a representative tool finding so `reinforced`
-                        # remains tool-reported by construction (see evidence.py).
-                        if rk is None:
-                            best_tool = min(
-                                [m for m in members if _is_tool_sourced(m)],
-                                key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)),
-                            )
-                            _reinforce_merge(best, best_tool)
+                    # ...then by the ARTIFACT the advisory is about (#2225), so
+                    # two jars sharing one CVE at one manifest both survive.
+                    for sub in _by_package(by_rule[rk]):
+                        best = min(sub, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
+                        if cat_has_tool and cat_has_agent:
+                            # Category-level tool+agent corroboration still marks
+                            # every surviving member of the category reinforced;
+                            # enrichment merges stay within the same rule bucket.
+                            best["reinforced"] = True
+                            # If the surviving member is agent-sourced (rk is None),
+                            # merge a representative tool finding so `reinforced`
+                            # remains tool-reported by construction (see evidence.py).
+                            if rk is None:
+                                best_tool = min(
+                                    [m for m in members if _is_tool_sourced(m)],
+                                    key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)),
+                                )
+                                _reinforce_merge(best, best_tool)
+                                # no _carry_aggregation: best_tool stays in the report (#2361)
+                            for m in sub:
+                                if m is not best:
+                                    _reinforce_merge(best, m)
+                        # #1476: alias EVERY collapsed member -- the
+                        # corroboration branch above is conditional, the drop is not.
+                        # #2361: the carry belongs to the DROP, not to corroboration,
+                        # so a tool-only sub-bucket keeps its aggregation too.
                         for m in sub:
                             if m is not best:
-                                _reinforce_merge(best, m)
-                    # #1476: alias EVERY collapsed member -- the
-                    # corroboration branch above is conditional, the drop is not.
-                    for m in sub:
-                        if m is not best:
-                            evidence_mod.record_merged_id(best, m)
-                    result.append(best)
+                                evidence_mod.record_merged_id(best, m)
+                                _carry_aggregation(best, m)
+                        result.append(best)
     return result + passthrough
 
 # Cross-panel corroboration groups findings from DIFFERENT panels at a nearby

@@ -220,10 +220,49 @@ def _build_report(tmpdir):
                             "message": {"text": "subprocess with shell=True"},
                             "locations": [{"physicalLocation": {
                                 "artifactLocation": {"uri": "vendor/lib/shell.py"},
-                                "region": {"startLine": 2}}}]}]}]}
+                                "region": {"startLine": 2}}}]},
+                           # #2353: ONE rule firing TWICE in ONE reviewed file --
+                           # the only shape that makes
+                           # `synth/findings.aggregate_tool_findings` stamp
+                           # `additional_loci`, the sibling of `occurrences` that
+                           # no fixture value reached until now. The pair
+                           # collapses to one finding at the lower line carrying
+                           # `occurrences: 2` and the other locus. Neither is
+                           # under `vendor/`, so the three `tools_suppressed*`
+                           # tallies still count only the two vendored results
+                           # above, and neither is 10*n: the `_agentic` loci are
+                           # multiples of ten, and an aggregated survivor sharing
+                           # a locus with an agent finding is dedupe's tool+agent
+                           # reinforce-merge, whose survivor is the more severe
+                           # member (here the HIGH agentic finding) --
+                           # `additional_loci` would never reach the artifact.
+                           {"ruleId": "B602", "level": "warning",
+                            "message": {"text": "subprocess with shell=True"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "src/app.py"},
+                                "region": {"startLine": 11}}}]},
+                           {"ruleId": "B602", "level": "warning",
+                            "message": {"text": "subprocess with shell=True"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "src/app.py"},
+                                "region": {"startLine": 12}}}]}]}]}
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
+    # #2225 fix round 1: the ONE tool finding that reaches `findings[]` here, and
+    # the only producer of `tool_evidence.included_by` -- parsed by the real
+    # dependency-check adapter, so the key the schema now describes is walked
+    # rather than asserted about. Both bandit results above are under `vendor/`
+    # and are withheld by the redteam gate, so without this the tool axis
+    # contributes no finding whose evidence block the walk can descend into.
+    dc_path = os.path.join(tools, "dependency-check.json")
+    with open(dc_path, "w", encoding="utf-8") as fh:
+        json.dump({"dependencies": [{
+            "fileName": "commons-fileupload-1.4.jar",
+            "includedBy": [{"reference": "org.owasp.webgoat:webgoat-container:2023.4"}],
+            "vulnerabilities": [{"name": "CVE-2023-24998", "severity": "MEDIUM",
+                                 "cwes": ["CWE-770"],
+                                 "description": "Apache Commons FileUpload DoS"}]}]}, fh)
     # M3/#1646: a NON-EMPTY `sanitized` block, so the walk descends into the
     # per-tool row and its `dropped[]` item shape rather than stopping at an
     # empty map. It is written through the real writer, like everything else here.
@@ -232,7 +271,8 @@ def _build_report(tmpdir):
     # fixture writes the manifest without running the scan loop, which is
     # exactly the caller the explicit argument exists for.
     tools_manifest.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
-                                  ["bandit"], [sarif_path], run_id="parity-run",
+                                  ["bandit", "dependency-check"],
+                                  [sarif_path, dc_path], run_id="parity-run",
                                   network={"bandit": "none",
                                            "pip-audit": "proxied:pypi.org"},
                                   sanitized={"pip-audit": {
@@ -367,7 +407,8 @@ class TestSchemaParity(unittest.TestCase):
         self.assertEqual(meta["tools"]["panels_with_scanner_context"],
                          {"with": 1, "without": 1})
         self.assertEqual(meta["coverage"]["test_inventory"], {"app": "empty"})
-        self.assertEqual(meta["coverage"]["tools_ran"], ["bandit"])
+        self.assertEqual(meta["coverage"]["tools_ran"],
+                         ["bandit", "dependency-check"])
         # #1578: non-empty, or the per-segment value this section describes is
         # never walked. #1701: this counts what stayed off the GATE, and under
         # this fixture's `--security redteam` that is the one B602 lint drop
@@ -386,6 +427,31 @@ class TestSchemaParity(unittest.TestCase):
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")
+        # #2225 fix round 1: the dependency-check finding is the only producer of
+        # `tool_evidence.included_by`, so pin it here like every other producer --
+        # if it stops reaching `findings[]`, the walk below silently stops
+        # covering the key and the schema may drift away from it again.
+        evidence = [f.get("tool_evidence") or {} for f in self.report["findings"]]
+        self.assertTrue([e for e in evidence if e.get("included_by")],
+                        "no included_by evidence: that key's shape is unwalked")
+        # #2353: the two-loci bandit hit is the only producer of
+        # `additional_loci`, the sibling `occurrences` got a schema entry and a
+        # fixture value while this key got neither. With no aggregated finding
+        # the walk below never sees the key, which is #1602's silence class
+        # exactly: a report key no schema describes and no test reaches.
+        aggregated = [f for f in self.report["findings"] if f.get("additional_loci")]
+        self.assertTrue(aggregated,
+                        "no aggregated finding: additional_loci is unwalked")
+        self.assertEqual(len(aggregated), 1,
+                         "the fixture aggregates or carries exactly one rule; a"
+                         " second makes the pin below arbitrary")
+        drifted = "additional_loci drifted: expected the src/app.py:12 sibling" \
+                  " and occurrences 2"
+        self.assertEqual(aggregated[0]["additional_loci"][0]["file"], "src/app.py",
+                         drifted)
+        self.assertEqual(aggregated[0]["additional_loci"][0]["line_start"], 12,
+                         drifted)
+        self.assertEqual(aggregated[0]["occurrences"], 2, drifted)
         # M3: the two sections this PR added must be NON-EMPTY, or the walk
         # stops at the list and never reaches the item shape it describes.
         self.assertTrue(meta["integrity"]["cross_domain_findings"],
@@ -403,6 +469,51 @@ class TestSchemaParity(unittest.TestCase):
         self.assertEqual(meta["tools"]["network"]["pip-audit"],
                          "proxied:pypi.org",
                          "no egress posture: that value is unwalked")
+
+    def test_the_delta_blocks_are_property_pinned_so_the_walk_descends(self):
+        """#2169: `meta.coverage.delta` was `{"type": ["object","null"]}` with no
+        `properties`, so `_undescribed` above treated it as a deliberately open
+        leaf and never descended -- its fourteen keys had no schema entry and no
+        parity coverage, which is #1602 in miniature inside a node #1602's own
+        guard walks past. The walk below cannot catch that regression: an open
+        leaf has nothing to be undescribed.
+
+        So assert the descent itself, from both ends. The schema's pinned key set
+        for each block must EQUAL the key set the fixture's report emits there --
+        a producer key with no schema entry fails here, and a schema entry no
+        producer writes fails here too, which is the half a one-directional walk
+        can never see."""
+        cov = self.report["meta"]["coverage"]
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            pinned = set((node[key].get("properties") or {}))
+            self.assertTrue(pinned, "%s is an open leaf again: the walk in "
+                                    "test_no_report_key_is_undescribed_by_the_"
+                                    "schema descends into `properties` only, so "
+                                    "an unpinned object is never checked" % key)
+            self.assertEqual(pinned, set(cov[key] or {}),
+                             "meta.coverage.%s: the schema pins %s and the "
+                             "fixture's report emits %s"
+                             % (key, sorted(pinned), sorted(cov[key] or {})))
+        # Vacuity: an empty `delta` block would satisfy the equality above only
+        # by making both sides empty, and the fixture DOES run `--diff-hunks`.
+        self.assertIsNotNone(cov["delta"], "the fixture ran no delta review")
+        self.assertIsNotNone(cov["delta_artifact"],
+                             "the fixture read no diff-hunks file")
+
+    def test_every_pinned_delta_key_is_described(self):
+        """#2169: a `properties` entry with a type and no prose is a pin, not a
+        contract -- and the walk that fails on an UNDESCRIBED key cannot see it,
+        because the key is described the moment it is listed."""
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            for name, sub in sorted((node[key].get("properties") or {}).items()):
+                self.assertTrue((sub.get("description") or "").strip(),
+                                "meta.coverage.%s.%s has no description: a "
+                                "consumer cannot tell what the value means"
+                                % (key, name))
 
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)

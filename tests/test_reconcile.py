@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -184,6 +186,16 @@ class TestLoadReport(unittest.TestCase):
 
 
 class TestIterRecords(unittest.TestCase):
+    def _written(self, doc):
+        """`doc` as a report file on disk, so the test goes through the real
+        `load_report` -> `iter_records` path rather than a hand-built dict."""
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        path = os.path.join(tmpdir, "run2.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
+
     def test_tags_kind_and_recomputes_fingerprint(self):
         report = reconcile.load_report(os.path.join(FIXTURES, "run2.json"))
         records = reconcile.iter_records(report)
@@ -202,6 +214,76 @@ class TestIterRecords(unittest.TestCase):
         report = {"findings": [{"id": "X", "panel": "p"}], "discarded_claims": []}
         records = reconcile.iter_records(report)
         self.assertEqual(records[0]["location_file"], "")
+
+    def test_a_malformed_tool_evidence_in_a_stored_report_is_not_fatal(self):
+        # #2359: load_report is a plain json.load with no schema check, so a
+        # report read off disk can hold a finding whose `tool_evidence` (and
+        # `provenance`) is not a dict. Every record here is fingerprinted, so
+        # one such finding must key as rule-less rather than abort the diff.
+        doc = {"findings": [{"id": "F-1", "panel": "security",
+                             "category": "injection", "title": "t",
+                             "source": "tool:bandit", "tool_evidence": "x",
+                             "provenance": "x",
+                             "location": {"file": "a.py"}}],
+               "discarded_claims": []}
+        records = reconcile.iter_records(reconcile.load_report(self._written(doc)))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records[0]["fingerprint"]), 16)
+        self.assertEqual(records[0]["coarse_key"],
+                         ("a.py", "security", "injection"))
+
+    def test_a_malformed_location_or_a_non_dict_entry_is_not_fatal(self):
+        # #2365, the same class #2359 closed for `tool_evidence`: `location` off
+        # an unvalidated json.load can be a string, and `findings[]` can hold a
+        # non-dict entry. Either aborted the WHOLE cross-run diff at `.get`.
+        def _f(fid, **kw):
+            f = {"id": fid, "panel": "security", "category": "injection",
+                 "title": "t", "source": "tool:bandit",
+                 "tool_evidence": {"rule_id": "B105"}}
+            f.update(kw)
+            return f
+
+        bad = _f("F-2", location="a.py")
+        doc = {"findings": [_f("F-1", location={"file": "a.py"}), bad, "junk", 42],
+               "discarded_claims": [_f("R-1", location=None)]}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            records = reconcile.iter_records(
+                reconcile.load_report(self._written(doc)))
+        self.assertEqual([r["id"] for r in records], ["F-1", "F-2", "R-1"])
+        by_id = {r["id"]: r for r in records}
+        self.assertEqual(by_id["F-2"]["location_file"], "")
+        stripped = {k: v for k, v in bad.items() if k != "location"}
+        self.assertEqual(by_id["F-2"]["fingerprint"],
+                         evidence.finding_fingerprint(stripped))
+        # A silent skip would be a disclosure gap: one counted line, on stderr.
+        self.assertEqual(err.getvalue().splitlines(),
+                         ["reconcile: skipped 2 non-dict findings entries"])
+
+    def test_a_non_list_section_reads_as_empty_through_the_real_path(self):
+        # #2365: a non-list section is no list of claims, and the rule has to
+        # hold where reports are actually read. `load_report` used to coerce
+        # with `list(...)`, so a dict arrived at `iter_records` as its KEYS and
+        # was announced as skipped entries, and `42` aborted the load itself
+        # with TypeError. Both layers now read it as empty and count nothing.
+        for shape in ({"a": 1}, "abc", 42):
+            with self.subTest(findings=shape):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    records = reconcile.iter_records(
+                        reconcile.load_report(self._written({"findings": shape})))
+                    # ... and the same rule as `iter_records`' own contract, for
+                    # a caller that hands it a section directly.
+                    direct = reconcile.iter_records({"findings": shape})
+                self.assertEqual((records, direct), ([], []))
+                self.assertEqual(err.getvalue(), "")
+
+    def test_a_well_formed_report_says_nothing_on_stderr(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            reconcile.iter_records(reconcile.load_report(
+                os.path.join(FIXTURES, "run2.json")))
+        self.assertEqual(err.getvalue(), "")
 
     def test_carries_category_and_coarse_key(self):
         report = {"findings": [{"id": "X-1", "panel": "security",
@@ -354,6 +436,48 @@ class TestBuildDiffCohorts(unittest.TestCase):
                                  source="tool:trivy")])
         diff = reconcile.build_diff(t2, t3, "r2", "r3")
         self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"T"})
+
+    def _jar(self, fid, jar):
+        """A dependency-check-shaped finding: located at the build manifest it
+        audited (#2225's manifest proxy), the vulnerable ARTIFACT in the title
+        and in `tool_evidence.package_name`."""
+        return {"id": fid, "panel": "security",
+                "category": "vulnerable-dependency",
+                "title": "%s: CVE-2021-1" % jar,
+                "source": "tool:dependency-check",
+                "location": {"file": "pom.xml", "line_start": 1},
+                "tool_evidence": {"rule_id": "CVE-2021-1", "package_name": jar}}
+
+    def _jar_diff(self, run2, run3):
+        """`build_diff` with the close path LIVE -- run3 states it reviewed the
+        manifest and declares itself repo-wide, so no close_guard short-circuits
+        the cohort reads (#2352)."""
+        diff = reconcile.build_diff(self._recs(run2), self._recs(run3), "r2", "r3",
+                                    run3_reviewed_files={"pom.xml"},
+                                    run3_review_type="repo")
+        self.assertIsNone(diff["meta"]["close_guard"])
+        return diff
+
+    def test_a_second_jar_on_the_same_advisory_is_new_not_recurring(self):
+        # #2352: two vulnerable artifacts sharing one advisory at one manifest
+        # are two CROSS-RUN identities. Both keys reconcile recomputes -- the
+        # exact fingerprint and the coarse reconcile_key -- ignored the
+        # artifact, so a jar first reported in run 3 read as the run-2 jar
+        # recurring.
+        diff = self._jar_diff([self._jar("A2", "a.jar")],
+                              [self._jar("A3", "a.jar"), self._jar("B3", "b.jar")])
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(self._cohort_ids(diff, "new", "run3"), {"B3"})
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+
+    def test_control_one_jar_on_both_sides_recurs_with_nothing_new(self):
+        diff = self._jar_diff([self._jar("A2", "a.jar")],
+                              [self._jar("A3", "a.jar")])
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A2"})
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run3"), {"A3"})
+        self.assertEqual(diff["new"], [])
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
 
     def test_split_merge_cardinality_both_kept(self):
         # two run2 findings on one coarse key, one run3 finding on it -> both kept.

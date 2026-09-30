@@ -14,7 +14,8 @@ What a grammar cannot settle leaves the wrapper UNRESOLVED, with the reason
 than reading past it -- an option the table does not know (it may take a
 value, and then the command starts a word later than any guess), and an
 option or option value the shell expands (`$`, a substitution), which may be
-any number of words once it has.
+any number of words once it has, or that an `xargs -I` in front or a brace
+or pathname pattern rewrites (`dynamic`).
 
 The getopt-shaped wrappers share one reading of their options: short flags,
 short options taking a value, long flags, long options taking one. The five
@@ -77,6 +78,21 @@ _LETTER = {"help": "h", "version": "V", "pid": "p", "pgid": "P", "uid": "u",
 # runs the command after the mask or priority after all, so only a static
 # positive pid is read as running nothing.
 _PID = re.compile(r"0*[1-9][0-9]*")
+
+
+class Rewritten(str):
+    """A word the command is not handed as written. Behind `xargs -I R` or
+    `--replace[=R]`, every word holding R is one: xargs puts a line of its
+    input where R stands (#2307), and so it may be the command, an option
+    or an operand that decides where the command starts. So is a word holding
+    a brace or pathname pattern bash expands first (`{sh,-c}`, `[s]h`), which
+    the reader marks (#2294)."""
+
+
+def dynamic(word, has_substitution):
+    """Whether this word is one no grammar can read as static: it holds a `$`
+    or a lifted `$(...)` (`has_substitution`), or it is `Rewritten`."""
+    return has_substitution(word) or "$" in word or isinstance(word, Rewritten)
 
 
 def _env_split(value):
@@ -166,7 +182,7 @@ def _operands(head, operands, seen, has_substitution):
         # The mask, the lock file or the priority decides where the command
         # starts, and an expansion there may be any number of words. Being
         # static and present is all that is asked of it.
-        if has_substitution(operands[0]) or "$" in operands[0]:
+        if dynamic(operands[0], has_substitution):
             return None, "has a dynamic operand before its command"
         operands = operands[1:]
         if head == "flock" and not operands:
@@ -215,10 +231,11 @@ def unwrap(argv, head, has_substitution):
     i = 1
     splits = 0
     noexec = False
+    replace = None              # xargs's replace string, once it has one
     seen: set[str] = set()      # each option read: its letter, or a long name `_LETTER` does not map
     while i < len(argv) and argv[i].startswith("-"):
         argument, i = argv[i], i + 1
-        if has_substitution(argument) or "$" in argument:
+        if dynamic(argument, has_substitution):
             return None, "has a dynamic option"
         if argument == "--":
             break
@@ -245,6 +262,8 @@ def unwrap(argv, head, has_substitution):
                 if sep and not _signal_list(value):
                     return None, "has an unsupported signal list"
                 continue  # Optional argument only in the = form.
+            if head == "xargs" and name == "replace":
+                replace = value if sep else "{}"
             if ((head == "sudo" and name == "preserve-env") or
                     (head == "xargs" and name in ("replace", "eof", "max-lines"))):
                 continue  # Optional operands are accepted only after '='.
@@ -260,7 +279,7 @@ def unwrap(argv, head, has_substitution):
                     continue
                 if i >= len(argv) and not sep:
                     return None, "is missing an option operand"
-                if not sep and (has_substitution(argv[i]) or "$" in argv[i]):
+                if not sep and dynamic(argv[i], has_substitution):
                     return None, "has a dynamic option operand"
                 i += not sep
             elif name not in long_flags.split() or sep:
@@ -268,7 +287,8 @@ def unwrap(argv, head, has_substitution):
             continue
         if argument == "-":
             if head == "env":
-                break  # env's legacy ignore-environment flag ends option parsing
+                i -= 1  # env's legacy ignore-environment flag, read below
+                break
             return None, "has an unknown option"
         for j, ch in enumerate(argument[1:], 2):
             seen.add(ch)
@@ -277,7 +297,7 @@ def unwrap(argv, head, has_substitution):
                     value = argument[j:] if j < len(argument) else (argv[i] if i < len(argv) else None)
                     if value is None:
                         return None, "is missing a split-string operand"
-                    if has_substitution(value):
+                    if has_substitution(value) or isinstance(value, Rewritten):
                         return None, "has a dynamic split-string"
                     split = _env_split(value)
                     if split is None or splits >= 4:
@@ -289,16 +309,36 @@ def unwrap(argv, head, has_substitution):
                     break
                 if j == len(argument) and i >= len(argv):
                     return None, "is missing an option operand"
-                if j == len(argument) and (has_substitution(argv[i]) or "$" in argv[i]):
+                if j == len(argument) and dynamic(argv[i], has_substitution):
                     return None, "has a dynamic option operand"
+                if head == "xargs" and ch == "I":
+                    replace = argument[j:] or argv[i]
                 i += j == len(argument)
                 break
             if ch not in flags:
                 return None, "has an unknown option"
+    if head == "env":
+        # coreutils env once its options end, `--` or not: one lone `-` is
+        # `-i`, and each word holding a `=` is an assignment, `x-y=1` too.
+        # One whose NAME bash expands or globs (`$(x)=1`, `{A=1,sh}`) may be
+        # no assignment, and an expanding value ahead of an option may split
+        # into the command that option is for (`FOO=$X -c …`, `X='1 sh'`):
+        # unresolved (review N-2). Any other value is read past (re-review
+        # N-B): one splitting into a command word ahead of a word that is no
+        # option stays the value-following gap `$CMD --flag` is.
+        i += argv[i:i + 1] == ["-"]
+        while i < len(argv) and "=" in argv[i]:
+            word, name = argv[i], argv[i].split("=", 1)[0]
+            if ("$" in name or "@@" in name and has_substitution(word)
+                    or isinstance(word, Rewritten) and any(ch in name for ch in "*?[{},")
+                    or dynamic(word, has_substitution) and argv[i + 1:i + 2] != []
+                    and argv[i + 1].startswith("-")):
+                return None, "has a dynamic assignment"
+            i += 1
     if head in _UTIL_LINUX:
         return _operands(head, argv[i:], seen, has_substitution)
     if head == "timeout":
-        if i >= len(argv) or not _DURATION.fullmatch(argv[i]):
+        if i >= len(argv) or not _DURATION.fullmatch(argv[i]) or isinstance(argv[i], Rewritten):
             return None, "has no supported duration"
         i += 1
     if noexec:
@@ -307,4 +347,7 @@ def unwrap(argv, head, has_substitution):
         if head == "env":
             return [], None  # env without a command prints its environment.
         return None, "is missing a command"
+    if replace is not None:
+        return [Rewritten(word) if replace in word and not has_substitution(word) else word
+                for word in argv[i:]], None
     return argv[i:], None

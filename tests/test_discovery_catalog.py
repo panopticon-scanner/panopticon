@@ -1261,6 +1261,73 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
         self.assertEqual(set(samples.values()), walked & listed)
 
 
+class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
+    """#2330 (ARC-G1B, epic #1784), carrying the owner ruling of 2026-09-28 on
+    #2274: a root dot-file the shipped catalogs do not NAME stays invisible by
+    design, and the remedy for a wanted one is a catalog row per spelling --
+    not a widened stem. This repository's own `.bandit` was named by neither a
+    catalog glob nor a floor hint, so it reached no group at all; `.eslintrc.cjs`
+    and `.eslintrc.yaml` are ordinary hand-written eslint config that the five
+    listed spellings missed. (`.eslintrc.mjs` was named by the ruling too and is
+    NOT here: the legacy cascade does not read it -- `.mjs` is flat config, and
+    the catalog claims that as `eslint.config.mjs`.)
+
+    Each spelling is asserted through the real discovery path (the walk arm; the git-listing arm
+    for these names is pinned by the bidirectional meta-test above) -- the dot-path
+    policy and the Commons catalog together -- because a row in only one of the
+    two files still reaches nothing: the policy drops the file before the
+    catalog sees it, or the catalog leaves a kept file in `Ungrouped`. The two
+    bidirectional meta-tests above prove both rows exist; these prove the pair
+    of them actually delivers the file to a review cell.
+    """
+
+    # Six OTHER Config-category files, so the category clears the
+    # tiny-universal-group fold (COMMONS_MIN_FILES) and reports under its own
+    # name rather than merging into `Commons`.
+    PADDING = (".gitignore", ".editorconfig", ".flake8", ".npmrc",
+               ".prettierrc", ".yarnrc")
+
+    def _scan_with(self, name):
+        """(groups by name, ungrouped) for a tree holding one root `name`."""
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            for rel in self.PADDING:
+                touch(d, rel)
+            touch(d, name)
+            _write_config(d, "groups:\n  src:\n    match: ['src/**']\n")
+            out, _err = run_scan_with_err(d)
+            return ({g["name"]: g["files"] for g in out["groups"]},
+                    out["ungrouped_files"])
+
+    def _assert_reaches_config(self, name):
+        by_name, ungrouped = self._scan_with(name)
+        self.assertIn(name, by_name.get("Config", []),
+                      "%s is claimed by the Config category but discovery never "
+                      "delivered it there (Config=%r) -- a catalog row without "
+                      "the matching dot-path allowlist entry, or the reverse, "
+                      "reaches no review cell" % (name, by_name.get("Config")))
+        self.assertNotIn(name, ungrouped)
+
+    def test_dot_bandit_reaches_the_config_group(self):
+        self._assert_reaches_config(".bandit")
+
+    def test_eslintrc_cjs_reaches_the_config_group(self):
+        self._assert_reaches_config(".eslintrc.cjs")
+
+    def test_eslintrc_yaml_reaches_the_config_group(self):
+        self._assert_reaches_config(".eslintrc.yaml")
+
+    def test_eslintcache_at_the_root_still_reaches_no_group_at_all(self):
+        # The generated-state exclusion the ruling KEEPS: `.eslint*` is spelled
+        # out name by name precisely so its cache file -- the `.mypy_cache`
+        # class -- does not ride in behind the config it sits beside. A file
+        # discovery never returns is never `Ungrouped` either, so assert both.
+        by_name, ungrouped = self._scan_with(".eslintcache")
+        self.assertNotIn(".eslintcache",
+                         [f for files in by_name.values() for f in files])
+        self.assertNotIn(".eslintcache", ungrouped)
+
+
 class TestBothDiscoveryPathsShareOneDotPolicy(unittest.TestCase):
     """ARC-1940929242: `_filter_reviewable` tested each ancestor DIRECTORY and
     the walk tested the WHOLE file path, so every file directly under

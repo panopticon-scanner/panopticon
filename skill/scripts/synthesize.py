@@ -327,7 +327,13 @@ def main(argv=None):
                                     git_drivers_suppressed=getattr(
                                         args, "git_drivers_suppressed", None),
                                     plan_owed=getattr(args, "plan_owed", False),
-                                    plan_sha256=getattr(args, "plan_sha256", None))
+                                    plan_sha256=getattr(args, "plan_sha256", None),
+                                    # #2271: discovery's own disclosures. It
+                                    # recorded them here and printed them on a
+                                    # stderr the driver buffers and discards on
+                                    # a SUCCESSFUL run, so the report is the
+                                    # only human surface they can reach.
+                                    discovery=gj.get("discovery"))
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,

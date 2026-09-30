@@ -108,13 +108,9 @@ def _agent_verdict(raw):
     (a) strip every private (`_`-prefixed) key. They are the pipeline's own
         carriers -- `_backup_missing_evidence` here, `_merged_ids`/`_group` on
         findings -- so an advisor that plants one is asserting a controller
-        decision. Round 1 F1 demonstrated a backup REJECTION laundered into a
-        retained primary CONFIRMED (rejected, factor 0.0, out of the gate ->
-        backup_scope_limited, factor 1.5, IN the gate) and a primary-only
-        verdict fabricating a "backup could not see" disclosure about a round
-        that never ran; round 2 N1 then found the same key emptying a cell's
-        whole backup scope through `phases/verify._cell_verdicts`, so no
-        adversarial round was dispatched;
+        decision (round 1 F1: a backup REJECTION laundered into a retained
+        primary CONFIRMED, out of the gate -> in it; round 2 N1: a cell's whole
+        backup scope emptied through `phases/verify._cell_verdicts`);
 
     (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
         say what it concluded, never which ROUND it was.
@@ -127,12 +123,12 @@ def _agent_verdict(raw):
 
     Three jobs since #1639 P15 fix round 2 (F3). The third is TYPE repair: the
     verify round writes this verdict's `reasoning`, `model`, `code`,
-    `references` and `citations` onto an already-normalized finding, into
-    fields `report-schema.json` pins -- after the findings boundary, with
-    nothing between. One advisor answering in a list where a string belongs
-    ended a completed run in `error`. `validate_schema.repair_verdict` does it
-    against the schema nodes those fields land in, so this boundary and the
-    findings boundary cannot disagree about a type.
+    `references` and `citations` onto an already-normalized finding, into fields
+    `report-schema.json` pins -- after the findings boundary, with nothing
+    between (an advisor answering in a list where a string belongs ended a
+    completed run in `error`). `validate_schema.repair_verdict` does it against
+    the schema nodes those fields land in, so this boundary and the findings
+    boundary cannot disagree about a type.
     """
     clean = {k: v for k, v in raw.items()
              if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
@@ -187,21 +183,28 @@ def tool_name(finding):
     return src[len("tool:"):] if src.startswith("tool:") else None
 
 
-def tool_rule_id(finding):
-    """The scanner rule a tool finding came from, wherever its adapter put it.
+def _tool_evidence(finding):
+    """`tool_evidence` as a dict, `{}` for absent or malformed (#2359)."""
+    te = finding.get("tool_evidence")
+    return te if isinstance(te, dict) else {}
 
-    Two adapter families disagree: the dependency scanners (pip_audit,
-    bundler_audit, dependency_check, eslint_security) set
-    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
-    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
-    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
-    only the first form made every SARIF finding look rule-less, which silently
-    disabled both aggregation and rule-based fingerprint identity for them.
+
+def location_of(finding):
+    """`location` as a dict (the finding's own, not a copy), `{}` for absent or malformed (#2365)."""
+    loc = finding.get("location")
+    return loc if isinstance(loc, dict) else {}
+
+
+def tool_rule_id(finding):
+    """The scanner rule a tool finding came from, wherever its adapter put it: the dependency
+    scanners set `tool_evidence.rule_id`, while the SARIF path carries it in
+    `provenance.confirmation_reasoning`; reading only the first made SARIF findings rule-less.
     """
-    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    rule = _tool_evidence(finding).get("rule_id")
     if rule:
         return rule
-    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
+    prov = finding.get("provenance")
+    return (prov.get("confirmation_reasoning") if isinstance(prov, dict) else None) or None
 
 
 def norm_path(p):
@@ -222,24 +225,44 @@ def norm_path(p):
     return fpath
 
 
+def artifact_term(finding):
+    """`tool_evidence.package_name` when it names an artifact, else None.
+
+    The ONE rule every identity and collapse stage uses (#2225/#2352): a non-empty
+    string splits two findings at one locus; absent, empty, a non-string or a non-dict
+    `tool_evidence` means "no artifact" and the finding keys exactly as it did before
+    the term existed (absent-means-unchanged). Only a tool-sourced finding names an
+    artifact; an agent-authored `tool_evidence` never reaches an identity (#914 guard).
+    """
+    if not is_tool_sourced(finding):
+        return None
+    pkg = _tool_evidence(finding).get("package_name")
+    return pkg if isinstance(pkg, str) and pkg else None
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding.
 
     Keys on panel + category + normalized file + the discriminator that is
     actually stable for that source: a tool's rule_id, or an agent finding's
-    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
-    free-text description (agent prose is re-worded every run). Also the
-    verify-queue's queue_id (P2) — the same identity both passes compute.
+    title -- plus `tool_evidence.package_name` when the finding names an
+    artifact, so two jars sharing one advisory at one manifest locus are two
+    identities (#2352). Deliberately EXCLUDES line numbers (issues survive code
+    moves) and free-text description (agent prose is re-worded every run). Also
+    the verify-queue's queue_id (P2) — the same identity both passes compute.
     """
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     fpath = norm_path(loc.get("file"))
     # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
     # advisor prose, which would be a disastrous identity discriminator.
     rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
     discriminator = str(rule) if rule else str(finding.get("title") or "")
-    payload = "|".join([str(finding.get("panel") or ""),
-                        str(finding.get("category") or ""),
-                        fpath, discriminator]).encode("utf-8")
+    parts = [str(finding.get("panel") or ""),
+             str(finding.get("category") or ""), fpath, discriminator]
+    pkg = artifact_term(finding)
+    if pkg is not None:
+        parts.append(pkg)
+    payload = "|".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
@@ -261,7 +284,7 @@ def matrix_finding_id(finding):
         dom = code.split("-", 1)[0] if "-" in code else "GEN"
     if not (isinstance(dom, str) and re.fullmatch(r"[A-Z]{2,8}", dom)):
         dom = "GEN"
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     title = " ".join(str(finding.get("title") or "").split())
     seed = "|".join([dom, str(finding.get("category") or ""),
                      norm_path(loc.get("file")), title,
@@ -271,38 +294,21 @@ def matrix_finding_id(finding):
 
 
 def reconcile_key(finding):
-    """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
-    once a finding carries an OCRDb domain code (5.0), the tighter
-    (normalized_file, "code", code).
-
-    Separate from finding_fingerprint (the within-run identity, left untouched):
-    reconcile keys on this to match a finding across two independent agentic
-    runs, where the free-text title finding_fingerprint uses as an agent
-    finding's discriminator is re-worded every run. Dropping the title (keeping
-    file + panel + category) lets a re-worded finding match; a genuinely-fixed
-    one's key vanishes (#914). The file normalization is finding_fingerprint's
-    exactly -- both call norm_path.
-
-    5.0: this was the seam the #914-era docstring flagged -- the finding-code
-    catalog now exists (OCRDb), so a code-bearing finding reconciles on
-    (file, code) instead of the free-text `category`, a strictly more precise
-    identity (two reviewers naming the same OCRDb code agree even when their
-    prose category differs). A code-less finding is UNCHANGED: it falls through
-    to the legacy (file, panel, category) tuple exactly as before, so reconcile.py
-    (this function's only consumer) sees no behavior change for pre-5.0/code-less
-    findings. The two arms are disjoint EXCEPT one narrow case -- a code-less
-    finding whose `panel` is the literal "code" (itself a real PANELS value) and
-    whose `category` happens to equal a code-string aliases a code-bearing
-    finding at the same file. That coarse cross-run match is benign (both keys
-    resolve to the same reconcile identity, not a correctness bug); it is NOT the
-    impossibility earlier wording claimed.
+    """Coarse CROSS-RUN identity: (file, panel, category), or (file, "code", code) with
+    an OCRDb code, plus `tool_evidence.package_name` when it names an artifact -- two
+    jars on one advisory at one manifest are two identities (#2352). Coarser than
+    finding_fingerprint, so a re-worded finding matches (#914); a code-less or
+    artifact-less finding keys as before, and panel=="code" aliasing (#1034) is benign.
     """
-    loc = finding.get("location") or {}
+    loc = location_of(finding)
     code = finding.get("code")
     if code:
-        return (norm_path(loc.get("file")), "code", str(code))
-    return (norm_path(loc.get("file")), str(finding.get("panel") or ""),
-            str(finding.get("category") or ""))
+        key = (norm_path(loc.get("file")), "code", str(code))
+    else:
+        key = (norm_path(loc.get("file")), str(finding.get("panel") or ""),
+               str(finding.get("category") or ""))
+    pkg = artifact_term(finding)
+    return (key + (pkg,)) if pkg is not None else key
 
 
 def sev_rank(finding):
@@ -317,12 +323,10 @@ def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
     Precedence (P2, #446): an advisor VERDICT decides first, whatever the
-    source — previously tool-sourcing short-circuited ahead of verdicts, so an
-    advisor could never refute a scanner. Without a verdict, a tool-sourced or
-    reinforced finding is `tool_reported`: reported, not verified, and NOT
-    gate-eligible. Never mutates the finding. Self-asserted
-    provenance.confirmation_status is deliberately ignored — a reviewer cannot
-    confirm its own finding.
+    source. Without a verdict, a tool-sourced or reinforced finding is
+    `tool_reported`: reported, not verified, and NOT gate-eligible. Never
+    mutates the finding. Self-asserted provenance.confirmation_status is
+    deliberately ignored — a reviewer cannot confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
@@ -410,7 +414,7 @@ def _queue_tiebreak(f):
     A residual tie after this means the two findings are identical in every
     field that could distinguish them: genuinely fungible claims.
     """
-    loc = f.get("location") or {}
+    loc = location_of(f)
     return (str(loc.get("file") or ""), str(loc.get("line_start") or ""),
            str(f.get("severity") or ""), str(f.get("source") or ""))
 
@@ -419,10 +423,8 @@ def build_verify_queue(findings, max_verify=None):
     """Return (entries, cut) for ALL findings, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
-    must mutate the real objects).
-
-    P2 (#446): tool-sourced and reinforced findings queue too — they are claims
-    like any other, and `tool_confirmed` now requires an advisor verdict.
+    must mutate the real objects); tool-sourced and reinforced findings queue
+    too, as claims like any other (P2, #446).
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the
@@ -875,27 +877,25 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
 
     A backup that returns NEEDS_MORE_INFO naming the files it was not granted
     (`missing_evidence`) is not disagreeing with the primary; it is reporting
-    that it could not look. Run-13's redaction-order defect was CONFIRMED by the
-    primary, reproduced by hand, and then published as unverifiable because the
-    backup -- granted the claim file alone -- said NEEDS_MORE_INFO about a
-    cross-file call order. So a scope-limited backup NMI displaces NO primary:
-    the primary verdict is returned, carrying the paths the backup named, and
-    `derive_evidence` spends that carrier only on a CONFIRMED -- which is what
-    makes the honest `backup_scope_limited`, while a primary REJECTED stays
-    `rejected` and a bare primary NMI stays `needs_more_info` (fix round 4, N1;
-    the branch used to retain a CONFIRMED only, so a rejected finding was
-    published as a gate-eligible disclosure instead). A backup NMI that names
-    NOTHING is a substantive "the code does not say", and keeps today's
-    backup-wins semantics.
+    that it could not look (run-13: a defect CONFIRMED and hand-reproduced, then
+    published as unverifiable because the backup, granted the claim file alone,
+    said NMI about a cross-file call order). So a scope-limited backup NMI
+    displaces NO primary: the primary verdict is returned, carrying the paths the
+    backup named, and `derive_evidence` spends that carrier only on a CONFIRMED
+    -- which is what makes the honest `backup_scope_limited`, while a primary
+    REJECTED stays `rejected` and a bare primary NMI stays `needs_more_info` (fix
+    round 4, N1; the branch used to retain a CONFIRMED only, so a rejected
+    finding was published as a gate-eligible disclosure instead). A backup NMI
+    that names NOTHING is a substantive "the code does not say", and keeps
+    today's backup-wins semantics.
 
     Where several BACKUP verdicts exist for one finding, the LEAST FAVOURABLE to
     it is the one that counts, and where several PRIMARY verdicts do, first-wins
     -- BOTH through `resolve_duplicates`, so the retained primary above is the
-    same verdict the driver acted on. `stage`
-    itself is controller-stamped at load, so "the backup" is a round the driver
-    dispatched, never a label an advisor chose for itself -- which is also what
-    makes the retained primary and the scope-limited backup necessarily
-    different bundles.
+    same verdict the driver acted on. `stage` itself is controller-stamped at
+    load, so "the backup" is a round the driver dispatched, never a label an
+    advisor chose for itself -- which is also what makes the retained primary and
+    the scope-limited backup necessarily different bundles.
     """
     fid = finding.get("id")
     if not fid:

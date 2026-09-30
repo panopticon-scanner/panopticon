@@ -85,56 +85,22 @@
    "results": [
     {
      "message": {
-      "text": "generic-api-key has detected secret for file /mnt/panopticon/.env."
-     },
-     "ruleId": "generic-api-key",
-     "locations": [
-      {
-       "physicalLocation": {
-        "artifactLocation": {
-         "uri": "/mnt/panopticon/.env"
-        },
-        "region": {
-         "startLine": 1,
-         "startColumn": 5,
-         "endLine": 1,
-         "endColumn": 48,
-         "snippet": {
-          "text": "[REDACTED_UUID]"
-         }
-        }
-       }
-      }
-     ],
-     "partialFingerprints": {
-      "commitSha": "",
-      "email": "",
-      "author": "",
-      "date": "",
-      "commitMessage": ""
-     },
-     "properties": {
-      "tags": []
-     }
-    },
-    {
-     "message": {
-      "text": "private-key has detected secret for file /mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report-discarded.json."
+      "text": "private-key has detected secret for file /src/app/deploy_key.pem."
      },
      "ruleId": "private-key",
      "locations": [
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "/mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report-discarded.json"
+         "uri": "/src/app/deploy_key.pem"
         },
         "region": {
-         "startLine": 4073,
-         "startColumn": 101,
-         "endLine": 4086,
-         "endColumn": 117,
+         "startLine": 1,
+         "startColumn": 1,
+         "endLine": 4,
+         "endColumn": 29,
          "snippet": {
-          "text": "-----BEGIN RSA PRIVATE KEY-----\\\\nMIIBsomekey\\\\n...') inside the TestRedactOutput.test_redacts_common_secret_formats test method. The test validates that driver._redact_output() properly detects and redacts private keys. The 'key' is deliberately non-functional (contains literal text 'somekey' instead of valid base64) and exists only as test scaffolding. Gitleaks matched the PEM header pattern but this is test data validating a security control, not a real exposed credential. No security risk.\"\n      },\n      \"references\": [],\n      \"impact\": \"\",\n      \"remediation\": \"\",\n      \"short_title\": \"private-key has detected secret for file /src/.worktrees/k3-ci-docker-config/tests/test_driver.py.\",\n      \"occurrences\": 1,\n      \"evidence\": {\n        \"status\": \"rejected\",\n        \"verified_by\": [\n          \"tool:gitleaks\",\n          \"agent:advisor\"\n        ],\n        \"reasoning\": \"Line 239 contains a fake, intentional PEM-format test fixture ('-----BEGIN RSA PRIVATE KEY----"
+          "text": "REDACTED"
          }
         }
        }
@@ -153,22 +119,56 @@
     },
     {
      "message": {
-      "text": "generic-api-key has detected secret for file /mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report_part3.json."
+      "text": "slack-bot-token has detected secret for file /src/app/settings.py."
      },
-     "ruleId": "generic-api-key",
+     "ruleId": "slack-bot-token",
      "locations": [
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "/mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report_part3.json"
+         "uri": "/src/app/settings.py"
         },
         "region": {
-         "startLine": 3472,
-         "startColumn": 98,
-         "endLine": 3472,
-         "endColumn": 142,
+         "startLine": 4,
+         "startColumn": 17,
+         "endLine": 4,
+         "endColumn": 70,
          "snippet": {
-          "text": "[REDACTED_UUID]"
+          "text": "REDACTED"
+         }
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "commitSha": "",
+      "email": "",
+      "author": "",
+      "date": "",
+      "commitMessage": ""
+     },
+     "properties": {
+      "tags": []
+     }
+    },
+    {
+     "message": {
+      "text": "aws-access-token has detected secret for file /src/app/settings.py."
+     },
+     "ruleId": "aws-access-token",
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/src/app/settings.py"
+        },
+        "region": {
+         "startLine": 6,
+         "startColumn": 23,
+         "endLine": 6,
+         "endColumn": 42,
+         "snippet": {
+          "text": "REDACTED"
          }
         }
        }
