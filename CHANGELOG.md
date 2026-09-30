@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **PR worktree reuse parses Git's machine records (#2100).** Acquisition reads NUL-delimited
+  porcelain paths, so spaces no longer hide a registered tree or truncate the main-worktree path
+  in transport-setting remedies.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
