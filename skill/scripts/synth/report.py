@@ -414,8 +414,9 @@ def validate_report(report, schema_path=None):
         if ev.get("status") not in evidence_mod.EVIDENCE_STATUSES:
             errors.append("finding[%d] bad evidence.status: %r" % (i, ev.get("status")))
         loc = f.get("location") or {}
-        if not loc.get("file") or loc.get("line_start") is None:
-            warnings.append("finding[%d] missing location.file/line_start" % i)
+        # #2174: a located finding with no line is the sanctioned whole-file shape (#1522).
+        if not loc.get("file"):
+            warnings.append("finding[%d] missing location.file" % i)
         agent_sourced = not evidence_mod.is_tool_sourced(f)
         if agent_sourced and f.get("panel") in ("security", "redteam") and f.get("severity") in ("CRITICAL", "HIGH"):
             if not f.get("cvss"):

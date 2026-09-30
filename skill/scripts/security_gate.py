@@ -477,9 +477,12 @@ def _row(finding):
     fields on both sides of it.
     """
     location = finding.get("location") or {}
+    # A whole-file finding has a file and no line, and `sarif_utils` records that
+    # as `line_start` present and None -- so a `get` default never fires (#2174).
+    line = location.get("line_start")
     return "  %s %s %s:%s - %s" % (
         finding.get("severity"), finding.get("id"),
-        location.get("file"), location.get("line_start"),
+        location.get("file"), "?" if line is None else line,
         finding.get("title"))
 
 

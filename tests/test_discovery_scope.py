@@ -891,3 +891,86 @@ def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
     assert "link.py" in changed                            # git really sees it change
     assert "link.py" not in in_delta                       # #2272: dropped on BOTH
     assert "link.py" not in in_whole                       # paths, by name
+
+
+# --- #2376/#2377: the delta surface is capped and says whose numbers it carries
+
+
+def test_scope_changed_publishes_the_changed_surface_not_the_listing(tmp_path):
+    # #2376: every scoped branch re-stamped the block from the SAME `info`, so a
+    # delta run published the whole-repo listing's counts (measured: reviewed 6,
+    # published `files_seen: 7`). `.hidden/a.py` is tracked and UNCHANGED, so the
+    # listing prunes a dot-path this run never saw: the delta's `pruned` must not
+    # inherit it, while the listing's own block still reports it.
+    tree = ["src/app.py", "node_modules/x.js", ".hidden/a.py"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, ["src/app.py", "node_modules/x.js"])
+    out = repo / ".panopticon" / "groups.json"
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    block = json.loads(out.read_text())["discovery"]
+    assert block["surface"] == "changed"
+    assert block["files_seen"] == 1                   # the changed set, filtered
+    assert block["files_truncated"] == 0
+    assert block["pruned"]["exclude_dir"] == 1        # the changed node_modules file
+    assert block["pruned"]["dot_path"] == 0           # NOT the listing's .hidden/
+    # Delta first, on purpose: this whole-repo run's own `.panopticon/` artifact is
+    # an untracked pruned dot-path too, so the listing's count is >= 1, not == 1.
+    whole = repo / ".panopticon" / "whole.json"
+    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
+    listing = json.loads(whole.read_text())["discovery"]
+    assert listing["surface"] == "repo"
+    assert listing["pruned"]["dot_path"] >= 1
+    # Ruling 4's other half: a NARROWING branch keeps the LISTING's numbers and
+    # `surface: "repo"`, because it narrows the already-pruned `allf` instead of
+    # rebuilding a surface -- so `exclude_dir` still counts a `node_modules` file that
+    # was never inside the scope asked for. Derive `surface` from `scoped is not None`
+    # and this reddens while the delta assertions above still pass.
+    narrowed = repo / ".panopticon" / "dir.json"
+    assert orchestrator.main(["--repo-scan", "--scope-dir", "src",
+                              str(repo), "--out", str(narrowed)]) == 0
+    scoped_block = json.loads(narrowed.read_text())["discovery"]
+    assert scoped_block["surface"] == "repo"
+    assert scoped_block["files_seen"] == listing["files_seen"]
+    assert scoped_block["pruned"]["exclude_dir"] == 1
+    assert scoped_block["pruned"]["dot_path"] >= 1
+
+
+def test_scope_changed_is_bounded_by_the_discovery_cap(tmp_path, capsys):
+    # #2376: `--repo-scan` wrapped the filter in `_cap_discovered` and the delta
+    # path did not, so a truncation of the reviewed delta was neither bounded nor
+    # disclosed.
+    tree = ["src/a.py", "src/b.py", "src/c.py"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, tree)
+    out = repo / ".panopticon" / "groups.json"
+    with mock.patch.object(orchestrator, "DISCOVERED_FILES_MAX", 2):
+        rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                                str(repo), "--out", str(out)])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert len(_reviewed_files(out)) == 2
+    block = json.loads(out.read_text())["discovery"]
+    assert block["files_seen"] == 3
+    assert block["files_truncated"] == 1
+    assert "DISCOVERED_FILES_MAX" in err
+
+
+def test_the_pruned_disclosure_is_one_line_per_run(tmp_path, capsys):
+    # #2377 asks for one line, not per-path lines: a listing that drops tens of
+    # thousands of `node_modules` paths would drown the terminal. It comes from
+    # the FINAL block, so a delta run prints the changed set's counts ONCE and
+    # never the listing's as a second line.
+    tree = ["src/app.py", "node_modules/x.js"]
+    repo = _repo_tracking(tmp_path, tree)
+    _rewrite_and_commit(repo, tree)
+    out = repo / ".panopticon" / "groups.json"
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    err = capsys.readouterr().err
+    assert err.count("discovery pruned") == 1
+    assert "changed surface" in err            # nit 6: the line names its surface
+    clean = _repo_tracking(tmp_path / "clean", ["src/app.py"])
+    assert orchestrator.main(["--repo-scan", str(clean), "--out",
+                              str(clean / ".panopticon" / "g.json")]) == 0
+    assert "discovery pruned" not in capsys.readouterr().err
