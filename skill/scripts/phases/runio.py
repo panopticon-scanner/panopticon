@@ -471,10 +471,9 @@ def committed_exclude_paths(review_root):
     `synthesize --tools-exclude`, so ONE committed policy governs the agentic
     scope, the scanners and the gate.
 
-    Same parse seam `discovery._committed_exclude_paths` reads
-    (`groups_schema.parse_exclude_paths` over `repo_config.read_document`), not
-    a second copy of the rule -- two answers to "what did the repo exclude?"
-    is the drift this shares a definition to avoid.
+    Uses the same parser as `discovery._committed_exclude_paths`, but not its
+    failure contract. Discovery refuses an invalid committed config before this
+    later phase can run; this defensive reader keeps the valid remainder or `[]`.
 
     Tolerant, and SILENT about errors: a missing, refused or invalid config
     yields `[]` rather than taking a run down, and discovery has already
