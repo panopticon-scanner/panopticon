@@ -559,7 +559,10 @@ def _capability_aliases():
     ever ADD credit, so running without them is safe."""
     import yaml
     try:
-        import setup_proposal
+        try:
+            from scripts import setup_proposal
+        except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
+            import setup_proposal  # type: ignore[no-redef]
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
     except (OSError, ValueError, ImportError, yaml.YAMLError):
         return {}
@@ -1360,14 +1363,11 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     commons_named, residual = assign_by_catalog(leftovers, commons)
     commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
-    # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
-    # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`
-    # -- invisible in `ls` and most editor trees) and rendered as a meaningless
-    # group name in the report. `Ungrouped_N` says what it is and stays visible.
-    # Both axes point at the sink itself: its chunks fold to the `Ungrouped`
-    # review unit, which then self-parents like any other top-level unit. A
-    # self-parenting CHUNK would make `Ungrouped_1` a report node in its own
-    # right, which is the chunk name leaking into the output again.
+    # run-9 A5: the sink used to be named `._N`; a leading dot made every derived
+    # artifact a hidden dotfile, and the group name in the report meaningless, so
+    # it is `Ungrouped_N` now. Both axes point at the sink itself: chunks fold to
+    # the `Ungrouped` review unit, which self-parents like any other top-level
+    # unit. A self-parenting CHUNK would leak the chunk name into the report.
     groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode,
                              parent=UNGROUPED_SINK, chunk_of=UNGROUPED_SINK)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))

@@ -40,15 +40,15 @@ import re
 from scripts import coverage_model
 from scripts import discovery
 from scripts import repo_config
-# These two stay FLAT deliberately. Neither has a `scripts.*` copy in a
-# driver-shaped process: `tests_axis` is imported flat by `discovery` itself,
-# and `setup_proposal` by `discovery._capability_aliases` plus six lazy
-# `import setup_proposal as sp` sites in `setup_flow` function bodies. So
-# qualifying either here would MINT a second identity rather than retire one --
-# #2256 measured that trade and put this line back. The real fix is those lazy
-# sites taking the guarded package-first shape while STAYING lazy; filed as a
-# follow-up and tracked with the rest of the residual in #1516.
-import setup_proposal
+# #2413: qualified too. Every path to `setup_proposal` is package-first now,
+# the seven LAZY sites in `setup_flow` and `discovery` function bodies
+# included, so nothing mints a pair here. Before that they reached it flat and
+# qualifying this line MINTED a second identity at call time rather than
+# retiring one -- #2256 measured that trade and put the flat spelling back.
+from scripts import setup_proposal
+# `tests_axis` stays FLAT for its own reason: it has no `scripts.*` copy in a
+# driver-shaped process, because `discovery` itself imports it flat, so
+# qualifying it here WOULD mint one. The rest of the residual is in #1516.
 import tests_axis
 
 FLOOR = discovery.COMMONS_MIN_FILES     # a layer under this merges back (6)

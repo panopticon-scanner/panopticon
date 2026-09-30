@@ -11,6 +11,17 @@ evidence exposed.
   A config refusal that already names its own remedy (`pip install pyyaml`) no longer has
   "fix it or re-run `driver setup`" appended, which setup could not deliver; every other
   refusal keeps it.
+- **Pip-audit uses the shared path-confinement predicate (#2262, #1768).** Requirement
+  candidates become absolute before the shared check, so relative target roots still reject
+  escaping symlinks; the private duplicate is gone.
+- **One `setup_proposal` in a driver-shaped process, at call time too (#2413, #1766).** The
+  six lazy sites in `setup_flow` import it through the package inside their function bodies --
+  that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
+  its own flat mode needs, so the grouping engine imports it the same way and the call-time
+  census keeps its three named residuals.
+- **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
+  fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
+  rollback prose already describes termination of registered child process groups.
 - **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
   `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
   stderr line name only roots pruned from the surface the run reviewed, like every other
