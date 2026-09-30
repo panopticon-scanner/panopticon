@@ -31,7 +31,8 @@ Three questions live here, each one a shape a step writes down:
                                the branch bodies it was written inside -- the
                                two ways the shell says an exit status will not
                                stop the script -- and `step_credit` the step's
-                               own `-e`, which a `set +e` turns off
+                               own `-e` and `pipefail`, which its `shell:`
+                               starts (`seed`) and a `set` moves
 
 Stdlib only, like everything under it.
 """
@@ -256,20 +257,22 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     command running a script around it passes that on, up to the command the
     step's own shell runs, whose failure `swallowed` and `step_credit` judge
     as they judge a check written there. A child shell has `-e` only from its
-    options or a `set`, and `pipefail` so too (re-review N-D); `eval` keeps
-    the step's -- whose `set`s are read the same way (#2335) -- but not `-e`
-    ahead of `||`/`&&`, where bash suspends it.
+    options or a `set`, and `pipefail` so too (re-review N-D); the step's own
+    shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
+    moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
+    where bash suspends it.
     `stops`: this script's failure reaches the step's own shell; `errexit`:
-    `-e` at its top (None: the step's own shell); `pipefail`: a pipeline
-    there fails on any of its commands; `shell`: the script's runner;
+    `-e` at its top (None: this is the step's own shell); `pipefail`: a
+    pipeline there fails on any of its commands; `shell`: the script's
+    runner, and at the step's own top its `shell:` (None: the default);
     `outer`: the bodies of the command running it, below the step's own, and
     `key` a name for the script, unique in the step, for its own bodies.
     """
-    out, last, where = [], len(stmts) - 1, regions(stmts)
-    inner = {} if errexit is None else where    # a step's own: `regions` over its read
-    on = _errexit_states(stmts, True if errexit is None else errexit, where)
-    fails = [pipefail] * len(stmts) if errexit is None else _errexit_states(
-        stmts, pipefail, inner, "pipefail")
+    out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
+    errexit, pipefail = seed(shell) if top else (errexit, pipefail)
+    inner = {} if top else where                # a step's own: `regions` over its read
+    on = _errexit_states(stmts, errexit, where)
+    fails = _errexit_states(stmts, pipefail, where, "pipefail")
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for stage in statement.stages:
@@ -277,14 +280,14 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             for text in scripts(argv) + stdin_scripts(argv, stage):
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
-                         and (errexit is None or on[index] or index == last)
+                         and (top or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(statements(text), gates, on[index] and statement.separator
                                      not in ("&&", "||") if own else _errexit(argv[1:]),
                                      fails[index] if own else _errexit(argv[1:], False, "pipefail"),
                                      name, region, key + ((index, ordinal),)))
-        if errexit is None:
+        if top:
             out.append(statement)
             continue
         why = (_UNGATED % shell if not stops
@@ -307,6 +310,21 @@ def _errexit(words, state=False, name="errexit"):
             if "o" in word[1:] and next(words, None) == name:
                 state = word[0] == "-"
     return state
+
+
+def seed(shell):
+    """(`-e`, `pipefail`) as a step whose `shell:` is `shell` starts (#2338).
+
+    GitHub runs a step with no `shell:` as `bash -e {0}` (`sh -e {0}` where
+    bash is missing) and `shell: sh` as `sh -e {0}`: `-e` and no pipefail.
+    Only `shell: bash` adds it (`bash --noprofile --norc -eo pipefail {0}`),
+    and a template (`bash {0}`, `bash -eo pipefail {0}`) runs with exactly
+    the options it writes.
+    """
+    words = (shell or "").split()
+    if len(words) < 2:
+        return True, words == ["bash"]
+    return _errexit(words[1:]), _errexit(words[1:], False, "pipefail")
 
 
 def _errexit_states(stmts, state, where, name="errexit"):
@@ -421,12 +439,14 @@ def in_container(argv, dest, interpreters):
     return None
 
 
-# A check whose non-zero exit nobody sees is not a check. Runners default to
-# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- and the
-# shell around the command decides whether that survives. `&` detaches it;
-# `||` hands the failure to a branch, which rescues it ONLY if that branch
-# ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
-# a test; a `set +e` ahead of it turns errexit off (`step_credit`).
+# A check whose non-zero exit nobody sees is not a check. A step with no
+# `shell:` runs `bash -e {0}`, and that `-e` is what makes `sha256sum -c` a
+# GATE -- and the shell around the command decides whether that survives. `&`
+# detaches it; `||` hands the failure to a branch, which rescues it ONLY if
+# that branch ends the job; `if`/`while`/`!` make it a test, and errexit never
+# applies to a test; a `set +e` ahead of it turns errexit off; and a command
+# piped after it takes the pipeline's status unless `pipefail` holds, which
+# only `shell: bash` or a `set -o pipefail` gives a step (`step_credit`).
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
@@ -543,28 +563,43 @@ def swallowed(stmts, index, statement, stage, credit=None):
 # `step_credit` finds it.
 _SET_E = ("runs after a `set +e` (or `set +o errexit`) turned errexit off and is not in "
           "the step's last command, so the step carries on past its failure")
+_NO_E = ("runs under `shell: %s`, which starts without errexit, and is not in the step's "
+         "last command, so the step carries on past its failure")
+_NO_PIPEFAIL = ("is piped into another command where `pipefail` is off, so the pipeline "
+                "takes that command's status and the step carries on past its failure "
+                "(`shell: bash`, or `set -o pipefail` before it, turns pipefail on)")
 
 
-def step_credit(flat):
-    """{index: (why, why)} for the statements of one step's `read` in which
-    a failing check does not stop the step, in `Inlined.credit`'s shape;
-    `swallowed` reads it last.
+def step_credit(flat, shell=None):
+    """{index: (why, why piped)} for the statements of one step's `read` in
+    which a failing check does not stop the step, in `Inlined.credit`'s shape
+    (the second answer is a check's with a command piped after it); a step
+    whose `shell:` is `shell`. `swallowed` reads it last.
 
     `flattened` credits a script handed on only as far as the command that
-    runs it, and the step's own shell decides the rest, for that command and
-    for a check written at the top alike: its `-e`, read as `_errexit_states`
-    reads a child script's. Where `-e` is off, a failure stops the step only
-    in its last command or through an `||` branch that exits; a check ahead
-    of `&&`, where bash suspends `-e` anyway, keeps the answer it has with it.
+    runs it, and the step's own shell decides the rest: its `-e`, for that
+    command and for a check written at the top alike, and its pipefail, for
+    a check piped at the top (`flattened` asks it of the command) -- each as
+    the `shell:` starts it (`seed`) and a `set` moves it, read the way
+    `_errexit_states` reads a child script. Without pipefail a piped check's
+    status is lost to the command after it. Where `-e` is off, a failure
+    stops the step only in its last command or through an `||` branch that
+    exits; a check ahead of `&&`, where bash suspends `-e` anyway, keeps the
+    answer it has with it.
     """
     at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
     stmts = [flat[index] for index in at]
-    on, start = _errexit_states(stmts, True, regions(stmts)), 0
-    credit: dict[int, tuple[str, str]] = {}
+    (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
+    on, fails = _errexit_states(stmts, errexit, where), _errexit_states(
+        stmts, pipefail, where, "pipefail")
+    credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
         separator = stmts[position].separator
-        if not (on[position] or position == len(stmts) - 1 or separator == "&&" or
-                separator == "||" and _stops_the_job(stmts, position, False)):
-            credit.update((inner, (_SET_E, _SET_E)) for inner in range(start, index + 1))
+        why = None if (on[position] or position == len(stmts) - 1 or separator == "&&" or
+                       separator == "||" and _stops_the_job(stmts, position, False)) else (
+            _SET_E if errexit else _NO_E % shell)
+        credit.update((inner, (why, why)) for inner in range(start, index) if why)
+        if why or not fails[position]:
+            credit[index] = (why, why if fails[position] else _NO_PIPEFAIL)
         start = index + 1
     return credit

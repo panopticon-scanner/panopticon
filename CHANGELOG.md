@@ -9,6 +9,7 @@ evidence exposed.
 
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
+  A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
   statement read from either side": an enforced entry whose agent is not the checkpoint's shell,

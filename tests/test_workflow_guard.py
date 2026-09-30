@@ -1197,6 +1197,68 @@ class TestASetPlusEAtTheStepsTopLevel(unittest.TestCase):
                               self.job("%s || true\n", shell)[0][1])
 
 
+class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
+    """#2338: a pipeline's status is its LAST command's unless `pipefail`
+    holds, so a check piped into another command (`CHECK | tee log`) stops
+    nothing where it is off -- and GitHub runs a step with no `shell:` as
+    `bash -e {0}`, which has none: `shell: bash` adds `-o pipefail`, `shell:
+    sh` is `sh -e {0}`, and a template (`bash {0}`) runs with exactly the
+    options it writes. The guard read every step as if pipefail held. The
+    step's `shell:` now seeds its `-e` and pipefail (`workflow_forms.seed`),
+    a top-level `set` moves them, and `read(script)` without a shell reads
+    the runner default."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    PIPED = "%s | tee log\n"
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_a_piped_check_without_pipefail_is_reported(self):
+        for shell, body in ((None, self.PIPED), ("sh", self.PIPED),
+                            ("bash", "set +o pipefail\n" + self.PIPED), ("bash -e {0}", self.PIPED),
+                            ("bash {0}", self.PIPED)):
+            with self.subTest(shell=shell, body=body):
+                found = self.job(body, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("the checksum that names /tmp/payload is piped into another "
+                              "command where `pipefail` is off", found[0][1])
+                self.assertIn("`shell: bash`, or `set -o pipefail`", found[0][1])
+        self.assertIn("where `pipefail` is off",
+                      wg.fetch_exec_defect(self.FETCH + self.PIPED % self.CHECK + self.USE))
+
+    def test_a_piped_check_under_pipefail_still_clears(self):
+        for shell, body in (("bash", self.PIPED), (None, "set -o pipefail\n" + self.PIPED),
+                            ("bash -eo pipefail {0}", self.PIPED),
+                            ("/bin/bash --noprofile --norc -eo pipefail {0}", self.PIPED)):
+            with self.subTest(shell=shell, body=body):
+                self.assertEqual([], self.job(body, shell))
+
+    def test_the_script_twins_take_the_steps_pipefail(self):
+        # The child's own pipefail covers its inner pipe, not the outer one
+        # whose status `tee` sets; `eval` runs in the step's shell and so
+        # inherits whatever pipefail the step has.
+        for form, why in (("bash -c 'set -o pipefail; %s | cat' | tee log\n",
+                           "the step does not stop when that script fails"),
+                          ("eval '%s | cat'\n", "piped into a command whose status")):
+            with self.subTest(form=form):
+                found = self.job(form)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(why, found[0][1])
+                self.assertEqual([], self.job(form, "bash"))
+
+    def test_a_template_without_e_gates_nothing_a_rescue_does_not(self):
+        found = self.job("%s\n", "bash {0}")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs under `shell: bash {0}`, which starts without errexit", found[0][1])
+        for body in ("%s || exit 1\n", "set -e\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body, "bash {0}"))
+        for shell in ("bash -e {0}", "bash -eo pipefail {0}", "sh -e {0}"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.job("%s\n", shell))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"

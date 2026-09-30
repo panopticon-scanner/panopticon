@@ -309,9 +309,9 @@ def _unread_stdin(stage):
     return None
 
 
-def read(script):
-    """Every statement a `run:` script runs, quoted scripts expanded."""
-    return flattened(statements(script))
+def read(script, shell=None):
+    """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded."""
+    return flattened(statements(script), shell=shell)
 
 
 def fetches(script):
@@ -669,7 +669,7 @@ def job_defects(steps):
         why = unparseable(step.shell)
         if not why:
             try:                    # the one read of every text, substitutions too
-                here = read(step.script)
+                here = read(step.script, step.shell)
                 walked = _walk(here, stream_exec=True)
             except shell_lex.Unreadable as error:
                 why = "cannot read this step: %s; nothing in it is accepted" % error
@@ -680,7 +680,7 @@ def job_defects(steps):
         unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
         # Per step, because each one is its own shell invocation: neither an
         # `if` left open nor a `set +e` in step A reaches step B.
-        branches, own = regions(here), step_credit(here)
+        branches, own = regions(here), step_credit(here, step.shell)
         for local, statement in enumerate(here):
             when = (step.condition, branches.get(local))
             if any(when):
