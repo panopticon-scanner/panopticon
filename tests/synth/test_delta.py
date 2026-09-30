@@ -249,6 +249,83 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(report.paths_without_ranges, 0)
             self.assertEqual(report.paths_emptied_by_drops, 0)
 
+    def test_each_artifact_key_of_the_wrong_type_reads_as_null_and_is_listed(self):
+        # #2382: `verdicts._delta_meta` copies these seven keys VERBATIM into
+        # `meta.coverage.delta`, so an artifact the controller did not write put
+        # `{"x": 1}` under a string key straight into the report. The read repairs
+        # them to null and says which ones -- a type pin with no repair at the read
+        # would let a hand-written artifact end a paid-for run on a schema error.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": {"x": 1}, "base_source": 7,
+                                   "base_commit": [], "delta_start": 1.5,
+                                   "delta_end": {}, "includes_uncommitted": "yes",
+                                   "files_changed": "many",
+                                   "hunks": {"a.py": [[1, 5]]}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            expected = ("base", "base_source", "base_commit", "delta_start",
+                        "delta_end", "includes_uncommitted", "files_changed")
+            for key in expected:
+                self.assertIsNone(data[key], key)
+            self.assertEqual(report.keys_repaired, expected)
+            # The pass owns those seven keys and nothing else: a boundary repair
+            # that coerced a key it did not own flipped a verdict once here.
+            self.assertEqual(data["hunks"], {"a.py": [(1, 5)]})
+            self.assertIsNone(report.payload_malformed)
+
+    def test_well_typed_and_absent_keys_are_not_repaired(self):
+        # A well-typed payload is passed through untouched, and an ABSENT key stays
+        # absent -- `_delta_meta` reads these with `.get`, which already answers
+        # None, so inventing the key would publish a repair that never happened.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main", "base_source": "explicit",
+                                   "files_changed": 3,
+                                   "includes_uncommitted": False,
+                                   "hunks": {"a.py": [[1, 5]]}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(report.keys_repaired, ())
+            self.assertEqual(data["base"], "main")
+            self.assertEqual(data["base_source"], "explicit")
+            self.assertEqual(data["files_changed"], 3)
+            self.assertIs(data["includes_uncommitted"], False)
+            self.assertNotIn("base_commit", data)
+            # Both halves of the bool/int trap, because `isinstance(True, int)` is
+            # True: a bool is not the int `files_changed` publishes, and an int is
+            # not the bool `includes_uncommitted` publishes.
+            path = self._write(d, {"base": "main", "files_changed": True,
+                                   "includes_uncommitted": 0, "hunks": {}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(report.keys_repaired,
+                             ("includes_uncommitted", "files_changed"))
+            self.assertIsNone(data["files_changed"])
+            self.assertIsNone(data["includes_uncommitted"])
+
+    def test_schema_version_is_honoured(self):
+        # #2382: `discovery.write_diff_hunks` stamps `schema_version: 1` and the
+        # loader ignored it. An unsupported version is a WHOLE-payload rejection,
+        # the same fail-closed shape as `not an object`: no `base` survives, so the
+        # review is not a delta one. Exactly the int 1 is supported -- `True` and
+        # `1.0` compare equal to it and are neither of them a version.
+        self.assertEqual(delta_mod.MALFORMED_SCHEMA_VERSION,
+                         "unsupported schema_version")
+        with tempfile.TemporaryDirectory() as d:
+            for version in (2, True, "1", 1.0, None):
+                path = self._write(d, {"schema_version": version, "base": "main",
+                                       "hunks": {"a.py": [[1, 5]]}})
+                data, report = delta_mod.load_diff_hunks_report(path)
+                self.assertEqual(data, {}, version)
+                self.assertEqual(report.payload_malformed,
+                                 "unsupported schema_version", version)
+            # Supported, and ABSENT is supported too: a hand-written artifact
+            # predating the key is not a version mismatch.
+            path = self._write(d, {"schema_version": 1, "base": "main",
+                                   "hunks": {"a.py": [[1, 5]]}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertIsNone(report.payload_malformed)
+            self.assertEqual(data["base"], "main")
+            path = self._write(d, {"base": "main", "hunks": {"a.py": [[1, 5]]}})
+            _, report = delta_mod.load_diff_hunks_report(path)
+            self.assertIsNone(report.payload_malformed)
+
     def test_load_diff_hunks_returns_the_same_data(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._write(d, {"base": "main", "hunks": {"a.py": [[1, 5]]}})
@@ -543,6 +620,29 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertIn("look identical from here", err)
         self.assertNotIn("was rejected", err)
 
+    def test_a_repaired_base_makes_the_review_non_delta_and_says_so(self):
+        # #2382 condition 2: repairing `base` to null WIDENS the gate to every
+        # active finding, which fails closed -- but it must not be silent, or a
+        # target-authored type error quietly turns a delta review into a whole-repo
+        # one. `delta_artifact` is the channel, because the `delta` block this very
+        # repair nulls cannot carry the reason it is null.
+        ctx, err, path = self._from_args({"base": ["main"],
+                                          "hunks": {"a.py": [[1, 5]]}})
+        self.assertFalse(ctx.active)
+        self.assertIn("DELTA ARTIFACT REPAIRED", err)
+        self.assertIn("base", err)
+        self.assertIn("NOT a delta one", err)
+        self.assertIn(path, err)
+        self.assertEqual(delta_mod.artifact_facts(ctx)["keys_repaired"], ["base"])
+        # And the scope clause is conditional: a repair that left the base alone
+        # did not widen anything, so claiming it had would be the same silence
+        # inverted.
+        ctx, err, _ = self._from_args({"base": "main", "files_changed": "many",
+                                       "hunks": {"a.py": [[1, 5]]}})
+        self.assertTrue(ctx.active)
+        self.assertIn("DELTA ARTIFACT REPAIRED", err)
+        self.assertNotIn("NOT a delta one", err)
+
     def test_no_disclosure_line_names_the_artifact_path_twice(self):
         _, err, path = self._from_args({"base": "main", "hunks": 7})
         self.assertTrue(err)
@@ -715,7 +815,7 @@ class TestArtifactFacts(unittest.TestCase):
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_a_rejected_payload_still_reports_the_read(self):
         ctx = self._ctx(["not", "an", "object"])
@@ -724,7 +824,7 @@ class TestArtifactFacts(unittest.TestCase):
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_an_active_payload_reports_no_rejection(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
@@ -733,7 +833,7 @@ class TestArtifactFacts(unittest.TestCase):
                          {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_it_carries_both_loss_counters(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})

@@ -480,7 +480,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_a_non_object_artifact_is_named_in_the_report(self):
         cov = self._coverage(payload=["not", "an", "object"])
@@ -489,7 +489,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_no_diff_hunks_flag_leaves_both_keys_null(self):
         # The distinction the whole change is about: nothing was read, so there
@@ -511,7 +511,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                          {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0,
                           "paths_without_ranges": 0,
-                          "paths_emptied_by_drops": 0})
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_the_two_blocks_agree_about_the_losses(self):
         # One loader record behind both, so the active block and the sibling
@@ -579,11 +579,19 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         # forgotten in `artifact_facts` or `_delta_meta` stayed green, which is
         # the class of omission #2169 and #2381 both were.
         renamed = {"files": "hunks_files", "ranges": "hunks_ranges"}
+        # #2382: ONE field is published in the sibling only, and deliberately.
+        # `keys_repaired` exists to disclose a repair that can null `base`, and a
+        # nulled base leaves `delta` itself null -- so a key there could not carry
+        # it in the case it was added for. Exempted by name, so the guard still
+        # fails for the next field added to `HunksLoad` and forgotten.
+        artifact_only = {"keys_repaired"}
         fields = {f.name for f in dataclasses.fields(delta_mod.HunksLoad)}
         self.assertTrue(set(renamed) <= fields)
+        self.assertTrue(artifact_only <= fields)
         cov = self._coverage(payload={"base": "main", "base_source": "explicit",
                                       "diff_context": 5, "files_changed": 1,
                                       "hunks": {"a.py": [[10, 12]]}})
         # the sibling publishes what the READ cost, so the two map sizes stay out
         self.assertEqual(set(cov["delta_artifact"]), fields - set(renamed))
-        self.assertLessEqual({renamed.get(f, f) for f in fields}, set(cov["delta"]))
+        self.assertLessEqual({renamed.get(f, f) for f in fields - artifact_only},
+                             set(cov["delta"]))
