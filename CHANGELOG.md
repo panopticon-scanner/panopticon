@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Keep HTML evidence disclosures fail closed (#2195, #1774).** The coverage header counts
+  the same active findings as its collapsed unverified section, and malformed evidence values
+  render there without crashing.
 - **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
   non-object `usage` value in its existing drop tally, and successful driver-side collection
   forwards the bounded collector disclosure to stderr.

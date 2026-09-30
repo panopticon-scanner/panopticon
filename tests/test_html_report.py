@@ -974,11 +974,19 @@ class TestHtmlReport(unittest.TestCase):
         self.assertNotIn("badge gate-pass", out)
 
     def test_header_shows_coverage_line(self):
-        report = _minimal_report()
+        statuses = (["advisor_confirmed"] * 2 + ["tool_confirmed"]
+                    + ["unverified"] * 2 + ["tool_reported"] * 3)
+        findings = []
+        for index, status in enumerate(statuses):
+            finding = dict(_minimal_report()["findings"][0])
+            finding["id"] = "SEC-%03d" % (index + 30)
+            finding["evidence"] = {"status": status}
+            findings.append(finding)
+        report = _minimal_report(findings)
         report["summary"]["evidence_stats"] = {
             "advisor_confirmed": 2,
             "tool_confirmed": 1,
-            "unverified": 5,
+            "unverified": 2,
             "tool_reported": 3,
         }
         report["summary"]["gate_policy"] = "confirmed_only"
@@ -2004,3 +2012,28 @@ class TestOneOwnerForVerified(unittest.TestCase):
         self.assertEqual(expected, len(sections.VERIFIED_STATUSES))
         self.assertIn("Coverage: %d verified &middot;" % expected,
                       hr._render_header(report))
+
+    def test_header_unverified_count_matches_the_collapsed_population(self):
+        statuses = ["tool_reported", "needs_more_info", "unverified", "future_status"]
+        findings = []
+        for index, status in enumerate(statuses):
+            finding = dict(_minimal_report()["findings"][0])
+            finding["id"] = "SEC-%03d" % (index + 20)
+            finding["evidence"] = {"status": status}
+            findings.append(finding)
+        report = _minimal_report(findings)
+        report["summary"]["evidence_stats"] = {
+            status: 1 for status in statuses if status != "future_status"
+        }
+        self.assertIn("4 unverified", hr._render_header(report))
+        self.assertIn("Unverified findings <span class='count'>(4)</span>",
+                      hr._render_findings(report))
+
+    def test_non_mapping_evidence_fails_closed_without_crashing(self):
+        for value in ("bad", ["bad"], 7):
+            with self.subTest(value=value):
+                report = _minimal_report()
+                report["findings"][0]["evidence"] = value
+                rendered = hr._render_findings(report)
+                self.assertIn("Unverified findings <span class='count'>(1)</span>",
+                              rendered)
