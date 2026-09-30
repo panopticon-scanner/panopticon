@@ -10,10 +10,16 @@ drifts: nothing failed when the thirtieth reference was added without a pin.
 This module writes the convention down as a test, so the control's scope is the
 whole directory rather than whichever lines someone remembered.
 """
+import ast
 import copy
+import importlib.metadata
+import json
 import os
 import re
 import shlex
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -832,6 +838,153 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
             % (m.group(1), ".".join(str(n) for n in RUNNER_PIP_FLOOR)))
 
 
+# --- #2369: what the driver's and the gate's import chains actually reach -----
+# Two properties over one reading of the same files.
+#
+# WHERE an import sits decides whether `driver readiness` can diagnose a thin
+# install at all: the `dependencies` row names an absent runtime package with
+# its `pip install`, and it only gets to print if the process reached a row. A
+# third-party import at MODULE level on the driver's path is a
+# ModuleNotFoundError traceback out of `import scripts.driver` instead (#2369).
+#
+# WHICH package an import names decides whether the security gate can start:
+# installed with `--require-hashes --no-deps`, `.github/requirements-gate.txt`
+# IS that environment, so every third-party module either chain imports -- at
+# module level or nested inside a function -- has to be in the closure.
+#
+# Both read the AST. A text guard cannot tell `import yaml` at the top of a file
+# from one inside a function, and that distinction is the whole first property
+# (`text-guards-must-read-the-AST`).
+
+SKILL_SCRIPTS = os.path.join(REPO_ROOT, "skill", "scripts")
+
+
+def _is_local_module(name):
+    """Is `name` one of this repo's own modules rather than a package?
+
+    `scripts` itself, or a module `skill/scripts/` ships under its BARE name:
+    `discovery.py` reaches `diff_map` that way, off the flat import root it
+    puts on `sys.path` itself, and a checker that did not know that would
+    report the repo's own files as third-party.
+    """
+    return (name == "scripts"
+            or os.path.isfile(os.path.join(SKILL_SCRIPTS, name + ".py"))
+            or os.path.isdir(os.path.join(SKILL_SCRIPTS, name)))
+
+
+def third_party_names(node):
+    """The non-stdlib, non-local top-level module names one import statement
+    names. A relative `from . import x` is local by construction."""
+    if isinstance(node, ast.ImportFrom):
+        if node.level:
+            return []
+        names = [(node.module or "").split(".")[0]]
+    else:
+        names = [alias.name.split(".")[0] for alias in node.names]
+    return [name for name in names
+            if name and name not in sys.stdlib_module_names
+            and not _is_local_module(name)]
+
+
+def _module_level_import_nodes(body):
+    """Every import statement that RUNS when the module is imported.
+
+    `tree.body`, descending into module-level `try:`/`if:` arms: a guarded
+    top-level import is still a top-level import -- the `except ImportError:`
+    changes what a failed import does, not when the import is attempted.
+    """
+    for node in body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield node
+        elif isinstance(node, (ast.Try, ast.If)):
+            arms = [node.body, node.orelse, getattr(node, "finalbody", [])]
+            arms += [handler.body for handler in getattr(node, "handlers", [])]
+            for arm in arms:
+                yield from _module_level_import_nodes(arm)
+
+
+def module_level_third_party(source, filename="<source>"):
+    """[(line, module)] for every third-party import at MODULE level."""
+    tree = ast.parse(source, filename=filename)
+    return [(node.lineno, name)
+            for node in _module_level_import_nodes(tree.body)
+            for name in third_party_names(node)]
+
+
+def every_third_party(source, filename="<source>"):
+    """[(line, module)] for every third-party import ANYWHERE in the file.
+
+    Nested imports included, because since #2369 they are the norm on these
+    paths -- and the gate still has to install what they name.
+    """
+    tree = ast.parse(source, filename=filename)
+    return [(node.lineno, name) for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for name in third_party_names(node)]
+
+
+# The census program, run in a CHILD rather than read off this process's
+# `sys.modules`: a full-suite run has already imported whatever every other
+# test module imports, and two of those are on neither chain under test --
+# `scripts.capture_goldens` (defusedxml at module level) and
+# `scripts.smoke_adapters` (a nested `bandit`). Reading this suite's own
+# `sys.modules` would make both guards depend on test ORDER.
+#
+# Selected by FILE and not by module NAME. `skill/scripts/` holds no
+# `__init__.py` and is itself on `sys.path` in several live paths, so a module
+# there has two reachable names (`tests/test_module_identity.py` is the guard
+# for that), and the flat one is how several are actually reached:
+# `grouping_engine.py` does a bare `import setup_proposal`, and a census keyed
+# on `scripts.` missed `setup_proposal.py`'s own module-level `import yaml`
+# entirely. The file is on the path however it was spelled.
+_CENSUS = """
+import json, os, sys
+scripts_dir = sys.argv[1]
+for name in sys.argv[2:]:
+    __import__(name)
+print(json.dumps(sorted({
+    os.path.abspath(module.__file__)
+    for module in list(sys.modules.values())
+    if getattr(module, "__file__", None)
+    and os.path.abspath(module.__file__).startswith(scripts_dir + os.sep)})))
+"""
+
+
+def files_reached_by(*roots):
+    """Every `skill/scripts` FILE that importing `roots` loads, sorted.
+
+    A fresh interpreter with only `skill/` on the path and a cwd elsewhere --
+    the driver-shaped process `tests/test_module_identity.py` measures its own
+    census in, for the same reason: the import graph under test must be the
+    product's, not this suite's.
+    """
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env["PYTHONPATH"] = os.path.join(REPO_ROOT, "skill")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(  # nosec B603
+        [sys.executable, "-c", _CENSUS, SKILL_SCRIPTS, *roots],
+        cwd=tempfile.gettempdir(), env=env, capture_output=True, text=True,
+        timeout=180)
+    if proc.returncode != 0:
+        raise AssertionError("importing %s failed, so neither import-chain "
+                             "guard can read anything:\n%s"
+                             % (", ".join(roots), proc.stdout + proc.stderr))
+    return json.loads(proc.stdout)
+
+
+def third_party_imports_under(files):
+    """{module: ["<file>:<line>", ...]} for every third-party import, nested
+    included, in `files`."""
+    found = {}
+    for path in files:
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        for line, module in every_third_party(source, path):
+            found.setdefault(module, []).append(
+                "%s:%d" % (os.path.relpath(path, REPO_ROOT), line))
+    return found
+
+
 class TestGateClosureCoversRuntimePackages(unittest.TestCase):
     """#2363: installed with `--no-deps`, the gate's requirements file IS the
     environment, so a runtime package the gate's import chain reaches has to be
@@ -840,21 +993,32 @@ class TestGateClosureCoversRuntimePackages(unittest.TestCase):
     Both commands that run repository code in that environment
     (`skill/scripts/run_tools.py` and `skill/scripts/security_gate.py`) reach
     `scripts.tools`, whose package body builds `ADAPTERS` by importing every
-    adapter, and an adapter is free to import a declared runtime dependency at
-    module level. The existing guards in this file assert the install COMMAND
-    (`--require-hashes`, a pinned file) and that every pinned line carries a
-    digest; none of them asks whether the closure covers what the gate imports.
-    That gap red-lined the `scan` and `fork-scan` checks the moment
-    `tools/spotbugs.py` stopped falling back to the stdlib XML parser.
+    adapter, and an adapter is free to import a declared runtime dependency --
+    since #2369 inside the function that needs it, which changes nothing about
+    what has to be installed. The existing guards in this file assert the
+    install COMMAND (`--require-hashes`, a pinned file) and that every pinned
+    line carries a digest; none of them asks whether the closure covers what
+    the gate imports. That gap red-lined the `scan` and `fork-scan` checks the
+    moment `tools/spotbugs.py` stopped falling back to the stdlib XML parser.
+
+    Two guards, because they fail differently. The first reads
+    `readiness_checks.RUNTIME_PACKAGES` -- a declared LIST, and a proxy: an
+    adapter that grows a dependency the list does not name would red the `scan`
+    job with it green. The second reads the IMPORTS, which is the property that
+    actually broke.
     """
 
     GATE = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")
 
     @staticmethod
     def _normalised(name):
-        """PEP 503-style, enough for these names: pip treats `rpds-py` and
-        `rpds_py` as one project, and so must a guard reading two files."""
-        return name.lower().replace("_", "-")
+        """PEP 503 normalisation, in full: pip treats `rpds-py`, `rpds_py` and
+        `rpds.py` as one project, and so must a guard reading two files. The
+        dot matters now that the second guard below compares requirement lines
+        against `importlib.metadata` distribution names, which are free to
+        carry any of the three separators (and any case -- `PyYAML`).
+        """
+        return re.sub(r"[-_.]+", "-", name).lower()
 
     def _pinned_names(self):
         with open(self.GATE, encoding="utf-8") as fh:
@@ -882,6 +1046,137 @@ class TestGateClosureCoversRuntimePackages(unittest.TestCase):
                     "so it is the whole environment. The gate would fail at "
                     "import, not degrade."
                     % (pip_name, os.path.relpath(self.GATE, REPO_ROOT)))
+
+    def test_every_third_party_import_on_the_gate_path_is_pinned(self):
+        pinned = self._pinned_names()
+        self.assertTrue(pinned, "the gate's requirements file pins nothing; "
+                                "this guard is reading the wrong file")
+        reached = files_reached_by("scripts.run_tools", "scripts.security_gate")
+        self.assertIn(os.path.join(SKILL_SCRIPTS, "run_tools.py"), reached,
+                      "the census imported no gate module; this guard is vacuous")
+        imports = third_party_imports_under(reached)
+        self.assertTrue(imports, "the gate's import chain reads as having no "
+                                 "third-party import at all, which it does "
+                                 "(yaml, at least); this guard is reading the "
+                                 "wrong files")
+        # `packages_distributions()` rather than a hand-written import-name ->
+        # distribution map: the mapping is a fact about what is installed
+        # (`yaml` comes from `PyYAML`), and a restated one goes stale silently.
+        provided_by = importlib.metadata.packages_distributions()
+        gate = os.path.relpath(self.GATE, REPO_ROOT)
+        for module, sites in sorted(imports.items()):
+            with self.subTest(module=module):
+                distributions = provided_by.get(module) or []
+                self.assertTrue(
+                    distributions,
+                    "`import %s` (%s) and no installed distribution provides "
+                    "that module, so this guard cannot say whether the gate's "
+                    "closure covers it -- an import the environment cannot "
+                    "explain. Install it (`pip install -e \".[dev]\"`) or drop "
+                    "the import." % (module, ", ".join(sites)))
+                # ANY of them: several distributions may provide one import
+                # name, and installing one of those is enough for the import to
+                # resolve. The message names them all so an unpinned one is
+                # obvious either way.
+                self.assertTrue(
+                    any(self._normalised(d) in pinned for d in distributions),
+                    "`import %s` (%s) is provided by %s, and %s pins none of "
+                    "them -- that file is installed with --require-hashes "
+                    "--no-deps, so it IS the gate's environment. The gate would "
+                    "fail at import, not degrade."
+                    % (module, ", ".join(sites),
+                       ", ".join(sorted(distributions)), gate))
+
+
+class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
+    """#2369: `driver readiness`'s `dependencies` row is only reachable if
+    importing the driver imports no third-party package.
+
+    The row names an absent runtime package with its `pip install`, before the
+    first paid dispatch. It printed for `jsonschema` -- imported lazily by the
+    artifact validation -- and for neither of the other two, because four
+    modules on the driver's own import path imported a third-party package at
+    MODULE level: `tools/spotbugs.py` (defusedxml, reached twice over through
+    `scripts.tools`'s package body, which imports every adapter) and
+    `setup_flow.py`, `discovery.py` and `setup_proposal.py` (yaml). A thin
+    install therefore got a ModuleNotFoundError traceback out of `import
+    scripts.driver` and no document at all -- loud, and it named the package,
+    but it was not the preflight.
+
+    The fourth was found by this guard and not by the issue: `setup_proposal.py`
+    is reached as flat `setup_proposal`, so the first draft of the census, keyed
+    on `sys.modules` names beginning `scripts.`, could not see it. Hence the
+    file-keyed census above.
+
+    So the property is about WHERE an import sits: on this path every
+    third-party import belongs inside the function that needs it. The design
+    ruling was lazy IMPORTS and not a lazy `ADAPTERS` registry -- that dict is
+    `mock.patch.dict`-ed by three test modules and enumerated by
+    `capture_goldens.py`, so it stays a plain dict.
+
+    `tests/phases/test_readiness_verb.py` asserts the row from the other side,
+    in a child interpreter where the package is genuinely gone. This guard is
+    what stops the next module-level import from putting it back.
+    """
+
+    #: `run_tools` and `security_gate` join the driver here because they are the
+    #: two commands the security gate runs, and the class above asks a different
+    #: question about the same two chains.
+    ROOTS = ("scripts.driver", "scripts.phases.readiness", "scripts.run_tools",
+             "scripts.security_gate")
+
+    def test_no_module_on_the_driver_path_imports_a_third_party_at_module_level(self):
+        reached = files_reached_by(*self.ROOTS)
+        self.assertIn(os.path.join(SKILL_SCRIPTS, "driver.py"), reached,
+                      "the census imported no driver module; this guard is vacuous")
+        offenders = []
+        for path in reached:
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read()
+            offenders += ["%s:%d %s" % (os.path.relpath(path, REPO_ROOT), line, module)
+                          for line, module in module_level_third_party(source, path)]
+        self.assertEqual(
+            [], offenders,
+            "these imports run when the driver is imported, so an install "
+            "without one of them is a traceback instead of the `dependencies` "
+            "row that names its `pip install` (#2369):\n  %s\nMove each into "
+            "the function that uses it -- no fallback, no guard: a guarded "
+            "top-level import still needs the package at import time."
+            % "\n  ".join(offenders))
+
+    def test_a_guarded_top_level_import_still_trips_the_checker(self):
+        # text-guards-must-read-the-AST. A `try:`/`except ImportError:` wrapper
+        # changes what a failed import DOES, not when it is attempted, so the
+        # package is still needed before any row can print. A checker reading
+        # indentation, or one stopping at `tree.body` without descending, would
+        # call this clean -- and this shape is exactly what someone reaches for
+        # when the guard reds on them.
+        source = ("import os\n"
+                  "try:\n"
+                  "    import defusedxml\n"
+                  "except ImportError:\n"
+                  "    pass\n")
+        self.assertEqual([(3, "defusedxml")], module_level_third_party(source))
+
+    def test_an_import_inside_a_function_is_not_a_module_level_import(self):
+        source = ("def parse(raw):\n"
+                  "    import defusedxml.ElementTree as ET\n"
+                  "    return ET.fromstring(raw)\n")
+        self.assertEqual([], module_level_third_party(source))
+        # ...and the nested reading DOES see it, which is what the gate-closure
+        # guard above is built on: moving an import does not un-require it.
+        self.assertEqual([(2, "defusedxml")], every_third_party(source))
+
+    def test_this_repos_own_modules_are_not_third_party(self):
+        source = ("import json\n"
+                  "import scripts.hosts\n"
+                  "from scripts.tools import egress\n"
+                  "import diff_map\n")
+        self.assertEqual([], module_level_third_party(source))
+
+    def test_a_relative_import_is_local_by_construction(self):
+        self.assertEqual([], module_level_third_party("from . import base\n"))
+        self.assertEqual([], module_level_third_party("from .base import run_tool\n"))
 
 
 # --- #1652: the scheduled adapter job's test selector ------------------------

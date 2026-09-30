@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
+  #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
+  before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the
+  driver's own import path imported a third-party package at MODULE level: `tools/spotbugs.py`
+  (`defusedxml`, reached through `scripts.tools`'s package body, which imports every adapter, which
+  the host probes import) and `setup_flow.py`, `discovery.py` and `setup_proposal.py` (`yaml`). A
+  checkout thinner than `pyproject.toml` therefore got a `ModuleNotFoundError` traceback out of
+  `import scripts.driver` and no document at all — loud, and it named the package, but it was not
+  the preflight. Each of those imports now sits inside the function that uses it, with no fallback
+  and no `except ImportError:` arm, so a missing package still raises loudly from the one call that
+  needs it (#2363); `ADAPTERS` stays a plain `dict`, since three test modules `mock.patch.dict` it
+  and `capture_goldens.py` enumerates it. `repo_config.read_document` now REFUSES the document when
+  `pyyaml` is absent rather than raising through `phases/readiness._matrix_row` and
+  `setup_flow._check_groups_manifest`, both of which document that they never raise. Two guards
+  pin the property. `tests/phases/test_readiness_verb.py` blocks each of the three packages in a
+  child interpreter and reads the row back: exit 1, `missing` is exactly that pip name, and no
+  `Traceback` on stderr. `tests/test_workflow_pins.py` asserts by AST that no module the driver's,
+  `run_tools`' or `security_gate`'s import chain loads names a non-stdlib, non-local module at
+  module level — descending into module-level `try:`/`if:` arms, because a guarded top-level import
+  still needs its package at import time, and selecting the modules by FILE rather than by
+  `sys.modules` name, which is how the fourth offender was found at all. The same file's
+  gate-closure guard now reads those IMPORTS instead of proxying the `RUNTIME_PACKAGES` list: every
+  third-party module those chains import, nested ones included, maps through
+  `importlib.metadata.packages_distributions()` to a distribution pinned in
+  `.github/requirements-gate.txt`, and its PEP 503 normalisation is now the full `[-_.]+` fold.
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
   statement read from either side": an enforced entry whose agent is not the checkpoint's shell,

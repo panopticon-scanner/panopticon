@@ -1,6 +1,7 @@
 """#1681 Plan 1: the one resolver/reader for the root config file."""
 import os
 import builtins
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -136,6 +137,23 @@ class TestReadDocument(unittest.TestCase):
                           doc.errors[0])
             self.assertIn("expected the node content", doc.errors[0])
             self.assertNotIn("must declare", doc.errors[0])
+
+    def test_an_absent_pyyaml_is_a_refusal_not_a_traceback(self):
+        # #2369: `phases/readiness._matrix_row` and
+        # `setup_flow._check_groups_manifest` are both documented NEVER to
+        # raise, and `driver readiness`'s `dependencies` row is where a missing
+        # runtime package gets named with its `pip install`. A ModuleNotFoundError
+        # out of here reached both before that row could print. A `None` entry in
+        # `sys.modules` is what makes `import yaml` raise ImportError.
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, "panopticon.yml", GOOD)
+            with mock.patch.dict(sys.modules, {"yaml": None}):
+                doc = rc.read_document(d)
+            self.assertEqual(path, doc.path)
+            self.assertIsNone(doc.doc)
+            self.assertEqual(
+                ["pyyaml is not installed; `pip install pyyaml` (the readiness "
+                 "`dependencies` row names it)"], doc.errors)
 
     def test_authored_config_read_oserror_is_unreadable(self):
         with tempfile.TemporaryDirectory() as d:

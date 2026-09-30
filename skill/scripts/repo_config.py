@@ -13,7 +13,10 @@ unknown top-level keys are disclosed and ignored. `.panopticon/groups.yml`
 is never read here: a tree that still carries one and no root file gets
 `legacy_message`, and `setup_flow.migrate_config` is the only reader of it.
 
-Importing names needs only the stdlib; read_document loads yaml when parsing.
+Importing names needs only the stdlib; read_document loads yaml when parsing --
+and REFUSES the document if the package is absent, rather than raising, because
+every caller here is documented as never raising and `driver readiness`'s
+`dependencies` row is the place a missing `pyyaml` gets named (#2369).
 """
 import os
 import stat
@@ -110,7 +113,18 @@ def read_document(review_root):
         return Document(res.path, None,
                         ["%s exceeds %d bytes; refused" % (res.path, MAX_CONFIG_BYTES)],
                         disclosures)
-    import yaml
+    # A refusal, not a traceback: `phases/readiness._matrix_row` and
+    # `setup_flow._check_groups_manifest` are both documented NEVER to raise, and
+    # an install without pyyaml reached them before the readiness `dependencies`
+    # row could name the package (#2369). The row still fails and still prints
+    # the `pip install`; this is the same refusal currency as a capped, symlinked
+    # or unparseable config.
+    try:
+        import yaml
+    except ImportError:
+        return Document(res.path, None,
+                        ["pyyaml is not installed; `pip install pyyaml` (the "
+                         "readiness `dependencies` row names it)"], disclosures)
 
     try:
         doc = yaml.safe_load(data.decode("utf-8"))

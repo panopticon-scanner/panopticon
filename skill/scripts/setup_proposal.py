@@ -11,10 +11,7 @@ handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
 from typing import Any
-
 import re
-
-import yaml
 
 import coverage_model
 import groups_schema
@@ -56,6 +53,7 @@ def _load_catalog(path, root_key, kind, noun):
     the SHIPPED data so fixtures can stay minimal); strict about the two
     things that break routing: a duplicate name, and an alias that resolves
     to two entries (first owner kept, collision reported)."""
+    import yaml
     empty: dict[str, Any] = {"names": [], "hints": {}, "entries": {}, "aliases": {}}
     with open(path, encoding="utf-8") as fh:
         try:
@@ -148,6 +146,7 @@ def canonicalize(label, catalog):
 def load_affinity(path, vocabulary):
     """Return ({capability: [domain]}, errors). Domains validate against
     groups_schema.DOMAINS; keys validate against the vocabulary names."""
+    import yaml
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
 
@@ -714,6 +713,7 @@ def dump_config_yaml(groups, exclude_paths=None, settings=None, header=True):
     Round-trips through repo_config.read_document + groups_schema.parse_*.
     A `settings` value of None is omitted so a repo never gains a key it did
     not ask for."""
+    import yaml
     cleaned = {}
     for name, body in groups.items():
         subs = body.get("subgroups")
