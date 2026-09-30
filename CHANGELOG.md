@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
+  report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
 - **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
   #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
   before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the
