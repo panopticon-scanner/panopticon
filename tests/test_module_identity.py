@@ -470,14 +470,23 @@ def _package_fallbacks(root=REPO_ROOT):
     return offenders
 
 
+def _names_flat_setup_proposal(node):
+    """True for `import setup_proposal` and `from setup_proposal import x`."""
+    if isinstance(node, ast.Import):
+        return any(alias.name == "setup_proposal" for alias in node.names)
+    return (isinstance(node, ast.ImportFrom) and not node.level
+            and node.module == "setup_proposal")
+
+
 def _flat_setup_proposal_imports(root=REPO_ROOT):
     """Flat `import setup_proposal` sites outside a guarded fallback arm.
 
     Every `*.py` under `skill/scripts/`, not just the package ones: the two
     modules that reach `setup_proposal` lazily are flat modules, so the surface
-    `_package_fallbacks` walks would miss both. `ast.Import` only: the package
-    spellings (`from scripts import ...`, `import scripts.setup_proposal`) are
-    what this gate wants to see.
+    `_package_fallbacks` walks would miss both. Both flat spellings, `import
+    setup_proposal` and `from setup_proposal import x`; the package spellings
+    (`from scripts import ...`, `import scripts.setup_proposal`) are what this
+    gate wants to see.
 
     The arm `discovery` falls back to in its OWN flat mode is the one legitimate
     flat spelling left (#2413), and it is inside an `except ModuleNotFoundError`
@@ -498,13 +507,11 @@ def _flat_setup_proposal_imports(root=REPO_ROOT):
             for handler in node.handlers:
                 if _catches_an_import_error(handler):
                     guarded.update(id(stmt) for stmt in ast.walk(handler)
-                                   if isinstance(stmt, ast.Import))
+                                   if _names_flat_setup_proposal(stmt))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Import) or id(node) in guarded:
+            if id(node) in guarded or not _names_flat_setup_proposal(node):
                 continue
-            if any(alias.name == "setup_proposal" for alias in node.names):
-                offenders.append("%s:%d: %s"
-                                 % (relative, node.lineno, ast.unparse(node)))
+            offenders.append("%s:%d: %s" % (relative, node.lineno, ast.unparse(node)))
     return offenders
 
 
@@ -857,6 +864,25 @@ class FlatSetupProposalImportTest(unittest.TestCase):
             "(`tests/test_layout.py`'s `FLAT_MODULES`), whose fallback arm is "
             "reached with only skill/scripts on sys.path (#2413, #1516)."
             % (len(offenders), "\n  ".join(offenders)))
+
+    def test_the_detector_sees_both_flat_spellings_and_only_unguarded_ones(self):
+        # Vacuity guard: with zero offenders in the tree, an empty answer is
+        # green even if the walk stopped looking. Plant the shapes it must see.
+        planted = {
+            "skill/scripts/a.py": "def f():\n    import setup_proposal as sp\n",
+            "skill/scripts/tools/b.py": "from setup_proposal import load_vocabulary\n",
+            "skill/scripts/c.py": ("try:\n    from scripts import setup_proposal\n"
+                                   "except ModuleNotFoundError:\n"
+                                   "    import setup_proposal\n"),
+            "skill/scripts/d.py": "from scripts import setup_proposal\n"}
+        with tempfile.TemporaryDirectory() as directory:
+            for relative, source in planted.items():
+                path = pathlib.Path(directory, *relative.split("/"))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding="utf-8")
+            self.assertEqual(
+                sorted(site.split(":")[0] for site in _flat_setup_proposal_imports(directory)),
+                ["skill/scripts/a.py", "skill/scripts/tools/b.py"])
 
 
 if __name__ == "__main__":
