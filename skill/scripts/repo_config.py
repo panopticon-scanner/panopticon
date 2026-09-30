@@ -121,10 +121,15 @@ def read_document(review_root):
     # or unparseable config.
     try:
         import yaml
-    except ImportError:
+    except ImportError as exc:
+        # The exception text, not just the remedy: a `yaml` whose own module
+        # body raises ImportError is a BROKEN install, not an absent one, and
+        # `pip install pyyaml` is only accidentally the right answer to it. The
+        # operator needs to see which of the two they have.
         return Document(res.path, None,
-                        ["pyyaml is not installed; `pip install pyyaml` (the "
-                         "readiness `dependencies` row names it)"], disclosures)
+                        ["pyyaml is not usable (%s); `pip install pyyaml` (the "
+                         "readiness `dependencies` row names it)" % exc],
+                        disclosures)
 
     try:
         doc = yaml.safe_load(data.decode("utf-8"))

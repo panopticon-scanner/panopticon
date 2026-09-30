@@ -886,21 +886,43 @@ def third_party_names(node):
             and not _is_local_module(name)]
 
 
+#: The only statements whose body does NOT run when the module is imported.
+#: `Lambda` is named for completeness and can never match: it is an expression,
+#: and an import is a statement, so no import can sit inside one.
+_FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
 def _module_level_import_nodes(body):
     """Every import statement that RUNS when the module is imported.
 
-    `tree.body`, descending into module-level `try:`/`if:` arms: a guarded
-    top-level import is still a top-level import -- the `except ImportError:`
-    changes what a failed import does, not when the import is attempted.
+    Written as a REFUSAL rather than as a list of shapes worth descending into:
+    everything that is not inside a function body runs at import, so the walk
+    follows every child statement -- `try`/`except`/`except*`/`finally`, `if`/
+    `else`, `with`, `for`, `while`, `match`/`case`, `class` -- and stops only at
+    `def` and `async def`.
+
+    The first version descended into `try:` and `if:` alone, and six other
+    shapes read as clean: `with contextlib.suppress(ImportError):`, which is the
+    first thing a developer reaches for when this guard reds on them, `except*`
+    (whose node is `ast.TryStar`, not an `ast.Try`), a class body, a `for`/
+    `while` body and a `match` case. A guard that enumerates the shapes it knows
+    is a guard the next shape walks past -- text-guards-must-read-the-AST, and
+    `TestNoThirdPartyImportAtModuleLevelOnTheDriverPath.MODULE_LEVEL_SHAPES`
+    holds all nine as a table.
     """
     for node in body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             yield node
-        elif isinstance(node, (ast.Try, ast.If)):
-            arms = [node.body, node.orelse, getattr(node, "finalbody", [])]
-            arms += [handler.body for handler in getattr(node, "handlers", [])]
-            for arm in arms:
-                yield from _module_level_import_nodes(arm)
+        elif not isinstance(node, _FUNCTION_SCOPES):
+            for child in ast.iter_child_nodes(node):
+                # `iter_child_nodes` hands back expressions too (a `with`'s
+                # context manager, an `if`'s test); only statement bodies can
+                # hold an import, and the two nodes that HOLD a body without
+                # being statements themselves are an except arm and a `case`.
+                if isinstance(child, ast.stmt):
+                    yield from _module_level_import_nodes([child])
+                elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
+                    yield from _module_level_import_nodes(child.body)
 
 
 def module_level_third_party(source, filename="<source>"):
@@ -957,14 +979,25 @@ def files_reached_by(*roots):
     the driver-shaped process `tests/test_module_identity.py` measures its own
     census in, for the same reason: the import graph under test must be the
     product's, not this suite's.
+
+    The environment is STATED, not inherited, the way the sibling child-process
+    case in `tests/phases/test_readiness_verb.py` states its own: an empty PATH
+    and a HOME with nothing under them, `PYTHONPATH` exactly `skill/`, and no
+    other `PYTHON*` variable the developer happens to have set. Nothing here
+    launches a binary -- it only imports -- but a census of what the product
+    imports must not be a reading of whoever ran it.
     """
-    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    env["PYTHONPATH"] = os.path.join(REPO_ROOT, "skill")
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    proc = subprocess.run(  # nosec B603
-        [sys.executable, "-c", _CENSUS, SKILL_SCRIPTS, *roots],
-        cwd=tempfile.gettempdir(), env=env, capture_output=True, text=True,
-        timeout=180)
+    with tempfile.TemporaryDirectory() as elsewhere:
+        env = {"PATH": os.path.join(elsewhere, "empty-path"),
+               "HOME": os.path.join(elsewhere, "home"),
+               "PYTHONPATH": os.path.join(REPO_ROOT, "skill"),
+               "PYTHONDONTWRITEBYTECODE": "1"}
+        for path in (env["PATH"], env["HOME"]):
+            os.makedirs(path, exist_ok=True)
+        proc = subprocess.run(  # nosec B603
+            [sys.executable, "-c", _CENSUS, SKILL_SCRIPTS, *roots],
+            cwd=elsewhere, env=env, capture_output=True, text=True,
+            timeout=180)
     if proc.returncode != 0:
         raise AssertionError("importing %s failed, so neither import-chain "
                              "guard can read anything:\n%s"
@@ -1001,11 +1034,21 @@ class TestGateClosureCoversRuntimePackages(unittest.TestCase):
     the gate imports. That gap red-lined the `scan` and `fork-scan` checks the
     moment `tools/spotbugs.py` stopped falling back to the stdlib XML parser.
 
-    Two guards, because they fail differently. The first reads
-    `readiness_checks.RUNTIME_PACKAGES` -- a declared LIST, and a proxy: an
-    adapter that grows a dependency the list does not name would red the `scan`
-    job with it green. The second reads the IMPORTS, which is the property that
-    actually broke.
+    Two guards, because they fail differently, and NEITHER is redundant. The
+    first reads `readiness_checks.RUNTIME_PACKAGES` -- a declared LIST, and a
+    proxy: an adapter that grows a dependency the list does not name would red
+    the `scan` job with it green. The second reads the IMPORTS, which is the
+    property that actually broke.
+
+    What each one covers is not the same set, so read this before retiring
+    either. The gate's chain imports `jsonschema` (through `security_gate` into
+    `synth/validate_schema.py`) and `defusedxml` (through `scripts.tools` into
+    the spotbugs adapter's `parse`), and it does NOT import `yaml` at all -- the
+    modules that do are on the DRIVER's chain, not the gate's. So the
+    import-reading guard covers jsonschema and defusedxml, and the
+    `RUNTIME_PACKAGES` proxy is the only thing keeping `pyyaml` in the closure:
+    retiring it would silently drop pyyaml from a file installed with
+    `--require-hashes --no-deps`.
     """
 
     GATE = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")
@@ -1057,8 +1100,8 @@ class TestGateClosureCoversRuntimePackages(unittest.TestCase):
         imports = third_party_imports_under(reached)
         self.assertTrue(imports, "the gate's import chain reads as having no "
                                  "third-party import at all, which it does "
-                                 "(yaml, at least); this guard is reading the "
-                                 "wrong files")
+                                 "(defusedxml and jsonschema, at least); this "
+                                 "guard is reading the wrong files")
         # `packages_distributions()` rather than a hand-written import-name ->
         # distribution map: the mapping is a fact about what is installed
         # (`yaml` comes from `PyYAML`), and a restated one goes stale silently.
@@ -1099,9 +1142,9 @@ class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
     MODULE level: `tools/spotbugs.py` (defusedxml, reached twice over through
     `scripts.tools`'s package body, which imports every adapter) and
     `setup_flow.py`, `discovery.py` and `setup_proposal.py` (yaml). A thin
-    install therefore got a ModuleNotFoundError traceback out of `import
-    scripts.driver` and no document at all -- loud, and it named the package,
-    but it was not the preflight.
+    install therefore got a ModuleNotFoundError traceback out of
+    `import scripts.driver` and no document at all -- loud, and it named the
+    package, but it was not the preflight.
 
     The fourth was found by this guard and not by the issue: `setup_proposal.py`
     is reached as flat `setup_proposal`, so the first draft of the census, keyed
@@ -1140,23 +1183,56 @@ class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
             "these imports run when the driver is imported, so an install "
             "without one of them is a traceback instead of the `dependencies` "
             "row that names its `pip install` (#2369):\n  %s\nMove each into "
-            "the function that uses it -- no fallback, no guard: a guarded "
-            "top-level import still needs the package at import time."
+            "the function that uses it. Not into a module-level `try:` / "
+            "`except ImportError:`: an except arm that rebinds the name is the "
+            "fallback #2363 forbids, one that passes leaves the name unbound "
+            "for a NameError at first use, and an unguarded one takes the row "
+            "down. The function body is the only place that is none of those."
             % "\n  ".join(offenders))
 
-    def test_a_guarded_top_level_import_still_trips_the_checker(self):
-        # text-guards-must-read-the-AST. A `try:`/`except ImportError:` wrapper
-        # changes what a failed import DOES, not when it is attempted, so the
-        # package is still needed before any row can print. A checker reading
-        # indentation, or one stopping at `tree.body` without descending, would
-        # call this clean -- and this shape is exactly what someone reaches for
-        # when the guard reds on them.
-        source = ("import os\n"
-                  "try:\n"
-                  "    import defusedxml\n"
-                  "except ImportError:\n"
-                  "    pass\n")
-        self.assertEqual([(3, "defusedxml")], module_level_third_party(source))
+    #: Every shape that puts an import at MODULE level, with the line it sits
+    #: on. All of them RUN when the module is imported, so all of them must
+    #: trip -- text-guards-must-read-the-AST, and this is the table that says
+    #: what "read the AST" has to mean here.
+    #:
+    #: Note what the rule is NOT resting on. A module-level
+    #: `try: import x / except ImportError: pass` does NOT need the package at
+    #: import time -- suppressing the error is exactly what it does, and the
+    #: readiness row prints fine with one in place (measured). It is refused for
+    #: two other reasons: an except arm that rebinds the name is the fallback
+    #: #2363 forbids, and one that passes leaves the name unbound for a
+    #: NameError at first use. An UNGUARDED module-level import is the one that
+    #: takes the row down. All three belong in the function instead.
+    #:
+    #: Six of the nine read as CLEAN
+    #: while the walk descended into `try:`/`if:` only (#2369 re-review):
+    #: `contextlib.suppress(ImportError)` is the first shape a developer
+    #: reaches for when this guard reds on them, and `except*` builds an
+    #: `ast.TryStar`, which is not an `ast.Try` subclass.
+    MODULE_LEVEL_SHAPES = (
+        ("a bare import", 1, "import defusedxml\n"),
+        ("an `if` arm", 2, "if True:\n    import defusedxml\n"),
+        ("a `try` body", 2, ("try:\n    import defusedxml\n"
+                             "except ImportError:\n    pass\n")),
+        ("an `except*` body (ast.TryStar)", 2,
+         "try:\n    import defusedxml\nexcept* ImportError:\n    pass\n"),
+        ("a `with contextlib.suppress(ImportError)` body", 2,
+         "with contextlib.suppress(ImportError):\n    import defusedxml\n"),
+        ("a class body", 2, "class A:\n    import defusedxml\n"),
+        ("a `for` body", 2, "for _ in range(1):\n    import defusedxml\n"),
+        ("a `while` body", 2,
+         "while True:\n    import defusedxml\n    break\n"),
+        ("a `match` case body", 3,
+         "match 1:\n    case 1:\n        import defusedxml\n"),
+    )
+
+    def test_every_module_level_shape_trips_the_checker(self):
+        for label, line, source in self.MODULE_LEVEL_SHAPES:
+            with self.subTest(shape=label):
+                self.assertEqual(
+                    [(line, "defusedxml")], module_level_third_party(source),
+                    "%s puts the import at module level, so it runs when the "
+                    "module is imported, so the checker has to see it" % label)
 
     def test_an_import_inside_a_function_is_not_a_module_level_import(self):
         source = ("def parse(raw):\n"

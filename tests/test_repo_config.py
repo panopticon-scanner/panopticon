@@ -138,22 +138,37 @@ class TestReadDocument(unittest.TestCase):
             self.assertIn("expected the node content", doc.errors[0])
             self.assertNotIn("must declare", doc.errors[0])
 
-    def test_an_absent_pyyaml_is_a_refusal_not_a_traceback(self):
+    def test_an_unusable_pyyaml_is_a_refusal_not_a_traceback(self):
         # #2369: `phases/readiness._matrix_row` and
         # `setup_flow._check_groups_manifest` are both documented NEVER to
         # raise, and `driver readiness`'s `dependencies` row is where a missing
         # runtime package gets named with its `pip install`. A ModuleNotFoundError
         # out of here reached both before that row could print. A `None` entry in
         # `sys.modules` is what makes `import yaml` raise ImportError.
+        #
+        # The refusal carries the ImportError's own text, so a BROKEN install --
+        # a `yaml` whose module body raises -- does not read as an absent one,
+        # for which `pip install pyyaml` is only accidentally the right answer.
         with tempfile.TemporaryDirectory() as d:
             path = _write(d, "panopticon.yml", GOOD)
             with mock.patch.dict(sys.modules, {"yaml": None}):
                 doc = rc.read_document(d)
+                # The same import in the same patched world: this pins the
+                # refusal's FORMAT without pinning CPython's wording for a
+                # `None` sys.modules entry.
+                try:
+                    import yaml  # noqa: F401
+                except ImportError as exc:
+                    reason = str(exc)
+                else:
+                    self.fail("`import yaml` did not raise with a None "
+                              "`sys.modules` entry; this case tests nothing")
             self.assertEqual(path, doc.path)
             self.assertIsNone(doc.doc)
+            self.assertIn("yaml", reason)
             self.assertEqual(
-                ["pyyaml is not installed; `pip install pyyaml` (the readiness "
-                 "`dependencies` row names it)"], doc.errors)
+                ["pyyaml is not usable (%s); `pip install pyyaml` (the "
+                 "readiness `dependencies` row names it)" % reason], doc.errors)
 
     def test_authored_config_read_oserror_is_unreadable(self):
         with tempfile.TemporaryDirectory() as d:
