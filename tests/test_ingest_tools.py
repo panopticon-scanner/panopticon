@@ -1873,14 +1873,21 @@ class TestGatesWhenSuppressed(unittest.TestCase):
         for bad in (None, {}, {"severity": None}, {"citations": "lots"},
                     {"citations": {"cwe": "CWE-798"}},
                     {"citations": {"cwe": [None, 798]}},
-                    # Review M1: `evidence.tool_rule_id` does
-                    # `(finding.get("tool_evidence") or {}).get(...)`, so these
-                    # two RAISED AttributeError against a docstring promising
-                    # totality. The name of this test was the over-claim.
+                    # These three pin the SHARED helper, not a local
+                    # workaround: `evidence.tool_rule_id` reads both fields
+                    # through `_tool_evidence` / `provenance_of`, each of which
+                    # answers `{}` for a non-dict (#2359, #2372).
                     {"tool_evidence": "nope"}, {"provenance": "nope"},
-                    {"tool_evidence": ["nope"], "provenance": 3}):
+                    {"tool_evidence": ["nope"], "provenance": 3},
+                    # #2366: that helper returns the rule id UNCONVERTED, so a
+                    # numeric one reached `CWE_TAG.finditer` and raised
+                    # `TypeError`. `_rule_id` is the boundary that guarantees
+                    # the regex a string.
+                    {"tool_evidence": {"rule_id": 5}}):
             with self.subTest(bad=bad):
                 self.assertFalse(it.gates_when_suppressed(bad))
+        # The string boundary itself: an absent rule is "", never "None" (#2366).
+        self.assertEqual(it._rule_id({}), "")
 
 
 class TestInSourceSuppressionIsAnIngestPolicy(unittest.TestCase):
