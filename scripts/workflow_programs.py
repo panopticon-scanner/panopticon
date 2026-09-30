@@ -116,15 +116,16 @@ def candidates(argv):
     """(the value, [the words it may make the program]) for a shell handed a
     value where it reads its options (`_VALUE`, #2344): `X=-c; sh $X 'curl
     … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
-    -I{} sh {} '…'` do. This module follows no value, so every literal word
-    after it may be the program; (None, []) where the options end first, at
-    a program, a `-c` whose string `scripts` reads, or a `--`. A value that
-    is the command word, handed a `-c` cluster, may be a shell itself (#2337,
-    `CMD=sh; $CMD -c '…'`): the program after the options is the candidate.
+    -I{} sh {} '…'` do. This module follows no value, so every word after it
+    may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern),
+    which `unread_program` cannot read (review N2 of #2331); (None, []) where
+    the options end first, at a program, a `-c` whose string `scripts` reads,
+    or a `--`. A value that is the command word, handed a `-c` cluster, may be
+    a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after the
+    options is the candidate.
     """
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
-        return argv[0], [w for w in _past_options(argv, 1)
-                         if not shell_reader.dynamic(w, shell_reader.has_substitution)]
+        return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
     owed = 0
@@ -132,8 +133,7 @@ def candidates(argv):
         if owed:
             owed -= 1
         elif _value(word):
-            return word, [w for w in argv[at + 1:]
-                          if not shell_reader.dynamic(w, shell_reader.has_substitution)]
+            return word, argv[at + 1:]
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":
@@ -193,7 +193,7 @@ def stdin_program(argv):
         # `bash -oe pipefail`); another interpreter's, one where it ends so.
         owed = (sum(letter in _VALUE_OPTIONS for letter in letters) if shell
                 else int(bool(letters) and letters[-1] in _VALUE_OPTIONS))
-        for _value in range(owed):
+        for _ in range(owed):
             next(rest, None)                # an option's value is not a program
     return answer
 

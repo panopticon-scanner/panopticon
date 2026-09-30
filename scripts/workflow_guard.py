@@ -82,10 +82,10 @@ that starts catching one fails there, and this list is edited with it.
   A download kept in a variable is followed to a shell whole (`carried`, #2341),
   not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
   and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
-  A value in a shell's options (`sh $X '…'`) is not followed; the literal words after it
-  are read as programs it may make (`candidates`, #2344), a `$` program (`sh -c "$P"`) not.
-  Nor is a `$` command word: `${X:-sh}` reads as the shell it defaults to, and another one
-  handed `-c` makes its program a candidate (#2337); `$CMD --flag` is read as nothing.
+  A value in a shell's options (`sh $X '…'`) is not followed: each word after it may be the
+  program (`candidates`, #2344), reported where a literal one fetches or the job downloads.
+  Nor is a `$` command word: `${X:-sh}` reads as the shell it defaults to, another handed
+  `-c` makes its program a candidate (#2337); `sh -c "$P"` and `$CMD --flag` read nothing.
   A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it (#2342).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL

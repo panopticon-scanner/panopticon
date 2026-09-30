@@ -300,8 +300,9 @@ class TestTheProgramAfterDashC(unittest.TestCase):
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be
     `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
-    under bash 3.2.57 and 5.2.21 -- so each literal word after it may be the
-    program. The guard does not follow the value; it reads those words."""
+    under bash 3.2.57 and 5.2.21 -- so each word after it may be the
+    program. The guard does not follow the value; it reads the literal words
+    and hands on a dynamic one, which it cannot read (review N2 of #2331)."""
 
     @staticmethod
     def argv(script):
@@ -309,14 +310,14 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         assert len(stmts) == 1, stmts
         return shell_reader.command(stmts[0].stages[-1].argv)
 
-    def test_each_literal_word_after_the_value_is_a_candidate(self):
+    def test_each_word_after_the_value_is_a_candidate(self):
         for script, value in (("sh $X P", "$X"), ('sh "${X:--c}" P', "${X:--c}"),
                               ("sh $(echo -c) P", "$(...)"), ("bash -e $X -o pipefail P", "$X"),
                               ("echo -c | xargs -I{} sh {} P", "{}"), ("sh ${X}c P", "${X}c")):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words[-1:]))
-        self.assertEqual(["P", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
+        self.assertEqual(["P", "$Y", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
 
     def test_none_where_the_options_end_first(self):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
@@ -354,9 +355,11 @@ class TestADynamicCommandWordHandedDashC(unittest.TestCase):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words))
+        # A dynamic program is a candidate too, handed on unread (review N2 of #2331).
+        self.assertEqual(["$P"], forms.candidates(self.argv('$CMD -c "$P"'))[1])
 
     def test_none_without_a_dash_c(self):
-        for script in ("$CMD --flag", "$CMD -x P", "$CMD", '$CMD -c "$P"', "$HOME/bin/tool -c P"):
+        for script in ("$CMD --flag", "$CMD -x P", "$CMD", "$HOME/bin/tool -c P"):
             with self.subTest(script=script):
                 self.assertEqual([], forms.candidates(self.argv(script))[1])
 

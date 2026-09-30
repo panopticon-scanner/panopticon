@@ -145,6 +145,46 @@ class TestADynamicCommandWord(unittest.TestCase):
         self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
 
 
+class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
+    """#2344 and #2337 (review N2 of #2331): a `$` word after a value in a shell's
+    options, or after a `$` command word's `-c`, may be the program, and the
+    guard cannot read it: it is weighed as a literal `'echo hi'` is there,
+    `Idle`, kept where the job fetches, not dropped."""
+
+    def test_it_is_reported_where_the_job_fetches(self):
+        # Bash 3.2.57, 5.2.21 and dash run the download in each once `$X`
+        # is `-c` (`tool` beside `'echo hi'`), `$CMD` is `sh`, and `$Y` and
+        # `$P` are `sh tool`.
+        for script in (GET + 'sh $X "$Y"\n', GET + '$CMD -c "$P"\n', GET + 'sh $X "$(cat tool)"\n',
+                       GET + "sh $X 'echo hi'\n"):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # All three run these too. A download a variable carries gets that
+        # `Idle` sentence, not #2341's: `carried` follows no value and no `$`
+        # command word.
+        for script, head in (('x=$(curl -fsSL %si.sh)\nX=-c\nsh $X "$x"\n' % URL, "passes `sh` `$X`"),
+                             ('x=$(curl -fsSL %si.sh)\nCMD=sh\n$CMD -c "$x"\n' % URL,
+                              "runs `$CMD` with `-c`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(head), found)
+
+    def test_it_is_not_reported_where_the_job_fetches_nothing(self):
+        for script in ('sh $X "$Y"\n', '$CMD -c "$P"\n', 'sh $X "$(cat notes.txt)"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_what_the_gap_list_keeps_reads_nothing(self):
+        # With no word after the value nothing is handed on: `sh $X` runs
+        # `tool` where `$X` names it, the value gap the gap list keeps, CLEAN
+        # before this fix too; and the gap list's `sh -c "$P"` reads nothing,
+        # though bash 3.2.57, 5.2.21 and dash run `tool` where `$P` is `sh tool`.
+        for script in (GET + "sh $X\n", GET + 'sh -c "$P"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 class TestDoubleQuoteEscapes(unittest.TestCase):
     """#2342: the program a double-quoted `-c` or `eval` string hands a shell
     is the text bash makes of it, `\\$` and `` \\` `` without their backslash."""
