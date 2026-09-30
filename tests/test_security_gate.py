@@ -243,6 +243,23 @@ class TestSecurityGate(unittest.TestCase):
         self.assertIn("README.md:? - test finding", out)
         self.assertNotIn("README.md:None", out)
 
+    def test_a_locus_free_finding_prints_a_question_mark_for_its_file(self):
+        # #2409 (#1784): #2174 made a finding with NO locus at all legal -- a
+        # repo-wide catalog or coverage gap (the `{domain}-X0X` fallback) has
+        # no file to name -- so the row must survive a `location` dict with no
+        # `file` key and a finding with no `location` at all. `synth/render.py`
+        # and `html_report.py` already default that half to `?`; the gate's
+        # row printed `None:?` to the same operator.
+        for location in ({"line_start": None}, {}, None):
+            with self.subTest(location=location):
+                finding = {"severity": "HIGH", "id": "SEC-X0X",
+                           "title": "catalog gap"}
+                if location is not None:
+                    finding["location"] = location
+                row = gate._row(finding)
+                self.assertIn("?:? - catalog gap", row)
+                self.assertNotIn("None", row)
+
     def test_empty_selection_is_invalid(self):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(
