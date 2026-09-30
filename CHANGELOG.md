@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tell a broken rangeless path from a legitimate one (#2386, #1783).** Both delta blocks carry
+  `paths_emptied_by_drops`, the subset of `paths_without_ranges` a broken artifact produced, and
+  the stderr disclosure names the rangeless paths (first ten, escaped).
 - **Read the committed config once per discovery run (#2269, #1761).** Exclusion and group
   readers share per-call snapshots, so one resolver disclosure reaches the operator once.
 - **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer

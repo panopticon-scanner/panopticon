@@ -479,7 +479,8 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0})
 
     def test_a_non_object_artifact_is_named_in_the_report(self):
         cov = self._coverage(payload=["not", "an", "object"])
@@ -487,7 +488,8 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0})
 
     def test_no_diff_hunks_flag_leaves_both_keys_null(self):
         # The distinction the whole change is about: nothing was read, so there
@@ -508,7 +510,8 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0})
 
     def test_the_two_blocks_agree_about_the_losses(self):
         # One loader record behind both, so the active block and the sibling
@@ -549,6 +552,25 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                           cov["delta"]["hunks_ranges"]), (2, 1))
         self.assertEqual(cov["delta"]["on_diff_total"], 2)
         self.assertEqual(cov["delta"]["pre_existing_total"], 0)
+        # #2386: c.py arrived `[]`, the legitimate half of the shape.
+        self.assertEqual(cov["delta"]["paths_emptied_by_drops"], 0)
+        self.assertEqual(cov["delta_artifact"]["paths_emptied_by_drops"], 0)
+
+    def test_the_broken_half_of_the_rangeless_shape_is_published_too(self):
+        # #2386: c.py's only range was malformed, so the loader emptied its list
+        # -- a BROKEN artifact wearing the same shape as the deletion-only change
+        # above. Both blocks carry the subset, so a consumer reading the report
+        # (not the stderr line) can tell the two apart for the first time.
+        cov = self._coverage(
+            payload={"base": "main", "base_source": "explicit", "diff_context": 5,
+                     "files_changed": 2,
+                     "hunks": {"a.py": [[10, 12]], "c.py": ["nope"]}},
+            group_files=("a.py", "c.py"))
+        self.assertEqual(cov["delta"]["paths_without_ranges"], 1)
+        self.assertEqual(cov["delta"]["paths_emptied_by_drops"], 1)
+        self.assertEqual(cov["delta_artifact"]["paths_emptied_by_drops"], 1)
+        self.assertEqual(cov["delta"]["ranges_dropped"], 1)
+        self.assertEqual(cov["delta"]["paths_dropped"], 0)
 
     def test_every_hunks_load_field_is_published_in_both_blocks(self):
         # #2381 review, N6: schema parity binds the schema to the report and the

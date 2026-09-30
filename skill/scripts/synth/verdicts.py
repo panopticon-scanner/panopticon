@@ -353,6 +353,10 @@ def _delta_meta(delta, partitions):
     # map NAMES with no range keeps its file and classifies every finding in it
     # ON-diff (`diff_map.classify`'s changed-file fail-open), which is the one
     # fail-open shape here and the one the two loss counters both read as zero.
+    # #2386 publishes the SUBSET of that third counter a broken artifact
+    # produced -- the paths whose list arrived non-empty and was emptied because
+    # every range in it was malformed -- so a consumer of the report, and not
+    # just a reader of the stderr line, can tell the two sub-populations apart.
     hunks_load = delta.report if delta_mode else None
     hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
                                  if delta_mode else (0, 0))
@@ -370,6 +374,8 @@ def _delta_meta(delta, partitions):
                    "paths_dropped": hunks_load.paths_dropped if hunks_load else None,
                    "paths_without_ranges": (hunks_load.paths_without_ranges
                                             if hunks_load else None),
+                   "paths_emptied_by_drops": (hunks_load.paths_emptied_by_drops
+                                              if hunks_load else None),
                    "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
                    "on_diff_total": len(partitions.on_diff_active),
                    "pre_existing_total": len(partitions.pre_existing_active)}
