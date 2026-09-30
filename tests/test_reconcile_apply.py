@@ -11,6 +11,7 @@ from unittest import mock
 
 import file_issues
 import reconcile_apply
+import sanitize
 import triage
 
 
@@ -2036,4 +2037,302 @@ class TestCommentBodyIsScrubbed(unittest.TestCase):
                 reconcile_apply.apply([action], dry=False, runner=runner,
                                       sleep=lambda _: None, progress_path=progress)
         self.assertIn("pending", str(caught.exception))
-        self.assertIn("different repo root", str(caught.exception))
+        self.assertIn("the receipt's root", str(caught.exception))
+        self.assertIn(sanitize._resolved_root(None), str(caught.exception))
+
+    def test_a_created_receipt_records_the_root_the_body_was_built_under(self):
+        """The receipt stores the prefix scrub() actually stripped, so a resume
+        from another checkout can rebuild the body byte-for-byte (#2157)."""
+        action = self._action()
+
+        def runner(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "comment"]:
+                return FakeCompleted("")
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            self.assertEqual(reconcile_apply.apply(
+                [action], dry=False, runner=runner, sleep=lambda _: None,
+                progress_path=progress), (1, 0))
+            receipt = json.loads(progress.read_text())
+        self.assertEqual(receipt["root"], sanitize._resolved_root(None))
+        self.assertEqual(receipt["root"], file_issues.repo_root())
+
+    def test_resume_rebuilds_the_pending_body_under_the_receipt_root(self):
+        """The whole point: a checkout whose own root is NOT the posted one still
+        confirms the comment, because the body is built under the receipt's root.
+        The other root is a real directory -- sanitize._normalized_root refuses
+        one that does not exist here, so a fictional path could never be used."""
+        with tempfile.TemporaryDirectory() as other, tempfile.TemporaryDirectory() as d:
+            elsewhere = os.path.realpath(other) + "/"
+            reason = "%sskill/scripts/driver.py is still flagged" % elsewhere
+            action = {"cohort": "ambiguous", "fingerprint": "fp1", "close": False,
+                      "issue": "https://github.com/o/r/issues/1",
+                      "comment": reconcile_apply.AMBIGUOUS_COMMENT
+                      % reconcile_apply.neutralize(reason)}
+            key = reconcile_apply._action_key(action, "o/r")
+            marker = "\n\n<!-- panopticon-reconcile:%s -->" % key
+            remote = file_issues.scrub(action["comment"], elsewhere) + marker
+            self.assertNotIn(elsewhere, remote)
+            self.assertNotEqual(remote, reconcile_apply._comment_body(action, "o/r"))
+
+            def runner(argv, **kwargs):
+                self.assertNotEqual(argv[:3], ["gh", "issue", "comment"])
+                if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                    return FakeCompleted(json.dumps([{"body": remote}]))
+                return FakeCompleted(json.dumps({"admin": True}))
+
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["root"] = elsewhere
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            reconcile_apply._save_progress(receipt, progress)
+            self.assertEqual(reconcile_apply.apply(
+                [action], dry=False, runner=runner, sleep=lambda _: None,
+                progress_path=progress), (0, 0))
+            acknowledged = json.loads(progress.read_text())["actions"][key]
+        self.assertEqual(acknowledged, {"commented": True, "closed": False})
+
+    def test_a_receipt_root_absent_from_this_machine_is_refused_with_both_routes(self):
+        """sanitize._normalized_root refuses a root that is not an existing
+        directory, so a receipt from a checkout this box does not have cannot
+        rebuild the body at all: name the root and both ways out, before any
+        probe or mutation."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["root"] = os.path.join(d, "gone", "checkout") + "/"
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            reconcile_apply._save_progress(receipt, progress)
+            with self.assertRaises(RuntimeError) as caught:
+                reconcile_apply.apply([action], dry=False, runner=runner,
+                                      sleep=lambda _: None, progress_path=progress)
+            self.assertEqual([c[:2] for c in calls], [["gh", "api"]])
+        message = str(caught.exception)
+        self.assertIn(receipt["root"], message)
+        self.assertIn("resume from that checkout", message)
+        self.assertIn("--reset-progress", message)
+
+    def test_a_gone_receipt_root_refuses_before_any_close(self):
+        """The proof is a pre-check, not a per-action one. A plan whose first
+        action is already commented and due to close must not close it and only
+        then discover that the second action's body cannot be rebuilt: the
+        operator would be told to reconcile by hand over a half-applied plan."""
+        first = dict(self._action(), close=True)
+        second = dict(self._action(), comment="second reconciliation comment",
+                      issue="https://github.com/o/r/issues/2")
+        keys = [reconcile_apply._action_key(a, "o/r") for a in (first, second)]
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", keys, False)
+            receipt["root"] = os.path.join(d, "gone", "checkout") + "/"
+            receipt["actions"][keys[0]] = {"commented": True, "closed": False}
+            receipt["actions"][keys[1]] = {"commented": False, "closed": False,
+                                           "comment_pending": True}
+            reconcile_apply._save_progress(receipt, progress)
+            with self.assertRaises(RuntimeError) as caught:
+                reconcile_apply.apply([first, second], dry=False, confirm_close=True,
+                                      runner=runner, sleep=lambda _: None,
+                                      progress_path=progress)
+            self.assertEqual([c[:2] for c in calls], [["gh", "api"]])
+        self.assertIn(receipt["root"], str(caught.exception))
+        self.assertIn("--reset-progress", str(caught.exception))
+
+    def test_a_receipt_root_with_a_nul_byte_refuses_with_the_receipt_message(self):
+        """os.path.realpath raises ValueError, not RuntimeError, on an embedded
+        NUL, so a corrupt recorded root has to be caught as well or it fails
+        closed with no route out."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["root"] = "/nul\x00root/"
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            progress.write_text(json.dumps(receipt))
+            with self.assertRaises(RuntimeError) as caught:
+                reconcile_apply.apply([action], dry=False, runner=runner,
+                                      sleep=lambda _: None, progress_path=progress)
+            self.assertEqual([c[:2] for c in calls], [["gh", "api"]])
+        message = str(caught.exception)
+        self.assertIn("recorded when the receipt was bound", message)
+        self.assertIn("--reset-progress", message)
+
+    def test_a_rootless_receipt_keeps_the_detections_own_refusal(self):
+        """The pre-check skips a receipt with no root, so _resolved_root(None)'s
+        own message survives: relabelling it would name a receipt root that does
+        not exist and offer two routes that cannot help."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        detection = "git rev-parse failed and the cwd is the filesystem root; run the filer"
+
+        def runner(argv, **kwargs):
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            progress.write_text(json.dumps({k: v for k, v in receipt.items() if k != "root"}))
+            with mock.patch.object(reconcile_apply.file_issues, "scrub",
+                                   side_effect=RuntimeError(detection)):
+                with self.assertRaises(RuntimeError) as caught:
+                    reconcile_apply.apply([action], dry=False, runner=runner,
+                                          sleep=lambda _: None, progress_path=progress)
+        self.assertEqual(str(caught.exception), detection)
+
+    def test_a_fresh_post_uses_the_receipt_root_for_the_body_it_posts(self):
+        """The posting path, not only the resume: the body handed to
+        `gh issue comment` is the one scrubbed under the receipt's root, so the
+        resume has something it can reproduce."""
+        with tempfile.TemporaryDirectory() as other, tempfile.TemporaryDirectory() as d:
+            elsewhere = os.path.realpath(other) + "/"
+            reason = "%sskill/scripts/driver.py is still flagged" % elsewhere
+            action = {"cohort": "ambiguous", "fingerprint": "fp1", "close": False,
+                      "issue": "https://github.com/o/r/issues/1",
+                      "comment": reconcile_apply.AMBIGUOUS_COMMENT
+                      % reconcile_apply.neutralize(reason)}
+            key = reconcile_apply._action_key(action, "o/r")
+            marker = "\n\n<!-- panopticon-reconcile:%s -->" % key
+            expected = file_issues.scrub(action["comment"], elsewhere) + marker
+            posted = []
+
+            def runner(argv, **kwargs):
+                if argv[:3] == ["gh", "issue", "comment"]:
+                    posted.append(argv[argv.index("--body") + 1])
+                    return FakeCompleted("")
+                return FakeCompleted(json.dumps({"admin": True}))
+
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["root"] = elsewhere
+            reconcile_apply._save_progress(receipt, progress)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(reconcile_apply.apply(
+                    [action], dry=False, runner=runner, sleep=lambda _: None,
+                    progress_path=progress), (1, 0))
+            self.assertNotIn(elsewhere, expected)
+            self.assertNotEqual(expected, reconcile_apply._comment_body(action, "o/r"))
+        self.assertEqual(posted, [expected])
+
+    def test_a_degenerate_live_detection_cannot_abort_a_valid_receipt_root(self):
+        """The disclosure is a warning, and a warning must never abort. With a
+        usable recorded root nothing on the posting path needs the live cwd --
+        scrub(text, root) never consults it -- so a detection that refuses must
+        leave the resume exactly as it was, silently."""
+        with tempfile.TemporaryDirectory() as other, tempfile.TemporaryDirectory() as d:
+            elsewhere = os.path.realpath(other) + "/"
+            action = {"cohort": "recurring", "fingerprint": "fp1", "close": False,
+                      "issue": "https://github.com/o/r/issues/1",
+                      "comment": "%sskill/scripts/driver.py recurred" % elsewhere}
+            key = reconcile_apply._action_key(action, "o/r")
+            posted = []
+
+            def runner(argv, **kwargs):
+                if argv[:3] == ["gh", "issue", "comment"]:
+                    posted.append(argv[argv.index("--body") + 1])
+                    return FakeCompleted("")
+                return FakeCompleted(json.dumps({"admin": True}))
+
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["root"] = elsewhere
+            reconcile_apply._save_progress(receipt, progress)
+            degenerate = RuntimeError("git rev-parse failed and the cwd is the filesystem root")
+            err = io.StringIO()
+            with mock.patch.object(reconcile_apply.file_issues, "repo_root",
+                                   side_effect=degenerate), contextlib.redirect_stderr(err):
+                self.assertEqual(reconcile_apply.apply(
+                    [action], dry=False, runner=runner, sleep=lambda _: None,
+                    progress_path=progress), (1, 0))
+            expected = (file_issues.scrub(action["comment"], elsewhere)
+                        + "\n\n<!-- panopticon-reconcile:%s -->" % key)
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(posted, [expected])
+        self.assertNotIn(elsewhere, posted[0])
+
+    def test_a_receipt_root_that_is_not_this_checkout_is_disclosed(self):
+        """The receipt now decides what a public comment strips, so a root from
+        another checkout is named on stderr beside this one, with the rebind."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+
+        def runner(argv, **kwargs):
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        for foreign in (True, False):
+            with self.subTest(foreign=foreign), tempfile.TemporaryDirectory() as other, \
+                    tempfile.TemporaryDirectory() as d:
+                progress = Path(d) / "progress.json"
+                receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+                if foreign:
+                    receipt["root"] = os.path.realpath(other) + "/"
+                reconcile_apply._save_progress(receipt, progress)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(reconcile_apply.apply(
+                        [action], dry=False, runner=runner, sleep=lambda _: None,
+                        progress_path=progress), (1, 0))
+                if foreign:
+                    self.assertIn(receipt["root"], err.getvalue())
+                    self.assertIn(file_issues.repo_root(), err.getvalue())
+                    self.assertIn("--reset-progress", err.getvalue())
+                else:
+                    self.assertEqual(err.getvalue(), "")
+
+    def test_a_rootless_receipt_resumes_and_a_non_string_root_is_refused(self):
+        """A pre-#2157 v2 receipt keeps the cwd detection; a present-but-unusable
+        `root` is a schema refusal before any mutation."""
+        action = self._action()
+        key = reconcile_apply._action_key(action, "o/r")
+        body = reconcile_apply._comment_body(action, "o/r")
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([{"body": body}]))
+            return FakeCompleted(json.dumps({"admin": True}))
+
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+            receipt["actions"][key] = {"commented": False, "closed": False,
+                                       "comment_pending": True}
+            rootless = {k: v for k, v in receipt.items() if k != "root"}
+            progress.write_text(json.dumps(rootless))
+            self.assertEqual(reconcile_apply.apply(
+                [action], dry=False, runner=runner, sleep=lambda _: None,
+                progress_path=progress), (0, 0))
+            self.assertEqual([c[:3] for c in calls if c[:2] == ["gh", "issue"]], [])
+            for bad in (7, "", None, [], {}):
+                with self.subTest(root=bad):
+                    progress.write_text(json.dumps(dict(rootless, root=bad)))
+                    calls.clear()
+                    with self.assertRaisesRegex(ValueError, "invalid progress schema: "):
+                        reconcile_apply.apply([action], dry=False, runner=runner,
+                                              sleep=lambda _: None, progress_path=progress)
+                    self.assertEqual(calls, [])

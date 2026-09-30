@@ -14,6 +14,10 @@ evidence exposed.
   `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
   The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
   `x=$(curl ...)` then `eval "$x"`, `sh -c "$x"` or `echo "$x" | sh` is now reported (#2341).
+- **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
+  records the repo root the scrubbed comment was built under, every body on that plan is built
+  under that root, so a resume from another checkout confirms the posted comment instead of
+  dead-ending on a body it could never match.
 - **Delta runs are capped and disclosed like whole-repo runs (#2376, #2377, #1784).** The
   `--scope-changed` surface is bounded by `DISCOVERED_FILES_MAX`, the `discovery` block says which
   surface its numbers describe (`surface`), and both paths publish what the policy pruned by class
