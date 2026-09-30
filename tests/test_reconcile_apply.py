@@ -1499,6 +1499,42 @@ class TestSafeRecovery(unittest.TestCase):
                     "--out", str(output)]), 0)
             self.assertEqual(file_issues.load_ledger(output), {})
 
+    def test_a_wrong_shaped_source_report_is_refused_by_name(self):
+        # #2398: `load_report` refuses a non-object document with a ValueError
+        # (#2373). Left bare, that reached the operator as "incomplete recovery:
+        # report ..." with nothing saying which INPUT was at fault. Raised as this
+        # module's own IncompleteRecovery it names the artifact and keeps the
+        # established `refusing:` / rc 1 register the CLI and its callers expect.
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.json"
+            source.write_text('["not", "an", "object"]')
+            reason = "source report .*not a JSON object"
+            with self.assertRaisesRegex(reconcile_apply.IncompleteRecovery, reason):
+                reconcile_apply._source_records({"source.json": source}, ())
+            with self.assertRaisesRegex(reconcile_apply.IncompleteRecovery, reason):
+                self.recover([], reports={"source.json": source})
+            output = Path(d) / "ledger.json"
+            err = io.StringIO()
+            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                    FakeCompleted("[]")), contextlib.redirect_stderr(err):
+                rc = reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                    "--out", str(output), "--report", "source.json=" + str(source)])
+            self.assertEqual(rc, 1)
+            self.assertIn("refusing: source report", err.getvalue())
+            self.assertFalse(output.exists())
+
+    def test_a_string_source_location_recovers_as_a_record_with_no_location(self):
+        # #2398: `dict(record.get("location") or {})` raised a ValueError on a
+        # string `location` -- the same unvalidated field every other reader now
+        # takes through `evidence.location_of`. It recovers as stating no location.
+        record = {"fingerprint": "abc123", "id": "F-1", "location": "a.py"}
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.json"
+            source.write_text(json.dumps({"findings": [record]}))
+            recovered = self.recover([self.issue(record)], reports={"source.json": source})
+        self.assertEqual(recovered, {file_issues.key_for(record, False):
+                                     "https://github.com/o/r/issues/1"})
+
     def test_producer_source_roundtrip(self):
         for name in ("@name", "#123", "](", "https://example/a", "Foo:Bar", "a\u200bb", "@\u200bname"):
             for rejected in (False, True):
