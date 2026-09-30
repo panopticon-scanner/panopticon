@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
+  domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
+  of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
+  as the HTML and Markdown renderers already do.
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
