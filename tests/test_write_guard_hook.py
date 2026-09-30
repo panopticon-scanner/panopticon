@@ -1003,6 +1003,24 @@ class TestMain(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_main_denies_when_adjudication_raises(self):
+        # #2391: main() must fail CLOSED -- a deny response and exit 0 -- when
+        # adjudicate() raises for any reason. A non-2 exit is NON-blocking in
+        # Claude Code, so a traceback out of main() would let the Write proceed.
+        # The write here is one the allowlist ALLOWS, so only the raise can deny.
+        allow = [".panopticon/findings-g1-x.json"]
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": ".panopticon/findings-g1-x.json"}}
+        )
+        self.assertEqual(self._run_main(payload, allowlist_paths=allow), (0, ""))   # allowed
+        with mock.patch.object(wg, "adjudicate", side_effect=RuntimeError("boom")):
+            rc, out = self._run_main(payload, allowlist_paths=allow)
+        self.assertEqual(rc, 0)
+        body = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(body["permissionDecision"], "deny")
+        self.assertIn("write guard crashed", body["permissionDecisionReason"])
+        self.assertIn("boom", body["permissionDecisionReason"])
+
 
 class TestInstallUninstall(unittest.TestCase):
     def test_install_writes_allowlist_and_registers_hook(self):
@@ -1474,13 +1492,16 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
     ACCESS, and nothing pinned that.
 
     As module CONSTANTS, `_trusted_hook_argv()` ran while the module BODY
-    executed, so its RuntimeError escaped as an IMPORT-time raise. This module
-    has NO never-crash envelope at all: `main()` is tolerant per branch, so any
-    raise reaches the host as a non-2 exit, which it treats as a non-blocking
-    error -- the Write proceeds, fail-OPEN (#2391 is the envelope). Every consumer of these
-    names is on the DRIVER side instead, where the same raise is a loud refusal
-    to arm. Restoring the constants leaves every other test in this file green
-    (measured), so this class is what holds the lazy shape in place.
+    executed, so its RuntimeError escaped as an IMPORT-time raise. `main()`'s
+    `except Exception` (#2391) is the module's never-crash contract and it
+    cannot cover a raise that early -- and in the hook PROCESS a crash is
+    fail-OPEN, because Claude Code treats any non-2 exit as a non-blocking
+    error and lets the Write proceed. That is why these names stay lazy: the
+    evaluation now happens inside main()'s try, so the same condition DENIES.
+    Every consumer of them is on the DRIVER side instead, where the same raise
+    is a loud refusal to arm. Restoring the constants leaves every other test
+    in this file green (measured), so this class is what holds the lazy shape
+    in place.
     """
 
     SCRIPT = os.path.abspath(wg.__file__)
@@ -1508,6 +1529,32 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("imported", proc.stdout)
                 self.assertNotIn("RuntimeError", proc.stderr)
+
+    def test_main_denies_instead_of_crashing_when_the_interpreter_is_unusable(self):
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                os.chdir(d)
+                os.makedirs(".panopticon", exist_ok=True)
+                target = os.path.abspath(os.path.join(".panopticon", "findings-g1-x.json"))
+                with open(".panopticon/write-allowlist.json", "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(wg.allowlist_document({"probe-cell": [target]})))
+                payload = json.dumps({"tool_name": "Write",
+                                      "tool_input": {"file_path": target}})   # an ALLOWED write
+                out = io.StringIO()
+                with mock.patch.object(wg.sys, "executable", ""), \
+                     mock.patch("sys.stdin", io.StringIO(payload)), \
+                     contextlib.redirect_stdout(out):
+                    rc = wg.main([])
+            finally:
+                os.chdir(old_cwd)
+        # The module's deny shape: exit 0 plus the deny JSON. A non-2, non-zero
+        # exit is exactly the non-blocking error this must not be.
+        self.assertEqual(rc, 0)
+        body = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(body["permissionDecision"], "deny")
+        self.assertIn("write guard crashed", body["permissionDecisionReason"])
+        self.assertIn("interpreter", body["permissionDecisionReason"])
 
     def test_the_lazy_constants_still_answer_as_module_attributes(self):
         self.assertEqual(list(wg._HOOK_ARGV),

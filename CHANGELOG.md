@@ -12,6 +12,12 @@ evidence exposed.
   so a malformed stored finding renders instead of aborting the filing run. `reconcile.load_report`
   rejects a non-object report, `meta`, part or discarded-claims sibling and a non-list `meta.parts`
   with one reason naming the path and the key, which both CLIs print before exiting 2.
+- **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
+  every truthy certification-sinking reason from the shared integrity table.
+- **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
+  interpreter check and the adjudication inside the read guard's never-crash envelope, so an
+  unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
+  treats as a non-blocking error -- which let the Write it exists to deny proceed.
 - **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
   missing and named cell domains deterministically instead of raising before the report renders.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
