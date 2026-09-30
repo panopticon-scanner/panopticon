@@ -10,12 +10,20 @@ function of its inputs (the only I/O is reading a data file whose path it is
 handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import re
 
-import coverage_model
-import groups_schema
-import repo_config
+# #2256: package-first, so a driver-shaped process holds ONE object per file
+# rather than `x` and `scripts.x` (the shape the siblings use, #1766).
+if TYPE_CHECKING:
+    from scripts import coverage_model, groups_schema, repo_config
+else:
+    try:
+        from scripts import coverage_model, groups_schema, repo_config
+    except ModuleNotFoundError:  # flat: the standalone `--repo-scan` path,
+        import coverage_model    # with only skill/scripts on sys.path
+        import groups_schema
+        import repo_config
 
 # 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
 # residual sink, and the residual LAYER. A catalog entry or alias carrying one
@@ -150,11 +158,9 @@ def load_affinity(path, vocabulary):
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
 
-    # Guard: doc must be a mapping
     if not isinstance(doc, dict):
         return {}, ["affinity: root must be a mapping"]
 
-    # Guard: affinity must be a mapping (if present)
     affinity_block = doc.get("affinity")
     if affinity_block is None:
         affinity_block = {}
@@ -169,7 +175,6 @@ def load_affinity(path, vocabulary):
             errors.append("affinity: %r is not a known capability" % cap)
             continue
 
-        # Guard: domains must be a list (if present)
         if domains is None:
             domains = []
         elif not isinstance(domains, list):
@@ -365,7 +370,6 @@ def validate_proposal(proposal):
         elif len(cap) > _MAX_ENTRY_LEN:
             errors.append("proposal group %s: capability name exceeds %d chars"
                           % (label, _MAX_ENTRY_LEN))
-        # Guard: after stripping custom: prefix, name must not be empty
         if isinstance(cap, str) and cap and _group_name(cap) == "":
             errors.append("proposal group %s: custom: prefix cannot be empty" % label)
         errors.extend(_validate_str_list(label, "match", g.get("match"), required=True))
@@ -381,8 +385,7 @@ def _group_name(capability):
 
 
 def _union_into(target, values):
-    """Append each of `values` not already in `target` (order-preserving,
-    de-duplicated union in place)."""
+    """Order-preserving, de-duplicated union of `values` into `target`, in place."""
     for v in values:
         if v not in target:
             target.append(v)
@@ -475,7 +478,8 @@ def assemble(proposal, vocabulary, affinity, layers=None):
     and keep Auth's affinity floor; #run7 COD-C2D's case/whitespace fold is
     the degenerate case (every known name is its own alias). A label that
     resolves to nothing is custom (`custom:` prefix or not); custom spellings
-    that fold to one alias_key are one group, named by the first spelling.
+    that fold to one alias_key are one group, named by the first spelling. Each
+    fixup is disclosed as that group's `normalized` {"from", "to"}, None when none.
 
     Floor outcomes (`floor_source`):
     - affinity row present                -> `"affinity"`
@@ -522,8 +526,6 @@ def assemble(proposal, vocabulary, affinity, layers=None):
         if canonical is not None:
             cap, name, is_custom = canonical, canonical, False
         else:
-            # custom: spellings that fold to one key are one group, named by
-            # the first spelling seen (disclosed via `normalized`).
             cap, is_custom = raw, True
             name = custom_seen.setdefault(alias_key(label), label)
         normalized = None if name == _group_name(raw) else {"from": raw, "to": name}
@@ -537,12 +539,10 @@ def assemble(proposal, vocabulary, affinity, layers=None):
             disclosure["groups"].append({
                 "name": name, "capability": cap, "custom": is_custom,
                 "floor": floor, "floor_source": floor_source,
-                # record the alias/case fixup so canonicalization is visible
                 "normalized": normalized,
             })
             continue
-        # Collision: merge into the existing group, then recompute the floor
-        # from the merged state (order-independent).
+        # Collision: merge into the existing group, then recompute the floor.
         existing = out[name]
         dgroup = next(d for d in disclosure["groups"] if d["name"] == name)
         _union_into(existing["match"], g["match"])

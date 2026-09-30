@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **setup_proposal has one identity in a driver-shaped process (#2256, #1766).** Its three
+  catalog imports take the guarded package-first shape its siblings use, so the flat copy every
+  setup path reaches binds the same catalog modules the package side does and the import-time
+  census's residual shrinks to the modules the flat `--repo-scan` entrypoint still owns.
 - **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
   requires `location` (the report schema never did), `validate_report` warns only on a missing
   `location.file` rather than on every finding without a line, and the security gate prints `?`
