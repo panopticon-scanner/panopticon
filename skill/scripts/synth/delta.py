@@ -141,12 +141,12 @@ def _disclose_load(ctx, path):
         # `base` and no active delta.
         regenerate = "regenerate it (the driver's discovery phase writes it)"
         if report.payload_malformed is not None:
-            cause = ("The map is empty because the payload was rejected (%s), "
-                     "not because the change was: %s."
+            cause = ("The map is empty of ranges because the payload was "
+                     "rejected (%s), not because the change was: %s."
                      % (report.payload_malformed, regenerate))
         elif report.ranges_dropped or report.paths_dropped:
-            cause = ("The map is empty because %s, not because the change was: "
-                     "%s." % (_dropped_phrase(report), regenerate))
+            cause = ("The map is empty of ranges because %s, not because the "
+                     "change was: %s." % (_dropped_phrase(report), regenerate))
         else:
             cause = ("An empty change and a broken artifact look identical from "
                      "here: %s and compare before trusting a green gate."
@@ -166,7 +166,7 @@ def _disclose_load(ctx, path):
             counts.append("%d whole path(s)" % report.paths_dropped)
         print("synthesize: DELTA ARTIFACT: %s dropped from %s%s"
               % (" and ".join(counts), path,
-                 " A dropped path leaves the map, so every finding in that "
+                 " -- a dropped path leaves the map, so every finding in that "
                  "file classifies off-diff." if report.paths_dropped else ""),
               file=sys.stderr)
 

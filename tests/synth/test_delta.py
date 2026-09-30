@@ -271,7 +271,7 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertIn("2 malformed hunk range(s) dropped", err)
         self.assertNotIn("ZERO HUNKS", err)
 
-    CONSEQUENCE = (" A dropped path leaves the map, so every finding in that "
+    CONSEQUENCE = (" -- a dropped path leaves the map, so every finding in that "
                    "file classifies off-diff.")
 
     def _artifact_line(self, err):
@@ -340,7 +340,7 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         # drop as the cause on another -- for the same read. Same three arms now.
         _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": 7}})
         self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
-        self.assertIn("The map is empty because 1 whole path(s) were dropped "
+        self.assertIn("The map is empty of ranges because 1 whole path(s) were dropped "
                       "for carrying no list of ranges, not because the change "
                       "was", err)
         self.assertNotIn("look identical", err)
@@ -348,7 +348,7 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
 
     def test_dropped_ranges_are_named_as_the_cause_too(self):
         _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": [[1]]}})
-        self.assertIn("The map is empty because 1 hunk range(s) were malformed "
+        self.assertIn("The map is empty of ranges because 1 hunk range(s) were malformed "
                       "and dropped, not because the change was", err)
         self.assertNotIn("look identical", err)
 

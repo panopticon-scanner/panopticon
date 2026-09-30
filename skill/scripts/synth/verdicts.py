@@ -58,9 +58,10 @@ class Resolved:
     `verdict_stats`, `verify_matrix`, `tool_axis`, `ocrdb_coverage`,
     `delta_meta` and `delta_artifact` are the meta.coverage sections this stage
     owns -- the last two are siblings, not halves of one block: `delta_meta` is
-    the ACTIVE delta and null outside it, `delta_artifact` is what reading the
-    diff-hunks file cost and null only when no file was read (#2169); `tool_names`
-    is the adapter set inferred from the findings (the fallback when the tool
+    the ACTIVE delta and null outside it, `delta_artifact` is what attempting
+    that read cost and null only when no `--diff-hunks` path was given (#2169);
+    `tool_names` is the adapter set inferred from the findings (the fallback when
+    the tool
     layer reported none); `unanswered_gate` the gate-aware unanswered count
     certify() consumes."""
     findings: list
