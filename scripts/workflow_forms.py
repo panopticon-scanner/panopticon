@@ -27,13 +27,18 @@ Three questions live here, each one a shape a step writes down:
                                and `in_container` the operand a `docker run`
                                hands to a shell on the far side of a bind mount
     whether a failure matters  `regions` reads the branch bodies a command was
-                               written inside, and `_errexit_states` the `-e`
-                               and `pipefail` each statement runs under as a
-                               `set` moves them; the rest are compatibility
+                               written inside, `_errexit_states` the `-e` and
+                               `pipefail` each statement runs under as a `set`
+                               moves them, and `step_credit` the step's own
+                               answer from both; the rest are compatibility
                                imports from workflow_gating (`swallowed`,
-                               `step_credit`, `seed`, `Reach`, `clears`,
-                               `Inlined`), split out when this module reached
-                               its size again
+                               `seed`, `Reach`, `clears`, `Inlined`), split out
+                               when this module reached its size again
+
+The layers run one way: `workflow_gating` sits below this module and imports
+nothing from it, `step_credit` lives here because it is the one gating answer
+that needs this module's readers, and `workflow_guard` sits on top of both,
+importing the gating names through this one.
 
 Stdlib only, like everything under it.
 """
@@ -47,8 +52,9 @@ from shell_reader import command, statements
 # the operand questions with theirs, and the gating ones with theirs.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             parse_fetch as parse_fetch, streamed_fetch as streamed_fetch)
-from workflow_gating import (Inlined as Inlined, Reach as Reach, _errexit, clears as clears,
-                             seed as seed, step_credit as step_credit, swallowed as swallowed)
+from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL,
+                             _SET_E, _errexit, _stops_step, clears as clears, seed as seed,
+                             swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -356,6 +362,54 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
     return states + [state]
+
+
+def step_credit(flat, shell=None):
+    """{index: (why, why piped)} for the statements of one step's `read` in
+    which a failing check does not stop the step, in `Inlined.credit`'s shape
+    (the second answer is a check's with a command piped after it); a step
+    whose `shell:` is `shell`. `swallowed` reads it last.
+
+    `flattened` credits a script handed on only as far as the command that
+    runs it, and the step's own shell decides the rest: its `-e`, for that
+    command and for a check written at the top alike, and its pipefail, for
+    a check piped at the top (`flattened` asks it of the command) -- each as
+    the `shell:` starts it (`seed`) and a `set` moves it, read the way
+    `_errexit_states` reads a child script. Without pipefail a piped check's
+    status is lost to the command after it. Where `-e` is off, a failure
+    stops the step only in its last command or through an `||` branch that
+    exits. Ahead of `&&` the shell suspends `-e`, so a failure there stops
+    only the rest of its list, a `Reach` of that many statements -- or,
+    where the reader lost the list's end, only the rest of its own command,
+    a `Reach` in `_LOST`'s words; a check that ends a group answers as the
+    group does (`_stops_step`).
+
+    The guard has no model of an exit status or a trap, so four readings
+    here are fail-closed, and bash stops the step on each (review N-1): with
+    `-e` off, a check the step then tests through `$?` (`rc=$?; if [ $rc -ne
+    0 ]; then exit 1; fi`), or through `[ $rc -eq 0 ] || exit 1`, or that
+    `trap 'exit 1' ERR` guards, is still refused; and so is `CHECK && [[ -f a
+    || -f b ]] || exit 1`, whose rescue is lost where the reader splits the
+    `[[ ]]` at its inner `||`.
+    """
+    at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
+    stmts = [flat[index] for index in at]
+    (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
+    on, fails = _errexit_states(stmts, errexit, where, shell=shell), _errexit_states(
+        stmts, pipefail, where, "pipefail", shell)
+    credit: dict[int, tuple] = {}
+    for position, index in enumerate(at):
+        stops = _stops_step(stmts, position, on, fails)
+        for inner in range(start, index + 1):
+            why = (Reach(index - inner, _LOST) if stops is _LOST
+                   else stops if stops is None or isinstance(stops, str)
+                   else Reach(at[stops] - inner) if stops >= 0
+                   else _SET_E if errexit else _NO_E % shell)
+            piped = why if inner < index or fails[position] else _NO_PIPEFAIL
+            if why or piped:
+                credit[inner] = (why, piped)
+        start = index + 1
+    return credit
 
 
 def stdin_scripts(argv, stage):
