@@ -95,8 +95,9 @@ class TestLegacySarifAdapter(unittest.TestCase):
 
     def test_semgrep_argv_has_offline_flags(self):
         expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
-                    "--metrics=off", "--disable-version-check",
-                    "--sarif", "--quiet", "/src"]
+                    "--metrics=off", "--disable-version-check"]
+        expected += legacy.SEMGREP_SCANNER_SCOPE_ARGS
+        expected += ["--sarif", "--quiet", "/src"]
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
 
     def test_semgrep_argv_suppresses_both_call_home_paths(self):

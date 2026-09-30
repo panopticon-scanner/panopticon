@@ -22,7 +22,8 @@ from scripts import tool_capture
 from scripts import tools_manifest
 from scripts import venv_scope
 from scripts.progress import NullProgress, make_progress
-from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
+from scripts.tools.legacy_sarif import (
+    LEGACY_SARIF_TOOLS, SEMGREP_SCANNER_SCOPE_ARGS, TOOL_CMD, with_semgrep_excludes)
 
 # #1762 (ARC-2609514778) part 1 of 4: the scanner-owned configuration block moved
 # to `scanner_config` whole. These names stay bound HERE because something still
@@ -31,7 +32,7 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 # `tests/test_venv_scope.py` (part 4 took their one reader here,
 # `_bandit_exclude_value`); `_working_dir_flags` and the dispatch loop spell
 # `TARGET_MOUNT` (`tests/test_code_scanning_reports.py` pins it against the
-# report side); two of the four ledgers the manifest reads back move with the
+# report side); two of the five ledgers the manifest reads back move with the
 # block and are cleared by `run_tools()`; and the staged-config constants are
 # read by `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`.
 # A ledger is the SAME dict object either way, so `.clear()`/`.pop()` here and
@@ -61,7 +62,7 @@ from scripts.scanner_config import (
     TRIVY_IGNOREFILE_NAME,        # noqa: F401
     TRIVY_IGNOREFILE_TEXT,        # noqa: F401
     TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # two of the manifest's four ledgers, both
+    _SCANNER_CONFIG_POSTURE,      # two of the manifest's five ledgers, both
     _SUPPRESSION_POSTURE,         # cleared by `run_tools()`; only this one popped
 )
 
@@ -90,12 +91,9 @@ from scripts.tool_capture import (
 # reader is the writer -- moved to `tools_manifest` whole. Three names stay bound
 # HERE, all three READ bindings under the same patch rule as the blocks above:
 # `VENV_MAX_DEPTH` is read through this module by `tests/test_run_tools_core.py`
-# and `tests/test_tools_manifest.py` (part 4 took its one reader here,
-# `find_virtualenvs`, whose `max_depth` default it is, with the virtualenv
-# block), and `_NETWORK_POSTURE` and `_IGNORE_FILE_POSTURE` are cleared by
+# and `tests/test_tools_manifest.py`; both posture maps are cleared by
 # `run_tools()` and filled by the dispatch loop where the argv is built -- the
-# SAME dict object either way. `write_manifest` is the one moved FUNCTION this
-# module still calls, and `main` calls it `tools_manifest.write_manifest(...)`.
+# SAME dict object either way.
 from scripts.tools_manifest import (
     VENV_MAX_DEPTH,               # noqa: F401
     _IGNORE_FILE_POSTURE,
@@ -143,7 +141,6 @@ PHASE2_ADAPTERS = {
 # Always-on SARIF scanners select_tools seeds regardless of language.
 BASE_TOOLS = {"semgrep", "gitleaks", "trivy"}
 
-
 def recommendable_tools(languages=None, target=None):
     """The scanner universe the scout may recommend from.
 
@@ -184,7 +181,6 @@ DOCKER_PROBE_TIMEOUT = 30
 CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
 CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
-
 
 def resource_limit_flags():
     """docker-run resource ceilings for the containers this module and
@@ -401,8 +397,8 @@ def filter_online(chosen, online):
 # container that starts there hands its scanner the reviewed repository as the
 # directory its OWN config resolution walks from -- pip deciding a requirement
 # is a local archive on a bare SUFFIX match and running a committed
-# `evil.tar.gz`'s build backend, npm reading `.npmrc`, semgrep
-# `.semgrepignore`. Gitleaks' independent source-root `.gitleaksignore` read is
+# `evil.tar.gz`'s build backend or npm reading `.npmrc`. Semgrep's independent
+# scan-root ignores are neutralised on its argv. Gitleaks' source-root read is
 # handled by `scanner_config`'s conditional overlay. The cwd rule is uniform: every
 # scanner container starts OUTSIDE the
 # mount. Docker CREATES a `-w` directory that does not exist, so this one is
@@ -479,7 +475,7 @@ class _DockerContext:
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
               runner=None, online=False, progress=None, venv_dirs=None,
-              run_id=None, security_mode="standard"):
+              run_id=None, security_mode="standard", exclude_globs=()):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -552,19 +548,20 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     _SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
     _SCANNER_CONFIG_POSTURE.clear()
     _IGNORE_FILE_POSTURE.clear()
+    tools_manifest._SCANNER_SCOPE_POSTURE.clear()
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
         written = _run_selected(target, tools, out_dir, image, docker_runner,
                                 progress, total, venv_dirs, docker_context,
-                                online_egress, security_mode)
+                                online_egress, security_mode, exclude_globs)
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
                   venv_dirs, docker_context, online_egress,
-                  security_mode="standard"):
+                  security_mode="standard", exclude_globs=()):
     """The dispatch loop, one docker invocation per selected tool.
 
     Split out of `run_tools` only so the `egress.session` context (#1645) does
@@ -590,11 +587,13 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         if cmd and tool != "gitleaks":
             cmd = list(cmd)   # never mutate the shared TOOL_CMD entry
             cmd = venv_scope._with_venv_excludes(tool, cmd, venv_dirs)  # #1638 P09
+            cmd = with_semgrep_excludes(tool, cmd, exclude_globs)
             # #1839: under redteam, stop honouring the suppression COMMENTS in
             # the target's own source. No-op under standard, where they are
             # honoured and `suppression_comments` says so.
             cmd = scanner_config._with_suppression_flags(
                 tool, cmd, security_mode)
+            tools_manifest._record_semgrep_scope(tool, cmd, SEMGREP_SCANNER_SCOPE_ARGS)
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             # #1839 / #run7: bandit's ini and trivy's ignorefile are the
             # SCANNER's, constants staged in a scratch this target never
@@ -801,7 +800,8 @@ def main(argv=None):
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
-                      run_id=a.run_id, security_mode=a.security_mode)
+                      run_id=a.run_id, security_mode=a.security_mode,
+                      exclude_globs=a.exclude)
     if a.manifest:
         tools_manifest.write_manifest(
             a.manifest, effective, paths, excluded_scope=excluded_scope,
