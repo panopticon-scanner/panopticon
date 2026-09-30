@@ -178,10 +178,12 @@ class TestKimiGuardRoundTrip(unittest.TestCase):
         self.assertIn("fixture-guard.py", detail)
         self.assertEqual(3, len(calls))
         for (command, kwargs), (_name, payload, entry_id, _allowed) in zip(calls, rows):
-            # The probe drives the hook with the interpreter the config arms:
-            # the resolved sys.executable (kimi_home._interpreter), not the raw one.
-            self.assertEqual([os.path.realpath(sys.executable), guard_path, "read", data_path],
-                             command)
+            # The probe drives the hook the way the config ARMS it: the resolved
+            # sys.executable (kimi_home._interpreter), not the raw one, and
+            # isolated (#2163) -- evidence gathered under a different argv is
+            # evidence about a command nothing registered.
+            self.assertEqual([os.path.realpath(sys.executable), "-I", guard_path,
+                              "read", data_path], command)
             self.assertEqual(payload, json.loads(kwargs["input"]))
             self.assertEqual({"capture_output": True, "text": True, "timeout": 30},
                              {key: kwargs[key] for key in ("capture_output", "text", "timeout")})
@@ -190,6 +192,35 @@ class TestKimiGuardRoundTrip(unittest.TestCase):
                 self.assertNotIn(kimi_guard_hook.ENV_ENTRY_ID, kwargs["env"])
             else:
                 self.assertEqual(entry_id, kwargs["env"][kimi_guard_hook.ENV_ENTRY_ID])
+
+    def test_the_spawned_argv_is_the_armed_hook_command(self):
+        # The probe's argv IS the per-run config's: `kimi_home._hook_entry` builds
+        # it, and the probe spawns that command's tokens rather than a copy of
+        # them. The copy is what drifts -- dropping `-I` from the builder used to
+        # red the config's test and leave this one green, so the evidence was
+        # gathered under an argv nothing had armed.
+        import scripts.runners.kimi_home as kimi_home
+
+        with tempfile.TemporaryDirectory() as d:
+            # RELATIVE on purpose: the builder arms `os.path.abspath(data_path)`,
+            # so a copied literal that agreed on an absolute path still differs
+            # here -- this is what makes the test bite on a copy, not only on a
+            # divergent literal.
+            data_path = os.path.relpath(os.path.join(d, "scope.json"))
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+            ok, _detail = kimi_probes._guard_round_trip(
+                "read", data_path,
+                [("allowed fixture", {"tool_name": "Read"}, "entry-1", True)],
+                runner=runner)
+            self.assertTrue(ok)
+            armed = kimi_home._hook_entry(
+                kimi_home.READ_MATCHER, "read", data_path)["command"]
+            self.assertEqual([shlex.split(armed)], calls)
 
     def test_guard_launcher_failure_reports_the_exception(self):
         for failure in (FileNotFoundError("synthetic missing guard"),

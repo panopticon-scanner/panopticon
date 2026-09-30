@@ -9,6 +9,20 @@ evidence exposed.
 
 - **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
   missing and named cell domains deterministically instead of raising before the report renders.
+- **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
+  it isolated (#2161, #2163, #1777).** `write_guard_hook`'s registered `PreToolUse` command began
+  with the bare word `python3`, and nothing resolved it: the CHILD looks that name up in ITS PATH,
+  which `runners/children.py` rewrites through `executable.resolve`, dropping every entry inside
+  the review root. An operator whose `python3` came from the reviewed repo's own `.venv/bin`
+  therefore armed a hook the child could not start -- and a hook that cannot start fails OPEN, so
+  write confinement was off with nothing said. The command now names the driver's own validated
+  `sys.executable`, the binding `read_guard_hook` and the Kimi hooks already use, and `install`
+  refuses before writing either file rather than arming a hook it cannot start. That refusal is
+  computed on ACCESS rather than at import (#2006), because a raise inside the hook process is
+  itself fail-open. `-I` now pairs with the pinned interpreter on the Kimi hooks, so a
+  `sitecustomize` cannot choose code for a confinement decision (#1996), and their guard
+  round-trip probe spawns the tokens of the armed command itself rather than a copy of them, so
+  the evidence can no longer describe an argv the per-run config never registered (#2163).
 - **Keep HTML evidence disclosures fail closed (#2195, #1774).** The coverage header counts
   the same active findings as its collapsed unverified section, and malformed evidence values
   render there without crashing.

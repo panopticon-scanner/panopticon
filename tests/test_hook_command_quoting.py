@@ -17,13 +17,12 @@ the hook itself, never a host binary -- and an escape shows up twice over: as a
 truncated argv, and as a marker file the shell created in the test's own
 temporary directory.
 
-Which stub depends on what the builder names. The write guard's command still
-starts with a bare `python3`, so `_test_helpers.argv_through_shell` replaces
-that NAME on PATH. The read guard and the Kimi hooks name an ABSOLUTE
-interpreter -- the driver's own `sys.executable` (ARC-1774133676) -- and a PATH
-entry cannot stand in for a path: they get `stub_interpreter` below, whose own
-path is then one more element whose quoting is on trial, and that helper must
-never be pointed at the real `sys.executable`.
+All three builders name an ABSOLUTE interpreter -- the driver's own
+`sys.executable` (ARC-1774133676 for the read guard and the Kimi hooks, #2161
+for the write guard, which spelled a bare `python3` until then) -- and a PATH
+entry cannot stand in for a path, so each of them gets `stub_interpreter`
+below, whose own path is then one more element whose quoting is on trial. That
+helper must never be pointed at the real `sys.executable`.
 """
 import json
 import os
@@ -36,7 +35,6 @@ import tomllib
 import unittest
 from unittest import mock
 
-from tests._test_helpers import argv_through_shell
 import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.kimi_toml as kimi_toml
 import scripts.read_guard_hook as rg
@@ -93,12 +91,23 @@ class HookCommandCase(unittest.TestCase):
 
 class TestWriteGuardHookCommand(HookCommandCase):
 
+    def _pinned(self, stub):
+        """`wg._trusted_hook_argv` answering with `stub` as the interpreter.
+
+        The write guard pins its own `sys.executable` too (#2161), so the PATH
+        stub the shared helper plants cannot stand in for it -- and the stub's
+        own path then joins the elements whose quoting is on trial.
+        """
+        return mock.patch.object(wg, "_trusted_hook_argv",
+                                 return_value=(stub, "-I", os.path.abspath(wg.__file__)))
+
     def test_a_hostile_allowlist_path_arrives_as_one_argument(self):
         with tempfile.TemporaryDirectory() as d:
             allowlist = os.path.join(d, HOSTILE_NAME)
-            command = wg._hook_entry(allowlist)["hooks"][0]["command"]
-            argv = argv_through_shell(command, cwd=d)
-            self.assertEqual([os.path.abspath(wg.__file__),
+            with self._pinned(self.stub_interpreter(d)):
+                command = wg._hook_entry(allowlist)["hooks"][0]["command"]
+            argv = self.argv_through_real_shell(command, cwd=d)
+            self.assertEqual(["-I", os.path.abspath(wg.__file__),
                               os.path.abspath(allowlist)], argv,
                              "the allowlist path did not survive the shell intact")
             self.assert_no_marker(d)
@@ -107,9 +116,10 @@ class TestWriteGuardHookCommand(HookCommandCase):
         # The legacy no-allowlist entry runs the same script path through the
         # same shell; it is only safe by accident of where this checkout sits.
         with tempfile.TemporaryDirectory() as d:
-            command = wg._hook_entry()["hooks"][0]["command"]
-            self.assertEqual([os.path.abspath(wg.__file__)],
-                             argv_through_shell(command, cwd=d))
+            with self._pinned(self.stub_interpreter(d)):
+                command = wg._hook_entry()["hooks"][0]["command"]
+            self.assertEqual(["-I", os.path.abspath(wg.__file__)],
+                             self.argv_through_real_shell(command, cwd=d))
 
 
 class TestReadGuardHookCommand(HookCommandCase):
@@ -154,7 +164,7 @@ class TestKimiPerRunConfigHookCommands(HookCommandCase):
                     (kimi_home.READ_MATCHER, "read", scope),
                     (kimi_home.WRITE_MATCHER, "write", allowlist)):
                 argv = self.argv_through_real_shell(commands[matcher], cwd=d)
-                self.assertEqual([guard, mode, os.path.abspath(data)], argv,
+                self.assertEqual(["-I", guard, mode, os.path.abspath(data)], argv,
                                  "the %s hook's argv did not survive the shell"
                                  % mode)
             self.assert_no_marker(d)
@@ -176,7 +186,7 @@ class TestKimiPerRunConfigHookCommands(HookCommandCase):
             self.assertIn(shlex.quote(armed), commands[kimi_home.READ_MATCHER],
                           "the interpreter path is not quoted in the command")
             argv = self.argv_through_real_shell(commands[kimi_home.READ_MATCHER], cwd=d)
-            self.assertEqual([os.path.abspath(kimi_guard_hook.__file__), "read", scope],
+            self.assertEqual(["-I", os.path.abspath(kimi_guard_hook.__file__), "read", scope],
                              argv, "the read hook's argv did not survive the shell")
             self.assert_no_marker(d)
 
