@@ -11,6 +11,9 @@ evidence exposed.
   and read guards test the tool roster inside their never-crash envelope, so a list or dict
   `tool_name` prints a deny instead of escaping `main` with a non-blocking exit; the read
   guard's envelope comment now calls its early returns permissive.
+- **Tell a broken rangeless path from a legitimate one (#2386, #1783).** Both delta blocks carry
+  `paths_emptied_by_drops`, the subset of `paths_without_ranges` a broken artifact produced, and
+  the stderr disclosure names the rangeless paths (first ten, escaped).
 - **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
   diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
   when they carry a value of the wrong type, lists them in
