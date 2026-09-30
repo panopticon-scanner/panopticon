@@ -16,15 +16,14 @@ Three questions live here, each one a shape a step writes down:
                                (`same_file`, `names_file`, `covers`, `may_run`,
                                `described`, `chmod_targets`), split out when
                                this module reached its size
-    where a script hides       `scripts` finds the shell handed to `eval` or
-                               `sh -c` as a STRING, which is the same act one
-                               quote away from a substitution; `stdin_program`
-                               the interpreter whose program arrives on standard
-                               input instead, which is the same act one
-                               REDIRECTION away (`bash -s <<'EOF'`), whose
-                               quoted body is `stdin_scripts`; `flattened`
-                               reads both in place of the command handed them;
-                               `within` the scripts a statement's command
+    where a script hides       `flattened` reads in place of the command handed
+                               them the scripts workflow_programs finds: the
+                               shell handed to `eval` or `sh -c` as a STRING
+                               (`scripts`), and the program an interpreter reads
+                               on standard input (`stdin_program`,
+                               `stdin_scripts`) -- compatibility imports split
+                               out when this module ran short of room a third
+                               time; `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
                                `carried` a download a step keeps in a variable
                                and hands to a shell (#2341);
@@ -66,6 +65,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
+from workflow_programs import (FOREIGN_PROGRAM as FOREIGN_PROGRAM, SHELL_PROGRAM as SHELL_PROGRAM,
+                               scripts, stdin_program as stdin_program, stdin_scripts)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -149,101 +150,6 @@ def regions(stmts):
 
 
 # --- where a script hides ----------------------------------------------------
-
-# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
-# The text is shell and this module reads shell, so the quotes are not a
-# grammar it lacks -- only one it was not looking through. `python3 -c` and
-# `perl -e` are NOT here: that text is another language, and the gap list says
-# so.
-_SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
-
-
-def scripts(argv):
-    """The shell scripts this command is handed as a string, in order.
-
-    A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and the guard's `_walk` already credits what
-    is inside it.
-    """
-    if not argv:
-        return []
-    name, found = os.path.basename(argv[0]), []
-    if name == "eval":
-        found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING:
-        found = _after_dash_c(argv)
-    return [t for t in found if not shell_reader.is_marker(t)]
-
-
-def _after_dash_c(argv):
-    """The script operand of a shell's `-c`, wherever the flag was clustered.
-
-    `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
-    obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
-    no shell spells anything else that way, and `-c` consumes the next word
-    whatever else rides along with it. Requiring `-c` as its own token let
-    every clustered spelling through.
-    """
-    for position, token in enumerate(argv[1:], start=1):
-        if token == "--":
-            break
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
-            return argv[position + 1:][:1]
-    return []
-
-
-# An interpreter given no program to run reads one from its STANDARD INPUT, and
-# a heredoc is the shortest way a `run:` step writes one down: `bash -s <<'EOF'`
-# hands over a script exactly as `sh -c '<script>'` does, one redirection away
-# (#1839, run-14 SEC-3915165799). Three answers, because the guard needs three.
-SHELL_PROGRAM = "shell"        # the body is shell, which this module reads
-FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
-# The interpreters of the second kind. `python3 -c` and `perl -e` are already
-# ruled another language by `scripts` above, and a heredoc is the same text one
-# redirection over.
-_FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-# The operands that ARE standard input, and the only options a shell a `run:`
-# step writes spells with a separate value (`-o pipefail`, bash's `-O shopt`).
-_STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
-_VALUE_OPTIONS = "oO"
-
-
-def stdin_program(argv):
-    """Whether this command's PROGRAM is its standard input, and in what.
-
-    `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare
-    `sh`, `dash -`), `FOREIGN_PROGRAM` for a program in a language this module
-    does not read (`python3 -`), and None when the program is somewhere else --
-    a file (`bash x.sh`), a `-c` string, a `-m` module -- which makes stdin that
-    program's input DATA and not an act of this job's own.
-
-    Read as OPERANDS rather than as a full option grammar: an interpreter's
-    first word that is not an option is its program, and a shell's `-s` says
-    every word after it is a positional parameter instead. See the guard's gap
-    list for the spelling that leaves behind.
-    """
-    if not argv:
-        return None
-    name = os.path.basename(argv[0])
-    shell = name in _SHELL_STRING
-    if not shell and name not in _FOREIGN:
-        return None
-    answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM
-    rest = iter(argv[1:])
-    for token in rest:
-        if token in _STDIN_OPERANDS:
-            return answer
-        if not token.startswith(("-", "+")):
-            return None                     # the program is this file
-        letters = "" if token[:2] in ("--", "++") else token[1:]
-        if shell and "c" in letters:
-            return None                     # the program is the `-c` string
-        if shell and "s" in letters:
-            return answer                   # the words after `-s` are parameters
-        if letters and letters[-1] in _VALUE_OPTIONS:
-            next(rest, None)                # an option's value is not a program
-    return answer
-
 
 # Why a checksum in a script handed to a shell clears nothing, as `flattened`
 # finds it for the `credit` of each `Inlined` statement.
@@ -416,22 +322,6 @@ def step_credit(flat, shell=None):
                 credit[inner] = (why, piped)
         start = index + 1
     return credit
-
-
-def stdin_scripts(argv, stage):
-    """The QUOTED heredoc script this stage hands an interpreter, if it does.
-
-    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
-    quoted delimiter the interpreter reads the body as the text it was written
-    as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level; so is
-    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
-    `_unread_stdin`.
-    """
-    here = stage.stdin_heredoc
-    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
-        return []
-    return [here[0]]
 
 
 class Idle(str):

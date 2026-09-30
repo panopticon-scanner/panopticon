@@ -103,7 +103,7 @@ _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 # An assignment to an array element, `a[1]=x`: bash globs no assignment word.
 _SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
 # The shells whose options and program word a pattern may rewrite into a `-c`
-# and its script (`sh {-c,'…'}`, review N-3): `workflow_forms._SHELL_STRING`.
+# and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
 _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")

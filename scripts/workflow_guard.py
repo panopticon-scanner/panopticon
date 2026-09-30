@@ -141,7 +141,7 @@ that starts catching one fails there, and this list is edited with it.
   to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
   `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
   Two facts decide it and both are already parsed: whether a command's program
-  is its standard input at all (`workflow_forms.stdin_program`, an operand walk
+  is its standard input at all (`workflow_programs.stdin_program`, an operand walk
   -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
   then the body is that program's input DATA), and which body descriptor 0
   finally reads, with the flag saying whether it EXPANDED
@@ -284,12 +284,12 @@ def _unread_stdin(stage):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
     A heredoc body or here-string handed to an interpreter is a program, not
-    data (`workflow_forms.stdin_program`), and two kinds of it cannot be read:
+    data (`workflow_programs.stdin_program`), and two kinds of it cannot be read:
     one in a language this module has no grammar for, and one the shell would
     EXPAND -- a body whose `$(...)` were lifted into the enclosing parse's
     table before it reached here, a here-string whose word bash expands first
     (#2293) -- so what the interpreter runs is not the text this module holds.
-    Quoted shell is the third kind and is READ, in `workflow_forms.stdin_scripts`.
+    Quoted shell is the third kind and is READ, in `workflow_programs.stdin_scripts`.
     """
     argv = command(stage.argv)
     here = stage.stdin_heredoc
