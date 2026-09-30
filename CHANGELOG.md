@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
+  `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
+  `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
+  source report by name through its own `refusing:` path.
 - **Tell a broken rangeless path from a legitimate one (#2386, #1783).** Both delta blocks carry
   `paths_emptied_by_drops`, the subset of `paths_without_ranges` a broken artifact produced, and
   the stderr disclosure names the rangeless paths (first ten, escaped).

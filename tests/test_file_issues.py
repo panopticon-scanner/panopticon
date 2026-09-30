@@ -264,6 +264,89 @@ def test_main_files_a_stored_finding_whose_dicts_are_strings(tmp_path, monkeypat
     assert "evidence:unverified" in create.call_args.args[2]
 
 
+def _one_finding_report(tmp_path, finding):
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"findings": [finding], "discarded_claims": []}),
+                      encoding="utf-8")
+    return report
+
+
+@pytest.mark.parametrize("occurrences", ["many", True])
+def test_main_files_a_stored_finding_whose_siblings_are_malformed(
+        tmp_path, monkeypatch, occurrences):
+    # #2398, the #2372 residue: `citations`, `occurrences`, `additional_loci` and
+    # `location.file` come off the same unvalidated `load_report` and are read in the
+    # same two functions as the three that were guarded. Each of these aborted the
+    # WHOLE filing run; each must now render as if the field were absent. A boolean
+    # count states no count too (`True > 1` is False; the bool clause states intent).
+    finding = {**_split_finding("sib"), "citations": "cwe-79",
+               "occurrences": occurrences, "additional_loci": ["b.py"],
+               "location": {"file": 7}}
+    _, create, record, _, rc = _run_split_main(
+        monkeypatch, _one_finding_report(tmp_path, finding))
+    assert rc is None
+    assert create.call_count == record.call_count == 1
+    title, body = create.call_args.args[:2]
+    assert title == "sib"                        # a non-string file has no suffix to take
+    assert "**Location:** `7`" in body           # `where` keeps its str() defang
+    assert "**Occurrences:**" not in body
+    assert "**Citations:**" not in body
+    assert "b.py" not in body
+
+
+def test_a_string_citation_list_does_not_file_its_characters(tmp_path, monkeypatch):
+    # The SILENT half of #2398: `{"cwe": "CWE-79"}` is a dict, so nothing raised --
+    # iterating the string value yielded its CHARACTERS and the public issue body
+    # read "**Citations:** C, W, E, -, 7, 9". A non-list value states no citation.
+    finding = {**_split_finding("cite"), "citations": {"cwe": "CWE-79"}}
+    _, create, _, _, rc = _run_split_main(
+        monkeypatch, _one_finding_report(tmp_path, finding))
+    assert rc is None
+    body = create.call_args.args[1]
+    assert "**Citations:**" not in body
+    assert "C, W, E" not in body
+
+
+def test_a_non_string_non_dict_citation_entry_is_skipped(tmp_path, monkeypatch):
+    # The same read one level in: a real list whose entry is neither a string nor a
+    # dict used to reach `c.get("id", ...)` and raise. It is not a citation: skipped,
+    # not rendered as `7` or `None` text (the wrong-body class one level down).
+    finding = {**_split_finding("cite2"),
+               "citations": {"cwe": ["CWE-79", 7, None, ["x"], {"id": "CWE-89"}]}}
+    _, create, _, _, rc = _run_split_main(
+        monkeypatch, _one_finding_report(tmp_path, finding))
+    assert rc is None
+    assert "**Citations:** CWE-79, CWE-89\n" in create.call_args.args[1] + "\n"
+
+
+@pytest.mark.parametrize("loci", ["b.py", 7, {"file": "c.py"}])
+def test_a_non_list_additional_loci_states_no_loci(tmp_path, monkeypatch, loci):
+    # A string is iterable and a dict iterates its KEYS, so `or []` entered both and
+    # died on the first member (`.get` on a str); an int is not iterable and raised.
+    # None of the three is a list of loci, so the count renders and no locus line does.
+    finding = {**_split_finding("bad-loci"), "occurrences": 3, "additional_loci": loci}
+    _, create, _, _, rc = _run_split_main(
+        monkeypatch, _one_finding_report(tmp_path, finding))
+    assert rc is None
+    body = create.call_args.args[1]
+    assert "**Occurrences:** 3 loci of this rule in this file (primary above)" in body
+    assert "\n  - " not in body                   # not one locus line, character or key
+
+
+def test_a_non_dict_locus_is_skipped(tmp_path, monkeypatch):
+    # `additional_loci` is a list of loci; a bare path string in it is not a locus.
+    # Skipping it keeps the real loci -- aborting the run lost every one of them.
+    finding = {**_split_finding("loci"), "occurrences": 3,
+               "additional_loci": ["b.py", {"file": "c.py", "line_start": 2}]}
+    _, create, _, _, rc = _run_split_main(
+        monkeypatch, _one_finding_report(tmp_path, finding))
+    assert rc is None
+    body = create.call_args.args[1]
+    assert "**Occurrences:** 3 loci of this rule in this file (primary above)" in body
+    assert "  - `c.py:2`" in body
+    assert "b.py" not in body
+
+
 def test_the_cli_entry_point_exits_with_the_code_main_returns(tmp_path):
     # `main` RETURNS the code, so the `__main__` guard has to exit with it: a bare
     # `main()` would print the reason and still leave the process rc at 0, which is
