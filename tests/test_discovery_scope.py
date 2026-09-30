@@ -950,9 +950,10 @@ def test_scope_changed_fixture_disclosure_describes_the_changed_set(tmp_path, ca
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
                               str(repo), "--out", str(out)]) == 0
+    err = capsys.readouterr().err
     assert _reviewed_files(out) == {"src/app.py"}
     assert "excluded" not in json.loads(out.read_text())
-    assert "fixture exclusion" not in capsys.readouterr().err
+    assert "fixture exclusion" not in err
 
 
 def test_scope_changed_keeps_the_changed_sets_own_fixture_prune(tmp_path, capsys):

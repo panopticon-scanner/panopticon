@@ -1800,8 +1800,8 @@ def _repo_scan(argv=None):
         # REVIEWED, not the listing it was filtered from. Then committed exclude_paths
         # prune, re-deriving excluded_files from the changed set, not the whole-repo
         # count the --scope-dir/-file/-group branches keep (they narrow pruned `allf`).
-        # `pruned_fixtures` is cleared first (#2410) so the fixture roots the
-        # artifact discloses are this surface's too, not the listing's.
+        # `pruned_fixtures` is cleared before that pass (#2410) so the fixture roots
+        # the artifact discloses are this surface's too, not the listing's.
         info["surface"] = "changed"
         del pruned_fixtures[:]
         scoped = _cap_discovered(_filter_reviewable(
