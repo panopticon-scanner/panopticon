@@ -278,15 +278,32 @@ def streamed_fetch(tool, args, stage, following, executors):
     stdout-only record for the execution check.
     """
     fetch, streams = _parse_fetch(tool, args, stage, None)
-    if not fetch or not streams:
-        return None
+    consumer = stream_consumer(following, executors) if fetch and streams else None
+    return fetch._replace(dest=None, piped_to=consumer) if consumer else None
+
+
+def stdout_fetch(text):
+    """The download a script is when it is one fetch to standard output and
+    nothing else -- what `x=$(curl -fsSL URL)` holds (#2341) -- or None."""
+    stmts = shell_reader.statements(text)
+    stage = stmts[0].stages[0] if len(stmts) == 1 and len(stmts[0].stages) == 1 else None
+    argv = command(stage.argv) if stage else []
+    tool = os.path.basename(argv[0]) if argv else ""
+    fetch, streams = _parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else (None, False)
+    return fetch if fetch and streams and fetch.url else None
+
+
+def stream_consumer(following, executors):
+    """The argv of the first of `executors` the stages `following` one hand
+    its standard output to, read through each stage that reads the pipe and
+    writes on into it (`| tee f | sh`), or None: `streamed_fetch`'s walk, and
+    `workflow_forms.carried`'s for a download a step prints (#2341)."""
     for next_stage in following:
         argv = command(next_stage.argv)
         if not argv or not _may_read_pipe(argv, next_stage):
             break
-        name = os.path.basename(argv[0])
-        if name in executors:
-            return fetch._replace(dest=None, piped_to=tuple(argv))
+        if os.path.basename(argv[0]) in executors:
+            return tuple(argv)
         if not next_stage.stdout_to_pipe:
             break
     return None

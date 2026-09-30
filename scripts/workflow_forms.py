@@ -24,28 +24,43 @@ Three questions live here, each one a shape a step writes down:
                                REDIRECTION away (`bash -s <<'EOF'`), whose
                                quoted body is `stdin_scripts`; `flattened`
                                reads both in place of the command handed them;
+                               `within` the scripts a statement's command
+                               substitutions run, where a use may be (#2345);
+                               `carried` a download a step keeps in a variable
+                               and hands to a shell (#2341);
                                and `in_container` the operand a `docker run`
                                hands to a shell on the far side of a bind mount
-    whether a failure matters  `swallowed` reads the separator, the `!` and
-                               the `if`/`while` around a command, and `regions`
-                               the branch bodies it was written inside -- the
-                               two ways the shell says an exit status will not
-                               stop the script
+    whether a failure matters  `regions` reads the branch bodies a command was
+                               written inside, `_errexit_states` the `-e` and
+                               `pipefail` each statement runs under as a `set`
+                               moves them, and `step_credit` the step's own
+                               answer from both; the rest are compatibility
+                               imports from workflow_gating (`swallowed`,
+                               `seed`, `Reach`, `clears`, `Inlined`), split out
+                               when this module reached its size again
+
+The layers run one way: `workflow_gating` sits below this module and imports
+nothing from it, `step_credit` lives here because it is the one gating answer
+that needs this module's readers, and `workflow_guard` sits on top of both,
+importing the gating names through this one.
 
 Stdlib only, like everything under it.
 """
-import collections
 import os
 import re
 
 import shell_reader
-from shell_reader import command, conditional, negated, statements
+from shell_reader import command, statements
 
 
 # Compatibility bindings share the single fetch owner with existing callers,
-# and the operand questions with theirs.
+# the operand questions with theirs, and the gating ones with theirs.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
-                            parse_fetch as parse_fetch, streamed_fetch as streamed_fetch)
+                            parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
+                            stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
+from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL,
+                             _SET_E, _errexit, _stops_step, clears as clears, seed as seed,
+                             swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -230,11 +245,8 @@ def stdin_program(argv):
     return answer
 
 
-# A statement of a script handed to a shell, as `flattened` inlines it, with
-# its bodies below the command running it (`regions`), and why a checksum there
-# clears nothing: as its pipeline's last command, and as an earlier one (None:
-# it may clear).
-Inlined = collections.namedtuple("Inlined", "stages separator region credit")
+# Why a checksum in a script handed to a shell clears nothing, as `flattened`
+# finds it for the `credit` of each `Inlined` statement.
 _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
             "the last command, so the script carries on past its failure")
 _UNGATED = "is inside the script `%s` runs, and the step does not stop when that script fails"
@@ -252,21 +264,26 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
 
     Hardened means the checksum's failure stops the STEP (review I-2 of #1793):
     it stops the script (`-e` holds, or it is the last command) and every
-    command running a script around it passes that on, up to the step's own
-    shell, where `swallowed` decides. A child shell has `-e` only from its
-    options or a `set`, and `pipefail` so too (re-review N-D); `eval` keeps
-    the step's, but not `-e` ahead of `||`/`&&`, where bash suspends it.
-    `stops`: this script's failure stops the step; `errexit`: `-e` at its
-    top (None: the step's own shell); `pipefail`: a pipeline there fails on
-    any of its commands; `shell`: the script's runner;
+    command running a script around it passes that on, up to the command the
+    step's own shell runs, whose failure `swallowed` and `step_credit` judge
+    as they judge a check written there -- where one ahead of `&&` reaches
+    only the rest of its list (#2334). A child shell has `-e` only from its
+    options or a `set`, and `pipefail` so too (re-review N-D); the step's own
+    shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
+    moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
+    where the shell suspends it.
+    `stops`: this script's failure reaches the step's own shell; `errexit`:
+    `-e` at its top (None: this is the step's own shell); `pipefail`: a
+    pipeline there fails on any of its commands; `shell`: the script's
+    runner, and at the step's own top its `shell:` (None: the default);
     `outer`: the bodies of the command running it, below the step's own, and
     `key` a name for the script, unique in the step, for its own bodies.
     """
-    out, last = [], len(stmts) - 1
-    inner = {} if errexit is None else regions(stmts)
-    on = [True] * len(stmts) if errexit is None else _errexit_states(stmts, errexit, inner)
-    fails = [pipefail] * len(stmts) if errexit is None else _errexit_states(
-        stmts, pipefail, inner, "pipefail")
+    out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
+    errexit, pipefail = seed(shell) if top else (errexit, pipefail)
+    inner = {} if top else where                # a step's own: `regions` over its read
+    on = _errexit_states(stmts, errexit, where, shell=shell)
+    fails = _errexit_states(stmts, pipefail, where, "pipefail", shell)
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for stage in statement.stages:
@@ -274,14 +291,14 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             for text in scripts(argv) + stdin_scripts(argv, stage):
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
-                         and (on[index] or index == last)
+                         and (top or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(statements(text), gates, on[index] and statement.separator
                                      not in ("&&", "||") if own else _errexit(argv[1:]),
                                      fails[index] if own else _errexit(argv[1:], False, "pipefail"),
                                      name, region, key + ((index, ordinal),)))
-        if errexit is None:
+        if top:
             out.append(statement)
             continue
         why = (_UNGATED % shell if not stops
@@ -291,41 +308,114 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     return out
 
 
-def _errexit(words, state=False, name="errexit"):
-    """Whether these shell or `set` options leave `-e` on, from `state` -- or
-    the option `-o name` sets, for `pipefail`, which no letter spells."""
-    words = iter(words)
-    for word in words:
-        if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
-            break
-        if word[:2] != "--":                    # bash's long options carry none
-            if "e" in word[1:] and name == "errexit":
-                state = word[0] == "-"
-            if "o" in word[1:] and next(words, None) == name:
-                state = word[0] == "-"
-    return state
+# The words a `set` this module reads may stand behind: `builtin` and `eval`
+# run it in this shell, as `command` does, in either order.
+_SETTERS = ("builtin", "command", "eval", "set", "shopt")
 
 
-def _errexit_states(stmts, state, where, name="errexit"):
+def _as_set(argv):
+    """`shopt -s -o NAME...` or `shopt -u -o NAME...` (`-so`, `-uo`, `-os`) as
+    the `set -o NAME...` or `set +o NAME...` it spells; any other argv as it
+    is. Without `-o` shopt names options of its own, and without `-s` or
+    `-u` it only reports them."""
+    if argv[:1] != ["shopt"]:
+        return argv
+    flags, rest = "", argv[1:]
+    while rest and rest[0][:1] == "-" and rest[0] != "--":
+        flags, rest = flags + rest[0][1:], rest[1:]
+    if "o" not in flags or ("s" in flags) == ("u" in flags):
+        return argv
+    sign = "-o" if "s" in flags else "+o"
+    rest = rest[1:] if rest[:1] == ["--"] else rest
+    return ["set"] + [word for option in rest for word in (sign, option)]
+
+
+def _errexit_states(stmts, state, where, name="errexit", shell=None):
     """Whether `-e` (or `-o name`) holds as each of `stmts` runs, from `state`
-    at the top: a `set` turns it on only as a plain statement outside every
-    branch (`where`, their `regions`), group, list and background job, and
-    off wherever it is."""
+    at the top, and after the last, in `shell` (a step's `shell:`, None for
+    the default, or the name of a script's runner).
+
+    A `set` turns it on only as a plain statement outside every branch
+    (`where`, their `regions`), group, list and background job, and off
+    wherever it is. `shopt -s -o` and `shopt -u -o` are the `set -o` and
+    `set +o` they spell (`_as_set`, #2335, #2338), and a plain `shopt` turns
+    an option on only where the shell is bash: dash has no `shopt`. A `set`
+    or `shopt` behind `builtin`, `command` or `eval` runs in this shell too,
+    and so does a `set` in the script `eval` runs, read in the same `shell`
+    (#2335, review N-6); this guard reads all of them as able only to turn
+    an option off, a fail-closed choice -- bash itself turns it on through
+    each of them."""
     depth, states = 0, []
+    bash = os.path.basename((shell or "bash").split()[0]) == "bash"
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
             argv = command(stage.argv)
+            while len(argv) > 1 and argv[0] in ("builtin", "eval") and argv[1] in _SETTERS:
+                argv = command(argv[1:])        # `builtin set`, `eval set`, either way round
+            argv = _as_set(argv)
             if argv and argv[0] == "set":
-                plain = (not depth and not stage.group_open and stage.argv[0] == "set"
-                         and index not in where and len(statement.stages) == 1
+                plain = (not depth and not stage.group_open and index not in where
+                         and (stage.argv[0] == "set" or bash and stage.argv[0] == "shopt")
+                         and len(statement.stages) == 1
                          and statement.separator not in ("&", "&&", "||")
                          and not (index and stmts[index - 1].separator in ("&&", "||")))
                 state = (_errexit(argv[1:], state, name) if plain
                          else state and _errexit(argv[1:], state, name))
+            for text in scripts(argv) if argv[:1] == ["eval"] else ():
+                inner = statements(text)
+                state = state and _errexit_states(inner, state, regions(inner), name, shell)[-1]
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
-    return states
+    return states + [state]
+
+
+def step_credit(flat, shell=None):
+    """{index: (why, why piped)} for the statements of one step's `read` in
+    which a failing check does not stop the step, in `Inlined.credit`'s shape
+    (the second answer is a check's with a command piped after it); a step
+    whose `shell:` is `shell`. `swallowed` reads it last.
+
+    `flattened` credits a script handed on only as far as the command that
+    runs it, and the step's own shell decides the rest: its `-e`, for that
+    command and for a check written at the top alike, and its pipefail, for
+    a check piped at the top (`flattened` asks it of the command) -- each as
+    the `shell:` starts it (`seed`) and a `set` moves it, read the way
+    `_errexit_states` reads a child script. Without pipefail a piped check's
+    status is lost to the command after it. Where `-e` is off, a failure
+    stops the step only in its last command or through an `||` branch that
+    exits. Ahead of `&&` the shell suspends `-e`, so a failure there stops
+    only the rest of its list, a `Reach` of that many statements -- or,
+    where the reader lost the list's end, only the rest of its own command,
+    a `Reach` in `_LOST`'s words; a check that ends a group answers as the
+    group does (`_stops_step`).
+
+    The guard has no model of an exit status or a trap, so four readings
+    here are fail-closed, and bash stops the step on each (review N-1): with
+    `-e` off, a check the step then tests through `$?` (`rc=$?; if [ $rc -ne
+    0 ]; then exit 1; fi`), or through `[ $rc -eq 0 ] || exit 1`, or that
+    `trap 'exit 1' ERR` guards, is still refused; and so is `CHECK && [[ -f a
+    || -f b ]] || exit 1`, whose rescue is lost where the reader splits the
+    `[[ ]]` at its inner `||`.
+    """
+    at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
+    stmts = [flat[index] for index in at]
+    (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
+    on, fails = _errexit_states(stmts, errexit, where, shell=shell), _errexit_states(
+        stmts, pipefail, where, "pipefail", shell)
+    credit: dict[int, tuple] = {}
+    for position, index in enumerate(at):
+        stops = _stops_step(stmts, position, on, fails)
+        for inner in range(start, index + 1):
+            why = (Reach(index - inner, _LOST) if stops is _LOST
+                   else stops if stops is None or isinstance(stops, str)
+                   else Reach(at[stops] - inner) if stops >= 0
+                   else _SET_E if errexit else _NO_E % shell)
+            piped = why if inner < index or fails[position] else _NO_PIPEFAIL
+            if why or piped:
+                credit[inner] = (why, piped)
+        start = index + 1
+    return credit
 
 
 def stdin_scripts(argv, stage):
@@ -373,13 +463,159 @@ def substitution_script(argv, stage, walk):
                       for found, unread in live) else Idle(why)
 
 
+INSIDE = " inside a command substitution"
+
+
+def within(statement, where=""):
+    """(statement, position, stage, where) for each stage of `statement` and,
+    under each, of the scripts it runs in a command substitution -- `$(...)`,
+    backquotes, `<(...)` -- read as scripts of their own (#2345), as the
+    guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
+    those. A script handed to a shell there as a string (`sh -c '...'`) is
+    not read: `substitution_script` reports it where the job downloads. Nor
+    is a check (the guard's `_checks` walks the outer stages only), so
+    `x=$(echo "<sha>  t" | sha256sum -c - && sh t)` reports its use though
+    the check gates it: fail-closed. Each fetch's `_uses` parses the later
+    substitutions again."""
+    for position, stage in enumerate(statement.stages):
+        yield statement, position, stage, where
+        for text in stage.substitutions:
+            for inner in statements(text):
+                yield from within(inner, INSIDE)
+
+
+# A download a step keeps in a variable and hands a shell as its script
+# (#2341): `x=$(curl -fsSL URL)`, then `eval "$x"`, `sh -c "$x"` or `echo "$x"
+# | sh`. No file ever holds it, so no checksum clears it, as none clears
+# `eval "$(curl URL)"`; the sentence names the variable.
+_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s, so there is no file to check -- "
+            "download it to a file, `sha256sum -c` that file, then run it")
+_NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+_WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+_DECLARES = ("export", "local", "declare", "typeset", "readonly")
+
+
+def _held(word):
+    """The name of the variable `word` is whole (`$x`, `${x}`), or ''."""
+    match = _WHOLE.fullmatch(word)
+    return (match[1] or match[2]) if match else ""
+
+
+def _prints(stage):
+    """The words an `echo` or `printf` stage writes to its standard output."""
+    argv = command(stage.argv)
+    return argv[1:] if argv and os.path.basename(argv[0]) in ("echo", "printf") else []
+
+
+def _assigned(stage, held):
+    """{name: the download it now holds, or None} for what this stage assigns,
+    in whatever shell runs it (`carried` weighs that). A bare assignment or a
+    declaration's (`export x=...`) holds one when its value is the stage's one
+    substitution and that is one fetch to standard output (`stdout_fetch`), or
+    is a variable that holds one, whole (`y="$x"`); `unset` empties one,
+    `unset -f` a function."""
+    argv = command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    if name == "unset":
+        return {} if "-f" in argv else dict.fromkeys((w for w in argv[1:] if w[:1] != "-"), None)
+    now = {}
+    for word in argv[1:] if name in _DECLARES else [] if argv else stage.argv:
+        match = _NAMED.match(word)
+        if match:
+            value = shell_reader.derived(word[match.end():], word)
+            whole = (len(stage.substitutions) == 1 and shell_reader.has_substitution(value)
+                     and shell_reader.readable(value) == "$(...)")
+            now[match[1]] = (stdout_fetch(stage.substitutions[0]) if whole
+                             else held.get(_held(value)))
+    return now
+
+
+def carried(stmts, executors):
+    """[(statement index, why)] for each download a step keeps in a variable
+    and hands whole to a shell as its script (#2341): the word `$x` or `${x}`
+    as what `eval` or a shell's `-c` runs (`scripts`), or printed by `echo` or
+    `printf` down a pipe to one of `executors` (`stream_consumer`) or from a
+    substitution one of them is handed (`bash <(echo "$x")`) -- in the
+    statement or in a script its substitutions run (`within`), where `x` was
+    assigned it before that statement and not since (`_assigned`). A step is
+    a shell of its own, so the guard asks of each step's statements apart,
+    and of each script a substitution runs for what it assigns itself.
+
+    A download is held wherever a statement of its own assigns it. A
+    reassignment empties the name only where the step's own shell always
+    runs it, in the step's own scope (review I-1, I-2): not in a script
+    `flattened` inlined, which `sh -c 'x=1'` runs in a child shell; not in
+    a branch (`regions`) or behind `&&` or `||`, which bash may skip; not in
+    a pipeline or a background job (`&`), which run in subshells; and not in
+    a `( )` or `{ }` group or a function body, read as `_errexit_states`
+    reads them: a subshell, or a body that runs only when called, with its
+    `local` in a scope of its own. Where bash does empty it before the use,
+    the name stays held, which is fail-closed: `eval 'x=:'`, `{ x=1; }`, a
+    called `f() { x=1; }`, a use inside the same `( )` as its reassignment
+    (`(x=1; eval "$x")`), bash's arithmetic `((x=1))` (dash runs it as two
+    subshells), and any reassignment after an argument `{` (`echo {`) or
+    after a `( ...` whose `)` stands alone on its line. The reader drops a
+    line holding only `(` or `)`, so a subshell opened on one reads as the
+    step's own scope: the guard's gap list.
+
+    More readings fail closed. The reader drops quotes, so `eval '$x'` and
+    `sh -c '$x'` read as `"$x"`: bash runs the first as one command made of
+    the payload's words -- a true positive -- and the second runs nothing
+    unless `x` is exported. These are reported where bash need not run the
+    download: `sh -c 'x=$(curl ...)'` then `eval "$x"`, as `flattened`
+    inlines the child's assignment; `local x`, `read -r x` or `for x in ...`
+    in between, which leave the name held; a printing substitution anywhere
+    in an executor's argv (`bash other.sh "$(echo "$x")"`, read as
+    `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"`,
+    `sh -c '...'` or `sh file`, read as `curl ... | sh x.sh` is.
+
+    Not followed, beside the gap list's cut, command output and file
+    (`echo "$x" > f; sh f`, `| tee f; sh f`): a substitution holding more
+    than the fetch (`x=$(curl ... || true)`, `x=$(curl ... | tr ...)`) or
+    not alone in its stage (`x=$(curl ...) y=$(date)`), `x+=$(curl ...)`,
+    a printer other than echo or printf (`cat <<< "$x" | sh`, a heredoc
+    naming `$x` piped to `sh`), a printer inside a `{ }` group or a
+    multi-line subshell whose closing line is piped (`{ echo "$x"; } | sh`),
+    which the stream walk does not read for a fetch either, and `$x` inside
+    a longer word (`eval "echo $x"`)."""
+    held: dict[str, Fetch | None] = {}
+    out, branches, depth = [], regions(stmts), 0
+    for index, statement in enumerate(stmts):
+        for inner, position, stage, where in within(statement):
+            argv = command(stage.argv)
+            to = (stream_consumer(inner.stages[position + 1:], executors)
+                  if _prints(stage) and stage.stdout_to_pipe else None)
+            words = scripts(argv) + (_prints(stage) if to else [])
+            if argv and os.path.basename(argv[0]) in executors:
+                words += [w for text in stage.substitutions for inside in statements(text)
+                          for w in _prints(inside.stages[-1])]
+            for word in words:
+                fetch = held.get(_held(word))
+                if fetch:
+                    consumer = to or [w for w in argv if w is not word
+                                      and not shell_reader.is_marker(w)]
+                    out.append((index, _CARRIES % (
+                        shell_reader.readable(fetch.url), _held(word),
+                        " ".join(shell_reader.readable(w) for w in consumer), where)))
+                    break
+        if len(statement.stages) == 1:
+            stage = statement.stages[0]
+            now = _assigned(stage, held)
+            sure = not (isinstance(statement, Inlined) or branches.get(index) or depth
+                        or stage.group_open or "{" in stage.argv or statement.separator == "&"
+                        or index and stmts[index - 1].separator in ("&&", "||"))
+            held.update(now if sure else {k: v for k, v in now.items() if v})
+        for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
+            depth = max(0, depth + stage.group_open + stage.argv.count("{")
+                        - stage.group_close - stage.argv.count("}"))
+    return out
+
+
 def kept(unread, fetched):
     """The `(index, why)` of `unread` that stand where `fetched` are the
     downloads: an `Idle` one only if there are any."""
     return [(index, why) for index, why in unread if fetched or not isinstance(why, Idle)]
 
-
-# --- whether a command's failure is allowed to matter -------------------------
 
 # The container runners, and the subcommands of theirs that run a command. The
 # image itself is not pinned -- this fleet runs the tools image from a mutable
@@ -410,116 +646,4 @@ def in_container(argv, dest, interpreters):
         for operand in argv[position + 1:]:
             if not operand.startswith("-") and os.path.basename(operand) == base:
                 return os.path.basename(token)
-    return None
-
-
-# A check whose non-zero exit nobody sees is not a check. Runners default to
-# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- and the
-# shell around the command decides whether that survives. `&` detaches it;
-# `||` hands the failure to a branch, which rescues it ONLY if that branch
-# ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
-# a test.
-# The `|| ...` branches that keep a check a check: they fail the step, which
-# is exactly what errexit would have done.
-_GROUP_OPEN = ("{", "(")
-
-
-def _known_status(argv, inherited):
-    """Known exit status, or None when this command's result is not proved."""
-    if not argv:
-        return inherited
-    name = os.path.basename(argv[0])
-    if name in ("exit", "return"):
-        if len(argv) == 1 or argv[1] == "$?":
-            return inherited
-        if len(argv) != 2 or not re.fullmatch(r"[+-]?[0-9]+", argv[1]):
-            return None
-        return int(argv[1]) % 256
-    if name == "false" and len(argv) == 1:
-        return 1
-    if name == "true" and len(argv) == 1:
-        return 0
-    return None
-
-
-def _stops_the_job(stmts, index):
-    """True if the `||` branch after `stmts[index]` fails the step.
-
-    `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
-    gates, not swallows -- and they are the cheap hardened spellings, so
-    refusing them would push authors toward the exemption list instead.
-    """
-    following = stmts[index + 1:index + 11]
-    if not following:
-        return False
-    first_stage = following[0].stages[0] if following[0].stages else None
-    first = first_stage.argv if first_stage else []
-    grouped = bool(first_stage and (first_stage.group_open or
-                                    (first and first[0] in _GROUP_OPEN)))
-    status = 1  # The rescue is entered only after the checksum fails.
-    depth = subshell_depth = 0
-    exited_subshell = None
-    stopped_job = False
-    for statement in following:
-        if (statement.separator == "&" or len(statement.stages) != 1 or
-                any(negated(stage.argv) for stage in statement.stages)):
-            return False
-        for stage in statement.stages:
-            depth += stage.group_open + stage.argv.count("{")
-            subshell_depth += stage.group_open
-            if exited_subshell is None and not stopped_job:
-                # The bounded status walk does not evaluate conditional arms.
-                if any(t in ("if", "then", "elif", "else", "fi", "while",
-                             "until", "do", "done", "case", "esac", "for")
-                       for t in stage.argv):
-                    return False
-                argv = command(stage.argv)
-                if argv:
-                    name = os.path.basename(argv[0])
-                    status = _known_status(argv, status)
-                    if name in ("exit", "return"):
-                        if subshell_depth:
-                            if name == "return":
-                                return False
-                            exited_subshell = subshell_depth
-                        else:
-                            stopped_job = True
-            depth -= stage.group_close + stage.argv.count("}")
-            subshell_depth -= stage.group_close
-            if depth < 0 or subshell_depth < 0:
-                return False
-            if exited_subshell is not None and subshell_depth < exited_subshell:
-                exited_subshell = None
-        if not grouped or depth == 0:
-            if statement.separator in ("&&", "||") and not stopped_job:
-                return False
-            break
-        if statement.separator in ("&&", "||"):
-            return False
-    return (not grouped or depth == 0) and status is not None and status != 0
-
-
-def swallowed(stmts, index, statement, stage):
-    """Why this check's failure would go nowhere, or None.
-
-    Phrased to follow "the checksum that names <file>", because that is the
-    sentence a reader gets when the check they wrote did not clear the fetch
-    they wrote it for.
-    """
-    if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
-        return statement.credit[stage is not statement.stages[-1]]
-    if statement.separator == "&":
-        return "is detached with `&`"
-    if statement.separator == "||" and not _stops_the_job(stmts, index):
-        return "hands its failure to a `||` branch that does not fail the step"
-    # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
-    # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
-    # module's own remedy text recommends -- the checksum is the second stage
-    # and its own argv says nothing about the test wrapped around it. Ask the
-    # head as well as the stage, because a one-stage statement is both.
-    head = statement.stages[0].argv if statement.stages else stage.argv
-    if negated(head) or negated(stage.argv):
-        return "is negated, so the failing path is the THEN branch"
-    if conditional(head) or conditional(stage.argv):
-        return "is an `if`/`while` test, which errexit does not apply to"
     return None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#1647 (ARC-F2C): what a workflow `run:` step FETCHES, and whether what it
+r"""#1647 (ARC-F2C): what a workflow `run:` step FETCHES, and whether what it
 then runs was checked against a digest bound to the file it downloaded.
 
 The rule is #1529's: a workflow can step outside the supply chain that
@@ -75,9 +75,13 @@ that starts catching one fails there, and this list is edited with it.
   `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
-  path spelled differently at fetch and at use matches nothing, including its
-  own use, so that download goes unseen. A COMMAND word with a `$` or `$(...)`
-  that ends in the download's basename is the exception: running it (#2310).
+  path spelled differently at fetch and at use matches nothing, and no `cd` is
+  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last parts
+  where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv only),
+  and for a glob where one spells the download's or the download is a bare name.
+  A download kept in a variable is followed to a shell whole (`carried`, #2341),
+  not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
+  and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -88,7 +92,7 @@ that starts catching one fails there, and this list is edited with it.
   is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
-  KEPT: it is the entry above wearing a checksum -- refusing it means
+  KEPT: it is variable expansion wearing a checksum -- refusing it means
   following a variable's VALUE. Only this spelling is open: with the digest in
   a sums file the step wrote, what was recorded is the text `sha256sum x`,
   which carries no digest, so the check does not count and the fetch is
@@ -147,7 +151,7 @@ that starts catching one fails there, and this list is edited with it.
   is the defect it is at the top level. An EXPANDING one is REPORTED unread
   (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
   were lifted into the enclosing parse's table before this text was reached
-  -- the entry above, one redirection over. A program in a language this
+  -- this entry's own gap, one redirection over. A program in a language this
   module has no grammar for is reported too, the answer `unparseable` gives a
   `shell: python` step. What that leaves unread: an interpreter whose program
   is on stdin in a spelling the operand walk does not resolve -- behind an
@@ -186,11 +190,11 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT,
-                            chmod_executable, chmod_targets, covers, described, flattened,
-                            in_container, kept, may_run, names_file, parse_fetch, regions,
-                            same_file, stdin_program, streamed_fetch, substitution_script,
-                            swallowed)
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Reach,
+                            carried, chmod_executable, chmod_targets, clears, covers, described,
+                            flattened, in_container, kept, may_run, names_file, parse_fetch,
+                            regions, same_file, stdin_program, step_credit, streamed_fetch,
+                            substitution_script, swallowed, within)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -222,17 +226,18 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False):
-    """([(statement index, Fetch)], [(statement index, why it is unread)]).
+    """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
 
     Every download in the script, and every command this module cannot read,
-    asked of each stage in ONE walk -- the one read of each command
+    asked of each stage in ONE walk -- the first read of each command
     substitution as a script of its own, so a caller that walks inside a
     catch (`job_defects`) has read every text anything here reads.
 
     A fetch in a substitution is credited to the command that CONSUMES it --
     `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
-    the downloaded bytes become behaviour. Three forms are REPORTED unread: a
-    command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
+    the downloaded bytes become behaviour, and so is one a variable carries
+    (`carried`, where the walk found a fetch). Three forms are REPORTED unread:
+    a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
     stdin program not readable as written (`_unread_stdin`) and, `inside` a
     substitution, a script handed to a shell (`substitution_script`), which `kept` weighs.
     """
@@ -267,7 +272,7 @@ def _walk(stmts, stream_exec=False, inside=False):
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)
                              for _index, fetch in fetched)
-    return found, unread
+    return found, unread + (carried(stmts, EXECUTORS) if found else [])
 
 
 def _fetch_records(stmts, stream_exec=False):
@@ -309,9 +314,9 @@ def _unread_stdin(stage):
     return None
 
 
-def read(script):
-    """Every statement a `run:` script runs, quoted scripts expanded."""
-    return flattened(statements(script))
+def read(script, shell=None):
+    """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded."""
+    return flattened(statements(script), shell=shell)
 
 
 def fetches(script):
@@ -393,7 +398,7 @@ def _unshared(conditions, check, use):
     return _UNSHARED_IF
 
 
-def _checks(stmts, soft=()):
+def _checks(stmts, credit=None):
     """[(statement index, checked text, why it clears nothing or None)]."""
     found = []
     written: dict[str, str] = {}
@@ -405,10 +410,8 @@ def _checks(stmts, soft=()):
             if not _has_check_flag(argv):
                 continue
             text = _checked_text(statement, position, stage, argv, written) or ""
-            why = swallowed(stmts, index, statement, stage)
-            if why is None and index in soft:
-                why = _SOFT_STEP
-            if why is None and not _DIGEST.search(text):
+            why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
+            if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
                 why = _NO_DIGEST
             found.append((index, text, why))
         _record_writes(statement, written)
@@ -441,23 +444,21 @@ def _copies(statement, names):
 
 
 def _uses(stmts, dest, after):
-    """(names the file goes by, [(statement index, what it does)]).
-
-    Walked in order from the fetch, so a name only counts once the statement
-    that created it has run.
-    """
+    """(names the file goes by, [(statement index, what it does)]), walked in
+    order from the fetch so a name only counts once the statement creating it
+    has run; a use in a statement's substitutions (`within`) is that statement's."""
     names, out = {dest}, []
     for index, statement in enumerate(stmts[after:], after):
-        for position, stage in enumerate(statement.stages):
+        for inner, position, stage, where in within(statement):
             argv, how = command(stage.argv), None
             for name in sorted(names):
-                how = _use(statement, position, stage, argv, name)
+                how = _use(inner, position, stage, argv, name)
                 if how:
                     if not same_file(name, dest):
                         how += " (as `%s`, copied from it earlier)" % name
                     break
             if how:
-                out.append((index, how))
+                out.append((index, how + where))
                 break
         names |= _copies(statement, names)
     return names, out
@@ -549,10 +550,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
     if fetch.dest is None:
-        if not fetch.piped_to:
-            return None
-        target = os.path.basename(fetch.piped_to[0])
-        if target not in EXECUTORS:
+        if not fetch.piped_to or os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
             return None
         # Nothing landed on disk, so no checksum anywhere in the step can be
         # about these bytes: the only fix is to stop streaming them into a
@@ -575,7 +573,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     naming = [(i, why) for i, text, why in checks if i > index
               and any(names_file(text, name) for name in sorted(names))]
     first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
-        why is None and i < u and _binds(conditions, i, u) for i, why in naming)), (None, None))
+        clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
     if first_use is None:
         return None
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
@@ -602,18 +600,20 @@ def _defect(fetch, index, stmts, checks, conditions=None):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, soft=(), walked=None):
+def _defects(stmts, conditions=None, credit=None, walked=None):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the PAIR that decides whether it
     runs -- the `if:` of the step it came from, and the shell branch it was
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
-    `soft` holds the indexes whose step carries `continue-on-error: true`,
-    whose checks clear nothing at all. `walked` is `_walk`'s answer for
-    `stmts`, which `job_defects` has from each step's own read.
+    `credit` maps an index to its step's own answer for a check there, which
+    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
+    `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
+    checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
+    which `job_defects` has from each step's own read.
     """
-    checks = _checks(stmts, soft)
+    checks = _checks(stmts, credit)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     found = kept(unread, fetched)
@@ -629,7 +629,7 @@ def fetch_exec_defects(script):
     stmts = read(script)
     branches = regions(stmts)
     return [why for _index, why in
-            _defects(stmts, {i: (None, b) for i, b in branches.items()})]
+            _defects(stmts, {i: (None, b) for i, b in branches.items()}, step_credit(stmts))]
 
 
 def fetch_exec_defect(script):
@@ -662,14 +662,14 @@ def job_defects(steps):
     stmts: list[shell_reader.Statement] = []
     owner = []
     conditions = {}
-    soft = set()
+    credit = {}
     found, fetched, unread = [], [], []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
         if not why:
             try:                    # the one read of every text, substitutions too
-                here = read(step.script)
+                here = read(step.script, step.shell)
                 walked = _walk(here, stream_exec=True)
             except shell_lex.Unreadable as error:
                 why = "cannot read this step: %s; nothing in it is accepted" % error
@@ -678,19 +678,18 @@ def job_defects(steps):
             continue
         fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
         unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
-        # Per step, because each one is its own shell invocation: an `if`
-        # left open at the end of step A must not make step B conditional.
-        branches = regions(here)
+        # Per step, because each one is its own shell invocation: neither an
+        # `if` left open nor a `set +e` in step A reaches step B.
+        branches, own = regions(here), step_credit(here, step.shell)
         for local, statement in enumerate(here):
             when = (step.condition, branches.get(local))
             if any(when):
                 conditions[len(stmts)] = when
-            if step.soft:
-                soft.add(len(stmts))
+            credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions, soft, (fetched, unread)))
+                 for index, why in _defects(stmts, conditions, credit, (fetched, unread)))
     return found
 
 
