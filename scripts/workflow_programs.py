@@ -5,20 +5,25 @@ Split out of `scripts/workflow_forms.py` (#2331's follow-ups) the way
 `scripts/workflow_operands.py` and `scripts/workflow_gating.py` were: that
 module had 51 lines of room left, fewer than the third batch of those
 follow-ups adds to these readers. What is here answers one question of one
-command -- which program it hands a shell -- and reads no statement around it:
+command -- which program it hands a shell -- and reads no statement around it,
+only, for a program piped into it, the stage in front of it (#2333):
 
     `scripts`         the script handed to `eval` or `sh -c` as a STRING,
                       which is the same act one quote away from a substitution
     `stdin_program`   whether an interpreter's program arrives on its standard
                       input instead, which is the same act one REDIRECTION
                       away (`bash -s <<'EOF'`), and in what language
-    `stdin_scripts`   the quoted body that program is, where it is shell
+    `stdin_scripts`   the quoted body that program is, where it is shell, or
+                      the text an `echo` or `printf` pipes in (`printed`)
+    `unprinted`       the printer piping one in whose text `printed` cannot
+                      spell out, for `unread_program` to weigh
     `candidates`      the words that may be the program, where a value this
                       module does not follow stands in a shell's options
 
-`workflow_forms` imports all four: its `flattened` reads each script found
+`workflow_forms` imports all five: its `flattened` reads each script found
 here in place of the command handed it, its `unread_program` weighs the
-candidates, and the guard takes `stdin_program` and `SHELL_PROGRAM` through it.
+candidates and the unprinted, and the guard takes `stdin_program` and
+`SHELL_PROGRAM` through it.
 
 Stdlib only, like everything under it.
 """
@@ -193,7 +198,7 @@ def stdin_program(argv):
     return answer
 
 
-def stdin_scripts(argv, stage):
+def stdin_scripts(argv, stage, before=None):
     """The QUOTED heredoc script this stage hands an interpreter, if it does.
 
     `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
@@ -201,9 +206,65 @@ def stdin_scripts(argv, stage):
     as, so reading it here is exactly as sound as reading that string -- and a
     `curl … | sh` inside it is the same defect it is at the top level; so is
     `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
-    `_unread_stdin`.
+    `_unread_stdin`. Read here too is the text an `echo` or `printf` in front
+    of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
+    'sh tool' | sh`; where it does not, `unprinted` has the printer.
     """
     here = stage.stdin_heredoc
+    if here is None and _piped(stage, before):
+        text = printed(shell_reader.command(before.argv))
+        here = None if text is None else (text, False)
     if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
         return []
     return [here[0]]
+
+
+def _piped(stage, before):
+    """Whether this stage's descriptor 0 finally reads what `before` writes."""
+    return before is not None and before.stdout_to_pipe and stage.stdin_from_pipe
+
+
+# The commands whose output is the text of their words (#2333).
+_PRINTERS = ("echo", "printf")
+
+
+def printed(argv):
+    """The text this `echo` or `printf` writes where its words spell it out,
+    or None: `echo` of words no expansion changes (a `spelled` one's, #2342),
+    after the `-n`, `-e` and `-E` bash's `echo` takes, or `printf` of such a
+    format with no `%`, or of `%s`, `%s\\n` or `%b` and one such word. A
+    backslash is left unspelled where the printer may read it as an escape
+    (dash's `echo` does), but a format's `\\n`."""
+    if not argv or os.path.basename(argv[0]) not in _PRINTERS or any(
+            shell_reader.dynamic(w, shell_reader.has_substitution) and not hasattr(w, "spelled")
+            for w in argv[1:]):
+        return None
+    words = [getattr(w, "spelled", w) for w in argv[1:]]
+    if os.path.basename(argv[0]) == "echo":
+        options = 0
+        while options < len(words) and re.fullmatch("-[neE]+", words[options]):
+            options += 1
+        end = "" if any("n" in word for word in words[:options]) else "\n"
+        text = " ".join(words[options:])
+        return None if "\\" in text else text + end
+    words = words[1:] if words[:1] == ["--"] else words
+    if not words or words[0][:1] == "-":
+        return None
+    if words[0] in ("%s", "%s\\n") and len(words) == 2:
+        return words[1] + words[0][2:].replace("\\n", "\n")
+    if "%" in words[0] and not (words[0] == "%b" and len(words) == 2):
+        return None
+    text = (words[1] if "%" in words[0] else words[0]).replace("\\n", "\n")
+    return None if "\\" in text else text
+
+
+def unprinted(argv, stage, before):
+    """The `echo` or `printf` in front of this shell piping it its program
+    where `printed` does not spell that text out (`echo "$X" | sh`, #2333),
+    or []."""
+    producer = (shell_reader.command(before.argv)
+                if stage.stdin_heredoc is None and _piped(stage, before) else [])
+    if (not producer or os.path.basename(producer[0]) not in _PRINTERS
+            or printed(producer) is not None or stdin_program(argv) != SHELL_PROGRAM):
+        return []
+    return producer

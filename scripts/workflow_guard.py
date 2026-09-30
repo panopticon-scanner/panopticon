@@ -168,6 +168,9 @@ that starts catching one fails there, and this list is edited with it.
   and, as everywhere in this module, an interpreter under a name its tables do
   not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
   program's basename.
+  A program `echo` or `printf` PIPES into a shell is read where their words spell it out;
+  one they do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words
+  fetch as written or the job downloads (#2333), and `cat <<'EOF' | sh` is not read at all.
   A heredoc the step WRITES to a file and then runs
   (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business at all: the
   script is text in the repo under review, which is the `sed -i` entry's
@@ -244,12 +247,11 @@ def _walk(stmts, stream_exec=False, inside=False):
     (`carried`, where the walk found a fetch). Three forms are REPORTED unread:
     a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
     stdin program not readable as written (`_unread_stdin`), and a program a
-    shell may run that the walk cannot read (`unread_program`), which `kept` weighs.
-    """
+    shell may run that the walk cannot read (`unread_program`), which `kept` weighs."""
     found, unread = [], []
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
-            argv = command(stage.argv)
+            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
@@ -266,7 +268,7 @@ def _walk(stmts, stream_exec=False, inside=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside)
+            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside, before)
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
@@ -698,8 +700,7 @@ def unparseable(shell):
 
     A `pwsh`, `python` or `cmd` step is not CLEAN, it is UNREAD, and the two
     answers must not look alike: `Invoke-WebRequest x.exe; ./x.exe` is the same
-    act in a shell this parser has no grammar for.
-    """
+    act in a shell this parser has no grammar for."""
     words = (shell or "").split()
     if not words or os.path.basename(words[0]) in PARSED_SHELLS:
         return None
@@ -720,8 +721,7 @@ def run_jobs(doc):
 
     The shell is resolved the way Actions resolves it: the step's own `shell:`,
     else the job's `defaults.run.shell`, else the workflow's, else the runner
-    default (bash on Linux, which is what this guard parses).
-    """
+    default (bash on Linux, which is what this guard parses)."""
     jobs = []
     for name, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):

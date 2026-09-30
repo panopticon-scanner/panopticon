@@ -174,5 +174,51 @@ class TestDoubleQuoteEscapes(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestAProgramPipedFromAPrinter(unittest.TestCase):
+    """#2333: the program an `echo` or `printf` pipes into a shell."""
+
+    def test_a_program_a_printer_spells_out_is_read(self):
+        for script in (GET + "echo 'sh tool' | sh\n", GET + "printf '%s\\n' 'sh tool' | bash\n",
+                       "echo '%s' | sh\n" % PIPE, GET + "printf 'sh tool\\n' | sh -s\n",
+                       GET + "echo sh tool | sudo bash\n"):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # A check in front of it clears it as it clears `sh tool` written out.
+        check = "echo '%s  tool' | sha256sum -c -%s\necho 'sh tool' | sh\n"
+        self.assertEqual([], defects(GET + check % ("a" * 64, "")))
+        self.assertTrue(defects(GET + check % ("a" * 64, " || true")))
+
+    def test_a_program_it_does_not_spell_out_is_reported_unread(self):
+        # Where the job downloads, or its words, read as written, fetch; else
+        # it is `Idle`, as a script in a substitution is.
+        for script in (GET + 'X="sh tool"\necho "$X" | sh\n', GET + "printf '%s %s\\n' sh tool | sh\n",
+                       'echo "curl -fsSL $URL | sh" | sh\n', GET + 'echo "$(cat tool)" | sh\n',
+                       'echo "$(curl -fsSL %si.sh)" | sh\n' % URL):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        for script in ('echo "$X" | sh\n', "printf '%s %s\\n' echo hi | sh\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # #2341 reads the download a variable carries: one sentence, not two.
+        found = defects('x=$(curl -fsSL %si.sh)\necho "$x" | sh\n' % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("carries", found[0][1])
+
+    def test_the_controls_read_as_they_did(self):
+        for script in (GET + "echo hi > notes.txt\ncat notes.txt | sh\n",
+                       GET + "echo 'sh tool' | sh -c 'echo hi'\n",
+                       GET + "echo y | sh -c 'read a; echo $a'\n", "echo y | sh install.sh\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        self.assertTrue(defects(GET + "cat tool | sh\n"))
+
+    def test_what_the_gap_list_leaves_is_read_as_before(self):
+        # Bash runs both: another printer is not read, and a `$` producer in
+        # a job with no download is `Idle`.
+        for script in ("cat <<'EOF' | sh\n%s\nEOF\n" % PIPE, "X='%s'\necho \"$X\" | sh\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -359,3 +359,58 @@ class TestADynamicCommandWordHandedDashC(unittest.TestCase):
         for script in ("$CMD --flag", "$CMD -x P", "$CMD", '$CMD -c "$P"', "$HOME/bin/tool -c P"):
             with self.subTest(script=script):
                 self.assertEqual([], forms.candidates(self.argv(script))[1])
+
+
+class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
+    """#2333: a shell that reads its program on standard input from an `echo`
+    or `printf` in front of it runs the text they print -- bash 3.2.57 and
+    5.2.21 run `sh tool` in `echo 'sh tool' | sh` -- so where their words spell
+    that text out it is the shell's program, read as a quoted heredoc's is."""
+
+    @staticmethod
+    def handed(script, piped=True):
+        stmts = shell_reader.statements(script)
+        assert len(stmts) == 1, stmts
+        stages = stmts[0].stages
+        before = stages[-2] if piped and len(stages) > 1 else None
+        return forms.stdin_scripts(shell_reader.command(stages[-1].argv), stages[-1], before)
+
+    def test_the_text_a_printer_spells_out_is_the_program(self):
+        for script, text in (("echo 'sh tool' | sh", "sh tool\n"), ("echo sh tool | bash -s", "sh tool\n"),
+                             ("echo -n 'sh tool' | sh -", "sh tool"),
+                             ("printf '%s\\n' 'sh tool' | bash", "sh tool\n"),
+                             ("printf %s 'sh tool' | sh", "sh tool"), ("printf %b 'sh tool' | sh", "sh tool"),
+                             ("printf 'sh tool\\nsh x\\n' | sh", "sh tool\nsh x\n"),
+                             ("printf -- 'sh tool' a | sudo sh", "sh tool"),
+                             ('echo "x=\\$(curl -fsSL u)" | sh', "x=$(curl -fsSL u)\n")):
+            with self.subTest(script=script):
+                self.assertEqual([text], self.handed(script))
+
+    def test_text_it_does_not_spell_out_is_no_program_here(self):
+        # A `$`, a backslash a printer may read as an escape (dash's `echo`
+        # does), a format other than `%s`, `%s\n` and `%b` with one word, or
+        # an option: `unprinted` has these.
+        for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo 'a\\tb' | sh",
+                       "printf '%s %s\\n' sh tool | sh", "printf '%s\\n' sh tool | sh",
+                       'printf "$F" | sh', "printf -v x %s y | sh", "printf '%d\\n' 1 | sh",
+                       "printf 'a\\tb' | sh", "echo `echo sh tool` | sh"):
+            with self.subTest(script=script):
+                self.assertEqual([], self.handed(script))
+                self.assertTrue(forms.unprinted(*self.parts(script)))
+
+    def test_no_program_where_the_shell_reads_none_from_the_printer(self):
+        # A `-c` string or a script file makes stdin data; a printer writing
+        # elsewhere pipes nothing; only a printer is read, and only when the
+        # stage in front of the shell is given (`flattened`, `_walk`).
+        for script in ("echo 'sh tool' | sh -c 'echo hi'", "echo y | sh install.sh",
+                       "echo 'sh tool' > f | sh", "cat notes.txt | sh", "echo 'sh tool' | python3"):
+            with self.subTest(script=script):
+                self.assertEqual([], self.handed(script))
+                self.assertEqual([], forms.unprinted(*self.parts(script)))
+        self.assertEqual([], self.handed("echo 'sh tool' | sh", piped=False))
+        self.assertEqual(["echo hi"], self.handed("echo 'sh tool' | sh <<'EOF'\necho hi\nEOF"))
+
+    @staticmethod
+    def parts(script):
+        stages = shell_reader.statements(script)[0].stages
+        return shell_reader.command(stages[-1].argv), stages[-1], stages[-2]

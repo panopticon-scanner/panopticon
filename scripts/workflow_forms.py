@@ -21,10 +21,11 @@ Three questions live here, each one a shape a step writes down:
                                shell handed to `eval` or `sh -c` as a STRING
                                (`scripts`), and the program an interpreter reads
                                on standard input (`stdin_program`,
-                               `stdin_scripts`) -- compatibility imports split
-                               out when this module ran short of room a third
-                               time; `unread_program` reports the programs it
-                               cannot read in place (`candidates`, #2344);
+                               `stdin_scripts`, a printer's among them, #2333)
+                               -- compatibility imports split out when this
+                               module ran short of room a third time;
+                               `unread_program` reports the programs it cannot
+                               read in place (`candidates`, `unprinted`);
                                `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
                                `carried` a download a step keeps in a variable
@@ -68,7 +69,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
 from workflow_programs import (FOREIGN_PROGRAM as FOREIGN_PROGRAM, SHELL_PROGRAM as SHELL_PROGRAM,
-                               candidates, scripts, stdin_program as stdin_program, stdin_scripts)
+                               candidates, scripts, stdin_program as stdin_program, stdin_scripts,
+                               unprinted as unprinted)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -194,9 +196,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     fails = _errexit_states(stmts, pipefail, where, "pipefail", shell)
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
-        for stage in statement.stages:
-            argv = command(stage.argv)
-            for text in scripts(argv) + stdin_scripts(argv, stage):
+        for position, stage in enumerate(statement.stages):
+            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            for text in scripts(argv) + stdin_scripts(argv, stage, before):
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
                          and (top or on[index] or index == last)
@@ -331,7 +333,12 @@ class Idle(str):
     `substitution_script` and `unread_program`."""
 
 
-def substitution_script(argv, stage, walk):
+class _Unprinted(Idle):
+    """`unread_program`'s for a printer, which `kept` keeps only where no
+    other reason reports its statement: `carried`'s `echo "$x" | sh` (#2333)."""
+
+
+def substitution_script(argv, stage, walk, before=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
@@ -342,8 +349,10 @@ def substitution_script(argv, stage, walk):
     `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but
     the guard follows no download into a substitution, where a script may
     still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`.
+    `before` is the stage in front of this one, whose `echo` or `printf` may
+    pipe the shell its program (`stdin_scripts`, #2333).
     """
-    handed = scripts(argv) + stdin_scripts(argv, stage)
+    handed = scripts(argv) + stdin_scripts(argv, stage, before)
     if not handed:
         return None
     return _weighed("hands a script to `%s` inside a command substitution, where this guard "
@@ -352,26 +361,31 @@ def substitution_script(argv, stage, walk):
                     "reason" % os.path.basename(argv[0]), handed, walk)
 
 
-def _weighed(why, texts, walk):
+def _weighed(why, texts, walk, idle=Idle):
     """`why` where a script among `texts`, flattened and walked, fetches or
-    holds an unread form, and `Idle(why)` where none does."""
+    holds an unread form, and `idle(why)` where none does."""
     live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
-                      for found, unread in live) else Idle(why)
+                      for found, unread in live) else idle(why)
 
 
-def unread_program(argv, stage, walk, inside):
+def unread_program(argv, stage, walk, inside, before=None):
     """Why a program this stage hands a shell goes unread, or None: a script
-    handed to one `inside` a command substitution (`substitution_script`), or
+    handed to one `inside` a command substitution (`substitution_script`),
     the words a value where it reads its options may make its program
-    (`candidates`, #2344, #2337), weighed alike -- so `X=-c; sh $X 'echo hi'`
-    is `Idle`, and `sh $X`, with no word after the value, hands none. A
+    (`candidates`, #2344, #2337), or those of a printer that pipes it one
+    they do not spell out (`unprinted`, `before` being the stage in front of
+    it, #2333), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" |
+    sh` are `Idle`, and `sh $X`, with no word after the value, hands none. A
     command the guard reports unresolved (`sudo $CMD -c …`) is not read
     again here."""
-    handed = inside and substitution_script(argv, stage, walk)
-    value, words = candidates(argv)
-    if handed or not words or shell_reader.unresolved_wrapper(stage.argv):
+    handed = inside and substitution_script(argv, stage, walk, before)
+    (value, words), printer = candidates(argv), unprinted(argv, stage, before)
+    if handed or not (words or printer) or shell_reader.unresolved_wrapper(stage.argv):
         return handed or None           # an unresolved command is reported whole
+    if printer:
+        return _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(printer[0])),
+                        [" ".join(printer[1:])], walk, _Unprinted)
     return _weighed((
         "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
         "the word after its options is a program that may fetch or run a download unchecked; "
@@ -383,6 +397,9 @@ def unread_program(argv, stage, walk, inside):
         % (os.path.basename(argv[0]), shell_reader.readable(value))), words, walk)
 
 
+_PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not spell out -- it "
+            "cannot say whether that program fetches or runs a download unchecked; print literal "
+            "text or write it in a quoted heredoc, or exempt the step with a reason")
 INSIDE = " inside a command substitution"
 
 
@@ -533,8 +550,11 @@ def carried(stmts, executors):
 
 def kept(unread, fetched):
     """The `(index, why)` of `unread` that stand where `fetched` are the
-    downloads: an `Idle` one only if there are any."""
-    return [(index, why) for index, why in unread if fetched or not isinstance(why, Idle)]
+    downloads: an `Idle` one only if there are any, and an `_Unprinted` one
+    not at a statement another reason reports (`carried`'s, #2333)."""
+    loud = {index for index, why in unread if not isinstance(why, Idle)}
+    return [(index, why) for index, why in unread if not isinstance(why, Idle)
+            or fetched and not (isinstance(why, _Unprinted) and index in loud)]
 
 
 # The container runners, and the subcommands of theirs that run a command. The
