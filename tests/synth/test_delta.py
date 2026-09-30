@@ -387,6 +387,24 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
                                      "hunks": {"a.py": [[1, 5]], "b.py": [[2, 3]]}})
         self.assertEqual(err, "")
 
+    def test_an_inactive_read_does_not_claim_a_rangeless_path_classified(self):
+        # #2381 review, F1: with no `base` nothing classifies and the gate keeps
+        # its wider, fail-closed scope, so a line saying findings "classify
+        # on-diff" would describe a run that never happened. No producer writes
+        # this shape (`write_diff_hunks` empties the map without a base); only a
+        # hand-edited artifact reaches it, and it must not be over-warned.
+        ctx, err, _ = self._from_args({"hunks": {"a.py": [[1, 5]], "c.py": []}})
+        self.assertFalse(ctx.active)
+        self.assertNotIn("carry no range", err)
+
+    def test_an_inactive_read_does_not_claim_a_dropped_path_classified(self):
+        # The sibling line's consequence clause ("classifies off-diff") is the
+        # same claim about the same absent classification; both lines now need
+        # an active delta, so they cannot disagree about that question.
+        ctx, err, _ = self._from_args({"hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        self.assertFalse(ctx.active)
+        self.assertNotIn("dropped from", err)
+
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
         # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
         # NAMES but gives no range: an unlined finding there never reaches the

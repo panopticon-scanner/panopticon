@@ -166,7 +166,11 @@ def _disclose_load(ctx, path):
         print("synthesize: DELTA REVIEW WITH ZERO HUNKS -- %s resolved a base "
               "but carries no diff ranges: %s. %s"
               % (path, shape, cause), file=sys.stderr)
-    if report.ranges_dropped or report.paths_dropped:
+    # #2381 review: both consequence lines below speak of how findings
+    # classify, which only an ACTIVE delta does -- a read with no `base` never
+    # reaches `classify_findings` -- so an inactive read keeps the MALFORMED
+    # line above alone rather than a warning about a gate it never scoped.
+    if ctx.active and (report.ranges_dropped or report.paths_dropped):
         # #2169: ONE line carrying both numbers -- two lines for one read have
         # the operator reconciling what looks like two problems -- and the
         # consequence in a sentence of its OWN (review F1): embedded in the count
@@ -181,7 +185,7 @@ def _disclose_load(ctx, path):
                  " -- a dropped path leaves the map, so every finding in that "
                  "file classifies off-diff." if report.paths_dropped else ""),
               file=sys.stderr)
-    if report.paths_without_ranges and report.ranges:
+    if ctx.active and report.paths_without_ranges and report.ranges:
         # #2381: the one FAIL-OPEN shape in this family, and the one nothing said
         # a word about. An empty list under a path is WELL FORMED, so neither drop
         # counter sees it, and the ZERO HUNKS arm above needs `ranges == 0` across

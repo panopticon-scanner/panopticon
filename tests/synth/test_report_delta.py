@@ -1,6 +1,7 @@
 """Delta classification, coverage, and gate contracts."""
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -449,7 +450,8 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                  "confidence": "POSSIBLE", "panel": "code", "category": "x",
                  "location": {"file": "a.py", "line_start": 11}}]
 
-    def _coverage(self, raw=None, payload=None, with_flag=True, findings=None):
+    def _coverage(self, raw=None, payload=None, with_flag=True, findings=None,
+                  group_files=("a.py",)):
         """`meta.coverage` for a run handed this artifact, or none at all."""
         with tempfile.TemporaryDirectory() as d:
             hp = os.path.join(d, "diff-hunks.json")
@@ -467,7 +469,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                     findings=self._findings() if findings is None else findings),
                 delta=delta,
                 plan=plan_mod.PlanInputs(
-                    groups_meta=[{"name": "g1", "files": ["a.py", "c.py"]}]),
+                    groups_meta=[{"name": "g1", "files": list(group_files)}]),
             ))
             return rep["meta"]["coverage"]
 
@@ -534,6 +536,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
             payload={"base": "main", "base_source": "explicit", "diff_context": 5,
                      "files_changed": 2,
                      "hunks": {"a.py": [[10, 12]], "c.py": []}},
+            group_files=("a.py", "c.py"),
             findings=self._findings() + [
                 {"id": "A-2", "title": "in the rangeless file", "severity": "HIGH",
                  "confidence": "POSSIBLE", "panel": "code", "category": "x",
@@ -546,3 +549,19 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                           cov["delta"]["hunks_ranges"]), (2, 1))
         self.assertEqual(cov["delta"]["on_diff_total"], 2)
         self.assertEqual(cov["delta"]["pre_existing_total"], 0)
+
+    def test_every_hunks_load_field_is_published_in_both_blocks(self):
+        # #2381 review, N6: schema parity binds the schema to the report and the
+        # cases above bind each counter to both blocks, but nothing bound the
+        # dataclass to its two publishers -- a field added to `HunksLoad` and
+        # forgotten in `artifact_facts` or `_delta_meta` stayed green, which is
+        # the class of omission #2169 and #2381 both were.
+        renamed = {"files": "hunks_files", "ranges": "hunks_ranges"}
+        fields = {f.name for f in dataclasses.fields(delta_mod.HunksLoad)}
+        self.assertTrue(set(renamed) <= fields)
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 1,
+                                      "hunks": {"a.py": [[10, 12]]}})
+        # the sibling publishes what the READ cost, so the two map sizes stay out
+        self.assertEqual(set(cov["delta_artifact"]), fields - set(renamed))
+        self.assertLessEqual({renamed.get(f, f) for f in fields}, set(cov["delta"]))

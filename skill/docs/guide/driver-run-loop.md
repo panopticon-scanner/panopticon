@@ -1036,8 +1036,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
   writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
   object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
-  exist included — active delta or not, carrying the `payload_malformed` reason and both drop
-  counts, and null when no path was given, so the block's presence alone is the fact.
+  exist included — active delta or not, carrying the `payload_malformed` reason and all three
+  counters, and null when no path was given, so the block's presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
   `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
