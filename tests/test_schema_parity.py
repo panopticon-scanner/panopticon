@@ -170,7 +170,7 @@ def _build_report(tmpdir):
         json.dump({"groups": [{"name": "app", "files": ["src/app.py"],
                                "panels": ["SEC", "COD"]}]}, fh)
 
-    findings_path = os.path.join(run_dir, "findings-app-security.json")
+    findings_path = os.path.join(run_dir, "agent-findings.json")
     with open(findings_path, "w", encoding="utf-8") as fh:
         json.dump({"findings": [_agentic(n) for n in range(1, 9)]}, fh)
 

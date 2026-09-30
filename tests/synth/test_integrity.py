@@ -28,19 +28,19 @@ class TestFindingsFileIntegrity(unittest.TestCase):
         plan = [
             {
                 "role": "panel_review",
-                "out_file": ".panopticon/findings-g1-redteam-panel_review.json",
+                "out_file": ".panopticon/findings-g1-SEC.json",
             },
             {
                 "role": "panel_review",
-                "out_file": ".panopticon/findings-g1-redteam-panel_review.json",
+                "out_file": ".panopticon/findings-g1-SEC.json",
             },
             {
                 "role": "lens_sweep",
-                "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json",
+                "out_file": ".panopticon/findings-g1-COD.json",
             },
         ]
         self.assertEqual(
-            integrity_mod.duplicate_out_files(plan), [".panopticon/findings-g1-redteam-panel_review.json"]
+            integrity_mod.duplicate_out_files(plan), [".panopticon/findings-g1-SEC.json"]
         )
         self.assertEqual(integrity_mod.duplicate_out_files([]), [])
 
@@ -296,7 +296,7 @@ class TestReconcileRealpath(unittest.TestCase):
             os.makedirs(real)
             link = os.path.join(d, "link")
             os.symlink(real, link)
-            fname = "findings-g1-code-panel_review.json"
+            fname = "findings-g1-COD.json"
             with open(os.path.join(real, fname), "w") as fh:
                 json.dump({"findings": []}, fh)
             plan = [{"out_file": os.path.join(link, fname)}]  # symlink form
@@ -361,7 +361,7 @@ class IntegritySectionTest(unittest.TestCase):
         self.assertNotIn("write_guard_covers_bash", sec)
 
     def test_ack_is_honoured_and_a_stale_one_is_reported(self):
-        plan = [{"group": "g1", "domain": "code", "out_file": "findings-g1-code.json"}]
+        plan = [{"group": "g1", "domain": "COD", "out_file": "findings-g1-COD.json"}]
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "unenforced-ack.json"), "w") as fh:
                 json.dump({"acknowledged": True, "plan_sha256": integrity_mod._plan_hash(plan),
@@ -370,7 +370,7 @@ class IntegritySectionTest(unittest.TestCase):
             self.assertTrue(sec["unenforced_acknowledged"])
             self.assertFalse(sec["ack_stale"])
             self.assertTrue(sec["write_guard_covers_bash"])
-            self.assertEqual(sec["missing_planned_files"], ["findings-g1-code.json"])
+            self.assertEqual(sec["missing_planned_files"], ["findings-g1-COD.json"])
             with open(os.path.join(d, "unenforced-ack.json"), "w") as fh:
                 json.dump({"acknowledged": True, "plan_sha256": "0" * 64}, fh)
             err = io.StringIO()

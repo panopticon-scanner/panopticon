@@ -147,7 +147,7 @@ class TestReport(unittest.TestCase):
             gj = os.path.join(d, "groups.json")
             with open(gj, "w") as fh:
                 json.dump({"mode": "directory", "groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
-            fpath = os.path.join(d, "findings-g1-code.json")
+            fpath = os.path.join(d, "findings-g1-COD.json")
             with open(fpath, "w") as fh:
                 json.dump(
                     {
@@ -189,7 +189,7 @@ class TestReport(unittest.TestCase):
                     },
                     fh,
                 )
-            fpath = os.path.join(d, "findings-core-code.json")
+            fpath = os.path.join(d, "findings-core-COD.json")
             with open(fpath, "w") as fh:
                 json.dump(
                     {
@@ -212,7 +212,7 @@ class TestReport(unittest.TestCase):
             buf = io.StringIO()
             with _chdir(d), contextlib.redirect_stdout(buf):
                 # relative paths so auto-discovery resolves against the cwd
-                syn.main(["--target", "src", "--out", "report.json", "findings-core-code.json"])
+                syn.main(["--target", "src", "--out", "report.json", "findings-core-COD.json"])
             with open(out) as _fh:
                 report = json.load(_fh)
         names = [g["name"] for g in report["groups"]]
@@ -229,7 +229,7 @@ class TestReport(unittest.TestCase):
             explicit = os.path.join(d, "explicit.json")
             with open(explicit, "w") as fh:
                 json.dump({"groups": [{"name": "explicit", "files": ["a.py"]}]}, fh)
-            fpath = os.path.join(d, "findings-x-code.json")
+            fpath = os.path.join(d, "findings-x-COD.json")
             with open(fpath, "w") as fh:
                 json.dump(
                     {
@@ -259,7 +259,7 @@ class TestReport(unittest.TestCase):
                         "explicit.json",
                         "--out",
                         "report.json",
-                        "findings-x-code.json",
+                        "findings-x-COD.json",
                     ]
                 )
             with open(out) as _fh:
@@ -321,7 +321,7 @@ class TestReport(unittest.TestCase):
                     "location": {"file": "a", "line_start": 2},
                 },
             ]
-            p = os.path.join(d, "findings-g1-security.json")
+            p = os.path.join(d, "findings-g1-SEC.json")
             with open(p, "w") as fh:
                 json.dump({"findings": findings}, fh)
             out = os.path.join(d, "report.json")
@@ -407,7 +407,7 @@ class TestReport(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tdir = self._tools_dir_with_sarif(d)
-            fpath = os.path.join(d, "findings-g1-code.json")
+            fpath = os.path.join(d, "findings-g1-COD.json")
             with open(fpath, "w") as fh:
                 json.dump({"findings": []}, fh)
 
@@ -443,7 +443,7 @@ class TestReport(unittest.TestCase):
 
     def test_main_changes_alias_sets_review_type(self):
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-g1-code.json")
+            p = os.path.join(d, "findings-g1-COD.json")
             with open(p, "w") as fh:
                 json.dump(
                     {
@@ -472,7 +472,7 @@ class TestReport(unittest.TestCase):
             self.assertEqual(report["meta"]["review_type"], "changes")
 
     def _delta_run(self, d, extra):
-        p = os.path.join(d, "findings-g1-code.json")
+        p = os.path.join(d, "findings-g1-COD.json")
         with open(p, "w") as fh:
             json.dump(
                 {

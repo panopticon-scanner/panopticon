@@ -52,19 +52,19 @@ class TestIntegrity(unittest.TestCase):
 
     def test_reconcile_flags_unexpected_and_missing(self):
         plan = [
-            {"role": "panel_review", "out_file": ".panopticon/findings-g1-code-panel_review.json"},
+            {"role": "panel_review", "out_file": ".panopticon/findings-g1-COD.json"},
             {
                 "role": "lens_sweep",
-                "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json",
+                "out_file": ".panopticon/findings-g1-ARC.json",
             },
         ]
         ingested = [
-            ".panopticon/findings-g1-code-panel_review.json",
+            ".panopticon/findings-g1-COD.json",
             ".panopticon/findings-EVIL-decoy.json",
         ]
         unexpected, missing = integrity_mod.reconcile_findings_files(plan, ingested)
         self.assertEqual(unexpected, [".panopticon/findings-EVIL-decoy.json"])
-        self.assertEqual(missing, [".panopticon/findings-g1-code-lens_sweep-style.json"])
+        self.assertEqual(missing, [".panopticon/findings-g1-ARC.json"])
 
     def test_reconcile_skipped_without_plan(self):
         self.assertEqual(integrity_mod.reconcile_findings_files([], ["whatever.json"]), ([], []))

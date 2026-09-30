@@ -148,7 +148,7 @@ def _synthesize_one(patch):
     finding = _probe_finding()
     finding.update(patch)
     with tempfile.TemporaryDirectory() as d, _chdir(d):
-        path = os.path.join(d, "findings-g1-code.json")
+        path = os.path.join(d, "findings-g1-COD.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"findings": [finding]}, fh)
         out = os.path.join(d, "report.json")

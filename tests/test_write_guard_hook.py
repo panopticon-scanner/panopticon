@@ -19,7 +19,7 @@ class TestDecide(unittest.TestCase):
         private = tempfile.TemporaryDirectory()
         self.addCleanup(private.cleanup)
         self.target = os.path.join(private.name, ".panopticon",
-                                   "findings-g1-code-panel_review.json")
+                                   "findings-g1-COD.json")
         os.makedirs(os.path.dirname(self.target))
         self.allow = {os.path.realpath(self.target)}
 
@@ -35,7 +35,7 @@ class TestDecide(unittest.TestCase):
 
     def test_write_to_sibling_findings_not_in_plan_is_blocked(self):
         sibling = os.path.join(os.path.dirname(self.target),
-                               "findings-g9-code-panel_review.json")
+                               "findings-g9-COD.json")
         ok, _ = wg.decide("Edit", sibling, self.allow)
         self.assertFalse(ok)
 
@@ -161,7 +161,7 @@ class TestCwdIndependence(unittest.TestCase):
 
     def test_absolute_out_file_authorizes_write_from_a_different_cwd(self):
         with tempfile.TemporaryDirectory() as run_root, tempfile.TemporaryDirectory() as elsewhere:
-            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
+            target = os.path.join(run_root, ".panopticon", "findings-g1-COD.json")
             allow = wg.union_paths(wg.allowlist_from_plan([{"out_file": target}]))  # install-time
             with self._in(elsewhere):  # subagent cwd
                 ok, _ = wg.decide("Write", target, allow)
@@ -171,10 +171,10 @@ class TestCwdIndependence(unittest.TestCase):
         # Documents WHY the plan must carry the absolute path: the same relative
         # name resolved from a different cwd is a different realpath -> denied.
         with tempfile.TemporaryDirectory() as run_root, tempfile.TemporaryDirectory() as elsewhere:
-            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
+            target = os.path.join(run_root, ".panopticon", "findings-g1-COD.json")
             allow = wg.union_paths(wg.allowlist_from_plan([{"out_file": target}]))
             with self._in(elsewhere):
-                ok, _ = wg.decide("Write", ".panopticon/findings-g1-code-panel_review.json", allow)
+                ok, _ = wg.decide("Write", ".panopticon/findings-g1-COD.json", allow)
             self.assertFalse(ok)
 
     def test_absolute_out_file_with_spaces_round_trips(self):
@@ -182,7 +182,7 @@ class TestCwdIndependence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as base:
             run_root = os.path.join(base, "Mini Vault")
             os.makedirs(os.path.join(run_root, ".panopticon"))
-            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
+            target = os.path.join(run_root, ".panopticon", "findings-g1-COD.json")
             allow = wg.union_paths(wg.allowlist_from_plan([{"out_file": target}]))
             ok, _ = wg.decide("Write", target, allow)
             self.assertTrue(ok)

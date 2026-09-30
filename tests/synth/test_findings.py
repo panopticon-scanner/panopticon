@@ -183,7 +183,7 @@ class TestLoad(unittest.TestCase):
 
     def test_load_findings_skips_missing(self):
         with tempfile.TemporaryDirectory() as d:
-            good = os.path.join(d, "findings-x-code.json")
+            good = os.path.join(d, "findings-x-COD.json")
             with open(good, "w") as fh:
                 json.dump({"findings": [{"severity": "HIGH", "panel": "code"}]}, fh)
             findings = findings_mod.load_findings([good, os.path.join(d, "missing.json")])
@@ -192,14 +192,14 @@ class TestLoad(unittest.TestCase):
 
     def test_load_findings_skips_non_dict_toplevel(self):
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-x-code.json")
+            p = os.path.join(d, "findings-x-COD.json")
             with open(p, "w") as fh:
                 fh.write("[1, 2, 3]")
             self.assertEqual(findings_mod.load_findings([p]), [])
 
     def test_load_findings_skips_non_dict_finding_entries(self):
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-x-code.json")
+            p = os.path.join(d, "findings-x-COD.json")
             with open(p, "w") as fh:
                 json.dump({"findings": ["oops", {"severity": "LOW", "panel": "code"}]}, fh)
             out = findings_mod.load_findings([p])
@@ -214,8 +214,8 @@ class TestLoad(unittest.TestCase):
     def test_load_findings_skips_invalid_json_and_continues(self):
 
         with tempfile.TemporaryDirectory() as d:
-            bad = os.path.join(d, "findings-g-code.json")
-            good = os.path.join(d, "findings-g-test.json")
+            bad = os.path.join(d, "findings-g-COD.json")
+            good = os.path.join(d, "findings-g-TST.json")
             with open(bad, "w") as fh:
                 fh.write("{ not valid json ")
             with open(good, "w") as fh:
@@ -240,7 +240,7 @@ class TestLoad(unittest.TestCase):
     def test_load_findings_skips_non_list_findings_key(self):
 
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-g-code.json")
+            p = os.path.join(d, "findings-g-COD.json")
             with open(p, "w") as fh:
                 json.dump({"findings": "not-a-list"}, fh)
             err = io.StringIO()
@@ -264,7 +264,7 @@ class TestLoad(unittest.TestCase):
         # stripped in load_findings, before any derivation runs.
 
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "findings-g-code.json")
+            p = os.path.join(d, "findings-g-COD.json")
             with open(p, "w") as fh:
                 json.dump(
                     {
@@ -894,7 +894,7 @@ class TestLoadFindingsProvenanceScrub(unittest.TestCase):
         # renders as an authoritative confirmed badge -- strip it at load (a real
         # verdict re-sets it via apply_verdict). Non-verification provenance stays.
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-g-code.json")
+            fp = os.path.join(d, "findings-g-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": [{
                     "title": "x", "severity": "LOW", "panel": "code",
@@ -1164,7 +1164,7 @@ class TestEvidenceIntegrity(unittest.TestCase):
     """SEC-102: trust must never derive from a field the finding payload sets."""
 
     def _agent_file(self, d, findings):
-        p = os.path.join(d, "findings-g1-security-panel_review.json")
+        p = os.path.join(d, "findings-g1-SEC.json")
         with open(p, "w") as fh:
             json.dump({"findings": findings}, fh)
         return p
@@ -1492,7 +1492,7 @@ class TestDocSeverityPolicy(unittest.TestCase):
     def test_main_wires_policy_and_discloses(self):
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = os.path.join(d, "findings-g1-code.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump(
                     {
@@ -1591,7 +1591,7 @@ class FindingSetLoaderTest(unittest.TestCase):
     severity floor + verdicts, in main()'s original order."""
 
     def _write_findings(self, d, findings):
-        p = os.path.join(d, "findings-g1-code-panel_review.json")
+        p = os.path.join(d, "findings-g1-COD.json")
         with open(p, "w") as fh:
             json.dump({"findings": findings}, fh)
         return p
