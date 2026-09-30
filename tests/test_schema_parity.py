@@ -36,6 +36,7 @@ import unittest
 import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 import scripts.tools_manifest as tools_manifest
+import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -501,6 +502,27 @@ class TestSchemaParity(unittest.TestCase):
         self.assertIsNotNone(cov["delta"], "the fixture ran no delta review")
         self.assertIsNotNone(cov["delta_artifact"],
                              "the fixture read no diff-hunks file")
+
+    def test_every_artifact_carried_delta_key_is_type_pinned(self):
+        """#2382: the seven keys `verdicts._delta_meta` copies verbatim out of the
+        diff-hunks artifact are type-pinned, with the type the loader's repair
+        table enforces at the read -- one table, so the pin and the repair cannot
+        pin different types for one key.
+
+        They were described and UNPINNED on purpose until the repair existed: a
+        schema error is terminal, so a pin over target-authored data could end a
+        paid-for run. Neither the description rule above nor the key-set equality
+        can see a type going missing, because both are satisfied by a bare
+        description."""
+        json_types = {str: "string", bool: "boolean", int: "integer"}
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"][
+            "properties"]["delta"]["properties"]
+        for key, typ in delta_mod._ARTIFACT_KEY_TYPES:
+            self.assertEqual(node[key].get("type"), [json_types[typ], "null"],
+                             "meta.coverage.delta.%s: the loader repairs this key "
+                             "to %s-or-null at the read (#2382), so the schema has "
+                             "to pin it" % (key, json_types[typ]))
 
     def test_every_pinned_delta_key_is_described(self):
         """#2169: a `properties` entry with a type and no prose is a pin, not a

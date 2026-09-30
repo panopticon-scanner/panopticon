@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
+  diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
+  when they carry a value of the wrong type, lists them in
+  `meta.coverage.delta_artifact.keys_repaired` and on stderr, rejects an unsupported
+  `schema_version` as a fourth `payload_malformed` reason, and the report schema now type-pins
+  those seven keys.
 - **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
   now offers direct repair before the setup command that refuses an invalid committed config.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
