@@ -13,6 +13,9 @@ evidence exposed.
   `meta.coverage.delta_artifact.keys_repaired` and on stderr, rejects an unsupported
   `schema_version` as a fourth `payload_malformed` reason, and the report schema now type-pins
   those seven keys.
+- **Escape request-sourced strings that reach a terminal (#2379, #1783).** The dispatch script
+  escapes any request-sourced string outside a safe charset (the checkpoint, the progress label,
+  the missing-id line), and the driver loop renders its pending-id lists with `%r`.
 - **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
   now offers direct repair before the setup command that refuses an invalid committed config.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
