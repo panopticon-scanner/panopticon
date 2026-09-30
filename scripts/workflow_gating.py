@@ -200,8 +200,9 @@ def swallowed(stmts, index, statement, stage, credit=None):
 _DETACHED = "is detached with `&`"
 _RESCUED = "hands its failure to a `||` branch that does not fail the step"
 _ENDS = "ends a group that %s"
-_SET_E = ("runs after a `set +e` (or `set +o errexit`) turned errexit off and is not in "
-          "the step's last command, so the step carries on past its failure")
+_SET_E = ("runs after a `set +e` or a spelling of it (`set +o errexit`, `shopt -uo errexit`, "
+          "`builtin set +e`) turned errexit off and is not in the step's last command, so the "
+          "step carries on past its failure")
 _NO_E = ("runs under `shell: %s`, which starts without errexit, and is not in the step's "
          "last command, so the step carries on past its failure")
 _NO_PIPEFAIL = ("is piped into another command where `pipefail` is off, so the pipeline "
@@ -232,8 +233,8 @@ def step_credit(flat, shell=None):
     at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
     stmts = [flat[index] for index in at]
     (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
-    on, fails = _errexit_states(stmts, errexit, where), _errexit_states(
-        stmts, pipefail, where, "pipefail")
+    on, fails = _errexit_states(stmts, errexit, where, shell=shell), _errexit_states(
+        stmts, pipefail, where, "pipefail", shell)
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
         stops = _stops_step(stmts, position, on, fails)

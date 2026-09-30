@@ -1268,6 +1268,82 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                 self.assertEqual([], self.job("%s\n", shell))
 
 
+class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
+    """#2335 and #2338 review N-2: bash moves errexit and pipefail through
+    `shopt -u -o NAME` (`-uo`), `shopt -s -o NAME` (`-so`) and `builtin set`,
+    and the guard read only `set` and `eval set`. After `shopt -uo errexit` or
+    `builtin set +e` bash 5.2.21 runs the use past a failing check the guard
+    credited; after `shopt -so pipefail` a piped check gates where the guard
+    refused it. A `shopt` with `-s` or `-u` and `-o` now reads as the `set -o`
+    or `set +o` it spells, and a leading `builtin` as a leading `command`
+    does, under the rule `set` has: off wherever it is written, on only as a
+    plain statement -- a plain `shopt` only where the step's shell is bash,
+    since dash has none (`shopt: not found`, exit 127), and never behind
+    `builtin`, which this guard reads, with `command` and `eval`, as able only
+    to turn an option off (bash turns it on through them)."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    PIPED = TestAPipedCheckGatesOnlyUnderPipefail.PIPED
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_every_spelling_turns_errexit_off_wherever_it_is(self):
+        for shell in (None, "sh", "bash"):
+            for spelling in ("shopt -uo errexit", "shopt -u -o errexit", "shopt -ou errexit",
+                             "shopt -uo nounset errexit", "builtin set +e",
+                             "builtin set +o errexit", "command builtin set +e",
+                             "builtin command set +e", "eval shopt -uo errexit",
+                             "if true; then shopt -uo errexit; fi"):
+                with self.subTest(shell=shell, spelling=spelling):
+                    found = self.job(spelling + "\n%s\n", shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload runs after a `set +e`",
+                                  found[0][1])
+
+    def test_every_spelling_turns_pipefail_off(self):
+        for spelling in ("shopt -uo pipefail", "shopt -u -o pipefail", "builtin set +o pipefail",
+                         "{ shopt -uo pipefail; }"):
+            with self.subTest(spelling=spelling):
+                found = self.job(spelling + "\n" + self.PIPED, "bash")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is piped into another command where `pipefail` is off", found[0][1])
+
+    def test_a_plain_shopt_turns_them_on_where_the_shell_is_bash(self):
+        for shell in (None, "bash", "bash {0}"):
+            for spelling in ("shopt -so errexit", "shopt -s -o errexit"):
+                with self.subTest(shell=shell, spelling=spelling):
+                    self.assertEqual([], self.job("set +e\n" + spelling + "\n%s\n", shell))
+        for shell in (None, "bash -e {0}"):
+            for spelling in ("shopt -so pipefail", "shopt -s -o pipefail", "shopt -os pipefail"):
+                with self.subTest(shell=shell, spelling=spelling):
+                    self.assertEqual([], self.job(spelling + "\n" + self.PIPED, shell))
+        # dash has no `shopt`: under `shell: sh` it turns nothing on.
+        self.assertIn("runs after a `set +e`",
+                      self.job("set +e\nshopt -so errexit\n%s\n", "sh")[0][1])
+        self.assertIn("where `pipefail` is off", self.job("shopt -so pipefail\n" + self.PIPED,
+                                                          "sh")[0][1])
+
+    def test_the_readings_that_stay_fail_closed(self):
+        # Bash turns the option on in the first five, which the guard does not
+        # read on: behind `builtin`, `command` or `eval`, or inside a branch.
+        # The last two turn nothing on: `shopt -o` alone only reports, and
+        # `pipefail` is not one of `shopt`'s own options.
+        for body, why in (("set +e\nbuiltin set -e\n%s\n", "runs after a `set +e`"),
+                          ("set +e\ncommand shopt -so errexit\n%s\n", "runs after a `set +e`"),
+                          ("set +e\neval shopt -so errexit\n%s\n", "runs after a `set +e`"),
+                          ("builtin set -o pipefail\n" + self.PIPED, "where `pipefail` is off"),
+                          ("if true; then shopt -so pipefail; fi\n" + self.PIPED,
+                           "where `pipefail` is off"),
+                          ("shopt -o pipefail\n" + self.PIPED, "where `pipefail` is off"),
+                          ("shopt -s pipefail\n" + self.PIPED, "where `pipefail` is off")):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(why, found[0][1])
+        self.assertEqual([], self.job("shopt -s extglob\n%s\n"))
+
+
 class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
     """#2334: bash suspends `-e` for every command of an `&&`/`||` list but
     the last, so a failing check ahead of `&&` only skips the rest of its

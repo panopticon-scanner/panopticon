@@ -270,8 +270,8 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
-    on = _errexit_states(stmts, errexit, where)
-    fails = _errexit_states(stmts, pipefail, where, "pipefail")
+    on = _errexit_states(stmts, errexit, where, shell=shell)
+    fails = _errexit_states(stmts, pipefail, where, "pipefail", shell)
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for stage in statement.stages:
@@ -296,21 +296,55 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     return out
 
 
-def _errexit_states(stmts, state, where, name="errexit"):
+# The words a `set` this module reads may stand behind: `builtin` and `eval`
+# run it in this shell, as `command` does, in either order.
+_SETTERS = ("builtin", "command", "eval", "set", "shopt")
+
+
+def _as_set(argv):
+    """`shopt -s -o NAME...` or `shopt -u -o NAME...` (`-so`, `-uo`, `-os`) as
+    the `set -o NAME...` or `set +o NAME...` it spells; any other argv as it
+    is. Without `-o` shopt names options of its own, and without `-s` or
+    `-u` it only reports them."""
+    if argv[:1] != ["shopt"]:
+        return argv
+    flags, rest = "", argv[1:]
+    while rest and rest[0][:1] == "-" and rest[0] != "--":
+        flags, rest = flags + rest[0][1:], rest[1:]
+    if "o" not in flags or ("s" in flags) == ("u" in flags):
+        return argv
+    sign = "-o" if "s" in flags else "+o"
+    rest = rest[1:] if rest[:1] == ["--"] else rest
+    return ["set"] + [word for option in rest for word in (sign, option)]
+
+
+def _errexit_states(stmts, state, where, name="errexit", shell=None):
     """Whether `-e` (or `-o name`) holds as each of `stmts` runs, from `state`
-    at the top, and after the last: a `set` turns it on only as a plain
-    statement outside every branch (`where`, their `regions`), group, list
-    and background job, and off wherever it is -- `eval`'s too (#2335), which
-    runs in this shell: `eval set +e`, and a `set` in the script it runs."""
+    at the top, and after the last, in `shell` (a step's `shell:`, None for
+    the default, or the name of a script's runner).
+
+    A `set` turns it on only as a plain statement outside every branch
+    (`where`, their `regions`), group, list and background job, and off
+    wherever it is. `shopt -s -o` and `shopt -u -o` are the `set -o` and
+    `set +o` they spell (`_as_set`, #2335, #2338), and a plain `shopt` turns
+    an option on only where the shell is bash: dash has no `shopt`. A `set`
+    or `shopt` behind `builtin`, `command` or `eval` runs in this shell too,
+    and so does a `set` in the script `eval` runs (#2335); this guard reads
+    all of them as able only to turn an option off, a fail-closed choice --
+    bash itself turns it on through each of them."""
     depth, states = 0, []
+    bash = os.path.basename((shell or "bash").split()[0]) == "bash"
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
             argv = command(stage.argv)
-            argv = argv[1:] if argv[:2] == ["eval", "set"] else argv
+            while len(argv) > 1 and argv[0] in ("builtin", "eval") and argv[1] in _SETTERS:
+                argv = command(argv[1:])        # `builtin set`, `eval set`, either way round
+            argv = _as_set(argv)
             if argv and argv[0] == "set":
-                plain = (not depth and not stage.group_open and stage.argv[0] == "set"
-                         and index not in where and len(statement.stages) == 1
+                plain = (not depth and not stage.group_open and index not in where
+                         and (stage.argv[0] == "set" or bash and stage.argv[0] == "shopt")
+                         and len(statement.stages) == 1
                          and statement.separator not in ("&", "&&", "||")
                          and not (index and stmts[index - 1].separator in ("&&", "||")))
                 state = (_errexit(argv[1:], state, name) if plain
