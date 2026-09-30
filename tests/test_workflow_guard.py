@@ -1440,6 +1440,92 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                 self.assertEqual([], self.both(body))
 
 
+class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
+    """#2334 and #2338 review I-2: a check that is the last command of a
+    `{ }` group -- or of a `( )` whose `(` line the reader dropped -- is the
+    group's status, so what bash applies to it is what follows the group:
+    ahead of `&&` or `||` it suspends `-e` for the whole group, a piped group
+    loses its status where pipefail is off, and `&` detaches it. The reader
+    gives `{ CHECK; } && echo verified` as `{ CHECK` `;` `}` `&&` `echo
+    verified`, so the guard judged the check by its own `;` and credited it
+    for the whole step, where bash 5.2.21 and dash run the use after it. A
+    check followed by the statements that close its groups is now judged by
+    the separator after the last of them, and a group piped under pipefail
+    passes its status on the way a subshell does (review N-1)."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    job = TestASetPlusEAtTheStepsTopLevel.job
+    both = TestACheckAheadOfAndGatesOnlyItsList.both
+
+    def reported(self, body, shell, why):
+        found = self.both(body, shell)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names /tmp/payload " + why, found[0])
+
+    def test_a_group_ahead_of_and_or_or_gates_only_what_it_reaches(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("{ %s; } && echo verified\n", "{\n  %s\n} && echo verified\n",
+                         "{ echo a; %s; } && echo b\n", "{ { %s; }; } && echo verified\n",
+                         "( { %s; } ) && echo verified\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.reported(body, shell, "runs ahead of `&&`")
+            for body in ("{ %s; } || true\n", "{\n  %s\n} || echo failed\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.reported(body, shell, "ends a group that hands its failure to a `||` "
+                                               "branch that does not fail the step")
+            with self.subTest(shell=shell, body="&"):
+                self.reported("{ %s; } &\nwait\n", shell, "ends a group that is detached with `&`")
+
+    def test_a_piped_group_gates_only_under_pipefail(self):
+        piped = "ends a group that is piped into another command where `pipefail` is off"
+        for shell, body in ((None, "{ %s; } | tee log\n"), ("sh", "{ %s; } | tee log\n"),
+                            ("bash {0}", "{ %s; } | tee log\n"),
+                            ("bash", "set +o pipefail\n{ %s; } | tee log\n"),
+                            (None, "{\n  %s\n} 2>&1 | tee log\n"), ("sh", "{\n  %s\n} 2>&1 | tee log\n"),
+                            (None, "(\n  %s\n) 2>&1 | tee log\n"), ("sh", "(\n  %s\n) 2>&1 | tee log\n")):
+            with self.subTest(shell=shell, body=body):
+                self.reported(body, shell, piped)
+        for shell, body in (("bash", "{ %s; } | tee log\n"), ("bash", "{\n  %s\n} 2>&1 | tee log\n"),
+                            ("bash", "(\n  %s\n) 2>&1 | tee log\n"),
+                            (None, "set -o pipefail\n{ %s; } | tee log\n"),
+                            # N-1: a piped group ending the check's list runs in a
+                            # subshell, whose status pipefail hands the pipeline.
+                            ("bash", "{ %s && echo ok; } | cat\n")):
+            with self.subTest(shell=shell, body=body):
+                self.assertEqual([], self.job(body, shell))
+        self.reported("{ %s && echo ok; } | cat\n", None, "runs ahead of `&&`")
+
+    def test_the_forms_that_already_read_right_keep_their_verdicts(self):
+        # Reported: the subshell twins, where the reader keeps the group on
+        # the check's own statement, and the checks with no group at all.
+        for shell in (None, "sh"):
+            for body, why in (("( echo a; %s ) && echo b\n", "runs ahead of `&&`"),
+                              ("( %s ) 2>&1 | tee log\n", "is piped into another command"),
+                              ("%s && echo verified\n", "runs ahead of `&&`"),
+                              ("%s | tee log\n", "is piped into another command")):
+                with self.subTest(shell=shell, body=body):
+                    self.reported(body, shell, why)
+        # Cleared: a group whose failure still stops the step, and a use
+        # inside the list the group heads.
+        for shell in (None, "sh", "bash"):
+            for body in ("{ %s; } || exit 1\n", "{ %s; }\n", "{\n  %s\n}\n",
+                         '{ %s; } || { echo "::error::bad"; exit 1; }\n', "{ { %s; }; }\n",
+                         "true && { %s; }\n", "{ %s && echo ok; } || exit 1\n",
+                         "{ %s && echo ok; } && "):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.job(body, shell))
+
+    def test_with_errexit_off_a_group_stops_the_step_only_as_its_last_command(self):
+        self.assertIn("runs after a `set +e`", self.job("set +e\n{ %s; }\n")[0][1])
+        # The group, not the check, is the step's last command: its status is
+        # the step's, and the job stops before the next step's use.
+        self.assertEqual([], wg.job_defects([
+            wg.Step("check", self.FETCH + "set +e\n{ " + self.CHECK + "; }\n"),
+            wg.Step("run", self.USE)]))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"
