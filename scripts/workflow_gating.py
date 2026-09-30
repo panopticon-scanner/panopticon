@@ -56,6 +56,7 @@ def _errexit(words, state=False, name="errexit"):
                 state = word[0] == "-"
             if "o" in word[1:] and next(words, None) == name:
                 state = word[0] == "-"
+            if "O" in word[1:]: next(words, None)   # bash's `-O shopt_option` (review N-3)
     return state
 
 

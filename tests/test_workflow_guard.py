@@ -1606,11 +1606,19 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                       wg.fetch_exec_defect(self.FETCH + self.PIPED % self.CHECK + self.USE))
 
     def test_a_piped_check_under_pipefail_still_clears(self):
+        # bash's `-O` takes a value (final review N-3), so `extglob` does not
+        # end the options: the `-e` after it still seeds errexit.
         for shell, body in (("bash", self.PIPED), (None, "set -o pipefail\n" + self.PIPED),
                             ("bash -eo pipefail {0}", self.PIPED),
+                            ("bash -O extglob -eo pipefail {0}", self.PIPED),
+                            ("bash -eO extglob -o pipefail {0}", self.PIPED),
                             ("/bin/bash --noprofile --norc -eo pipefail {0}", self.PIPED)):
             with self.subTest(shell=shell, body=body):
                 self.assertEqual([], self.job(body, shell))
+        found = self.job("%s\n", "bash -O extglob {0}")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs under `shell: bash -O extglob {0}`, which this guard reads as starting "
+                      "without errexit", found[0][1])
 
     def test_the_script_twins_take_the_steps_pipefail(self):
         # The child's own pipefail covers its inner pipe, not the outer one
