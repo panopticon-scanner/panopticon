@@ -1517,9 +1517,9 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     both = TestACheckAheadOfAndGatesOnlyItsList.both
 
     AHEAD = "runs ahead of `&&`, where the shell suspends `-e`"
-    LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (a line ending in "
-            "`(` or holding only `)`, or a `case` inside `$(...)`), so it clears nothing after "
-            "its own command in that list")
+    LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for example a "
+            "line ending in `(` or starting with `)`, or a `case` inside `$(...)`), so it "
+            "clears nothing after its own command in that list")
 
     def assertAhead(self, body, shell, why=AHEAD):
         found = self.both(body, shell)

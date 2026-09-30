@@ -223,9 +223,9 @@ _NO_PIPEFAIL = ("is piped into another command where this guard reads `pipefail`
                 "before it where the shell is bash)")
 _AHEAD = ("runs ahead of `&&`, where the shell suspends `-e`, so its failure skips only the "
           "rest of that list and the step carries on past it")
-_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (a line ending in `(` "
-         "or holding only `)`, or a `case` inside `$(...)`), so it clears nothing after its "
-         "own command in that list")
+_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for example a line "
+         "ending in `(` or starting with `)`, or a `case` inside `$(...)`), so it clears "
+         "nothing after its own command in that list")
 
 
 class Reach(str):
