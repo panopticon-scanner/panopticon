@@ -78,7 +78,9 @@ that starts catching one fails there, and this list is edited with it.
   path spelled differently at fetch and at use matches nothing, so that
   download goes unseen -- but the side that RUNS compares last parts where a
   `$` spells the use's directory (`may_run` #2310, `covers` #2345), and for a
-  glob where one spells the download's or the download is a bare name.
+  glob where one spells the download's or the download is a bare name. A
+  download kept in a variable is followed to a shell whole (`carried`, #2341),
+  not through a cut (`${x%%#*}`), a command (`$(echo "$x")`) or a file (`> f`).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -188,7 +190,7 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Reach,
-                            chmod_executable, chmod_targets, clears, covers, described,
+                            carried, chmod_executable, chmod_targets, clears, covers, described,
                             flattened, in_container, kept, may_run, names_file, parse_fetch,
                             regions, same_file, stdin_program, step_credit, streamed_fetch,
                             substitution_script, swallowed, within)
@@ -223,17 +225,18 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False):
-    """([(statement index, Fetch)], [(statement index, why it is unread)]).
+    """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
 
     Every download in the script, and every command this module cannot read,
-    asked of each stage in ONE walk -- the one read of each command
+    asked of each stage in ONE walk -- the first read of each command
     substitution as a script of its own, so a caller that walks inside a
     catch (`job_defects`) has read every text anything here reads.
 
     A fetch in a substitution is credited to the command that CONSUMES it --
     `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
-    the downloaded bytes become behaviour. Three forms are REPORTED unread: a
-    command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
+    the downloaded bytes become behaviour, and so is one a variable carries
+    (`carried`, where the walk found a fetch). Three forms are REPORTED unread:
+    a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
     stdin program not readable as written (`_unread_stdin`) and, `inside` a
     substitution, a script handed to a shell (`substitution_script`), which `kept` weighs.
     """
@@ -268,7 +271,7 @@ def _walk(stmts, stream_exec=False, inside=False):
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)
                              for _index, fetch in fetched)
-    return found, unread
+    return found, unread + (carried(stmts, EXECUTORS) if found else [])
 
 
 def _fetch_records(stmts, stream_exec=False):
@@ -547,10 +550,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
     if fetch.dest is None:
-        if not fetch.piped_to:
-            return None
-        target = os.path.basename(fetch.piped_to[0])
-        if target not in EXECUTORS:
+        if not fetch.piped_to or os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
             return None
         # Nothing landed on disk, so no checksum anywhere in the step can be
         # about these bytes: the only fix is to stop streaming them into a

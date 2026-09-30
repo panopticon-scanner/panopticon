@@ -26,6 +26,8 @@ Three questions live here, each one a shape a step writes down:
                                reads both in place of the command handed them;
                                `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
+                               `carried` a download a step keeps in a variable
+                               and hands to a shell (#2341);
                                and `in_container` the operand a `docker run`
                                hands to a shell on the far side of a bind mount
     whether a failure matters  `regions` reads the branch bodies a command was
@@ -45,6 +47,7 @@ importing the gating names through this one.
 Stdlib only, like everything under it.
 """
 import os
+import re
 
 import shell_reader
 from shell_reader import command, statements
@@ -53,7 +56,8 @@ from shell_reader import command, statements
 # Compatibility bindings share the single fetch owner with existing callers,
 # the operand questions with theirs, and the gating ones with theirs.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
-                            parse_fetch as parse_fetch, streamed_fetch as streamed_fetch)
+                            parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
+                            stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL,
                              _SET_E, _errexit, _stops_step, clears as clears, seed as seed,
                              swallowed as swallowed)
@@ -474,6 +478,87 @@ def within(statement, where=""):
         for text in stage.substitutions:
             for inner in statements(text):
                 yield from within(inner, INSIDE)
+
+
+# A download a step keeps in a variable and hands a shell as its script
+# (#2341): `x=$(curl -fsSL URL)`, then `eval "$x"`, `sh -c "$x"` or `echo "$x"
+# | sh`. No file ever holds it, so no checksum clears it, as none clears
+# `eval "$(curl URL)"`; the sentence names the variable.
+_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s, so there is no file to check -- "
+            "download it to a file, `sha256sum -c` that file, then run it")
+_NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+_WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+_DECLARES = ("export", "local", "declare", "typeset", "readonly")
+
+
+def _held(word):
+    """The name of the variable `word` is whole (`$x`, `${x}`), or ''."""
+    match = _WHOLE.fullmatch(word)
+    return (match[1] or match[2]) if match else ""
+
+
+def _prints(stage):
+    """The words an `echo` or `printf` stage writes to its standard output."""
+    argv = command(stage.argv)
+    return argv[1:] if argv and os.path.basename(argv[0]) in ("echo", "printf") else []
+
+
+def _assigned(stage, held):
+    """{name: the download it now holds, or None} for what this stage assigns
+    in the step's own shell. A bare assignment or a declaration's (`export
+    x=...`) holds one when its value is the stage's one substitution and that
+    is one fetch to standard output (`stdout_fetch`), or is a variable that
+    holds one, whole (`y="$x"`); `unset` empties one, `unset -f` a function."""
+    argv = command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    if name == "unset":
+        return {} if "-f" in argv else dict.fromkeys((w for w in argv[1:] if w[:1] != "-"), None)
+    now = {}
+    for word in argv[1:] if name in _DECLARES else [] if argv else stage.argv:
+        match = _NAMED.match(word)
+        if match:
+            value = shell_reader.derived(word[match.end():], word)
+            whole = (len(stage.substitutions) == 1 and shell_reader.has_substitution(value)
+                     and shell_reader.readable(value) == "$(...)")
+            now[match[1]] = (stdout_fetch(stage.substitutions[0]) if whole
+                             else held.get(_held(value)))
+    return now
+
+
+def carried(stmts, executors):
+    """[(statement index, why)] for each download a step keeps in a variable
+    and hands whole to a shell as its script (#2341): the word `$x` or `${x}`
+    as what `eval` or a shell's `-c` runs (`scripts`), or printed by `echo` or
+    `printf` down a pipe to one of `executors` (`stream_consumer`) or from a
+    substitution one of them is handed (`bash <(echo "$x")`) -- in the
+    statement or in a script its substitutions run (`within`), where `x` was
+    assigned it before that statement and not since (`_assigned`). A step is
+    a shell of its own, so the guard asks of each step's statements apart,
+    and of each script a substitution runs for what it assigns itself. What
+    else is done to the variable is not followed: the guard's gap list."""
+    held: dict[str, Fetch | None] = {}
+    out = []
+    for index, statement in enumerate(stmts):
+        for inner, position, stage, where in within(statement):
+            argv = command(stage.argv)
+            to = (stream_consumer(inner.stages[position + 1:], executors)
+                  if _prints(stage) and stage.stdout_to_pipe else None)
+            words = scripts(argv) + (_prints(stage) if to else [])
+            if argv and os.path.basename(argv[0]) in executors:
+                words += [w for text in stage.substitutions for inside in statements(text)
+                          for w in _prints(inside.stages[-1])]
+            for word in words:
+                fetch = held.get(_held(word))
+                if fetch:
+                    consumer = to or [w for w in argv if w is not word
+                                      and not shell_reader.is_marker(w)]
+                    out.append((index, _CARRIES % (
+                        shell_reader.readable(fetch.url), _held(word),
+                        " ".join(shell_reader.readable(w) for w in consumer), where)))
+                    break
+        if len(statement.stages) == 1:
+            held.update(_assigned(statement.stages[0], held))
+    return out
 
 
 def kept(unread, fetched):

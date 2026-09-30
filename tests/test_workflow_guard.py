@@ -898,6 +898,90 @@ class TestAGlobFromAnotherDirectoryReachesABareDownload(unittest.TestCase):
                 self.assertEqual([], self.job(script))
 
 
+class TestADownloadCarriedInAVariable(unittest.TestCase):
+    """#2341: `x=$(curl -fsSL URL)` and then `eval "$x"`, `sh -c "$x"` or
+    `echo "$x" | sh` read clean -- the fetch was read, writing to standard
+    output, into a variable the guard never followed -- and bash 3.2 and 5.2
+    run the download through each. A whole-word variable a plain fetch
+    substitution assigned earlier in the step is now that fetch's output
+    where it is handed to a shell as its script: no file ever holds it, so
+    no checksum clears it, as none clears `eval "$(curl URL)"`."""
+
+    GET = "x=$(curl -fsSL https://example.test/i.sh)\n"
+    SAID = ("carries https://example.test/i.sh in `$x` and hands it to `%s`%s, so there "
+            "is no file to check")
+
+    def job(self, *scripts):
+        return [why for _n, why in wg.job_defects(
+            [("step %d" % n, script) for n, script in enumerate(scripts)])]
+
+    def test_handed_whole_to_a_shell_it_is_the_download(self):
+        for get in (self.GET, 'x="$(curl -fsSL https://example.test/i.sh)"\n',
+                    "x=$(wget -qO- https://example.test/i.sh)\n",
+                    "export x=$(curl -fsSL https://example.test/i.sh)\n"):
+            for use, to in (('eval "$x"\n', "eval"), ("eval $x\n", "eval"),
+                            ('eval "${x}"\n', "eval"), ('sh -c "$x"\n', "sh -c"),
+                            ('bash -c "$x"\n', "bash -c"), ('echo "$x" | sh\n', "sh"),
+                            ("printf '%s\\n' \"$x\" | bash\n", "bash")):
+                with self.subTest(get=get, use=use):
+                    why = self.job(get + use)
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn(self.SAID % (to, ""), why[0])
+
+    def test_wherever_the_step_hands_it_over(self):
+        for script, to, where in (
+                (self.GET + 'y=$(echo "$x" | sh)\n', "sh", " inside a command substitution"),
+                (self.GET + 'echo "$x" | tr -d "\\r" | sh -s -- --yes\n', "sh -s -- --yes", ""),
+                ("f() {\n  local x=$(curl -fsSL https://example.test/i.sh)\n  eval \"$x\"\n}\n"
+                 "f\n", "eval", ""),
+                (self.GET + "x=$(curl -fsSL https://example.test/i.sh)\neval \"$x\"\n", "eval", ""),
+                (self.GET + 'bash <(echo "$x")\n', "bash", ""),
+                (self.GET + "source <(printf '%s\\n' \"$x\")\n", "source", ""),
+                (self.GET + 'eval "$(echo "$x")"\n', "eval", "")):
+            with self.subTest(script=script):
+                why = self.job(script)
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.SAID % (to, where), why[0])
+        # A whole copy holds it too, and the sentence names the variable used.
+        for copy in ('y="$x"\n', "y=$x\n", 'export y="${x}"\n'):
+            with self.subTest(copy=copy):
+                why = self.job(self.GET + copy + 'eval "$y"\n')
+                self.assertEqual(1, len(why), why)
+                self.assertIn("carries https://example.test/i.sh in `$y` and hands it to `eval`",
+                              why[0])
+        # A script handed to `eval` in a substitution was refused already, in
+        # a job that downloads (`substitution_script`); it now says what runs.
+        why = self.job(self.GET + 'y=$(eval "$x")\n')
+        self.assertEqual(2, len(why), why)
+        self.assertIn("hands a script to `eval` inside a command substitution", why[0])
+        self.assertIn(self.SAID % ("eval", " inside a command substitution"), why[1])
+
+    def test_the_here_string_keeps_its_own_answer(self):
+        # Already refused as an expanding here-string (#2293), with or without
+        # the download: the same one sentence, and not a second.
+        self.assertEqual(self.job('bash <<< "$x"\n'), self.job(self.GET + 'bash <<< "$x"\n'))
+        self.assertIn("hands an EXPANDING heredoc body or here-string to `bash`",
+                      "".join(self.job(self.GET + 'bash <<< "$x"\n')))
+
+    def test_not_handed_to_a_shell_or_not_the_download_it_is_not(self):
+        for script in (self.GET + 'echo "$x" > f\n',                 # the issue's control
+                       self.GET + 'x=1\neval "$x"\n', self.GET + 'unset x\neval "$x"\n',
+                       self.GET + 'eval "$y"\n', self.GET + 'echo "$x"\n',
+                       self.GET + 'echo "$x" | grep -c .\n',
+                       self.GET + "sh -c 'echo hi' \"$x\"\n",         # there it is `$0`
+                       "x=$(curl -fsSLo f https://example.test/i.sh)\neval \"$x\"\n",
+                       self.GET + 'diff <(echo "$x") f\n', self.GET + 'bash <(echo "$y")\n',
+                       self.GET + 'y="$x"\ny=1\neval "$y"\n',
+                       'eval "$x"\n' + self.GET):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+
+    def test_each_step_is_a_shell_of_its_own(self):
+        # A variable dies with the step's shell; in one step it is the download.
+        self.assertEqual([], self.job(self.GET, 'eval "$x"\n'))
+        self.assertEqual(1, len(self.job(self.GET + 'eval "$x"\n')))
+
+
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
     in a checkout holding a file called sh, before the command runs, which the
@@ -2650,6 +2734,18 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         for run in ('"$PWD/payload" 9\n', 'sh "$PWD/payload"\n'):
             with self.subTest(run=run):
                 self.flagged(fetch, ("run", run))
+
+    def test_a_download_carried_in_a_variable_beyond_the_shape_that_is_read(self):
+        # #2341 follows `x=$(curl ...)` to a shell whole, or a whole copy of it
+        # (`TestADownloadCarriedInAVariable`); through a cut, a command or a
+        # file, it is a value the guard does not follow.
+        get = "x=$(curl -fsSL https://example.test/i.sh)\n"
+        for run in (get + 'eval "${x%%#*}"\n', get + 'echo "$x" > f\nsh f\n',
+                    get + 'y=$(echo "$x")\neval "$y"\n',
+                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"):
+            with self.subTest(run=run):
+                self.accepted(("run", run))
+        self.flagged(("run", get + 'eval "$x"\n'))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
