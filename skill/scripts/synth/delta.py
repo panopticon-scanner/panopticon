@@ -230,8 +230,7 @@ def _disclose_load(ctx, path):
                      if not rs]
         shown = ", ".join(repr(p) for p in rangeless[:_NAMED_PATHS_MAX])
         extra = len(rangeless) - _NAMED_PATHS_MAX
-        named = (" (%s%s)" % (shown, ", +%d more" % extra if extra > 0 else "")
-                 if shown else "")
+        named = " (%s%s)" % (shown, ", +%d more" % extra if extra > 0 else "")
         # The subset clause, second: the count says how many files the gate
         # admitted, and this says how many of them said so because the artifact
         # is broken. Silent at zero, so the legitimate shape -- every rangeless
@@ -436,12 +435,7 @@ def load_diff_hunks_report(path):
             # artifact): the fail-open is the same either way.
             rangeless_paths += 1
             if rs:
-                # #2386: WHICH of the two it was is a different question, and
-                # `ranges_dropped` answers it only while the two populations do
-                # not co-occur -- in one mixed map it cannot say which rangeless
-                # path it belongs to. So the emptied ones are counted again here,
-                # as a SUBSET: the tally above keeps its meaning, every
-                # rangeless path.
+                # #2386: the broken SUBSET of the tally above; see `HunksLoad`.
                 emptied_paths += 1
         hunks[str(p)] = cleaned
     data["hunks"] = hunks
