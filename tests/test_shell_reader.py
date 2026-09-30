@@ -33,6 +33,46 @@ def stage(script):
     return stmts[0].stages[0]
 
 
+class LinearGrowth:
+    """The reader's scaling checks, shared by every class that times it."""
+
+    def assert_linear_growth(self, n, make, check):
+        """Read `make(n)` and `make(4 * n)`, `check(size, parsed)` each, and
+        require t(4n) <= 8 * t(n) + 0.25 s. Two sizes timed in one process
+        measure how the reader grows -- about 4x for a linear pass, 16x for a
+        quadratic one -- whatever the speed of the machine. Bounds in seconds
+        sized on a dev box fail on CI's 3.11-3.13 jobs: traced for coverage on
+        shared runners, they run the reader 6-9x slower.
+
+        A ratio of wall-clock times still inflates when the process is
+        descheduled during a read (9.1x and 11.3x in 16 runs on a box at
+        load 45), so each read is timed in this process's CPU time, with
+        the garbage collector off as `timeit` turns it off, and a miss is
+        measured once more and judged on the lesser of each size's two times:
+        a quadratic reader misses twice, a spike does not. The constant
+        absorbs timer noise when t(n) is small; 15 s of CPU guards only
+        against a catastrophe."""
+        def read(size):
+            script = make(size)
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                parsed = shell_reader.statements(script)
+                elapsed = time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
+            check(size, parsed)
+            return elapsed
+
+        small, large = read(n), read(4 * n)
+        if large > 8 * small + 0.25:
+            small, large = min(small, read(n)), min(large, read(4 * n))
+        self.assertLessEqual(large, 8 * small + 0.25, (small, large))
+        self.assertLess(large, 15.0, (small, large))
+
+
 class TestFdDuplicationIsNeitherReadNorWrite(unittest.TestCase):
     """The module docstring's claim ("`2>&1` is neither"), held true by test."""
 
@@ -120,7 +160,7 @@ class TestCombinedStreamRedirectsAreARealDestination(unittest.TestCase):
             self.assertEqual([], s.writes, script)
 
 
-class TestTheCaseHeaderProbeIsNotQuadratic(unittest.TestCase):
+class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
     """#1714 fix round, Critical 1: reading `case WORD in` cost O(n^2).
 
     The header probe re-ran `shlex.split` over the WHOLE accumulated buffer
@@ -136,17 +176,23 @@ class TestTheCaseHeaderProbeIsNotQuadratic(unittest.TestCase):
     per statement, which makes `_split` linear again. The `case` cases in
     `tests/test_workflow_guard.py` are the other half of this spec -- the
     probe must still fire on every header it fired on before.
+
+    Both 50 KB reads are timed as `LinearGrowth` times the reader: how each
+    grows from a quarter of its size, in CPU time. The 2.0 s of wall clock
+    they were held to failed with the reader unchanged once the process ran
+    slower, as it does on a loaded box or traced for coverage (#2295).
     """
 
-    def test_a_50kb_single_statement_parses_in_well_under_a_second(self):
-        script = "echo " + "a " * 26000 + "\n"
-        self.assertGreater(len(script), 50 * 1024, len(script))
-        start = time.monotonic()
-        stmts = shell_reader.statements(script)
-        elapsed = time.monotonic() - start
-        self.assertEqual(1, len(stmts), stmts)
-        self.assertEqual(26001, len(stmts[0].stages[0].argv))
-        self.assertLess(elapsed, 2.0, elapsed)
+    def test_a_50kb_single_statement_parses_in_linear_time(self):
+        def make(words):
+            return "echo " + "a " * words + "\n"
+
+        def check(words, parsed):
+            self.assertEqual(1, len(parsed), parsed)
+            self.assertEqual(words + 1, len(parsed[0].stages[0].argv))
+
+        self.assertGreater(len(make(26000)), 50 * 1024)
+        self.assert_linear_growth(6500, make, check)
 
     def test_a_second_case_header_on_the_same_line_is_still_read(self):
         # Caught by differentially parsing a corpus against the unbounded
@@ -168,13 +214,12 @@ class TestTheCaseHeaderProbeIsNotQuadratic(unittest.TestCase):
     def test_a_50kb_statement_that_really_is_a_case_header_is_fast_too(self):
         # The probe survives on a buffer whose first word IS `case`, so the
         # bound cannot be "give up once the statement is long".
-        script = "case " + "a" * (50 * 1024) + " in x) :; esac\n"
-        start = time.monotonic()
-        stmts = shell_reader.statements(script)
-        elapsed = time.monotonic() - start
-        self.assertLess(elapsed, 2.0, elapsed)
-        self.assertTrue(any(st.stages[0].argv[:1] == ["esac"] for st in stmts),
-                        stmts)
+        def check(_size, parsed):
+            self.assertTrue(any(st.stages[0].argv[:1] == ["esac"] for st in parsed),
+                            parsed)
+
+        self.assert_linear_growth(
+            50 * 1024 // 4, lambda size: "case " + "a" * size + " in x) :; esac\n", check)
 
 
 if __name__ == "__main__":
@@ -417,6 +462,36 @@ class TestHeredocOnStandardInput(unittest.TestCase):
         self.assertIsNone(stage("bash -s < script.sh").stdin_heredoc)
         self.assertIsNone(stage("bash -s").stdin_heredoc)
 
+    def test_a_here_string_is_the_body_its_descriptor_reads(self):
+        # #2293: `<<<` hands the command its word on that descriptor, quotes
+        # removed as bash removes them -- the script of an interpreter in
+        # front of it, as a heredoc is. A word bash expands first (`$`, a
+        # backquote, `~`, an escape `$'...'` decodes) says so, as written.
+        # It is no sums list to quote back: `heredoc` stays None.
+        for script, body in (("sh <<< 'curl x | sh'", ("curl x | sh", False)),
+                             ('sh <<<"a \\$b \\` \\\\ \\c"', ("a $b ` \\ \\c", False)),
+                             ("sh <<< a\\ b'c'$'d\\''", ("a bcd'", False)),
+                             ("sh <<< 'a\nb'", ("a\nb", False)),
+                             ("sh <<< {a,b}*", ("{a,b}*", False)),
+                             ('sh <<< "$CMD"', ("$CMD", True)),
+                             ("sh <<< ~/x", ("~/x", True)),
+                             ("sh 3<<< 'x' 0<&3", ("x", False)),
+                             ("sh 3<<< 'x'", None),
+                             ("sh <<< 'x' < f", None)):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                self.assertEqual(body, parsed.stdin_heredoc)
+                self.assertIsNone(parsed.heredoc)
+        for script in ("sh <<< $'a\\n'", "sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
+            with self.subTest(script=script):
+                self.assertTrue(stage(script).stdin_heredoc[1])
+        parsed = stage("sha256sum -c <<< 'x' 3<<EOF\nbody\nEOF")
+        self.assertEqual(("body", ("x", False)), (parsed.heredoc, parsed.stdin_heredoc))
+        # The lines below a here-string are code, whatever its word held; and
+        # a `$(...)` keeps its word as written, to be read again as a script.
+        self.assertEqual([[['sh']], [['echo', 'a']]], argvs("sh <<< 'x\ny'; echo a\n"))
+        self.assertEqual(["sh <<< 'a b'"], stage("echo $(sh <<< 'a b')").substitutions)
+
 
 class TestPipelineStdoutProvenance(unittest.TestCase):
     def test_stdout_aliases_and_redirect_order(self):
@@ -582,6 +657,18 @@ class TestDocumentedShellReading(unittest.TestCase):
             self.assertTrue(shell_reader.has_substitution(argument))
             self.assertEqual('$(...)', shell_reader.readable(argument))
 
+    def test_an_extglob_group_is_part_of_its_word(self):
+        # Re-review I-5: bash reads `!(keep|*.md)` as one word with `extglob`
+        # on, and refuses the line with it off -- never `!` and a subshell
+        # piping into a command called `*.md`.
+        parsed = shell_reader.statements("rm -rf !(keep|*.md) ./x\n")
+        self.assertEqual([[["rm", "-rf", "!(keep|*.md)", "./x"]]],
+                         [[part.argv for part in statement.stages] for statement in parsed])
+        # A `$(...)` in it is lifted, as anywhere; where a command starts, the
+        # word is one bash expands, as `*(...)` is.
+        self.assertEqual(["curl u"], stage("echo @($(curl u)|x)").substitutions)
+        self.assertIn("is a pattern", shell_reader.unresolved_wrapper(stage("@(sh) -c x").argv))
+
     def test_unquoted_heredoc_expands_but_quoted_heredoc_is_literal(self):
         parsed = shell_reader.statements(
             "cat <<EOF\n$(printf expanded)\nEOF\n"
@@ -654,7 +741,7 @@ def argvs(script):
             for statement in shell_reader.statements(script)]
 
 
-class TestOneLexicalPass(unittest.TestCase):
+class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
     """#1793 (COD-3418139920): comments, continuations and heredocs, read the
     way bash reads them -- in one forward pass that knows the quote it is in.
 
@@ -665,42 +752,6 @@ class TestOneLexicalPass(unittest.TestCase):
     the next line into it. `tests/test_workflow_guard.py` holds the steps each
     one hid from the guard; this is the reader's own half of the spec.
     """
-
-    def assert_linear_growth(self, n, make, check):
-        """Read `make(n)` and `make(4 * n)`, `check(size, parsed)` each, and
-        require t(4n) <= 8 * t(n) + 0.25 s. Two sizes timed in one process
-        measure how the reader grows -- about 4x for a linear pass, 16x for a
-        quadratic one -- whatever the speed of the machine. Bounds in seconds
-        sized on a dev box fail on CI's 3.11-3.13 jobs: traced for coverage on
-        shared runners, they run the reader 6-9x slower.
-
-        A ratio of wall-clock times still inflates when the process is
-        descheduled during a read (9.1x and 11.3x in 16 runs on a box at
-        load 45), so each read is timed in this process's CPU time, with
-        the garbage collector off as `timeit` turns it off, and a miss is
-        measured once more and judged on the lesser of each size's two times:
-        a quadratic reader misses twice, a spike does not. The constant
-        absorbs timer noise when t(n) is small; 15 s of CPU guards only
-        against a catastrophe."""
-        def read(size):
-            script = make(size)
-            enabled = gc.isenabled()
-            gc.disable()
-            try:
-                start = time.process_time()
-                parsed = shell_reader.statements(script)
-                elapsed = time.process_time() - start
-            finally:
-                if enabled:
-                    gc.enable()
-            check(size, parsed)
-            return elapsed
-
-        small, large = read(n), read(4 * n)
-        if large > 8 * small + 0.25:
-            small, large = min(small, read(n)), min(large, read(4 * n))
-        self.assertLessEqual(large, 8 * small + 0.25, (small, large))
-        self.assertLess(large, 15.0, (small, large))
 
     def test_quote_state_carries_across_lines(self):
         for script in ('echo "a\n# b"; echo c\n', "echo 'a\n# b'; echo c\n"):
@@ -844,7 +895,7 @@ class TestOneLexicalPass(unittest.TestCase):
                              ("cat 3<\\\n<EOF\nit's\nEOF\necho a\n", None),
                              ("cat <<\\\n-EOF\n\tit's\n\tEOF\necho a\n", ("it's", True)),
                              ("cat <\\\n<\\\n-'EOF'\n\tit's\n\tEOF\necho a\n", ("it's", False)),
-                             ("cat <\\\n<<x\necho a\nx\n", None)):
+                             ("cat <\\\n<<x\necho a\nx\n", ("x", False))):
             with self.subTest(script=script):
                 self.assertEqual(body, shell_reader.statements(script)[0].stages[0].stdin_heredoc)
                 self.assertIn([['echo', 'a']], argvs(script))

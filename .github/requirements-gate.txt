@@ -44,6 +44,11 @@ pyyaml==6.0.3 \
 jsonschema==4.26.0 \
     --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
 
+# Runtime package of the gate's own import chain: scripts.tools imports every
+# adapter body and tools/spotbugs.py imports defusedxml unconditionally (#2363).
+defusedxml==0.7.1 \
+    --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
+
 # jsonschema's runtime closure, spelled out because of --no-deps above.
 # typing-extensions is `referencing`'s, on python_version < "3.13" -- the gate
 # pins python 3.12, so it is reached.

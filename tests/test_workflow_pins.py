@@ -15,11 +15,12 @@ import os
 import re
 import shlex
 import unittest
+from unittest import mock
 
 import yaml
 
 from tests._test_helpers import REPO_ROOT
-from workflow_guard import UNNAMED, fetches, job_defects, run_jobs
+from workflow_guard import UNNAMED, Step, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including
 # the two the install rule was written for -- and a guard that reads a comment
@@ -176,6 +177,13 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
         # in the fleet. "No defects" is evidence only while the scan still
         # sees the two artifact downloads this repo has (hadolint in
         # docker-build-pr.yml, the DependencyCheck release in nvd-cache.yml).
+        # `fetches` raises on a step the reader refuses, which has no answer
+        # in its shape -- none is "no downloads" -- so `job_defects`, which
+        # names such a step, is asked first (#2286).
+        refused = ["%s / %s -- %s" % defect for defect in _fetch_defects_in_repo()
+                   if defect[2].startswith("cannot read this step: ")]
+        self.assertEqual([], refused, "the fetch scan cannot read these steps:\n" +
+                         "\n".join(refused))
         found = [(w, f) for w, _j, steps in _run_jobs_in_repo()
                  for step in steps for f in fetches(step.script)]
         self.assertGreaterEqual(
@@ -183,6 +191,16 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
                            "scanner is broken, not the tree")
         self.assertTrue(all(f.url for _w, f in found),
                         "a fetch was seen with no URL parsed out of it: %s" % found)
+
+    def test_a_step_the_reader_refuses_fails_the_scan_by_name(self):
+        # The scan above ERRORED on such a step with a `shell_lex.Unreadable`
+        # traceback that named no step, beside the gate test's named failure.
+        steps = [Step("fetch", "curl -fsSL -o t https://example.test/t\n"),
+                 Step("refused", "cat <<$(a b)\nit's\n$(a b)\n")]
+        with mock.patch.dict(globals(), {"_run_jobs_in_repo": lambda: [("x.yml", "j", steps)]}):
+            with self.assertRaises(AssertionError) as raised:
+                self.test_the_fetch_scan_is_actually_seeing_the_downloads()
+        self.assertIn("x.yml / refused -- cannot read this step: ", str(raised.exception))
 
     def test_no_fetch_exemption_outlives_the_step_it_was_written_for(self):
         fired = set()
@@ -812,6 +830,58 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
             pinned, RUNNER_PIP_FLOOR,
             "pinned pip %s is older than the %s the runner already ships"
             % (m.group(1), ".".join(str(n) for n in RUNNER_PIP_FLOOR)))
+
+
+class TestGateClosureCoversRuntimePackages(unittest.TestCase):
+    """#2363: installed with `--no-deps`, the gate's requirements file IS the
+    environment, so a runtime package the gate's import chain reaches has to be
+    listed in it or the gate cannot start.
+
+    Both commands that run repository code in that environment
+    (`skill/scripts/run_tools.py` and `skill/scripts/security_gate.py`) reach
+    `scripts.tools`, whose package body builds `ADAPTERS` by importing every
+    adapter, and an adapter is free to import a declared runtime dependency at
+    module level. The existing guards in this file assert the install COMMAND
+    (`--require-hashes`, a pinned file) and that every pinned line carries a
+    digest; none of them asks whether the closure covers what the gate imports.
+    That gap red-lined the `scan` and `fork-scan` checks the moment
+    `tools/spotbugs.py` stopped falling back to the stdlib XML parser.
+    """
+
+    GATE = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")
+
+    @staticmethod
+    def _normalised(name):
+        """PEP 503-style, enough for these names: pip treats `rpds-py` and
+        `rpds_py` as one project, and so must a guard reading two files."""
+        return name.lower().replace("_", "-")
+
+    def _pinned_names(self):
+        with open(self.GATE, encoding="utf-8") as fh:
+            text = join_continuations(fh.read())
+        names = set()
+        for line in text.splitlines():
+            m = _PIN_LINE.match(line.strip())
+            if m:
+                names.add(self._normalised(m.group("name")))
+        return names
+
+    def test_every_runtime_package_is_in_the_gate_closure(self):
+        import scripts.phases.readiness_checks as readiness_checks
+        pinned = self._pinned_names()
+        self.assertTrue(pinned, "the gate's requirements file pins nothing; "
+                                "this guard is reading the wrong file")
+        self.assertTrue(readiness_checks.RUNTIME_PACKAGES, "no packages to check")
+        for _module, pip_name in readiness_checks.RUNTIME_PACKAGES:
+            with self.subTest(package=pip_name):
+                self.assertIn(
+                    self._normalised(pip_name), pinned,
+                    "%s is in readiness_checks.RUNTIME_PACKAGES, so the gate's "
+                    "import chain reaches it, but %s does not pin it -- and "
+                    "that file is installed with --require-hashes --no-deps, "
+                    "so it is the whole environment. The gate would fail at "
+                    "import, not degrade."
+                    % (pip_name, os.path.relpath(self.GATE, REPO_ROOT)))
 
 
 # --- #1652: the scheduled adapter job's test selector ------------------------

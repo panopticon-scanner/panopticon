@@ -28,6 +28,8 @@ from the guard until it was:
                     a command's exit status is allowed to matter
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
                     `do`) that stand in front of a command
+    patterns        `{sh,-c}` and `[s]h` are not expanded but marked: bash makes
+                    words of them, so no command they may start is resolved
 
 The first three are settled on the TEXT, before any command is read, in the
 one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793).
@@ -45,7 +47,8 @@ import secrets
 import shlex
 
 from shell_lex import closing, lex
-from shell_wrappers import WRAPPERS, unwrap
+from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
+from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -67,6 +70,8 @@ from shell_wrappers import WRAPPERS, unwrap
 # questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
 # hands stdin somewhere else afterwards, and only the second question can say
 # whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
+# A here-string is a body the second question reads too (`sh <<< '...'`,
+# #2293) -- expanding unless `lex` spelled its word -- and never the first's.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
@@ -92,7 +97,12 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-_REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
+# An assignment to an array element, `a[1]=x`: bash globs no assignment word.
+_SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
+# The shells whose options and program word a pattern may rewrite into a `-c`
+# and its script (`sh {-c,'…'}`, review N-3): `workflow_forms._SHELL_STRING`.
+_SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
+_REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -109,6 +119,11 @@ class _Token(str):
         return token
 
     markers: dict[str, tuple[str, object]]
+
+
+class _Expanded(_Token, Rewritten):
+    """A word bash expands as a pattern (#2294), lifted text in it or not;
+    `covers` knows one by its `lead`: may it begin with `-` (`leads`)."""
 
 
 def _markers(text):
@@ -428,7 +443,7 @@ def input_alias_fd(word):
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value."""
     try:
-        tokens = shlex.split(text)
+        tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv, writes, reads = [], [], []
@@ -443,8 +458,9 @@ def _stage(text, context):
     pipe_inputs = {"0": True}
     # Which heredoc each descriptor reads, in that same order: a heredoc is an
     # input FILE opened on one descriptor, so a later open, copy or close of
-    # that descriptor replaces it exactly as it replaces a pipe.
-    bodies: dict[str, tuple[str, bool]] = {}
+    # that descriptor replaces it exactly as it replaces a pipe. A here-string
+    # is one too; the third field says which, as only a heredoc is quoted back.
+    bodies: dict[str, tuple[str, bool, bool]] = {}
     # fd 1 initially feeds the next pipeline stage. Opening its aliases copies
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
@@ -462,7 +478,10 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        word = context.token(context.restore_arithmetic(raw))
+        word = context.token(context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")))
+        if is_pattern(raw):             # bash expands it first (#2294)
+            word = _Expanded(word, _markers(word))
+            setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -493,14 +512,16 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if op == "<":
+            if op in ("<", "<<<"):
+                spelled = op == "<<<" and entry and entry[0] == "heredoc"
+                word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
                 pipe_outputs[number] = False
-                reads_body(number, bodies.get(source) if source and source != "?"
-                           else None)
+                reads_body(number, (word, not spelled, False) if op == "<<<" else
+                           bodies.get(source) if source and source != "?" else None)
             else:
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
@@ -519,18 +540,18 @@ def _stage(text, context):
             number = fd.lstrip("0") or "0"
             pipe_inputs[number] = False
             pipe_outputs[number] = False
-            reads_body(number, (heredoc, expands))
+            reads_body(number, (heredoc, expands, True))
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
         take(word)
         argv.append(word)
     stdout, stdin = sinks.get("1"), bodies.get("0")
-    return Stage(argv, writes, reads, stdin[0] if stdin else heredoc, substitutions,
-                 [stdout] if stdout is not None else [], group_open, group_close,
-                 pipe_inputs["0"], pipe_outputs["1"],
+    return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
+                 substitutions, [stdout] if stdout is not None else [], group_open,
+                 group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 stdin)
+                 stdin[:2] if stdin else None)
 
 
 def statements(script):
@@ -548,8 +569,8 @@ def statements(script):
 
 def _command_result(argv):
     """Shared parse result for execution extraction and unread decisions: the
-    command, why a wrapper in front of it cannot be read (or None), and the
-    words read as wrappers, as written."""
+    command, why it or a wrapper in front of it cannot be read (or None), and
+    the words read as wrappers, as written."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -576,8 +597,11 @@ def _command_result(argv):
             del argv[0:2]
             continue
         head = os.path.basename(argv[0])
-        if heads and (has_substitution(argv[0]) or "$" in argv[0]):
+        if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
+        if isinstance(argv[0], Rewritten) and not _SUBSCRIPTED.match(argv[0]):
+            return argv, "`%s` is a pattern bash expands before anything runs" % readable(
+                argv[0]), heads
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -596,6 +620,11 @@ def _command_result(argv):
         # the last word it reads a pid from (`xargs taskset -p ...`).
         head, argv = behind
         reason = "`%s` has no command as written, and xargs appends words to it" % head
+    if reason is None and argv and os.path.basename(argv[0]) in _SHELLS:
+        word = next((w for w in shell_words(argv) if getattr(w, "lead", False)), None)
+        if word is not None:
+            reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
+                readable(word), os.path.basename(argv[0]))
     return argv, reason, heads
 
 
@@ -605,7 +634,8 @@ def command(argv):
 
 
 def unresolved_wrapper(argv):
-    """Why a wrapper at this command's head cannot be resolved, if any."""
+    """Why a wrapper at this command's head -- or, with none, a pattern bash
+    expands where the command starts (#2294) -- cannot be resolved, if any."""
     return _command_result(argv)[1]
 
 
@@ -616,8 +646,6 @@ def wrapper_words(argv):
     read through, though what runs is the file at ./flock (#2227).
     """
     return _command_result(argv)[2]
-
-
 
 
 def negated(argv):

@@ -676,8 +676,9 @@ def _relocated_gitleaks_golden(prefix):
     REAL output, per tests/goldens/tool-raw/README.md: the rules, the absent
     `level`, the message shapes and the envelope are all the scanner's own.
     Only `artifactLocation.uri` moves, and it has to: the capture's own hits sit
-    in `.env` and under `.panopticon/`, and the run-artifact exclusion drops
-    those before the name-based suppression this test is about can see them.
+    at `/src/app/deploy_key.pem` and `/src/app/settings.py`, and what this test
+    is about is the gate's NON-vendored versus vendored verdict, which needs the
+    same hits under a prefix of each kind.
     """
     with open(os.path.join(GOLDEN_DIR, "gitleaks.raw"), encoding="utf-8") as fh:
         sarif = json.load(fh)
@@ -1933,6 +1934,30 @@ def _suppressed_sarif():
         "tool": {"driver": {"name": "semgrep", "rules": []}},
         "results": [result("nosemd", [{"kind": "inSource"}]),
                     result("plain")]}]}
+
+
+class TestTheGateIdentityAlreadyNamesTheArtifact(unittest.TestCase):
+    """#2352: `finding_identity`'s fourth element is the whitespace-collapsed
+    TITLE, and dependency-check writes the vulnerable jar into it, so two
+    artifacts sharing one advisory at one manifest are ALREADY two gate
+    identities. `tool_evidence.package_name` is deliberately not added here --
+    this pins the reason the delta gate needed no change."""
+
+    def _jar(self, jar):
+        return {"id": jar, "panel": "security",
+                "category": "vulnerable-dependency",
+                "title": "%s: CVE-2021-1" % jar,
+                "source": "tool:dependency-check",
+                "location": {"file": "pom.xml", "line_start": 1},
+                "tool_evidence": {"rule_id": "CVE-2021-1", "package_name": jar}}
+
+    def test_two_jars_at_one_manifest_differ_in_the_title_element(self):
+        a = gate.finding_identity(self._jar("a.jar"))
+        b = gate.finding_identity(self._jar("b.jar"))
+        self.assertNotEqual(a, b)
+        self.assertEqual(a[:3], b[:3])
+        self.assertEqual((a[3], b[3]),
+                         ("a.jar: CVE-2021-1", "b.jar: CVE-2021-1"))
 
 
 class TestTheGatesModeReachesTheParse(unittest.TestCase):

@@ -42,9 +42,9 @@ class TestRedact(unittest.TestCase):
         """#1639 P11 F1: the PEM rule is the ONE pattern here that is not
         anchored to a character class -- it used to be `.*?` under DOTALL, so a
         BEGIN with no END of its own ran on until it found somebody else's END
-        and deleted everything in between. A truncated key snippet (gitleaks
-        quotes one in the committed golden) plus any later complete block is all
-        it takes."""
+        and deleted everything in between. A truncated key snippet (the gitleaks
+        golden quoted one before #2313 re-captured it; the shape is pinned
+        synthetically here) plus any later complete block is all it takes."""
         text = (pem_begin() + "\nMIIBtruncated\n"
                 "KEEP THIS LINE\n"
                 + fake_pem("MIIBrealkey") + "\n")

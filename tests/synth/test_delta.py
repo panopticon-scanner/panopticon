@@ -1,13 +1,18 @@
 """Tests for scripts.synth.delta: diff hunks and on-diff classification.
 """
 import contextlib
+import copy
 import io
 import os
 import json
 import tempfile
+import types
 import unittest
 
+import scripts.evidence as evidence_mod
 import scripts.synth.delta as delta_mod
+import scripts.synth.grading as grading_mod
+import scripts.synth.verdicts as verdicts_mod
 
 from tests.synth.helpers import _cli_args
 
@@ -114,6 +119,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
         self.assertEqual(data, {})
         self.assertEqual(report.payload_malformed, "unreadable")
         self.assertEqual((report.files, report.ranges, report.ranges_dropped), (0, 0, 0))
+        self.assertEqual(report.paths_dropped, 0)
 
     def test_malformed_json_is_reported_as_unreadable(self):
         with tempfile.TemporaryDirectory() as d:
@@ -154,8 +160,24 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(data["hunks"], {"a.py": [(1, 5)]})
             self.assertIsNone(report.payload_malformed)
             self.assertEqual((report.files, report.ranges), (1, 1))
-            # three malformed ranges under a.py, plus b.py's whole entry
-            self.assertEqual(report.ranges_dropped, 4)
+            # Three malformed ranges under a.py. b.py is a LOST PATH, and #2169
+            # counts it apart: one lost path is not one lost range, and the
+            # difference is what it costs -- every finding in b.py classifies
+            # off-diff, where a dropped range only narrows the map.
+            self.assertEqual(report.ranges_dropped, 3)
+            self.assertEqual(report.paths_dropped, 1)
+
+    def test_a_lost_path_is_counted_apart_from_a_lost_range(self):
+        # #2169: the two losses were indistinguishable, so a report saying
+        # `ranges_dropped: 2` could mean two narrowed files or one file gone.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main",
+                                   "hunks": {"a.py": [[1, 5], [2]],
+                                             "c.py": {"not": "a list"}}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(data["hunks"], {"a.py": [(1, 5)]})
+            self.assertEqual(report.ranges_dropped, 1)
+            self.assertEqual(report.paths_dropped, 1)
 
     def test_a_well_formed_payload_reports_nothing_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -164,6 +186,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             _, report = delta_mod.load_diff_hunks_report(path)
             self.assertIsNone(report.payload_malformed)
             self.assertEqual((report.files, report.ranges, report.ranges_dropped), (2, 3, 0))
+            self.assertEqual(report.paths_dropped, 0)
 
     def test_load_diff_hunks_returns_the_same_data(self):
         with tempfile.TemporaryDirectory() as d:
@@ -248,6 +271,49 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertIn("2 malformed hunk range(s) dropped", err)
         self.assertNotIn("ZERO HUNKS", err)
 
+    CONSEQUENCE = (" -- a dropped path leaves the map, so every finding in that "
+                   "file classifies off-diff.")
+
+    def _artifact_line(self, err):
+        lines = [ln for ln in err.splitlines() if "DELTA ARTIFACT:" in ln]
+        self.assertEqual(len(lines), 1, err)
+        return lines[0]
+
+    def test_a_dropped_path_is_disclosed_as_its_own_count(self):
+        # #2169: a lost PATH is the more expensive loss -- every finding in that
+        # file classifies off-diff -- so it gets its own number rather than
+        # being added to the malformed-range tally.
+        #
+        # The WHOLE line, not a substring (#2169 review, F1): the consequence
+        # clause first lived inside the count phrase, which left the line reading
+        # "...classifies off-diff dropped from /...", and two substring
+        # assertions could not see the missing verb.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5]], "b.py": 7}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 1 whole path(s) dropped "
+                         "from %s%s" % (path, self.CONSEQUENCE))
+        self.assertNotIn("malformed hunk range(s)", err)
+
+    def test_both_losses_are_disclosed_on_one_line(self):
+        # One line, both numbers: two lines for one artifact read as two
+        # problems, and the operator has to reconcile them. Exact string.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 1 malformed hunk range(s) "
+                         "and 1 whole path(s) dropped from %s%s"
+                         % (path, self.CONSEQUENCE))
+
+    def test_only_a_dropped_path_gets_the_consequence_clause(self):
+        # A dropped RANGE narrows a file it leaves in the map, so the clause
+        # would be false for it -- and the pre-#2169 line stays byte-identical.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5], [2], "x"]}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 2 malformed hunk range(s) "
+                         "dropped from %s" % path)
+
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
         # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
         # NAMES but gives no range: an unlined finding there never reaches the
@@ -266,6 +332,34 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         _, err, _ = self._from_args({"base": "main", "hunks": {}})
         self.assertIn("the map is empty", err)
         self.assertNotIn("fails OPEN", err)
+
+    def test_a_loader_drop_is_named_as_the_cause_not_called_unknown(self):
+        # #2169 review, F2: `_disclose_load` branched on `payload_malformed`
+        # alone, so a map emptied by a dropped PATH was called indistinguishable
+        # from an empty change on one line while `zero_hunk_gate_gap` named the
+        # drop as the cause on another -- for the same read. Same three arms now.
+        _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": 7}})
+        self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
+        self.assertIn("The map is empty of ranges because 1 whole path(s) were dropped "
+                      "for carrying no list of ranges, not because the change "
+                      "was", err)
+        self.assertNotIn("look identical", err)
+        self.assertNotIn("was rejected", err)
+
+    def test_dropped_ranges_are_named_as_the_cause_too(self):
+        _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": [[1]]}})
+        self.assertIn("The map is empty of ranges because 1 hunk range(s) were malformed "
+                      "and dropped, not because the change was", err)
+        self.assertNotIn("look identical", err)
+
+    def test_the_unknown_arm_survives_for_a_genuinely_empty_map(self):
+        # Nothing rejected and nothing dropped: the operator really cannot tell
+        # an empty change from a broken artifact, and the third arm says so.
+        _, err, _ = self._from_args({"base": "main", "hunks": {}})
+        self.assertIn("An empty change and a broken artifact look identical "
+                      "from here", err)
+        self.assertNotIn("was rejected", err)
+        self.assertNotIn("were dropped", err)
 
     def test_a_rejected_payload_is_not_called_indistinguishable(self):
         # The reason is already on stderr one line up, so this artifact is
@@ -295,9 +389,11 @@ class TestZeroHunkGateGap(unittest.TestCase):
     """#2178 (owner ruling 2026-09-27): the gate consequence of the shape #1783
     only disclosed. A based artifact with no diff ranges leaves a `--gate-scope
     on-diff` gate scoping against something that is not a measured diff, so a
-    run carrying active findings must not read PASS. The reason string this
-    function returns is what `certify` puts in `coverage_note`; None means
-    there is no gap, and every arm below is one of the four conditions."""
+    run carrying findings the gate would have judged must not read PASS (#2222
+    narrowed that population from any active finding; `TestTheZeroHunkPopulation`
+    below is where it is decided). The reason string this function returns is
+    what `certify` puts in `coverage_note`; None means there is no gap, and every
+    arm below is one of the four conditions."""
 
     def _ctx(self, payload):
         with tempfile.TemporaryDirectory() as d:
@@ -316,7 +412,7 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertIn("zero-hunk delta gate", gap)
         self.assertIn("no diff ranges", gap)
         self.assertIn("on-diff", gap)
-        self.assertIn("2 active finding(s)", gap)
+        self.assertIn("2 gate-eligible finding(s)", gap)   # #2222: the population
         # The remedy, in the disclosure's words: this artifact is written by a
         # phase the operator can re-run, which is the whole point of naming it.
         self.assertIn("regenerate the diff-hunks artifact", gap)
@@ -352,13 +448,33 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertNotIn("was rejected", gap)
         self.assertIn("regenerate the diff-hunks artifact", gap)
 
-    def test_the_count_is_qualified_as_the_active_set(self):
-        # The ruling's population is "active findings"; the clause says so, so a
-        # reader does not take the number for what the gate would have judged.
+    def test_dropped_paths_name_that_cause_too(self):
+        # #2169: a map emptied by LOST PATHS is known-broken for the same reason
+        # a map emptied by malformed ranges is, and the note has to name the
+        # loss it actually suffered.
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": 7}}), 1, "on-diff")
+        self.assertIn("1 whole path(s)", gap)
+        self.assertNotIn("look identical", gap)
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+
+    def test_both_losses_are_named_when_both_happened(self):
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1]], "b.py": 7}}), 1,
+            "on-diff")
+        self.assertIn("1 hunk range(s) were malformed and dropped", gap)
+        self.assertIn("1 whole path(s)", gap)
+
+    def test_the_count_is_qualified_as_the_gate_eligible_set(self):
+        # #2222 (owner ruling 2026-09-28): the population is what the GATE would
+        # have judged, and the clause says which filters made it -- so a reader
+        # does not take the number for the wider `active` tally the same summary
+        # reports.
         gap = delta_mod.zero_hunk_gate_gap(
             self._ctx({"base": "main", "hunks": {}}), 3, "on-diff")
-        self.assertIn("3 active finding(s) (counted before the gate's "
-                      "evidence and severity policy)", gap)
+        self.assertIn("3 gate-eligible finding(s) (the active set after the "
+                      "gate's evidence policy and any --fail-on floor, before "
+                      "delta scoping)", gap)
 
     def test_a_named_file_with_no_range_is_still_a_gap(self):
         # ranges == 0 is the condition, not files == 0: a map that names a file
@@ -368,7 +484,10 @@ class TestZeroHunkGateGap(unittest.TestCase):
             self._ctx({"base": "main", "hunks": {"a.py": []}}), 1, "on-diff"))
 
     def test_no_active_findings_is_no_gap(self):
-        # The owner's carve-out: an empty legitimate change still passes.
+        # The owner's carve-out: an empty legitimate change still passes. #2222
+        # WIDENS it -- the zero the caller passes is now the gate-eligible
+        # population, so a run whose only findings could never gate lands here
+        # too (`TestTheZeroHunkPopulation` below is where that is decided).
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(
             self._ctx({"base": "main", "hunks": {}}), 0, "on-diff"))
 
@@ -396,3 +515,161 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertTrue(ctx.active)
         self.assertIsNone(ctx.report)
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+
+
+class TestArtifactFacts(unittest.TestCase):
+    """#2169: `meta.coverage.delta_artifact`'s source -- a dict whenever a
+    `--diff-hunks` path was given, active delta or not, None when none was; the
+    key's schema node in `report-schema.json` says why."""
+
+    def _ctx(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                return delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+
+    def test_a_context_given_no_path_has_no_facts(self):
+        # A caller that built the context from a payload it already held: no read
+        # was attempted, so there is no zero to report.
+        ctx = delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}})
+        self.assertIsNone(delta_mod.artifact_facts(ctx))
+        self.assertIsNone(delta_mod.artifact_facts(delta_mod.DeltaContext()))
+
+    def test_a_path_that_does_not_exist_still_reports_the_attempt(self):
+        # #2169 review, F3: `from_args` builds a HunksLoad for the FLAG, so this
+        # shape reaches the report -- which is why the block is no longer
+        # described as "a file was read" and no longer carries `path_read`.
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ctx = delta_mod.DeltaContext.from_args(_cli_args(
+                    diff_hunks=os.path.join(d, "absent.json"), fail_on="high"))
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_a_rejected_payload_still_reports_the_read(self):
+        ctx = self._ctx(["not", "an", "object"])
+        self.assertFalse(ctx.active)
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_an_active_payload_reports_no_rejection(self):
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
+        self.assertTrue(ctx.active)
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"payload_malformed": None,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_it_carries_both_loss_counters(self):
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        self.assertEqual(delta_mod.artifact_facts(ctx)["ranges_dropped"], 1)
+        self.assertEqual(delta_mod.artifact_facts(ctx)["paths_dropped"], 1)
+
+
+class TestTheZeroHunkPopulation(unittest.TestCase):
+    """#2222 (owner ruling 2026-09-28), narrowing #2178: which findings the
+    zero-hunk refusal is a statement ABOUT. The empty hunk map hid findings from
+    the GATE, so the population is the active set the gate would actually have
+    judged -- the evidence policy, then the `--fail-on` floor -- and a run
+    carrying only findings the gate would have ignored anyway keeps its PASS."""
+
+    def _f(self, sev, status="advisor_confirmed", fid="A-1"):
+        return {"id": fid, "severity": sev, "evidence": {"status": status}}
+
+    def test_the_fail_on_floor_excludes_what_cannot_gate(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", fid="A-1"), self._f("LOW", fid="A-2"),
+             self._f("INFO", fid="A-3")], "high", False)
+        self.assertEqual([f["id"] for f in pop], ["A-1"])
+
+    def test_the_floor_admits_everything_at_or_above_it(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("CRITICAL", fid="A-1"), self._f("HIGH", fid="A-2"),
+             self._f("MEDIUM", fid="A-3")], "medium", False)
+        self.assertEqual([f["id"] for f in pop], ["A-1", "A-2", "A-3"])
+
+    def test_an_unverified_finding_is_out_under_the_default_policy(self):
+        # `confirmed_only`: an unverified HIGH is active but does not gate, so
+        # the empty map scoped nothing away from the gate by hiding it.
+        self.assertEqual(delta_mod.zero_hunk_population(
+            [self._f("HIGH", status="unverified")], "high", False), [])
+
+    def test_gate_unverified_takes_the_whole_active_set(self):
+        # The opt-in policy gates on unverified findings, so they are exactly
+        # what the map hid.
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", status="unverified", fid="A-1"),
+             self._f("HIGH", status="needs_more_info", fid="A-2")], "high", True)
+        self.assertEqual([f["id"] for f in pop], ["A-1", "A-2"])
+
+    def test_every_gate_eligible_status_counts(self):
+        pop = delta_mod.zero_hunk_population(
+            [self._f("HIGH", status=s, fid=s) for s in
+             sorted(evidence_mod.GATE_ELIGIBLE_DEFAULT)], "high", False)
+        self.assertEqual({f["id"] for f in pop},
+                         set(evidence_mod.GATE_ELIGIBLE_DEFAULT))
+
+    def test_no_fail_on_admits_every_severity(self):
+        # RULING: the floor reads nothing when there is no threshold, because
+        # `gate_verdict` returns OFF before reading a severity -- so an OFF gate
+        # over a zero-hunk map still reports the gap it has always reported
+        # (`test_grading.py::...::test_off_is_preserved`), and only the evidence
+        # policy narrows the count.
+        active = [self._f("INFO", fid="A-1"), self._f("CRITICAL", fid="A-2"),
+                  self._f("HIGH", status="unverified", fid="A-3")]
+        self.assertEqual([f["id"] for f in
+                          delta_mod.zero_hunk_population(active, None, False)],
+                         ["A-1", "A-2"])
+        self.assertEqual(len(delta_mod.zero_hunk_population(active, None, True)), 3)
+
+    def test_an_empty_active_set_is_an_empty_population(self):
+        for fail_on in ("high", None):
+            for unverified in (False, True):
+                with self.subTest(fail_on=fail_on, gate_unverified=unverified):
+                    self.assertEqual(
+                        delta_mod.zero_hunk_population([], fail_on, unverified), [])
+
+    def test_it_equals_what_the_gate_itself_judges(self):
+        # META-TEST: the two policies are the GATE's, not copies of them. The
+        # evidence half comes from `verdicts._partition_gate` (on an INACTIVE
+        # delta, which is scope `all` -- the wider scope this count is about) and
+        # the severity half from `grading.gate_verdict`, one finding at a time:
+        # a finding the gate would FAIL on is one the empty map hid from it.
+        # The floor is ONE definition (`findings.severity_floor_admits`), so
+        # this equality cannot see a floor change -- it is what keeps the
+        # MIRRORED evidence half from drifting, and it still trips if
+        # `gate_verdict` ever re-inlines a floor of its own. `gate_verdict`'s
+        # quantifier is pinned by `test_grading.py`'s `test_gate_*`, not here:
+        # a one-element list makes `any` and `all` agree.
+        findings = [self._f("CRITICAL", fid="A-1"),
+                    self._f("HIGH", status="tool_confirmed", fid="A-2"),
+                    self._f("HIGH", status="backup_scope_limited", fid="A-3"),
+                    self._f("HIGH", status="unverified", fid="A-4"),
+                    self._f("MEDIUM", fid="A-5"),
+                    self._f("LOW", status="tool_reported", fid="A-6"),
+                    self._f("INFO", fid="A-7"),
+                    self._f("CRITICAL", status="rejected", fid="A-8")]
+        for fail_on in ("critical", "high", "medium", "low", "info"):
+            for unverified in (False, True):
+                with self.subTest(fail_on=fail_on, gate_unverified=unverified):
+                    run = types.SimpleNamespace(gate_scope="all", fail_on=fail_on,
+                                                gate_unverified=unverified)
+                    parts = verdicts_mod._partition_gate(
+                        copy.deepcopy(findings), delta_mod.DeltaContext(), run)
+                    expected = [f["id"] for f in parts.gate_eligible
+                                if grading_mod.gate_verdict([f], fail_on) == "FAIL"]
+                    pop = delta_mod.zero_hunk_population(parts.active, fail_on,
+                                                         unverified)
+                    self.assertEqual([f["id"] for f in pop], expected)
+                    # The fixture must actually exercise whichever filter is in
+                    # force, or the equality above would hold vacuously. Under
+                    # `--gate-unverified` the evidence filter is a no-op by
+                    # design, and at `--fail-on info` so is the floor.
+                    if not unverified:
+                        self.assertLess(len(parts.gate_eligible), len(parts.active))
+                    if fail_on != "info":
+                        self.assertLess(len(pop), len(parts.gate_eligible))
