@@ -11,6 +11,8 @@ evidence exposed.
   interpreter check and the adjudication inside the read guard's never-crash envelope, so an
   unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
   treats as a non-blocking error -- which let the Write it exists to deny proceed.
+- **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
+  missing and named cell domains deterministically instead of raising before the report renders.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
   it isolated (#2161, #2163, #1777).** `write_guard_hook`'s registered `PreToolUse` command began
   with the bare word `python3`, and nothing resolved it: the CHILD looks that name up in ITS PATH,
