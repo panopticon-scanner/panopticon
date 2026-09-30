@@ -2749,17 +2749,33 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(fetch, ("run", run))
 
-    def test_a_download_carried_in_a_variable_beyond_the_shape_that_is_read(self):
-        # #2341 follows `x=$(curl ...)` to a shell whole, or a whole copy of it
-        # (`TestADownloadCarriedInAVariable`); through a cut, a command or a
-        # file, it is a value the guard does not follow.
-        get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'eval "${x%%#*}"\n', get + 'echo "$x" > f\nsh f\n',
-                    get + 'y=$(echo "$x")\neval "$y"\n',
-                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"):
+    def test_a_path_reached_through_a_cd(self):
+        # The guard follows no `cd`: a path is compared as written. #2345 (e)
+        # binds a glob from another directory by its last part
+        # (`TestAGlobFromAnotherDirectoryReachesABareDownload`); a literal
+        # name reached through a `cd` still matches nothing fetched.
+        cuda = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\nmkdir -p s\ncd s\n"
+        for run in ("mkdir -p d\ncurl -fsSLo d/x.sh https://example.test/x.sh\ncd d\nsh x.sh\n",
+                    cuda + "sh ../cuda_1.run\n"):
             with self.subTest(run=run):
                 self.accepted(("run", run))
-        self.flagged(("run", get + 'eval "$x"\n'))
+        self.flagged(("run", cuda + "sh ../cuda_*.run\n"))
+
+    def test_a_download_carried_in_a_variable_beyond_the_shape_that_is_read(self):
+        # #2341 follows `x=$(curl ...)` to a shell whole, or a whole copy of it
+        # (`TestADownloadCarriedInAVariable`); through a cut, a command's output
+        # or a file, from a substitution holding more than the fetch, or through
+        # a printer other than echo/printf, it is a value the guard does not follow.
+        get = "x=$(curl -fsSL https://example.test/i.sh)\n"
+        for run in (get + 'eval "${x%%#*}"\n', get + 'echo "$x" > f\nsh f\n',
+                    get + 'y=$(echo "$x")\neval "$y"\n', get + 'cat <<< "$x" | sh\n',
+                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
+                    'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
+            with self.subTest(run=run):
+                self.accepted(("run", run))
+        for run in (get + 'eval "$x"\n', get + 'echo "$x" | sh\n'):
+            with self.subTest(run=run):
+                self.flagged(("run", run))
 
     def test_a_subshell_reassignment_empties_a_carried_download(self):
         # Review I-1: the reader keeps no subshell, so `( x=1 )` reads as the

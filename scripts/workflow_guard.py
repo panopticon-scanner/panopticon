@@ -75,12 +75,12 @@ that starts catching one fails there, and this list is edited with it.
   `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
-  path spelled differently at fetch and at use matches nothing, so that
-  download goes unseen -- but the side that RUNS compares last parts where a
-  `$` spells the use's directory (`may_run` #2310, `covers` #2345), and for a
-  glob where one spells the download's or the download is a bare name. A
-  download kept in a variable is followed to a shell whole (`carried`, #2341),
-  not through a cut (`${x%%#*}`), a command (`$(echo "$x")`) or a file (`> f`),
+  path spelled differently at fetch and at use matches nothing, and no `cd` is
+  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last
+  parts where a `$` spells the use's directory (`may_run` #2310, `covers` #2345),
+  and for a glob where one spells the download's or the download is a bare name.
+  A download kept in a variable is followed to a shell whole (`carried`, #2341),
+  not through a cut (`${x%%#*}`), a command's output (`y=$(echo "$x")`) or `> f`,
   and a subshell's `( x=1 )` empties it: the reader keeps no subshell.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
@@ -92,7 +92,7 @@ that starts catching one fails there, and this list is edited with it.
   is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
-  KEPT: it is the entry above wearing a checksum -- refusing it means
+  KEPT: it is variable expansion wearing a checksum -- refusing it means
   following a variable's VALUE. Only this spelling is open: with the digest in
   a sums file the step wrote, what was recorded is the text `sha256sum x`,
   which carries no digest, so the check does not count and the fetch is
