@@ -347,6 +347,49 @@ raise SystemExit(scripts.driver.main(["readiness", sys.argv[3], "--json"]))
                 self.assertIn("pip install %s" % pip_name,
                               body["dependencies"]["detail"])
 
+    # #2384: the matrix row's remedy has to FIT the refusal. `_matrix_row`
+    # used to append "fix it or re-run `driver setup`" to every `doc.errors`
+    # entry; it now appends it only to a refusal that does not carry its own.
+    # The pyyaml refusal above is the one that does -- it names its own
+    # `pip install`, and setup will not install a package. Blocked-`yaml`
+    # child again, because an `_installed` patch cannot produce this refusal:
+    # it is raised by `repo_config.read_document`'s own import, in the child's
+    # import system.
+    def test_the_pyyaml_refusal_keeps_its_own_remedy_in_the_matrix_row(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        env = {"PATH": self._tmpdir(), "HOME": self._tmpdir(),
+               "PYTHONDONTWRITEBYTECODE": "1"}
+        proc = subprocess.run(  # nosec B603
+            [sys.executable, "-c", self._WITHOUT_PACKAGE, "yaml", SKILL_ROOT, d],
+            capture_output=True, text=True, env=env, timeout=180)
+        self.assertEqual(1, proc.returncode, proc.stdout + "\n" + proc.stderr)
+        body = json.loads(proc.stdout)
+        detail = body["matrix"]["detail"]
+        self.assertIs(False, body["matrix"]["ok"])
+        self.assertIn("pip install pyyaml", detail)
+        self.assertNotIn("driver setup", detail)
+
+    def test_a_refusal_with_no_remedy_of_its_own_still_gets_the_suffix(self):
+        """The must-trip control for the case above. An unparseable config is
+        exactly the class of refusal the setup tail is for, so that one keeps
+        it; a rule that dropped the tail everywhere would leave this row with
+        no remedy at all.
+
+        The SECOND config is the fail-open a substring rule had: PyYAML's
+        error text echoes the offending line, so target-authored text could
+        name an install and suppress the tail. The rule reads the refusal's
+        own opening instead, so a quoted install changes nothing."""
+        d = self._repo(groups_yml="groups: [unclosed\n")
+        _code, body = self._json(d, which=READY_CLI)
+        self.assertIs(False, body["matrix"]["ok"])
+        self.assertIn("fix it or re-run `driver setup`", body["matrix"]["detail"])
+        self.assertNotIn("pip install", body["matrix"]["detail"])
+        planted = self._repo(groups_yml="groups: [\"`pip install pyyaml`\n")
+        _code, body = self._json(planted, which=READY_CLI)
+        self.assertIs(False, body["matrix"]["ok"])
+        self.assertIn("pip install pyyaml", body["matrix"]["detail"])
+        self.assertIn("fix it or re-run `driver setup`", body["matrix"]["detail"])
+
 
 class TestTheReadyMachine(_VerbCase):
 

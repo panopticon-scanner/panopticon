@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The readiness matrix row's remedy fits a refusal that names its own install (#2384, #1784).**
+  A config refusal that already names its own remedy (`pip install pyyaml`) no longer has
+  "fix it or re-run `driver setup`" appended, which setup could not deliver; every other
+  refusal keeps it.
 - **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
   `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
   stderr line name only roots pruned from the surface the run reviewed, like every other
