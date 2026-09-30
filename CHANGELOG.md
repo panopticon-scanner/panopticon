@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
+  records the repo root the scrubbed comment was built under, every body on that plan is built
+  under that root, so a resume from another checkout confirms the posted comment instead of
+  dead-ending on a body it could never match.
 - **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
   `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
   `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
