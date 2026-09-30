@@ -252,6 +252,18 @@ class TestLoadReport(unittest.TestCase):
                 self.assertIn(named, str(caught.exception))
                 self.assertIn("is not valid JSON", str(caught.exception))
 
+    def test_a_non_utf8_document_is_named_too(self):
+        # `UnicodeDecodeError` is a `ValueError` as well, raised by the decode
+        # inside `json.load`; a report copied through a non-UTF-8 tool must name
+        # its file the same way a truncated one does.
+        path = _written_report(self, {"findings": []})
+        with open(path, "wb") as fh:
+            fh.write(b'{"findings": [\xff]}')
+        with self.assertRaises(ValueError) as caught:
+            reconcile.load_report(path)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("is not valid JSON", str(caught.exception))
+
     def test_a_part_or_the_discarded_sibling_that_is_not_an_object_names_it(self):
         # The continuation documents are loaded by the same plain `json.load`, so
         # each one is typed too -- and the reason names the RESOLVED part path,

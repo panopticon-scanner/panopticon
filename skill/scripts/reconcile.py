@@ -149,11 +149,11 @@ def _object(value, what, where):
 
 
 def _document(path, what):
-    """`path` parsed and typed, or ONE reason: unparseable JSON names the file too (#2373)."""
+    """`path` parsed and typed, or ONE reason naming the file: bad JSON or bad UTF-8 (#2373)."""
     with open(path, encoding="utf-8") as fh:
         try:
             data = json.load(fh)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("%s %s is not valid JSON: %s" % (what, path, exc)) from exc
     return _object(data, what, path)
 
