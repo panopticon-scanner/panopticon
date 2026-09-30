@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
+  diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
+  when they carry a value of the wrong type, lists them in
+  `meta.coverage.delta_artifact.keys_repaired` and on stderr, rejects an unsupported
+  `schema_version` as a fourth `payload_malformed` reason, and the report schema now type-pins
+  those seven keys.
 - **Read the committed config once per discovery run (#2269, #1761).** Exclusion and group
   readers share per-call snapshots, so one resolver disclosure reaches the operator once.
 - **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer

@@ -12,12 +12,27 @@ import scripts.evidence as evidence_mod
 # The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
 # here because `meta.coverage.delta`'s published description enumerates these
 # exact strings, so a literal typed in a second place can drift from the
-# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach a report: the other two
+# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other three
 # leave the payload with no `base`, so the review is not a delta one and the
 # whole `meta.coverage.delta` block is null.
 MALFORMED_UNREADABLE = "unreadable"
 MALFORMED_NOT_OBJECT = "not an object"
 MALFORMED_HUNKS_NOT_OBJECT = "hunks not an object"
+# #2382: `discovery.write_diff_hunks` stamps `schema_version: 1` and the loader
+# ignored it. An unsupported version rejects the WHOLE payload, the same
+# fail-closed shape as `not an object`; an ABSENT key is accepted, because a
+# hand-written artifact predating the key is not a version mismatch.
+MALFORMED_SCHEMA_VERSION = "unsupported schema_version"
+
+# #2382: the seven keys `verdicts._delta_meta` copies VERBATIM out of the
+# artifact into `meta.coverage.delta`, with the type each one is published as.
+# ONE table, read by the repair in the loader below and by the schema-parity test
+# that asserts `report-schema.json` pins these same types -- a repair and a pin
+# that disagreed about a key would build a report the schema rejects, and a
+# schema error is terminal. The order is the order `keys_repaired` lists them in.
+_ARTIFACT_KEY_TYPES = (("base", str), ("base_source", str), ("base_commit", str),
+                       ("delta_start", str), ("delta_end", str),
+                       ("includes_uncommitted", bool), ("files_changed", int))
 
 
 @dataclass(frozen=True)
@@ -29,9 +44,17 @@ class HunksLoad:
     Every tolerance it applies is recorded here instead of being silent.
 
     `payload_malformed` is the reason the payload was rejected in whole or in
-    part -- "unreadable", "not an object", "hunks not an object" -- and None
-    when there was nothing to reject. `files` and `ranges` count the hunk map
-    that survived: what the review is actually scoped to.
+    part -- "unreadable", "not an object", "hunks not an object", "unsupported
+    schema_version" -- and None when there was nothing to reject. `files` and
+    `ranges` count the hunk map that survived: what the review is actually
+    scoped to.
+
+    `keys_repaired` names the artifact-carried keys of `meta.coverage.delta` that
+    carried a value of the WRONG TYPE and were read as null (#2382), in
+    `_ARTIFACT_KEY_TYPES` order. A tuple because this dataclass is frozen. It is
+    published in `delta_artifact` and not in `delta`, because repairing `base`
+    leaves no base -- so the very block that repair changed is null, and a key
+    there could not carry the reason it is null.
 
     TWO counters for what did not survive, because the losses do not cost the
     same (#2169). `ranges_dropped` is a range that was not a two-integer pair:
@@ -51,6 +74,7 @@ class HunksLoad:
     about one path -- the artifact is broken, AND the map still admits that file
     on-diff -- and a reader needs both."""
     payload_malformed: str | None = None
+    keys_repaired: tuple[str, ...] = ()
     files: int = 0
     ranges: int = 0
     ranges_dropped: int = 0
@@ -128,6 +152,18 @@ def _disclose_load(ctx, path):
         print("synthesize: DELTA ARTIFACT MALFORMED -- %s: %s; no diff hunks "
               "were read from it, so nothing scopes this review to the change"
               % (path, report.payload_malformed), file=sys.stderr)
+    if report.keys_repaired:
+        # #2382: the repair is fail-closed but it is not free. Reading `base` as
+        # null widens the gate to every active finding, and a target-authored type
+        # error must not make that switch quietly. In exactly that case the whole
+        # `meta.coverage.delta` block is null, so this line and the sibling
+        # `delta_artifact.keys_repaired` are the only two carriers of the fact.
+        print("synthesize: DELTA ARTIFACT REPAIRED -- %s: %s carried a value of "
+              "the wrong type and read as null%s"
+              % (path, ", ".join(report.keys_repaired),
+                 "; the review is NOT a delta one, so the gate scopes to every "
+                 "active finding" if "base" in report.keys_repaired else ""),
+              file=sys.stderr)
     if ctx.active and report.ranges == 0:
         # Zero ranges has two consequences, and which one this is depends on
         # whether the map names any file at all: `diff_map.classify` answers
@@ -149,8 +185,8 @@ def _disclose_load(ctx, path):
         # `zero_hunk_gate_gap` composes below: a rejection and a loader drop are
         # each a KNOWN cause, named on a line of its own, and sending the
         # operator to compare a known-broken artifact is the wrong instruction.
-        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other two leave no
-        # `base` and no active delta.
+        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other three leave
+        # no `base` and no active delta (#2382 added the fourth).
         regenerate = "regenerate it (the driver's discovery phase writes it)"
         if report.payload_malformed is not None:
             cause = ("The map is empty of ranges because the payload was "
@@ -218,11 +254,16 @@ def artifact_facts(ctx) -> dict | None:
     The key's schema node in `report-schema.json` is the canonical statement of
     why it exists and of what it does NOT change about `meta.coverage.delta`.
     Here rather than in `verdicts`, so `HunksLoad`'s fields keep one reader;
-    `path_read` is gone, redundant with presence (review F3/N6)."""
+    `path_read` is gone, redundant with presence (review F3/N6).
+
+    `keys_repaired` is published here and NOT in `meta.coverage.delta` on purpose
+    (#2382): the repair it discloses can read `base` as null, which makes the
+    review a non-delta one and nulls that whole block."""
     report = ctx.report
     if report is None:
         return None
     return {"payload_malformed": report.payload_malformed,
+            "keys_repaired": list(report.keys_repaired),
             "ranges_dropped": report.ranges_dropped,
             "paths_dropped": report.paths_dropped,
             "paths_without_ranges": report.paths_without_ranges}
@@ -362,6 +403,15 @@ def load_diff_hunks_report(path):
         return {}, HunksLoad(payload_malformed=MALFORMED_UNREADABLE)
     if not isinstance(data, dict):
         return {}, HunksLoad(payload_malformed=MALFORMED_NOT_OBJECT)
+    if "schema_version" in data:
+        # #2382, honoured minimally: exactly the int 1. `True` and `1.0` both
+        # compare equal to it and neither is a version this loader knows, so the
+        # check is by type as well as by value. An unsupported version rejects the
+        # whole payload, which leaves no `base` and hence no delta review -- the
+        # same fail-closed degradation a non-object payload gets.
+        version = data["schema_version"]
+        if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+            return {}, HunksLoad(payload_malformed=MALFORMED_SCHEMA_VERSION)
 
     raw = data.get("hunks")
     malformed = None
@@ -397,8 +447,31 @@ def load_diff_hunks_report(path):
             rangeless_paths += 1
         hunks[str(p)] = cleaned
     data["hunks"] = hunks
+    # #2382: the seven artifact-carried keys, repaired HERE at the read. Nothing
+    # normalized them before, so `verdicts._delta_meta` copied them verbatim into
+    # `meta.coverage.delta` and a type pin on them would have let a target-authored
+    # value end a paid-for run on a terminal schema error. The pass touches ONLY
+    # these seven -- never `hunks`, which the loop above owns, and never a
+    # controller-computed key: a boundary repair that coerced a key it did not own
+    # flipped a verdict once in this repo.
+    repaired = []
+    for key, typ in _ARTIFACT_KEY_TYPES:
+        if key not in data:
+            # Absent is not repaired. `_delta_meta` reads these with `.get`, which
+            # already answers None, so writing the key would publish a repair that
+            # never happened.
+            continue
+        value = data[key]
+        # `isinstance(True, int)` is True, so `files_changed` needs the bool
+        # exclusion or a boolean is published as a count of changed files.
+        kept = value is None or (isinstance(value, typ)
+                                 and not (typ is int and isinstance(value, bool)))
+        if not kept:
+            data[key] = None
+            repaired.append(key)
     files, ranges = count_hunks(hunks)
-    return data, HunksLoad(payload_malformed=malformed, files=files,
+    return data, HunksLoad(payload_malformed=malformed,
+                           keys_repaired=tuple(repaired), files=files,
                            ranges=ranges, ranges_dropped=dropped,
                            paths_dropped=dropped_paths,
                            paths_without_ranges=rangeless_paths)

@@ -419,28 +419,56 @@
                 "object",
                 "null"
               ],
-              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven artifact-carried keys are described but NOT type-pinned, because their values are copied verbatim out of `.panopticon/diff-hunks.json` with nothing normalizing them at the read, and a schema error is terminal -- so pinning them would let a hand-supplied artifact end a paid-for run. The driver's discovery phase rewrites or removes that file, so the exposure is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`. #2382 is the follow-up: normalize those seven at the read, then pin them.",
+              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven keys copied verbatim out of `.panopticon/diff-hunks.json` are type-pinned too, and safely so, because the loader now REPAIRS them at the read (#2382): a value of the wrong type is read as null and named in `delta_artifact.keys_repaired`, so the pin states what the read already enforces instead of letting a hand-supplied artifact end a paid-for run on a terminal schema error. The driver's discovery phase rewrites or removes that file, so the exposure the repair closes is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`.",
               "properties": {
                 "base": {
-                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one. Never null here: a `base` the artifact omitted or that was repaired at the read (see `delta_artifact.keys_repaired`) makes the review a non-delta one, and this whole block is null instead."
                 },
                 "base_source": {
-                  "description": "How the artifact says it chose that base (`explicit`, `fallback`, ...), copied verbatim from it."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "How the artifact says it chose that base (`explicit`, `fallback`, ...), copied verbatim from it. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "base_commit": {
-                  "description": "The artifact's own anchor commit for the base, so a later reader can reconstruct the delta after branch tips move; null when it resolved none."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the base, so a later reader can reconstruct the delta after branch tips move; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "delta_start": {
-                  "description": "The artifact's own anchor commit for the start of the delta; null when it resolved none."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the start of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "delta_end": {
-                  "description": "The artifact's own anchor commit for the end of the delta; null when it resolved none."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the end of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "includes_uncommitted": {
-                  "description": "Whether the artifact says the diff it measured included uncommitted worktree changes."
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether the artifact says the diff it measured included uncommitted worktree changes. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "files_changed": {
-                  "description": "The ARTIFACT's own count of changed files, which is not the size of the map this run classified against -- compare `hunks_files` below."
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "The ARTIFACT's own count of changed files, which is not the size of the map this run classified against -- compare `hunks_files` below. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
                 },
                 "diff_context": {
                   "type": "integer",
@@ -480,7 +508,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object`. Only `hunks not an object` can reach this block, because the other two leave no `base` and hence no delta review -- there the sibling `delta_artifact` carries the reason. Null when nothing was rejected, and null when this context was not built by reading a file."
+                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version`. Only `hunks not an object` can reach this block, because the other three -- `unsupported schema_version` included, which rejects the whole payload (#2382) -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. Null when nothing was rejected, and null when this context was not built by reading a file."
                 },
                 "on_diff_total": {
                   "type": "integer",
@@ -504,7 +532,14 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all three values can appear here, including the two (`unreadable` -- which covers a path that does not exist -- and `not an object`) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all four values can appear here, including the three (`unreadable` -- which covers a path that does not exist -- `not an object`, and `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                },
+                "keys_repaired": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The artifact-carried keys of `meta.coverage.delta` that carried a value of the wrong type and were read as NULL (#2382), in the loader's table order: `base`, `base_source`, `base_commit`, `delta_start`, `delta_end`, `includes_uncommitted`, `files_changed`. Empty when every one of those the artifact carried had the type pinned for it above; a key ABSENT from the artifact is not a repair, because `meta.coverage.delta` publishes it as null either way. `base` in this list is the expensive entry: the review is NOT a delta one, `delta` above is null exactly as it is for a run given no artifact, and the gate scopes to every active finding -- which is why the list lives in THIS block, the one written whenever `--diff-hunks` was passed, rather than in the block the repair can null. A repair is also printed on stderr in the #957 register. Never null here, because this block is written only when a read was attempted."
                 },
                 "ranges_dropped": {
                   "type": "integer",
