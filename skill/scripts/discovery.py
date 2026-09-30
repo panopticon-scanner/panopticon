@@ -839,12 +839,12 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
             except OSError:
                 pass
 
-def _hunks_path_for(out):
-    """Path for diff-hunks.json: alongside --out's directory, else the default
-    .panopticon/ location. Shared by every mode that emits the artifact so the
-    placement rule has one definition."""
+def _hunks_path_for(out, repo):
+    """Place diff-hunks.json beside --out, or under the selected repository.
+
+    Shared by every mode that emits or removes the artifact."""
     return (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
-            if out else os.path.join(".panopticon", "diff-hunks.json"))
+            if out else os.path.join(repo, ".panopticon", "diff-hunks.json"))
 
 def _validate_artifact_output(repo, path):
     """Reject writes through a target-controlled ``.panopticon`` symlink."""
@@ -1858,14 +1858,14 @@ def _repo_scan(argv=None):
         _cfg_exclude = repo_config.CONFIG_NAMES if args.pr_worktree else ()
         includes_uncommitted = _worktree_dirty(repo, exclude=_cfg_exclude)
         write_diff_hunks(repo, base, source,
-                         _hunks_path_for(args.out), args.diff_context,
+                         _hunks_path_for(args.out, repo), args.diff_context,
                          includes_uncommitted, exclude=_cfg_exclude)
     else:
         # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
         # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the
         # driver's file-existence check re-scopes this whole-repo run to the old
         # diff and PASSES vacuously.
-        _stale_hunks = _hunks_path_for(args.out)
+        _stale_hunks = _hunks_path_for(args.out, repo)
         if os.path.isfile(_stale_hunks):
             os.remove(_stale_hunks)
     if any(g.get("match") for g in catalog.values()):

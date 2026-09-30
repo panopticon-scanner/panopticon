@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Direct discovery owns its implicit delta map under the selected repository (#2102).**
+  Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
+  runs clean that same path. Explicit outputs still keep the map beside `--out`.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
