@@ -603,8 +603,8 @@ def main(argv=None):
     if any(dropped):
         # ARC-2134807886: one line, only when there is something to say. The
         # counts are in the document either way, which is the half that always
-        # travels: this line is what a DIRECT run of the script shows, while
-        # under synthesize the child's stderr is captured (follow-up #2171).
+        # travels: a DIRECT run shows this line, and synthesize forwards the
+        # child's stderr on a zero exit (#2171), so either path reaches the operator.
         print("collect-usage: dropped input -- %d unreadable transcript(s), %d "
               "undecodable line(s), %d non-integer usage field/value(s); the first "
               "two count across every transcript read, not only this run's "
