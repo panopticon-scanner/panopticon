@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Pip-audit uses the shared path-confinement predicate (#2262, #1768).** Requirement
+  candidates become absolute before the shared check, so relative target roots still reject
+  escaping symlinks; the private duplicate is gone.
 - **One `setup_proposal` in a driver-shaped process, at call time too (#2413, #1766).** The
   six lazy sites in `setup_flow` import it through the package inside their function bodies --
   that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
