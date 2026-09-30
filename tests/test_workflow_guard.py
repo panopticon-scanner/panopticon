@@ -1325,6 +1325,26 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
         self.assertIn("where `pipefail` is off", self.job("shopt -so pipefail\n" + self.PIPED,
                                                           "sh")[0][1])
 
+    def test_a_shopt_that_eval_runs_is_read_under_the_steps_shell(self):
+        # Review N-6: `eval` runs its text in the step's own shell, so under
+        # dash its `shopt` is not found either and the use runs; the text was
+        # read as bash's.
+        found = self.job("eval 'set +e; shopt -so errexit'\n%s\n", "sh")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs after a `set +e`", found[0][1])
+        # The controls: the same words outside `eval`, and `eval` without the
+        # `shopt`, reported; `set -e` inside it, and the `shopt` where the
+        # shell is bash, cleared.
+        for body in ("set +e\nshopt -so errexit\n%s\n", "eval 'set +e'\n%s\n"):
+            with self.subTest(body=body):
+                self.assertIn("runs after a `set +e`", self.job(body, "sh")[0][1])
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.job("eval 'set +e; set -e'\n%s\n", shell))
+        for shell in (None, "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.job("eval 'set +e; shopt -so errexit'\n%s\n", shell))
+
     def test_the_readings_that_stay_fail_closed(self):
         # Bash turns the option on in the first five, which the guard does not
         # read on: behind `builtin`, `command` or `eval`, or inside a branch.

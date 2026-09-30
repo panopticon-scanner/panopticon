@@ -329,9 +329,10 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
     `set +o` they spell (`_as_set`, #2335, #2338), and a plain `shopt` turns
     an option on only where the shell is bash: dash has no `shopt`. A `set`
     or `shopt` behind `builtin`, `command` or `eval` runs in this shell too,
-    and so does a `set` in the script `eval` runs (#2335); this guard reads
-    all of them as able only to turn an option off, a fail-closed choice --
-    bash itself turns it on through each of them."""
+    and so does a `set` in the script `eval` runs, read in the same `shell`
+    (#2335, review N-6); this guard reads all of them as able only to turn
+    an option off, a fail-closed choice -- bash itself turns it on through
+    each of them."""
     depth, states = 0, []
     bash = os.path.basename((shell or "bash").split()[0]) == "bash"
     for index, statement in enumerate(stmts):
@@ -351,7 +352,7 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
                          else state and _errexit(argv[1:], state, name))
             for text in scripts(argv) if argv[:1] == ["eval"] else ():
                 inner = statements(text)
-                state = state and _errexit_states(inner, state, regions(inner), name)[-1]
+                state = state and _errexit_states(inner, state, regions(inner), name, shell)[-1]
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
     return states + [state]
