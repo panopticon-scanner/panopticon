@@ -1055,9 +1055,8 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
     return _cap_discovered(sorted(out), info)
 
 # #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth` on
-# every groups.json entry for the 4.x plan contract retired in #1444. Nothing reads
-# `depth` now, and the 5.x review axis is the (domain, group) cell, not a per-group
-# depth. is_architecture_file / is_database_file survive: they feed group panels.
+# every groups.json entry for the 4.x plan contract retired in #1444.
+# is_architecture_file / is_database_file survive: they feed group panels.
 
 def _discovery_block(info):
     """The `discovery` block of groups.json: how the surface was found, how much
@@ -1618,9 +1617,7 @@ def main(argv=None):
 
     Discovery touches the target's git from several depths -- the changed-file
     diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
-    from any of them means the same thing and deserves the same sentence. An
-    unhandled OSError out of here is a stack trace the operator has to decode,
-    and it never says which setting was refused.
+    from any of them means the same thing and deserves the same sentence.
     """
     try:
         return _repo_scan(argv)
@@ -1803,7 +1800,10 @@ def _repo_scan(argv=None):
         # REVIEWED, not the listing it was filtered from. Then committed exclude_paths
         # prune, re-deriving excluded_files from the changed set, not the whole-repo
         # count the --scope-dir/-file/-group branches keep (they narrow pruned `allf`).
+        # `pruned_fixtures` is cleared before that pass (#2410) so the fixture roots
+        # the artifact discloses are this surface's too, not the listing's.
         info["surface"] = "changed"
+        del pruned_fixtures[:]
         scoped = _cap_discovered(_filter_reviewable(
             changed, include_fixtures=(args.security == "redteam"),
             pruned_fixtures=pruned_fixtures, info=info,

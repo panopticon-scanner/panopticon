@@ -12,6 +12,21 @@ evidence exposed.
   that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
   its own flat mode needs, so the grouping engine imports it the same way and the call-time
   census keeps its three named residuals.
+- **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
+  `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
+  stderr line name only roots pruned from the surface the run reviewed, like every other
+  disclosure on a delta run.
+- **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
+  domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
+  of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
+  as the HTML and Markdown renderers already do.
+- **The workflow guard credits a checksum only where its failure stops the step (#2331).**
+  A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
+  A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
+  A check ahead of `&&` now clears only what its list runs, unless the list fails the step (#2334).
+  `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
+  The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
+  `x=$(curl ...)` then `eval "$x"`, `sh -c "$x"` or `echo "$x" | sh` is now reported (#2341).
 - **setup_proposal has one identity in a driver-shaped process (#2256, #1766).** Its three
   catalog imports take the guarded package-first shape its siblings use, so the flat copy every
   setup path reaches binds the same catalog modules the package side does and the import-time

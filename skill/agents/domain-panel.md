@@ -58,7 +58,9 @@ Each finding MUST carry:
   delta/`--pr` gate can match it against the diff). `line_start`/`line_end` are
   1-based, and belong on a finding that has a locus in the file; a whole-file
   finding (a missing header, a bad config) MUST omit `line_start`/`line_end`
-  entirely (not `null`) rather than invent one
+  entirely (not `null`) rather than invent one; and a finding with no locus
+  at all — a repo-wide catalog or coverage gap, usually the `{domain}-X0X`
+  fallback — MUST omit `location` itself rather than invent a `file`
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 

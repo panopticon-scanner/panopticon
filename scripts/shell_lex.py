@@ -91,6 +91,14 @@ shell looks for `-c`, it is one bash expands. So is a `!(` where a command
 starts, which bash with `extglob` off reads as a negated subshell. A `$(...)`
 in any of these is code, read as ever.
 
+A `case` arm's pattern list is one word to the reader, from its first word to
+its `)`, and bash and dash read the spaces and tabs around its `|` and inside
+its `( ... )` as separating nothing: `a | x)` is the arm `a|x)`. Kept, they
+split the arm, and the reader took the pattern `a` and then a `|` for the
+command, so the body behind them went unread (#2345). So `lex` follows each
+`case` as bash's parser does (`casing`) and drops those spaces and tabs from a
+pattern list outside quotes; a newline there is a syntax error to all three.
+
 Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
 the `$(...)` matcher `shell_reader` lifts substitutions with. The pattern
 marks, `patterned` and `is_pattern`, are `scripts/shell_patterns.py`'s.
@@ -146,7 +154,10 @@ _ASSIGNS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _COMPOUND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[.*\])?\+?=", re.S)  # then `(`
 _IO_NUMBER = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
 # The state a word is read in: saved around a `$(...)`, and at a `((`.
-_STATE = ("word", "named", "at", "target", "last", "compound", "assigned", "cond")
+_STATE = ("word", "named", "at", "target", "last", "compound", "assigned", "cond", "cases")
+# Where each `case` open in a frame stands (`casing`), innermost last: its
+# word or its `in` due, a pattern list due or begun, or an arm's body.
+_SUBJECT, _IN, _PATTERN, _ARM, _BODY = "subject", "in", "pattern", "arm", "body"
 # A quoted part of a heredoc's delimiter word, and the escapes "..." removes.
 _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"",
                      re.S)
@@ -236,6 +247,7 @@ class _Lexer:
         self.compound = ""              # in `name=(...)`: `at` from before it
         self.assigned = -1              # the last word a `[...]=` assigns in
         self.cond = 0                   # inside `[[ ... ]]`: 1 + the `(` open in it
+        self.cases: tuple[str, ...] = ()    # the `case`s open here (`casing`)
         self.lines: dict[bool, _Lines] = {}
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
@@ -279,7 +291,7 @@ class _Lexer:
         if kind in _CODE:               # a `$(...)` holds commands of its own
             self.frames[-1].saved = self.saved()
             vars(self).update(word=len(self.out), at="head", target=False, last="",
-                              compound="", cond=0)
+                              compound="", cond=0, cases=())
         return i + len(opener)
 
     def saved(self) -> dict:
@@ -316,6 +328,9 @@ class _Lexer:
                     self.frames.append(_Frame("x(", 1))
                     return i + 1
                 self.token(i)
+                if ch in " \t" and self.cases[-1:] == (_ARM,):
+                    self.word = len(out)            # `a | x)` is the arm `a|x)` (#2345)
+                    return i + 1
             here = _HERE.match(text, i) if ch == "<" else None
             if here and here[1] == "<":         # a here-string
                 out.append("<<<")
@@ -387,9 +402,11 @@ class _Lexer:
 
     def token(self, i: int) -> None:
         """Move `self.at` past the word the metacharacter at `i` ends -- none,
-        if it is an IO number -- and past that metacharacter."""
+        if it is an IO number -- and past that metacharacter; the `case`s open
+        here too (`casing`)."""
         text, ch, before = self.text, self.text[i], self.text[i - 1:i]
         word = "".join(self.out[self.word:])
+        self.casing(word, ch, text.startswith((";;", ";&"), i))
         if word == "[[" and self.at in _HEADS or word == "]]" and self.cond:
             self.cond = int(word == "[[")       # a conditional expands no pattern
         if self.cond and ch in "()":            # and ends at a `)` it did not open
@@ -407,6 +424,27 @@ class _Lexer:
             self.at = ("|" if ch == "|" and before != "|" else
                        "|\n" if ch == "\n" and self.at == "|" else "head")
             self.last, self.target = "", False
+
+    def casing(self, word: str, ch: str, arm_end: bool) -> None:
+        """Move the `case`s open here past `word` and the metacharacter `ch`
+        ending it, `arm_end` if that is a `;;`, `;&` or `;;&`: `case` where a
+        command starts, its word and `in`, then a pattern list -- begun by its
+        first word or `(`, ended by its `)` -- and the arm's body, to the end
+        of the arm, where a pattern list is due again; `esac` closes it where a
+        pattern list or a command is due."""
+        state, rest = (self.cases or ("",))[-1], self.cases[:-1]
+        if word and state == _SUBJECT:
+            self.cases = rest + (_IN,)
+        elif word and state == _IN:
+            self.cases = rest + (_PATTERN,) if word == "in" else rest
+        elif word == "esac" and (state == _PATTERN or state == _BODY and self.at in _HEADS):
+            self.cases = rest
+        elif word == "case" and self.at in _HEADS and state not in (_PATTERN, _ARM):
+            self.cases += (_SUBJECT,)
+        elif state == _PATTERN and (word or ch in "(|"):
+            self.cases = rest + (_ARM,)
+        if ch == ")" and self.cases[-1:] == (_ARM,) or arm_end and self.cases[-1:] == (_BODY,):
+            self.cases = self.cases[:-1] + ((_BODY,) if ch == ")" else (_PATTERN,))
 
     def stood(self, word: str) -> str:
         """Where the word after `word` stands, `word` having stood at `self.at`."""
