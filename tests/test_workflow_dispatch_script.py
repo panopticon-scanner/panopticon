@@ -275,8 +275,8 @@ class TestRefusalsEscapeTheId(DispatchScriptTestCase):
         }
 
     def test_the_hostile_id_really_carries_the_raw_bytes(self):
-        # The must-trip control: without it the assertions below could pass on
-        # test data that never held an escape or a newline in the first place.
+        # Guards the fixture, not the code: without it the assertions in the
+        # next test could pass on data that never held an escape or a newline.
         self.assertIn(self.ESC, self.HOSTILE_ID)
         self.assertIn("\n", self.HOSTILE_ID)
 
