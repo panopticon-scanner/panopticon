@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
+  fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
+  rollback prose already describes termination of registered child process groups.
 - **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
   `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
   stderr line name only roots pruned from the surface the run reviewed, like every other
