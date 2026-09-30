@@ -21,9 +21,13 @@ import os
 import re
 import subprocess
 import unittest
+from unittest import mock
 
+from scripts import scanner_config
 import scripts.tools.egress as egress
 from scripts.tools import ONLINE_ONLY
+
+from tests._test_helpers import only
 
 
 class TestAllowlistTable(unittest.TestCase):
@@ -336,3 +340,27 @@ class TestSessionAgainstTheRealRunnerShape(unittest.TestCase):
                 self.assertEqual(sess.proxy, "http://172.30.0.2:8888")
         self.assertEqual([c[1:3] for c in calls][-2:],
                          [["rm", "-f"], ["network", "rm"]])
+
+    def test_the_sidecar_privilege_drop_comes_from_its_one_owner(self):
+        # #2150 (ARC-A3A): this argv used to splice `PROXY_HARDENING`, a literal
+        # copy of what `scanner_config.privilege_drop_flags` returns. A copy can
+        # keep a flag the scanner containers dropped, or miss one they gained,
+        # with the whole suite green -- so the claim under test is the LOOKUP:
+        # patch the owner and the sidecar's own argv has to move with it.
+        # `PROXY_LIMITS` stays the sidecar's own and is pinned elsewhere.
+        calls = []
+        with mock.patch.object(scanner_config, "privilege_drop_flags",
+                               return_value=["--marker"]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with egress.session("docker", ["pip-audit"], self._runner(calls),
+                                run_id="r2150") as sess:
+                self.assertTrue(sess.serves("pip-audit"))
+        started = only([c for c in calls if c[1:3] == ["run", "-d"]],
+                       "sidecar launch")
+        self.assertIn("--marker", started)
+        self.assertNotIn("--cap-drop=ALL", started)
+        self.assertNotIn("--security-opt=no-new-privileges", started)
+        # The ceilings are NOT the owner's: a patch of the privilege drop must
+        # leave them exactly where they were, right after it.
+        self.assertIn("--memory", started)
+        self.assertEqual(started.index("--marker") + 1, started.index("--memory"))
