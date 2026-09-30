@@ -220,6 +220,19 @@ class TestSchemas(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     validate(instance=envelope, schema=schema)
 
+    def test_findings_envelope_accepts_a_locus_free_finding(self):
+        _require_jsonschema(self)
+        # #2174 (#1784): a repo-wide catalog-gap finding (`<DOM>-X0X`) has no
+        # locus at all. `synth/findings.py` drops the empty location rather than
+        # keep a shape that violates the report schema, and `x0x_report.py`
+        # counts those candidates -- so the envelope, the schema a reply is
+        # validated against, must accept a finding with no `location` key.
+        schema = _load("findings-envelope-schema.json")
+        for name, envelope in self._whole_file_cases():
+            with self.subTest(definition=name):
+                del envelope["findings"][0]["location"]
+                validate(instance=envelope, schema=schema)  # must not raise
+
     def test_envelope_location_required_matches_report(self):
         """#1602: the emission envelope and the published report must agree.
 
@@ -230,12 +243,22 @@ class TestSchemas(unittest.TestCase):
         """
         envelope = _load("findings-envelope-schema.json")
         report = _load("report-schema.json")
-        published = report["properties"]["findings"]["items"]["properties"]["location"]
+        items = report["properties"]["findings"]["items"]
+        published = items["properties"]["location"]
         for name in ("legacyPanelFinding", "domainRoleFinding"):
             with self.subTest(definition=name):
                 loc = envelope["definitions"][name]["properties"]["location"]
                 self.assertEqual(set(loc.get("required", [])),
                                  set(published.get("required", [])))
+                # #2174: and the same question one level up -- whether a finding
+                # must carry a `location` AT ALL. The report schema leaves it
+                # out of its finding-level required list on purpose, because a
+                # locus-free catalog-gap finding is legal; an envelope that
+                # demands it refuses that finding on a schema-enforcing host, or
+                # pressures the agent into inventing a file for it.
+                self.assertEqual(
+                    "location" in envelope["definitions"][name].get("required", []),
+                    "location" in items.get("required", []))
 
     def test_advisor_verdict_schema_accepts_schema_version(self):
         _require_jsonschema(self)
