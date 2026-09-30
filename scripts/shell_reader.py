@@ -97,11 +97,17 @@ KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
 # to it. A guard reading exit statuses has to know the difference.
 CONDITIONS = ("if", "elif", "while", "until")
 
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# A word bash reads as an assignment in front of a command (#2348): `NAME=`,
+# `NAME+=`, and to an array element, `a[1]=x` or `a[1]+=x`, which bash globs
+# nothing in; an array literal (`a=(1 2)`) is folded into its word by `_stage`.
+# Behind a wrapper the words are the wrapper's, and only `NAME=` is popped
+# there, as `env X=1` and `sudo X=1` take it: `sudo a[1]=x` is a pattern.
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
+_ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
+_DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# An assignment to an array element, `a[1]=x`: bash globs no assignment word.
-_SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
 # The shells whose options and program word a pattern may rewrite into a `-c`
 # and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
 _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
@@ -359,13 +365,24 @@ def input_alias_fd(word):
     return None
 
 
+def _assigns(words):
+    """Whether bash reads the word after `words` as an assignment: behind
+    keywords and assignments only, or among a declaration's words. After any
+    other command word an array literal is a syntax error, read as before."""
+    words = [word for word in words if word not in KEYWORDS and not _ASSIGNMENT.match(word)]
+    return not words or words[0] in _DECLARATIONS
+
+
 def _stage(text, context):
-    """Read lexical redirect operators in order, copying fd sinks by value."""
+    """Read lexical redirect operators in order, copying fd sinks by value,
+    and an array literal as part of the word that assigns it where a command
+    follows it (#2348)."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
-    argv, writes, reads = [], [], []
+    argv: list[str] = []
+    writes, reads = [], []
     group_open = group_close = 0
     substitutions: list[str] = []
     heredoc = None
@@ -384,6 +401,8 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    literal: int | None = None          # where an array literal's words start
+    words: list[str] = []               # argv with no literal folded
 
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
@@ -405,8 +424,16 @@ def _stage(text, context):
         if entry and entry[0] == "group":
             if entry[1] == "(":
                 group_open += 1
+                # `a=(1 2)` is no subshell: bash reads an array literal as the
+                # rest of the word that assigns it, so it is one here (#2348).
+                literal = len(argv) if argv and _ASSIGNMENT.fullmatch(argv[-1]) and _assigns(
+                    argv[:-1]) else None
             else:
                 group_close += 1
+                if literal is not None:
+                    argv[literal - 1:] = [context.token(
+                        "%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))]
+                literal = None
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
@@ -465,6 +492,9 @@ def _stage(text, context):
             continue
         take(word)
         argv.append(word)
+        words.append(word)
+    if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
+        argv = words        # it only assigns: an array of a command is read as run
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -497,7 +527,7 @@ def _command_result(argv):
     # an argv that is not the one that runs (#2227).
     appended, behind = False, None
     while argv:
-        if _ASSIGNMENT.match(argv[0]) and not argv[0].startswith("-"):
+        if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]):
             argv.pop(0)
             continue
         if argv[0] in KEYWORDS:
@@ -518,7 +548,7 @@ def _command_result(argv):
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
-        if isinstance(argv[0], Rewritten) and not _SUBSCRIPTED.match(argv[0]):
+        if isinstance(argv[0], Rewritten):
             return argv, "`%s` is a pattern bash expands before anything runs" % readable(
                 argv[0]), heads
         if head not in WRAPPERS:

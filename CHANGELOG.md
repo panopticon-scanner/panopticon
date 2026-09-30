@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard reads the command and program forms its reviews found unread (#2331).**
+  The command behind an `A+=x`, `a[1]=x` or `arr=(a b)` prefix is now read, as `X=1`'s is (#2348).
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
