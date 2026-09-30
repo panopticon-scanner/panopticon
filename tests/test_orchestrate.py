@@ -225,6 +225,13 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         status = self._run(d, floor, runner, "--max-iterations", "2")
         self.assertEqual(status["status"], "error")
         self.assertIn("review-app-SEC", status["message"])
+        # #2379: the pending ids are request-sourced text on their way to an
+        # operator's terminal, so the message renders each through `%r` -- the
+        # register `loop_batch.misroute_refusal` already uses for the same
+        # value. The engine cannot mint an id with control bytes today
+        # (`_GROUP_NAME_RE` forbids them in the group half), so this asserts
+        # the register rather than a hostile id.
+        self.assertIn("'review-app-SEC'", status["message"])
         self.assertIn("2", status["message"])
 
     def test_max_budget_stops_new_launches_and_exits_error_with_the_ledger(self):

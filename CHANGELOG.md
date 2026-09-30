@@ -10,6 +10,9 @@ evidence exposed.
 - **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer
   re-filters the fields `evidence.tool_rule_id` already reads totally, and coerces a non-string
   rule id to text before the CWE regex sees it.
+- **Escape request-sourced strings that reach a terminal (#2379, #1783).** The dispatch script
+  escapes any request-sourced string outside a safe charset (the checkpoint, the progress label,
+  the missing-id line), and the driver loop renders its pending-id lists with `%r`.
 - **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
   now offers direct repair before the setup command that refuses an invalid committed config.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
