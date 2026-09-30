@@ -162,7 +162,8 @@ class TestReconciliation(unittest.TestCase):
                         ],
                     ),
                 ))
-                _errors, warnings = report_mod.validate_report(report)
+                errors, warnings = report_mod.validate_report(report)
+                self.assertEqual(errors, [])
                 self.assertEqual([w for w in warnings if "location" in w], expected)
 
     def test_validate_reports_the_null_sections_the_hand_checks_missed(self):
