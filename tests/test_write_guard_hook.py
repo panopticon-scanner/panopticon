@@ -1021,6 +1021,21 @@ class TestMain(unittest.TestCase):
         self.assertIn("write guard crashed", body["permissionDecisionReason"])
         self.assertIn("boom", body["permissionDecisionReason"])
 
+    def test_a_non_hashable_tool_name_denies_instead_of_crashing(self):
+        # #2394: the roster test is a set membership, so a list or dict
+        # `tool_name` raises TypeError. Above the envelope that raise escaped
+        # main(), and a non-2 exit is NON-blocking -- the Write proceeded.
+        payload = json.dumps({"tool_name": ["Write"], "tool_input": {"file_path": "x"}})
+        rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(rc, 0)
+        body = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(body["permissionDecision"], "deny")
+        self.assertIn("write guard crashed", body["permissionDecisionReason"])
+        self.assertIn("unhashable", body["permissionDecisionReason"])
+        # The relocated roster return is still PERMISSIVE for a non-roster name.
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "x"}})
+        self.assertEqual((0, ""), self._run_main(payload))
+
 
 class TestInstallUninstall(unittest.TestCase):
     def test_install_writes_allowlist_and_registers_hook(self):

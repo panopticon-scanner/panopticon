@@ -860,6 +860,28 @@ class TestMain(unittest.TestCase):
             self.assertIn("read guard crashed", body["permissionDecisionReason"])
             self.assertIn("boom", body["permissionDecisionReason"])
 
+    def test_a_non_hashable_tool_name_denies_instead_of_crashing(self):
+        # #2394: the roster test is a set membership, so a list or dict
+        # `tool_name` raises TypeError. Above the envelope that raise escaped
+        # main(), and a non-2 exit is NON-blocking -- the Read proceeded.
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope()}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            payload = {"tool_name": ["Read"], "agent_id": "a", "transcript_path": parent,
+                       "tool_input": {"file_path": "x"}}
+            rc, out = self._run(payload, [scope_path])
+            self.assertEqual(0, rc)
+            body = json.loads(out)["hookSpecificOutput"]
+            self.assertEqual("deny", body["permissionDecision"])
+            self.assertIn("read guard crashed", body["permissionDecisionReason"])
+            self.assertIn("unhashable", body["permissionDecisionReason"])
+            # The relocated roster return is still PERMISSIVE for a non-roster name.
+            payload["tool_name"] = "Bash"
+            self.assertEqual((0, ""), self._run(payload, [scope_path]))
+
     def test_malformed_and_non_dict_stdin_are_tolerated(self):
         for raw in ("{not json", "[1, 2]"):
             with self.subTest(raw=raw):
