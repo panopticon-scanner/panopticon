@@ -446,17 +446,22 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
 
 
-class TestContainerHardeningComesFromRunTools(unittest.TestCase):
+class TestContainerHardeningComesFromItsOwners(unittest.TestCase):
     """#1767 ARC-3859414366: one owner for the container-launch policy.
 
-    `run_tools` says its privilege-drop flags and resource ceilings go on every
-    container it and the fixture runner launch. These two launched with neither,
-    and nothing could notice the divergence because this module imported no part
-    of `run_tools` -- the probe did not even isolate the network, while the
-    pytest container runs the real scanners over attacker-shaped inputs on a
-    developer machine. So the flags are READ from `run_tools` here: a local copy
-    would pass a spot-check and drift on the next change to the policy. Argv
-    only; no daemon is reached.
+    The policy says its privilege-drop flags and resource ceilings go on every
+    container the tool runner and the fixture runner launch. These two launched
+    with neither, and nothing could notice the divergence because this module
+    imported no part of either owner -- the probe did not even isolate the
+    network, while the pytest container runs the real scanners over
+    attacker-shaped inputs on a developer machine. So the flags are READ here: a
+    local copy would pass a spot-check and drift on the next change to the
+    policy. Argv only; no daemon is reached.
+
+    TWO owners since #2150 (ARC-A3A), because the two flag sets have different
+    reach: the ceilings stay in `run_tools`, whose `PANOPTICON_TOOL_*` constants
+    tune them, and the privilege drop moved to `scanner_config`, which the egress
+    sidecar can import and `run_tools` cannot be imported BY.
     """
 
     def _pytest_argv(self):
@@ -507,11 +512,12 @@ class TestContainerHardeningComesFromRunTools(unittest.TestCase):
             with self.subTest(container=container):
                 self.assertEqual(argv[argv.index("--network") + 1], "none")
 
-    def test_the_hardening_is_run_tools_own_lists_verbatim(self):
+    def test_the_hardening_is_the_owners_own_lists_verbatim(self):
         # Parity, not resemblance: the flags between `run --rm` and everything
-        # else are exactly what run_tools returns, in run_tools' own order.
+        # else are exactly what the two owners return, in the order this module
+        # splices them.
         expected = (rft.run_tools.resource_limit_flags()
-                    + rft.run_tools.privilege_drop_flags())
+                    + rft.scanner_config.privilege_drop_flags())
         for container, argv in self._both():
             with self.subTest(container=container):
                 self.assertEqual(argv[:3], ["docker-unit-test", "run", "--rm"])
