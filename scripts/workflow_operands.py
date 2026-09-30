@@ -11,8 +11,9 @@ designate a file without ever writing its name:
 
     `same_file`, `names_file`  exactly, and for a checksum's text, word for
                                word
-    `covers`                   by a glob, or by the directory a recursive
-                               command walks
+    `covers`                   by a glob, by a word bash expands that ends
+                               in a download's basename (#2345), or by the
+                               directory a recursive command walks
     `may_run`                  a command word bash expands that ends in a
                                download's basename (#2310), or a bare name a
                                download written into a directory on PATH
@@ -138,8 +139,10 @@ _GLOB = re.compile(r"[*?\[]")
 # In a word bash expands as a pattern, a brace or extglob group, a `$...` and
 # a `$(...)` stand for any text where a glob is matched, and a leading `./`
 # names what the name after it names: so `sh ./cuda_*.run` runs a download
-# `cuda_1.run` (re-review N-C). With a `$` in it, only the shell knows the
-# directory, so its last part binds the download's, as in `may_run`.
+# `cuda_1.run` (re-review N-C). With a `$` in it, or in the download's name,
+# only the shell knows the directory, so the last parts bind, as in `may_run`
+# (#2345); so do they for a bare download and a glob with a directory part,
+# which reaches it from another directory: the guard follows no `cd`.
 _GROUP = re.compile(r"\{[^{}]*\}|[@+!*?]\([^()]*\)")
 _EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\(\.\.\.\)|\$(?:\w+|[^\w{])")
 _HERE = re.compile(r"^(?:\./+)+")
@@ -152,29 +155,37 @@ _RECURSIVE = ("-R", "-r", "--recursive")
 def covers(token, dest, recursive=False):
     """Does this operand stand for `dest`, even without naming it?
 
-    Three spellings, and the guard binds by NAME, so each one hid a use:
-    exactly (`chmod +x /tmp/payload`), by a glob (`chmod +x /tmp/*.sh`, or a
-    word bash expands, read as `_GROUP` says), and by the directory a
-    recursive command walks (`chmod -R +x /tmp`). A glob is matched against
-    the whole path, a leading `./` on either dropped, and, for a bare dest,
-    its basename -- the same asymmetry `names_file` draws, and for the same
-    reason.
+    Four spellings, and the guard binds by NAME, so each one hid a use:
+    exactly (`chmod +x /tmp/payload`), by a word bash expands that ends in
+    the download's basename (`sh "$PWD/payload"`, #2345: its last part must
+    be that name as written, and an option word is never one), by a glob
+    (`chmod +x /tmp/*.sh`, or a word bash expands, read as `_GROUP` says),
+    and by the directory a recursive command walks (`chmod -R +x /tmp`). A
+    glob is matched against the whole path with a leading `./` on either
+    dropped -- and, one bash expands, by the last parts where a `$` spells
+    either directory or it has one a bare dest does not (`_GROUP`'s comment
+    says why). The directory part over-reports: after a fetch of
+    `install.sh`, `chmod +x scripts/*.sh` or `sh scripts/*.sh` is refused,
+    though bash never touches `install.sh` -- kept, as restricting it to
+    `..` would reopen `cd ..; sh repo/cuda_*.run`, which bash runs. The run
+    side only, as in `may_run`: a checksum binds by `names_file`.
     """
     if same_file(token, dest):
         return True
-    glob, loose = token, False
-    if getattr(token, "lead", None) is not None:    # a word bash expands (the reader's)
+    glob, loose, pattern = token, False, getattr(token, "lead", None) is not None
+    if pattern:                                     # a word bash expands (the reader's)
         glob = shell_reader.readable(token)
         loose = bool(_EXPANSION.search(glob))
         while _GROUP.search(glob) or _EXPANSION.search(glob):
             glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
+    elif dynamic(token, shell_reader.has_substitution) and not token.startswith("-") and (
+            os.path.basename(os.path.normpath(token)) == os.path.basename(os.path.normpath(dest))):
+        return True
     if _GLOB.search(glob):
         glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
-        if loose:
+        if loose or pattern and ("$" in dest or os.path.dirname(glob) and not os.path.dirname(dest)):
             glob, dest = os.path.basename(glob), os.path.basename(dest)
-        return (fnmatch.fnmatch(dest, glob)
-                or (not os.path.dirname(dest)
-                    and fnmatch.fnmatch(os.path.basename(dest), glob)))
+        return fnmatch.fnmatch(dest, glob)
     if recursive and not token.startswith("-"):
         prefix = os.path.normpath(token)
         if prefix == ".":
