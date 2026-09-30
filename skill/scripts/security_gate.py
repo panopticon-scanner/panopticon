@@ -478,11 +478,14 @@ def _row(finding):
     """
     location = finding.get("location") or {}
     # A whole-file finding has a file and no line, and `sarif_utils` records that
-    # as `line_start` present and None -- so a `get` default never fires (#2174).
+    # as `line_start` present and None -- so a `get` default never fires for the
+    # line half (#2174). The `file` half takes the `?` default its siblings in
+    # `synth/render.py` and `html_report.py` use, because a locus-free finding --
+    # a repo-wide catalog or coverage gap -- carries no `location` at all (#2409).
     line = location.get("line_start")
     return "  %s %s %s:%s - %s" % (
         finding.get("severity"), finding.get("id"),
-        location.get("file"), "?" if line is None else line,
+        location.get("file", "?"), "?" if line is None else line,
         finding.get("title"))
 
 

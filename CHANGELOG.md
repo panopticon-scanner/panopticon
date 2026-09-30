@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
+  domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
+  of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
+  as the HTML and Markdown renderers already do.
 - **One owner for the container privilege drop (#2150, #1767).** The tool runner, the fixture
   runner and the egress sidecar all splice `scanner_config.privilege_drop_flags`. The daily fixture
   lanes spell the same two flags out, keeping the ceilings exemption the workflow now states. The
