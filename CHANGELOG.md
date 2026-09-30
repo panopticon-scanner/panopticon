@@ -9,6 +9,37 @@ evidence exposed.
 
 - **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
   report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
+- **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
+  #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
+  before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the
+  driver's own import path imported a third-party package at MODULE level: `tools/spotbugs.py`
+  (`defusedxml`, reached through `scripts.tools`'s package body, which imports every adapter, which
+  the host probes import) and `setup_flow.py`, `discovery.py` and `setup_proposal.py` (`yaml`). A
+  checkout thinner than `pyproject.toml` therefore got a `ModuleNotFoundError` traceback out of
+  `import scripts.driver` and no document at all — loud, and it named the package, but it was not
+  the preflight. Each of those imports now sits inside the function that uses it, with no fallback
+  and no `except ImportError:` arm, so a missing package still raises loudly from the one call that
+  needs it (#2363); `ADAPTERS` stays a plain `dict`, since three test modules `mock.patch.dict` it
+  and `capture_goldens.py` enumerates it. `repo_config.read_document` now REFUSES the document when
+  `pyyaml` is absent rather than raising through `phases/readiness._matrix_row` and
+  `setup_flow._check_groups_manifest`, both of which document that they never raise. Two guards
+  pin the property. `tests/phases/test_readiness_verb.py` blocks each of the three packages in a
+  child interpreter and reads the row back: exit 1, `missing` is exactly that pip name, and no
+  `Traceback` on stderr. `tests/test_workflow_pins.py` asserts by AST that no module the driver's,
+  `run_tools`' or `security_gate`'s import chain loads names a non-stdlib, non-local module at
+  module level. It walks every statement not inside a function body — `try`/`except*`/`finally`,
+  `if`, `with`, `for`, `while`, `match`, `class` — rather than enumerating shapes worth descending
+  into, because a guard that knows six shapes is a guard the seventh walks past; a module-level
+  `try:`/`except ImportError:` is refused not because it needs the package at import time (it does
+  not) but because an except arm that rebinds the name is the fallback #2363 forbids and one that
+  passes leaves the name unbound for a `NameError` at first use, while an unguarded import takes the
+  row down. It selects the modules by FILE rather than by `sys.modules` name, which is how the
+  fourth offender was found at all. The same file's gate-closure guard now ALSO reads those IMPORTS,
+  beside the `RUNTIME_PACKAGES` proxy it keeps: every third-party module those chains import, nested
+  ones included, maps through `importlib.metadata.packages_distributions()` to a distribution pinned
+  in `.github/requirements-gate.txt`, and its PEP 503 normalisation is now the full `[-_.]+` fold.
+  The two cover different sets and both are load-bearing — the gate's chain imports `jsonschema` and
+  `defusedxml` but never `yaml`, so the proxy is the only guard keeping `pyyaml` in the closure.
 - **A rejected diff-hunks artifact is disclosed in the report (#2169, #1783, ARC-B8 follow-up).**
   Three gaps the B8 disclosure left. An unreadable or non-object `diff-hunks.json` yields a payload
   with no `base`, so the review degrades to a non-delta one and `meta.coverage.delta` is null --

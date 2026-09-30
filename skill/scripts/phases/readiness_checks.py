@@ -110,20 +110,30 @@ SESSION_REMEDY = (
 # #1639 P15 I2: declared Python runtime packages, as (import name, pip name).
 # All are declared in `pyproject.toml`'s `[project] dependencies` and
 # `tests/phases/test_readiness_verb.py` holds this tuple to that list, so the
-# two cannot drift. Checked HERE, before the first paid dispatch -- but reached
-# only for `jsonschema` today, because the driver's own import chain fails first
-# for the other two: `scripts.setup_flow` (discovery) imports `yaml` directly,
-# and this module reaches `scripts.tools` -- every adapter body, so `defusedxml`
-# -- twice over, through `setup_flow`'s host probes and directly for `egress`,
-# as does `driver.py`. So an absent `pyyaml` or `defusedxml` is a traceback
-# naming the package before any row is printed (#2369 tracks making the row
-# reachable for all three). `jsonschema` is imported by the completion path's
-# artifact validation, which is deliberately fail-closed, so an install without
-# it does not quietly stop validating -- it exits `artifact invalid` after the
-# whole review has been paid for. defusedxml is the XML parser for the spotbugs
-# adapter and the golden-capture path; both refuse entity definitions -- the
-# internal ones the stdlib parser expands, and the external references it
-# leaves undefined -- and neither falls back.
+# two cannot drift. Checked HERE, before the first paid dispatch, and reached
+# for ALL THREE: no module on the driver's import path imports a third-party
+# package at module level, so importing `scripts.driver` cannot fail on an
+# absent one and the row gets to name it with its `pip install` (#2369).
+#
+# That is a pinned property, not a coincidence: the AST guard in
+# `tests/test_workflow_pins.py` refuses a module-level third-party import
+# anywhere on the path, and `test_readiness_verb.py` blocks each package in a
+# child interpreter and reads this row back out.
+#
+# Until #2369 the row was reached only for `jsonschema`: `setup_flow`,
+# `discovery` and `setup_proposal` imported `yaml` at module level, and
+# `tools/spotbugs.py` imported `defusedxml` at module level while
+# `scripts.tools`'s package body imports every adapter -- reached twice over
+# from here, through `setup_flow`'s host probes and directly for `egress`, and
+# again from `driver.py`.
+#
+# `jsonschema` is imported by the completion path's artifact validation, which
+# is deliberately fail-closed, so an install without it does not quietly stop
+# validating -- it exits `artifact invalid` after the whole review has been paid
+# for. defusedxml is the XML parser for the spotbugs adapter and the
+# golden-capture path; both refuse entity definitions -- the internal ones the
+# stdlib parser expands, and the external references it leaves undefined -- and
+# neither falls back.
 RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("defusedxml", "defusedxml"),
                     ("jsonschema", "jsonschema"))
 

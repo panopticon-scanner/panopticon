@@ -46,18 +46,18 @@ in one. None of the three is optional, and each is absent in a different way:
 a missing `pyyaml` takes discovery down with a traceback; a missing
 `jsonschema` is fail-closed by design, so the run exits `artifact invalid`
 *after* the whole review has been paid for; and a missing `defusedxml` fails
-the spotbugs adapter's import — loudly, on every path, before any report is
-parsed. There is no stdlib fallback, so the paths that never run the readiness
-phase — the CI gate `skill/scripts/security_gate.py`, which imports
+the spotbugs adapter's report parse — loudly, on every path, before a single
+finding is read. There is no stdlib fallback, so the paths that never run the
+readiness phase — the CI gate `skill/scripts/security_gate.py`, which imports
 `ingest_tools`, and a resumed run whose `readiness.json` already recorded
 `ready: true` — stop with an `ImportError` naming the package instead of
 parsing an untrusted scanner report with the hardening silently gone. The
-gating `dependencies` row of `driver readiness` names an absent `jsonschema`
-with the `pip install` that fixes it; a missing `defusedxml` never gets that
-far, because the driver's own import chain — host probes into the adapter
-package — fails first with a traceback naming the package, and neither does a
-missing `pyyaml`, which discovery imports directly (#2369 tracks reaching the
-row for all three). Either way, run `driver readiness` before you run anything.
+gating `dependencies` row of `driver readiness` names an absent runtime package
+— `pyyaml`, `defusedxml` or `jsonschema` — with the `pip install` that fixes it,
+and since #2369 it is reached for all three: no module on the driver's import
+chain imports a third-party package at module level, so a thin install reads
+the preflight row instead of a traceback out of `import scripts.driver`. Run
+`driver readiness` before you run anything.
 
 **The three `superpowers:*` sub-skills above** are the only other external
 things this skill asks for. Panopticon does not ship them and does not install
