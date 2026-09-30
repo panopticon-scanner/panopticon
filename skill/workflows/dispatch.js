@@ -39,17 +39,31 @@
 // on `model` in silence (#2166). The two refusals are one statement read from
 // either side: the same pair of SHAPES `loop_batch.refuse_misrouted` refuses
 // over the request one level up -- WHICH shell a checkpoint may name is
-// checked there, not here. Every refusal below that prints an id prints it
-// through `JSON.stringify`, for the reason `misroute_refusal` uses `%r`: the
-// id comes out of the request and reaches the operator's terminal, so a
-// control character, an ANSI escape or an embedded newline in it is rendered
-// as its escape sequence rather than executed by the terminal.
+// checked there, not here. Every string below that came out of the request
+// and reaches the operator's terminal is SHOWN: as-is when it is in the safe
+// charset `[\w.:-]+`, else through `JSON.stringify`, for the reason
+// `misroute_refusal` uses `%r` -- a control character, an ANSI escape or an
+// embedded newline then arrives as its escape sequence rather than as bytes
+// the terminal acts on. The register is the file's, not one refusal's: the
+// four refusals above print an id through `JSON.stringify` outright (#2166),
+// and the lines that run only after validation passes -- the checkpoint,
+// each progress label, each missing id -- go through `shown()` below
+// (#2379), so every id this run can mint still reads as it is typed.
+// What the RETURNED document carries stays raw, and so do the values the
+// HOST keys on -- `agentType`, `model`, and the marker and pointer in the
+// prompt: those are data the host and the read guard match on, not
+// terminal text.
 export const meta = {
   name: 'panopticon-dispatch',
   description: 'Run one Panopticon session-mode checkpoint: one subagent per pending entry, in its registered shell, marker line first',
   whenToUse: 'After `driver loop --mode session` prints a dispatch status; pass its pending entries (reduced, no inline prompt) as args.entries',
   phases: [{ title: 'Dispatch', detail: 'one subagent per pending entry, in parallel' }],
 }
+
+// The register above, as one expression -- the only escape decision the
+// post-validation lines make. `String(s)` so a non-string from the request
+// cannot slip past the test.
+const shown = (s) => (/^[\w.:-]+$/.test(String(s)) ? String(s) : JSON.stringify(s))
 
 const entries = Array.isArray(args && args.entries) ? args.entries : []
 if (!entries.length) {
@@ -88,10 +102,10 @@ for (const e of entries) {
 
 phase('Dispatch')
 log('panopticon-dispatch: ' + entries.length + ' pending entr' + (entries.length === 1 ? 'y' : 'ies') +
-    ' at checkpoint ' + (args.checkpoint || '?'))
+    ' at checkpoint ' + (args.checkpoint ? shown(args.checkpoint) : '?'))
 
 const results = await parallel(entries.map(e => () => {
-  const opts = { label: e.id, phase: 'Dispatch' }
+  const opts = { label: shown(e.id), phase: 'Dispatch' }
   // Unchanged by #2166: validation above refuses both mismatched shapes, so
   // this branch yields only the two dispatch shapes it was written for --
   // `agentType` only when enforced with a shell name, `model` otherwise (a
@@ -128,7 +142,8 @@ if (missing.length) {
   // No silent caps: a skipped or dead subagent is named, and the loop's
   // pending-set recomputation re-emits it on the next re-entry.
   log('panopticon-dispatch: ' + missing.length + ' entr' + (missing.length === 1 ? 'y' : 'ies') +
-      ' returned nothing (skipped or died): ' + missing.join(', ') + ' -- re-run the loop and they are re-emitted')
+      ' returned nothing (skipped or died): ' + missing.map(id => shown(id)).join(', ') +
+      ' -- re-run the loop and they are re-emitted')
 }
 return {
   checkpoint: args.checkpoint || null,
