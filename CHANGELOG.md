@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
+  every truthy certification-sinking reason from the shared integrity table.
 - **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
   missing and named cell domains deterministically instead of raising before the report renders.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs

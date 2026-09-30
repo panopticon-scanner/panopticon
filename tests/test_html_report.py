@@ -1215,6 +1215,69 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertIn("gate-pass", out)
 
 
+class TestIntegrityFailureDetails(unittest.TestCase):
+    """#2265: the HTML names every integrity fact that sinks certification."""
+
+    SINKING_VALUES = {
+        "unexpected_findings_files": ["unexpected.json"],
+        "malformed_findings_files": [{"file": "malformed.json"}],
+        "duplicate_out_files": ["duplicate.json"],
+        "mislabeled_findings_files": ["mislabeled.json"],
+        "content_mismatched_files": ["changed.json"],
+        "content_snapshot_unreadable": True,
+        "content_snapshot_missing": True,
+        "empty_dispatch_plans": 1,
+        "invalid_dispatch_plans": [
+            {"file": "dispatch-plan-bad.json", "reason": "not an object"}
+        ],
+        "invalid_verify_queue": "verify queue has no entries list",
+        "dispatch_plan_missing": True,
+        "dispatch_plan_mismatched": True,
+        "tools_manifest_invalid": "tools-manifest.json is not an object",
+        "delta_scope_suppressed_git_drivers": ["diff.external"],
+    }
+
+    def test_every_sinking_key_is_named_under_not_certified(self):
+        import scripts.synth.integrity as integrity_mod
+
+        sinking = {
+            key for key, spec in integrity_mod.INTEGRITY_KEYS.items() if spec.sinks
+        }
+        self.assertEqual(sinking, set(self.SINKING_VALUES))
+        for key, value in self.SINKING_VALUES.items():
+            with self.subTest(key=key):
+                report = {
+                    "meta": {"target": "t", "coverage": {},
+                             "integrity": {key: value}},
+                    "summary": {
+                        "overall_grade": "B", "risk_level": "MEDIUM",
+                        "gate": "INCONCLUSIVE", "coverage_certified": False,
+                    },
+                    "findings": [],
+                    "groups": [],
+                }
+                out = hr.render(report)
+                body = integrity_mod.INTEGRITY_KEYS[key].sentence
+                self.assertIsNotNone(body)
+                if "%s" in body:
+                    body = body % integrity_mod.evidence_text(key, value)
+                self.assertIn("NOT CERTIFIED", out)
+                expected = html.escape(body)
+                self.assertTrue(expected in out,
+                                "%s: missing integrity sentence %r" % (key, expected))
+                root = _parse(out)
+                banners = [
+                    node for node in _nodes(root, "div")
+                    if node["attrs"].get("class") == "not-certified"
+                ]
+                self.assertEqual(len(banners), 1)
+                details = [
+                    node for node in banners[0]["children"]
+                    if node["attrs"].get("class") == "integrity-detail"
+                ]
+                self.assertEqual([_text(node) for node in details], [body])
+
+
 _NO_KEY = object()
 
 _HOSTILE_TREE_CAPS = {

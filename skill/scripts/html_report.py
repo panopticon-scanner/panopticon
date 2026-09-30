@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import scripts.evidence_sections as evidence_sections
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
+    import scripts.integrity_messages as integrity_messages
     import scripts.ocrdb as ocrdb
     import scripts.safe_write as safe_write
 else:
@@ -21,6 +22,7 @@ else:
         import scripts.evidence_sections as evidence_sections
         import scripts.host_disclosure as host_disclosure
         import scripts.hosts as hosts
+        import scripts.integrity_messages as integrity_messages
         import scripts.ocrdb as ocrdb
         import scripts.safe_write as safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
@@ -28,6 +30,7 @@ else:
         import evidence_sections
         import host_disclosure
         import hosts
+        import integrity_messages
         import ocrdb
         import safe_write
 
@@ -105,6 +108,7 @@ h2 { font-size: 18px; font-weight: 600; }
 .badge.gate-inconclusive { background: #8a6d1f; color: #faf8f2; }
 .not-certified { margin: 8px 0; padding: 8px 12px; border-left: 4px solid #8a6d1f;
   background: #2e2814; color: #e8d9a0; font-weight: 600; }
+.integrity-detail { margin-top: .35rem; font-family: var(--mono); font-size: 11px; }
 /* Spec 5.1 surface 3. Deliberately not styled as a warning: it renders on
    EVERY report, and the all-proven case is a statement, not an alarm. */
 .host-caps { margin: 8px 0; padding: 8px 12px; border-left: 4px solid var(--accent-border);
@@ -529,15 +533,10 @@ def _render_header(report):
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # #calibration: health belongs in the header, not buried. The letter grade is
-    # a worst-severity rollup, so it saturates -- across six calibration targets
-    # every one graded D or F off the same ceiling while health ranged 35.68 to
-    # 70.45. The grade answers "does this gate?"; health answers "how much of
-    # this codebase is clean?", and only the second discriminated between them.
-    # Deliberately NOT banded: six targets, none of them a healthy control, is
-    # not a sample to draw healthy/fair/poor thresholds from. The number plus its
-    # inputs is honest; a label would not be.
-    # Health never touches the gate (#1057) -- this is presentation only.
+    # Health is presentation only and never affects the gate (#1057). Unlike the
+    # worst-severity grade, it shows how localised the measured defect burden is.
+    # Six calibration targets do not justify healthy/fair/poor bands, so the
+    # header publishes the number and inputs without a qualitative label.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(
@@ -567,13 +566,14 @@ def _render_header(report):
                 _escape("{:,}".format(health.get("total_loc", 0))),
                 _escape("{:,}".format(health.get("weighted_defect", 0))),
                 _escape(str(health["score"]))))                     # popover
-    parts += [
-        "</div>",
-    ]
+    parts.append("</div>")
     if summary.get("coverage_certified") is False:
         note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
-        parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s</div>"
-                     % _escape(note))
+        details = "".join(
+            "<div class='integrity-detail'>%s</div>" % _escape(sentence)
+            for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
+        parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
+                     % (_escape(note), details))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
