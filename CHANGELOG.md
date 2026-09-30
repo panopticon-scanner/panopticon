@@ -10,6 +10,14 @@ evidence exposed.
 - **Escape request-sourced strings that reach a terminal (#2379, #1783).** The dispatch script
   escapes any request-sourced string outside a safe charset (the checkpoint, the progress label,
   the missing-id line), and the driver loop renders its pending-id lists with `%r`.
+- **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
+  now offers direct repair before the setup command that refuses an invalid committed config.
+- **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
+  and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
+  so those three malformed shapes no longer abort the filing run. `reconcile.load_report` refuses
+  unparseable JSON, a non-object report, `meta`, part or discarded-claims sibling and a non-list
+  `meta.parts` with one reason naming the file (and the key where there is one), which both CLIs
+  print before exiting 2.
 - **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
   every truthy certification-sinking reason from the shared integrity table.
 - **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the

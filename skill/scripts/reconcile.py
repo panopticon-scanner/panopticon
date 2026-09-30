@@ -132,8 +132,41 @@ def _section(value):
     return list(value) if isinstance(value, list) else []
 
 
+def _object(value, what, where):
+    """One stored JSON document (or sub-document) as a dict, or ONE loud reason (#2373).
+
+    The shape of a report is not the shape of a finding: a wrong-shaped DOCUMENT
+    has no salvageable content, so it is refused here, naming what was wrong and
+    the file it was in -- the rule `security_gate.load_manifest` applies to the
+    manifest it loads -- rather than surfacing as an `AttributeError` from
+    wherever the shape first bites. Takes the VALUE, for `_section`'s reason: the
+    key stays a constant in `load_report`, which is where
+    `tests/test_agent_findings_guard.py` classifies the readers of it.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("%s %s is not a JSON object" % (what, where))
+    return value
+
+
+def _document(path, what):
+    """`path` parsed and typed, or ONE reason naming the file: bad JSON or bad UTF-8 (#2373)."""
+    with open(path, encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("%s %s is not valid JSON: %s" % (what, path, exc)) from exc
+    return _object(data, what, path)
+
+
 def load_report(path):
     """Load a report, merging confined part and rejected-claim continuations.
+
+    A document that is not valid JSON or not a JSON object -- the report, its
+    `meta`, a part or the discarded-claims sibling -- and a `meta.parts` that is
+    present and not a list are refused with ONE reason naming the file and, where
+    there is one, the offending key, which both CLIs print (#2373).
+    A non-list `findings` / `discarded_claims` is a different case and keeps
+    #2365's coercion to empty, so this loader and `iter_records` cannot disagree.
 
     Also carries what the run says it LOOKED AT, which the cross-run diff needs
     to tell "fixed" from "never reviewed" (#1807): `reviewed_files` (the union of
@@ -147,10 +180,16 @@ def load_report(path):
     whether the finding's own panel or tool axis ran on that file are further
     cross-checks this loader does not yet read (follow-ups #2084, #2087).
     """
-    with open(path, encoding="utf-8") as fh:
-        report = json.load(fh)
+    report = _document(path, "report")
     findings = _section(report.get("findings"))
     discarded = _section(report.get("discarded_claims"))
+    # An absent or null `meta` is empty; a present one of any other shape is a
+    # document that cannot be read, not one that said nothing.
+    meta = report.get("meta")
+    meta = {} if meta is None else _object(meta, "meta of report", path)
+    parts = meta.get("parts")
+    if parts is not None and not isinstance(parts, list):
+        raise ValueError("meta.parts of report %s is not a list" % path)
     reviewed_files = _stated_files(report)
     declared_main = _stated_review_type(report)
     declared_parts = []
@@ -162,10 +201,9 @@ def load_report(path):
     # legitimate same-directory part. Absolute-anchoring keeps the check
     # correct in both cases.
     base_dir = os.path.dirname(os.path.abspath(path))
-    for part in (report.get("meta") or {}).get("parts") or []:
+    for part in parts or []:
         ppath = _resolve_part_path(base_dir, part)
-        with open(ppath, encoding="utf-8") as fh:
-            pdata = json.load(fh)
+        pdata = _document(ppath, "report part")
         findings.extend(_section(pdata.get("findings")))
         discarded.extend(_section(pdata.get("discarded_claims")))
         # A part may WIDEN a claim the report already made, never supply one
@@ -179,10 +217,11 @@ def load_report(path):
     # list + a meta.discarded_claims_file pointer. The meta.parts merge above never
     # follows that pointer, so recovery silently loses EVERY rejected claim. Merge
     # the sibling back in, through the same confinement check.
-    disc_file = (report.get("meta") or {}).get("discarded_claims_file")
+    disc_file = meta.get("discarded_claims_file")
     if disc_file:
-        with open(_resolve_part_path(base_dir, disc_file), encoding="utf-8") as fh:
-            discarded.extend(_section(json.load(fh).get("discarded_claims")))
+        dpath = _resolve_part_path(base_dir, disc_file)
+        sibling = _document(dpath, "discarded-claims file")
+        discarded.extend(_section(sibling.get("discarded_claims")))
     return {"findings": findings, "discarded_claims": discarded,
             "reviewed_files": reviewed_files,
             "review_type": _resolve_review_type(declared_main, declared_parts)}
@@ -559,8 +598,15 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "diff":
-        r2 = iter_records(load_report(a.run2_report))
-        report3 = load_report(a.run3_report)
+        # A stored report the loader refuses is an operator-facing reason, not a
+        # traceback from wherever the shape first bit (#2373).
+        try:
+            report2 = load_report(a.run2_report)
+            report3 = load_report(a.run3_report)
+        except ValueError as exc:
+            print("reconcile: %s" % exc, file=sys.stderr)
+            return 2
+        r2 = iter_records(report2)
         r3 = iter_records(report3)
         diff = build_diff(r2, r3, a.run2_report, a.run3_report,
                           run3_reviewed_files=report3["reviewed_files"],
