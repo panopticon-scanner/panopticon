@@ -959,7 +959,7 @@ def every_third_party(source, filename="<source>"):
 # `__init__.py` and is itself on `sys.path` in several live paths, so a module
 # there has two reachable names (`tests/test_module_identity.py` is the guard
 # for that), and the flat one is how several are actually reached:
-# `grouping_engine.py` does a bare `import setup_proposal`, and a census keyed
+# `grouping_engine.py` does a bare `import tests_axis`, and a census keyed
 # on `scripts.` missed `setup_proposal.py`'s own module-level `import yaml`
 # entirely. The file is on the path however it was spelled.
 _CENSUS = """

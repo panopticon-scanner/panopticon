@@ -10,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 
+from scripts.claim_scope import confined_to_root
 import scripts.redact as redact
 from .base import (cve_ids, make_finding, normalize_severity, omit_none,
                    parse_json_bytes, run_tool, scratch_cwd, target_root_cv)
@@ -377,6 +378,9 @@ def _requirement_candidate(target):
     requirements-dev.txt would otherwise win over requirements.txt and the
     PRIMARY manifest would go unaudited.
 
+    Make candidates absolute: `confined_to_root` treats relative paths as
+    root-relative, so a prefixed relative candidate would be joined twice.
+
     C2(a): every candidate must resolve INSIDE the target. `os.path.isfile`
     follows symlinks, so a repo whose `requirements.txt` points at
     `/home/scanner/.aws/credentials` was opened and read -- and since this
@@ -387,6 +391,7 @@ def _requirement_candidate(target):
     treated as absent and the NEXT one is considered, so a repo with a symlinked
     `requirements.txt` beside a real `requirements-dev.txt` still gets audited.
     """
+    target = os.path.abspath(target)
     exact = os.path.join(target, "requirements.txt")
     candidates = [exact] + sorted(glob.glob(os.path.join(target, "requirements*.txt")))
     # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists
@@ -397,7 +402,7 @@ def _requirement_candidate(target):
     candidates = [c for c in dict.fromkeys(candidates) if os.path.lexists(c)]
     rejected = []
     for candidate in candidates:
-        if not _within(target, candidate):
+        if not confined_to_root(target, candidate):
             rejected.append(os.path.relpath(candidate, target))
         elif os.path.isfile(candidate):
             return candidate, rejected
@@ -417,15 +422,6 @@ def _is_archive_name(name):
 
 def _hashes_present(text):
     return bool(_HASH.search(str(text or "")))
-
-
-def _within(root, path):
-    """True iff `path` resolves inside `root` -- realpath, so an in-tree symlink
-    out of the repo is caught too (the `runio._confined_to_root` rule, restated
-    here because a tool adapter may not import the driver's phase package)."""
-    root = os.path.realpath(root)
-    full = os.path.realpath(path)
-    return full == root or full.startswith(root + os.sep)
 
 
 def sanitize_requirements_file(path, root):
@@ -469,7 +465,7 @@ def sanitize_requirements_file(path, root):
                 resolved_dropped.append(entry)
                 continue
             target = os.path.join(base, m.group(1).strip().strip('"\''))
-            if not _within(root, target):
+            if not confined_to_root(root, target):
                 resolved_dropped.append(dict(entry, reason="include outside target"))
             elif depth >= _MAX_INCLUDE_DEPTH or os.path.realpath(target) in seen:
                 resolved_dropped.append(dict(entry, reason="nested include"))

@@ -167,7 +167,7 @@ def _seed_groups_manifest(repo):
     if committed is not None:
         names = list((discovery.load_catalog(repo) or {}).keys())
         return committed, False, names
-    import setup_proposal as sp  # noqa: E402
+    from scripts import setup_proposal as sp  # noqa: E402
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
@@ -738,7 +738,7 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
                  if os.path.basename(f) in _MANIFEST_NAMES and f.count("/") <= 2]
     frameworks = _detect_frameworks(repo, manifests)
     committed = committed_matrix(repo)
-    import setup_proposal as sp
+    from scripts import setup_proposal as sp
     committed_view = {n: {"match": list(b.get("match") or []),
                           "tests": list(b.get("tests") or [])}
                       for n, b in sp.flatten_groups(committed).items()}
@@ -920,7 +920,7 @@ def load_bundled_layers(layers_path=None):
     """Load the bundled layer vocabulary. Returns (layers, present: bool),
     mirroring `load_bundled_vocabulary`: present is False when the file is
     absent or the parse yields no names or reports errors."""
-    import setup_proposal as sp
+    from scripts import setup_proposal as sp
     lpath = layers_path or _LAYERS_PATH
     if not os.path.isfile(lpath):
         return {"names": []}, False
@@ -1030,7 +1030,7 @@ def migrate_config(repo):
     Returns (path, message)."""
     # Nested, not module level: the driver's import path stays third-party-free (#2369).
     import yaml
-    import setup_proposal as sp  # noqa: E402
+    from scripts import setup_proposal as sp  # noqa: E402
     res = repo_config.resolve(repo)
     if res.path is not None or res.disclosures:
         # Not `res.path is not None` alone: a REFUSED symlink at either config
@@ -1080,7 +1080,7 @@ def migrate_config(repo):
 def load_bundled_vocabulary(vocabulary_path=None):
     """Load the bundled capability vocabulary. Returns (vocab, present: bool).
     present is False when the file is absent or the parse yields no names."""
-    import setup_proposal as sp
+    from scripts import setup_proposal as sp
     vpath = vocabulary_path or _VOCAB_PATH
     if not os.path.isfile(vpath):
         return {"names": []}, False
@@ -1263,7 +1263,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
 
     Readiness is NOT taken here and not written here: `record_readiness`
     below adds it once this has written the draft (#1603 fix round 1)."""
-    import setup_proposal as sp
+    from scripts import setup_proposal as sp
     refusal = config_refusal(repo)          # I2: before anything is written
     if refusal:
         return {"ok": False, "errors": refusal}
