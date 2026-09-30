@@ -481,7 +481,8 @@ def _row(finding):
     # as `line_start` present and None -- so a `get` default never fires for the
     # line half (#2174). The `file` half takes the `?` default its siblings in
     # `synth/render.py` and `html_report.py` use, because a locus-free finding --
-    # a repo-wide catalog or coverage gap -- carries no `location` at all (#2409).
+    # a repo-wide catalog or coverage gap -- carries no `location` at all (#2409);
+    # today `sarif_utils` always writes `file`, so only a hand-built row reaches it.
     line = location.get("line_start")
     return "  %s %s %s:%s - %s" % (
         finding.get("severity"), finding.get("id"),
