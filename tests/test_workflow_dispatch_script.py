@@ -53,8 +53,9 @@ class DispatchScriptTestCase(unittest.TestCase):
                          "how a runner that is MEANT to have it fails loud")
 
     def run_harness(self, scenario, script=None):
-        """The harness's `{meta, calls, result, error}` document for `scenario`
-        run against `script` (default: the real dispatch.js)."""
+        """The harness's `{meta, calls, result, error, logs}` document for
+        `scenario` run against `script` (default: the real dispatch.js).
+        `logs` is every `log()` line the script printed, in order."""
         proc = subprocess.run(
             [self.node, HARNESS, script or DISPATCH_JS],
             input=json.dumps(scenario), capture_output=True, text=True,
@@ -250,12 +251,24 @@ class TestRefusalsEscapeTheId(DispatchScriptTestCase):
     of the dispatch request, a file inside the reviewed tree, and the refusal
     reaches the operator's terminal -- so a control character, an ANSI escape
     or an embedded newline in it has to arrive as its escape sequence rather
-    than as bytes the terminal acts on."""
+    than as bytes the terminal acts on.
+
+    #2379 decides that register ONCE rather than per line: the three
+    request-sourced strings the script prints on the paths that run AFTER
+    validation passes -- the checkpoint in the opening `log()`, the progress
+    label the Workflow tool renders, and each id in the closing `missing`
+    `log()` -- are escaped the same way. Validation constrains the marker's
+    agreement with the id, never the id's bytes, so a valid entry can still
+    carry both. What the RESULT document returns stays raw on purpose: those
+    are data the session keys on, not terminal text."""
 
     ESC = "\x1b"
     # `ESC [ 2 K` erases the operator's current line; the newline then forges
     # a second line of output underneath the refusal.
     HOSTILE_ID = "e1" + ESC + "[2K\nfake"
+    # The same two bytes in `args.checkpoint`, the other request-sourced value
+    # the opening log line prints.
+    HOSTILE_CHECKPOINT = "review" + ESC + "[2K\nfake"
     # What JSON.stringify renders those two as -- checked in node, not guessed.
     ESCAPED_ESC = "\\u001b[2K"
     ESCAPED_NEWLINE = "\\n"
@@ -279,6 +292,8 @@ class TestRefusalsEscapeTheId(DispatchScriptTestCase):
         # next test could pass on data that never held an escape or a newline.
         self.assertIn(self.ESC, self.HOSTILE_ID)
         self.assertIn("\n", self.HOSTILE_ID)
+        self.assertIn(self.ESC, self.HOSTILE_CHECKPOINT)
+        self.assertIn("\n", self.HOSTILE_CHECKPOINT)
 
     def test_every_refusal_that_prints_an_id_escapes_it(self):
         for name, entry in self._refusals().items():
@@ -296,6 +311,57 @@ class TestRefusalsEscapeTheId(DispatchScriptTestCase):
                     "a raw newline reached the operator's terminal")
                 self.assertEqual([], out["calls"],
                                  "no agent should be dispatched")
+
+    def test_the_label_escapes_the_id(self):
+        # #2379, post-validation: this entry is VALID (its marker agrees with
+        # its id), so no refusal fires and the id travels on into the progress
+        # label the Workflow tool renders.
+        out = self.run_harness({"args": {"entries": [_entry(self.HOSTILE_ID)]},
+                                "replies": {self.HOSTILE_ID: "ok"}})
+        self.assertIsNone(out["error"], "a matching marker passes validation")
+        label = out["calls"][0]["opts"]["label"]
+        self.assertIn(self.ESCAPED_ESC, label)
+        self.assertIn(self.ESCAPED_NEWLINE, label)
+        self.assertNotIn(self.ESC, label,
+                         "a raw ESC byte reached the operator's terminal")
+        self.assertNotIn("\n", label,
+                         "a raw newline reached the operator's terminal")
+
+    def test_the_checkpoint_log_line_escapes_the_checkpoint(self):
+        # #2379: `args.checkpoint` is request-sourced too, and the opening
+        # log line is the first thing the operator sees.
+        out = self.run_harness({"args": {"checkpoint": self.HOSTILE_CHECKPOINT,
+                                         "entries": [_entry("e1")]},
+                                "replies": {"e1": "ok"}})
+        self.assertIsNone(out["error"])
+        opening = out["logs"][0]
+        self.assertIn(self.ESCAPED_ESC, opening)
+        self.assertIn(self.ESCAPED_NEWLINE, opening)
+        self.assertNotIn(self.ESC, opening,
+                         "a raw ESC byte reached the operator's terminal")
+        self.assertNotIn("\n", opening,
+                         "a raw newline reached the operator's terminal")
+        # The result still ECHOES the raw checkpoint: that is data the session
+        # reads back, not text on its way to a terminal.
+        self.assertEqual(self.HOSTILE_CHECKPOINT, out["result"]["checkpoint"])
+
+    def test_the_missing_log_line_escapes_the_ids(self):
+        # #2379: a null reply lands the entry in `missing`, and the closing log
+        # line names every one of them.
+        out = self.run_harness({"args": {"entries": [_entry(self.HOSTILE_ID)]},
+                                "replies": {self.HOSTILE_ID: None}})
+        self.assertIsNone(out["error"])
+        closing = out["logs"][-1]
+        self.assertIn("returned nothing", closing)
+        self.assertIn(self.ESCAPED_ESC, closing)
+        self.assertIn(self.ESCAPED_NEWLINE, closing)
+        self.assertNotIn(self.ESC, closing,
+                         "a raw ESC byte reached the operator's terminal")
+        self.assertNotIn("\n", closing,
+                         "a raw newline reached the operator's terminal")
+        # `missing` itself stays RAW: the loop keys its pending set on those
+        # ids, so escaping them there would be a different id.
+        self.assertEqual([self.HOSTILE_ID], out["result"]["missing"])
 
 
 class TestPromptShape(DispatchScriptTestCase):
@@ -382,8 +448,9 @@ class TestCheckpointEcho(DispatchScriptTestCase):
 
 class TestMetaAndDispatchPhase(DispatchScriptTestCase):
     """(h) meta.name == 'panopticon-dispatch' and meta.phases[0].title ==
-    'Dispatch', and every agent call carries phase: 'Dispatch' and label ==
-    id."""
+    'Dispatch', and every agent call carries phase: 'Dispatch' and a label
+    that is the id through `JSON.stringify` (#2379 -- the label is rendered
+    in the Workflow tool's progress tree, so it is terminal text)."""
 
     def test_meta_name_and_first_phase_title(self):
         out = self.run_harness({"args": {"entries": [_entry("e1")]},
@@ -399,7 +466,7 @@ class TestMetaAndDispatchPhase(DispatchScriptTestCase):
         self.assertEqual(len(entries), len(out["calls"]))
         for entry, call in zip(entries, out["calls"]):
             self.assertEqual("Dispatch", call["opts"]["phase"])
-            self.assertEqual(entry["id"], call["opts"]["label"])
+            self.assertEqual(json.dumps(entry["id"]), call["opts"]["label"])
 
 
 if __name__ == "__main__":

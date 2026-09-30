@@ -8,9 +8,11 @@
 // The scenario (argv[3], else stdin) is
 //   { args: {...}, replies: { [id]: string|null }, throws: { [id]: string } }
 // and the harness prints ONE JSON document to stdout:
-//   { meta, calls, result, error }
+//   { meta, calls, result, error, logs }
 // `calls` is every `agent(prompt, opts)` invocation, in order; `error` is the
-// thrown message when the wrapped script throws, else null.
+// thrown message when the wrapped script throws, else null; `logs` is every
+// `log()` line, in order -- the operator-facing output #2379 escapes
+// request-sourced text in, so a test can read what reached the terminal.
 import fs from 'node:fs'
 import vm from 'node:vm'
 
@@ -45,9 +47,16 @@ new vm.Script(wrapped, { filename: scriptPath }).runInContext(context)
 const { meta, run } = context.__EXPORTS__
 
 const calls = []
+// The script labels each call with `JSON.stringify(e.id)` (#2379), so no id
+// reaches a terminal raw; the scenario is keyed by the RAW id, so the label is
+// decoded back here. A label that is not JSON is used as it stands, which
+// keeps this lookup working whichever way the script renders it.
+function scenarioKey(label) {
+  try { return JSON.parse(label) } catch { return label }
+}
 function agent(prompt, opts) {
   calls.push({ prompt, opts })
-  const id = opts && opts.label
+  const id = scenarioKey(opts && opts.label)
   if (scenario.throws && Object.prototype.hasOwnProperty.call(scenario.throws, id)) {
     throw new Error(scenario.throws[id])
   }
@@ -59,11 +68,14 @@ async function parallel(thunks) {
     try { return await t() } catch { return null }
   }))
 }
-// Real Workflow globals; the script's use of them is side-effect-only
-// (progress text), so the fake versions are no-ops -- `calls` stays the
-// agent-call record `{prompt, opts}` the pins in tests/test_workflow_dispatch_script.py read.
+// Real Workflow globals. `phase()` is progress-only, so it stays a no-op;
+// `log()` lines are the script's operator-facing output, so they are RECORDED
+// rather than dropped -- nothing could observe them before, and #2379 is about
+// what they print. `calls` stays the agent-call record `{prompt, opts}` the
+// pins in tests/test_workflow_dispatch_script.py read.
 const phase = () => {}
-const log = () => {}
+const logs = []
+const log = (m) => { logs.push(String(m)) }
 
 let result = null, error = null
 try {
@@ -71,4 +83,4 @@ try {
 } catch (e) {
   error = e && e.message ? e.message : String(e)
 }
-process.stdout.write(JSON.stringify({ meta, calls, result, error }))
+process.stdout.write(JSON.stringify({ meta, calls, result, error, logs }))

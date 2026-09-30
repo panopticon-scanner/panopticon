@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Escape every request-sourced string the dispatch script prints (#2379, #1783).** The
+  checkpoint, the progress label and the missing-id line go through `JSON.stringify` like the
+  validation refusals did, and the loop's iteration-cap message renders pending ids with `%r`.
 - **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
   every truthy certification-sinking reason from the shared integrity table.
 - **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
