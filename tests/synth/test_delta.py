@@ -193,6 +193,8 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             data, report = delta_mod.load_diff_hunks_report(path)
             self.assertEqual(data["hunks"], {"a.py": [(1, 5)], "c.py": []})
             self.assertEqual(report.paths_without_ranges, 1)
+            # #2386: c.py's list ARRIVED empty, so it is not in the broken subset.
+            self.assertEqual(report.paths_emptied_by_drops, 0)
             self.assertEqual(report.paths_dropped, 0)
             self.assertEqual(report.ranges_dropped, 0)
             self.assertEqual((report.files, report.ranges), (2, 1))
@@ -210,7 +212,31 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             _, report = delta_mod.load_diff_hunks_report(path)
             self.assertEqual(report.ranges_dropped, 2)
             self.assertEqual(report.paths_without_ranges, 1)
+            # #2386: and b.py is the SUBSET a broken artifact produced -- the one
+            # rangeless path here whose list did not arrive that way.
+            self.assertEqual(report.paths_emptied_by_drops, 1)
             self.assertEqual(report.paths_dropped, 0)
+
+    def test_paths_emptied_by_drops_is_the_broken_subset(self):
+        # #2386: one map, both sub-populations. b.py arrived `[]` (legitimate: a
+        # deletion-only, binary, mode-only or same-content rename change) and c.py
+        # was EMPTIED by the range loop (a broken artifact). Before the split they
+        # were one number, so a gate rule reading it could not tell a truncated
+        # map from a deletion-only PR; `ranges_dropped` disambiguates only while
+        # the two populations do not co-occur, which is exactly this map.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main",
+                                   "hunks": {"a.py": [[1, 5]], "b.py": [],
+                                             "c.py": ["x"]}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(report.paths_without_ranges, 2)
+            self.assertEqual(report.paths_emptied_by_drops, 1)
+            self.assertEqual(report.ranges_dropped, 1)
+            self.assertEqual(report.paths_dropped, 0)
+            # Neither rangeless path LEFT the map: both still classify on-diff,
+            # which is what the split does not change.
+            self.assertEqual(data["hunks"],
+                             {"a.py": [(1, 5)], "b.py": [], "c.py": []})
 
     def test_a_well_formed_payload_reports_nothing_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -221,6 +247,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual((report.files, report.ranges, report.ranges_dropped), (2, 3, 0))
             self.assertEqual(report.paths_dropped, 0)
             self.assertEqual(report.paths_without_ranges, 0)
+            self.assertEqual(report.paths_emptied_by_drops, 0)
 
     def test_each_artifact_key_of_the_wrong_type_reads_as_null_and_is_listed(self):
         # #2382: `verdicts._delta_meta` copies these seven keys VERBATIM into
@@ -425,12 +452,14 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
                          "synthesize: DELTA ARTIFACT: 2 malformed hunk range(s) "
                          "dropped from %s" % path)
 
-    RANGELESS = ("synthesize: DELTA ARTIFACT: %d named path(s) in %s carry no "
+    # #2386 widened the two `%s` in the middle: the paths themselves, and the
+    # broken-subset clause. Order: count, names, artifact path, subset clause.
+    RANGELESS = ("synthesize: DELTA ARTIFACT: %d named path(s)%s in %s carry no "
                  "range -- every finding in those file(s) classifies on-diff "
                  "(the changed-file fail-open), so a --gate-scope on-diff gate "
                  "admits them on the artifact's word: a deletion-only, binary, "
                  "mode-only or same-content rename change looks exactly like a "
-                 "truncated map from here.")
+                 "truncated map from here%s.")
 
     def _rangeless_line(self, err):
         """The #2381 line, isolated. Not `_artifact_line` above: both lines open
@@ -448,8 +477,53 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         # a.py's one real range silences it -- which is why this line exists.
         _, err, path = self._from_args({"base": "main",
                                         "hunks": {"a.py": [[1, 5]], "c.py": []}})
-        self.assertEqual(self._rangeless_line(err), self.RANGELESS % (1, path))
+        self.assertEqual(self._rangeless_line(err),
+                         self.RANGELESS % (1, " ('c.py')", path, ""))
         self.assertNotIn("DELTA REVIEW WITH ZERO HUNKS", err)
+
+    EMPTIED = ("; %d of them emptied by dropped ranges (a broken artifact, not "
+               "a change shape)")
+
+    def test_the_rangeless_paths_are_named_on_stderr(self):
+        # #2386: the counter said HOW MANY files the gate admitted on the
+        # artifact's word and never WHICH, so an operator had to regenerate the
+        # artifact to find out. The names come from the cleaned map, not from a
+        # new `HunksLoad` field, so nothing else has to publish them.
+        #
+        # `%r`, because these are artifact-supplied strings reaching a terminal
+        # (the #2379 register): a path carrying a newline must not break the line
+        # it is disclosed on, and the escaped form is what a reader can paste.
+        _, err, path = self._from_args(
+            {"base": "main", "hunks": {"a.py": [[1, 5]], "b.py": [],
+                                       "evil\n.py": ["x"]}})
+        self.assertEqual(self._rangeless_line(err),
+                         self.RANGELESS % (2, " ('b.py', 'evil\\n.py')", path,
+                                           self.EMPTIED % 1))
+        self.assertIn("'evil\\n.py'", err)
+        self.assertNotIn("'evil\n", err)          # not the raw newline
+
+    def test_a_legitimately_rangeless_path_gets_no_emptied_clause(self):
+        # The whole point of the split: b.py arrived `[]`, which is what
+        # `diff_map.parse` emits for a deletion-only change, so the line must not
+        # suggest a broken artifact. Nothing was dropped, so the clause is absent.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5]], "b.py": []}})
+        self.assertEqual(self._rangeless_line(err),
+                         self.RANGELESS % (1, " ('b.py')", path, ""))
+        self.assertNotIn("emptied by dropped ranges", err)
+
+    def test_the_named_path_list_stops_at_ten_and_says_how_many_more(self):
+        # A wholly truncated map can name hundreds; the line stays readable and
+        # still says the count in full, so the cap cannot be mistaken for the
+        # number of rangeless paths. `a.py` keeps one real range, else the
+        # ZERO HUNKS arm takes this read instead.
+        hunks = {"a.py": [[1, 5]]}
+        hunks.update({"f%02d.py" % i: [] for i in range(12)})
+        _, err, path = self._from_args({"base": "main", "hunks": hunks})
+        named = ", ".join("'f%02d.py'" % i for i in range(10))
+        self.assertEqual(self._rangeless_line(err),
+                         self.RANGELESS % (12, " (%s, +2 more)" % named, path, ""))
+        self.assertNotIn("'f10.py'", err)
 
     def test_a_wholly_rangeless_map_keeps_the_zero_hunk_line_and_only_that(self):
         # The whole-map case already has its own arm, which says the same thing in
@@ -740,7 +814,8 @@ class TestArtifactFacts(unittest.TestCase):
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0, "keys_repaired": []})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_a_rejected_payload_still_reports_the_read(self):
         ctx = self._ctx(["not", "an", "object"])
@@ -748,7 +823,8 @@ class TestArtifactFacts(unittest.TestCase):
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0, "keys_repaired": []})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_an_active_payload_reports_no_rejection(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
@@ -756,7 +832,8 @@ class TestArtifactFacts(unittest.TestCase):
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0,
-                          "paths_without_ranges": 0, "keys_repaired": []})
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
 
     def test_it_carries_both_loss_counters(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
@@ -770,6 +847,8 @@ class TestArtifactFacts(unittest.TestCase):
         facts = delta_mod.artifact_facts(ctx)
         self.assertEqual(facts["paths_without_ranges"], 1)
         self.assertEqual((facts["ranges_dropped"], facts["paths_dropped"]), (0, 0))
+        # #2386: c.py arrived `[]`, so the broken subset of that one is empty.
+        self.assertEqual(facts["paths_emptied_by_drops"], 0)
 
 
 class TestTheZeroHunkPopulation(unittest.TestCase):

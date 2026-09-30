@@ -34,6 +34,12 @@ _ARTIFACT_KEY_TYPES = (("base", str), ("base_source", str), ("base_commit", str)
                        ("delta_start", str), ("delta_end", str),
                        ("includes_uncommitted", bool), ("files_changed", int))
 
+# How many rangeless paths `_disclose_load` names before it says "+N more"
+# (#2386). A wholly truncated map can name hundreds, and the line has to stay
+# readable; the count itself is always disclosed in full, so the cap can never
+# be mistaken for the number of paths.
+_NAMED_PATHS_MAX = 10
+
 
 @dataclass(frozen=True)
 class HunksLoad:
@@ -72,7 +78,16 @@ class HunksLoad:
     counted rather than refused. A path whose EVERY range was malformed lands
     here too, and in `ranges_dropped` as well: those are two different facts
     about one path -- the artifact is broken, AND the map still admits that file
-    on-diff -- and a reader needs both."""
+    on-diff -- and a reader needs both.
+
+    `paths_emptied_by_drops` counts exactly those paths (#2386): the SUBSET of
+    `paths_without_ranges` whose list arrived NON-empty and was emptied by the
+    range loop. The difference between the two is therefore how many arrived
+    `[]`, and that is the split a later gate rule needs -- a broken artifact
+    told apart from a deletion-only change, which `ranges_dropped` can do only
+    while the two populations do not co-occur. What it does NOT recover: a
+    truncated map arrives `[]` like the legitimate shapes, so a path in the
+    remainder is not thereby innocent."""
     payload_malformed: str | None = None
     keys_repaired: tuple[str, ...] = ()
     files: int = 0
@@ -80,6 +95,7 @@ class HunksLoad:
     ranges_dropped: int = 0
     paths_dropped: int = 0
     paths_without_ranges: int = 0
+    paths_emptied_by_drops: int = 0
 
 
 @dataclass(frozen=True)
@@ -237,12 +253,34 @@ def _disclose_load(ctx, path):
         # truncated or hand-edited map is indistinguishable from that legitimate
         # shape, and the counter this line reads is what a later gate rule would
         # need to make a verdict out of the difference.
-        print("synthesize: DELTA ARTIFACT: %d named path(s) in %s carry no range "
-              "-- every finding in those file(s) classifies on-diff (the "
+        #
+        # #2386 adds the two things the count alone could not say. The PATHS, so
+        # an operator can see WHICH file the gate admitted on the artifact's word
+        # without regenerating the artifact -- read off the cleaned map rather
+        # than carried in a new `HunksLoad` field, because names are for this
+        # line and a field would oblige both report blocks to publish them. And
+        # `%r` for each, the #2379 register: these are artifact-supplied strings
+        # reaching a terminal, so a path carrying a newline must not be able to
+        # break the line it is disclosed on.
+        rangeless = [p for p, rs in (ctx.diff_hunks.get("hunks") or {}).items()
+                     if not rs]
+        shown = ", ".join(repr(p) for p in rangeless[:_NAMED_PATHS_MAX])
+        extra = len(rangeless) - _NAMED_PATHS_MAX
+        named = " (%s%s)" % (shown, ", +%d more" % extra if extra > 0 else "")
+        # The subset clause, second: the count says how many files the gate
+        # admitted, and this says how many of them said so because the artifact
+        # is broken. Silent at zero, so the legitimate shape -- every rangeless
+        # path arrived `[]` -- is not made to look like a defect.
+        emptied = ("; %d of them emptied by dropped ranges (a broken artifact, "
+                   "not a change shape)" % report.paths_emptied_by_drops
+                   if report.paths_emptied_by_drops else "")
+        print("synthesize: DELTA ARTIFACT: %d named path(s)%s in %s carry no "
+              "range -- every finding in those file(s) classifies on-diff (the "
               "changed-file fail-open), so a --gate-scope on-diff gate admits "
               "them on the artifact's word: a deletion-only, binary, mode-only "
               "or same-content rename change looks exactly like a truncated map "
-              "from here." % (report.paths_without_ranges, path),
+              "from here%s." % (report.paths_without_ranges, named, path,
+                                emptied),
               file=sys.stderr)
 
 
@@ -266,7 +304,8 @@ def artifact_facts(ctx) -> dict | None:
             "keys_repaired": list(report.keys_repaired),
             "ranges_dropped": report.ranges_dropped,
             "paths_dropped": report.paths_dropped,
-            "paths_without_ranges": report.paths_without_ranges}
+            "paths_without_ranges": report.paths_without_ranges,
+            "paths_emptied_by_drops": report.paths_emptied_by_drops}
 
 
 def zero_hunk_population(active, fail_on, gate_unverified) -> list:
@@ -424,6 +463,7 @@ def load_diff_hunks_report(path):
     dropped = 0
     dropped_paths = 0
     rangeless_paths = 0
+    emptied_paths = 0
     hunks = {}
     for p, rs in raw.items():
         if not isinstance(rs, list):
@@ -442,9 +482,11 @@ def load_diff_hunks_report(path):
             # every finding in it classifies on-diff. Counted whether the list
             # arrived empty (a legitimate deletion-only, binary, mode-only or
             # same-content rename change) or was emptied above (a broken
-            # artifact): the fail-open is the same either way, and the two facts
-            # are told apart by `ranges_dropped`, which is why both are kept.
+            # artifact): the fail-open is the same either way.
             rangeless_paths += 1
+            if rs:
+                # #2386: the broken SUBSET of the tally above; see `HunksLoad`.
+                emptied_paths += 1
         hunks[str(p)] = cleaned
     data["hunks"] = hunks
     # #2382: the seven artifact-carried keys, repaired HERE at the read. Nothing
@@ -474,7 +516,8 @@ def load_diff_hunks_report(path):
                            keys_repaired=tuple(repaired), files=files,
                            ranges=ranges, ranges_dropped=dropped,
                            paths_dropped=dropped_paths,
-                           paths_without_ranges=rangeless_paths)
+                           paths_without_ranges=rangeless_paths,
+                           paths_emptied_by_drops=emptied_paths)
 
 def classify_findings(findings, hunks, tolerance):
     """Stamp each finding with delta = {on_diff, hunk, distance}."""

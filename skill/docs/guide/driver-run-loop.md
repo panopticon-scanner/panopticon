@@ -1026,7 +1026,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   rename change legitimately carries such a key and a truncated map is indistinguishable from
   it, so the shape is counted in both blocks and named on stderr rather than reclassified; the
   whole-map disclosures below cannot see it, because one real range anywhere leaves
-  `hunks_ranges` non-zero. An ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
+  `hunks_ranges` non-zero. `paths_emptied_by_drops` splits that count (#2386): the subset whose
+  list arrived non-empty and was emptied because every range in it was malformed — a broken
+  artifact rather than a change shape, which the merged count could not tell apart — and the
+  stderr line now names the rangeless paths themselves (the first ten, escaped). An ACTIVE delta
+  whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings
@@ -1036,7 +1040,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
   writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
   object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
-  exist included — active delta or not, carrying the `payload_malformed` reason, all three counters and the
+  exist included — active delta or not, carrying the `payload_malformed` reason, every counter and the
   `keys_repaired` list (#2382), and null when no path was given, so the block's presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
