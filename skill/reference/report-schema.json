@@ -501,7 +501,14 @@
                     "integer",
                     "null"
                   ],
-                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; it is the input a gate rule would need to make a verdict out of the difference. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path. Null when this context was not built by reading a file."
+                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; it is the input a gate rule would need to make a verdict out of the difference. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path, and `paths_emptied_by_drops` below is how many of the paths counted here are of that kind. Null when this context was not built by reading a file."
+                },
+                "paths_emptied_by_drops": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. What it does NOT recover: a truncated or hand-edited map arrives `[]` exactly as those legitimate shapes do, so a path in the remainder is not thereby innocent, and this key is a lower bound on how much of the shape is artifact damage. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
                 },
                 "payload_malformed": {
                   "type": [
@@ -551,7 +558,11 @@
                 },
                 "paths_without_ranges": {
                   "type": "integer",
-                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings."
+                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings. `paths_emptied_by_drops` below splits them."
+                },
+                "paths_emptied_by_drops": {
+                  "type": "integer",
+                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact; it cannot recover a truncated map, which arrives `[]` and so still looks like a legitimate deletion-only, binary, mode-only or same-content rename change. Never null here, for the same reason as its siblings."
                 }
               }
             },

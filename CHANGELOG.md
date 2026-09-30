@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tell a broken rangeless path from a legitimate one (#2386, #1783).** Both delta blocks carry
+  `paths_emptied_by_drops`, the subset of `paths_without_ranges` a broken artifact produced, and
+  the stderr disclosure names the rangeless paths (first ten, escaped).
 - **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
   diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
   when they carry a value of the wrong type, lists them in
