@@ -41,10 +41,13 @@ from scripts import coverage_model
 from scripts import discovery
 from scripts import repo_config
 # These two stay FLAT deliberately. Neither has a `scripts.*` copy in a
-# driver-shaped process -- `setup_proposal` is reached flat by
-# `discovery._capability_aliases` at call time and `tests_axis` by `discovery`
-# itself -- so qualifying them here would MINT a second identity rather than
-# retire one. Tracked with the rest of the residual in #1516.
+# driver-shaped process: `tests_axis` is imported flat by `discovery` itself,
+# and `setup_proposal` by `discovery._capability_aliases` plus six lazy
+# `import setup_proposal as sp` sites in `setup_flow` function bodies. So
+# qualifying either here would MINT a second identity rather than retire one --
+# #2256 measured that trade and put this line back. The real fix is those lazy
+# sites taking the guarded package-first shape while STAYING lazy; filed as a
+# follow-up and tracked with the rest of the residual in #1516.
 import setup_proposal
 import tests_axis
 
