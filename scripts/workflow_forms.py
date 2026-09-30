@@ -504,11 +504,12 @@ def _prints(stage):
 
 
 def _assigned(stage, held):
-    """{name: the download it now holds, or None} for what this stage assigns
-    in the step's own shell. A bare assignment or a declaration's (`export
-    x=...`) holds one when its value is the stage's one substitution and that
-    is one fetch to standard output (`stdout_fetch`), or is a variable that
-    holds one, whole (`y="$x"`); `unset` empties one, `unset -f` a function."""
+    """{name: the download it now holds, or None} for what this stage assigns,
+    in whatever shell runs it (`carried` weighs that). A bare assignment or a
+    declaration's (`export x=...`) holds one when its value is the stage's one
+    substitution and that is one fetch to standard output (`stdout_fetch`), or
+    is a variable that holds one, whole (`y="$x"`); `unset` empties one,
+    `unset -f` a function."""
     argv = command(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     if name == "unset":
@@ -534,10 +535,17 @@ def carried(stmts, executors):
     statement or in a script its substitutions run (`within`), where `x` was
     assigned it before that statement and not since (`_assigned`). A step is
     a shell of its own, so the guard asks of each step's statements apart,
-    and of each script a substitution runs for what it assigns itself. What
-    else is done to the variable is not followed: the guard's gap list."""
+    and of each script a substitution runs for what it assigns itself.
+
+    A download assigned anywhere is held. A reassignment empties the name
+    only where the step's own shell always runs it (review I-1): not in a
+    script `flattened` inlined, which `sh -c 'x=1'` runs in a child shell,
+    not in a branch (`regions`) and not behind `&&` or `||`, which bash may
+    skip, and not in a pipeline, whose stages are subshells. So `eval 'x=:'`,
+    which does run here, leaves it held: fail-closed. What else is done to
+    the variable is not followed: the guard's gap list."""
     held: dict[str, Fetch | None] = {}
-    out = []
+    out, branches = [], regions(stmts)
     for index, statement in enumerate(stmts):
         for inner, position, stage, where in within(statement):
             argv = command(stage.argv)
@@ -557,7 +565,10 @@ def carried(stmts, executors):
                         " ".join(shell_reader.readable(w) for w in consumer), where)))
                     break
         if len(statement.stages) == 1:
-            held.update(_assigned(statement.stages[0], held))
+            now = _assigned(statement.stages[0], held)
+            sure = not (isinstance(statement, Inlined) or branches.get(index)
+                        or index and stmts[index - 1].separator in ("&&", "||"))
+            held.update(now if sure else {k: v for k, v in now.items() if v})
     return out
 
 

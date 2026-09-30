@@ -80,7 +80,8 @@ that starts catching one fails there, and this list is edited with it.
   `$` spells the use's directory (`may_run` #2310, `covers` #2345), and for a
   glob where one spells the download's or the download is a bare name. A
   download kept in a variable is followed to a shell whole (`carried`, #2341),
-  not through a cut (`${x%%#*}`), a command (`$(echo "$x")`) or a file (`> f`).
+  not through a cut (`${x%%#*}`), a command (`$(echo "$x")`) or a file (`> f`),
+  and a subshell's `( x=1 )` empties it: the reader keeps no subshell.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -444,9 +445,8 @@ def _copies(statement, names):
 
 def _uses(stmts, dest, after):
     """(names the file goes by, [(statement index, what it does)]), walked in
-    order from the fetch, so a name only counts once the statement that
-    created it has run; a use in a statement's substitutions (`within`) is
-    that statement's."""
+    order from the fetch so a name only counts once the statement creating it
+    has run; a use in a statement's substitutions (`within`) is that statement's."""
     names, out = {dest}, []
     for index, statement in enumerate(stmts[after:], after):
         for inner, position, stage, where in within(statement):

