@@ -179,6 +179,39 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(report.ranges_dropped, 1)
             self.assertEqual(report.paths_dropped, 1)
 
+    def test_a_named_path_with_no_ranges_is_counted_on_its_own(self):
+        # #2381: `{"c.py": []}` is WELL FORMED -- `diff_map.parse` emits it on
+        # purpose for a file the diff changed without ADDING a line (a pure
+        # deletion, a binary or mode-only change, a 100%-similarity rename) -- so
+        # nothing was dropped and c.py stays in the map. What it costs is
+        # `diff_map.classify`'s changed-file fail-open: every finding in c.py
+        # classifies ON-diff. None of the other three counters can see that, and a
+        # truncated map looks exactly the same, so it gets a counter of its own.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main",
+                                   "hunks": {"a.py": [[1, 5]], "c.py": []}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(data["hunks"], {"a.py": [(1, 5)], "c.py": []})
+            self.assertEqual(report.paths_without_ranges, 1)
+            self.assertEqual(report.paths_dropped, 0)
+            self.assertEqual(report.ranges_dropped, 0)
+            self.assertEqual((report.files, report.ranges), (2, 1))
+
+    def test_a_path_whose_every_range_was_malformed_counts_in_both(self):
+        # #2381: two DIFFERENT facts about b.py and a reader needs both.
+        # `ranges_dropped` says the loader discarded something, so the artifact is
+        # broken; `paths_without_ranges` says what the surviving map now DOES --
+        # b.py is still named, so every finding in it classifies on-diff. Folding
+        # either into the other would publish a broken artifact as a legitimate
+        # deletion-only change, or a fail-open file as a merely narrower one.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main",
+                                   "hunks": {"a.py": [[1, 5], [2]], "b.py": ["x"]}})
+            _, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(report.ranges_dropped, 2)
+            self.assertEqual(report.paths_without_ranges, 1)
+            self.assertEqual(report.paths_dropped, 0)
+
     def test_a_well_formed_payload_reports_nothing_dropped(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._write(d, {"base": "main",
@@ -187,6 +220,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertIsNone(report.payload_malformed)
             self.assertEqual((report.files, report.ranges, report.ranges_dropped), (2, 3, 0))
             self.assertEqual(report.paths_dropped, 0)
+            self.assertEqual(report.paths_without_ranges, 0)
 
     def test_load_diff_hunks_returns_the_same_data(self):
         with tempfile.TemporaryDirectory() as d:
@@ -313,6 +347,45 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertEqual(self._artifact_line(err),
                          "synthesize: DELTA ARTIFACT: 2 malformed hunk range(s) "
                          "dropped from %s" % path)
+
+    RANGELESS = ("synthesize: DELTA ARTIFACT: %d named path(s) in %s carry no "
+                 "range -- every finding in those file(s) classifies on-diff "
+                 "(the changed-file fail-open), so a --gate-scope on-diff gate "
+                 "admits them on the artifact's word: a deletion-only, binary, "
+                 "mode-only or same-content rename change looks exactly like a "
+                 "truncated map from here.")
+
+    def _rangeless_line(self, err):
+        """The #2381 line, isolated. Not `_artifact_line` above: both lines open
+        `DELTA ARTIFACT:`, and a map that dropped something AND names a rangeless
+        path prints both -- they are different facts about one read."""
+        lines = [ln for ln in err.splitlines() if "carry no range" in ln]
+        self.assertEqual(len(lines), 1, err)
+        return lines[0]
+
+    def test_a_named_path_with_no_range_is_disclosed_though_the_map_is_not_empty(self):
+        # #2381, the ONLY fail-open shape in this family: c.py is named with no
+        # range, so every finding in it classifies ON-diff and a --gate-scope
+        # on-diff gate judges it as if the diff had touched it. The ZERO HUNKS arm
+        # below cannot say so -- it needs `ranges == 0` across the WHOLE map, and
+        # a.py's one real range silences it -- which is why this line exists.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5]], "c.py": []}})
+        self.assertEqual(self._rangeless_line(err), self.RANGELESS % (1, path))
+        self.assertNotIn("DELTA REVIEW WITH ZERO HUNKS", err)
+
+    def test_a_wholly_rangeless_map_keeps_the_zero_hunk_line_and_only_that(self):
+        # The whole-map case already has its own arm, which says the same thing in
+        # more detail. Printing both for one read has the operator reconciling
+        # what looks like two problems (#2169's lesson, F1).
+        _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": []}})
+        self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
+        self.assertNotIn("carry no range", err)
+
+    def test_a_map_giving_every_named_path_a_range_discloses_nothing(self):
+        _, err, _ = self._from_args({"base": "main",
+                                     "hunks": {"a.py": [[1, 5]], "b.py": [[2, 3]]}})
+        self.assertEqual(err, "")
 
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
         # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
@@ -548,26 +621,37 @@ class TestArtifactFacts(unittest.TestCase):
                     diff_hunks=os.path.join(d, "absent.json"), fail_on="high"))
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_a_rejected_payload_still_reports_the_read(self):
         ctx = self._ctx(["not", "an", "object"])
         self.assertFalse(ctx.active)
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_an_active_payload_reports_no_rejection(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
         self.assertTrue(ctx.active)
         self.assertEqual(delta_mod.artifact_facts(ctx),
                          {"payload_malformed": None,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_it_carries_both_loss_counters(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
         self.assertEqual(delta_mod.artifact_facts(ctx)["ranges_dropped"], 1)
         self.assertEqual(delta_mod.artifact_facts(ctx)["paths_dropped"], 1)
+
+    def test_it_carries_the_rangeless_path_counter_too(self):
+        # #2381: the fourth fact, and the one the other three cannot imply -- the
+        # map kept c.py, so the gate reads every finding in it as on-diff.
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]], "c.py": []}})
+        facts = delta_mod.artifact_facts(ctx)
+        self.assertEqual(facts["paths_without_ranges"], 1)
+        self.assertEqual((facts["ranges_dropped"], facts["paths_dropped"]), (0, 0))
 
 
 class TestTheZeroHunkPopulation(unittest.TestCase):

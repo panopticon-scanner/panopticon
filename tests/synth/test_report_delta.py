@@ -449,7 +449,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                  "confidence": "POSSIBLE", "panel": "code", "category": "x",
                  "location": {"file": "a.py", "line_start": 11}}]
 
-    def _coverage(self, raw=None, payload=None, with_flag=True):
+    def _coverage(self, raw=None, payload=None, with_flag=True, findings=None):
         """`meta.coverage` for a run handed this artifact, or none at all."""
         with tempfile.TemporaryDirectory() as d:
             hp = os.path.join(d, "diff-hunks.json")
@@ -463,9 +463,11 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                 run=report_mod.RunConfig(
                     target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
                     gate_unverified=True),
-                findings=findings_mod.FindingSet(findings=self._findings()),
+                findings=findings_mod.FindingSet(
+                    findings=self._findings() if findings is None else findings),
                 delta=delta,
-                plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+                plan=plan_mod.PlanInputs(
+                    groups_meta=[{"name": "g1", "files": ["a.py", "c.py"]}]),
             ))
             return rep["meta"]["coverage"]
 
@@ -474,14 +476,16 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertIsNone(cov["delta"])            # still not a delta review
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_a_non_object_artifact_is_named_in_the_report(self):
         cov = self._coverage(payload=["not", "an", "object"])
         self.assertIsNone(cov["delta"])
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_no_diff_hunks_flag_leaves_both_keys_null(self):
         # The distinction the whole change is about: nothing was read, so there
@@ -501,7 +505,8 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertEqual(cov["delta"]["paths_dropped"], 0)
         self.assertEqual(cov["delta_artifact"],
                          {"payload_malformed": None,
-                          "ranges_dropped": 0, "paths_dropped": 0})
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0})
 
     def test_the_two_blocks_agree_about_the_losses(self):
         # One loader record behind both, so the active block and the sibling
@@ -516,3 +521,28 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
                          cov["delta_artifact"]["paths_dropped"])
         self.assertEqual((cov["delta"]["ranges_dropped"],
                           cov["delta"]["paths_dropped"]), (1, 1))
+
+    def test_a_named_path_with_no_range_is_published_in_both_blocks(self):
+        # #2381: the map NAMES c.py and gives it no range, so `diff_map.classify`
+        # fails open and the finding there is counted on-diff -- `on_diff_total: 2`
+        # below is that fail-open, and before this counter nothing in the report
+        # said the second of the two was admitted on the artifact's word rather
+        # than on a measured range. Nothing was dropped (both loss counters are 0)
+        # and the whole-map disclosures stay silent (`hunks_ranges` is 1), so this
+        # key is the only place the shape appears.
+        cov = self._coverage(
+            payload={"base": "main", "base_source": "explicit", "diff_context": 5,
+                     "files_changed": 2,
+                     "hunks": {"a.py": [[10, 12]], "c.py": []}},
+            findings=self._findings() + [
+                {"id": "A-2", "title": "in the rangeless file", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                 "location": {"file": "c.py", "line_start": 99}}])
+        self.assertEqual(cov["delta"]["paths_without_ranges"], 1)
+        self.assertEqual(cov["delta_artifact"]["paths_without_ranges"], 1)
+        self.assertEqual((cov["delta"]["ranges_dropped"],
+                          cov["delta"]["paths_dropped"]), (0, 0))
+        self.assertEqual((cov["delta"]["hunks_files"],
+                          cov["delta"]["hunks_ranges"]), (2, 1))
+        self.assertEqual(cov["delta"]["on_diff_total"], 2)
+        self.assertEqual(cov["delta"]["pre_existing_total"], 0)

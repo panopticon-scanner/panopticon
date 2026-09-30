@@ -349,6 +349,10 @@ def _delta_meta(delta, partitions):
     # #2169: `paths_dropped` is beside `ranges_dropped` rather than inside it --
     # a path whose value was not a list leaves the map, so every finding in that
     # file classifies off-diff, which is not what one dropped range costs.
+    # #2381 adds the third counter beside them, and it is not a loss: a path the
+    # map NAMES with no range keeps its file and classifies every finding in it
+    # ON-diff (`diff_map.classify`'s changed-file fail-open), which is the one
+    # fail-open shape here and the one the two loss counters both read as zero.
     hunks_load = delta.report if delta_mode else None
     hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
                                  if delta_mode else (0, 0))
@@ -364,6 +368,8 @@ def _delta_meta(delta, partitions):
                    "hunks_ranges": hunks_ranges,
                    "ranges_dropped": hunks_load.ranges_dropped if hunks_load else None,
                    "paths_dropped": hunks_load.paths_dropped if hunks_load else None,
+                   "paths_without_ranges": (hunks_load.paths_without_ranges
+                                            if hunks_load else None),
                    "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
                    "on_diff_total": len(partitions.on_diff_active),
                    "pre_existing_total": len(partitions.pre_existing_active)}

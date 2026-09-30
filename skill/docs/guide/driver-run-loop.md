@@ -1018,7 +1018,15 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   same (#2169): `ranges_dropped` is a range that was not a two-integer pair, which leaves the
   file in the map and merely narrower, while `paths_dropped` is a path whose value was not a
   list of ranges at all, so that file leaves the map entirely and every finding in it
-  classifies off-diff. An ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
+  classifies off-diff. The third counter is not a loss at all (#2381):
+  `paths_without_ranges` is a path the map NAMES whose list of ranges is empty, so that file
+  stays in the map and every finding in it classifies ON-diff — `diff_map.classify`'s
+  changed-file fail-open — and a `--gate-scope on-diff` gate judges them on the artifact's
+  word rather than on a measured range. A deletion-only, binary, mode-only or same-content
+  rename change legitimately carries such a key and a truncated map is indistinguishable from
+  it, so the shape is counted in both blocks and named on stderr rather than reclassified; the
+  whole-map disclosures below cannot see it, because one real range anywhere leaves
+  `hunks_ranges` non-zero. An ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings

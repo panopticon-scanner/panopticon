@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A diff-hunks path with no ranges is disclosed (#2381, #1783, ARC-B8 follow-up).** A map that
+  NAMES a path and gives it no range -- `{"a.py": [[1, 5]], "c.py": []}` -- classified every
+  finding in `c.py` as on-diff and nothing anywhere said so: the loader drops nothing (an empty
+  list is well formed), both #2169 loss counters read zero, and the two whole-map disclosures
+  need `hunks_ranges: 0`, which `a.py`'s one real range denies. It is the only FAIL-OPEN shape in
+  this family -- under the default `--gate-scope on-diff` those findings reach the gate's source
+  set as if the diff had touched their file. A third counter now publishes it,
+  `paths_without_ranges`, in `meta.coverage.delta` and `meta.coverage.delta_artifact` alike, plus
+  one stderr line naming the count and the artifact. Classification is UNCHANGED on purpose:
+  `diff_map.parse` emits a rangeless key for a file the diff changed without ADDING a line -- a
+  pure deletion, a binary or mode-only change, a 100%-similarity rename -- and deleting a line
+  can introduce a finding (a removed check), so classifying it on-diff is that module's
+  documented contract. What was wrong is that a truncated or hand-edited map is
+  indistinguishable from that legitimate shape; the counter is the input a later gate rule would
+  need to tell the two apart.
 - **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
   #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
   before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the
