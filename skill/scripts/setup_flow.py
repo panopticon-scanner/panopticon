@@ -17,8 +17,6 @@ import re
 import subprocess
 import sys
 
-import yaml
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts import plan_contract  # noqa: E402
 from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
@@ -1030,6 +1028,8 @@ def migrate_config(repo):
     resolver merely DISCLOSED one (a refused symlink at either name resolves
     to no path, and overwriting it would destroy the operator's link).
     Returns (path, message)."""
+    # Nested, not module level: the driver's import path stays third-party-free (#2369).
+    import yaml
     import setup_proposal as sp  # noqa: E402
     res = repo_config.resolve(repo)
     if res.path is not None or res.disclosures:

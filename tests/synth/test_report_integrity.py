@@ -52,19 +52,19 @@ class TestIntegrity(unittest.TestCase):
 
     def test_reconcile_flags_unexpected_and_missing(self):
         plan = [
-            {"role": "panel_review", "out_file": ".panopticon/findings-g1-code-panel_review.json"},
+            {"role": "panel_review", "out_file": ".panopticon/findings-g1-COD.json"},
             {
                 "role": "lens_sweep",
-                "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json",
+                "out_file": ".panopticon/findings-g1-ARC.json",
             },
         ]
         ingested = [
-            ".panopticon/findings-g1-code-panel_review.json",
+            ".panopticon/findings-g1-COD.json",
             ".panopticon/findings-EVIL-decoy.json",
         ]
         unexpected, missing = integrity_mod.reconcile_findings_files(plan, ingested)
         self.assertEqual(unexpected, [".panopticon/findings-EVIL-decoy.json"])
-        self.assertEqual(missing, [".panopticon/findings-g1-code-lens_sweep-style.json"])
+        self.assertEqual(missing, [".panopticon/findings-g1-ARC.json"])
 
     def test_reconcile_skipped_without_plan(self):
         self.assertEqual(integrity_mod.reconcile_findings_files([], ["whatever.json"]), ([], []))
@@ -542,6 +542,15 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       "filed outside their cell's domain; often a catalog gap (X0X). "
                       "Does NOT affect certification.", md)
         self.assertNotIn("**Integrity:**", md)
+
+    def test_cross_domain_note_sorts_mixed_missing_and_named_domains(self):
+        inputs = self._inputs("cross_domain_findings")
+        inputs.plan.integrity["cross_domain_findings"] = [
+            {"cell_domain": "COD", "finding_domain": "TST"},
+            {"cell_domain": None, "finding_domain": "ARC"},
+        ]
+        md = render_mod.render_summary(report_mod.build_report(inputs))
+        self.assertIn("2 cross-domain finding(s) — None→ARC ×1, COD→TST ×1", md)
 
     def test_every_key_integrity_section_publishes_is_in_the_table(self):
         # The RUNTIME side of the membership, and the one the fixture-run check

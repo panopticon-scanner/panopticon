@@ -974,11 +974,19 @@ class TestHtmlReport(unittest.TestCase):
         self.assertNotIn("badge gate-pass", out)
 
     def test_header_shows_coverage_line(self):
-        report = _minimal_report()
+        statuses = (["advisor_confirmed"] * 2 + ["tool_confirmed"]
+                    + ["unverified"] * 2 + ["tool_reported"] * 3)
+        findings = []
+        for index, status in enumerate(statuses):
+            finding = dict(_minimal_report()["findings"][0])
+            finding["id"] = "SEC-%03d" % (index + 30)
+            finding["evidence"] = {"status": status}
+            findings.append(finding)
+        report = _minimal_report(findings)
         report["summary"]["evidence_stats"] = {
             "advisor_confirmed": 2,
             "tool_confirmed": 1,
-            "unverified": 5,
+            "unverified": 2,
             "tool_reported": 3,
         }
         report["summary"]["gate_policy"] = "confirmed_only"
@@ -1205,6 +1213,101 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertNotIn("NOT CERTIFIED", out)
         self.assertNotIn("(provisional)", out)
         self.assertIn("gate-pass", out)
+
+
+class TestIntegrityFailureDetails(unittest.TestCase):
+    """#2265: the HTML names every integrity fact that sinks certification."""
+
+    SINKING_VALUES = {
+        "unexpected_findings_files": ["unexpected.json"],
+        "malformed_findings_files": [{"file": "malformed.json"}],
+        "duplicate_out_files": ["duplicate.json"],
+        "mislabeled_findings_files": ["mislabeled.json"],
+        "content_mismatched_files": ["changed.json"],
+        "content_snapshot_unreadable": True,
+        "content_snapshot_missing": True,
+        "empty_dispatch_plans": 1,
+        "invalid_dispatch_plans": [
+            {"file": "dispatch-plan-bad.json", "reason": "not an object"}
+        ],
+        "invalid_verify_queue": "verify queue has no entries list",
+        "dispatch_plan_missing": True,
+        "dispatch_plan_mismatched": True,
+        "tools_manifest_invalid": "tools-manifest.json is not an object",
+        "delta_scope_suppressed_git_drivers": ["diff.external"],
+    }
+
+    def test_every_sinking_key_is_named_under_not_certified(self):
+        import scripts.synth.integrity as integrity_mod
+
+        sinking = {
+            key for key, spec in integrity_mod.INTEGRITY_KEYS.items() if spec.sinks
+        }
+        self.assertEqual(sinking, set(self.SINKING_VALUES))
+        for key, value in self.SINKING_VALUES.items():
+            with self.subTest(key=key):
+                report = {
+                    "meta": {"target": "t", "coverage": {},
+                             "integrity": {key: value}},
+                    "summary": {
+                        "overall_grade": "B", "risk_level": "MEDIUM",
+                        "gate": "INCONCLUSIVE", "coverage_certified": False,
+                    },
+                    "findings": [],
+                    "groups": [],
+                }
+                out = hr.render(report)
+                body = integrity_mod.INTEGRITY_KEYS[key].sentence
+                self.assertIsNotNone(body)
+                if "%s" in body:
+                    body = body % integrity_mod.evidence_text(key, value)
+                self.assertIn("NOT CERTIFIED", out)
+                expected = html.escape(body)
+                self.assertTrue(expected in out,
+                                "%s: missing integrity sentence %r" % (key, expected))
+                root = _parse(out)
+                banners = [
+                    node for node in _nodes(root, "div")
+                    if node["attrs"].get("class") == "not-certified"
+                ]
+                self.assertEqual(len(banners), 1)
+                details = [
+                    node for node in banners[0]["children"]
+                    if node["attrs"].get("class") == "integrity-detail"
+                ]
+                self.assertEqual([_text(node) for node in details], [body])
+
+    def test_target_controlled_detail_is_bounded_and_marked(self):
+        import scripts.integrity_messages as integrity_messages
+        import scripts.tools.base as tool_base
+
+        self.assertEqual(integrity_messages.HTML_DETAIL_MAX,
+                         tool_base.INERT_TEXT_MAX)
+        files = ["%04d-%s.json" % (index, "x" * 200) for index in range(100)]
+        report = {
+            "meta": {
+                "target": "t", "coverage": {},
+                "integrity": {"unexpected_findings_files": files},
+            },
+            "summary": {
+                "overall_grade": "B", "risk_level": "MEDIUM",
+                "gate": "INCONCLUSIVE", "coverage_certified": False,
+            },
+            "findings": [],
+            "groups": [],
+        }
+
+        root = _parse(hr.render(report))
+        details = [
+            node for node in _nodes(root, "div")
+            if node["attrs"].get("class") == "integrity-detail"
+        ]
+        self.assertEqual(len(details), 1)
+        detail = _text(details[0])
+        self.assertLessEqual(len(detail), integrity_messages.HTML_DETAIL_MAX)
+        self.assertIn(integrity_messages.HTML_DETAIL_CUT, detail)
+        self.assertTrue(detail.endswith(
+            "(not declared by the dispatch plan; run not certified)"))
 
 
 _NO_KEY = object()
@@ -2004,3 +2107,28 @@ class TestOneOwnerForVerified(unittest.TestCase):
         self.assertEqual(expected, len(sections.VERIFIED_STATUSES))
         self.assertIn("Coverage: %d verified &middot;" % expected,
                       hr._render_header(report))
+
+    def test_header_unverified_count_matches_the_collapsed_population(self):
+        statuses = ["tool_reported", "needs_more_info", "unverified", "future_status"]
+        findings = []
+        for index, status in enumerate(statuses):
+            finding = dict(_minimal_report()["findings"][0])
+            finding["id"] = "SEC-%03d" % (index + 20)
+            finding["evidence"] = {"status": status}
+            findings.append(finding)
+        report = _minimal_report(findings)
+        report["summary"]["evidence_stats"] = {
+            status: 1 for status in statuses if status != "future_status"
+        }
+        self.assertIn("4 unverified", hr._render_header(report))
+        self.assertIn("Unverified findings <span class='count'>(4)</span>",
+                      hr._render_findings(report))
+
+    def test_non_mapping_evidence_fails_closed_without_crashing(self):
+        for value in ("bad", ["bad"], 7):
+            with self.subTest(value=value):
+                report = _minimal_report()
+                report["findings"][0]["evidence"] = value
+                rendered = hr._render_findings(report)
+                self.assertIn("Unverified findings <span class='count'>(1)</span>",
+                              rendered)

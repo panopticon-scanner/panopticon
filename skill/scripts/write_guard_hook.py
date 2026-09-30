@@ -578,8 +578,7 @@ def _resolve_allowlist_path(argv_path=None):
 
 
 def main(argv=None):
-    """`argv` is the argument list AFTER the program name. It defaults to the
-    real one; pass [] to exercise a bare invocation with no baked-in allowlist."""
+    """`argv` is the arg list AFTER the program name (default: the real one); [] = bare."""
     args = sys.argv[1:] if argv is None else argv
     try:
         payload = json.load(sys.stdin)
@@ -587,10 +586,18 @@ def main(argv=None):
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
     if not isinstance(payload, dict):
         return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
-    if payload.get("tool_name", "") not in _WRITE_TOOLS:
+    try:
+        # #2391/#2394: the roster test, the interpreter check and the adjudication, INSIDE the
+        # envelope. A non-2 exit is NON-blocking in Claude Code (the Write proceeds), so an
+        # uncaught raise here would fail OPEN -- while the tolerant returns above are permissive.
+        if payload.get("tool_name", "") not in _WRITE_TOOLS:
+            return 0
+        argv_path = args[0] if args else None
+        _trusted_hook_argv()
+        allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
+    except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
+        print(_deny_response("write guard crashed: %s" % exc))
         return 0
-    argv_path = args[0] if args else None
-    allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
     if allow:
         return 0
     print(_deny_response(reason))
@@ -600,61 +607,53 @@ def main(argv=None):
 def hook_command(*argv):
     """One hook `command` string, every element shell-quoted (#1633, SEC-A1A).
 
-    A registered PreToolUse command is SHELL SOURCE: the host runs it through
-    `sh -c`, so an element interpolated into it is not an argument. The
-    `"%s"` this replaces stopped a space and nothing else, which left a `"`,
-    a backtick or a `$(...)` in an install path -- the allowlist path, the
-    scope path, the checkout the script itself sits in -- executing on every
-    tool call. Copied into each guard hook rather than imported, for the same
-    reason the settings plumbing is a copy (R-P5-5): a hook runs standing
-    alone, with no package on sys.path.
+    A registered PreToolUse command is SHELL SOURCE: the host runs it through `sh -c`, so an
+    interpolated element is not an argument. The `"%s"` this replaces stopped a space and nothing
+    else, so a `"`, a backtick or a `$(...)` in an install path -- the allowlist path, the scope
+    path, the checkout this script sits in -- executed on every tool call. Copied into each guard
+    hook, not imported, like the settings plumbing (R-P5-5): a hook has no package on sys.path.
     """
     return " ".join(shlex.quote(a) for a in argv)
 
 
-# #495: self-locate. The old literal "skill/scripts/..." only resolved when
-# the skill lived INSIDE the target repo (the self-scan layout); installed
-# under a skills dir the hook silently never ran. The module's own absolute
-# path works under both layouts (shell-quoted: install paths may contain
-# spaces -- or worse, #1633).
-_HOOK_ARGV = ("python3", os.path.abspath(__file__))
-_HOOK_CMD = hook_command(*_HOOK_ARGV)
-# Ordering is fixed to the original string so install()/uninstall() never
-# produce a duplicate or stale entry when upgrading from a settings.local.json
-# written by an earlier version. #1633 changed the command's QUOTING, so that
-# promise no longer rests on dict equality across versions -- `_is_our_entry`,
-# which matches on the script path rather than on the text, is what carries it
-# (measured in tests/test_hook_command_quoting.py). The entry's shape is
-# unchanged.
-_HOOK_ENTRY = {"matcher": _MATCHER,
-               "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+def _trusted_hook_argv():
+    """THIS process's interpreter, `-I`, this module's absolute path (#495). #2161: a bare
+    `python3` resolves in the CHILD's rewritten PATH (`executable.resolve` drops the review root)
+    -- a fail-OPEN. `-I` so no `sitecustomize` picks the code (#1996). Shape: the read guard's."""
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        raise RuntimeError("write guard interpreter unavailable or not absolute: %r" % executable)
+    executable = os.path.realpath(executable)
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        raise RuntimeError("write guard interpreter is unavailable: %s" % executable)
+    return executable, "-I", os.path.abspath(__file__)
+
+
+def __getattr__(name):
+    """The `_HOOK_*` names on ACCESS: an import-time raise is fail-OPEN (#2006, read_guard_hook)."""
+    if name == "_HOOK_ARGV":
+        return _trusted_hook_argv()
+    if name == "_HOOK_CMD":
+        return hook_command(*_trusted_hook_argv())
+    if name == "_HOOK_ENTRY":
+        return _hook_entry()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def _hook_entry(allowlist_path=None):
-    """The PreToolUse entry to register.
-
-    With `allowlist_path`, the absolute allowlist is baked into the command so
-    the hook never has to infer it from its CWD (see _resolve_allowlist_path).
-    Without one, this is the legacy bare entry -- the same entry an earlier
-    version wrote, now shell-quoted (#1633), so it is recognised as ours by
-    `_is_our_entry` rather than by comparing equal to the older text."""
-    if not allowlist_path:
-        return _HOOK_ENTRY
-    cmd = hook_command(*_HOOK_ARGV, os.path.abspath(allowlist_path))
+    """The entry to register; `allowlist_path` is baked in absolutely, never inferred from a CWD."""
+    baked = [os.path.abspath(allowlist_path)] if allowlist_path else []
+    cmd = hook_command(*_trusted_hook_argv(), *baked)
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
 
 
 def _runs_this_script(command):
-    """True when `command` invokes THIS module -- quoted (#1633) or in the bare
-    form an earlier version wrote.
+    """True when `command` invokes THIS module -- quoted (#1633) or bare (an earlier version's).
 
-    Tokenizing is what keeps our own entry recognisable once the script path is
-    quoted: a checkout path that needed escaping no longer appears verbatim in
-    the command, and an unrecognised entry is one uninstall would orphan,
-    leaving the guard armed and every later write denied. Both legacy
-    spellings tokenize cleanly, so the substring test is the fallback for a
-    command no shell can parse: one that still names this script is ours (and
-    removable), one that does not answers False rather than raising."""
+    Tokenizing is what keeps our own entry recognisable once the script path is quoted: an escaped
+    checkout path no longer appears verbatim, and an unrecognised entry is one uninstall would
+    orphan, leaving the guard armed and every later write denied. The substring test is the
+    fallback for a command no shell can parse: naming this script is ours, else False, no raise."""
     mine = os.path.abspath(__file__)
     try:
         tokens = shlex.split(command)
@@ -1042,6 +1041,7 @@ def _resolve(settings_path, allowlist_path, session_root):
 
 
 def install(plan, settings_path=None, allowlist_path=None, *, session_root=None):
+    _trusted_hook_argv()   # refuse before ANY write, the allowlist document included
     # #11: UNION with any existing allowlist rather than REPLACING it wholesale.
     # A re-arm while a prior fan-out is still in flight (an overlapping/nested
     # install) used to overwrite the allowlist with only the new set, silently

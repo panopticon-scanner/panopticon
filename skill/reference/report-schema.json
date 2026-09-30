@@ -419,7 +419,152 @@
                 "object",
                 "null"
               ],
-              "description": "Delta-review disclosure (#449): {base, base_source, base_commit, delta_start, delta_end, includes_uncommitted, files_changed, diff_context, hunks_files, hunks_ranges, ranges_dropped, payload_malformed, on_diff_total, pre_existing_total}; null outside delta mode. #1783: `files_changed` is the artifact's own count, `hunks_files`/`hunks_ranges` the map this run classified against -- an active delta whose map is empty (`hunks_files: 0`) matched no finding, so every one classified off-diff and an on-diff gate had nothing to fail on; a map that names a file with no range instead fails OPEN for a lined finding there. `ranges_dropped` counts the malformed hunk entries the loader discarded -- one per range that was not a two-integer pair, and ONE for a path whose value was not a list at all, although that path is dropped entirely and every finding in that file then classifies off-diff. `payload_malformed` names why a payload was rejected in whole or in part; the only value that can reach a report is `hunks not an object`, because the loader's other two outcomes (`unreadable`, `not an object`) leave no `base`, hence a non-delta review where this whole block is null and only synthesize's stderr names them. Both are null when the context was not built by reading the file."
+              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven keys copied verbatim out of `.panopticon/diff-hunks.json` are type-pinned too, and safely so, because the loader now REPAIRS them at the read (#2382): a value of the wrong type is read as null and named in `delta_artifact.keys_repaired`, so the pin states what the read already enforces instead of letting a hand-supplied artifact end a paid-for run on a terminal schema error. The driver's discovery phase rewrites or removes that file, so the exposure the repair closes is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`.",
+              "properties": {
+                "base": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one. Never null here: a `base` the artifact omitted or that was repaired at the read (see `delta_artifact.keys_repaired`) makes the review a non-delta one, and this whole block is null instead."
+                },
+                "base_source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "How the artifact says it chose that base (`explicit`, `fallback`, ...), copied verbatim from it. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "base_commit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the base, so a later reader can reconstruct the delta after branch tips move; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "delta_start": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the start of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "delta_end": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The artifact's own anchor commit for the end of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "includes_uncommitted": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether the artifact says the diff it measured included uncommitted worktree changes. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "files_changed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "The ARTIFACT's own count of changed files, which is not the size of the map this run classified against -- compare `hunks_files` below. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
+                },
+                "diff_context": {
+                  "type": "integer",
+                  "description": "Lines of tolerance this run allowed around a hunk when classifying a finding on-diff (`--diff-context`, default 5)."
+                },
+                "hunks_files": {
+                  "type": "integer",
+                  "description": "Files in the hunk map this run actually classified against; 0 on an ACTIVE delta means the map matched no finding, so every one classified off-diff and a `--gate-scope on-diff` gate had nothing left to fail on."
+                },
+                "hunks_ranges": {
+                  "type": "integer",
+                  "description": "Line ranges in that same map. 0 on an ACTIVE delta with gate-eligible findings present under `--gate-scope on-diff` makes that run read INCONCLUSIVE rather than PASS (#2178, narrowed by #2222); with no such finding it keeps its PASS, because a legitimately empty change is not a defect. A named file with no range of its own is a separate hazard: a finding there fails OPEN to on-diff."
+                },
+                "ranges_dropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Null when this context was not built by reading a file."
+                },
+                "paths_dropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Null when this context was not built by reading a file."
+                },
+                "paths_without_ranges": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; it is the input a gate rule would need to make a verdict out of the difference. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path, and `paths_emptied_by_drops` below is how many of the paths counted here are of that kind. Null when this context was not built by reading a file."
+                },
+                "paths_emptied_by_drops": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. What it does NOT recover: a truncated or hand-edited map arrives `[]` exactly as those legitimate shapes do, so a path in the remainder is not thereby innocent, and this key is a lower bound on how much of the shape is artifact damage. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
+                },
+                "payload_malformed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version`. Only `hunks not an object` can reach this block, because the other three -- `unsupported schema_version` included, which rejects the whole payload (#2382) -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. Null when nothing was rejected, and null when this context was not built by reading a file."
+                },
+                "on_diff_total": {
+                  "type": "integer",
+                  "description": "Active findings this run classified as on-diff."
+                },
+                "pre_existing_total": {
+                  "type": "integer",
+                  "description": "Active findings this run classified as pre-existing (off-diff)."
+                }
+              }
+            },
+            "delta_artifact": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "What ATTEMPTING to read `.panopticon/diff-hunks.json` cost: an object whenever a `--diff-hunks` path was given and a read was attempted -- whether or not it succeeded, and whether or not the resulting delta was active -- and null when none was given (a direct caller, or a run never passed the flag), so the block's presence alone is the fact (#2169). That is what it publishes: a rejected payload carries no `base`, so `delta` above is null exactly as it is for a run given no artifact at all, and rather than dressing a rejection up as an active delta, `delta` is left alone for consumers that read its truthiness as \"this was a delta review\".",
+              "properties": {
+                "payload_malformed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all four values can appear here, including the three (`unreadable` -- which covers a path that does not exist -- `not an object`, and `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                },
+                "keys_repaired": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The artifact-carried keys of `meta.coverage.delta` that carried a value of the wrong type and were read as NULL (#2382), in the loader's table order: `base`, `base_source`, `base_commit`, `delta_start`, `delta_end`, `includes_uncommitted`, `files_changed`. Empty when every one of those the artifact carried had the type pinned for it above; a key ABSENT from the artifact is not a repair, because `meta.coverage.delta` publishes it as null either way. `base` in this list is the expensive entry: the review is NOT a delta one, `delta` above is null exactly as it is for a run given no artifact, and the gate scopes to every active finding -- which is why the list lives in THIS block, the one written whenever `--diff-hunks` was passed, rather than in the block the repair can null. A repair is also printed on stderr in the #957 register. Never null here, because this block is written only when a read was attempted."
+                },
+                "ranges_dropped": {
+                  "type": "integer",
+                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped`; never null here, because this block is written only when a read was attempted."
+                },
+                "paths_dropped": {
+                  "type": "integer",
+                  "description": "Whole paths the loader discarded, as `delta.paths_dropped`; never null here, for the same reason."
+                },
+                "paths_without_ranges": {
+                  "type": "integer",
+                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings. `paths_emptied_by_drops` below splits them."
+                },
+                "paths_emptied_by_drops": {
+                  "type": "integer",
+                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact; it cannot recover a truncated map, which arrives `[]` and so still looks like a legitimate deletion-only, binary, mode-only or same-content rename change. Never null here, for the same reason as its siblings."
+                }
+              }
             },
             "ocrdb": {
               "type": ["object", "null"],
@@ -614,7 +759,7 @@
             },
             "discovery_files_truncated": {
               "type": ["integer", "null"],
-              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
+              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; on a delta run this counts the changed set, not the repository listing, and `groups.json`'s `discovery.surface` says which; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
             }
           }
         },

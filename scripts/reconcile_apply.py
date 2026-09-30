@@ -14,18 +14,16 @@ Usage:
 Every recovered issue requires an authoritative matching source report; posted
 locations alone cannot establish original identity. Empty query results remain valid.
 
-Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json
-(override with --progress). Receipts bind to the unique, ordered, exact-content
-plan: retries skip acknowledged operations, including completed plans. Use
---reset-progress to intentionally replay a plan or bind a changed/reordered plan.
-Valid v1 receipts migrate by keeping only exact acknowledgements in this plan.
-Dry runs preview unique requested actions without receipt I/O (including resets).
-Empty live plans are no-ops; explicit live reset requires a nonempty plan to
-identify the repository and replacement binding.
-Comment intent is durable before one bounded mutation attempt. Unacknowledged
-comments require a complete exact remote marker match; inconclusive probes block
-replay. Direct live callers must supply progress_path. Close remains idempotent.
-This is resume support, not an exactly-once protocol.
+Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json (override
+with --progress). Receipts bind to the unique, ordered, exact-content plan: retries skip
+acknowledged operations, including completed plans. Use --reset-progress to intentionally replay
+a plan or bind a changed/reordered plan. Valid v1 receipts migrate by keeping only exact
+acknowledgements in this plan. Dry runs preview unique requested actions without receipt I/O
+(including resets). Empty live plans are no-ops; explicit live reset requires a nonempty plan to
+identify the repository and replacement binding. Comment intent is durable before one bounded
+mutation attempt. Unacknowledged comments require a complete exact remote marker match;
+inconclusive probes block replay. Direct live callers must supply progress_path. Close remains
+idempotent. This is resume support, not an exactly-once protocol.
 """
 import argparse
 import contextlib
@@ -124,7 +122,10 @@ def _source_records(reports, source_roots):
         root = roots[index] if roots else None
         if root is not None and not os.path.isabs(root):
             raise ValueError("source root must be absolute")
-        report = file_issues._reconcile.load_report(path)
+        try:
+            report = file_issues._reconcile.load_report(path)
+        except ValueError as exc:
+            raise IncompleteRecovery("source %s" % exc) from exc
         pointer = file_issues.scrub(str(artifact))
         if pointer in indexed:
             raise IncompleteRecovery("conflicting source report artifact: " + pointer)
@@ -134,7 +135,7 @@ def _source_records(reports, source_roots):
                 if not isinstance(original, dict):
                     raise IncompleteRecovery("malformed source report record")
                 record = dict(original)
-                location = dict(record.get("location") or {})
+                location = dict(file_issues.evidence.location_of(record))
                 location_file = location.get("file") or ""
                 if not isinstance(location_file, str):
                     raise IncompleteRecovery("malformed source location")
@@ -328,10 +329,9 @@ def neutralize(text):
     renders markdown and @-mentions inert.
     """
     s = " ".join(str(text or "").split())
-    # str.split() collapses the WHITESPACE class only; other C0/C1 control
-    # bytes (ESC, BEL, single-byte CSI \x9b, ...) survive it and would reach
-    # anyone reading the comment through gh/terminal pipelines as terminal
-    # escape sequences. Strip them outright.
+    # str.split() collapses the WHITESPACE class only; other C0/C1 control bytes (ESC, BEL,
+    # single-byte CSI \x9b, ...) survive it and would reach anyone reading the comment through
+    # gh/terminal pipelines as terminal escape sequences. Strip them outright.
     s = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", s)
     s = s.replace("`", "'")
     return "`%s`" % (s or "(empty)")

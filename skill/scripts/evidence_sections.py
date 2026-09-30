@@ -65,6 +65,17 @@ def is_verified(status):
     return status in VERIFIED_STATUSES
 
 
+def finding_evidence(finding):
+    """Return one finding's evidence mapping, or an empty mapping if malformed."""
+    value = finding.get("evidence")
+    return value if isinstance(value, dict) else {}
+
+
+def finding_status(finding):
+    """Return one finding's status; malformed evidence is an absent status."""
+    return finding_evidence(finding).get("status")
+
+
 def is_unverified(status):
     """True when the report collapses this status into "Unverified findings".
 
@@ -74,3 +85,8 @@ def is_unverified(status):
     """
     return (status in UNVERIFIED_STATUSES
             or status not in evidence.EVIDENCE_STATUSES)
+
+
+def is_unverified_finding(finding):
+    """Apply the fail-closed status predicate to one finding."""
+    return is_unverified(finding_status(finding))

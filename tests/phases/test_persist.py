@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from tests._test_helpers import fake_pem, pem_begin
 import scripts.phases.persist as persist
@@ -167,6 +168,32 @@ class TestWriteReply(unittest.TestCase):
         ok, reason = persist.write_reply(e, "{}")
         self.assertFalse(ok)
         self.assertFalse(os.path.exists(e["out_file"]))
+
+    def test_write_failures_return_the_shared_writers_reason(self):
+        entry = _entry(self._out("setup-proposal.json"))
+        for error in (OSError("disk full"), ValueError("escaping path")):
+            with self.subTest(error=error), \
+                 mock.patch.object(runio, "_write_json", side_effect=error) as writer:
+                ok, reason = persist.write_reply(entry, '{"groups": []}')
+            self.assertFalse(ok)
+            self.assertEqual(reason, "could not write %s: %s" % (entry["out_file"], error))
+            writer.assert_called_once_with(entry["out_file"], {"groups": []})
+            self.assertFalse(os.path.exists(entry["out_file"]))
+
+    def test_a_rejected_escaping_parent_does_not_delete_its_staging_file(self):
+        outside = os.path.join(self.d, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "setup-proposal.json.tmp")
+        with open(victim, "w", encoding="utf-8") as stream:
+            stream.write("KEEP")
+        os.symlink(outside, self._out("escape"))
+        entry = _entry(self._out("escape", "setup-proposal.json"))
+        ok, reason = persist.write_reply(entry, "{}")
+        self.assertFalse(ok)
+        self.assertIn("artifact path escapes", reason)
+        with open(victim, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "KEEP")
+        self.assertEqual(os.listdir(outside), ["setup-proposal.json.tmp"])
 
 
 class TestVerifyCellCompleteness(unittest.TestCase):

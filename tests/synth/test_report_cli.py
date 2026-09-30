@@ -77,7 +77,7 @@ class TestCliAndSummary(unittest.TestCase):
 
     def test_main_returns_1_on_gate_fail(self):
         with tempfile.TemporaryDirectory() as d:
-            fpath = os.path.join(d, "findings-g1-security.json")
+            fpath = os.path.join(d, "findings-g1-SEC.json")
             with open(fpath, "w") as fh:
                 # tool-sourced: tool_confirmed is gate-eligible by default, so
                 # this exercises the CLI FAIL path without needing a verdict.
@@ -181,7 +181,7 @@ class TestCliAndSummary(unittest.TestCase):
 
     def test_main_returns_0_when_gate_not_fail(self):
         with tempfile.TemporaryDirectory() as d:
-            fpath = os.path.join(d, "findings-g1-code.json")
+            fpath = os.path.join(d, "findings-g1-COD.json")
             with open(fpath, "w") as fh:
                 json.dump(
                     {

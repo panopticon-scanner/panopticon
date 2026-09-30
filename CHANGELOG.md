@@ -14,6 +14,159 @@ evidence exposed.
   `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
   The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
   `x=$(curl ...)` then `eval "$x"`, `sh -c "$x"` or `echo "$x" | sh` is now reported (#2341).
+- **Delta runs are capped and disclosed like whole-repo runs (#2376, #2377, #1784).** The
+  `--scope-changed` surface is bounded by `DISCOVERED_FILES_MAX`, the `discovery` block says which
+  surface its numbers describe (`surface`), and both paths publish what the policy pruned by class
+  (`pruned`: dot-path, excluded-dir, `.git` segment; null on the non-git walk, which counts nothing)
+  with one stderr line when any count is non-zero.
+- **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
+  requires `location` (the report schema never did), `validate_report` warns only on a missing
+  `location.file` rather than on every finding without a line, and the security gate prints `?`
+  for a missing line like the other renderers.
+- **A non-hashable tool_name denies instead of crashing the guard (#2394, #1777).** The write
+  and read guards test the tool roster inside their never-crash envelope, so a list or dict
+  `tool_name` prints a deny instead of escaping `main` with a non-blocking exit; the read
+  guard's envelope comment now calls its early returns permissive.
+- **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
+  `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
+  `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
+  source report by name through its own `refusing:` path.
+- **Tell a broken rangeless path from a legitimate one (#2386, #1783).** Both delta blocks carry
+  `paths_emptied_by_drops`, the subset of `paths_without_ranges` a broken artifact produced, and
+  the stderr disclosure names the rangeless paths (first ten, escaped).
+- **Repair the artifact-carried delta keys at the read, then pin them (#2382, #1783).** The
+  diff-hunks loader reads the seven keys it copies verbatim into `meta.coverage.delta` as null
+  when they carry a value of the wrong type, lists them in
+  `meta.coverage.delta_artifact.keys_repaired` and on stderr, rejects an unsupported
+  `schema_version` as a fourth `payload_malformed` reason, and the report schema now type-pins
+  those seven keys.
+- **Read the committed config once per discovery run (#2269, #1761).** Exclusion and group
+  readers share per-call snapshots, so one resolver disclosure reaches the operator once.
+- **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer
+  re-filters the fields `evidence.tool_rule_id` already reads totally, and coerces a non-string
+  rule id to text before the CWE regex sees it.
+- **Escape request-sourced strings that reach a terminal (#2379, #1783).** The dispatch script
+  escapes any request-sourced string outside a safe charset (the checkpoint, the progress label,
+  the missing-id line), and the driver loop renders its pending-id lists with `%r`.
+- **Give unmatched groups a usable readiness remedy (#2268, #1761).** The failed preflight row
+  now offers direct repair before the setup command that refuses an invalid committed config.
+- **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
+  and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
+  so those three malformed shapes no longer abort the filing run. `reconcile.load_report` refuses
+  unparseable JSON, a non-object report, `meta`, part or discarded-claims sibling and a non-list
+  `meta.parts` with one reason naming the file (and the key where there is one), which both CLIs
+  print before exiting 2.
+- **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
+  every truthy certification-sinking reason from the shared integrity table.
+- **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
+  interpreter check and the adjudication inside the read guard's never-crash envelope, so an
+  unexpected exception becomes a deny response instead of a traceback and a non-2 exit the host
+  treats as a non-blocking error -- which let the Write it exists to deny proceed.
+- **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
+  missing and named cell domains deterministically instead of raising before the report renders.
+- **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
+  it isolated (#2161, #2163, #1777).** `write_guard_hook`'s registered `PreToolUse` command began
+  with the bare word `python3`, and nothing resolved it: the CHILD looks that name up in ITS PATH,
+  which `runners/children.py` rewrites through `executable.resolve`, dropping every entry inside
+  the review root. An operator whose `python3` came from the reviewed repo's own `.venv/bin`
+  therefore armed a hook the child could not start -- and a hook that cannot start fails OPEN, so
+  write confinement was off with nothing said. The command now names the driver's own validated
+  `sys.executable`, the binding `read_guard_hook` and the Kimi hooks already use, and `install`
+  refuses before writing either file rather than arming a hook it cannot start. That refusal is
+  computed on ACCESS rather than at import (#2006), because a raise inside the hook process is
+  itself fail-open. `-I` now pairs with the pinned interpreter on the Kimi hooks, so a
+  `sitecustomize` cannot choose code for a confinement decision (#1996), and their guard
+  round-trip probe spawns the tokens of the armed command itself rather than a copy of them, so
+  the evidence can no longer describe an argv the per-run config never registered (#2163).
+- **Keep HTML evidence disclosures fail closed (#2195, #1774).** The coverage header counts
+  the same active findings as its collapsed unverified section, and malformed evidence values
+  render there without crashing.
+- **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
+  non-object `usage` value in its existing drop tally, and successful driver-side collection
+  forwards the bounded collector disclosure to stderr.
+- **A diff-hunks path with no ranges is disclosed (#2381, #1783, ARC-B8 follow-up).** A map that
+  NAMES a path and gives it no range -- `{"a.py": [[1, 5]], "c.py": []}` -- classified every
+  finding in `c.py` as on-diff and nothing anywhere said so: the loader drops nothing (an empty
+  list is well formed), both #2169 loss counters read zero, and the two whole-map disclosures
+  need `hunks_ranges: 0`, which `a.py`'s one real range denies. It is the only FAIL-OPEN shape in
+  this family -- under the default `--gate-scope on-diff` those findings reach the gate's source
+  set as if the diff had touched their file. A third counter now publishes it,
+  `paths_without_ranges`, in `meta.coverage.delta` and `meta.coverage.delta_artifact` alike, plus
+  one stderr line naming the count and the artifact. Classification is UNCHANGED on purpose:
+  `diff_map.parse` emits a rangeless key for a file the diff changed without ADDING a line -- a
+  pure deletion, a binary or mode-only change, a 100%-similarity rename -- and deleting a line
+  can introduce a finding (a removed check), so classifying it on-diff is that module's
+  documented contract. What was wrong is that a truncated or hand-edited map is
+  indistinguishable from that legitimate shape; the counter is the input a later gate rule would
+  need to tell the two apart.
+- **Share reply publication and artifact roots (#2346, #1820).** Reply persistence uses the
+  common atomic JSON writer, which cleans opened staging files after failures and leaves
+  rejected paths untouched. Writers and reply placement share lexical root discovery while
+  preserving their distinct symlink policies.
+- **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
+  use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
+- **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
+  report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
+- **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
+  #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
+  before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the
+  driver's own import path imported a third-party package at MODULE level: `tools/spotbugs.py`
+  (`defusedxml`, reached through `scripts.tools`'s package body, which imports every adapter, which
+  the host probes import) and `setup_flow.py`, `discovery.py` and `setup_proposal.py` (`yaml`). A
+  checkout thinner than `pyproject.toml` therefore got a `ModuleNotFoundError` traceback out of
+  `import scripts.driver` and no document at all — loud, and it named the package, but it was not
+  the preflight. Each of those imports now sits inside the function that uses it, with no fallback
+  and no `except ImportError:` arm, so a missing package still raises loudly from the one call that
+  needs it (#2363); `ADAPTERS` stays a plain `dict`, since three test modules `mock.patch.dict` it
+  and `capture_goldens.py` enumerates it. `repo_config.read_document` now REFUSES the document when
+  `pyyaml` is absent rather than raising through `phases/readiness._matrix_row` and
+  `setup_flow._check_groups_manifest`, both of which document that they never raise. Two guards
+  pin the property. `tests/phases/test_readiness_verb.py` blocks each of the three packages in a
+  child interpreter and reads the row back: exit 1, `missing` is exactly that pip name, and no
+  `Traceback` on stderr. `tests/test_workflow_pins.py` asserts by AST that no module the driver's,
+  `run_tools`' or `security_gate`'s import chain loads names a non-stdlib, non-local module at
+  module level. It walks every statement not inside a function body — `try`/`except*`/`finally`,
+  `if`, `with`, `for`, `while`, `match`, `class` — rather than enumerating shapes worth descending
+  into, because a guard that knows six shapes is a guard the seventh walks past; a module-level
+  `try:`/`except ImportError:` is refused not because it needs the package at import time (it does
+  not) but because an except arm that rebinds the name is the fallback #2363 forbids and one that
+  passes leaves the name unbound for a `NameError` at first use, while an unguarded import takes the
+  row down. It selects the modules by FILE rather than by `sys.modules` name, which is how the
+  fourth offender was found at all. The same file's gate-closure guard now ALSO reads those IMPORTS,
+  beside the `RUNTIME_PACKAGES` proxy it keeps: every third-party module those chains import, nested
+  ones included, maps through `importlib.metadata.packages_distributions()` to a distribution pinned
+  in `.github/requirements-gate.txt`, and its PEP 503 normalisation is now the full `[-_.]+` fold.
+  The two cover different sets and both are load-bearing — the gate's chain imports `jsonschema` and
+  `defusedxml` but never `yaml`, so the proxy is the only guard keeping `pyyaml` in the closure.
+- **A rejected diff-hunks artifact is disclosed in the report (#2169, #1783, ARC-B8 follow-up).**
+  Three gaps the B8 disclosure left. An unreadable or non-object `diff-hunks.json` yields a payload
+  with no `base`, so the review degrades to a non-delta one and `meta.coverage.delta` is null --
+  the same null a run that was never passed `--diff-hunks` writes; only stderr said otherwise, and
+  a `driver run` keeps a child's stderr only on failure. The loader counted a whole lost path (a
+  `hunks` value that is not a list) as `ranges_dropped += 1`, the same as one malformed pair, so a
+  lost file read as a lost line range -- yet every finding in that file classifies off-diff, which
+  a narrowed file does not. And `meta.coverage.delta` was `{"type": ["object","null"]}` with no
+  `properties`, so `tests/test_schema_parity.py`'s walk treated it as a deliberately open leaf and
+  never descended: fourteen keys with no schema entry and no parity coverage, #1602 in miniature
+  inside #1602's own guard. So: a sibling `meta.coverage.delta_artifact` --
+  `payload_malformed`, `ranges_dropped`, `paths_dropped` -- an object whenever a `--diff-hunks`
+  path was GIVEN and a read attempted, active delta or not, and null when none was, so its
+  presence alone is the fact; a separate `paths_dropped` counter in the loader, in both report
+  blocks, in the one stderr line and in the zero-hunk certification reason, which now names a
+  loader drop as the cause instead of calling it indistinguishable from an empty change; and
+  every key of both blocks pinned under `properties` with a description, with a parity test that
+  the schema's pinned key set EQUALS the key set the fixture's report emits, so the open leaf
+  cannot return silently. `meta.coverage.delta` itself is untouched, and its sibling's schema
+  node states that contract. The seven values the block copies verbatim out of the artifact are
+  described but NOT type-pinned -- a schema error is terminal (`ARTIFACT_INVALID`) and nothing
+  normalizes them at the read, so pinning them would let a hand-supplied artifact end a paid-for
+  run; the driver's discovery phase rewrites or removes that file, so the exposure is the direct
+  `synthesize.py --diff-hunks` path rather than a `driver run`. #2169's third gap asked for the
+  walk, and the pin that closes it stops at the keys this controller computes; #2382 is the
+  follow-up that normalizes those seven at the read and then pins them. Still out of scope, as
+  #2169 says, and now filed as #2381: a partial map naming a file with no ranges
+  (`{"c.py": []}`) classifies every finding in it on-diff with no warning, a fail-open this
+  change does not touch.
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same
   statement read from either side": an enforced entry whose agent is not the checkpoint's shell,

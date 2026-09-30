@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import scripts.evidence_sections as evidence_sections
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
+    import scripts.integrity_messages as integrity_messages
     import scripts.ocrdb as ocrdb
     import scripts.safe_write as safe_write
 else:
@@ -21,6 +22,7 @@ else:
         import scripts.evidence_sections as evidence_sections
         import scripts.host_disclosure as host_disclosure
         import scripts.hosts as hosts
+        import scripts.integrity_messages as integrity_messages
         import scripts.ocrdb as ocrdb
         import scripts.safe_write as safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
@@ -28,6 +30,7 @@ else:
         import evidence_sections
         import host_disclosure
         import hosts
+        import integrity_messages
         import ocrdb
         import safe_write
 
@@ -105,6 +108,7 @@ h2 { font-size: 18px; font-weight: 600; }
 .badge.gate-inconclusive { background: #8a6d1f; color: #faf8f2; }
 .not-certified { margin: 8px 0; padding: 8px 12px; border-left: 4px solid #8a6d1f;
   background: #2e2814; color: #e8d9a0; font-weight: 600; }
+.integrity-detail { margin-top: .35rem; font-family: var(--mono); font-size: 11px; }
 /* Spec 5.1 surface 3. Deliberately not styled as a warning: it renders on
    EVERY report, and the all-proven case is a statement, not an alarm. */
 .host-caps { margin: 8px 0; padding: 8px 12px; border-left: 4px solid var(--accent-border);
@@ -529,15 +533,10 @@ def _render_header(report):
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # #calibration: health belongs in the header, not buried. The letter grade is
-    # a worst-severity rollup, so it saturates -- across six calibration targets
-    # every one graded D or F off the same ceiling while health ranged 35.68 to
-    # 70.45. The grade answers "does this gate?"; health answers "how much of
-    # this codebase is clean?", and only the second discriminated between them.
-    # Deliberately NOT banded: six targets, none of them a healthy control, is
-    # not a sample to draw healthy/fair/poor thresholds from. The number plus its
-    # inputs is honest; a label would not be.
-    # Health never touches the gate (#1057) -- this is presentation only.
+    # Health never affects the gate (#1057). Across six calibration targets, every
+    # grade was D/F while health ranged from 35.68 to 70.45. That sample is too
+    # small for healthy/fair/poor bands, so the number and inputs show how much of
+    # the measured codebase is clean without assigning a qualitative label.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(
@@ -567,17 +566,19 @@ def _render_header(report):
                 _escape("{:,}".format(health.get("total_loc", 0))),
                 _escape("{:,}".format(health.get("weighted_defect", 0))),
                 _escape(str(health["score"]))))                     # popover
-    parts += [
-        "</div>",
-    ]
+    parts.append("</div>")
     if summary.get("coverage_certified") is False:
         note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
-        parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s</div>"
-                     % _escape(note))
+        details = "".join(
+            "<div class='integrity-detail'>%s</div>" % _escape(sentence)
+            for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
+        parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
+                     % (_escape(note), details))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
-    unverified = int(ev.get("unverified", 0))
+    unverified = sum(evidence_sections.is_unverified_finding(f)
+                     for f in report.get("findings", []))
     tool_reported = int(ev.get("tool_reported", 0))
     cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
     policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
@@ -1138,8 +1139,8 @@ def _render_card(finding, delta=None):
     category = finding.get("category", "general")
     confidence = finding.get("confidence", "NOTE")
     provenance_html = _render_provenance(finding.get("provenance"))
-    quality_html = _render_citation_quality(
-        (finding.get("evidence") or {}).get("citation_quality"))
+    finding_evidence = evidence_sections.finding_evidence(finding)
+    quality_html = _render_citation_quality(finding_evidence.get("citation_quality"))
     delta_badge = ""
     if delta:
         delta_badge = (
@@ -1158,7 +1159,7 @@ def _render_card(finding, delta=None):
     # finding whose second opinion is silently missing. The paths are advisor-
     # supplied (already redacted upstream by render.redact_report_secrets) and
     # escaped here like every other agent string.
-    missing = [m for m in ((finding.get("evidence") or {}).get("missing_evidence") or [])
+    missing = [m for m in (finding_evidence.get("missing_evidence") or [])
                if isinstance(m, str) and m]
     if missing:
         details.append("<dt>Backup could not see</dt><dd>%s</dd>"
@@ -1445,9 +1446,8 @@ def _render_findings(report):
     file_to_group = _file_to_group(report)
     has_profile = len(file_to_group) > 0
     labels = _group_display_labels(report)
-    # #1774: one owner for the split, which is NOT the header's "verified" set.
-    main_list = [f for f in findings if not evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
-    unverified = [f for f in findings if evidence_sections.is_unverified((f.get("evidence") or {}).get("status"))]
+    main_list = [f for f in findings if not evidence_sections.is_unverified_finding(f)]
+    unverified = [f for f in findings if evidence_sections.is_unverified_finding(f)]
 
     by_sev: dict[str, list[dict[str, Any]]] = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []

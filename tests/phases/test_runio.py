@@ -456,6 +456,73 @@ class TestAtomicArtifactWrite(unittest.TestCase):
                 runio._write_json(p, {"total": 2})
             with open(p) as fh:
                 self.assertEqual(json.load(fh), {"total": 1})   # never truncated
+            self.assertFalse(os.path.lexists(p + ".tmp"))
+
+    def test_atomic_failure_cleans_the_stage_without_replacing_the_artifact(self):
+        real_open = runio._open_w_nofollow
+
+        @contextlib.contextmanager
+        def close_failure(path):
+            with real_open(path) as stream:
+                yield stream
+            raise OSError("close failed")
+
+        def partial_dump(data, stream, **kwargs):
+            stream.write('{"partial":')
+            raise ValueError("serialization failed")
+
+        failures = ((runio.json, "dump", partial_dump),
+                    (runio, "_open_w_nofollow", close_failure),
+                    (runio.os, "replace", OSError("replace failed")))
+        for owner, name, failure in failures:
+            with self.subTest(stage=name), tempfile.TemporaryDirectory() as root:
+                path = os.path.join(root, "artifact.json")
+                runio._write_json(path, {"old": True})
+                with mock.patch.object(owner, name, side_effect=failure), \
+                     self.assertRaises((OSError, ValueError)):
+                    runio._write_json(path, {"new": True})
+                with open(path, encoding="utf-8") as stream:
+                    self.assertEqual(json.load(stream), {"old": True})
+                self.assertEqual(os.listdir(root), ["artifact.json"])
+
+    def test_a_failed_open_does_not_remove_an_unopened_stage(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "artifact.json")
+            with open(path + ".tmp", "w", encoding="utf-8") as stream:
+                stream.write("KEEP")
+            with mock.patch.object(runio, "_open_w_nofollow", side_effect=OSError("denied")), \
+                 self.assertRaises(OSError):
+                runio._write_json(path, {})
+            with open(path + ".tmp", encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "KEEP")
+
+    def test_cleanup_failure_keeps_the_original_write_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "artifact.json")
+            runio._write_json(path, {"old": True})
+            with mock.patch.object(runio.json, "dump", side_effect=OSError("disk full")), \
+                 mock.patch.object(runio.os, "remove", side_effect=OSError("cleanup denied")), \
+                 self.assertRaisesRegex(OSError, "disk full"):
+                runio._write_json(path, {"new": True})
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {"old": True})
+
+    def test_successful_publication_leaves_a_later_writers_stage_alone(self):
+        real_replace = os.replace
+
+        def publish_then_start_next_writer(source, destination):
+            real_replace(source, destination)
+            with open(source, "w", encoding="utf-8") as stream:
+                stream.write("NEXT WRITER")
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "artifact.json")
+            with mock.patch.object(runio.os, "replace", side_effect=publish_then_start_next_writer):
+                runio._write_json(path, {"ok": True})
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {"ok": True})
+            with open(path + ".tmp", encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "NEXT WRITER")
 
     def test_a_plain_write_that_fails_does_truncate_it(self):
         # The contrast, so the flag is not decorative: this is what the reader

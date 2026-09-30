@@ -34,7 +34,9 @@ import tempfile
 import unittest
 
 import scripts.hosts as hosts
+import scripts.ocrdb as ocrdb
 import scripts.tools_manifest as tools_manifest
+import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -169,7 +171,7 @@ def _build_report(tmpdir):
         json.dump({"groups": [{"name": "app", "files": ["src/app.py"],
                                "panels": ["SEC", "COD"]}]}, fh)
 
-    findings_path = os.path.join(run_dir, "findings-app-security.json")
+    findings_path = os.path.join(run_dir, "agent-findings.json")
     with open(findings_path, "w", encoding="utf-8") as fh:
         json.dump({"findings": [_agentic(n) for n in range(1, 9)]}, fh)
 
@@ -469,6 +471,72 @@ class TestSchemaParity(unittest.TestCase):
                          "proxied:pypi.org",
                          "no egress posture: that value is unwalked")
 
+    def test_the_delta_blocks_are_property_pinned_so_the_walk_descends(self):
+        """#2169: `meta.coverage.delta` was `{"type": ["object","null"]}` with no
+        `properties`, so `_undescribed` above treated it as a deliberately open
+        leaf and never descended -- its fourteen keys had no schema entry and no
+        parity coverage, which is #1602 in miniature inside a node #1602's own
+        guard walks past. The walk below cannot catch that regression: an open
+        leaf has nothing to be undescribed.
+
+        So assert the descent itself, from both ends. The schema's pinned key set
+        for each block must EQUAL the key set the fixture's report emits there --
+        a producer key with no schema entry fails here, and a schema entry no
+        producer writes fails here too, which is the half a one-directional walk
+        can never see."""
+        cov = self.report["meta"]["coverage"]
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            pinned = set((node[key].get("properties") or {}))
+            self.assertTrue(pinned, "%s is an open leaf again: the walk in "
+                                    "test_no_report_key_is_undescribed_by_the_"
+                                    "schema descends into `properties` only, so "
+                                    "an unpinned object is never checked" % key)
+            self.assertEqual(pinned, set(cov[key] or {}),
+                             "meta.coverage.%s: the schema pins %s and the "
+                             "fixture's report emits %s"
+                             % (key, sorted(pinned), sorted(cov[key] or {})))
+        # Vacuity: an empty `delta` block would satisfy the equality above only
+        # by making both sides empty, and the fixture DOES run `--diff-hunks`.
+        self.assertIsNotNone(cov["delta"], "the fixture ran no delta review")
+        self.assertIsNotNone(cov["delta_artifact"],
+                             "the fixture read no diff-hunks file")
+
+    def test_every_artifact_carried_delta_key_is_type_pinned(self):
+        """#2382: the seven keys `verdicts._delta_meta` copies verbatim out of the
+        diff-hunks artifact are type-pinned, with the type the loader's repair
+        table enforces at the read -- one table, so the pin and the repair cannot
+        pin different types for one key.
+
+        They were described and UNPINNED on purpose until the repair existed: a
+        schema error is terminal, so a pin over target-authored data could end a
+        paid-for run. Neither the description rule above nor the key-set equality
+        can see a type going missing, because both are satisfied by a bare
+        description."""
+        json_types = {str: "string", bool: "boolean", int: "integer"}
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"][
+            "properties"]["delta"]["properties"]
+        for key, typ in delta_mod._ARTIFACT_KEY_TYPES:
+            self.assertEqual(node[key].get("type"), [json_types[typ], "null"],
+                             "meta.coverage.delta.%s: the loader repairs this key "
+                             "to %s-or-null at the read (#2382), so the schema has "
+                             "to pin it" % (key, json_types[typ]))
+
+    def test_every_pinned_delta_key_is_described(self):
+        """#2169: a `properties` entry with a type and no prose is a pin, not a
+        contract -- and the walk that fails on an UNDESCRIBED key cannot see it,
+        because the key is described the moment it is listed."""
+        schema = _load_schema()
+        node = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        for key in ("delta", "delta_artifact"):
+            for name, sub in sorted((node[key].get("properties") or {}).items()):
+                self.assertTrue((sub.get("description") or "").strip(),
+                                "meta.coverage.%s.%s has no description: a "
+                                "consumer cannot tell what the value means"
+                                % (key, name))
+
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)
         self.assertEqual(
@@ -479,6 +547,35 @@ class TestSchemaParity(unittest.TestCase):
             "means and who writes it) -- a key no schema describes is a "
             "contract no consumer can validate against."
             % (len(drift), "\n  ".join(drift)))
+
+
+class TestDomainRosterParity(unittest.TestCase):
+    """Published enums track the runtime roster, including its ZZZ exception."""
+
+    def test_finding_domains_match_the_runtime_roster_in_every_report(self):
+        schemas = ((validate_schema_mod.REPORT_SCHEMA, "findings"),
+                   (validate_schema_mod.X0X_SCHEMA, "candidates"),
+                   ("strain-report-schema.json", "signals"))
+        for name, collection in schemas:
+            with self.subTest(schema=name):
+                with open(os.path.join(validate_schema_mod.REFERENCE_DIR, name),
+                          encoding="utf-8") as stream:
+                    schema = json.load(stream)
+                enum = schema["properties"][collection]["items"]["properties"]["domain"]["enum"]
+                # Comparing sorted lists also rejects duplicate enum members.
+                self.assertEqual(sorted(enum), sorted(ocrdb.DOMAIN_TO_PANEL))
+
+    def test_coverage_cells_exclude_the_domainless_sentinel(self):
+        # ZZZ can describe a finding, but it never names a scheduled review cell.
+        sentinel = ocrdb.domain_of(ocrdb.UNKNOWN_DOMAIN_FALLBACK)
+        self.assertIn(sentinel, ocrdb.DOMAIN_TO_PANEL)
+        expected = sorted(set(ocrdb.DOMAIN_TO_PANEL) - {sentinel})
+        coverage = _load_schema()["properties"]["meta"]["properties"]["coverage"]
+        cells = coverage["properties"]["cells"]
+        for name in ("reviewed", "planned_pairs"):
+            with self.subTest(cells=name):
+                enum = cells["properties"][name]["items"]["items"][1]["enum"]
+                self.assertEqual(sorted(enum), expected)
 
 
 if __name__ == "__main__":

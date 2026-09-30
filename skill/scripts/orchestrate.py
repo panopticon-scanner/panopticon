@@ -394,7 +394,7 @@ def loop(args):
             if refusal:
                 return _finish(_status("error", refusal), review_root, guards, ledger,
                                namespace, mode, runner)
-            pending_ids = ", ".join(e.get("id") for e in pending)
+            pending_ids = ", ".join("%r" % e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"

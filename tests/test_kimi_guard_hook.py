@@ -519,6 +519,20 @@ class TestMain(unittest.TestCase):
         self.assertIn("deny", out)
         self.assertIn("crashed", out)
 
+    def test_a_non_hashable_tool_name_denies_instead_of_crashing(self):
+        # #2394: the roster test is a set membership, so a list `tool_name`
+        # raises TypeError. Here it already runs inside `adjudicate`, INSIDE
+        # the envelope; this pins it there -- a deny, never an escaped raise.
+        code, out = self._main(
+            ["read", self.scope_path],
+            {"tool_name": ["Read"], "tool_input": {"path": self.inside}},
+            {guard.ENV_ENTRY_ID: "entry-1"})
+        self.assertEqual(code, 0)
+        body = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(body["permissionDecision"], "deny")
+        self.assertIn("crashed", body["permissionDecisionReason"])
+        self.assertIn("unhashable", body["permissionDecisionReason"])
+
     def test_a_malformed_payload_is_tolerantly_allowed(self):
         # The payload is the CLI's, not the model's -- Claude's hook makes the
         # same call, and denying on it would break legitimate work on a CLI

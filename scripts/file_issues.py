@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """File panopticon self-scan findings as GitHub issues.
 
-One issue per finding. Every body carries the finding's `fingerprint` (the
-cross-run identity) and a pointer to the generating report artifact, or the
-round trip does not close. Advisor-rejected claims are filed too, labelled
-`evidence:rejected` + `false-positive` — kept so the fleet can be measured
-against them rather than silently dropped.
+One issue per finding. Every body carries the finding's `fingerprint` (the cross-run identity)
+and a pointer to the generating report artifact, or the round trip does not close.
+Advisor-rejected claims are filed too, labelled `evidence:rejected` + `false-positive` — kept so
+the fleet can be measured against them rather than silently dropped.
 
 Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 """
@@ -31,23 +30,32 @@ except ImportError:            # pragma: no cover - not reachable on posix CI
 import triage
 from sanitize import repo_root, repo_relative, scrub, defang
 
-# skill/scripts/reconcile.py owns the part-path confinement. This filer used to
-# carry its own copy, which never received the #run9 SEC-D1C realpath hardening
-# (#1523) -- so import the one implementation rather than mirroring it again.
+# skill/scripts/reconcile.py owns the part-path confinement; this filer's own copy never got the
+# #run9 SEC-D1C realpath hardening (#1523), so import that one implementation, never mirror it.
 _SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "skill")
 if _SKILL not in sys.path:
     sys.path.insert(0, _SKILL)
 import scripts.reconcile as _reconcile  # noqa: E402
 import scripts.evidence as evidence  # noqa: E402
+import scripts.evidence_sections as evidence_sections  # noqa: E402
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
-# Defaults describe run 2 (the first filed self-scan). Each subsequent scan —
-# the cadence is a fresh self-scan every Saturday — passes its own --report,
-# --report-url, --run-label, --run-date, and --run-state-doc, so no code edit
-# is needed to file a new run. Defaults are kept only for backward-compatibility
-# and to keep body_for() callable with a bare finding in tests.
+
+# A malformed sibling field renders as ABSENT rather than aborting the run (#2372, #2398).
+def _dict(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _list(v):
+    return v if isinstance(v, list) else []
+
+
+# Defaults describe run 2 (the first filed self-scan). Each subsequent scan — the cadence is a
+# fresh self-scan every Saturday — passes its own --report, --report-url, --run-label, --run-date
+# and --run-state-doc, so no code edit is needed to file a new run. Defaults are kept only for
+# backward-compatibility and to keep body_for() callable with a bare finding in tests.
 REPORT = "docs/superpowers/2026-08-04-self-scan-report.json"
 REPORT_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
               "docs/superpowers/2026-08-04-self-scan-report.json")
@@ -67,14 +75,13 @@ _LABEL_DIAG_MAX = 60     # bound on the report-authored value a refusal names
 def _label(table, value, axis, owner):
     """``table[value]``, or a ValueError naming the value and its taxonomy.
 
-    Guessing is what this replaces: an unlisted severity used to become
-    `severity:info` and an unlisted status `evidence:unverified` -- a label
-    asserting the opposite of what happened, on a PUBLIC issue, with nothing
-    objecting. Report values are agent-authored, so the refusal collapses the
-    value to one line, bounds it with a MARKED cut and renders it with ``%r``,
-    which makes a control character inert; naming the OWNER points the fix at the
-    derivation above, not at a new hand-written row here. `main` asks this of
-    every finding before the first `create`, so the answer is never N-1 issues in.
+    Guessing is what this replaces: an unlisted severity used to become `severity:info` and an
+    unlisted status `evidence:unverified` -- a label asserting the opposite of what happened, on a
+    PUBLIC issue, with nothing objecting. Report values are agent-authored, so the refusal
+    collapses the value to one line, bounds it with a MARKED cut and renders it with ``%r``, which
+    makes a control character inert; naming the OWNER points the fix at the derivation above, not
+    at a new hand-written row here. `main` asks this of every finding before the first `create`, so
+    the answer is never N-1 issues in.
     """
     if value in table:
         return table[value]
@@ -90,7 +97,7 @@ def labels_for(f, rejected=False):
     out = ["self-scan"]
     out.append(_label(SEV_LABEL, str(f.get("severity") or "INFO").upper(),
                       "severity", "SEV_ORDER"))
-    status = (f.get("evidence") or {}).get("status") or "unverified"
+    status = evidence_sections.finding_status(f) or "unverified"
     out.append(_label(EV_LABEL, status, "evidence status", "EVIDENCE_STATUSES"))
     panel = f.get("panel")
     if panel:
@@ -105,8 +112,8 @@ def labels_for(f, rejected=False):
 
 
 def title_for(f):
-    loc = f.get("location") or {}
-    fname = defang((loc.get("file") or "").split("/")[-1])
+    fname = evidence.location_of(f).get("file")
+    fname = defang(fname.split("/")[-1]) if isinstance(fname, str) else ""
     t = defang(f.get("short_title") or f.get("title") or "(untitled)")
     suffix = " (%s)" % fname if fname else ""
     room = 240 - len(suffix)
@@ -117,15 +124,13 @@ def title_for(f):
 
 def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
              run_label=RUN_LABEL, run_date=RUN_DATE, run_state_doc=RUN_STATE_DOC):
-    loc = f.get("location") or {}
-    ev = f.get("evidence") or {}
-    prov = f.get("provenance") or {}
-    # #run7 COD-C3A: fingerprint + id are the report<->issue round-trip identity
-    # (reconcile_apply's FP_RE/ID_RE require a non-empty capture). Rendering an
-    # empty value as empty backticks silently breaks recovery -- the issue drops
-    # out of the recovered ledger. Fail loud instead of filing an unrecoverable
-    # issue. (The normal synthesize path always stamps both, so this only fires on
-    # a malformed / hand-built report.)
+    loc = evidence.location_of(f)
+    ev = evidence_sections.finding_evidence(f)
+    prov = evidence.provenance_of(f)
+    # #run7 COD-C3A: fingerprint + id are the report<->issue round-trip identity (FP_RE/ID_RE in
+    # reconcile_apply need a non-empty capture), so rendering an empty value as empty backticks
+    # silently drops the issue out of the recovered ledger. Fail loud instead: only a malformed
+    # or hand-built report reaches this, since synthesize always stamps both.
     if not (f.get("fingerprint") and f.get("id")):
         raise ValueError(
             "cannot file issue %r: missing round-trip identity (fingerprint=%r "
@@ -140,10 +145,10 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     if loc.get("line_start"):
         where += ":%s" % loc["line_start"]
     L.append("**Location:** `%s`" % where)
-    if f.get("occurrences", 1) > 1:
-        L.append("**Occurrences:** %d loci of this rule in this file "
-                 "(primary above)" % f["occurrences"])
-        for a in (f.get("additional_loci") or []):
+    occ = f.get("occurrences", 1)
+    if isinstance(occ, int) and not isinstance(occ, bool) and occ > 1:
+        L.append("**Occurrences:** %d loci of this rule in this file (primary above)" % occ)
+        for a in [x for x in _list(f.get("additional_loci")) if isinstance(x, dict)]:
             L.append("  - `%s:%s`" % (defang(a.get("file") or "").replace("`", "'"),
                                       a.get("line_start")))
     L.append("**Severity (impact if true):** %s   **Evidence:** `%s`   "
@@ -152,10 +157,10 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     src = defang(prov.get("discovered_by") or f.get("source") or "unknown")
     L.append("**Found by:** %s%s" % (src, "  ·  model: %s" % defang(prov["model"])
                                      if prov.get("model") else ""))
-    cites = f.get("citations") or {}
+    cites = _dict(f.get("citations"))
     flat = []
     for k in ("cwe", "owasp", "cve"):
-        for c in (cites.get(k) or []):
+        for c in [x for x in _list(cites.get(k)) if isinstance(x, (str, dict))]:
             cid = defang(c if isinstance(c, str) else c.get("id", str(c))).replace("`", "'")
             flat.append(cid)
     if flat:
@@ -173,10 +178,9 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
         L.append("\n## %s\n\n%s" % (verb, defang(reasoning)))
     if ev.get("verified_by"):
         verified_by = ev["verified_by"]
-        # #run11 COD-D3C: derive_evidence returns this as a LIST in some
-        # branches and a bare STRING in others ("tool:bandit", "agent:advisor").
-        # Iterating a string yields CHARACTERS, so the public issue body read
-        # "a, g, e, n, t, :, a, ..." -- one identity is a one-element list.
+        # #run11 COD-D3C: derive_evidence returns this as a LIST in some branches and a bare
+        # STRING in others ("tool:bandit", "agent:advisor"). Iterating a string yields CHARACTERS,
+        # so the public issue body read "a, g, e, ..." -- one identity is a one-element list.
         if isinstance(verified_by, str):
             verified_by = [verified_by]
         L.append("\n**Corroborating panels:** %s" % ", ".join(
@@ -201,11 +205,10 @@ REPO_SLUG = "panopticon-scanner/panopticon"
 
 LEDGER = ".panopticon/filed-issues.json"
 
-# #run11 DAT-F2A: the ledger used to be a bare {key: url} map with no version,
-# so a key-format change was detected by COUNTING '|' fields -- and a key the
-# heuristic misread (a corrupt one, a future shape, or a sibling filer's
-# '|'-free id) was carried through unmigrated and silently orphaned, never again
-# recognised as already-filed. v2 states the format instead of sniffing it.
+# #run11 DAT-F2A: the ledger used to be a bare {key: url} map with no version, so a key-format
+# change was detected by COUNTING '|' fields -- and a key the heuristic misread (a corrupt one, a
+# future shape, or a sibling filer's '|'-free id) was carried through unmigrated and silently
+# orphaned, never again recognised as already-filed. v2 states the format instead of sniffing it.
 LEDGER_SCHEMA_VERSION = 2
 
 
@@ -278,12 +281,11 @@ def load_ledger(path=LEDGER):
     except FileNotFoundError:
         return {}                    # no ledger yet -> legitimate first run
     except (OSError, ValueError) as e:
-        # #run9 COD-B1A: a CORRUPT or unreadable (but PRESENT) ledger is NOT an
-        # empty one. Returning {} reset the dedup state, so main()'s
-        # `key_for(f, rej) not in ledger` treated every already-filed finding as
-        # new and RE-FILED it -- mass duplicates. Fail loud so the operator
-        # restores/repairs the ledger; deleting it deliberately (-> FileNotFound
-        # above) is the explicit way to start fresh.
+        # #run9 COD-B1A: a CORRUPT or unreadable (but PRESENT) ledger is NOT an empty one.
+        # Returning {} reset the dedup state, so main()'s `key_for(f, rej) not in ledger` treated
+        # every already-filed finding as new and RE-FILED it -- mass duplicates. Fail loud so the
+        # operator restores/repairs it; deleting it deliberately (-> FileNotFound above) is the
+        # explicit way to start fresh.
         raise RuntimeError(
             "ledger %s is present but unreadable/corrupt (%s); refusing to proceed "
             "-- treating it as empty would re-file every finding as a duplicate. "
@@ -294,10 +296,9 @@ def load_ledger(path=LEDGER):
 def _ledger_lock(path):
     """Exclusive lock for one read-modify-write of the ledger.
 
-    Without it two filers each read the ledger at start-up and whichever wrote
-    last erased the other's entries (#run11 DAT-F1C) -- and a lost entry is a
-    DUPLICATE public issue on the next run. The lock lives beside the ledger
-    rather than on it, so it survives the atomic os.replace below."""
+    Without it two filers each read the ledger at start-up and whichever wrote last erased the
+    other's entries (#run11 DAT-F1C) -- and a lost entry is a DUPLICATE public issue on the next
+    run. The lock lives beside the ledger, not on it, so it survives the atomic os.replace."""
     if fcntl is None:                      # pragma: no cover - posix in CI
         yield
         return
@@ -354,7 +355,7 @@ resolve_part_path = _reconcile._resolve_part_path
 
 
 def key_for(f, rejected):
-    loc = f.get("location") or {}
+    loc = evidence.location_of(f)
     return make_ledger_key(
         f.get("fingerprint"),
         f.get("id"),
@@ -372,10 +373,9 @@ GH_CREATE_TIMEOUT = 60
 def _gh_bin():
     """The same trusted resolution `scripts/triage.py` uses (#1650 R1).
 
-    This module CREATES public issues as the automation account, so resolving
-    its `gh` off the ambient PATH was the same CWE-427 shape triage was
-    hardened against -- and it left the odd halfway state of a built env
-    beside an unhardened argv[0] in the same `subprocess.run`.
+    This module CREATES public issues as the automation account, so resolving its `gh` off the
+    ambient PATH was the same CWE-427 shape triage was hardened against -- and it left the odd
+    halfway state of a built env beside an unhardened argv[0] in the same `subprocess.run`.
     """
     return triage.gh_bin()
 
@@ -500,11 +500,10 @@ def _preflight(repo, runner):
 def find_existing_issue(title, runner, repo=REPO_SLUG, *, intent=None):
     """Adopt one exact operation marker only from a complete bounded response.
 
-    Legacy title-only calls retain their positional/keyword interface and
-    return None without querying: a title cannot prove operation identity.
-    Explicit intent enables strict reconciliation and raises if unresolved.
-    Search indexing may lag acceptance. Even an empty result cannot authorize
-    replay. A full page, malformed row, or duplicate marker is inconclusive.
+    Legacy title-only calls retain their positional/keyword interface and return None without
+    querying: a title cannot prove operation identity. Explicit intent enables strict
+    reconciliation and raises if unresolved. Search indexing may lag acceptance. Even an empty
+    result cannot authorize replay. A full page, malformed row or duplicate marker is inconclusive.
     """
     if intent is None:
         return None
@@ -650,7 +649,11 @@ def main():
 
     # Load every continuation before any issue creation or ledger access. The
     # shared loader confines both parts and the rejected-claim spill file.
-    report = _reconcile.load_report(a.report)
+    try:
+        report = _reconcile.load_report(a.report)
+    except ValueError as exc:                 # #2373: one reason, not a traceback
+        print("file_issues: %s" % exc, file=sys.stderr)
+        return 2
     findings = report["findings"]
     print("loaded %d finding(s) and %d rejected claim(s)" % (
         len(findings), len(report["discarded_claims"])), file=sys.stderr)
@@ -694,4 +697,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

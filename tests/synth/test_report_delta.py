@@ -1,6 +1,7 @@
 """Delta classification, coverage, and gate contracts."""
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -435,3 +436,162 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
         note = rep["summary"]["coverage_note"]
         self.assertIn("zero-hunk delta gate", note)
         self.assertIn("1 gate-eligible finding(s)", note)
+
+
+class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
+    """#2169, end to end through the report builder: a run rejected the
+    diff-hunks artifact, said so on stderr, and published a report in which the
+    fact did not appear. The sibling `meta.coverage.delta_artifact` is the fix,
+    and its schema node in `report-schema.json` says why it has the shape it
+    has and what it deliberately does NOT change about `meta.coverage.delta`."""
+
+    def _findings(self):
+        return [{"id": "A-1", "title": "t", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                 "location": {"file": "a.py", "line_start": 11}}]
+
+    def _coverage(self, raw=None, payload=None, with_flag=True, findings=None,
+                  group_files=("a.py",)):
+        """`meta.coverage` for a run handed this artifact, or none at all."""
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "diff-hunks.json")
+            if raw is not None or payload is not None:
+                with open(hp, "w", encoding="utf-8") as fh:
+                    fh.write(raw if raw is not None else json.dumps(payload))
+            with contextlib.redirect_stderr(io.StringIO()):
+                delta = delta_mod.DeltaContext.from_args(_cli_args(
+                    diff_hunks=hp if with_flag else None, fail_on="high"))
+            rep = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
+                    gate_unverified=True),
+                findings=findings_mod.FindingSet(
+                    findings=self._findings() if findings is None else findings),
+                delta=delta,
+                plan=plan_mod.PlanInputs(
+                    groups_meta=[{"name": "g1", "files": list(group_files)}]),
+            ))
+            return rep["meta"]["coverage"]
+
+    def test_an_unreadable_artifact_is_named_in_the_report(self):
+        cov = self._coverage(raw="{not json")
+        self.assertIsNone(cov["delta"])            # still not a delta review
+        self.assertEqual(cov["delta_artifact"],
+                         {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
+
+    def test_a_non_object_artifact_is_named_in_the_report(self):
+        cov = self._coverage(payload=["not", "an", "object"])
+        self.assertIsNone(cov["delta"])
+        self.assertEqual(cov["delta_artifact"],
+                         {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
+
+    def test_no_diff_hunks_flag_leaves_both_keys_null(self):
+        # The distinction the whole change is about: nothing was read, so there
+        # is nothing to report about a read -- and `delta_artifact` is PRESENT
+        # and null rather than absent, so its absence can never be mistaken for
+        # a producer that failed to run.
+        cov = self._coverage(with_flag=False)
+        self.assertIsNone(cov["delta"])
+        self.assertIn("delta_artifact", cov)
+        self.assertIsNone(cov["delta_artifact"])
+
+    def test_an_active_delta_carries_both_blocks(self):
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 1,
+                                      "hunks": {"a.py": [[10, 12]]}})
+        self.assertIsNotNone(cov["delta"])
+        self.assertEqual(cov["delta"]["paths_dropped"], 0)
+        self.assertEqual(cov["delta_artifact"],
+                         {"payload_malformed": None,
+                          "ranges_dropped": 0, "paths_dropped": 0,
+                          "paths_without_ranges": 0,
+                          "paths_emptied_by_drops": 0, "keys_repaired": []})
+
+    def test_the_two_blocks_agree_about_the_losses(self):
+        # One loader record behind both, so the active block and the sibling
+        # cannot disagree about what reading the artifact cost.
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 2,
+                                      "hunks": {"a.py": [[10, 12], [3]],
+                                                "b.py": 7}})
+        self.assertEqual(cov["delta"]["ranges_dropped"],
+                         cov["delta_artifact"]["ranges_dropped"])
+        self.assertEqual(cov["delta"]["paths_dropped"],
+                         cov["delta_artifact"]["paths_dropped"])
+        self.assertEqual((cov["delta"]["ranges_dropped"],
+                          cov["delta"]["paths_dropped"]), (1, 1))
+
+    def test_a_named_path_with_no_range_is_published_in_both_blocks(self):
+        # #2381: the map NAMES c.py and gives it no range, so `diff_map.classify`
+        # fails open and the finding there is counted on-diff -- `on_diff_total: 2`
+        # below is that fail-open, and before this counter nothing in the report
+        # said the second of the two was admitted on the artifact's word rather
+        # than on a measured range. Nothing was dropped (both loss counters are 0)
+        # and the whole-map disclosures stay silent (`hunks_ranges` is 1), so this
+        # key is the only place the shape appears.
+        cov = self._coverage(
+            payload={"base": "main", "base_source": "explicit", "diff_context": 5,
+                     "files_changed": 2,
+                     "hunks": {"a.py": [[10, 12]], "c.py": []}},
+            group_files=("a.py", "c.py"),
+            findings=self._findings() + [
+                {"id": "A-2", "title": "in the rangeless file", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                 "location": {"file": "c.py", "line_start": 99}}])
+        self.assertEqual(cov["delta"]["paths_without_ranges"], 1)
+        self.assertEqual(cov["delta_artifact"]["paths_without_ranges"], 1)
+        self.assertEqual((cov["delta"]["ranges_dropped"],
+                          cov["delta"]["paths_dropped"]), (0, 0))
+        self.assertEqual((cov["delta"]["hunks_files"],
+                          cov["delta"]["hunks_ranges"]), (2, 1))
+        self.assertEqual(cov["delta"]["on_diff_total"], 2)
+        self.assertEqual(cov["delta"]["pre_existing_total"], 0)
+        # #2386: c.py arrived `[]`, the legitimate half of the shape.
+        self.assertEqual(cov["delta"]["paths_emptied_by_drops"], 0)
+        self.assertEqual(cov["delta_artifact"]["paths_emptied_by_drops"], 0)
+
+    def test_the_broken_half_of_the_rangeless_shape_is_published_too(self):
+        # #2386: c.py's only range was malformed, so the loader emptied its list
+        # -- a BROKEN artifact wearing the same shape as the deletion-only change
+        # above. Both blocks carry the subset, so a consumer reading the report
+        # (not the stderr line) can tell the two apart for the first time.
+        cov = self._coverage(
+            payload={"base": "main", "base_source": "explicit", "diff_context": 5,
+                     "files_changed": 2,
+                     "hunks": {"a.py": [[10, 12]], "c.py": ["nope"]}},
+            group_files=("a.py", "c.py"))
+        self.assertEqual(cov["delta"]["paths_without_ranges"], 1)
+        self.assertEqual(cov["delta"]["paths_emptied_by_drops"], 1)
+        self.assertEqual(cov["delta_artifact"]["paths_emptied_by_drops"], 1)
+        self.assertEqual(cov["delta"]["ranges_dropped"], 1)
+        self.assertEqual(cov["delta"]["paths_dropped"], 0)
+
+    def test_every_hunks_load_field_is_published_in_both_blocks(self):
+        # #2381 review, N6: schema parity binds the schema to the report and the
+        # cases above bind each counter to both blocks, but nothing bound the
+        # dataclass to its two publishers -- a field added to `HunksLoad` and
+        # forgotten in `artifact_facts` or `_delta_meta` stayed green, which is
+        # the class of omission #2169 and #2381 both were.
+        renamed = {"files": "hunks_files", "ranges": "hunks_ranges"}
+        # #2382: ONE field is published in the sibling only, and deliberately.
+        # `keys_repaired` exists to disclose a repair that can null `base`, and a
+        # nulled base leaves `delta` itself null -- so a key there could not carry
+        # it in the case it was added for. Exempted by name, so the guard still
+        # fails for the next field added to `HunksLoad` and forgotten.
+        artifact_only = {"keys_repaired"}
+        fields = {f.name for f in dataclasses.fields(delta_mod.HunksLoad)}
+        self.assertTrue(set(renamed) <= fields)
+        self.assertTrue(artifact_only <= fields)
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 1,
+                                      "hunks": {"a.py": [[10, 12]]}})
+        # the sibling publishes what the READ cost, so the two map sizes stay out
+        self.assertEqual(set(cov["delta_artifact"]), fields - set(renamed))
+        self.assertLessEqual({renamed.get(f, f) for f in fields - artifact_only},
+                             set(cov["delta"]))

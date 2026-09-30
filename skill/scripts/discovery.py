@@ -23,7 +23,6 @@ import re
 import subprocess
 import sys
 import uuid
-import yaml
 
 # This script is invoked as a standalone CLI entrypoint (``python
 # skill/scripts/discovery.py --repo-scan``) from ``driver.py``. Because
@@ -35,8 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
 # #1740 fix round 2: ONE module object, so the glob compiler this module and
 # the TOOL side share is one cache and one disclosure ledger, not two. Same
-# fallback shape as safe_write below: the standalone CLI has only
-# skill/scripts on sys.path.
+# fallback shape as safe_write below: the standalone CLI has only skill/scripts on sys.path.
 if TYPE_CHECKING:
     from scripts import groups_schema
 else:
@@ -56,8 +54,7 @@ else:
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
-# #1735: the no-follow artifact open. Fallback arm: imported with only
-# skill/scripts on sys.path.
+# #1735: the no-follow artifact open. Fallback arm: imported with only skill/scripts on sys.path.
 if TYPE_CHECKING:
     from scripts import safe_write
 else:
@@ -342,18 +339,15 @@ def collect_changed_files(repo, base=None, exclude=()):
     is a loud failure upstream, never a silent downgrade). This keeps the
     reviewed file set and the on-diff hunk map scoped to one shared base.
 
-    When ``base`` is None (legacy/no-delta callers), tries the default
-    upstream branches (main, then master) first and falls back to HEAD~1 only
-    as the last resort of THIS no-base path.
+    When ``base`` is None (legacy/no-delta callers), tries the default upstream
+    branches (main, then master) first and HEAD~1 only as THIS path's last resort.
 
-    ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped
-    from the changed set before it is returned -- the ``--pr-worktree`` caller
-    passes the root config names, the SAME ones ``diff_map.hunk_map`` excludes,
-    so the reviewed file set and the on-diff hunk map keep agreeing (the
-    ``--find-renames`` invariant below) instead of diverging on the one file
-    `_sync_config` just overwrote: that file was dispatched as reviewable PR
-    surface with no hunks for it. A plain (non-PR) delta review passes none, so
-    a real changed root config there is reviewed exactly like any other file.
+    ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped from
+    the changed set before it is returned -- the ``--pr-worktree`` caller passes the
+    root config names, the SAME ones ``diff_map.hunk_map`` excludes, so the reviewed
+    file set and the on-diff hunk map keep agreeing (the ``--find-renames`` invariant
+    below) instead of diverging on the one file `_sync_config` just overwrote. A plain
+    (non-PR) delta review passes none.
 
     Only files that still exist in the working tree are returned. Returns
     None if no git history is available.
@@ -388,18 +382,15 @@ def collect_changed_files(repo, base=None, exclude=()):
     changed = set()
     untracked = set()
     try:
-        # --find-renames: same rename semantics as diff_map.hunk_map, so the
-        # reviewed file set and the on-diff hunk map can never diverge on a
-        # similarity-threshold edge (#978).
+        # --find-renames: same rename semantics as diff_map.hunk_map, so the reviewed
+        # file set and the on-diff hunk map cannot diverge on a similarity edge (#978).
         # -z + text=False + os.fsdecode (#1739), the SAME treatment
-        # _git_listed_files already gives the whole-repo listing: without -z
-        # git C-quotes any path carrying a byte >= 0x80 (default
-        # core.quotepath) or a `"`, `\`, tab or newline (whatever quotepath
-        # says) -- `"src/caf\303\251.py"` -- and that spelling is not a file,
-        # so the isfile filter below dropped the changed file out of the
-        # reviewed set in silence. A PR author picks the filename, so that is
-        # an author-chosen exemption from delta review. core.quotepath=false
-        # is belt and braces; with -z git never quotes at all.
+        # _git_listed_files already gives the whole-repo listing: without -z git
+        # C-quotes any path carrying a byte >= 0x80 (default core.quotepath) or a
+        # `"`, `\`, tab or newline (whatever quotepath says) -- and that spelling is
+        # not a file, so the isfile filter below dropped the changed file out of the
+        # reviewed set in silence. core.quotepath=false is belt and braces; with -z
+        # git never quotes at all.
         out = _git(repo, ["-c", "core.quotepath=false", "diff", "--name-only",
                           "--diff-filter=d", "--find-renames", "-z", mb],
                    text=False)
@@ -566,6 +557,7 @@ def _capability_aliases():
     vocabulary, so a committed `Auth` group's `tests:` globs also credit
     `tests/authentication/`. Empty when the file is unreadable: aliases only
     ever ADD credit, so running without them is safe."""
+    import yaml
     try:
         import setup_proposal
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
@@ -892,23 +884,19 @@ def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
     return base, source
 
 # #1576 (run-13 OPS-4065418712): the most reviewable files one discovery hands
-# back. Repository-wide enumeration happens BEFORE exclusion, partitioning,
-# --scope narrowing and max_per_group chunking, so none of those bound it; past
-# this many files the sorted remainder is dropped, the drop is announced on
-# stderr, and `discovery.files_truncated` in groups.json says the tree was
-# larger than what was reviewed. Chosen well above any real target: the largest
-# repository in the calibration pool is ~35k files, so only a runaway or
-# hostile tree (the millions-of-tiny-files case) can reach it.
+# back. Exclusion, partitioning, the four narrowing scopes and max_per_group
+# chunking all run on the list this bound already built, so none of them bound it.
+# Chosen well above any real target: the largest repository in the calibration pool
+# is ~35k files, so only a runaway or hostile tree can reach it.
 DISCOVERED_FILES_MAX = 200_000
 
 
 def _cap_discovered(files, info):
     """`files` bounded to DISCOVERED_FILES_MAX, disclosing what it dropped.
 
-    The input is sorted, so the kept prefix is deterministic rather than
-    whichever paths the filesystem or the index happened to yield first, and
-    both discovery methods get the same treatment. Records `files_seen` /
-    `files_truncated` on `info` when the caller supplied one.
+    The input is sorted, so the kept prefix is deterministic rather than whichever
+    paths the filesystem or the index happened to yield first. Records `files_seen`
+    / `files_truncated` on `info` when the caller supplied one.
     """
     seen = len(files)
     if info is not None:
@@ -928,19 +916,16 @@ def _git_listed_files(repo, info=None):
 
     ``git ls-files --cached --others --exclude-standard`` = tracked files plus
     intentional-but-uncommitted new files, minus everything the TARGET's own
-    .gitignore excludes (#500: a raw walk swept 17,253 files on a repo whose
-    git surface was 528 — 94% gitignored runtime data, including encrypted
-    user blobs).
+    .gitignore excludes (#500: a raw walk swept 17,253 files on a repo whose git
+    surface was 528 — 94% gitignored runtime data, including encrypted blobs).
 
     None means "walk instead", and the reasons are told apart (ARC-1940929242):
     a tree with no ``.git`` entry is not a worktree -- the ordinary case, and it
     says nothing -- while anything else is a FAILURE, named on stderr and
     recorded as ``info["git_failure"]`` for the discovery block, because the walk
-    then reviews a tree the target's .gitignore never scoped: the downgrade #500
-    made this the surface to avoid, and it used to happen in silence. The scan
-    still runs, since a fallback nobody can see is the defect, not the fallback.
-    The except names what `_git` raises; `ls-files` is on the probe's allowlist,
-    so it never preflights and never refuses (#2006 fix round 2, M7).
+    then reviews a tree the target's .gitignore never scoped. The scan still runs:
+    a fallback nobody can see is the defect, not the fallback. `ls-files` is on the
+    probe's allowlist, so it never preflights and never refuses (#2006 R2 M7).
     """
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
@@ -967,29 +952,43 @@ def _is_confined_regular(repo, rel):
     return (not os.path.islink(full) and os.path.isfile(full)
             and _within(repo, full))
 
-def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
+_PRUNE_CLASSES = ("dot_path", "exclude_dir", "git_segment")   # #2377 disclosure
+
+def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile, info=None):
     """Apply the discovery policy to a candidate path list.
 
-    Shared by the git listing and the `--scope-changed` branch (#2272), so both
-    get the treatment the walk applies inline: EXCLUDE_DIRS /
-    EXCLUDE_DIR_GLOBS on every ancestor segment (a repo that TRACKS node_modules
-    still shouldn't review it), the one ``dot_paths.allowed`` policy, the
-    fixture-corpus pruning (#434, recorded in ``pruned_fixtures`` for disclosure),
-    and — git path only in practice — dropping anything with a ``.git`` segment: a
-    gitlink or nested-repo artifact is never a reviewable file (#500 saw
-    ``design-system/.git`` leak into group lists). ``isfile`` is injected so the
-    pure filtering logic stays unit-testable; on the git path it also drops gitlink
-    directory entries and index entries deleted from disk.
+    Shared by the git listing and the `--scope-changed` branch (#2272), so both get
+    the treatment the walk applies inline: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every
+    ancestor segment (a repo that TRACKS node_modules still shouldn't review it), the
+    one ``dot_paths.allowed`` policy, the #434 fixture prune (recorded in
+    ``pruned_fixtures``), and the ``.git``-segment drop: a gitlink or nested-repo
+    artifact is never a reviewable file (#500 saw ``design-system/.git`` leak into
+    group lists). ``isfile`` is injected so the pure filtering logic stays
+    unit-testable; on the git path it also drops gitlink directory entries and index
+    entries deleted from disk.
+
+    Everything but the fixture prune dropped SILENTLY on both paths until #2377, so
+    ``info``, when a dict, gets a per-class count in ``info["pruned"]`` -- counted
+    HERE, where one place serves both paths, and printed once per run from the
+    block rather than once per path.
     """
+    pruned = dict.fromkeys(_PRUNE_CLASSES, 0)
+    if info is not None:
+        info["pruned"] = pruned              # a FRESH dict: the last pass wins
     out = []
     for rel in sorted(set(paths)):
         parts = rel.split("/")
-        if ".git" in parts or not dot_paths.allowed(rel):
+        if ".git" in parts:                  # first: it is also a dot path
+            pruned["git_segment"] += 1
+            continue
+        if not dot_paths.allowed(rel):
+            pruned["dot_path"] += 1
             continue
         skip = False
         for j, seg in enumerate(parts[:-1]):
             prefix = "/".join(parts[:j + 1])
             if _is_excluded_dir(seg):
+                pruned["exclude_dir"] += 1
                 skip = True
                 break
             if not include_fixtures and _is_fixture_dir(prefix):
@@ -1010,15 +1009,12 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
     .gitignore defines the surface (#500); non-git targets fall back to an
     os.walk that prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS and asks
     ``dot_paths.allowed`` about every dot-path, exactly as the git filter does.
-    ``info`` (a dict, when supplied) records which ``method`` ran, and any
-    ``git_failure`` behind a fallback, so the artifact can disclose both.
+    ``info`` (a dict, when supplied) records which ``method`` ran, any
+    ``git_failure`` behind a fallback, and a null ``pruned`` when the walk runs
+    (it prunes inline and counts nothing), so the artifact can disclose each.
 
-    Unless ``include_fixtures`` (redteam), test-fixture corpus roots
-    (``_is_fixture_dir``) are pruned too, each appended to ``pruned_fixtures``
-    when a list is supplied so the caller can disclose the exclusion.
-
-    Both methods return at most ``DISCOVERED_FILES_MAX`` paths (#1576), with
-    the count and any truncation recorded on ``info`` for the artifact.
+    Both methods return at most ``DISCOVERED_FILES_MAX`` paths (#1576), with the
+    count and any truncation recorded on ``info`` for the artifact.
     """
     listed = _git_listed_files(repo, info)
     if listed is not None:
@@ -1026,9 +1022,10 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
             info["method"] = "git-ls-files"
         return _cap_discovered(_filter_reviewable(
             listed, include_fixtures, pruned_fixtures,
-            isfile=lambda rel: _is_confined_regular(repo, rel)), info)
+            isfile=lambda rel: _is_confined_regular(repo, rel), info=info), info)
     if info is not None:
         info["method"] = "walk"
+        info["pruned"] = None            # prunes inline, counts nothing: not measured
     out = []
     for dirpath, dirnames, filenames in os.walk(repo):
         rel_dir = os.path.relpath(dirpath, repo)
@@ -1054,46 +1051,56 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                 out.append(rel)
     return _cap_discovered(sorted(out), info)
 
-# #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth`
-# on every groups.json entry for the 4.x plan contract retired in #1444 (readers:
-# plan_contract's DEPTH_ORDER, dispatch.load_group_assignment, synthesize's
-# _load_group_assignments). Nothing reads `depth` now, and the 5.x review axis is
-# the (domain, group) cell, not a per-group depth. is_architecture_file /
-# is_database_file survive: they still feed compute_group_panels.
+# #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth` on
+# every groups.json entry for the 4.x plan contract retired in #1444. Nothing reads
+# `depth` now, and the 5.x review axis is the (domain, group) cell, not a per-group
+# depth. is_architecture_file / is_database_file survive: they feed group panels.
 
 def _discovery_block(info):
-    """The `discovery` block of groups.json: how the surface was found and how
-    much of it there was (#1576).
+    """The `discovery` block of groups.json: how the surface was found, how much
+    of it there was (#1576), and WHICH surface that is (#2376).
 
-    `files_truncated` is published on every scan, 0 included, for the same
-    reason `excluded_block` publishes an empty glob list: it scoped the run,
-    and a reader comparing two runs needs to see that this one reviewed the
-    whole tree rather than a prefix of it.
+    `files_truncated` and `pruned` are published on every scan, 0 included, for
+    the same reason `excluded_block` publishes an empty glob list: they scoped the
+    run, and a reader comparing two runs needs to see that this one reviewed the
+    whole tree rather than a prefix of it. `pruned` is null -- NOT zeros -- wherever
+    nothing counted the drops: the walk path prunes inline and counts nothing, and a
+    zero nobody measured is a false disclosure, the reading `meta.tools` gives an
+    absent manifest. `surface` is "changed" only on a --scope-changed run, whose
+    numbers then describe the delta it REVIEWED and not the listing it came from.
     """
+    counts = info.get("pruned", {})          # None (not {}) = nothing measured
     return {"method": info.get("method"),
             "files_seen": info.get("files_seen", 0),
             "files_truncated": info.get("files_truncated", 0),
+            "pruned": None if counts is None else dict(dict.fromkeys(_PRUNE_CLASSES, 0), **counts),
+            "surface": info.get("surface", "repo"),
             "git_failure": info.get("git_failure")}
+
+
+def _say_pruned(pruned, surface):
+    """One stderr line per run when the policy pruned anything (#2377)."""
+    if pruned and any(pruned.values()):
+        print("panopticon: discovery pruned %d dot-path, %d excluded-dir and %d "
+              ".git-segment path(s) from this run's %s surface"
+              % (pruned["dot_path"], pruned["exclude_dir"], pruned["git_segment"],
+                 surface), file=sys.stderr)
 
 
 def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     """Build one group entry: panels, parent and chunk_of for a file set.
 
-    Two roll-up axes, deliberately separate:
-
-    `parent` is the AUTHORED axis -- the review unit this group rolls up to,
-    at most one level deep (`groups_schema`: subgroups cannot nest). A
-    subgroup passes its catalog-declared parent name; a leaf or leftover
-    chunk defaults to self-parenting (``parent or name``), so a flat
-    root config (all leaves) yields ``parent == name`` for every group.
-
-    `chunk_of` is the MACHINE axis -- the review unit this group was split
-    OUT OF when it outgrew ``max_per_group``. Chunking is an internal
-    performance decision that means nothing to whoever wrote the root config, so
-    it gets its own field instead of being recovered by parsing ``_<n>`` off
-    a name: that inference cannot tell a chunk of `API` from a committed
-    group named `API_1` (#1480). A group that was never split is its own
-    whole, so ``chunk_of == name``.
+    Two roll-up axes, deliberately separate. `parent` is the AUTHORED axis -- the
+    review unit this group rolls up to, at most one level deep (`groups_schema`:
+    subgroups cannot nest). A subgroup passes its catalog-declared parent name; a
+    leaf or leftover chunk self-parents (``parent or name``), so a flat root config
+    (all leaves) yields ``parent == name`` for every group. `chunk_of` is the
+    MACHINE axis -- the review unit this group was split OUT OF when it outgrew
+    ``max_per_group``. Chunking is an internal performance decision that means
+    nothing to whoever wrote the root config, so it gets its own field instead of
+    being recovered by parsing ``_<n>`` off a name: that inference cannot tell a
+    chunk of `API` from a committed group named `API_1` (#1480). A group that was
+    never split is its own whole, so ``chunk_of == name``.
 
     Keeping them apart is what lets `Product:API` survive being chunked. Its
     chunks carry ``chunk_of="Product:API"`` and ``parent="Product"``, so the
@@ -1123,6 +1130,7 @@ def commons_catalog():
     catalog. NOT routed through ``groups_schema.parse_groups``: this is
     shipped, tested data, not committed user input, so it needs only
     each entry's `match`."""
+    import yaml
     with open(_COMMONS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
@@ -1215,6 +1223,7 @@ _TESTS_CATALOG_PATH = os.path.join(
 def tests_catalog():
     """The Tests sweep seed globs (5.2 §4.3) as ``{"Tests": {"match": [...]}}``,
     loaded like ``commons_catalog``: shipped, tested data, no parse_groups."""
+    import yaml
     with open(_TESTS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
@@ -1454,11 +1463,11 @@ def _committed_document(repo):
         raise ValueError("; ".join(doc.errors))
     return doc
 
-def _committed_groups(repo):
+def _committed_groups(repo, doc=None):
     """(doc, mapping, errors) for the committed `groups:` value, normalized by
-    the owner with both disclosure channels printed: the read every groups
-    reader shares (#2229). `mapping` is {} with no document."""
-    doc = _committed_document(repo)
+    the owner with both disclosure channels (#2229). An already-read document
+    avoids repeating its resolver disclosures; `mapping` is {} with no document."""
+    doc = _committed_document(repo) if doc is None else doc
     raw, errors, disclosures = groups_schema.normalize_groups_mapping(
         (doc.doc or {}).get("groups"))
     _disclose_committed(disclosures)
@@ -1480,7 +1489,7 @@ def _committed_matrix(repo):
     merge, so `setup_flow.config_refusal` refuses what it cannot round trip."""
     return groups_schema.committed_bodies(_matrix_catalog(repo))
 
-def _matrix_catalog(repo):
+def _matrix_catalog(repo, committed=None):
     """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan
     / readiness: {name: {match: [...], tests, floor, exclude}} with `match`
     VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
@@ -1494,7 +1503,7 @@ def _matrix_catalog(repo):
     matrix holds, and `_declares_groups` makes an all-invalid catalog loud
     (#run8 COD-B1A). Setup refuses them outright instead
     (`setup_flow.config_refusal`): it is about to write a draft."""
-    doc, raw, errors = _committed_groups(repo)
+    doc, raw, errors = committed if committed is not None else _committed_groups(repo)
     if doc.doc is None:
         return {}
     groups, errs = groups_schema.parse_groups({"groups": raw})
@@ -1505,7 +1514,7 @@ def _matrix_catalog(repo):
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
 
-def _declares_groups(repo):
+def _declares_groups(repo, committed=None):
     """True iff the committed root config actually declares one or more groups
     (#run8 COD-B1A: an authored-but-unusable catalog must fail loud, not
     degrade to whole-repo chunking). No config and an empty `groups:` mapping
@@ -1518,10 +1527,10 @@ def _declares_groups(repo):
     `groups: API` printed the error and chunked the whole repo with rc 0
     (#2189). A value the owner cannot normalize is a declaration nothing could
     read: the case COD-B1A exists to refuse."""
-    doc, raw, errors = _committed_groups(repo)
+    doc, raw, errors = committed if committed is not None else _committed_groups(repo)
     return doc.doc is not None and bool(raw or errors)
 
-def _committed_exclude_paths(repo):
+def _committed_exclude_paths(repo, doc=None):
     """Committed top-level `exclude_paths:` globs from the root config
     (Task 4, #1136), for the run side and the setup side both -- the ONE copy
     (#2229; `setup_flow`'s alias resolves here).
@@ -1534,7 +1543,7 @@ def _committed_exclude_paths(repo):
     swallowed BOTH error sets, so a committed pruning policy could vanish from
     a setup draft with a refused symlink as its only trace. A missing config is
     still `[]`: no pruning."""
-    doc = _committed_document(repo)
+    doc = _committed_document(repo) if doc is None else doc
     if doc.doc is None:
         return []
     globs, errs = groups_schema.parse_exclude_paths(doc.doc)
@@ -1678,14 +1687,13 @@ def _repo_scan(argv=None):
                                include_fixtures=(args.security == "redteam"),
                                pruned_fixtures=pruned_fixtures,
                                info=info)
-    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching
-    # files BEFORE any grouping (build_result's default chunking, --scope-*
-    # narrowing, and catalog_groups/assign_by_catalog all consume `allf` from
-    # this point on) -- excluded files land in NEITHER a group NOR a leftover.
-    # Absent `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a
-    # no-op (byte-identical back-compat).
+    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
+    # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
+    # catalog_groups/assign_by_catalog all consume `allf` from here on) -- excluded
+    # files land in NEITHER a group NOR a leftover; with none committed it is a no-op.
     try:
-        exclude_globs = _committed_exclude_paths(repo)
+        committed_doc = _committed_document(repo)
+        exclude_globs = _committed_exclude_paths(repo, committed_doc)
     except ValueError as exc:
         # The matrix read's refusal below, and this reader runs first: since
         # #2229 a document nothing could read -- or a pruning policy the schema
@@ -1713,22 +1721,20 @@ def _repo_scan(argv=None):
                           group_files=impl + tests, security_mode=args.security)
     result["discovery"] = _discovery_block(info)
     try:
-        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
-        # In the SAME guard (#2229): it reads the same document through the same
-        # seam, and a reader that raises must not do it past the scan.
-        declares = _declares_groups(repo)
+        committed_groups = _committed_groups(repo, committed_doc)
+        catalog = _matrix_catalog(repo, committed_groups)  # SEC-3: validated matrix read
+        # Same #2229 guard: a reader that rejects this document must stop the scan.
+        declares = _declares_groups(repo, committed_groups)
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
-    # #run8 COD-B1A: a committed root config that DECLARES groups but whose
-    # entries all fail schema validation leaves `catalog` with no match-bearing
-    # group. The guard below (`if any(g.get("match") ...)`) would then silently
-    # fall back to whole-repo default chunking, discarding the operator's
-    # committed scoping with only an easy-to-miss stderr line -- corrupt and
-    # absent configs treated alike. Fail loud instead: an authored-but-
-    # unusable catalog is an error, not a request for the default. (A single bad
-    # group among good ones still degrades gracefully -- its files fall to ._N,
-    # disclosed via ungrouped_files -- because a match-bearing group survives.)
+    # #run8 COD-B1A: a committed root config that DECLARES groups but whose entries
+    # all fail schema validation leaves `catalog` with no match-bearing group, and the
+    # guard below (`if any(g.get("match") ...)`) would then silently fall back to
+    # whole-repo default chunking -- corrupt and absent configs treated alike. Fail
+    # loud instead: an authored-but-unusable catalog is an error, not a request for the
+    # default. (One bad group among good ones still degrades gracefully -- its files
+    # fall to ._N, disclosed via ungrouped_files -- because a match-bearing one lives.)
     if declares and not any(g.get("match") for g in catalog.values()):
         print("panopticon: %s declares groups but none survived schema validation "
               "(see the 'committed %s:' errors above); refusing to silently fall "
@@ -1768,13 +1774,11 @@ def _repo_scan(argv=None):
                   % args.scope_dir, file=sys.stderr)
             return 2
     elif args.scope_file is not None:
-        # `is not None`, not truthiness: `-f ""` (an unset shell variable) used
-        # to skip this branch and review the WHOLE repository at rc 0; the
-        # helper refuses an empty entry, as it does for the plural (#2023).
-        # #5.0-17 normalization + the repo clamp, via the helper the plural
-        # shares (#2023). `allf` is this branch's whole universe: nothing prunes
-        # after it, so a path the committed `exclude_paths:` already dropped has
-        # to refuse here rather than be reviewed anyway.
+        # `is not None`, not truthiness: `-f ""` (an unset shell variable) used to skip
+        # this branch and review the WHOLE repository at rc 0; the helper refuses an
+        # empty entry, normalizes (#5.0-17) and clamps to the repo, as it does for the
+        # plural (#2023). `allf` is this branch's whole universe: nothing prunes after
+        # it, so a path the committed `exclude_paths:` already dropped must refuse here.
         sf = _confine_scope_path(repo, args.scope_file, allf, "--scope-file")
         if sf is None:
             return 2
@@ -1791,20 +1795,19 @@ def _repo_scan(argv=None):
             print("could not determine changed files; is %s a git repo?" % repo,
                   file=sys.stderr)
             return 2
-        # Delta-path parity (#1136, #2272): --scope-changed rebuilds `scoped`
-        # from git-diff output, which never passed the whole-repo filters above.
-        # It asks the SAME `_filter_reviewable` with the SAME arguments as the
-        # whole-repo listing -- the one dot-path policy, EXCLUDE_DIRS/GLOBS per
-        # ancestor segment, the #434 fixture prune, the `.git`-segment drop --
-        # because a changed tracked `.venv/x.py` was reviewable surface HERE while
-        # --repo-scan pruned it. A future delta-path filter goes THROUGH that
-        # function, never beside it. Then committed exclude_paths prune, re-deriving
-        # excluded_files from the changed set, not the whole-repo count that the
-        # --scope-dir/-file/-group branches keep (they narrow the pruned `allf`).
-        scoped = _filter_reviewable(
+        # Delta-path parity (#1136, #2272, #2376): --scope-changed rebuilds `scoped`
+        # from git-diff output, which never passed the whole-repo filters above, so it
+        # asks the SAME `_filter_reviewable` and the SAME `_cap_discovered` bound the
+        # listing gets -- a future delta-path filter goes THROUGH them, never beside
+        # them. Both overwrite `info`, so the block describes the surface this run
+        # REVIEWED, not the listing it was filtered from. Then committed exclude_paths
+        # prune, re-deriving excluded_files from the changed set, not the whole-repo
+        # count the --scope-dir/-file/-group branches keep (they narrow pruned `allf`).
+        info["surface"] = "changed"
+        scoped = _cap_discovered(_filter_reviewable(
             changed, include_fixtures=(args.security == "redteam"),
-            pruned_fixtures=pruned_fixtures,
-            isfile=lambda rel: _is_confined_regular(repo, rel))
+            pruned_fixtures=pruned_fixtures, info=info,
+            isfile=lambda rel: _is_confined_regular(repo, rel)), info)
         scoped, excluded_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
@@ -1818,12 +1821,11 @@ def _repo_scan(argv=None):
         # `exclude_paths:` glob is review-scope policy, not confinement, and
         # #1136 requires a named-but-excluded file to be PRUNED from the delta
         # (rc 0, disclosed in `excluded_count`) rather than refuse the run.
-        # `_apply_exclude` below is what prunes it, so every entry that survives
-        # this branch is in `allf` -- the same invariant the singular gets from its
-        # own membership test. `prune_fixture_files` cannot fire on that universe any
-        # more (standard mode pruned the corpora from the listing before
-        # `excluded_files` was taken off it, and redteam keeps them); it stays as what
-        # would prune a fixture path if this universe ever widened to accept one.
+        # `_apply_exclude` below is what prunes it, so every entry that survives this
+        # branch is in `allf` -- the same invariant the singular gets from its own
+        # membership test. `prune_fixture_files` cannot fire on that universe any more
+        # (standard mode pruned the corpora before `excluded_files` came off the
+        # listing, redteam keeps them); it stays for a universe that ever widens.
         universe = set(allf) | set(excluded_files)
         entries: list[str] = []
         for raw in args.scope_files:
@@ -1846,15 +1848,13 @@ def _repo_scan(argv=None):
                               args.max_per_group, group_files=impl + tests,
                               security_mode=args.security)
         result["discovery"] = _discovery_block(info)
+    _say_pruned(result["discovery"]["pruned"], result["discovery"]["surface"])
     if _delta is not None:
         base, source = _delta
         # True for -c live tree; also true for a --pr worktree now that
-        # _sync_config's overwrite of the root config dirties it too (#1681
-        # fix round 2 item 6 -- this used to read "False for a clean --pr
-        # worktree", which stopped being so the moment the sync started
-        # writing into it).
-        # M4: the same exclusion, on the same flag, for all three -- the sync
-        # is not the PR's uncommitted work any more than it is the PR's hunk.
+        # _sync_config's overwrite of the root config dirties it too (#1681 fix round
+        # 2 item 6). M4: the same exclusion, on the same flag, for all three -- the
+        # sync is not the PR's uncommitted work any more than it is the PR's hunk.
         _cfg_exclude = repo_config.CONFIG_NAMES if args.pr_worktree else ()
         includes_uncommitted = _worktree_dirty(repo, exclude=_cfg_exclude)
         write_diff_hunks(repo, base, source,

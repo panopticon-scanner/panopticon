@@ -397,6 +397,14 @@ class TestMatrixRowNamesTheResolvedConfig(unittest.TestCase):
             self.assertIn("symlink", row["detail"])
             self.assertEqual(row["config"], "none")
 
+    def test_unmatched_group_remedy_allows_direct_repair(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  App:\n    match: []\n")
+            row = readiness._matrix_row(d)
+        self.assertFalse(row["ok"])
+        self.assertIn("fix it or re-run `driver setup`", row["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

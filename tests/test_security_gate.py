@@ -223,6 +223,26 @@ class TestSecurityGate(unittest.TestCase):
         self.assertEqual(len(high), 1)
         self.assertEqual(high[0]["severity"], "HIGH")
 
+    def test_a_whole_file_finding_prints_a_question_mark_for_its_line(self):
+        # #2174 (#1784): a location-less or region-less SARIF result is valid --
+        # `sarif_utils` records it as a file with `line_start` PRESENT and None
+        # (#run10 COD-C3A) -- so a `get` with a default never fires and the row
+        # printed `README.md:None`. `synth/render.py` and `html_report.py` print
+        # `?` for a line they do not have; the gate's row is read by the same
+        # operator and now says the same thing.
+        doc = _sarif("error")
+        location = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        location["artifactLocation"]["uri"] = "/README.md"
+        del location["region"]
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, doc)
+            rc, out, err = self._main_result(tools, manifest)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("README.md:? - test finding", out)
+        self.assertNotIn("README.md:None", out)
+
     def test_empty_selection_is_invalid(self):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(

@@ -1012,17 +1012,39 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
   .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
-  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and every malformed
-  range it drops are named on stderr, and counted in `meta.coverage.delta` when the payload
-  resolved a `base` (#1783): an ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
+  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
+  drops or repairs (#2382) are named on stderr, and every drop is counted in `meta.coverage.delta` when the payload
+  resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
+  same (#2169): `ranges_dropped` is a range that was not a two-integer pair, which leaves the
+  file in the map and merely narrower, while `paths_dropped` is a path whose value was not a
+  list of ranges at all, so that file leaves the map entirely and every finding in it
+  classifies off-diff. The third counter is not a loss at all (#2381):
+  `paths_without_ranges` is a path the map NAMES whose list of ranges is empty, so that file
+  stays in the map and every finding in it classifies ON-diff — `diff_map.classify`'s
+  changed-file fail-open — and a `--gate-scope on-diff` gate judges them on the artifact's
+  word rather than on a measured range. A deletion-only, binary, mode-only or same-content
+  rename change legitimately carries such a key and a truncated map is indistinguishable from
+  it, so the shape is counted in both blocks and named on stderr rather than reclassified; the
+  whole-map disclosures below cannot see it, because one real range anywhere leaves
+  `hunks_ranges` non-zero. `paths_emptied_by_drops` splits that count (#2386): the subset whose
+  list arrived non-empty and was emptied because every range in it was malformed — a broken
+  artifact rather than a change shape, which the merged count could not tell apart — and the
+  stderr line now names the rangeless paths themselves (the first ten, escaped). An ACTIVE delta
+  whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings
   (active, admitted by the evidence policy and by `--fail-on` when one is set) that run now reads
   `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
-  (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
-  `meta.coverage.delta` is null: there, only stderr carries it. It
-  also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
+  (unreadable, not an object, or a bad `schema_version`) carries no `base`, so the review stays a non-delta one and
+  `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
+  writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
+  object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
+  exist included — active delta or not, carrying the `payload_malformed` reason, every counter and the
+  `keys_repaired` list (#2382), and null when no path was given, so the block's presence alone is the fact.
+  `meta.coverage.delta` itself is unchanged; its sibling's schema node in
+  `skill/reference/report-schema.json` is where that contract is stated.
+  `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
   `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
   `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from
