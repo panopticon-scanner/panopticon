@@ -1026,13 +1026,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
   (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
   `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
-  writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169):
-  present whenever a diff-hunks file was READ, active delta or not, carrying `path_read`, the
-  `payload_malformed` reason and both drop counts, and null only when no file was read.
-  `meta.coverage.delta` itself is unchanged, so a consumer reading it for truthiness to mean
-  "this was a delta review" still gets that answer and a rejected payload is never dressed up
-  as an active delta. It
-  also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
+  writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
+  object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
+  exist included — active delta or not, carrying the `payload_malformed` reason and both drop
+  counts, and null when no path was given, so the block's presence alone is the fact.
+  `meta.coverage.delta` itself is unchanged; its sibling's schema node in
+  `skill/reference/report-schema.json` is where that contract is stated.
+  `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
   `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
   `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from

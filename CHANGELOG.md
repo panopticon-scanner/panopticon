@@ -17,20 +17,24 @@ evidence exposed.
   a narrowed file does not. And `meta.coverage.delta` was `{"type": ["object","null"]}` with no
   `properties`, so `tests/test_schema_parity.py`'s walk treated it as a deliberately open leaf and
   never descended: fourteen keys with no schema entry and no parity coverage, #1602 in miniature
-  inside #1602's own guard. So: a sibling `meta.coverage.delta_artifact` -- `path_read`,
-  `payload_malformed`, `ranges_dropped`, `paths_dropped` -- emitted whenever a diff-hunks file was
-  READ, active delta or not, and null only when none was; a separate `paths_dropped` counter in the
-  loader, in both report blocks, in the stderr line and in the zero-hunk certification reason; and
+  inside #1602's own guard. So: a sibling `meta.coverage.delta_artifact` --
+  `payload_malformed`, `ranges_dropped`, `paths_dropped` -- an object whenever a `--diff-hunks`
+  path was GIVEN and a read attempted, active delta or not, and null when none was, so its
+  presence alone is the fact; a separate `paths_dropped` counter in the loader, in both report
+  blocks, in the one stderr line and in the zero-hunk certification reason, which now names a
+  loader drop as the cause instead of calling it indistinguishable from an empty change; and
   every key of both blocks pinned under `properties` with a description, with a parity test that
   the schema's pinned key set EQUALS the key set the fixture's report emits, so the open leaf
-  cannot return silently. `meta.coverage.delta` itself is untouched: a consumer that tests it for
-  truthiness to mean "this was a delta review" keeps that answer, and a rejected payload is never
-  dressed up as an active delta. The seven values the block copies verbatim from the
-  target-writable artifact are described but NOT type-pinned -- a schema error is terminal
-  (`ARTIFACT_INVALID`), so pinning them would let a reviewed repository end a paid-for run with one
-  line of JSON; #2169's third gap asked for the walk, and the pin that closes it stops at the keys
-  this controller computes. Still out of scope, as #2169 says: a partial map naming a file with no
-  ranges (`{"c.py": []}`) classifies every finding in it on-diff with no warning, a fail-open this
+  cannot return silently. `meta.coverage.delta` itself is untouched, and its sibling's schema
+  node states that contract. The seven values the block copies verbatim out of the artifact are
+  described but NOT type-pinned -- a schema error is terminal (`ARTIFACT_INVALID`) and nothing
+  normalizes them at the read, so pinning them would let a hand-supplied artifact end a paid-for
+  run; the driver's discovery phase rewrites or removes that file, so the exposure is the direct
+  `synthesize.py --diff-hunks` path rather than a `driver run`. #2169's third gap asked for the
+  walk, and the pin that closes it stops at the keys this controller computes; #2382 is the
+  follow-up that normalizes those seven at the read and then pins them. Still out of scope, as
+  #2169 says, and now filed as #2381: a partial map naming a file with no ranges
+  (`{"c.py": []}`) classifies every finding in it on-diff with no warning, a fail-open this
   change does not touch.
 - **`dispatch.js` refuses an unenforced entry that names a shell, and every refusal escapes the
   entry id (#2166, #1783).** `loop_batch.refuse_misrouted` calls its two shapes "the same

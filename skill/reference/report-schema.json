@@ -419,7 +419,7 @@
                 "object",
                 "null"
               ],
-              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that READ a diff-hunks file says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven artifact-carried keys are described but NOT type-pinned, because their values are copied verbatim from the target-writable `.panopticon/diff-hunks.json` and a schema error is terminal, so pinning them would hand a reviewed repository a way to end a paid-for run.",
+              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven artifact-carried keys are described but NOT type-pinned, because their values are copied verbatim out of `.panopticon/diff-hunks.json` with nothing normalizing them at the read, and a schema error is terminal -- so pinning them would let a hand-supplied artifact end a paid-for run. The driver's discovery phase rewrites or removes that file, so the exposure is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`. #2382 is the follow-up: normalize those seven at the read, then pin them.",
               "properties": {
                 "base": {
                   "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one."
@@ -452,7 +452,7 @@
                 },
                 "hunks_ranges": {
                   "type": "integer",
-                  "description": "Line ranges in that same map; 0 with `hunks_files` non-zero is the shape where a finding in a named file fails OPEN to on-diff, and it forces the gate to INCONCLUSIVE (#2178, narrowed by #2222)."
+                  "description": "Line ranges in that same map. 0 on an ACTIVE delta with gate-eligible findings present under `--gate-scope on-diff` makes that run read INCONCLUSIVE rather than PASS (#2178, narrowed by #2222); with no such finding it keeps its PASS, because a legitimately empty change is not a defect. A named file with no range of its own is a separate hazard: a finding there fails OPEN to on-diff."
                 },
                 "ranges_dropped": {
                   "type": [
@@ -490,22 +490,18 @@
                 "object",
                 "null"
               ],
-              "description": "What READING `.panopticon/diff-hunks.json` cost, present whenever a diff-hunks file was read, active delta or not, and null only when no file was read -- a direct caller, or a run that was never passed `--diff-hunks` (#2169). That is the distinction it exists to publish: a rejected payload carries no `base`, so the review degrades to a non-delta one and `delta` above is null, exactly as it is for a run given no artifact at all; until this key, synthesize's stderr was the only record, and a `driver run` keeps a child's stderr only on failure. The degraded shape WIDENS the gate, so it fails closed -- the defect was the silence, not the scope. `delta`'s own truthiness contract is unchanged by this key: a rejected payload is never dressed up as an active delta.",
+              "description": "What ATTEMPTING to read `.panopticon/diff-hunks.json` cost: an object whenever a `--diff-hunks` path was given and a read was attempted -- whether or not it succeeded, and whether or not the resulting delta was active -- and null when none was given (a direct caller, or a run never passed the flag), so the block's presence alone is the fact (#2169). That is what it publishes: a rejected payload carries no `base`, so `delta` above is null exactly as it is for a run given no artifact at all, and rather than dressing a rejection up as an active delta, `delta` is left alone for consumers that read its truthiness as \"this was a delta review\".",
               "properties": {
-                "path_read": {
-                  "type": "boolean",
-                  "description": "Always true: this block exists only when a diff-hunks file was read, so a consumer testing it reads the same fact as the block's presence."
-                },
                 "payload_malformed": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all three values can appear here, including the two (`unreadable`, `not an object`) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all three values can appear here, including the two (`unreadable` -- which covers a path that does not exist -- and `not an object`) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
                 },
                 "ranges_dropped": {
                   "type": "integer",
-                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped`; never null here, because this block is written only when a read was measured."
+                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped`; never null here, because this block is written only when a read was attempted."
                 },
                 "paths_dropped": {
                   "type": "integer",

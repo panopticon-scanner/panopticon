@@ -438,22 +438,11 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
 
 
 class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
-    """#2169, end to end through the report builder: the run said on stderr that
-    it rejected the diff-hunks artifact, and then published a report in which
-    that fact did not appear.
-
-    `meta.coverage.delta` is emitted only for an ACTIVE delta, and a rejected
-    payload carries no `base`, so the review degrades to a non-delta one and the
-    whole block is null -- the same null a run that was never passed
-    `--diff-hunks` writes. The stderr line is the only record, and a `driver run`
-    keeps a child's stderr only on failure, which this is not (the degraded shape
-    WIDENS the gate, so it fails closed).
-
-    The fix is the SIBLING `meta.coverage.delta_artifact`, emitted whenever a file
-    was read. `meta.coverage.delta` is deliberately left exactly as it was: a
-    consumer that tests it for truthiness to mean "this was a delta review" keeps
-    that answer, and a rejected payload must not be dressed up as an active
-    delta."""
+    """#2169, end to end through the report builder: a run rejected the
+    diff-hunks artifact, said so on stderr, and published a report in which the
+    fact did not appear. The sibling `meta.coverage.delta_artifact` is the fix,
+    and its schema node in `report-schema.json` says why it has the shape it
+    has and what it deliberately does NOT change about `meta.coverage.delta`."""
 
     def _findings(self):
         return [{"id": "A-1", "title": "t", "severity": "HIGH",
@@ -484,16 +473,14 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         cov = self._coverage(raw="{not json")
         self.assertIsNone(cov["delta"])            # still not a delta review
         self.assertEqual(cov["delta_artifact"],
-                         {"path_read": True,
-                          "payload_malformed": delta_mod.MALFORMED_UNREADABLE,
+                         {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
                           "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_a_non_object_artifact_is_named_in_the_report(self):
         cov = self._coverage(payload=["not", "an", "object"])
         self.assertIsNone(cov["delta"])
         self.assertEqual(cov["delta_artifact"],
-                         {"path_read": True,
-                          "payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                         {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_no_diff_hunks_flag_leaves_both_keys_null(self):
@@ -513,7 +500,7 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertIsNotNone(cov["delta"])
         self.assertEqual(cov["delta"]["paths_dropped"], 0)
         self.assertEqual(cov["delta_artifact"],
-                         {"path_read": True, "payload_malformed": None,
+                         {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_the_two_blocks_agree_about_the_losses(self):

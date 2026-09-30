@@ -271,24 +271,48 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         self.assertIn("2 malformed hunk range(s) dropped", err)
         self.assertNotIn("ZERO HUNKS", err)
 
+    CONSEQUENCE = (" A dropped path leaves the map, so every finding in that "
+                   "file classifies off-diff.")
+
+    def _artifact_line(self, err):
+        lines = [ln for ln in err.splitlines() if "DELTA ARTIFACT:" in ln]
+        self.assertEqual(len(lines), 1, err)
+        return lines[0]
+
     def test_a_dropped_path_is_disclosed_as_its_own_count(self):
         # #2169: a lost PATH is the more expensive loss -- every finding in that
         # file classifies off-diff -- so it gets its own number rather than
         # being added to the malformed-range tally.
-        _, err, _ = self._from_args({"base": "main",
-                                     "hunks": {"a.py": [[1, 5]], "b.py": 7}})
-        self.assertIn("1 whole path(s)", err)
+        #
+        # The WHOLE line, not a substring (#2169 review, F1): the consequence
+        # clause first lived inside the count phrase, which left the line reading
+        # "...classifies off-diff dropped from /...", and two substring
+        # assertions could not see the missing verb.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5]], "b.py": 7}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 1 whole path(s) dropped "
+                         "from %s%s" % (path, self.CONSEQUENCE))
         self.assertNotIn("malformed hunk range(s)", err)
 
     def test_both_losses_are_disclosed_on_one_line(self):
         # One line, both numbers: two lines for one artifact read as two
-        # problems, and the operator has to reconcile them.
-        _, err, _ = self._from_args({"base": "main",
-                                     "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
-        lines = [ln for ln in err.splitlines() if "DELTA ARTIFACT:" in ln]
-        self.assertEqual(len(lines), 1, err)
-        self.assertIn("1 malformed hunk range(s)", lines[0])
-        self.assertIn("1 whole path(s)", lines[0])
+        # problems, and the operator has to reconcile them. Exact string.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 1 malformed hunk range(s) "
+                         "and 1 whole path(s) dropped from %s%s"
+                         % (path, self.CONSEQUENCE))
+
+    def test_only_a_dropped_path_gets_the_consequence_clause(self):
+        # A dropped RANGE narrows a file it leaves in the map, so the clause
+        # would be false for it -- and the pre-#2169 line stays byte-identical.
+        _, err, path = self._from_args({"base": "main",
+                                        "hunks": {"a.py": [[1, 5], [2], "x"]}})
+        self.assertEqual(self._artifact_line(err),
+                         "synthesize: DELTA ARTIFACT: 2 malformed hunk range(s) "
+                         "dropped from %s" % path)
 
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
         # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
@@ -308,6 +332,34 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
         _, err, _ = self._from_args({"base": "main", "hunks": {}})
         self.assertIn("the map is empty", err)
         self.assertNotIn("fails OPEN", err)
+
+    def test_a_loader_drop_is_named_as_the_cause_not_called_unknown(self):
+        # #2169 review, F2: `_disclose_load` branched on `payload_malformed`
+        # alone, so a map emptied by a dropped PATH was called indistinguishable
+        # from an empty change on one line while `zero_hunk_gate_gap` named the
+        # drop as the cause on another -- for the same read. Same three arms now.
+        _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": 7}})
+        self.assertIn("DELTA REVIEW WITH ZERO HUNKS", err)
+        self.assertIn("The map is empty because 1 whole path(s) were dropped "
+                      "for carrying no list of ranges, not because the change "
+                      "was", err)
+        self.assertNotIn("look identical", err)
+        self.assertNotIn("was rejected", err)
+
+    def test_dropped_ranges_are_named_as_the_cause_too(self):
+        _, err, _ = self._from_args({"base": "main", "hunks": {"a.py": [[1]]}})
+        self.assertIn("The map is empty because 1 hunk range(s) were malformed "
+                      "and dropped, not because the change was", err)
+        self.assertNotIn("look identical", err)
+
+    def test_the_unknown_arm_survives_for_a_genuinely_empty_map(self):
+        # Nothing rejected and nothing dropped: the operator really cannot tell
+        # an empty change from a broken artifact, and the third arm says so.
+        _, err, _ = self._from_args({"base": "main", "hunks": {}})
+        self.assertIn("An empty change and a broken artifact look identical "
+                      "from here", err)
+        self.assertNotIn("was rejected", err)
+        self.assertNotIn("were dropped", err)
 
     def test_a_rejected_payload_is_not_called_indistinguishable(self):
         # The reason is already on stderr one line up, so this artifact is
@@ -466,14 +518,9 @@ class TestZeroHunkGateGap(unittest.TestCase):
 
 
 class TestArtifactFacts(unittest.TestCase):
-    """#2169: `meta.coverage.delta_artifact`'s source. The block says what
-    READING the diff-hunks artifact cost, and it is emitted whether or not the
-    delta came out active -- which is the whole point: a rejected payload leaves
-    no `base`, so `meta.coverage.delta` is null and, before this, a run that read
-    a broken artifact was indistinguishable from one that was never given one.
-
-    It lives here rather than in `verdicts` so the report side never reaches into
-    `HunksLoad`'s fields itself: one reader of the loader's record."""
+    """#2169: `meta.coverage.delta_artifact`'s source -- a dict whenever a
+    `--diff-hunks` path was given, active delta or not, None when none was; the
+    key's schema node in `report-schema.json` says why."""
 
     def _ctx(self, payload):
         with tempfile.TemporaryDirectory() as d:
@@ -484,26 +531,37 @@ class TestArtifactFacts(unittest.TestCase):
                 return delta_mod.DeltaContext.from_args(
                     _cli_args(diff_hunks=path, fail_on="high"))
 
-    def test_a_context_that_read_no_file_has_no_facts(self):
-        # A caller that built the context from a payload it already held: nothing
-        # measured the read, so there is no zero to report.
+    def test_a_context_given_no_path_has_no_facts(self):
+        # A caller that built the context from a payload it already held: no read
+        # was attempted, so there is no zero to report.
         ctx = delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}})
         self.assertIsNone(delta_mod.artifact_facts(ctx))
         self.assertIsNone(delta_mod.artifact_facts(delta_mod.DeltaContext()))
+
+    def test_a_path_that_does_not_exist_still_reports_the_attempt(self):
+        # #2169 review, F3: `from_args` builds a HunksLoad for the FLAG, so this
+        # shape reaches the report -- which is why the block is no longer
+        # described as "a file was read" and no longer carries `path_read`.
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ctx = delta_mod.DeltaContext.from_args(_cli_args(
+                    diff_hunks=os.path.join(d, "absent.json"), fail_on="high"))
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"payload_malformed": delta_mod.MALFORMED_UNREADABLE,
+                          "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_a_rejected_payload_still_reports_the_read(self):
         ctx = self._ctx(["not", "an", "object"])
         self.assertFalse(ctx.active)
         self.assertEqual(delta_mod.artifact_facts(ctx),
-                         {"path_read": True,
-                          "payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                         {"payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
                           "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_an_active_payload_reports_no_rejection(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
         self.assertTrue(ctx.active)
         self.assertEqual(delta_mod.artifact_facts(ctx),
-                         {"path_read": True, "payload_malformed": None,
+                         {"payload_malformed": None,
                           "ranges_dropped": 0, "paths_dropped": 0})
 
     def test_it_carries_both_loss_counters(self):
