@@ -1388,6 +1388,58 @@ class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
                     self.assertEqual([], wg.job_defects([wg.Step("s", idiom, shell)]))
 
 
+class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
+    """#2334 review I-1: the guard finds where a check's `&&` list ends by
+    counting the compound commands it opens and closes, and the reader breaks
+    that count two ways -- it drops a line holding only `(` or `)`, and a
+    `case` pattern's `)` inside `$(...)` ends the substitution, so the `esac`
+    after it closes a group nothing opened. A count that never balanced read
+    as "the list runs to the step's end", and one that closed a subshell no
+    statement up to the check opened read as "the list ends its own
+    subshell": either way the check was credited for the whole step, where
+    bash 5.2.21 and dash skip the subshell and run the use after it. A list
+    whose end the count cannot place now clears nothing after the check."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    job = TestASetPlusEAtTheStepsTopLevel.job
+    both = TestACheckAheadOfAndGatesOnlyItsList.both
+
+    def assertAhead(self, body, shell):
+        found = self.both(body, shell)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names /tmp/payload runs ahead of `&&`", found[0])
+
+    def test_a_lone_paren_line_or_a_case_in_a_substitution_clears_nothing_after(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("%s && ( echo a\n)\n", "%s && ( echo a\n  echo b\n)\n",
+                         "%s && ( cd / && echo a\n)\n", "%s && (\n  echo a )\n",
+                         "%s && if true; then echo $(case x in x) echo y | cat;; esac); fi\n",
+                         # A `{` before the check opens no subshell for the `)` to close.
+                         "{ %s && if true; then echo $(case x in x) echo y;; esac); fi; }\n",
+                         "{\n%s && if true; then echo $(case x in x) echo y;; esac); fi\n}\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
+
+    def test_the_spellings_the_count_reads_whole_keep_their_verdicts(self):
+        # The subshell on one line, both parens on lines of their own (the
+        # reader drops both, leaving the list), the substitution without the
+        # `if` and the `if` without the `case`: reported before and after.
+        for shell in (None, "sh", "bash"):
+            for body in ("%s && ( echo a )\n", "%s && (\n  echo a\n)\n",
+                         "%s && echo $(case x in x) echo y | cat;; esac)\n",
+                         "%s && if true; then echo $(echo y | cat); fi\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
+        # A subshell the list does end, opened on the check's line or before
+        # it, is the subshell's failure, which `-e` does not let pass.
+        for body in ("( %s && echo ok )\n", "(cd /tmp && %s && echo ok)\n",
+                     "( echo a; %s && echo ok )\n", "( ( %s && echo ok ) )\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.both(body))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"

@@ -286,7 +286,12 @@ def _stops_step(stmts, position, on, fails):
     That status still stops the step as the step's last command, through an
     `||` branch that stops the step, or as a subshell's where `-e` holds --
     never a `{ ...; }` group's, which `-e` lets pass -- and not from a group
-    detached with `&`, or piped where pipefail is off (`fails`)."""
+    detached with `&`, or piped where pipefail is off (`fails`). A count of
+    compound commands that never balances, or that closes a subshell no
+    statement up to the check opened, is a paren the reader lost -- it drops
+    a line holding only `(` or `)`, and ends a `$(...)` at a `case` pattern's
+    `)` -- and there the list's end is unknown: the failure stops only its
+    own statement."""
     last, separator = len(stmts) - 1, stmts[position].separator
     if separator != "&&":
         stops = (on[position] or position == last or
@@ -296,6 +301,9 @@ def _stops_step(stmts, position, on, fails):
     while end < last and (depth > 0 or not depth and stmts[end].separator == "&&"):
         end += 1
         depth += _nesting(stmts[end])
+    if depth > 0 or depth < 0 and sum(stage.group_open - stage.group_close for statement
+                                      in stmts[:position + 1] for stage in statement.stages) < 1:
+        return position                         # a lost paren: the list's end is unknown
     if not depth and end < last and stmts[end].separator not in ("&", "||") and [
             stage.argv for stage in stmts[end + 1].stages[:1]] == [["}"]]:
         end, depth = end + 1, -1                # the list ends its `{ ...; }` group
