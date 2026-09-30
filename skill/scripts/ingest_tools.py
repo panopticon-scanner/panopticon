@@ -469,26 +469,14 @@ def suppression_class(segment):
 SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
 
 
-# The two fields `evidence.tool_rule_id` reads, each with `(x or {}).get(...)`.
-_RULE_ID_FIELDS = ("tool_evidence", "provenance")
-
-
 def _rule_id(finding):
-    """`evidence.tool_rule_id`, made TOTAL (#1578 fix round 1, review M1).
+    """The finding's scanner rule as a STRING -- all `_cwe_tags` needs (#2366).
 
-    That helper reads `(finding.get("tool_evidence") or {}).get("rule_id")` and
-    the same for `provenance`, so a finding whose either field is a STRING
-    raises `AttributeError` instead of answering. No caller can reach this
-    module with such a finding today -- both gates take findings straight from
-    `make_finding` / `sarif_to_findings`, and the driver path additionally runs
-    `repair_finding` -- but `gates_when_suppressed` promises totality, and a
-    merge gate is not the place to discover the promise was narrower than it
-    read. Unreadable fields are dropped, never coerced: the shared helper still
-    answers, using whichever of the two is a mapping.
+    `evidence.tool_rule_id` is total since #2359 / #2372: it reads `tool_evidence`
+    and `provenance` through accessors that answer `{}` for a non-dict. But it
+    returns the rule UNCONVERTED, and `CWE_TAG.finditer` takes only a string.
     """
-    readable = {k: v for k, v in finding.items()
-                if k not in _RULE_ID_FIELDS or isinstance(v, dict)}
-    return evidence_mod.tool_rule_id(readable) or ""
+    return str(evidence_mod.tool_rule_id(finding) or "")
 
 
 def _cwe_tags(finding):
@@ -548,9 +536,10 @@ def gates_when_suppressed(finding):
 
     Total on a malformed row rather than raising: the finding was built from
     scanner output about the reviewed tree, and a gate is not the place to
-    discover that. `_rule_id` is what makes the claim true for the two fields
-    the shared rule-id helper reads. A row this cannot read does not gate --
-    the report still discloses it in `meta.coverage.tools_suppressed`.
+    discover that. The shared rule-id helper answers for any shape of the two
+    fields it reads (#2359, #2372); `_rule_id` only makes that answer a string
+    for the CWE regex. A row this cannot read does not gate -- the report
+    still discloses it in `meta.coverage.tools_suppressed`.
     """
     if not isinstance(finding, dict):
         return False

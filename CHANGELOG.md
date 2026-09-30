@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer
+  re-filters the fields `evidence.tool_rule_id` already reads totally, and coerces a non-string
+  rule id to text before the CWE regex sees it.
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
   and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
   so those three malformed shapes no longer abort the filing run. `reconcile.load_report` refuses
