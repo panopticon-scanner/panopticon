@@ -661,6 +661,46 @@ class TestADownloadWrittenIntoADirectoryOnPath(unittest.TestCase):
                 self.assertIsNone(self.defect(dest, run))
 
 
+class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
+    """#2339: after `curl -o cuda_1.run`, `chmod +x ./cuda_*.run` and `sh
+    ./cuda_*.run` read clean where `cuda_*.run` did not, and bash 3.2 and 5.2
+    make the download executable and run it. `covers` matches a glob with a
+    leading `./` dropped on both sides (#2349, re-review N-C), which closed
+    it; these pin it: the `chmod` and the `sh` spellings, with and without a
+    checksum that names the file, and a glob that cannot match."""
+
+    GET = "curl -fsSLo %s https://example.test/cuda_1.run\n"
+    CHECK = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, dest, use):
+        return [why for _n, why in wg.job_defects([("step", self.GET % dest + use)])]
+
+    def test_either_spelling_of_the_glob_makes_it_executable_or_runs_it(self):
+        for dest in ("cuda_1.run", "./cuda_1.run"):
+            for use, how in (("chmod +x ./cuda_*.run\n", "making it executable"),
+                             ("sh ./cuda_*.run\n", "running it under `sh`"),
+                             ("chmod +x cuda_*.run\n", "making it executable"),
+                             ("sh cuda_*.run\n", "running it under `sh`"),
+                             ("chmod +x ./cuda_1.run\n", "making it executable"),
+                             ("sh ./cuda_1.run\n", "running it under `sh`")):
+                with self.subTest(dest=dest, use=use):
+                    why = self.job(dest, use)
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("-> %s and %s with nothing verifying" % (dest, how), why[0])
+
+    def test_a_checksum_naming_the_file_clears_the_glob(self):
+        for dest in ("cuda_1.run", "./cuda_1.run"):
+            for use in ("chmod +x ./cuda_*.run\n", "sh ./cuda_*.run\n"):
+                with self.subTest(dest=dest, use=use):
+                    self.assertEqual([], self.job(dest, self.CHECK + use))
+
+    def test_a_glob_that_cannot_match_is_not_a_use(self):
+        for dest in ("cuda_1.run", "./cuda_1.run"):
+            for use in ("chmod +x ./other_*.run\n", "sh ./other_*.run\n"):
+                with self.subTest(dest=dest, use=use):
+                    self.assertEqual([], self.job(dest, use))
+
+
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
     """#2294: bash 3.2 and 5.2 expand `{sh,-c}` to `sh -c`, and `[s]h` to `sh`
     in a checkout holding a file called sh, before the command runs, which the
