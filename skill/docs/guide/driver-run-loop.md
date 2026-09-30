@@ -1013,7 +1013,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
   .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
   diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
-  drops or repairs (#2382) are named on stderr, and counted in `meta.coverage.delta` when the payload
+  drops or repairs (#2382) are named on stderr, and every drop is counted in `meta.coverage.delta` when the payload
   resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
   same (#2169): `ranges_dropped` is a range that was not a two-integer pair, which leaves the
   file in the map and merely narrower, while `paths_dropped` is a path whose value was not a
@@ -1036,8 +1036,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
   writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
   object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
-  exist included — active delta or not, carrying the `payload_malformed` reason and all three
-  counters, and null when no path was given, so the block's presence alone is the fact.
+  exist included — active delta or not, carrying the `payload_malformed` reason, all three counters and the
+  `keys_repaired` list (#2382), and null when no path was given, so the block's presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
   `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
