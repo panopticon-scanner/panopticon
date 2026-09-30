@@ -259,7 +259,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     options or a `set`, and `pipefail` so too (re-review N-D); the step's own
     shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
     moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
-    where bash suspends it.
+    where the shell suspends it.
     `stops`: this script's failure reaches the step's own shell; `errexit`:
     `-e` at its top (None: this is the step's own shell); `pipefail`: a
     pipeline there fails on any of its commands; `shell`: the script's

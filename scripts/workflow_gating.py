@@ -13,9 +13,10 @@ around it decides that, not the command:
                                around a check, and whether an `||` branch
                                after it fails the step (`_stops_the_job`)
     `step_credit`              the step's own `-e` and `pipefail`, which its
-                               `shell:` starts (`seed`) and a `set` moves, and
-                               how far a check ahead of `&&` reaches: the rest
-                               of its list (`_stops_step`, `Reach`, `clears`)
+                               `shell:` starts (`seed`) and a `set` moves, how
+                               far a check ahead of `&&` reaches -- the rest of
+                               its list -- and what follows a group the check
+                               ends (`_stops_step`, `Reach`, `clears`)
 
 `Inlined` -- a statement of a script `workflow_forms.flattened` reads in place
 -- lives here because both layers read it, and so does `_errexit`, the option
@@ -78,8 +79,10 @@ def seed(shell):
 # detaches it; `||` hands the failure to a branch, which rescues it ONLY if
 # that branch ends the job; `if`/`while`/`!` make it a test, and errexit never
 # applies to a test; a `set +e` ahead of it turns errexit off; and a command
-# piped after it takes the pipeline's status unless `pipefail` holds, which
-# only `shell: bash` or a `set -o pipefail` gives a step (`step_credit`).
+# piped after it takes the pipeline's status unless `pipefail` holds, which a
+# step has from `shell: bash`, from a `shell:` template that writes it (`bash
+# -euxo pipefail {0}`, `seed`), or from a `set -o pipefail` or `shopt -so
+# pipefail` before it (`step_credit`).
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
@@ -171,8 +174,10 @@ def swallowed(stmts, index, statement, stage, credit=None):
     they wrote it for. What is read here is the shell right around the check
     -- an `Inlined` statement's `credit` first, then its separator, `!` and
     `if` -- and `credit` is the step's own answer for the statement, read
-    last: `step_credit`'s, or None where it has none. A `Reach` answer is a
-    check ahead of `&&`, which still stops what its list runs (`clears`).
+    last: `step_credit`'s, the guard's `_SOFT_STEP` pair where the step
+    carries `continue-on-error: true` (`job_defects`), or None where it has
+    none. A `Reach` answer is a check ahead of `&&`, which still stops what
+    its list runs (`clears`).
     """
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
@@ -201,15 +206,17 @@ _DETACHED = "is detached with `&`"
 _RESCUED = "hands its failure to a `||` branch that does not fail the step"
 _ENDS = "ends a group that %s"
 _SET_E = ("runs after a `set +e` or a spelling of it (`set +o errexit`, `shopt -uo errexit`, "
-          "`builtin set +e`) turned errexit off and is not in the step's last command, so the "
-          "step carries on past its failure")
+          "`builtin set +e`), which this guard reads as turning errexit off from where it is "
+          "written, and is not in the step's last command, so the step carries on past its "
+          "failure")
 _NO_E = ("runs under `shell: %s`, which starts without errexit, and is not in the step's "
          "last command, so the step carries on past its failure")
 _NO_PIPEFAIL = ("is piped into another command where `pipefail` is off, so the pipeline "
                 "takes that command's status and the step carries on past its failure "
-                "(`shell: bash`, or `set -o pipefail` before it, turns pipefail on)")
-_AHEAD = ("runs ahead of `&&`, where bash suspends `-e`, so its failure skips only the rest "
-          "of that list and the step carries on past it")
+                "(`shell: bash` turns pipefail on, and so does a `set -o pipefail` before it "
+                "where the shell is bash)")
+_AHEAD = ("runs ahead of `&&`, where the shell suspends `-e`, so its failure skips only the "
+          "rest of that list and the step carries on past it")
 
 
 def step_credit(flat, shell=None):
@@ -226,8 +233,17 @@ def step_credit(flat, shell=None):
     `_errexit_states` reads a child script. Without pipefail a piped check's
     status is lost to the command after it. Where `-e` is off, a failure
     stops the step only in its last command or through an `||` branch that
-    exits. Ahead of `&&` bash suspends `-e`, so a failure there stops only
-    the rest of its list (`_stops_step`), a `Reach` of that many statements.
+    exits. Ahead of `&&` the shell suspends `-e`, so a failure there stops
+    only the rest of its list, a `Reach` of that many statements; a check
+    that ends a group answers as the group does (`_stops_step`).
+
+    The guard has no model of an exit status or a trap, so four readings
+    here are fail-closed, and bash stops the step on each (review N-1): with
+    `-e` off, a check the step then tests through `$?` (`rc=$?; if [ $rc -ne
+    0 ]; then exit 1; fi`), or through `[ $rc -eq 0 ] || exit 1`, or that
+    `trap 'exit 1' ERR` guards, is still refused; and so is `CHECK && [[ -f a
+    || -f b ]] || exit 1`, whose rescue is lost where the reader splits the
+    `[[ ]]` at its inner `||`.
     """
     from workflow_forms import _errexit_states, regions   # the layer above (module docstring)
     at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]

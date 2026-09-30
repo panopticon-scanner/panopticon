@@ -1232,7 +1232,8 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("the checksum that names /tmp/payload is piped into another "
                               "command where `pipefail` is off", found[0][1])
-                self.assertIn("`shell: bash`, or `set -o pipefail`", found[0][1])
+                self.assertIn("(`shell: bash` turns pipefail on, and so does a `set -o pipefail` "
+                              "before it where the shell is bash)", found[0][1])
         self.assertIn("where `pipefail` is off",
                       wg.fetch_exec_defect(self.FETCH + self.PIPED % self.CHECK + self.USE))
 
@@ -1382,7 +1383,7 @@ class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
                     found = self.both(body, shell)
                     self.assertEqual(1, len(found), found)
                     self.assertIn("the checksum that names /tmp/payload runs ahead of `&&`, "
-                                  "where bash suspends `-e`", found[0])
+                                  "where the shell suspends `-e`", found[0])
         # A subshell piped into `tee` hands its failure to the pipeline, which
         # takes `tee`'s status unless pipefail holds.
         self.assertEqual(1, len(self.both("( %s && echo ok ) | tee log\n")))
