@@ -11,6 +11,17 @@ evidence exposed.
   domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
   of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
   as the HTML and Markdown renderers already do.
+- **The workflow guard credits a checksum only where its failure stops the step (#2331).**
+  A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
+  A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
+  A check ahead of `&&` now clears only what its list runs, unless the list fails the step (#2334).
+  `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
+  The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
+  `x=$(curl ...)` then `eval "$x"`, `sh -c "$x"` or `echo "$x" | sh` is now reported (#2341).
+- **setup_proposal has one identity in a driver-shaped process (#2256, #1766).** Its three
+  catalog imports take the guarded package-first shape its siblings use, so the flat copy every
+  setup path reaches binds the same catalog modules the package side does and the import-time
+  census's residual shrinks to the modules the flat `--repo-scan` entrypoint still owns.
 - **One owner for the container privilege drop (#2150, #1767).** The tool runner, the fixture
   runner and the egress sidecar all splice `scanner_config.privilege_drop_flags`. The daily fixture
   lanes spell the same two flags out, keeping the ceilings exemption the workflow now states. The

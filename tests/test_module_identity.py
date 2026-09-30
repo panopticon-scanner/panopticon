@@ -79,6 +79,14 @@ _CENSUS_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
                    "import scripts.setup_flow\nimport scripts.dispatch\n"
                    + _CENSUS_TAIL)
 
+# The same census after a real setup path has been CALLED. `load_bundled_layers`
+# is a public setup entry point and one of the seven sites that reach
+# `setup_proposal` with a flat import inside a FUNCTION body, so running it
+# measures the call-time class the program above cannot see (#2256, #1516).
+_CALL_TIME_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
+                      "import scripts.setup_flow\nimport scripts.dispatch\n"
+                      "scripts.setup_flow.load_bundled_layers()\n" + _CENSUS_TAIL)
+
 # The same detection over a deliberately doubled import, for the mechanics test:
 # both roots on the path and one file imported under both of its names.
 _PLANTED_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.plan_contract\n"
@@ -91,26 +99,29 @@ _PLANTED_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.plan_contract\n"
 # * `diff_map`, `plan_contract`, `repo_config` -- `discovery.py` imports these
 #   three flat, after its own bootstrap, and that is the mode `FLAT_MODULES`
 #   pins for it.
-# * `coverage_model`, `groups_schema` -- `setup_proposal.py` imports them flat.
-#   It is reached flat on purpose: `discovery._capability_aliases` imports it at
-#   CALL time (the edge must stay lazy, see `coverage_model`'s own note), and
-#   `tests/test_coverage_model.py` pins that the standalone flat `--repo-scan`
-#   path still returns its aliases. `setup_proposal.py` also sits at its
-#   shrink-only pin in `tests/test_flat_module_ceiling.py`, so the guarded
-#   `try: from scripts import ... except ModuleNotFoundError` shape its siblings
-#   use cannot be added to it without raising that pin.
 #
-# The census measures IMPORT time only, so this list is not the whole debt: a
-# flat `import x` inside a FUNCTION body mints its second copy when that function
-# is first called, in a process this program never drives. That is a separate
-# class with its own instances -- `discovery._capability_aliases`'s lazy
-# `import setup_proposal` is the known one -- and it is tracked with the rest
-# under #1516 rather than measured here.
+# `coverage_model` and `groups_schema` left this list in #2256: `setup_proposal`
+# was the only module importing them flat at import time, and it now carries the
+# guarded `try: from scripts import ... except ModuleNotFoundError` shape its
+# siblings use, paid for inside its own shrink-only pin. Its own importers are
+# unchanged -- `grouping_engine` still reaches it flat -- but that flat copy now
+# binds the PACKAGE catalogs, so one object per catalog file exists either way.
+# `tests/test_coverage_model.py` still pins that the standalone flat
+# `--repo-scan` path returns its aliases, which is what the flat arm is for.
+#
+# The import-time census measures import time only, so this list is not the whole
+# debt: a flat `import x` inside a FUNCTION body mints its second copy when that
+# function is first called. That is a separate class, and the known ones all name
+# one module -- `discovery._capability_aliases`'s lazy `import setup_proposal`,
+# and the six `import setup_proposal as sp` sites in `setup_flow` function bodies
+# (#1516). None of them mints anything today, because nothing gives
+# `setup_proposal` a package copy to be doubled against; #2256 measured what
+# happens when something does. The test below drives one of those sites, so the
+# class is measured here rather than only described.
 #
 # This is an equality, not a subset: a residual that goes away must fail here
 # too, so the list cannot outlive the flat imports it records (#1516).
-RESIDUAL = ("coverage_model", "diff_map", "groups_schema", "plan_contract",
-            "repo_config")
+RESIDUAL = ("diff_map", "plan_contract", "repo_config")
 
 # The two production surfaces. `tests/` is `tests/test_no_per_file_sys_path.py`'s,
 # where the rule is ZERO sites rather than an enumerated few.
@@ -478,6 +489,26 @@ class ModuleIdentityCensusTest(unittest.TestCase):
             "-- import the package (`from scripts import x`) at the importing "
             "site. A residual that has GONE fails here too: drop it from "
             "RESIDUAL (#1516)."
+            % (len(doubled), "\n  ".join(doubled) or "(none)",
+               "\n  ".join(expected),
+               "\n  ".join(sorted(set(doubled) ^ set(expected))) or "(none)"))
+
+    def test_calling_a_setup_path_adds_nothing_to_the_residual(self):
+        # Same allowed set as the import-time census: running a setup path must
+        # not ADD a pair. No second literal -- a call-time residual would be a
+        # debt this list already knows how to record.
+        doubled = self._census(_CALL_TIME_PROGRAM)
+        expected = sorted(RESIDUAL)
+        self.assertEqual(
+            doubled, expected,
+            "calling one real setup path leaves %d module(s) loaded from one "
+            "file under both `x` and `scripts.x`:\n  %s\nexpected the same "
+            "flat-mode residual the import-time census allows:\n  %s\n"
+            "disagreeing names:\n  %s\nA NEW name is a lazy flat import minting "
+            "a second module object when its function runs -- give that site the "
+            "guarded `from scripts import x` shape, keeping the import lazy. A "
+            "name that has GONE fails here too, for the same reason it does "
+            "above: drop it from RESIDUAL in the same change (#1516)."
             % (len(doubled), "\n  ".join(doubled) or "(none)",
                "\n  ".join(expected),
                "\n  ".join(sorted(set(doubled) ^ set(expected))) or "(none)"))
