@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Golden captures reject image-mount paths (#2261, #1768).** SARIF normalization reads the
+  shared scanner mount, capture reroots fixture payloads before verification, and any surviving
+  fixture, probe, or source-root prefix prevents the golden write.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.

@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 
 from tests._test_helpers import fake_uuid, last
 import scripts.capture_goldens as cg
+import scripts.tools.sarif_utils as sarif_utils
 
 
 class TestTrimJson(unittest.TestCase):
@@ -147,6 +148,14 @@ class _Adapter:
         return self._parsed
 
 
+class _PathAdapter(_Adapter):
+    """Parse one JSON path through the real SARIF location normalizer."""
+
+    def parse(self, raw, group):
+        path = json.loads(raw)["path"]
+        return [{"id": "X-001", "location": {"file": sarif_utils.norm_uri(path)}}]
+
+
 class TestMainStatusClassification(unittest.TestCase):
     """main()'s seven-way classification is how an operator learns WHY a golden
     is missing. A capture that silently reported 'ok' for a tool it never ran
@@ -209,6 +218,45 @@ class TestMainStatusClassification(unittest.TestCase):
         self.assertEqual(written, ["t.raw"])
         self.assertLess(report["t"]["golden_bytes"], report["t"]["raw_bytes"])
         self.assertEqual(report["t"]["golden_findings"], 1)
+
+
+class TestMountPathGuard(unittest.TestCase):
+    def _run(self, adapter, target):
+        out_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(
+            out_dir, ignore_errors=True))
+        out = io.StringIO()
+        with unittest.mock.patch.object(cg, "ADAPTERS", {"t": adapter}), \
+             unittest.mock.patch.object(cg, "TARGETS", {"t": target}), \
+             contextlib.redirect_stdout(out):
+            cg.main([out_dir])
+        path = os.path.join(out_dir, "t.raw")
+        written = None
+        if os.path.isfile(path):
+            with open(path, "rb") as fh:
+                written = fh.read()
+        return json.loads(out.getvalue())["t"], written
+
+    def test_capture_reroots_a_fixture_target_before_reparse_and_write(self):
+        target = tempfile.mkdtemp()
+        self.addCleanup(lambda: os.rmdir(target) if os.path.isdir(target) else None)
+        raw = json.dumps({"path": target + "/app.py"}).encode()
+        report, written = self._run(_PathAdapter(raw=raw), target)
+        self.assertEqual(report["status"], "ok")
+        self.assertNotIn((target + "/").encode(), written)
+        self.assertIn(b"/src/app.py", written)
+
+    def test_each_known_mount_prefix_refuses_the_golden(self):
+        target = tempfile.mkdtemp()
+        self.addCleanup(lambda: os.rmdir(target) if os.path.isdir(target) else None)
+        paths = ("opt/panopticon-fixtures/railsgoat/app.rb",
+                 "mnt/gotify/main.go", "src/app.py")
+        for path in paths:
+            with self.subTest(path=path):
+                adapter = _Adapter(parsed=[{"id": "X-001", "location": {"file": path}}])
+                report, written = self._run(adapter, target)
+                self.assertEqual(report["status"], "mount-prefixed-path")
+                self.assertIsNone(written)
 
 
 class _RecordingAdapter(_Adapter):
@@ -351,6 +399,26 @@ class TestCaptureTargets(unittest.TestCase):
         offenders = {n: t for n, t in cg.TARGETS.items()
                      if t == "/mnt/panopticon"}
         self.assertEqual(offenders, {})
+
+
+class TestCommittedSemgrepGolden(unittest.TestCase):
+    def test_the_capture_is_rerooted_and_parses_to_repo_relative_locations(self):
+        path = os.path.join(os.path.dirname(__file__), "goldens", "tool-raw",
+                            "semgrep.raw")
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        old = (cg.DEFAULT_FIXTURES_ROOT + "/railsgoat/").encode()
+        self.assertNotIn(old, raw)
+        self.assertIn((cg.DEFAULT_SRC_ROOT + "/").encode(), raw)
+        findings = cg.ADAPTERS["semgrep"].parse(raw, "Probe")
+        prefixes = tuple(root.lstrip("/") + "/" for root in (
+            cg.DEFAULT_FIXTURES_ROOT, cg.DEFAULT_PROBES_ROOT,
+            cg.DEFAULT_SRC_ROOT))
+        self.assertFalse([
+            (finding.get("location") or {}).get("file")
+            for finding in findings
+            if str((finding.get("location") or {}).get("file") or "")
+            .startswith(prefixes)])
 
 
 class TestImportRootFromFile(unittest.TestCase):

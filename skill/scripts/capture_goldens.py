@@ -180,6 +180,28 @@ def redact_bytes(raw: bytes):
     return masked, masked != raw
 
 
+def _reroot_capture(raw: bytes, target: str, src_root: str) -> bytes:
+    """Replace a capture target's absolute prefix with the scanner mount."""
+    target_prefix = os.fsencode(target.rstrip("/") + "/")
+    src_prefix = os.fsencode(src_root.rstrip("/") + "/")
+    if target_prefix == src_prefix:
+        return raw
+    return raw.replace(target_prefix, src_prefix)
+
+
+def _has_mount_prefixed_path(findings, roots) -> bool:
+    """True when a normalized finding still names an image mount root."""
+    prefixes = tuple(root.strip("/") + "/" for root in roots if root.strip("/"))
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        location = finding.get("location")
+        path = location.get("file") if isinstance(location, dict) else None
+        if isinstance(path, str) and path.startswith(prefixes):
+            return True
+    return False
+
+
 def _target_override(value):
     """argparse `type=` for `--target NAME=PATH`.
 
@@ -263,7 +285,7 @@ def main(argv=None):
             report[name] = {"status": "parse-error", "rc": rc,
                             "error": str(exc)[:160], "bytes": len(raw)}
             continue
-        small = trim(raw)
+        small = _reroot_capture(trim(raw), target, src_root)
         # Redact BEFORE the check below, so what is verified is what is written.
         small, redacted = redact_bytes(small)
         # A trimmed payload must still parse, or the golden is useless.
@@ -271,6 +293,10 @@ def main(argv=None):
             reparsed = adapter.parse(small, "Probe")
         except Exception as exc:                      # noqa: BLE001
             report[name] = {"status": "trim-broke-parse", "error": str(exc)[:160]}
+            continue
+        if _has_mount_prefixed_path(
+                reparsed, (fixtures_root, probes_root, src_root)):
+            report[name] = {"status": "mount-prefixed-path"}
             continue
         with open(os.path.join(out_dir, "%s.raw" % name), "wb") as fh:
             fh.write(small)
