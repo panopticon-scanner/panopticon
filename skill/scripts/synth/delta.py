@@ -31,14 +31,20 @@ class HunksLoad:
     `payload_malformed` is the reason the payload was rejected in whole or in
     part -- "unreadable", "not an object", "hunks not an object" -- and None
     when there was nothing to reject. `files` and `ranges` count the hunk map
-    that survived: what the review is actually scoped to. `ranges_dropped`
-    counts what did not survive -- a range that was not a two-integer pair,
-    plus one for any path whose value was not a list at all, whose ranges
-    cannot be counted individually."""
+    that survived: what the review is actually scoped to.
+
+    TWO counters for what did not survive, because the two losses do not cost
+    the same (#2169). `ranges_dropped` counts a range that was not a
+    two-integer pair: the map keeps the file and is merely narrower.
+    `paths_dropped` counts a path whose value was not a list at all: that file
+    leaves the map entirely, so every finding in it classifies off-diff.
+    Counting the second as one of the first -- which is what this did until
+    #2169 -- published a lost file as a lost line range."""
     payload_malformed: str | None = None
     files: int = 0
     ranges: int = 0
     ranges_dropped: int = 0
+    paths_dropped: int = 0
 
 
 @dataclass(frozen=True)
@@ -129,9 +135,50 @@ def _disclose_load(ctx, path):
         print("synthesize: DELTA REVIEW WITH ZERO HUNKS -- %s resolved a base "
               "but carries no diff ranges: %s. %s"
               % (path, shape, cause), file=sys.stderr)
-    if report.ranges_dropped:
-        print("synthesize: DELTA ARTIFACT: %d malformed hunk range(s) dropped "
-              "from %s" % (report.ranges_dropped, path), file=sys.stderr)
+    if report.ranges_dropped or report.paths_dropped:
+        # #2169: ONE line carrying both numbers. A dropped path is the more
+        # expensive loss -- the file leaves the map, so every finding in it
+        # classifies off-diff, where a dropped range only narrows the file --
+        # and it used to be added to the range tally, which published it as a
+        # lost line range. Two separate lines for one read would instead have
+        # the operator reconciling what looks like two problems.
+        lost = []
+        if report.ranges_dropped:
+            lost.append("%d malformed hunk range(s)" % report.ranges_dropped)
+        if report.paths_dropped:
+            lost.append("%d whole path(s) whose ranges were not a list, so "
+                        "every finding in such a file classifies off-diff"
+                        % report.paths_dropped)
+        print("synthesize: DELTA ARTIFACT: %s dropped from %s"
+              % (" and ".join(lost), path), file=sys.stderr)
+
+
+def artifact_facts(ctx) -> dict | None:
+    """`meta.coverage.delta_artifact`: what READING the artifact cost (#2169).
+
+    `meta.coverage.delta` is emitted only for an ACTIVE delta, and the two
+    rejections that leave no `base` therefore published nothing at all: the
+    review degraded to a non-delta one and the block went null -- the same null
+    a run that was never passed `--diff-hunks` writes. `_disclose_load` above
+    named it on stderr, and a `driver run` keeps a child's stderr only on
+    failure, which a degraded run is not (the wider gate fails closed). So the
+    fact had no carrier a consumer could read.
+
+    This block is that carrier, and it is emitted whenever a file was READ,
+    active or not. None when no file was read, which is the distinction it
+    exists to make: nothing measured the read, so there is no zero to report.
+    `meta.coverage.delta` is deliberately unchanged -- a consumer that tests it
+    for truthiness to mean "this was a delta review" keeps that answer, and a
+    rejected payload is not dressed up as an active delta.
+
+    It lives here, not in `verdicts`, so `HunksLoad`'s fields have one reader."""
+    report = ctx.report
+    if report is None:
+        return None
+    return {"path_read": True,
+            "payload_malformed": report.payload_malformed,
+            "ranges_dropped": report.ranges_dropped,
+            "paths_dropped": report.paths_dropped}
 
 
 def zero_hunk_population(active, fail_on, gate_unverified) -> list:
@@ -212,9 +259,19 @@ def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     if report.payload_malformed is not None:
         cause = ("the map is empty because the payload was rejected (%s), not "
                  "because the change was" % report.payload_malformed)
-    elif report.ranges_dropped:
-        cause = ("the map is empty because its %d hunk range(s) were malformed "
-                 "and dropped, not because the change was" % report.ranges_dropped)
+    elif report.ranges_dropped or report.paths_dropped:
+        # #2169: either loss can empty the map, and the note names the one that
+        # did -- a map emptied by dropped PATHS lost whole files, which is not
+        # the same defect in the artifact as malformed line ranges.
+        lost = []
+        if report.ranges_dropped:
+            lost.append("%d hunk range(s) were malformed and dropped"
+                        % report.ranges_dropped)
+        if report.paths_dropped:
+            lost.append("%d whole path(s) were dropped for carrying no list of "
+                        "ranges" % report.paths_dropped)
+        cause = ("the map is empty because %s, not because the change was"
+                 % " and ".join(lost))
     else:
         cause = "an empty change and a broken artifact look identical from here"
     # The count is what the GATE would have judged (#2222): `zero_hunk_population`
@@ -276,10 +333,13 @@ def load_diff_hunks_report(path):
         malformed = MALFORMED_HUNKS_NOT_OBJECT
         raw = {}
     dropped = 0
+    dropped_paths = 0
     hunks = {}
     for p, rs in raw.items():
         if not isinstance(rs, list):
-            dropped += 1
+            # #2169: the path is gone from the map, so this is NOT one dropped
+            # range -- it is every range that file had, uncountable from here.
+            dropped_paths += 1
             continue
         cleaned = []
         for r in rs:
@@ -291,7 +351,8 @@ def load_diff_hunks_report(path):
     data["hunks"] = hunks
     files, ranges = count_hunks(hunks)
     return data, HunksLoad(payload_malformed=malformed, files=files,
-                           ranges=ranges, ranges_dropped=dropped)
+                           ranges=ranges, ranges_dropped=dropped,
+                           paths_dropped=dropped_paths)
 
 def classify_findings(findings, hunks, tolerance):
     """Stamp each finding with delta = {on_diff, hunk, distance}."""

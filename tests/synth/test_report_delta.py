@@ -435,3 +435,97 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
         note = rep["summary"]["coverage_note"]
         self.assertIn("zero-hunk delta gate", note)
         self.assertIn("1 gate-eligible finding(s)", note)
+
+
+class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
+    """#2169, end to end through the report builder: the run said on stderr that
+    it rejected the diff-hunks artifact, and then published a report in which
+    that fact did not appear.
+
+    `meta.coverage.delta` is emitted only for an ACTIVE delta, and a rejected
+    payload carries no `base`, so the review degrades to a non-delta one and the
+    whole block is null -- the same null a run that was never passed
+    `--diff-hunks` writes. The stderr line is the only record, and a `driver run`
+    keeps a child's stderr only on failure, which this is not (the degraded shape
+    WIDENS the gate, so it fails closed).
+
+    The fix is the SIBLING `meta.coverage.delta_artifact`, emitted whenever a file
+    was read. `meta.coverage.delta` is deliberately left exactly as it was: a
+    consumer that tests it for truthiness to mean "this was a delta review" keeps
+    that answer, and a rejected payload must not be dressed up as an active
+    delta."""
+
+    def _findings(self):
+        return [{"id": "A-1", "title": "t", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                 "location": {"file": "a.py", "line_start": 11}}]
+
+    def _coverage(self, raw=None, payload=None, with_flag=True):
+        """`meta.coverage` for a run handed this artifact, or none at all."""
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "diff-hunks.json")
+            if raw is not None or payload is not None:
+                with open(hp, "w", encoding="utf-8") as fh:
+                    fh.write(raw if raw is not None else json.dumps(payload))
+            with contextlib.redirect_stderr(io.StringIO()):
+                delta = delta_mod.DeltaContext.from_args(_cli_args(
+                    diff_hunks=hp if with_flag else None, fail_on="high"))
+            rep = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
+                    gate_unverified=True),
+                findings=findings_mod.FindingSet(findings=self._findings()),
+                delta=delta,
+                plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+            ))
+            return rep["meta"]["coverage"]
+
+    def test_an_unreadable_artifact_is_named_in_the_report(self):
+        cov = self._coverage(raw="{not json")
+        self.assertIsNone(cov["delta"])            # still not a delta review
+        self.assertEqual(cov["delta_artifact"],
+                         {"path_read": True,
+                          "payload_malformed": delta_mod.MALFORMED_UNREADABLE,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_a_non_object_artifact_is_named_in_the_report(self):
+        cov = self._coverage(payload=["not", "an", "object"])
+        self.assertIsNone(cov["delta"])
+        self.assertEqual(cov["delta_artifact"],
+                         {"path_read": True,
+                          "payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_no_diff_hunks_flag_leaves_both_keys_null(self):
+        # The distinction the whole change is about: nothing was read, so there
+        # is nothing to report about a read -- and `delta_artifact` is PRESENT
+        # and null rather than absent, so its absence can never be mistaken for
+        # a producer that failed to run.
+        cov = self._coverage(with_flag=False)
+        self.assertIsNone(cov["delta"])
+        self.assertIn("delta_artifact", cov)
+        self.assertIsNone(cov["delta_artifact"])
+
+    def test_an_active_delta_carries_both_blocks(self):
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 1,
+                                      "hunks": {"a.py": [[10, 12]]}})
+        self.assertIsNotNone(cov["delta"])
+        self.assertEqual(cov["delta"]["paths_dropped"], 0)
+        self.assertEqual(cov["delta_artifact"],
+                         {"path_read": True, "payload_malformed": None,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_the_two_blocks_agree_about_the_losses(self):
+        # One loader record behind both, so the active block and the sibling
+        # cannot disagree about what reading the artifact cost.
+        cov = self._coverage(payload={"base": "main", "base_source": "explicit",
+                                      "diff_context": 5, "files_changed": 2,
+                                      "hunks": {"a.py": [[10, 12], [3]],
+                                                "b.py": 7}})
+        self.assertEqual(cov["delta"]["ranges_dropped"],
+                         cov["delta_artifact"]["ranges_dropped"])
+        self.assertEqual(cov["delta"]["paths_dropped"],
+                         cov["delta_artifact"]["paths_dropped"])
+        self.assertEqual((cov["delta"]["ranges_dropped"],
+                          cov["delta"]["paths_dropped"]), (1, 1))

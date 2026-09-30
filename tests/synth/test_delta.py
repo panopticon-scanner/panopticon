@@ -119,6 +119,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
         self.assertEqual(data, {})
         self.assertEqual(report.payload_malformed, "unreadable")
         self.assertEqual((report.files, report.ranges, report.ranges_dropped), (0, 0, 0))
+        self.assertEqual(report.paths_dropped, 0)
 
     def test_malformed_json_is_reported_as_unreadable(self):
         with tempfile.TemporaryDirectory() as d:
@@ -159,8 +160,24 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(data["hunks"], {"a.py": [(1, 5)]})
             self.assertIsNone(report.payload_malformed)
             self.assertEqual((report.files, report.ranges), (1, 1))
-            # three malformed ranges under a.py, plus b.py's whole entry
-            self.assertEqual(report.ranges_dropped, 4)
+            # Three malformed ranges under a.py. b.py is a LOST PATH, and #2169
+            # counts it apart: one lost path is not one lost range, and the
+            # difference is what it costs -- every finding in b.py classifies
+            # off-diff, where a dropped range only narrows the map.
+            self.assertEqual(report.ranges_dropped, 3)
+            self.assertEqual(report.paths_dropped, 1)
+
+    def test_a_lost_path_is_counted_apart_from_a_lost_range(self):
+        # #2169: the two losses were indistinguishable, so a report saying
+        # `ranges_dropped: 2` could mean two narrowed files or one file gone.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, {"base": "main",
+                                   "hunks": {"a.py": [[1, 5], [2]],
+                                             "c.py": {"not": "a list"}}})
+            data, report = delta_mod.load_diff_hunks_report(path)
+            self.assertEqual(data["hunks"], {"a.py": [(1, 5)]})
+            self.assertEqual(report.ranges_dropped, 1)
+            self.assertEqual(report.paths_dropped, 1)
 
     def test_a_well_formed_payload_reports_nothing_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -169,6 +186,7 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             _, report = delta_mod.load_diff_hunks_report(path)
             self.assertIsNone(report.payload_malformed)
             self.assertEqual((report.files, report.ranges, report.ranges_dropped), (2, 3, 0))
+            self.assertEqual(report.paths_dropped, 0)
 
     def test_load_diff_hunks_returns_the_same_data(self):
         with tempfile.TemporaryDirectory() as d:
@@ -252,6 +270,25 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
                                      "hunks": {"a.py": [[1, 5], [2], "x"]}})
         self.assertIn("2 malformed hunk range(s) dropped", err)
         self.assertNotIn("ZERO HUNKS", err)
+
+    def test_a_dropped_path_is_disclosed_as_its_own_count(self):
+        # #2169: a lost PATH is the more expensive loss -- every finding in that
+        # file classifies off-diff -- so it gets its own number rather than
+        # being added to the malformed-range tally.
+        _, err, _ = self._from_args({"base": "main",
+                                     "hunks": {"a.py": [[1, 5]], "b.py": 7}})
+        self.assertIn("1 whole path(s)", err)
+        self.assertNotIn("malformed hunk range(s)", err)
+
+    def test_both_losses_are_disclosed_on_one_line(self):
+        # One line, both numbers: two lines for one artifact read as two
+        # problems, and the operator has to reconcile them.
+        _, err, _ = self._from_args({"base": "main",
+                                     "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        lines = [ln for ln in err.splitlines() if "DELTA ARTIFACT:" in ln]
+        self.assertEqual(len(lines), 1, err)
+        self.assertIn("1 malformed hunk range(s)", lines[0])
+        self.assertIn("1 whole path(s)", lines[0])
 
     def test_a_named_file_with_no_range_is_disclosed_as_the_fail_open_shape(self):
         # `diff_map.classify` fails OPEN on BOTH its arms for a file the map
@@ -359,6 +396,23 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertNotIn("was rejected", gap)
         self.assertIn("regenerate the diff-hunks artifact", gap)
 
+    def test_dropped_paths_name_that_cause_too(self):
+        # #2169: a map emptied by LOST PATHS is known-broken for the same reason
+        # a map emptied by malformed ranges is, and the note has to name the
+        # loss it actually suffered.
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": 7}}), 1, "on-diff")
+        self.assertIn("1 whole path(s)", gap)
+        self.assertNotIn("look identical", gap)
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+
+    def test_both_losses_are_named_when_both_happened(self):
+        gap = delta_mod.zero_hunk_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1]], "b.py": 7}}), 1,
+            "on-diff")
+        self.assertIn("1 hunk range(s) were malformed and dropped", gap)
+        self.assertIn("1 whole path(s)", gap)
+
     def test_the_count_is_qualified_as_the_gate_eligible_set(self):
         # #2222 (owner ruling 2026-09-28): the population is what the GATE would
         # have judged, and the clause says which filters made it -- so a reader
@@ -409,6 +463,53 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertTrue(ctx.active)
         self.assertIsNone(ctx.report)
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+
+
+class TestArtifactFacts(unittest.TestCase):
+    """#2169: `meta.coverage.delta_artifact`'s source. The block says what
+    READING the diff-hunks artifact cost, and it is emitted whether or not the
+    delta came out active -- which is the whole point: a rejected payload leaves
+    no `base`, so `meta.coverage.delta` is null and, before this, a run that read
+    a broken artifact was indistinguishable from one that was never given one.
+
+    It lives here rather than in `verdicts` so the report side never reaches into
+    `HunksLoad`'s fields itself: one reader of the loader's record."""
+
+    def _ctx(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                return delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+
+    def test_a_context_that_read_no_file_has_no_facts(self):
+        # A caller that built the context from a payload it already held: nothing
+        # measured the read, so there is no zero to report.
+        ctx = delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}})
+        self.assertIsNone(delta_mod.artifact_facts(ctx))
+        self.assertIsNone(delta_mod.artifact_facts(delta_mod.DeltaContext()))
+
+    def test_a_rejected_payload_still_reports_the_read(self):
+        ctx = self._ctx(["not", "an", "object"])
+        self.assertFalse(ctx.active)
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"path_read": True,
+                          "payload_malformed": delta_mod.MALFORMED_NOT_OBJECT,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_an_active_payload_reports_no_rejection(self):
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}})
+        self.assertTrue(ctx.active)
+        self.assertEqual(delta_mod.artifact_facts(ctx),
+                         {"path_read": True, "payload_malformed": None,
+                          "ranges_dropped": 0, "paths_dropped": 0})
+
+    def test_it_carries_both_loss_counters(self):
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5], [2]], "b.py": 7}})
+        self.assertEqual(delta_mod.artifact_facts(ctx)["ranges_dropped"], 1)
+        self.assertEqual(delta_mod.artifact_facts(ctx)["paths_dropped"], 1)
 
 
 class TestTheZeroHunkPopulation(unittest.TestCase):

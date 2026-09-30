@@ -55,8 +55,11 @@ class Resolved:
     `integration_findings`); `active`/`rejected` partition it by evidence
     status; `gate_eligible` is the subset grades and the gate are computed
     from; the on-diff/pre-existing lists are empty outside delta mode.
-    `verdict_stats`, `verify_matrix`, `tool_axis`, `ocrdb_coverage` and
-    `delta_meta` are the meta.coverage sections this stage owns; `tool_names`
+    `verdict_stats`, `verify_matrix`, `tool_axis`, `ocrdb_coverage`,
+    `delta_meta` and `delta_artifact` are the meta.coverage sections this stage
+    owns -- the last two are siblings, not halves of one block: `delta_meta` is
+    the ACTIVE delta and null outside it, `delta_artifact` is what reading the
+    diff-hunks file cost and null only when no file was read (#2169); `tool_names`
     is the adapter set inferred from the findings (the fallback when the tool
     layer reported none); `unanswered_gate` the gate-aware unanswered count
     certify() consumes."""
@@ -75,6 +78,7 @@ class Resolved:
     tool_names: set
     delta_mode: bool
     delta_meta: dict | None
+    delta_artifact: dict | None
     doc_policy: dict | None
     verdict_unloadable: list
     unanswered_gate: int
@@ -341,6 +345,9 @@ def _delta_meta(delta, partitions):
     # left for `--fail-on` to fail on. `ranges_dropped` / `payload_malformed`
     # are the loader's tolerances, and are null when this context was not built
     # from a file read (a direct caller: unmeasured, not the same as zero).
+    # #2169: `paths_dropped` is beside `ranges_dropped` rather than inside it --
+    # a path whose value was not a list leaves the map, so every finding in that
+    # file classifies off-diff, which is not what one dropped range costs.
     hunks_load = delta.report if delta_mode else None
     hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
                                  if delta_mode else (0, 0))
@@ -355,6 +362,7 @@ def _delta_meta(delta, partitions):
                    "hunks_files": hunks_files,
                    "hunks_ranges": hunks_ranges,
                    "ranges_dropped": hunks_load.ranges_dropped if hunks_load else None,
+                   "paths_dropped": hunks_load.paths_dropped if hunks_load else None,
                    "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
                    "on_diff_total": len(partitions.on_diff_active),
                    "pre_existing_total": len(partitions.pre_existing_active)}
@@ -409,6 +417,9 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                     verdict_stats=verdict_stats, verify_matrix=verify_matrix_cov,
                     tool_axis=tool_axis, tool_names=tool_names,
                     delta_mode=delta.active, delta_meta=_delta_meta(delta, partitions),
+                    # #2169: emitted for an INACTIVE context too, whenever a file
+                    # was read -- the one carrier a rejected payload has.
+                    delta_artifact=delta_mod.artifact_facts(delta),
                     doc_policy=fs.doc_policy, verdict_unloadable=fs.verdict_unloadable or [],
                     # Measured only when --verdicts-dir was passed at all.
                     unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,

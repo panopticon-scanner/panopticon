@@ -1006,16 +1006,26 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
   .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
-  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and every malformed
-  range it drops are named on stderr, and counted in `meta.coverage.delta` when the payload
-  resolved a `base` (#1783): an ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
+  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
+  drops are named on stderr, and counted in `meta.coverage.delta` when the payload
+  resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
+  same (#2169): `ranges_dropped` is a range that was not a two-integer pair, which leaves the
+  file in the map and merely narrower, while `paths_dropped` is a path whose value was not a
+  list of ranges at all, so that file leaves the map entirely and every finding in it
+  classifies off-diff. An ACTIVE delta whose map is empty (`hunks_files: 0`) matches no
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings
   (active, admitted by the evidence policy and by `--fail-on` when one is set) that run now reads
   `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
   (unreadable, or not an object) carries no `base`, so the review stays a non-delta one and
-  `meta.coverage.delta` is null: there, only stderr carries it. It
+  `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
+  writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169):
+  present whenever a diff-hunks file was READ, active delta or not, carrying `path_read`, the
+  `payload_malformed` reason and both drop counts, and null only when no file was read.
+  `meta.coverage.delta` itself is unchanged, so a consumer reading it for truthiness to mean
+  "this was a delta review" still gets that answer and a rejected payload is never dressed up
+  as an active delta. It
   also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
   `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
