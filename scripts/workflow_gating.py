@@ -177,7 +177,7 @@ def swallowed(stmts, index, statement, stage, credit=None):
     last: `step_credit`'s, the guard's `_SOFT_STEP` pair where the step
     carries `continue-on-error: true` (`job_defects`), or None where it has
     none. A `Reach` answer is a check ahead of `&&`, which still stops what
-    its list runs (`clears`).
+    its list runs, or its own command where the list's end is lost (`clears`).
     """
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
@@ -201,7 +201,10 @@ def swallowed(stmts, index, statement, stage, credit=None):
 # Why a check the step's own shell runs does not stop the step, as
 # `step_credit` finds it -- the first two as `swallowed` does too, and those
 # and `_NO_PIPEFAIL` again for the group a check ends, whose status is the
-# check's (`_ENDS`).
+# check's (`_ENDS`). Where a sentence gives this guard's reading rather than
+# what bash does, it says so: `_SET_E`, `_NO_E` and `_NO_PIPEFAIL` are also
+# the fail-closed answers for a `set` or template it does not read (review
+# N-3, N-7), and `_LOST` is the one for a list whose end the reader lost.
 _DETACHED = "is detached with `&`"
 _RESCUED = "hands its failure to a `||` branch that does not fail the step"
 _ENDS = "ends a group that %s"
@@ -209,14 +212,17 @@ _SET_E = ("runs after a `set +e` or a spelling of it (`set +o errexit`, `shopt -
           "`builtin set +e`), which this guard reads as turning errexit off from where it is "
           "written, and is not in the step's last command, so the step carries on past its "
           "failure")
-_NO_E = ("runs under `shell: %s`, which starts without errexit, and is not in the step's "
-         "last command, so the step carries on past its failure")
-_NO_PIPEFAIL = ("is piped into another command where `pipefail` is off, so the pipeline "
-                "takes that command's status and the step carries on past its failure "
-                "(`shell: bash` turns pipefail on, and so does a `set -o pipefail` before it "
-                "where the shell is bash)")
+_NO_E = ("runs under `shell: %s`, which this guard reads as starting without errexit, and is "
+         "not in the step's last command, so the step carries on past its failure")
+_NO_PIPEFAIL = ("is piped into another command where this guard reads `pipefail` as off, so "
+                "the pipeline takes that command's status and the step carries on past its "
+                "failure (`shell: bash` turns pipefail on, and so does a `set -o pipefail` "
+                "before it where the shell is bash)")
 _AHEAD = ("runs ahead of `&&`, where the shell suspends `-e`, so its failure skips only the "
           "rest of that list and the step carries on past it")
+_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (a line ending in `(` "
+         "or holding only `)`, or a `case` inside `$(...)`), so it clears nothing after its "
+         "own command in that list")
 
 
 def step_credit(flat, shell=None):
@@ -234,8 +240,10 @@ def step_credit(flat, shell=None):
     status is lost to the command after it. Where `-e` is off, a failure
     stops the step only in its last command or through an `||` branch that
     exits. Ahead of `&&` the shell suspends `-e`, so a failure there stops
-    only the rest of its list, a `Reach` of that many statements; a check
-    that ends a group answers as the group does (`_stops_step`).
+    only the rest of its list, a `Reach` of that many statements -- or,
+    where the reader lost the list's end, only the rest of its own command,
+    a `Reach` in `_LOST`'s words; a check that ends a group answers as the
+    group does (`_stops_step`).
 
     The guard has no model of an exit status or a trap, so four readings
     here are fail-closed, and bash stops the step on each (review N-1): with
@@ -255,7 +263,8 @@ def step_credit(flat, shell=None):
     for position, index in enumerate(at):
         stops = _stops_step(stmts, position, on, fails)
         for inner in range(start, index + 1):
-            why = (stops if stops is None or isinstance(stops, str)
+            why = (Reach(index - inner, _LOST) if stops is _LOST
+                   else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
@@ -267,12 +276,14 @@ def step_credit(flat, shell=None):
 
 class Reach(str):
     """A check's refusal that still clears the `span` statements after it:
-    the rest of the `&&` list its failure skips (`step_credit`, `clears`)."""
+    the rest of the `&&` list its failure skips, or of its own command where
+    the list's end is lost (`_LOST`), in the words `why` gives it
+    (`step_credit`, `clears`)."""
 
     span: int
 
-    def __new__(cls, span):
-        reach = str.__new__(cls, _AHEAD)
+    def __new__(cls, span, why=_AHEAD):
+        reach = str.__new__(cls, why)
         reach.span = span
         return reach
 
@@ -325,8 +336,9 @@ def _lost_case(stmts):
 
 def _stops_step(stmts, position, on, fails):
     """How much of the step a failure in its top-level statement `position`
-    stops: None for all of it, -1 for none of it, the refusal where a group it
-    ends lets it go, else the index of the last statement it still stops.
+    stops: None for all of it, -1 for none of it, `_LOST` for its own
+    statement only, the refusal where a group it ends lets it go, else the
+    index of the last statement it still stops.
 
     A check that ends a `{ }` group, or a `( )` whose `(` line the reader
     dropped, is that group's status, and what follows the statements closing
@@ -347,7 +359,8 @@ def _stops_step(stmts, position, on, fails):
     that ends a line and a `)` alone on one -- and a list that closes a
     `case` it never opened is a `$(...)` it ended at a `case` pattern's `)`,
     whatever the count says (`_lost_case`, review I-4): there the list's end
-    is unknown, and the failure stops only its own statement (review I-1)."""
+    is unknown, and the failure stops only its own statement (`_LOST`, review
+    I-1, N-7)."""
     last, close = len(stmts) - 1, position
     while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
             stmts[close + 1]):
@@ -372,12 +385,12 @@ def _stops_step(stmts, position, on, fails):
     opened = sum(stage.group_open - stage.group_close for statement in stmts[:position + 1]
                  for stage in statement.stages)
     if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
-        return position                         # a lost paren: the list's end is unknown
+        return _LOST                            # a lost paren: the list's end is unknown
     if not depth and end < last and stmts[end].separator not in ("&", "||") and _closes(
             stmts[end + 1]):
         end, depth = end + 1, -1                # the list ends its group
         if stmts[end].stages[0].argv != ["}"] and opened < 1:
-            return position                     # a `)` whose `(` the reader dropped
+            return _LOST                        # a `)` whose `(` the reader dropped
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere

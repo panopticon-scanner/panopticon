@@ -1231,10 +1231,10 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                 found = self.job(body, shell)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("the checksum that names /tmp/payload is piped into another "
-                              "command where `pipefail` is off", found[0][1])
+                              "command where this guard reads `pipefail` as off", found[0][1])
                 self.assertIn("(`shell: bash` turns pipefail on, and so does a `set -o pipefail` "
                               "before it where the shell is bash)", found[0][1])
-        self.assertIn("where `pipefail` is off",
+        self.assertIn("where this guard reads `pipefail` as off",
                       wg.fetch_exec_defect(self.FETCH + self.PIPED % self.CHECK + self.USE))
 
     def test_a_piped_check_under_pipefail_still_clears(self):
@@ -1260,7 +1260,8 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     def test_a_template_without_e_gates_nothing_a_rescue_does_not(self):
         found = self.job("%s\n", "bash {0}")
         self.assertEqual(1, len(found), found)
-        self.assertIn("runs under `shell: bash {0}`, which starts without errexit", found[0][1])
+        self.assertIn("runs under `shell: bash {0}`, which this guard reads as starting without "
+                      "errexit", found[0][1])
         for body in ("%s || exit 1\n", "set -e\n%s\n"):
             with self.subTest(body=body):
                 self.assertEqual([], self.job(body, "bash {0}"))
@@ -1308,7 +1309,8 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
             with self.subTest(spelling=spelling):
                 found = self.job(spelling + "\n" + self.PIPED, "bash")
                 self.assertEqual(1, len(found), found)
-                self.assertIn("is piped into another command where `pipefail` is off", found[0][1])
+                self.assertIn("is piped into another command where this guard reads `pipefail` "
+                              "as off", found[0][1])
 
     def test_a_plain_shopt_turns_them_on_where_the_shell_is_bash(self):
         for shell in (None, "bash", "bash {0}"):
@@ -1322,8 +1324,8 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
         # dash has no `shopt`: under `shell: sh` it turns nothing on.
         self.assertIn("runs after a `set +e`",
                       self.job("set +e\nshopt -so errexit\n%s\n", "sh")[0][1])
-        self.assertIn("where `pipefail` is off", self.job("shopt -so pipefail\n" + self.PIPED,
-                                                          "sh")[0][1])
+        self.assertIn("where this guard reads `pipefail` as off",
+                      self.job("shopt -so pipefail\n" + self.PIPED, "sh")[0][1])
 
     def test_a_shopt_that_eval_runs_is_read_under_the_steps_shell(self):
         # Review N-6: `eval` runs its text in the step's own shell, so under
@@ -1349,15 +1351,16 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
         # Bash turns the option on in the first five, which the guard does not
         # read on: behind `builtin`, `command` or `eval`, or inside a branch.
         # The last two turn nothing on: `shopt -o` alone only reports, and
-        # `pipefail` is not one of `shopt`'s own options.
+        # `pipefail` is not one of `shopt`'s own options. Each sentence says it
+        # is this guard's reading (review N-7).
+        off = "where this guard reads `pipefail` as off"
         for body, why in (("set +e\nbuiltin set -e\n%s\n", "runs after a `set +e`"),
                           ("set +e\ncommand shopt -so errexit\n%s\n", "runs after a `set +e`"),
                           ("set +e\neval shopt -so errexit\n%s\n", "runs after a `set +e`"),
-                          ("builtin set -o pipefail\n" + self.PIPED, "where `pipefail` is off"),
-                          ("if true; then shopt -so pipefail; fi\n" + self.PIPED,
-                           "where `pipefail` is off"),
-                          ("shopt -o pipefail\n" + self.PIPED, "where `pipefail` is off"),
-                          ("shopt -s pipefail\n" + self.PIPED, "where `pipefail` is off")):
+                          ("builtin set -o pipefail\n" + self.PIPED, off),
+                          ("if true; then shopt -so pipefail; fi\n" + self.PIPED, off),
+                          ("shopt -o pipefail\n" + self.PIPED, off),
+                          ("shopt -s pipefail\n" + self.PIPED, off)):
             with self.subTest(body=body):
                 found = self.job(body)
                 self.assertEqual(1, len(found), found)
@@ -1450,7 +1453,7 @@ class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
         # even where the list ends the step.
         piped = self.job("%s | tee log && chmod +x /tmp/payload\necho done\n", use="")
         self.assertEqual(1, len(piped), piped)
-        self.assertIn("where `pipefail` is off", piped[0][1])
+        self.assertIn("where this guard reads `pipefail` as off", piped[0][1])
         bare = wg.job_defects([("s", self.FETCH + 'echo "/tmp/payload" | sha256sum -c - && '
                                 "chmod +x /tmp/payload\necho done\n")])
         self.assertEqual(1, len(bare), bare)
@@ -1502,7 +1505,10 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     own subshell, whose failure pipefail hands the step. Review I-4: a
     `$(case ...)` is now read by its signature -- the list closes a `case`
     it never opened -- not by the count, which a `(` the reader kept without
-    its `)` balanced, and which the `esac` could leave at 0 inside the list."""
+    its `)` balanced, and which the `esac` could leave at 0 inside the list.
+    Review N-7: such a list is refused in words of its own, since bash does
+    stop the step on some of them; `_AHEAD`'s "the step carries on past it"
+    stays with the lists whose end the guard reads."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -1510,10 +1516,18 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     job = TestASetPlusEAtTheStepsTopLevel.job
     both = TestACheckAheadOfAndGatesOnlyItsList.both
 
-    def assertAhead(self, body, shell):
+    AHEAD = "runs ahead of `&&`, where the shell suspends `-e`"
+    LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (a line ending in "
+            "`(` or holding only `)`, or a `case` inside `$(...)`), so it clears nothing after "
+            "its own command in that list")
+
+    def assertAhead(self, body, shell, why=AHEAD):
         found = self.both(body, shell)
         self.assertEqual(1, len(found), found)
-        self.assertIn("the checksum that names /tmp/payload runs ahead of `&&`", found[0])
+        self.assertIn("the checksum that names /tmp/payload " + why, found[0])
+
+    def assertLost(self, body, shell):
+        self.assertAhead(body, shell, self.LOST)
 
     def test_a_lone_paren_line_or_a_case_in_a_substitution_clears_nothing_after(self):
         for shell in (None, "sh", "bash"):
@@ -1524,7 +1538,7 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                          "{ %s && if true; then echo $(case x in x) echo y;; esac); fi; }\n",
                          "{\n%s && if true; then echo $(case x in x) echo y;; esac); fi\n}\n"):
                 with self.subTest(shell=shell, body=body):
-                    self.assertAhead(body, shell)
+                    self.assertLost(body, shell)
 
     def test_the_spellings_the_count_reads_whole_keep_their_verdicts(self):
         # The subshell on one line, both parens on lines of their own (the
@@ -1553,10 +1567,10 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                             (None, "set -o pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n"),
                             (None, "shopt -so pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n")):
             with self.subTest(shell=shell, body=body):
-                self.assertAhead(body, shell)
+                self.assertLost(body, shell)
         # The controls, reported before and after: the subshell on one line,
         # its `(` kept on the next statement, a `{ }` group after `&&`, and
-        # the dropped `(` where pipefail is off.
+        # the dropped `(` where pipefail is off, now in the lost list's words.
         for shell in (None, "sh", "bash"):
             for body in ("%s && ( echo b ) 2>&1 | tee log\n", "%s && ( echo b\n) 2>&1 | tee log\n",
                          "%s && {\n  echo b\n} 2>&1 | tee log\n"):
@@ -1564,11 +1578,11 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                     self.assertAhead(body, shell)
         for shell in (None, "sh"):
             with self.subTest(shell=shell):
-                self.assertAhead("%s && (\n  echo b\n) 2>&1 | tee log\n", shell)
+                self.assertLost("%s && (\n  echo b\n) 2>&1 | tee log\n", shell)
         # The fail-closed price: `(` alone before the check gives the reader
         # the same statements, so it is refused too, though bash stops the step
         # there; a `{`, which the reader keeps, still reads as the group.
-        self.assertAhead("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
+        self.assertLost("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
         self.assertEqual([], self.job("{\n  %s && echo b\n} 2>&1 | tee log\n", "bash"))
 
     def test_a_case_closed_inside_a_substitution_fails_closed_whatever_the_count(self):
@@ -1589,11 +1603,13 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                               + "\n) | tee log\nfi\n")):
             for shell in shells:
                 with self.subTest(shell=shell, body=body):
-                    self.assertAhead(body, shell)
-        # The controls, reported before and after: the same lists with no `(`
-        # before them, and the same prefixes with no `$(case ...)`.
+                    self.assertLost(body, shell)
+        # The controls, reported before and after: the same list with no `(`
+        # before it, and the same prefixes with no `$(case ...)`.
         for shell in every:
-            for body in ("%s && " + sub + "\n", "( echo a\n)\n%s && echo ok\n",
+            with self.subTest(shell=shell):
+                self.assertLost("%s && " + sub + "\n", shell)
+            for body in ("( echo a\n)\n%s && echo ok\n",
                          "%s && if true; then if true; then echo y || exit 1; fi; fi\n",
                          "( echo a\n)\n%s && if true; then ( echo y\n) | tee log\nfi\n"):
                 with self.subTest(shell=shell, body=body):
@@ -1605,7 +1621,19 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
         # same, though bash and dash stop the step on its failure.
         for shell in every:
             with self.subTest(shell=shell):
-                self.assertAhead("( %s && " + sub + " )\n", shell)
+                self.assertLost("( %s && " + sub + " )\n", shell)
+
+    def test_the_refusal_keeps_its_reach_inside_a_script_handed_on(self):
+        # Review N-7: a lost list's check still stops the rest of its own
+        # command. Inside `sh -ec '...'` that is the rest of the script, which
+        # bash 5.2.21 and dash never reach; a use after the command is refused.
+        for shell in (None, "sh", "bash"):
+            for body in ("sh -ec '%s; chmod +x /tmp/payload; /tmp/payload' && ( echo a\n)\n",
+                         "{ sh -ec '%s; chmod +x /tmp/payload; /tmp/payload'; } && ( echo a\n)\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.both(body + "echo done\n", shell, use=""))
+            with self.subTest(shell=shell):
+                self.assertLost("sh -ec '%s' && ( echo a\n)\n", shell)
 
 
 class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
@@ -1647,7 +1675,8 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
                 self.reported("{ %s; } &\nwait\n", shell, "ends a group that is detached with `&`")
 
     def test_a_piped_group_gates_only_under_pipefail(self):
-        piped = "ends a group that is piped into another command where `pipefail` is off"
+        piped = ("ends a group that is piped into another command where this guard reads "
+                 "`pipefail` as off")
         for shell, body in ((None, "{ %s; } | tee log\n"), ("sh", "{ %s; } | tee log\n"),
                             ("bash {0}", "{ %s; } | tee log\n"),
                             ("bash", "set +o pipefail\n{ %s; } | tee log\n"),
