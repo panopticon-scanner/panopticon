@@ -10,15 +10,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-# `run_tools` owns the container-launch policy these two containers now launch
-# under -- its privilege-drop flags and its resource ceilings, read from it
-# rather than copied weakly into here (#1767, ARC-3859414366).
+# The container-launch policy these two containers run under is read from the
+# modules that OWN it rather than copied weakly into here (#1767,
+# ARC-3859414366): the resource ceilings from `run_tools`, whose env constants
+# tune them, and the privilege drop from `scanner_config`, the one owner every
+# panopticon container shares since #2150 (ARC-A3A).
 # skill/ is not on sys.path when this file runs as a script, so put it there
 # first: the same bootstrap run_tools.py itself uses. Acyclic and stdlib-only
 # (run_tools imports no part of this module), so a module-level import costs a
 # few tens of milliseconds and keeps the coupling visible.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts import run_tools            # noqa: E402  (needs the path above)
+from scripts import scanner_config       # noqa: E402  (needs the path above)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
@@ -151,11 +154,11 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
         'done'
     )
     # The probe stats baked paths only, but it launches under the same policy as
-    # every other container here: run_tools' flags, in run_tools' own order, and
-    # a network it cannot use.
+    # every other container here: the same flags in the same order as the tool
+    # runner's own dispatch, and a network it cannot use.
     cmd = [_docker_bin(), "run", "--rm",
            *run_tools.resource_limit_flags(),
-           *run_tools.privilege_drop_flags(),
+           *scanner_config.privilege_drop_flags(),
            "--network", "none",
            tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
@@ -216,9 +219,9 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # .github/workflows/adapter-integration.yml), so evil.csproj's curl
         # target does not fire here -- that test skips. All of that launched
         # with no cap-drop, no no-new-privileges and no memory/CPU/pids ceiling until
-        # #1767 (ARC-3859414366). The flags come from the module that owns them.
+        # #1767 (ARC-3859414366). Each flag set comes from the module that owns it.
         *run_tools.resource_limit_flags(),
-        *run_tools.privilege_drop_flags(),
+        *scanner_config.privilege_drop_flags(),
         # #calibration-6: scans run with NO NETWORK, so the fixture suite must
         # too -- otherwise it certifies scanners in an environment that does not
         # exist. Three broken adapters passed here for exactly that reason:

@@ -67,7 +67,7 @@ PENDING: dict[str, int] = {
     "skill/scripts/loop_batch.py": 822,
     "skill/scripts/orchestrate.py": 738,
     "skill/scripts/read_guard_hook.py": 786,
-    "skill/scripts/run_tools.py": 838,
+    "skill/scripts/run_tools.py": 815,
     "skill/scripts/safe_git.py": 852,
     "skill/scripts/setup_flow.py": 1335,
     "skill/scripts/setup_proposal.py": 741,

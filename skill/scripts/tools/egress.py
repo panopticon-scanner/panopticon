@@ -56,6 +56,12 @@ import subprocess
 import sys
 import tempfile
 
+# The PACKAGE form, and the module rather than the name: the privilege drop
+# below is looked up on its owner at call time, so there is one lookup site for
+# the flags every panopticon container shares (#2150, ARC-A3A). `scanner_config`
+# reaches only `tools.base`, so this closes no loop back into this module.
+from scripts import scanner_config
+
 
 # Adapter -> the advisory endpoints its argv actually reaches. Sorted, so the
 # rendered filter file and the manifest's posture string are stable.
@@ -229,10 +235,13 @@ PROXY_PREFIX = "panopticon-proxy-"
 EGRESS_LABEL = "panopticon-egress=1"
 SWEEP_AGE = "1h"
 
-# The sidecar is a plain workload -- a 6 MB proxy with two adapters talking to
-# it -- so it gets its own ceilings rather than the scanners' (6g/4cpu), which
-# are sized for an adversarial target driving a SAST parser.
-PROXY_HARDENING = ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
+# The CEILINGS are the sidecar's own, and only they. It is a plain workload -- a
+# 6 MB proxy with two adapters talking to it -- so it is sized for that rather
+# than for an adversarial target driving a SAST parser (the scanners' 6g/4cpu),
+# and that difference is the reason this constant exists. The PRIVILEGE DROP is
+# not a difference and stopped being a copy of one in #2150 (ARC-A3A): it comes
+# from `scanner_config.privilege_drop_flags`, the one owner every panopticon
+# container reads, so a flag added there reaches this sidecar too.
 PROXY_LIMITS = ["--memory", "256m", "--memory-swap", "256m",
                 "--cpus", "1", "--pids-limit", "64"]
 # NOT applied: `--read-only`. tinyproxy with this config writes nothing (no
@@ -371,7 +380,7 @@ def _establish(docker_bin, runner, token, online, scratch, made, max_seconds):
     conf, filt = write_config(scratch, subnet, allowed_hosts(online))
     _require(runner, [docker_bin, "run", "-d", "--rm", "--name", proxy,
                       "--label", EGRESS_LABEL, "--network", "bridge"]
-             + PROXY_HARDENING + PROXY_LIMITS
+             + scanner_config.privilege_drop_flags() + PROXY_LIMITS
              + ["-v", "%s:%s:ro" % (conf, PROXY_CONF),
                 "-v", "%s:%s:ro" % (filt, PROXY_FILTER),
                 PROXY_IMAGE, "timeout", str(max_seconds),

@@ -11,6 +11,14 @@ the runner OBSERVED itself doing rather than restating an intention (the other
 two, the network posture and the gitleaks ignore-file posture, live beside that
 writer; `run_tools` binds all four back and is where each is filled).
 
+Beside them sits the container LAUNCH policy those same containers share:
+`TARGET_MOUNT` and, since #2150 (ARC-A3A), `privilege_drop_flags`. That is policy
+about the CONTAINER rather than about a scanner's configuration, and it lives here
+for the reason this file exists: the egress sidecar under `tools/` needs the
+privilege drop and MAY NOT reach `run_tools`, which imports `tools/egress.py`
+itself. The fixture runner is under no such rule and imports both owners on one
+argv -- `run_tools.resource_limit_flags()` for the ceilings, this file for the drop.
+
 Separate from `run_tools` because it is a POLICY surface, and it grew like one:
 #1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
 own 700-line ratchet, having absorbed the whole post-run scanner-policy series
@@ -42,6 +50,35 @@ from scripts.tools.base import REDTEAM, SECURITY_FLAG
 # and bandit's `--ini` pin still spell it literally; both are outside #1877's
 # scope.)
 TARGET_MOUNT = "/src"
+
+
+def privilege_drop_flags():
+    """Privilege-drop flags for every container panopticon launches: `run_tools`'
+    tool and adapter dispatch (#run10 SEC-C1A), `run_fixture_tests.py`'s two
+    (#1767, ARC-3859414366) and the online egress sidecar (#2150, ARC-A3A). All of
+    them run attacker-influenced build logic -- a .csproj/.targets executes
+    arbitrary code through build targets, the fixture corpus is hostile by design
+    -- and neither the resource ceilings nor `--network none` stops a capability
+    escalation.
+
+    ONE OWNER, and this is it (#2150). `tools/egress.py` hardened its sidecar from
+    a literal copy of this list until then, and the daily `adapter-integration`
+    lanes carried neither these flags nor any ceiling. The sidecar calls this now;
+    the four lanes spell the two flags out, because a workflow cannot import a
+    Python module, and are exempt from the CEILINGS for the reason stated there.
+    A ceiling is the one part that does not travel: the sidecar's own
+    (`egress.PROXY_LIMITS`) is tighter on purpose and the lanes have none.
+
+    --cap-drop=ALL removes the whole capability-abuse class (raw sockets, mknod, chroot,
+      ptrace-by-cap) and a scanner needs none of it; --security-opt=no-new-privileges
+      stops a setuid/setgid binary in the image raising privileges beyond the start.
+
+    NOT applied: `--read-only`. Scanners write inside the container
+    (dependency-check unpacks, dotnet/MSBuild builds, tools spill to /tmp), so it
+    needs a tuned tmpfs per tool and a real tool round to validate -- and a broken
+    tool round is the worse outcome. Tracked, not half-applied."""
+    return ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
+
 
 # bandit's own parser default for --exclude, restated because bandit PREFERS a
 # command-line --exclude over both that default and the `.bandit` ini's
