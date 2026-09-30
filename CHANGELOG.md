@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A non-hashable tool_name denies instead of crashing the guard (#2394, #1777).** The write
+  and read guards test the tool roster inside their never-crash envelope, so a list or dict
+  `tool_name` prints a deny instead of escaping `main` with a non-blocking exit; the read
+  guard's envelope comment now calls its early returns permissive.
 - **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
   `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
   `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
