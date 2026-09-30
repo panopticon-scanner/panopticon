@@ -230,6 +230,28 @@ class TestLoadReport(unittest.TestCase):
                 self.assertIn("meta.parts", str(caught.exception))
                 self.assertIn(path, str(caught.exception))
 
+    def test_unparseable_json_in_any_document_names_the_file(self):
+        # `json.JSONDecodeError` is a `ValueError`, so the CLIs' catch swallowed it
+        # with a reason that named no file -- on a split report the operator could
+        # not tell which of three documents to open. Every document goes through
+        # `_document`, which names the file it could not parse.
+        for channel in ("report", "parts", "discarded_claims_file"):
+            with self.subTest(channel=channel):
+                if channel == "report":
+                    path = _written_report(self, {"findings": []})
+                    bad = path
+                else:
+                    path = _written_report(self, {"findings": [], "meta": {
+                        channel: ["part.json"] if channel == "parts" else "part.json"}})
+                    bad = os.path.join(os.path.dirname(path), "part.json")
+                with open(bad, "w", encoding="utf-8") as fh:
+                    fh.write('{"findings": [')
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                named = bad if channel == "report" else os.path.realpath(bad)
+                self.assertIn(named, str(caught.exception))
+                self.assertIn("is not valid JSON", str(caught.exception))
+
     def test_a_part_or_the_discarded_sibling_that_is_not_an_object_names_it(self):
         # The continuation documents are loaded by the same plain `json.load`, so
         # each one is typed too -- and the reason names the RESOLVED part path,

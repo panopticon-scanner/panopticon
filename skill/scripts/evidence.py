@@ -196,7 +196,7 @@ def location_of(finding):
 
 
 def provenance_of(finding):
-    """`provenance` as a dict (the finding's own, not a copy), `{}` if absent/malformed (#2372)."""
+    """`provenance` as a dict (the finding's own, no copy), `{}` for absent or malformed (#2372)."""
     prov = finding.get("provenance")
     return prov if isinstance(prov, dict) else {}
 

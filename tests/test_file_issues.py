@@ -270,7 +270,7 @@ def test_the_cli_entry_point_exits_with_the_code_main_returns(tmp_path):
     # a filing run the operator's shell reads as successful (#2373).
     report = tmp_path / "report.json"
     report.write_text("[]", encoding="utf-8")
-    script = Path(file_issues.__file__).with_name("file_issues.py")
+    script = file_issues.__file__
     done = subprocess.run([file_issues.sys.executable, str(script),
                            "--report", str(report)], capture_output=True, text=True)
     assert done.returncode == 2

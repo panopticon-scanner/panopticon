@@ -148,12 +148,23 @@ def _object(value, what, where):
     return value
 
 
+def _document(path, what):
+    """`path` parsed and typed, or ONE reason: unparseable JSON names the file too (#2373)."""
+    with open(path, encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise ValueError("%s %s is not valid JSON: %s" % (what, path, exc)) from exc
+    return _object(data, what, path)
+
+
 def load_report(path):
     """Load a report, merging confined part and rejected-claim continuations.
 
-    A document that is not a JSON object -- the report, its `meta`, a part or the
-    discarded-claims sibling -- and a non-list `meta.parts` are refused with ONE
-    reason naming the offending key and the file, which both CLIs print (#2373).
+    A document that is not valid JSON or not a JSON object -- the report, its
+    `meta`, a part or the discarded-claims sibling -- and a `meta.parts` that is
+    present and not a list are refused with ONE reason naming the file and, where
+    there is one, the offending key, which both CLIs print (#2373).
     A non-list `findings` / `discarded_claims` is a different case and keeps
     #2365's coercion to empty, so this loader and `iter_records` cannot disagree.
 
@@ -169,12 +180,11 @@ def load_report(path):
     whether the finding's own panel or tool axis ran on that file are further
     cross-checks this loader does not yet read (follow-ups #2084, #2087).
     """
-    with open(path, encoding="utf-8") as fh:
-        report = _object(json.load(fh), "report", path)
+    report = _document(path, "report")
     findings = _section(report.get("findings"))
     discarded = _section(report.get("discarded_claims"))
-    # An absent `meta` is empty; a present one of any other shape is a document
-    # that cannot be read, not one that said nothing.
+    # An absent or null `meta` is empty; a present one of any other shape is a
+    # document that cannot be read, not one that said nothing.
     meta = report.get("meta")
     meta = {} if meta is None else _object(meta, "meta of report", path)
     parts = meta.get("parts")
@@ -193,8 +203,7 @@ def load_report(path):
     base_dir = os.path.dirname(os.path.abspath(path))
     for part in parts or []:
         ppath = _resolve_part_path(base_dir, part)
-        with open(ppath, encoding="utf-8") as fh:
-            pdata = _object(json.load(fh), "report part", ppath)
+        pdata = _document(ppath, "report part")
         findings.extend(_section(pdata.get("findings")))
         discarded.extend(_section(pdata.get("discarded_claims")))
         # A part may WIDEN a claim the report already made, never supply one
@@ -211,8 +220,7 @@ def load_report(path):
     disc_file = meta.get("discarded_claims_file")
     if disc_file:
         dpath = _resolve_part_path(base_dir, disc_file)
-        with open(dpath, encoding="utf-8") as fh:
-            sibling = _object(json.load(fh), "report part", dpath)
+        sibling = _document(dpath, "discarded-claims file")
         discarded.extend(_section(sibling.get("discarded_claims")))
     return {"findings": findings, "discarded_claims": discarded,
             "reviewed_files": reviewed_files,
@@ -593,11 +601,12 @@ def main(argv=None):
         # A stored report the loader refuses is an operator-facing reason, not a
         # traceback from wherever the shape first bit (#2373).
         try:
-            r2 = iter_records(load_report(a.run2_report))
+            report2 = load_report(a.run2_report)
             report3 = load_report(a.run3_report)
         except ValueError as exc:
             print("reconcile: %s" % exc, file=sys.stderr)
             return 2
+        r2 = iter_records(report2)
         r3 = iter_records(report3)
         diff = build_diff(r2, r3, a.run2_report, a.run3_report,
                           run3_reviewed_files=report3["reviewed_files"],

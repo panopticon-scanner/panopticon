@@ -9,9 +9,10 @@ evidence exposed.
 
 - **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
   and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
-  so a malformed stored finding renders instead of aborting the filing run. `reconcile.load_report`
-  rejects a non-object report, `meta`, part or discarded-claims sibling and a non-list `meta.parts`
-  with one reason naming the path and the key, which both CLIs print before exiting 2.
+  so those three malformed shapes no longer abort the filing run. `reconcile.load_report` refuses
+  unparseable JSON, a non-object report, `meta`, part or discarded-claims sibling and a non-list
+  `meta.parts` with one reason naming the file (and the key where there is one), which both CLIs
+  print before exiting 2.
 - **Name integrity failures in HTML (#2265, #1761).** The NOT CERTIFIED banner renders
   every truthy certification-sinking reason from the shared integrity table.
 - **The write guard fails closed when it crashes (#2391, #1777).** `main` now runs the
