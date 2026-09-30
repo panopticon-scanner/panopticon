@@ -389,10 +389,10 @@ def _assigns(words):
 
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
-    and an array literal as part of the word that assigns it where a command
-    follows it (#2348). A word with a double-quoted `\\$` or `` \\` `` and no
-    expansion left live in it carries the text bash makes of it, `spelled`,
-    which is the program a shell handed it runs (#2342); it reads as before."""
+    and an array literal as part of the word that assigns it (#2348). A word
+    with a double-quoted `\\$` or `` \\` `` and no other `$` or backtick in it
+    carries the text bash makes of it, `spelled`, which is the program a
+    shell handed it runs (#2342); it reads as before."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote

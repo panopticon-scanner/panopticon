@@ -61,8 +61,8 @@ already produced and the rule simply did not look at: a `chmod` over a glob
 and over a walked directory, the `{}` and `xargs` operands that describe a
 file instead of naming it, a fetch inside an `eval`/`sh -c` STRING, and
 `continue-on-error: true`. What remains keeps its entry WITH its reason, and
-`TestTheGapsTheGuardDocuments` runs all of them as live steps -- so a change
-that starts catching one fails there, and this list is edited with it.
+`TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py
+runs each live, so a change that catches one fails there and edits this list.
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
   `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting

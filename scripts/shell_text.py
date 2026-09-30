@@ -3,7 +3,7 @@
 into statements, and the two line-level passes the tests still read with.
 
 Split out of `scripts/shell_reader.py` (#2331's follow-ups), which stood one
-line under the 700-line flat-module ceiling with three fixes to its command
+line under the 700-line flat-module ceiling with four fixes to its command
 and program forms still to make. The three functions here read text and
 nothing the reader builds from it. `_lift_substitutions` takes the `$(...)`,
 `<(...)`, `>(...)` and backquote texts out of a script before its statements

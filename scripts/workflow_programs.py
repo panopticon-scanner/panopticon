@@ -85,7 +85,9 @@ def _past_options(argv, at):
     in a word takes the next word as its value (`-c -o pipefail P`, `-co
     pipefail P`); a `-` or `--` ends the options, and the word after it is
     the program even if it begins with `-`; a `--long` word after `-c` is
-    one both shells refuse, and nothing runs.
+    one both shells refuse, and nothing runs. Option letters are not
+    checked: one both shells refuse (`sh -c -K P`) is read on to `P`,
+    fail-closed, though nothing runs.
     """
     while True:
         at += 1 + sum(letter in _VALUE_OPTIONS for letter in argv[at][1:])
@@ -100,7 +102,8 @@ def _past_options(argv, at):
 # A word bash expands, where a shell reads its options, that may spell one
 # (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
 # letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
-# `$'\x2dc'` the reader leaves undecoded (`shell_lex.ansi_c`), or a word
+# `$'…'` the reader leaves undecoded (`shell_lex.ansi_c`) whose text BEGINS
+# with an escape, `$'\x2dc'` but not `$'-\x63'` (a residual), or a word
 # xargs puts a line of its input in (`{}`).
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
@@ -120,9 +123,9 @@ def candidates(argv):
     may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern),
     which `unread_program` cannot read (review N2 of #2331); (None, []) where
     the options end first, at a program, a `-c` whose string `scripts` reads,
-    or a `--`. A value that is the command word, handed a `-c` cluster, may be
-    a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after the
-    options is the candidate.
+    or a `-` or `--`. A value that is the command word, handed a `-c` cluster,
+    may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after
+    the options is the candidate.
     """
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
