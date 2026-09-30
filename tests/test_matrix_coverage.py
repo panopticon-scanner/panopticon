@@ -231,7 +231,9 @@ class TestMatrixCoverage(unittest.TestCase):
             "%d ToolAdapters leaf(s) above the %d-file headroom (the cap is "
             "%d):\n  %s\nsplit the leaf into another layer in panopticon.yml "
             "now, while the split is still this PR's decision rather than the "
-            "next contributor's surprise (#2315)."
+            "next contributor's surprise (#2315). If `Integration` is the leaf "
+            "and nothing was added, a layer of literal paths was reordered "
+            "behind its globs: `Contract` must stay listed before it."
             % (len(tight), headroom, discovery.DEFAULT_MAX_PER_GROUP,
                "\n  ".join(tight)))
 
