@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 import shutil
@@ -182,8 +183,10 @@ def _run_split_main(monkeypatch, report, *options, ledger=None):
                               None if args[3] else "https://example.test/issue/1") as create, \
             mock.patch.object(file_issues, "record") as record, \
             mock.patch.object(file_issues.triage, "gh_env", return_value={}) as gh_env:
-        file_issues.main()
-    return load, create, record, gh_env
+        rc = file_issues.main()
+    # `rc` is the process exit code (#2373): None on the success path, 2 when the
+    # shared loader refuses the stored report's shape.
+    return load, create, record, gh_env, rc
 
 
 @pytest.mark.parametrize(("options", "expected"), [
@@ -195,7 +198,7 @@ def _run_split_main(monkeypatch, report, *options, ledger=None):
 ])
 def test_main_files_selected_split_records_in_order(tmp_path, monkeypatch, options, expected):
     report, records = _split_report(tmp_path)
-    load, create, record, gh_env = _run_split_main(monkeypatch, report, *options)
+    load, create, record, gh_env, _ = _run_split_main(monkeypatch, report, *options)
     load.assert_called_once_with(file_issues.LEDGER)
     gh_env.assert_called_once_with()
     assert create.call_count == record.call_count == len(expected)
@@ -220,7 +223,7 @@ def test_main_files_selected_split_records_in_order(tmp_path, monkeypatch, optio
 def test_main_skips_existing_split_record(tmp_path, monkeypatch):
     report, records = _split_report(tmp_path)
     existing = file_issues.key_for(records["rejected-part"], True)
-    _, create, record, _ = _run_split_main(
+    _, create, record, _, _ = _run_split_main(
         monkeypatch, report, "--only", "rejected", ledger={existing: "https://github.com/panopticon-scanner/panopticon/issues/1"})
     assert [call.args[0] for call in create.call_args_list] == [
         file_issues.title_for(records[name]) for name in ("rejected-inline", "rejected-spill")]
@@ -230,13 +233,66 @@ def test_main_skips_existing_split_record(tmp_path, monkeypatch):
 
 def test_main_dry_run_reads_all_split_records_without_ledger(tmp_path, monkeypatch):
     report, records = _split_report(tmp_path)
-    load, create, record, gh_env = _run_split_main(monkeypatch, report, "--dry-run")
+    load, create, record, gh_env, _ = _run_split_main(monkeypatch, report, "--dry-run")
     load.assert_not_called()
     gh_env.assert_not_called()
     record.assert_not_called()
     assert [call.args[0] for call in create.call_args_list] == [
         file_issues.title_for(records[name]) for name in records]
     assert all(call.args[3] is True for call in create.call_args_list)
+
+
+def test_main_files_a_stored_finding_whose_dicts_are_strings(tmp_path, monkeypatch):
+    # #2372: the shared `load_report` is a plain `json.load`, so `location`,
+    # `provenance` and `evidence` can each be any JSON value. `key_for`,
+    # `title_for`, `body_for` and `labels_for` all did `.get` on the raw value,
+    # so ONE such stored finding aborted the whole filing run with
+    # `AttributeError: 'str' object has no attribute 'get'`. It must render and
+    # file exactly like a finding that states none of the three.
+    finding = {**_split_finding("junk"), "location": "a.py",
+               "provenance": "x", "evidence": "y"}
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"findings": [finding], "discarded_claims": []}),
+                      encoding="utf-8")
+    _, create, record, _, rc = _run_split_main(monkeypatch, report)
+    assert rc is None
+    assert create.call_count == record.call_count == 1
+    title, body = create.call_args.args[:2]
+    assert title == "junk"                       # no ` (file)` suffix to take
+    assert "**Location:** `(no file)`" in body
+    assert "**Fingerprint:** `fingerprint-junk`" in body
+    assert "evidence:unverified" in create.call_args.args[2]
+
+
+def test_the_cli_entry_point_exits_with_the_code_main_returns(tmp_path):
+    # `main` RETURNS the code, so the `__main__` guard has to exit with it: a bare
+    # `main()` would print the reason and still leave the process rc at 0, which is
+    # a filing run the operator's shell reads as successful (#2373).
+    report = tmp_path / "report.json"
+    report.write_text("[]", encoding="utf-8")
+    script = Path(file_issues.__file__).with_name("file_issues.py")
+    done = subprocess.run([file_issues.sys.executable, str(script),
+                           "--report", str(report)], capture_output=True, text=True)
+    assert done.returncode == 2
+    assert done.stderr.startswith("file_issues: report ")
+    assert "Traceback" not in done.stderr
+
+
+def test_main_prints_one_reason_for_a_wrong_shaped_report(tmp_path, monkeypatch, capsys):
+    # #2373: the loader's reason on stderr and exit 2, not an AttributeError
+    # traceback out of `report.get("findings")`.
+    report = tmp_path / "report.json"
+    report.write_text('["not", "an", "object"]', encoding="utf-8")
+    load, create, record, gh_env, rc = _run_split_main(monkeypatch, report)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err.startswith("file_issues: report ")
+    assert "is not a JSON object" in err
+    assert "Traceback" not in err
+    load.assert_not_called()
+    create.assert_not_called()
+    record.assert_not_called()
+    gh_env.assert_not_called()
 
 
 @pytest.mark.parametrize("channel", ["parts", "discarded_claims_file"])
@@ -277,8 +333,15 @@ def test_main_validates_all_continuations_before_side_effects(
             mock.patch.object(file_issues, "create") as create, \
             mock.patch.object(file_issues, "record") as record, \
             mock.patch.object(file_issues.triage, "gh_env") as gh_env:
-        with pytest.raises((OSError, json.JSONDecodeError, ValueError)):
-            file_issues.main()
+        # #2373: a continuation the loader refuses -- unconfined, or holding
+        # something that is not a JSON object -- is now one printed reason and
+        # exit 2 rather than a traceback. A pointer to a file that is not there
+        # is still the loader's OSError. Either way: fail CLOSED, nothing filed.
+        if bad == "missing":
+            with pytest.raises(OSError):
+                file_issues.main()
+        else:
+            assert file_issues.main() == 2
     load.assert_not_called()
     create.assert_not_called()
     record.assert_not_called()

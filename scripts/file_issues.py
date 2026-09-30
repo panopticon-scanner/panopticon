@@ -40,14 +40,14 @@ if _SKILL not in sys.path:
     sys.path.insert(0, _SKILL)
 import scripts.reconcile as _reconcile  # noqa: E402
 import scripts.evidence as evidence  # noqa: E402
+import scripts.evidence_sections as evidence_sections  # noqa: E402
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
-# Defaults describe run 2 (the first filed self-scan). Each subsequent scan —
-# the cadence is a fresh self-scan every Saturday — passes its own --report,
-# --report-url, --run-label, --run-date, and --run-state-doc, so no code edit
-# is needed to file a new run. Defaults are kept only for backward-compatibility
-# and to keep body_for() callable with a bare finding in tests.
+# Defaults describe run 2 (the first filed self-scan). Each subsequent scan — the cadence is a
+# fresh self-scan every Saturday — passes its own --report, --report-url, --run-label, --run-date
+# and --run-state-doc, so no code edit is needed to file a new run. Defaults are kept only for
+# backward-compatibility and to keep body_for() callable with a bare finding in tests.
 REPORT = "docs/superpowers/2026-08-04-self-scan-report.json"
 REPORT_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
               "docs/superpowers/2026-08-04-self-scan-report.json")
@@ -90,7 +90,7 @@ def labels_for(f, rejected=False):
     out = ["self-scan"]
     out.append(_label(SEV_LABEL, str(f.get("severity") or "INFO").upper(),
                       "severity", "SEV_ORDER"))
-    status = (f.get("evidence") or {}).get("status") or "unverified"
+    status = evidence_sections.finding_status(f) or "unverified"
     out.append(_label(EV_LABEL, status, "evidence status", "EVIDENCE_STATUSES"))
     panel = f.get("panel")
     if panel:
@@ -105,7 +105,7 @@ def labels_for(f, rejected=False):
 
 
 def title_for(f):
-    loc = f.get("location") or {}
+    loc = evidence.location_of(f)
     fname = defang((loc.get("file") or "").split("/")[-1])
     t = defang(f.get("short_title") or f.get("title") or "(untitled)")
     suffix = " (%s)" % fname if fname else ""
@@ -117,15 +117,14 @@ def title_for(f):
 
 def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
              run_label=RUN_LABEL, run_date=RUN_DATE, run_state_doc=RUN_STATE_DOC):
-    loc = f.get("location") or {}
-    ev = f.get("evidence") or {}
-    prov = f.get("provenance") or {}
+    loc = evidence.location_of(f)
+    ev = evidence_sections.finding_evidence(f)
+    prov = evidence.provenance_of(f)
     # #run7 COD-C3A: fingerprint + id are the report<->issue round-trip identity
-    # (reconcile_apply's FP_RE/ID_RE require a non-empty capture). Rendering an
-    # empty value as empty backticks silently breaks recovery -- the issue drops
-    # out of the recovered ledger. Fail loud instead of filing an unrecoverable
-    # issue. (The normal synthesize path always stamps both, so this only fires on
-    # a malformed / hand-built report.)
+    # (reconcile_apply's FP_RE/ID_RE require a non-empty capture). Rendering an empty value as
+    # empty backticks silently breaks recovery -- the issue drops out of the recovered ledger.
+    # Fail loud instead of filing an unrecoverable issue. (The normal synthesize path always
+    # stamps both, so this only fires on a malformed / hand-built report.)
     if not (f.get("fingerprint") and f.get("id")):
         raise ValueError(
             "cannot file issue %r: missing round-trip identity (fingerprint=%r "
@@ -354,7 +353,7 @@ resolve_part_path = _reconcile._resolve_part_path
 
 
 def key_for(f, rejected):
-    loc = f.get("location") or {}
+    loc = evidence.location_of(f)
     return make_ledger_key(
         f.get("fingerprint"),
         f.get("id"),
@@ -650,7 +649,11 @@ def main():
 
     # Load every continuation before any issue creation or ledger access. The
     # shared loader confines both parts and the rejected-claim spill file.
-    report = _reconcile.load_report(a.report)
+    try:
+        report = _reconcile.load_report(a.report)
+    except ValueError as exc:                 # #2373: one reason, not a traceback
+        print("file_issues: %s" % exc, file=sys.stderr)
+        return 2
     findings = report["findings"]
     print("loaded %d finding(s) and %d rejected claim(s)" % (
         len(findings), len(report["discarded_claims"])), file=sys.stderr)
@@ -694,4 +697,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

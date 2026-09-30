@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The stored-report path fails loud, not with a traceback (#2372, #2373, #1768).** `file_issues`
+  and `evidence` read `location` / `provenance` / `evidence` through the one guarded reader each,
+  so a malformed stored finding renders instead of aborting the filing run. `reconcile.load_report`
+  rejects a non-object report, `meta`, part or discarded-claims sibling and a non-list `meta.parts`
+  with one reason naming the path and the key, which both CLIs print before exiting 2.
 - **Keep mixed cross-domain metadata renderable (#2266, #1761).** Summary aggregation sorts
   missing and named cell domains deterministically instead of raising before the report renders.
 - **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
