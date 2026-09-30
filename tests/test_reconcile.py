@@ -33,6 +33,17 @@ def stage1(tmpdir, run2_doc, run3_doc, extra=None):
         return rc, json.load(fh)
 
 
+def _written_report(case, doc, name="run2.json"):
+    """`doc` as a report file on disk, so a test goes through the real
+    `load_report` path rather than a hand-built dict. Cleaned up with `case`."""
+    tmpdir = tempfile.mkdtemp()
+    case.addCleanup(shutil.rmtree, tmpdir)
+    path = os.path.join(tmpdir, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    return path
+
+
 def fixture_records(name):
     return reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, name)))
 
@@ -184,17 +195,97 @@ class TestLoadReport(unittest.TestCase):
             self.assertEqual(len(report["findings"]), 6)
             self.assertEqual(len(report["discarded_claims"]), 1)
 
+    def test_a_document_that_is_not_an_object_is_one_reason_naming_the_path(self):
+        # #2373: `report.get(...)` on a list, a string or a bare `null` aborted
+        # with an AttributeError from wherever the shape first bit. One reason,
+        # naming the path, in the style of `security_gate.load_manifest`.
+        for shape in ([], "junk", 42, None):
+            with self.subTest(report=shape):
+                path = _written_report(self, shape)
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                self.assertIn(path, str(caught.exception))
+                self.assertIn("is not a JSON object", str(caught.exception))
+
+    def test_a_meta_that_is_not_an_object_names_meta_and_the_path(self):
+        # A string `meta` raised on `(report.get("meta") or {}).get(...)`; a list
+        # or a number was silently read as "no meta" instead.
+        for shape in ("junk", [], 42):
+            with self.subTest(meta=shape):
+                path = _written_report(self, {"findings": [], "meta": shape})
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                self.assertIn("meta", str(caught.exception))
+                self.assertIn(path, str(caught.exception))
+
+    def test_a_non_list_meta_parts_names_meta_parts_and_the_path(self):
+        # Iterating a number raised TypeError; iterating a string or a dict
+        # silently resolved its CHARACTERS or its KEYS as part paths.
+        for shape in (5, {"a": 1}, "part.json"):
+            with self.subTest(parts=shape):
+                path = _written_report(self, {"findings": [],
+                                              "meta": {"parts": shape}})
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                self.assertIn("meta.parts", str(caught.exception))
+                self.assertIn(path, str(caught.exception))
+
+    def test_unparseable_json_in_any_document_names_the_file(self):
+        # `json.JSONDecodeError` is a `ValueError`, so the CLIs' catch swallowed it
+        # with a reason that named no file -- on a split report the operator could
+        # not tell which of three documents to open. Every document goes through
+        # `_document`, which names the file it could not parse.
+        for channel in ("report", "parts", "discarded_claims_file"):
+            with self.subTest(channel=channel):
+                if channel == "report":
+                    path = _written_report(self, {"findings": []})
+                    bad = path
+                else:
+                    path = _written_report(self, {"findings": [], "meta": {
+                        channel: ["part.json"] if channel == "parts" else "part.json"}})
+                    bad = os.path.join(os.path.dirname(path), "part.json")
+                with open(bad, "w", encoding="utf-8") as fh:
+                    fh.write('{"findings": [')
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                named = bad if channel == "report" else os.path.realpath(bad)
+                self.assertIn(named, str(caught.exception))
+                self.assertIn("is not valid JSON", str(caught.exception))
+
+    def test_a_non_utf8_document_is_named_too(self):
+        # `UnicodeDecodeError` is a `ValueError` as well, raised by the decode
+        # inside `json.load`; a report copied through a non-UTF-8 tool must name
+        # its file the same way a truncated one does.
+        path = _written_report(self, {"findings": []})
+        with open(path, "wb") as fh:
+            fh.write(b'{"findings": [\xff]}')
+        with self.assertRaises(ValueError) as caught:
+            reconcile.load_report(path)
+        self.assertIn(path, str(caught.exception))
+        self.assertIn("is not valid JSON", str(caught.exception))
+
+    def test_a_part_or_the_discarded_sibling_that_is_not_an_object_names_it(self):
+        # The continuation documents are loaded by the same plain `json.load`, so
+        # each one is typed too -- and the reason names the RESOLVED part path,
+        # which is the file the operator has to go and look at.
+        for channel in ("parts", "discarded_claims_file"):
+            with self.subTest(channel=channel):
+                path = _written_report(self, {"findings": [], "meta": {
+                    channel: ["part.json"] if channel == "parts" else "part.json"}})
+                ppath = os.path.join(os.path.dirname(path), "part.json")
+                with open(ppath, "w", encoding="utf-8") as fh:
+                    fh.write('["not an object"]')
+                with self.assertRaises(ValueError) as caught:
+                    reconcile.load_report(path)
+                self.assertIn(os.path.realpath(ppath), str(caught.exception))
+                self.assertIn("is not a JSON object", str(caught.exception))
+
 
 class TestIterRecords(unittest.TestCase):
     def _written(self, doc):
-        """`doc` as a report file on disk, so the test goes through the real
-        `load_report` -> `iter_records` path rather than a hand-built dict."""
-        tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmpdir)
-        path = os.path.join(tmpdir, "run2.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh)
-        return path
+        """`doc` on disk, so the test goes through the real `load_report` ->
+        `iter_records` path rather than a hand-built dict."""
+        return _written_report(self, doc)
 
     def test_tags_kind_and_recomputes_fingerprint(self):
         report = reconcile.load_report(os.path.join(FIXTURES, "run2.json"))
@@ -983,3 +1074,21 @@ class TestCli(unittest.TestCase):
             self.assertTrue(os.path.exists(summary))
             with open(summary) as fh:
                 self.assertIn("recurring: 3", fh.read())
+
+    def test_a_wrong_shaped_report_prints_one_reason_and_returns_two(self):
+        # #2373: the operator gets the loader's reason on stderr and a non-zero
+        # exit, not an AttributeError traceback out of the first key read.
+        with tempfile.TemporaryDirectory() as d:
+            bad = os.path.join(d, "bad.json")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("[]")
+            out = os.path.join(d, "diff.json")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = reconcile.main(["diff", bad,
+                                     os.path.join(FIXTURES, "run3.json"),
+                                     "--out", out])
+            self.assertEqual(rc, 2)
+            self.assertTrue(err.getvalue().startswith("reconcile: report "))
+            self.assertIn("is not a JSON object", err.getvalue())
+            self.assertFalse(os.path.exists(out))

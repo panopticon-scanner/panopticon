@@ -466,9 +466,9 @@ class TestMalformedToolEvidence(unittest.TestCase):
 
 
 class TestMalformedLocation(unittest.TestCase):
-    """#2365: `load_report` is a plain `json.load`, so a stored finding's
-    `location` can be any JSON value. A non-dict must key exactly like an absent
-    one instead of aborting the caller on `.get`."""
+    """#2365/#2372: `load_report` is a plain `json.load`, so a stored finding's
+    `location` -- or its `provenance` -- can be any JSON value. A non-dict must
+    key exactly like an absent one instead of aborting the caller on `.get`."""
 
     def test_the_reader_passes_a_dict_through_and_maps_everything_else_to_empty(self):
         loc = {"file": "a.py", "line_start": 3}
@@ -477,6 +477,29 @@ class TestMalformedLocation(unittest.TestCase):
             with self.subTest(value=bad):
                 self.assertEqual(ev.location_of({"location": bad}), {})
         self.assertEqual(ev.location_of({}), {})
+
+    def test_the_provenance_reader_is_the_same_rule_for_the_same_hazard(self):
+        prov = {"discovered_by": "agent:security", "model": "opus"}
+        self.assertIs(ev.provenance_of({"provenance": prov}), prov)
+        for bad in (None, "x", ["x"], 7):
+            with self.subTest(value=bad):
+                self.assertEqual(ev.provenance_of({"provenance": bad}), {})
+        self.assertEqual(ev.provenance_of({}), {})
+
+    def test_apply_verdict_merges_into_the_findings_own_provenance_or_a_fresh_one(self):
+        # The reader replaces a `setdefault`, so both halves are asserted: a dict
+        # provenance is still merged into IN PLACE, and a malformed one is replaced
+        # by the fresh dict the verdict lands in rather than raising on assignment.
+        prov = {"discovered_by": "agent:security"}
+        kept = _finding(provenance=prov)
+        ev.apply_verdict(kept, {"verdict": "CONFIRMED", "reasoning": "r"})
+        self.assertIs(kept["provenance"], prov)
+        self.assertEqual(prov["confirmation_status"], "CONFIRMED")
+        for bad in (None, "x", ["x"], 7):
+            with self.subTest(value=bad):
+                f = _finding(provenance=bad)
+                ev.apply_verdict(f, {"verdict": "REJECTED", "reasoning": "r"})
+                self.assertEqual(f["provenance"]["confirmation_status"], "REJECTED")
 
     def test_a_string_location_keys_exactly_like_no_location_at_all(self):
         absent = _finding(source="tool:bandit")
@@ -489,19 +512,19 @@ class TestMalformedLocation(unittest.TestCase):
 
 
 class TestOneReaderPerGuardedKey(unittest.TestCase):
-    """#2365: `tool_evidence` and `location` are both read off an unvalidated
-    stored report, and the unguarded idiom recurred four times for `location`
-    after #2359 fixed it for `tool_evidence`. So each key has exactly ONE reader
-    in `evidence.py`, and this guard fails on every occurrence of the key as a
-    constant, in any idiom, except a subscript write.
+    """#2365/#2372: `tool_evidence`, `location` and `provenance` are all read off
+    an unvalidated stored report, and the unguarded idiom recurred four times for
+    `location` after #2359 fixed it for `tool_evidence`. So each key has exactly
+    ONE reader in `evidence.py`, and this guard fails on every occurrence of the
+    key as a constant, in any idiom, except a subscript write.
 
     It covers `evidence.py` alone. `phases/review.py` and `security_gate.py` keep
     the idiom on adapter-constructed findings, whose `location` is always a dict
     an adapter built, so those are safe by construction; `scripts/file_issues.py`
-    -- the other consumer of the same `reconcile.load_report` -- still carries it
-    and is tracked as #2372. One layer up, a report whose top level is not an
-    object or whose `meta.parts` is not a list still aborts in `load_report`
-    itself (#2373)."""
+    -- the other consumer of the same `reconcile.load_report` -- now reads all
+    three through the same readers (#2372). One layer up, `load_report` types its
+    own document, so a report, a `meta`, a part or the discarded-claims sibling
+    that is not an object is one named reason rather than a traceback (#2373)."""
 
     def _tree(self):
         with open(evidence.__file__, encoding="utf-8") as fh:
@@ -510,7 +533,8 @@ class TestOneReaderPerGuardedKey(unittest.TestCase):
     def test_each_guarded_key_is_read_inside_its_reader_only(self):
         tree = self._tree()
         for key, reader in (("tool_evidence", "_tool_evidence"),
-                            ("location", "location_of")):
+                            ("location", "location_of"),
+                            ("provenance", "provenance_of")):
             with self.subTest(key=key):
                 self.assertEqual(_key_reads(tree, key), {reader})
 
