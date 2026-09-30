@@ -135,6 +135,36 @@ class TestReconciliation(unittest.TestCase):
                       errors)
         self.assertTrue(any("location" in w for w in warnings))
 
+    def test_a_whole_file_location_is_silent_and_a_fileless_one_still_warns(self):
+        # #2174 (#1784): `{"file": "README.md"}` with no line is the SANCTIONED
+        # whole-file shape -- a missing header, a bad config -- and #1522 already
+        # ruled no line may be invented for it, so warning about it teaches the
+        # reader to skip the warning that does mean something. What is still a
+        # "where is it?" warning is a location naming no file at all.
+        cases = (({"file": "README.md"}, []),
+                 ({"file": ""}, ["finding[0] missing location.file"]))
+        for location, expected in cases:
+            with self.subTest(location=location):
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target="src", fail_on=None,
+                                             timestamp=DEFAULT_TIMESTAMP),
+                    findings=findings_mod.FindingSet(
+                        findings=[
+                            {
+                                "id": "CD-001",
+                                "title": "t",
+                                "severity": "LOW",
+                                "confidence": "POSSIBLE",
+                                "panel": "code",
+                                "category": "general",
+                                "location": location,
+                            }
+                        ],
+                    ),
+                ))
+                _errors, warnings = report_mod.validate_report(report)
+                self.assertEqual([w for w in warnings if "location" in w], expected)
+
     def test_validate_reports_the_null_sections_the_hand_checks_missed(self):
         """#1639 P15, Codex's repro: `meta`/`summary`/`cross_panel` all null.
 

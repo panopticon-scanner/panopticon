@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A whole-file finding is legal end to end (#2174, #1784).** The emission envelope no longer
+  requires `location` (the report schema never did), `validate_report` warns only on a missing
+  `location.file` rather than on every finding without a line, and the security gate prints `?`
+  for a missing line like the other renderers.
 - **file_issues renders malformed sibling fields as absent (#2398, #1768).** A string
   `citations`, `occurrences` or `additional_loci` value, a non-dict locus and a non-string
   `location.file` no longer abort the filing run, and `reconcile_apply` refuses an unreadable
