@@ -23,7 +23,6 @@ import re
 import subprocess
 import sys
 import uuid
-import yaml
 
 # This script is invoked as a standalone CLI entrypoint (``python
 # skill/scripts/discovery.py --repo-scan``) from ``driver.py``. Because
@@ -35,8 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
 # #1740 fix round 2: ONE module object, so the glob compiler this module and
 # the TOOL side share is one cache and one disclosure ledger, not two. Same
-# fallback shape as safe_write below: the standalone CLI has only
-# skill/scripts on sys.path.
+# fallback shape as safe_write below: the standalone CLI has only skill/scripts on sys.path.
 if TYPE_CHECKING:
     from scripts import groups_schema
 else:
@@ -56,8 +54,7 @@ else:
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
-# #1735: the no-follow artifact open. Fallback arm: imported with only
-# skill/scripts on sys.path.
+# #1735: the no-follow artifact open. Fallback arm: imported with only skill/scripts on sys.path.
 if TYPE_CHECKING:
     from scripts import safe_write
 else:
@@ -566,6 +563,7 @@ def _capability_aliases():
     vocabulary, so a committed `Auth` group's `tests:` globs also credit
     `tests/authentication/`. Empty when the file is unreadable: aliases only
     ever ADD credit, so running without them is safe."""
+    import yaml
     try:
         import setup_proposal
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
@@ -1123,6 +1121,7 @@ def commons_catalog():
     catalog. NOT routed through ``groups_schema.parse_groups``: this is
     shipped, tested data, not committed user input, so it needs only
     each entry's `match`."""
+    import yaml
     with open(_COMMONS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
@@ -1215,6 +1214,7 @@ _TESTS_CATALOG_PATH = os.path.join(
 def tests_catalog():
     """The Tests sweep seed globs (5.2 §4.3) as ``{"Tests": {"match": [...]}}``,
     loaded like ``commons_catalog``: shipped, tested data, no parse_groups."""
+    import yaml
     with open(_TESTS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}

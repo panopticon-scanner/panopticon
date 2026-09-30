@@ -3,10 +3,6 @@ from __future__ import annotations
 import os
 import sys
 
-# Required, not optional hardening: the stdlib parser expands the internal
-# entities this one refuses, and readiness gates on the package itself (#2363).
-import defusedxml.ElementTree as ET
-
 from scripts.claim_scope import confined_to_root
 
 from .base import (as_list, make_finding, omit_none, run_tool, scratch_cwd,
@@ -453,6 +449,18 @@ class SpotBugsAdapter:
         return text
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
+        # Required, not optional hardening: the stdlib parser expands the
+        # internal entities this one refuses, and readiness gates on the package
+        # itself (#2363). No fallback -- an install without it raises
+        # ModuleNotFoundError from here, loud.
+        #
+        # HERE and not at module level (#2369): `scripts.tools`'s package body
+        # imports every adapter, and the driver imports that package through its
+        # host probes, so a module-level import put defusedxml on the driver's
+        # own import path. An install without it was then a traceback out of
+        # `import scripts.driver` instead of the readiness `dependencies` row
+        # that names its `pip install`.
+        import defusedxml.ElementTree as ET
         text = self._trim_to_xml(raw.decode("utf-8", errors="replace").strip())
         if not text:
             return []
