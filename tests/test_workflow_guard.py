@@ -1213,7 +1213,7 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     `bash -e {0}`, which has none: `shell: bash` adds `-o pipefail`, `shell:
     sh` is `sh -e {0}`, and a template (`bash {0}`) runs with exactly the
     options it writes. The guard read every step as if pipefail held. The
-    step's `shell:` now seeds its `-e` and pipefail (`workflow_forms.seed`),
+    step's `shell:` now seeds its `-e` and pipefail (`workflow_gating.seed`),
     a top-level `set` moves them, and `read(script)` without a shell reads
     the runner default."""
 

@@ -608,7 +608,7 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
     `credit` maps an index to its step's own answer for a check there, which
-    `workflow_forms.swallowed` reads last: `workflow_forms.step_credit`'s, or
+    `workflow_gating.swallowed` reads last: `workflow_gating.step_credit`'s, or
     `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
     checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
     which `job_defects` has from each step's own read.
