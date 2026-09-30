@@ -79,13 +79,26 @@ _CENSUS_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
                    "import scripts.setup_flow\nimport scripts.dispatch\n"
                    + _CENSUS_TAIL)
 
-# The same census after a real setup path has been CALLED. `load_bundled_layers`
-# is a public setup entry point and one of the seven sites that reach
-# `setup_proposal` with a flat import inside a FUNCTION body, so running it
-# measures the call-time class the program above cannot see (#2256, #1516).
+# The same census after real setup paths have been CALLED, which is the only way
+# to measure the lazy class the program above cannot see (#2256, #2413, #1516).
+# Five of the seven sites that reach `setup_proposal` from a FUNCTION body run
+# here: `load_bundled_layers`, `load_bundled_vocabulary` and `build_spine` in
+# `setup_flow`, `migrate_config` (whose import runs before it refuses a tree with
+# nothing to migrate), and `discovery._capability_aliases`. The two left out --
+# `_seed_groups_manifest` and `ingest_proposal` -- WRITE config artifacts, which
+# a census has no business doing; they import the package the same way as these.
+# The cwd is a fresh empty directory, so `build_spine` sees an empty repo and
+# `migrate_config` raises after its import rather than touching anything.
 _CALL_TIME_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
                       "import scripts.setup_flow\nimport scripts.dispatch\n"
-                      "scripts.setup_flow.load_bundled_layers()\n" + _CENSUS_TAIL)
+                      "scripts.setup_flow.load_bundled_layers()\n"
+                      "scripts.setup_flow.load_bundled_vocabulary()\n"
+                      "scripts.setup_flow.build_spine('.')\n"
+                      "try:\n"
+                      "    scripts.setup_flow.migrate_config('.')\n"
+                      "except ValueError:\n"
+                      "    pass\n"
+                      "scripts.discovery._capability_aliases()\n" + _CENSUS_TAIL)
 
 # The same detection over a deliberately doubled import, for the mechanics test:
 # both roots on the path and one file imported under both of its names.
@@ -103,21 +116,22 @@ _PLANTED_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.plan_contract\n"
 # `coverage_model` and `groups_schema` left this list in #2256: `setup_proposal`
 # was the only module importing them flat at import time, and it now carries the
 # guarded `try: from scripts import ... except ModuleNotFoundError` shape its
-# siblings use, paid for inside its own shrink-only pin. Its own importers are
-# unchanged -- `grouping_engine` still reaches it flat -- but that flat copy now
-# binds the PACKAGE catalogs, so one object per catalog file exists either way.
+# siblings use, paid for inside its own shrink-only pin. Its own importers now
+# reach it through the package too (#2413), so the flat copy exists only in the
+# standalone flat mode, where it binds the flat catalogs its guarded arms name.
 # `tests/test_coverage_model.py` still pins that the standalone flat
 # `--repo-scan` path returns its aliases, which is what the flat arm is for.
 #
 # The import-time census measures import time only, so this list is not the whole
 # debt: a flat `import x` inside a FUNCTION body mints its second copy when that
-# function is first called. That is a separate class, and the known ones all name
-# one module -- `discovery._capability_aliases`'s lazy `import setup_proposal`,
-# and the six `import setup_proposal as sp` sites in `setup_flow` function bodies
-# (#1516). None of them mints anything today, because nothing gives
-# `setup_proposal` a package copy to be doubled against; #2256 measured what
-# happens when something does. The test below drives one of those sites, so the
-# class is measured here rather than only described.
+# function is first called. #2256 measured that -- qualifying `grouping_engine`'s
+# `import setup_proposal` took the call-time census from 3 to 4, because the six
+# lazy sites in `setup_flow` and `discovery._capability_aliases`'s one reached it
+# flat. #2413 pointed all seven at the package, still lazy: the `setup_flow` six
+# import it plainly, because that module binds every sibling package-first and so
+# has no flat mode of its own, while `discovery`'s keeps the guarded fallback its
+# own flat mode needs. The test below CALLS five of them, so the class is
+# measured here rather than only described (#1516).
 #
 # This is an equality, not a subset: a residual that goes away must fail here
 # too, so the list cannot outlive the flat imports it records (#1516).
@@ -456,6 +470,44 @@ def _package_fallbacks(root=REPO_ROOT):
     return offenders
 
 
+def _flat_setup_proposal_imports(root=REPO_ROOT):
+    """Flat `import setup_proposal` sites outside a guarded fallback arm.
+
+    Every `*.py` under `skill/scripts/`, not just the package ones: the two
+    modules that reach `setup_proposal` lazily are flat modules, so the surface
+    `_package_fallbacks` walks would miss both. `ast.Import` only: the package
+    spellings (`from scripts import ...`, `import scripts.setup_proposal`) are
+    what this gate wants to see.
+
+    The arm `discovery` falls back to in its OWN flat mode is the one legitimate
+    flat spelling left (#2413), and it is inside an `except ModuleNotFoundError`
+    handler, so `_catches_an_import_error` exempts it. Anywhere else a flat
+    `import setup_proposal` mints a second module object the moment something
+    holds the package copy -- at import time if it is module level, and the first
+    time the function runs if it is lazy. The call-time census above measures the
+    lazy half only for the paths it can call; this walk sees all of them (#1516).
+    """
+    offenders = []
+    for path in sorted(pathlib.Path(root, "skill", "scripts").rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+        guarded = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            for handler in node.handlers:
+                if _catches_an_import_error(handler):
+                    guarded.update(id(stmt) for stmt in ast.walk(handler)
+                                   if isinstance(stmt, ast.Import))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Import) or id(node) in guarded:
+                continue
+            if any(alias.name == "setup_proposal" for alias in node.names):
+                offenders.append("%s:%d: %s"
+                                 % (relative, node.lineno, ast.unparse(node)))
+    return offenders
+
+
 class ModuleIdentityCensusTest(unittest.TestCase):
     """No file is loaded twice in the process the driver actually runs in."""
 
@@ -496,7 +548,11 @@ class ModuleIdentityCensusTest(unittest.TestCase):
     def test_calling_a_setup_path_adds_nothing_to_the_residual(self):
         # Same allowed set as the import-time census: running a setup path must
         # not ADD a pair. No second literal -- a call-time residual would be a
-        # debt this list already knows how to record.
+        # debt this list already knows how to record. Reverting any ONE of the
+        # five sites this drives to a flat `import setup_proposal` fails here
+        # with `setup_proposal` in the census; the two it cannot call, because
+        # they write config artifacts, are pinned by the static guard below
+        # instead (#2413).
         doubled = self._census(_CALL_TIME_PROGRAM)
         expected = sorted(RESIDUAL)
         self.assertEqual(
@@ -505,10 +561,12 @@ class ModuleIdentityCensusTest(unittest.TestCase):
             "file under both `x` and `scripts.x`:\n  %s\nexpected the same "
             "flat-mode residual the import-time census allows:\n  %s\n"
             "disagreeing names:\n  %s\nA NEW name is a lazy flat import minting "
-            "a second module object when its function runs -- give that site the "
-            "guarded `from scripts import x` shape, keeping the import lazy. A "
-            "name that has GONE fails here too, for the same reason it does "
-            "above: drop it from RESIDUAL in the same change (#1516)."
+            "a second module object when its function runs -- import it through "
+            "the package, keeping the import lazy, and add the flat "
+            "`except ModuleNotFoundError` arm only where the module has a flat "
+            "mode of its own (`tests/test_layout.py`'s `FLAT_MODULES`). A name "
+            "that has GONE fails here too, for the same reason it does above: "
+            "drop it from RESIDUAL in the same change (#1516)."
             % (len(doubled), "\n  ".join(doubled) or "(none)",
                "\n  ".join(expected),
                "\n  ".join(sorted(set(doubled) ^ set(expected))) or "(none)"))
@@ -773,6 +831,32 @@ class PackageFallbackTest(unittest.TestCase):
             self.assertEqual(
                 sorted(site.split(":")[0] for site in _package_fallbacks(directory)),
                 sorted(inside + ["skill/scripts/phases/deep/nest.py"]))
+
+
+class FlatSetupProposalImportTest(unittest.TestCase):
+    """The two lazy sites the call-time census cannot drive, pinned statically.
+
+    `_seed_groups_manifest` and `ingest_proposal` WRITE config artifacts, so the
+    census will not call them; a flat revert at either one would re-mint the pair
+    on the real `driver setup` path with nothing to say so. This is that gate,
+    and it covers the other five and every site added later for free.
+    """
+
+    def test_no_flat_import_of_setup_proposal_outside_a_fallback_arm(self):
+        offenders = _flat_setup_proposal_imports()
+        self.assertEqual(
+            offenders, [],
+            "%d flat `import setup_proposal` site(s) under skill/scripts/ "
+            "outside an `except ModuleNotFoundError` arm:\n  %s\n"
+            "`grouping_engine` holds the PACKAGE copy on every driver-shaped "
+            "import, so each of these mints a second module object with its own "
+            "state and its own patch targets -- at import time if it is module "
+            "level, the first time the function runs if it is lazy. Import it as "
+            "`from scripts import setup_proposal` instead, lazily where it was "
+            "lazy. The one exemption is a module with a flat mode of its own "
+            "(`tests/test_layout.py`'s `FLAT_MODULES`), whose fallback arm is "
+            "reached with only skill/scripts on sys.path (#2413, #1516)."
+            % (len(offenders), "\n  ".join(offenders)))
 
 
 if __name__ == "__main__":

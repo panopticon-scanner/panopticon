@@ -753,8 +753,9 @@ class TestScopedTests(unittest.TestCase):
     def test_shipped_alias_shape_is_rechecked(self):
         # The loader reports a scalar `aliases` as an ERROR but keeps the raw
         # entry; a string must not explode into per-character labels here.
-        # discovery imports the bare module name lazily; patch that binding.
-        with mock.patch("setup_proposal.load_vocabulary",
+        # #2413: the lazy import is package-first now, so the patch target is
+        # the package binding -- the object `_capability_aliases` resolves now.
+        with mock.patch("scripts.setup_proposal.load_vocabulary",
                         return_value=({"entries": {"Auth": {"aliases": "Login"},
                                                    "API": {"aliases": ["Http", 3]},
                                                    "UI": {}}}, ["err"])):

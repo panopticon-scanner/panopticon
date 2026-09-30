@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **One `setup_proposal` in a driver-shaped process, at call time too (#2413, #1766).** The
+  six lazy sites in `setup_flow` import it through the package inside their function bodies --
+  that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
+  its own flat mode needs, so the grouping engine imports it the same way and the call-time
+  census keeps its three named residuals.
 - **setup_proposal has one identity in a driver-shaped process (#2256, #1766).** Its three
   catalog imports take the guarded package-first shape its siblings use, so the flat copy every
   setup path reaches binds the same catalog modules the package side does and the import-time
