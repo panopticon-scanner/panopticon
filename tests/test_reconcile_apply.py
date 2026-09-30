@@ -1501,10 +1501,10 @@ class TestSafeRecovery(unittest.TestCase):
 
     def test_a_wrong_shaped_source_report_is_refused_by_name(self):
         # #2398: `load_report` refuses a non-object document with a ValueError
-        # (#2373). Left bare, that reached the operator as "incomplete recovery:
-        # report ..." with nothing saying which INPUT was at fault. Raised as this
-        # module's own IncompleteRecovery it names the artifact and keeps the
-        # established `refusing:` / rc 1 register the CLI and its callers expect.
+        # (#2373). Left bare, it reached the operator only through the blanket
+        # "incomplete recovery:" wrapper, as a ValueError nothing here could tell
+        # apart. Raised as this module's own IncompleteRecovery it says which input
+        # (the source report) and keeps the `refusing:` / rc 1 register callers expect.
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "source.json"
             source.write_text('["not", "an", "object"]')

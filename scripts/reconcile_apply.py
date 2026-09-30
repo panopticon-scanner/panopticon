@@ -125,7 +125,7 @@ def _source_records(reports, source_roots):
         try:
             report = file_issues._reconcile.load_report(path)
         except ValueError as exc:
-            raise IncompleteRecovery("source report %s: %s" % (path, exc)) from exc
+            raise IncompleteRecovery("source %s" % exc) from exc
         pointer = file_issues.scrub(str(artifact))
         if pointer in indexed:
             raise IncompleteRecovery("conflicting source report artifact: " + pointer)

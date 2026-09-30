@@ -277,8 +277,8 @@ def test_main_files_a_stored_finding_whose_siblings_are_malformed(
     # #2398, the #2372 residue: `citations`, `occurrences`, `additional_loci` and
     # `location.file` come off the same unvalidated `load_report` and are read in the
     # same two functions as the three that were guarded. Each of these aborted the
-    # WHOLE filing run; each must now render as if the field were absent. `True` is
-    # an int to `isinstance`, so a boolean occurrence count states no count either.
+    # WHOLE filing run; each must now render as if the field were absent. A boolean
+    # count states no count too (`True > 1` is False; the bool clause states intent).
     finding = {**_split_finding("sib"), "citations": "cwe-79",
                "occurrences": occurrences, "additional_loci": ["b.py"],
                "location": {"file": 7}}
@@ -307,21 +307,23 @@ def test_a_string_citation_list_does_not_file_its_characters(tmp_path, monkeypat
     assert "C, W, E" not in body
 
 
-def test_a_non_string_citation_entry_renders_instead_of_aborting(tmp_path, monkeypatch):
+def test_a_non_string_non_dict_citation_entry_is_skipped(tmp_path, monkeypatch):
     # The same read one level in: a real list whose entry is neither a string nor a
-    # dict used to reach `c.get("id", ...)` and raise. It renders as its own text.
-    finding = {**_split_finding("cite2"), "citations": {"cwe": ["CWE-79", 7]}}
+    # dict used to reach `c.get("id", ...)` and raise. It is not a citation: skipped,
+    # not rendered as `7` or `None` text (the wrong-body class one level down).
+    finding = {**_split_finding("cite2"),
+               "citations": {"cwe": ["CWE-79", 7, None, ["x"], {"id": "CWE-89"}]}}
     _, create, _, _, rc = _run_split_main(
         monkeypatch, _one_finding_report(tmp_path, finding))
     assert rc is None
-    assert "**Citations:** CWE-79, 7" in create.call_args.args[1]
+    assert "**Citations:** CWE-79, CWE-89\n" in create.call_args.args[1] + "\n"
 
 
 @pytest.mark.parametrize("loci", ["b.py", 7, {"file": "c.py"}])
 def test_a_non_list_additional_loci_states_no_loci(tmp_path, monkeypatch, loci):
-    # A string is iterable and a dict iterates its KEYS, so `or []` let both through
-    # as character/key "loci"; an int is not iterable at all and raised. None of the
-    # three is a list of loci, so the count renders and no locus line does.
+    # A string is iterable and a dict iterates its KEYS, so `or []` entered both and
+    # died on the first member (`.get` on a str); an int is not iterable and raised.
+    # None of the three is a list of loci, so the count renders and no locus line does.
     finding = {**_split_finding("bad-loci"), "occurrences": 3, "additional_loci": loci}
     _, create, _, _, rc = _run_split_main(
         monkeypatch, _one_finding_report(tmp_path, finding))

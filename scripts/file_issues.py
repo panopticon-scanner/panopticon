@@ -160,8 +160,8 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     cites = _dict(f.get("citations"))
     flat = []
     for k in ("cwe", "owasp", "cve"):
-        for c in _list(cites.get(k)):
-            cid = defang(c if isinstance(c, str) else _dict(c).get("id", str(c))).replace("`", "'")
+        for c in [x for x in _list(cites.get(k)) if isinstance(x, (str, dict))]:
+            cid = defang(c if isinstance(c, str) else c.get("id", str(c))).replace("`", "'")
             flat.append(cid)
     if flat:
         L.append("**Citations:** %s" % ", ".join(flat))
