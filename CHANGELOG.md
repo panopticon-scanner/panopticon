@@ -13,6 +13,8 @@ evidence exposed.
   `meta.coverage.delta_artifact.keys_repaired` and on stderr, rejects an unsupported
   `schema_version` as a fourth `payload_malformed` reason, and the report schema now type-pins
   those seven keys.
+- **Read the committed config once per discovery run (#2269, #1761).** Exclusion and group
+  readers share per-call snapshots, so one resolver disclosure reaches the operator once.
 - **Retire the dead rule-id pre-filter (#2366, #1768).** `ingest_tools._rule_id` no longer
   re-filters the fields `evidence.tool_rule_id` already reads totally, and coerces a non-string
   rule id to text before the CWE regex sees it.

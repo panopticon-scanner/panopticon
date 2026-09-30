@@ -643,6 +643,19 @@ class TestOneOwnerForTheCommittedConfig:
         setup_flow.migrate_config(str(legacy_repo))
         assert LEGACY_NOTICE in capsys.readouterr().err
 
+    def test_repo_scan_emits_a_document_disclosure_once(self, tmp_path, capsys):
+        repo = tmp_path / "once"
+        repo.mkdir()
+        (repo / "panopticon.yml").write_text(
+            "version: 1\ncolour: blue\ngroups:\n"
+            "  App:\n    match: ['*.py']\n",
+            encoding="utf-8",
+        )
+        (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        assert discovery._repo_scan(["--repo-scan", str(repo)]) == 0
+        disclosure = "unknown top-level key(s) ignored: colour"
+        assert capsys.readouterr().err.count(disclosure) == 1
+
     def test_both_exclude_paths_callers_are_one_function(self, tmp_path, capsys):
         # The refused-symlink disclosure used to reach stderr on the setup copy
         # and not on the discovery one; there is one copy now.

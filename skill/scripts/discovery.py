@@ -1454,11 +1454,11 @@ def _committed_document(repo):
         raise ValueError("; ".join(doc.errors))
     return doc
 
-def _committed_groups(repo):
+def _committed_groups(repo, doc=None):
     """(doc, mapping, errors) for the committed `groups:` value, normalized by
-    the owner with both disclosure channels printed: the read every groups
-    reader shares (#2229). `mapping` is {} with no document."""
-    doc = _committed_document(repo)
+    the owner with both disclosure channels (#2229). An already-read document
+    avoids repeating its resolver disclosures; `mapping` is {} with no document."""
+    doc = _committed_document(repo) if doc is None else doc
     raw, errors, disclosures = groups_schema.normalize_groups_mapping(
         (doc.doc or {}).get("groups"))
     _disclose_committed(disclosures)
@@ -1480,7 +1480,7 @@ def _committed_matrix(repo):
     merge, so `setup_flow.config_refusal` refuses what it cannot round trip."""
     return groups_schema.committed_bodies(_matrix_catalog(repo))
 
-def _matrix_catalog(repo):
+def _matrix_catalog(repo, committed=None):
     """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan
     / readiness: {name: {match: [...], tests, floor, exclude}} with `match`
     VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
@@ -1494,7 +1494,7 @@ def _matrix_catalog(repo):
     matrix holds, and `_declares_groups` makes an all-invalid catalog loud
     (#run8 COD-B1A). Setup refuses them outright instead
     (`setup_flow.config_refusal`): it is about to write a draft."""
-    doc, raw, errors = _committed_groups(repo)
+    doc, raw, errors = committed if committed is not None else _committed_groups(repo)
     if doc.doc is None:
         return {}
     groups, errs = groups_schema.parse_groups({"groups": raw})
@@ -1505,7 +1505,7 @@ def _matrix_catalog(repo):
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
 
-def _declares_groups(repo):
+def _declares_groups(repo, committed=None):
     """True iff the committed root config actually declares one or more groups
     (#run8 COD-B1A: an authored-but-unusable catalog must fail loud, not
     degrade to whole-repo chunking). No config and an empty `groups:` mapping
@@ -1518,10 +1518,10 @@ def _declares_groups(repo):
     `groups: API` printed the error and chunked the whole repo with rc 0
     (#2189). A value the owner cannot normalize is a declaration nothing could
     read: the case COD-B1A exists to refuse."""
-    doc, raw, errors = _committed_groups(repo)
+    doc, raw, errors = committed if committed is not None else _committed_groups(repo)
     return doc.doc is not None and bool(raw or errors)
 
-def _committed_exclude_paths(repo):
+def _committed_exclude_paths(repo, doc=None):
     """Committed top-level `exclude_paths:` globs from the root config
     (Task 4, #1136), for the run side and the setup side both -- the ONE copy
     (#2229; `setup_flow`'s alias resolves here).
@@ -1534,7 +1534,7 @@ def _committed_exclude_paths(repo):
     swallowed BOTH error sets, so a committed pruning policy could vanish from
     a setup draft with a refused symlink as its only trace. A missing config is
     still `[]`: no pruning."""
-    doc = _committed_document(repo)
+    doc = _committed_document(repo) if doc is None else doc
     if doc.doc is None:
         return []
     globs, errs = groups_schema.parse_exclude_paths(doc.doc)
@@ -1682,10 +1682,10 @@ def _repo_scan(argv=None):
     # files BEFORE any grouping (build_result's default chunking, --scope-*
     # narrowing, and catalog_groups/assign_by_catalog all consume `allf` from
     # this point on) -- excluded files land in NEITHER a group NOR a leftover.
-    # Absent `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a
-    # no-op (byte-identical back-compat).
+    # With no `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a no-op.
     try:
-        exclude_globs = _committed_exclude_paths(repo)
+        committed_doc = _committed_document(repo)
+        exclude_globs = _committed_exclude_paths(repo, committed_doc)
     except ValueError as exc:
         # The matrix read's refusal below, and this reader runs first: since
         # #2229 a document nothing could read -- or a pruning policy the schema
@@ -1713,10 +1713,10 @@ def _repo_scan(argv=None):
                           group_files=impl + tests, security_mode=args.security)
     result["discovery"] = _discovery_block(info)
     try:
-        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
-        # In the SAME guard (#2229): it reads the same document through the same
-        # seam, and a reader that raises must not do it past the scan.
-        declares = _declares_groups(repo)
+        committed_groups = _committed_groups(repo, committed_doc)
+        catalog = _matrix_catalog(repo, committed_groups)  # SEC-3: validated matrix read
+        # Same #2229 guard: a reader that rejects this document must stop the scan.
+        declares = _declares_groups(repo, committed_groups)
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
