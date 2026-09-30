@@ -22,6 +22,10 @@ evidence exposed.
   documented contract. What was wrong is that a truncated or hand-edited map is
   indistinguishable from that legitimate shape; the counter is the input a later gate rule would
   need to tell the two apart.
+- **Use current OCRDb domains in synthesis test filenames (#2253, #1765).** Inert fixtures now
+  use uppercase domain codes; explicit rejection fixtures retain the retired spellings they test.
+- **Bind report domain enums to the runtime roster (#2347, #1821).** Contract tests cover the
+  report, X0X and strain schemas, including coverage cells that exclude the domainless sentinel.
 - **`driver readiness`'s gating `dependencies` row is reached for every runtime package (#2369,
   #1784).** The row names an absent `pyyaml`, `defusedxml` or `jsonschema` with its `pip install`
   before the first paid dispatch, and it printed for `jsonschema` alone. Four modules on the

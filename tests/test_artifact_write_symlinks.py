@@ -165,7 +165,7 @@ class TestUsageJson(_Planted):
 
 class TestOutFileHashes(_Planted):
     def test_snapshot_out_files_refuses_a_planted_link(self):
-        cell = os.path.join(self.pano, "findings-g1-security.json")
+        cell = os.path.join(self.pano, "findings-g1-SEC.json")
         with open(cell, "w", encoding="utf-8") as fh:
             json.dump({"findings": []}, fh)
         path = self.plant("runs", "tag", "out-file-hashes.json")
@@ -185,7 +185,7 @@ class TestX0xArtifact(_Planted):
         self.addCleanup(os.chdir, cwd)
 
     def test_the_x0x_staging_write_refuses_a_planted_link(self):
-        findings = os.path.join(self.root, "findings-g1-security.json")
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
         with open(findings, "w", encoding="utf-8") as fh:
             json.dump({"findings": []}, fh)
         out = os.path.join(self.pano, "report.json")
