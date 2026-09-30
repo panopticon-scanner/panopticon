@@ -1277,6 +1277,38 @@ class TestIntegrityFailureDetails(unittest.TestCase):
                 ]
                 self.assertEqual([_text(node) for node in details], [body])
 
+    def test_target_controlled_detail_is_bounded_and_marked(self):
+        import scripts.integrity_messages as integrity_messages
+        import scripts.tools.base as tool_base
+
+        self.assertEqual(integrity_messages.HTML_DETAIL_MAX,
+                         tool_base.INERT_TEXT_MAX)
+        files = ["%04d-%s.json" % (index, "x" * 200) for index in range(100)]
+        report = {
+            "meta": {
+                "target": "t", "coverage": {},
+                "integrity": {"unexpected_findings_files": files},
+            },
+            "summary": {
+                "overall_grade": "B", "risk_level": "MEDIUM",
+                "gate": "INCONCLUSIVE", "coverage_certified": False,
+            },
+            "findings": [],
+            "groups": [],
+        }
+
+        root = _parse(hr.render(report))
+        details = [
+            node for node in _nodes(root, "div")
+            if node["attrs"].get("class") == "integrity-detail"
+        ]
+        self.assertEqual(len(details), 1)
+        detail = _text(details[0])
+        self.assertLessEqual(len(detail), integrity_messages.HTML_DETAIL_MAX)
+        self.assertIn(integrity_messages.HTML_DETAIL_CUT, detail)
+        self.assertTrue(detail.endswith(
+            "(not declared by the dispatch plan; run not certified)"))
+
 
 _NO_KEY = object()
 

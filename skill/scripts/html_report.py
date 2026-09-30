@@ -533,10 +533,10 @@ def _render_header(report):
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # Health is presentation only and never affects the gate (#1057). Unlike the
-    # worst-severity grade, it shows how localised the measured defect burden is.
-    # Six calibration targets do not justify healthy/fair/poor bands, so the
-    # header publishes the number and inputs without a qualitative label.
+    # Health never affects the gate (#1057). Across six calibration targets, every
+    # grade was D/F while health ranged from 35.68 to 70.45. That sample is too
+    # small for healthy/fair/poor bands, so the number and inputs show how much of
+    # the measured codebase is clean without assigning a qualitative label.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(

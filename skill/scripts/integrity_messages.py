@@ -2,6 +2,13 @@
 from dataclasses import dataclass
 
 
+# Mirrors tools.base.INERT_TEXT_MAX. This module must also import flat when
+# skill/scripts itself is on sys.path, where the `scripts.tools.base` package
+# path does not exist; keep the HTML boundary local and pin equality in tests.
+HTML_DETAIL_MAX = 2000
+HTML_DETAIL_CUT = "…"
+
+
 @dataclass(frozen=True)
 class IntegrityKey:
     """One `meta.integrity` key's two published facts.
@@ -193,12 +200,31 @@ def raw_evidence_text(key, value):
     return text
 
 
-def sentence_text(key, value):
-    """Render one table sentence, filling its evidence slot when present."""
+def _marked_prefix(text, limit):
+    """Return at most `limit` characters, marking any truncation."""
+    if len(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    marker = HTML_DETAIL_CUT[:limit]
+    return text[:limit - len(marker)] + marker
+
+
+def sentence_text(key, value, *, limit=None):
+    """Render one table sentence, optionally bounding its complete length."""
     sentence = INTEGRITY_KEYS[key].sentence
-    if sentence is not None and "%s" in sentence:
-        return sentence % raw_evidence_text(key, value)
-    return sentence
+    if sentence is None:
+        return None
+    if "%s" not in sentence:
+        return sentence if limit is None else _marked_prefix(sentence, limit)
+    evidence = raw_evidence_text(key, value)
+    if limit is None:
+        return sentence % evidence
+    prefix, suffix = sentence.split("%s", 1)
+    evidence_limit = limit - len(prefix) - len(suffix)
+    if evidence_limit <= 0:
+        return _marked_prefix(sentence % "", limit)
+    return prefix + _marked_prefix(evidence, evidence_limit) + suffix
 
 
 def sinking_sentences(section):
@@ -209,7 +235,7 @@ def sinking_sentences(section):
     for key, spec in INTEGRITY_KEYS.items():
         value = section.get(key)
         if value and spec.sinks:
-            sentence = sentence_text(key, value)
+            sentence = sentence_text(key, value, limit=HTML_DETAIL_MAX)
             if sentence is not None:
                 rendered.append(sentence)
     return rendered
