@@ -1474,10 +1474,10 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
     ACCESS, and nothing pinned that.
 
     As module CONSTANTS, `_trusted_hook_argv()` ran while the module BODY
-    executed, so its RuntimeError escaped as an IMPORT-time raise. `main()` is
-    this module's only never-crash envelope and cannot cover one -- and in the
-    hook PROCESS a crash is fail-OPEN, because the host treats any non-2 exit as
-    a non-blocking error and lets the Write proceed. Every consumer of these
+    executed, so its RuntimeError escaped as an IMPORT-time raise. This module
+    has NO never-crash envelope at all: `main()` is tolerant per branch, so any
+    raise reaches the host as a non-2 exit, which it treats as a non-blocking
+    error -- the Write proceeds, fail-OPEN (#2391 is the envelope). Every consumer of these
     names is on the DRIVER side instead, where the same raise is a loud refusal
     to arm. Restoring the constants leaves every other test in this file green
     (measured), so this class is what holds the lazy shape in place.

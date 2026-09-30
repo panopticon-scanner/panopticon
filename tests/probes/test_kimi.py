@@ -202,7 +202,11 @@ class TestKimiGuardRoundTrip(unittest.TestCase):
         import scripts.runners.kimi_home as kimi_home
 
         with tempfile.TemporaryDirectory() as d:
-            data_path = os.path.join(d, "scope.json")
+            # RELATIVE on purpose: the builder arms `os.path.abspath(data_path)`,
+            # so a copied literal that agreed on an absolute path still differs
+            # here -- this is what makes the test bite on a copy, not only on a
+            # divergent literal.
+            data_path = os.path.relpath(os.path.join(d, "scope.json"))
             calls = []
 
             def runner(command, **kwargs):

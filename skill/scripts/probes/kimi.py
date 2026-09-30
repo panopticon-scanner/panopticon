@@ -198,7 +198,9 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     matcher = kimi_home.READ_MATCHER if mode == "read" else kimi_home.WRITE_MATCHER
     armed = shlex.split(kimi_home._hook_entry(matcher, mode, data_path)["command"])
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
-    argv = [guard_path if token == kimi_home._GUARD else token for token in armed]
+    argv = list(armed)
+    if kimi_home._GUARD in argv:      # the script element only, never a data token
+        argv[argv.index(kimi_home._GUARD)] = guard_path
     for name, payload, env_id, want_allow in rows:
         env = {"PATH": os.environ.get("PATH", "")}
         if env_id:
