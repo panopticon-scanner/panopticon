@@ -15,11 +15,12 @@ evidence exposed.
   therefore armed a hook the child could not start -- and a hook that cannot start fails OPEN, so
   write confinement was off with nothing said. The command now names the driver's own validated
   `sys.executable`, the binding `read_guard_hook` and the Kimi hooks already use, and `install`
-  refuses loudly instead of arming a hook whose interpreter cannot run it. That refusal is
+  refuses before writing either file rather than arming a hook it cannot start. That refusal is
   computed on ACCESS rather than at import (#2006), because a raise inside the hook process is
-  itself fail-open. `-I` now pairs with the pinned interpreter on the Kimi hooks and on their
-  guard round-trip probe too (#2163), so a `sitecustomize` cannot choose code for a confinement
-  decision (#1996).
+  itself fail-open. `-I` now pairs with the pinned interpreter on the Kimi hooks, so a
+  `sitecustomize` cannot choose code for a confinement decision (#1996), and their guard
+  round-trip probe spawns the tokens of the armed command itself rather than a copy of them, so
+  the evidence can no longer describe an argv the per-run config never registered (#2163).
 - **Surface dropped token-ledger inputs (#2171, #1782).** Usage collection counts a present
   non-object `usage` value in its existing drop tally, and successful driver-side collection
   forwards the bounded collector disclosure to stderr.

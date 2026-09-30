@@ -17,6 +17,7 @@ The probe-id -> function registry stays in `host_probes.py`.
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import tomllib
@@ -187,19 +188,23 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     own (M1: a literal "(8 rows)" beside this function's own answer drifts the
     moment a row is added). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
-    # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is
-    # `sys.executable -I <the hook> <mode> <data>` -- the hook protocol itself,
-    # and the argv the per-run config arms (#2163), so the evidence is about the
-    # command that actually runs.
+    # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is the hook
+    # protocol itself. The argv is not a copy of the armed command, it IS the
+    # armed command -- `kimi_home._hook_entry` builds it and this splits that one
+    # shell string back into tokens (#2163), so no drift can leave the evidence
+    # describing an argv the per-run config never registered. `guard_path`
+    # replaces the script element for this module's own fixture-guard tests.
     runner = subprocess.run if runner is None else runner
+    matcher = kimi_home.READ_MATCHER if mode == "read" else kimi_home.WRITE_MATCHER
+    armed = shlex.split(kimi_home._hook_entry(matcher, mode, data_path)["command"])
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
+    argv = [guard_path if token == kimi_home._GUARD else token for token in armed]
     for name, payload, env_id, want_allow in rows:
         env = {"PATH": os.environ.get("PATH", "")}
         if env_id:
             env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
         try:
-            proc = runner([kimi_home._interpreter(), "-I", guard_path, mode, data_path],
-                          input=json.dumps(payload), capture_output=True,
+            proc = runner(argv, input=json.dumps(payload), capture_output=True,
                           text=True, timeout=30, env=env)
         except Exception as exc:  # noqa: BLE001 -- report, never raise
             return False, common.failure_detail(

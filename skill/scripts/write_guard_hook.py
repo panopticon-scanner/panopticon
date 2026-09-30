@@ -614,8 +614,8 @@ def hook_command(*argv):
 
 def _trusted_hook_argv():
     """THIS process's interpreter, `-I`, this module's absolute path (#495). #2161: a bare
-    `python3` resolves in the CHILD's rewritten PATH (`executable.resolve` drops the review root),
-    so the hook could not start -- which fails OPEN. Shape, refusals and `-I`: the read guard's."""
+    `python3` resolves in the CHILD's rewritten PATH (`executable.resolve` drops the review root)
+    -- a fail-OPEN. `-I` so no `sitecustomize` picks the code (#1996). Shape: the read guard's."""
     executable = sys.executable
     if not executable or not os.path.isabs(executable):
         raise RuntimeError("write guard interpreter unavailable or not absolute: %r" % executable)
@@ -638,10 +638,9 @@ def __getattr__(name):
 
 def _hook_entry(allowlist_path=None):
     """The entry to register; `allowlist_path` is baked in absolutely, never inferred from a CWD."""
-    argv = list(_trusted_hook_argv())
-    if allowlist_path:
-        argv.append(os.path.abspath(allowlist_path))
-    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": hook_command(*argv)}]}
+    baked = [os.path.abspath(allowlist_path)] if allowlist_path else []
+    cmd = hook_command(*_trusted_hook_argv(), *baked)
+    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
 
 
 def _runs_this_script(command):
@@ -1042,6 +1041,7 @@ def _resolve(settings_path, allowlist_path, session_root):
 
 
 def install(plan, settings_path=None, allowlist_path=None, *, session_root=None):
+    _trusted_hook_argv()   # refuse before ANY write, the allowlist document included
     # #11: UNION with any existing allowlist rather than REPLACING it wholesale.
     # A re-arm while a prior fan-out is still in flight (an overlapping/nested
     # install) used to overwrite the allowlist with only the new set, silently
