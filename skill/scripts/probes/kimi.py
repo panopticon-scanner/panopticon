@@ -188,7 +188,9 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     moment a row is added). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
     # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is
-    # `sys.executable <the hook> <mode> <data>`, the hook protocol itself.
+    # `sys.executable -I <the hook> <mode> <data>` -- the hook protocol itself,
+    # and the argv the per-run config arms (#2163), so the evidence is about the
+    # command that actually runs.
     runner = subprocess.run if runner is None else runner
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
     for name, payload, env_id, want_allow in rows:
@@ -196,7 +198,7 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
         if env_id:
             env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
         try:
-            proc = runner([kimi_home._interpreter(), guard_path, mode, data_path],
+            proc = runner([kimi_home._interpreter(), "-I", guard_path, mode, data_path],
                           input=json.dumps(payload), capture_output=True,
                           text=True, timeout=30, env=env)
         except Exception as exc:  # noqa: BLE001 -- report, never raise

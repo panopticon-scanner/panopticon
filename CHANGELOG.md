@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The Claude write guard runs under the driver's own interpreter, and every guard hook runs
+  it isolated (#2161, #2163, #1777).** `write_guard_hook`'s registered `PreToolUse` command began
+  with the bare word `python3`, and nothing resolved it: the CHILD looks that name up in ITS PATH,
+  which `runners/children.py` rewrites through `executable.resolve`, dropping every entry inside
+  the review root. An operator whose `python3` came from the reviewed repo's own `.venv/bin`
+  therefore armed a hook the child could not start -- and a hook that cannot start fails OPEN, so
+  write confinement was off with nothing said. The command now names the driver's own validated
+  `sys.executable`, the binding `read_guard_hook` and the Kimi hooks already use, and `install`
+  refuses loudly instead of arming a hook whose interpreter cannot run it. That refusal is
+  computed on ACCESS rather than at import (#2006), because a raise inside the hook process is
+  itself fail-open. `-I` now pairs with the pinned interpreter on the Kimi hooks and on their
+  guard round-trip probe too (#2163), so a `sitecustomize` cannot choose code for a confinement
+  decision (#1996).
 - **Share reply publication and artifact roots (#2346, #1820).** Reply persistence uses the
   common atomic JSON writer, which cleans opened staging files after failures and leaves
   rejected paths untouched. Writers and reply placement share lexical root discovery while

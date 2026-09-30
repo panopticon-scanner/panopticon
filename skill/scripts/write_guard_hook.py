@@ -612,36 +612,36 @@ def hook_command(*argv):
     return " ".join(shlex.quote(a) for a in argv)
 
 
-# #495: self-locate. The old literal "skill/scripts/..." only resolved when
-# the skill lived INSIDE the target repo (the self-scan layout); installed
-# under a skills dir the hook silently never ran. The module's own absolute
-# path works under both layouts (shell-quoted: install paths may contain
-# spaces -- or worse, #1633).
-_HOOK_ARGV = ("python3", os.path.abspath(__file__))
-_HOOK_CMD = hook_command(*_HOOK_ARGV)
-# Ordering is fixed to the original string so install()/uninstall() never
-# produce a duplicate or stale entry when upgrading from a settings.local.json
-# written by an earlier version. #1633 changed the command's QUOTING, so that
-# promise no longer rests on dict equality across versions -- `_is_our_entry`,
-# which matches on the script path rather than on the text, is what carries it
-# (measured in tests/test_hook_command_quoting.py). The entry's shape is
-# unchanged.
-_HOOK_ENTRY = {"matcher": _MATCHER,
-               "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+def _trusted_hook_argv():
+    """THIS process's interpreter, `-I`, this module's absolute path (#495). #2161: a bare
+    `python3` resolves in the CHILD's rewritten PATH (`executable.resolve` drops the review root),
+    so the hook could not start -- which fails OPEN. Shape, refusals and `-I`: the read guard's."""
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        raise RuntimeError("write guard interpreter unavailable or not absolute: %r" % executable)
+    executable = os.path.realpath(executable)
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        raise RuntimeError("write guard interpreter is unavailable: %s" % executable)
+    return executable, "-I", os.path.abspath(__file__)
+
+
+def __getattr__(name):
+    """The `_HOOK_*` names on ACCESS: an import-time raise is fail-OPEN (#2006, read_guard_hook)."""
+    if name == "_HOOK_ARGV":
+        return _trusted_hook_argv()
+    if name == "_HOOK_CMD":
+        return hook_command(*_trusted_hook_argv())
+    if name == "_HOOK_ENTRY":
+        return _hook_entry()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def _hook_entry(allowlist_path=None):
-    """The PreToolUse entry to register.
-
-    With `allowlist_path`, the absolute allowlist is baked into the command so
-    the hook never has to infer it from its CWD (see _resolve_allowlist_path).
-    Without one, this is the legacy bare entry -- the same entry an earlier
-    version wrote, now shell-quoted (#1633), so it is recognised as ours by
-    `_is_our_entry` rather than by comparing equal to the older text."""
-    if not allowlist_path:
-        return _HOOK_ENTRY
-    cmd = hook_command(*_HOOK_ARGV, os.path.abspath(allowlist_path))
-    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
+    """The entry to register; `allowlist_path` is baked in absolutely, never inferred from a CWD."""
+    argv = list(_trusted_hook_argv())
+    if allowlist_path:
+        argv.append(os.path.abspath(allowlist_path))
+    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": hook_command(*argv)}]}
 
 
 def _runs_this_script(command):

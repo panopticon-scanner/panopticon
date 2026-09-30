@@ -178,10 +178,12 @@ class TestKimiGuardRoundTrip(unittest.TestCase):
         self.assertIn("fixture-guard.py", detail)
         self.assertEqual(3, len(calls))
         for (command, kwargs), (_name, payload, entry_id, _allowed) in zip(calls, rows):
-            # The probe drives the hook with the interpreter the config arms:
-            # the resolved sys.executable (kimi_home._interpreter), not the raw one.
-            self.assertEqual([os.path.realpath(sys.executable), guard_path, "read", data_path],
-                             command)
+            # The probe drives the hook the way the config ARMS it: the resolved
+            # sys.executable (kimi_home._interpreter), not the raw one, and
+            # isolated (#2163) -- evidence gathered under a different argv is
+            # evidence about a command nothing registered.
+            self.assertEqual([os.path.realpath(sys.executable), "-I", guard_path,
+                              "read", data_path], command)
             self.assertEqual(payload, json.loads(kwargs["input"]))
             self.assertEqual({"capture_output": True, "text": True, "timeout": 30},
                              {key: kwargs[key] for key in ("capture_output", "text", "timeout")})

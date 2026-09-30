@@ -1366,8 +1366,68 @@ class TestHookCmdSelfLocating(unittest.TestCase):
         # survive paths with spaces. #1633: double quotes were how it survived
         # them, and they survive NOTHING else -- so the pin is what a shell
         # makes of the command, not which quote character it starts with.
-        self.assertEqual(["python3", os.path.abspath(wg.__file__)],
+        self.assertEqual([os.path.realpath(sys.executable), "-I",
+                          os.path.abspath(wg.__file__)],
                          shlex.split(wg._HOOK_CMD))
+
+    def test_the_registered_command_names_an_absolute_interpreter(self):
+        # #2161: the first element was the bare word `python3`, which nothing
+        # resolved -- the CHILD looks it up in ITS PATH, and `runners/children.py`
+        # rewrites that PATH through `executable.resolve`, dropping every entry
+        # inside the review root. An operator whose `python3` came from the
+        # reviewed repo's own `.venv/bin` therefore armed a hook the child could
+        # not start, and a hook that cannot start fails OPEN. PATH is emptied
+        # here so the interpreter running this suite cannot stand in for the very
+        # name the child had no entry for.
+        with tempfile.TemporaryDirectory() as d:
+            allowlist = os.path.join(d, "write-allowlist.json")
+            with mock.patch.dict(os.environ, {"PATH": ""}):
+                command = wg._hook_entry(allowlist)["hooks"][0]["command"]
+            first = shlex.split(command)[0]
+            self.assertTrue(os.path.isabs(first),
+                            "the interpreter is not an absolute path: %r" % first)
+            # The armed path is the one `_trusted_hook_argv` VALIDATED, i.e. the
+            # realpath; on a framework or venv python the two spellings differ.
+            self.assertEqual(os.path.realpath(sys.executable), first)
+            self.assertNotEqual("python3", first,
+                                "a bare interpreter name is resolved in the child's PATH")
+
+    def test_an_unusable_interpreter_refuses_to_build_an_entry(self):
+        # Mirrors tests/runners/test_kimi_home.py's arming-path refusal. A
+        # RELATIVE `sys.executable` is the case a check over the DRIVER's cwd
+        # cannot judge: the child resolves it against its own cwd (or its PATH,
+        # for a bare name), so it is a different file or none. An EMPTY one is
+        # real too (an embedded interpreter, a caller that overwrote it). Each is
+        # refused, naming the value, rather than falling back to a name a PATH
+        # gets to choose -- and a raise on the DRIVER side is the fail-closed
+        # direction, since the guard is then never armed at all.
+        for bad in ("", "python3", os.path.join("bin", "python3")):
+            with self.subTest(interpreter=bad):
+                with mock.patch.object(wg.sys, "executable", bad):
+                    with self.assertRaises(RuntimeError) as caught:
+                        wg._hook_entry()
+                message = str(caught.exception)
+                self.assertIn("not absolute", message)
+                self.assertIn(repr(bad), message)
+
+    def test_install_refuses_an_unusable_interpreter_before_writing_settings(self):
+        # install() goes through `_hook_entry`, so the refusal lands BEFORE the
+        # settings file is rewritten: an operator whose interpreter cannot be
+        # pinned gets a loud failure to arm, never a settings file carrying a
+        # hook command the child cannot start.
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "settings.local.json")
+            with open(sp, "w", encoding="utf-8") as fh:
+                json.dump({"permissions": {"allow": ["Read"]}}, fh)
+            with open(sp, encoding="utf-8") as fh:
+                before = fh.read()
+            with mock.patch.object(wg.sys, "executable", "python3"):
+                with self.assertRaises(RuntimeError):
+                    wg.install([{"out_file": os.path.join(d, "o.json")}],
+                               settings_path=sp,
+                               allowlist_path=os.path.join(d, "allow.json"))
+            with open(sp, encoding="utf-8") as fh:
+                self.assertEqual(before, fh.read())    # untouched, so never armed
 
     def test_resolve_allowlist_path_finds_parent_dir(self):
         with tempfile.TemporaryDirectory() as d:
