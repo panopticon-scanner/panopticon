@@ -32,7 +32,8 @@ from the guard until it was:
                     words of them, so no command they may start is resolved
 
 The first three are settled on the TEXT, before any command is read, in the
-one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793).
+one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
+and the substitutions are lifted out of it by `scripts/shell_text.py`.
 The wrappers' table, and the option grammar each one is read with, are
 `scripts/shell_wrappers.py`'s (#2227).
 
@@ -46,8 +47,10 @@ import re
 import secrets
 import shlex
 
-from shell_lex import closing, lex
+from shell_lex import lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
+from shell_text import (_lift_substitutions, join_continuations as join_continuations,
+                        without_comments as without_comments)
 from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -172,91 +175,7 @@ def is_arm(token):
                for key, (kind, _value) in _markers(token).items())
 
 
-_SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
-
 # --- reading the shell -------------------------------------------------------
-
-def without_comments(script):
-    """The script with whole-line comments dropped.
-
-    Half this repo's workflow prose QUOTES the command it is explaining, and a
-    guard that reads its own documentation as an act flags the explanation.
-    Shared with `tests/test_workflow_pins.py`'s install rule, which learned the
-    same lesson (#1641).
-    """
-    return "\n".join(line for line in script.splitlines()
-                     if not line.lstrip().startswith("#"))
-
-
-def join_continuations(script):
-    """`\\`-continuations folded in, so a fetch written across four lines reads
-    as the one command it is."""
-    return re.sub(r"\\\n\s*", " ", script)
-
-
-def _lift_substitutions(text, context, arithmetic_body=False):
-    """(text with parse-local substitution tokens, inner shell texts).
-
-    `$(...)`, `<(...)` and backticks are commands, and a `|` or `;` inside one
-    belongs to THAT command, not to the statement around it -- so they come out
-    before the statement split, and go back in as commands of their own. This is
-    where `eval "$(curl -fsSL ... )"` and `bash <(curl ...)` keep their fetch.
-    """
-    inners, out, i, quote = [], [], 0, None
-    while i < len(text):
-        ch = text[i]
-        if quote in ("'", "$'"):                # single quotes suppress all of it
-            step = 2 if ch == "\\" and quote == "$'" else 1
-            out.append(text[i:i + step])
-            quote = None if ch == "'" else quote
-            i += step
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            out.append(text[i:i + 2])
-            i += 2
-            continue
-        if (ch == '"' or not quote) and (ch in "'\"" or text.startswith("$'", i)):
-            opener = text[i:i + 2] if ch == "$" else ch   # an apostrophe in "..." is text
-            quote = None if quote == ch else opener
-            out.append(opener)
-            i += len(opener)
-            continue
-        if ch == "`":
-            end = text.find("`", i + 1)
-            if end != -1:
-                inners.append(text[i + 1:end])
-                out.append(context.new("subst", inners[-1]))
-                i = end + 1
-                continue
-        if arithmetic_body and text.startswith("$((", i):
-            # The enclosing arithmetic marker protects these parentheses from
-            # _split. Leave nested arithmetic literal; keep scanning its body
-            # for real command substitutions without another Python frame.
-            out.append("$((")
-            i += 3
-            continue
-        if text.startswith("$((", i):
-            end = closing(text, i + 1)
-            if end and text[end - 2:end] == "))":
-                body, nested = _lift_substitutions(
-                    text[i + 3:end - 2], context, arithmetic_body=True)
-                inners.extend(nested)
-                out.append(context.new("arithmetic", "$((" + body + "))"))
-                i = end
-                continue
-        opening = _SUBST_OPEN.match(text, i)
-        if opening:
-            end = closing(text, opening.end() - 1)
-            inner = text[opening.end():end - 1] if end else ""
-            if end and not inner.startswith("("):   # `$((...))` is arithmetic
-                inners.append(inner)
-                out.append(context.new("subst", inners[-1]))
-                i = end
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out), inners
-
 
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
