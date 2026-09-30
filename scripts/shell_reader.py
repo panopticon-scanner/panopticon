@@ -47,7 +47,7 @@ import re
 import secrets
 import shlex
 
-from shell_lex import lex
+from shell_lex import ansi_c, lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
@@ -188,11 +188,13 @@ def _split(text, context):
 
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
+    A `$'...'` whose escapes `shell_lex.ansi_c` decodes becomes the '...' of
+    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344).
     """
     statements = []
     stages = []
     buf: list[str] = []
-    quote, i, n = None, 0, len(text)
+    quote, i, n, opened = None, 0, len(text), 0
     cases: list[str] = []
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
@@ -231,11 +233,14 @@ def _split(text, context):
                 i += 2
                 continue
             if ch == quote[-1]:
+                body = ansi_c("".join(buf[opened + 1:-1])) if quote == "$'" else None
+                if body is not None:        # bash's text for a `$'...'`, quoted (#2344)
+                    buf[opened:] = ["'%s'" % body.replace("'", "'\"'\"'")]
                 quote = None
             i += 1
             continue
         if ch in "'\"" or text.startswith("$'", i):
-            quote = text[i:i + 2] if ch == "$" else ch
+            quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
             i += len(quote)
             continue

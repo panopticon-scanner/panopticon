@@ -1100,3 +1100,37 @@ class TestAssignmentPrefixes(unittest.TestCase):
                              ("echo A+=x", "echo")):
             with self.subTest(script=script):
                 self.assertEqual(head, shell_reader.command(stage(script).argv)[0])
+
+
+class TestValuesBeforeAShellsProgram(unittest.TestCase):
+    """#2344, the reader's two halves: bash decodes `$'...'` before a shell
+    sees its options, so `sh $'-c' P` runs `P` (bash 3.2.57 and 5.2.21);
+    and each `o` or `O` in an option word takes a value, so in `bash -eo
+    pipefail [-]c P` the pattern stands where bash looks for `-c`."""
+
+    def test_ansi_c_quoting_is_the_text_bash_decodes(self):
+        self.assertEqual(["sh", "-c", "P"], stage("sh $'-c' P").argv)
+        self.assertEqual(["echo", "a'b", 'c"d\\e?'], stage("echo $'a\\'b' $'c\\\"d\\\\e\\?'").argv)
+        self.assertEqual(["echo", "x y*", "a"], stage("echo $'x y*' a").argv)
+        self.assertFalse(shell_reader.unresolved_wrapper(stage("$'[s]h' -c P").argv))
+        self.assertEqual("ab", shell_lex.ansi_c("ab"))
+        # An escape that is not the character is not decoded: the word keeps
+        # its `$`, which the guard reads as a value it does not follow.
+        self.assertIsNone(shell_lex.ansi_c("\\x2dc"))
+        self.assertEqual(["sh", "$\\x2dc", "P"], stage("sh $'\\x2dc' P").argv)
+        # Inside "..." it is no quoting at all.
+        self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
+
+    def test_every_o_in_an_option_word_takes_a_value(self):
+        for argv in (["bash", "-eo", "pipefail", "[-]c", "P"],
+                     ["bash", "-oe", "pipefail", "[-]c", "P"],
+                     ["bash", "-euo", "pipefail", "+O", "extglob", "[-]c", "P"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(argv[1:-1], shell_reader.shell_words(argv))
+        self.assertEqual(["-oo", "a", "b", "x.sh"],
+                         shell_reader.shell_words(["bash", "-oo", "a", "b", "x.sh", "y"]))
+        self.assertEqual(["--norc", "x.sh"], shell_reader.shell_words(["bash", "--norc", "x.sh"]))
+        for script in ("bash -eo pipefail [-]c P", "bash -euo pipefail {-c,P}"):
+            with self.subTest(script=script):
+                self.assertIn("looks for `-c` or a script",
+                              shell_reader.unresolved_wrapper(stage(script).argv) or "")

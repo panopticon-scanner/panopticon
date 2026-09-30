@@ -96,5 +96,32 @@ class TestOptionsAfterDashC(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestValuesBeforeAShellsProgram(unittest.TestCase):
+    """#2344: a value that may be a shell's `-c`, and an `o` that takes a
+    value from the middle of an option word."""
+
+    def test_each_spelling_is_read(self):
+        # Bash 3.2.57 and 5.2.21 run each, `[-]c` where a file named `-c`
+        # makes the pattern one; the value is never followed, the words
+        # after it are read (`candidates`).
+        for script in ("X=-c\nsh $X '%s'\n" % PIPE, "sh $(echo -c) '%s'\n" % PIPE,
+                       "echo -c | xargs -I{} sh {} '%s'\n" % PIPE, "sh $'-c' '%s'\n" % PIPE,
+                       "bash -eo pipefail {-c,'%s'}\n" % PIPE, "X=[-]c\nsh $X '%s'\n" % PIPE,
+                       "bash -euo pipefail [-]c '%s'\n" % PIPE,
+                       "sh $'\\x2dc' '%s'\n" % PIPE, "bash -oe pipefail <<'EOF'\n%s\nEOF\n" % PIPE,
+                       GET + "X=-c\nsh $X 'sh tool'\n"):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+
+    def test_the_controls_read_as_they_did(self):
+        # A value whose words fetch nothing, in a job that downloads nothing,
+        # is not reported; with no word after it there is nothing to read.
+        for script in ("X=-c\nsh $X 'echo hi'\n", "sh $X\n", "sh -o pipefail x.sh\n",
+                       "bash $X/x.sh '%s'\n" % PIPE, "sh $'-e' '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        self.assertTrue(defects("sh -c '%s'\n" % PIPE))
+
+
 if __name__ == "__main__":
     unittest.main()

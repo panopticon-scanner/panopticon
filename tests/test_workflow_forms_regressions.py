@@ -295,3 +295,42 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         self.assertEqual(["-P"], self.program("sh -c -- -P"))
         self.assertEqual([], self.program("sh -c -x"))
         self.assertEqual([], self.program("bash -c --norc P"))
+
+
+class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
+    """#2344: a value bash expands where a shell reads its options may be
+    `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
+    under bash 3.2.57 and 5.2.21 -- so each literal word after it may be the
+    program. The guard does not follow the value; it reads those words."""
+
+    @staticmethod
+    def argv(script):
+        stmts = shell_reader.statements(script)
+        assert len(stmts) == 1, stmts
+        return shell_reader.command(stmts[0].stages[-1].argv)
+
+    def test_each_literal_word_after_the_value_is_a_candidate(self):
+        for script, value in (("sh $X P", "$X"), ('sh "${X:--c}" P', "${X:--c}"),
+                              ("sh $(echo -c) P", "$(...)"), ("bash -e $X -o pipefail P", "$X"),
+                              ("echo -c | xargs -I{} sh {} P", "{}"), ("sh ${X}c P", "${X}c")):
+            with self.subTest(script=script):
+                found, words = forms.candidates(self.argv(script))
+                self.assertEqual((value, ["P"]), (shell_reader.readable(found), words[-1:]))
+        self.assertEqual(["P", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
+
+    def test_none_where_the_options_end_first(self):
+        # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
+        # the value only begins (`$X/x.sh` is no option), or a value an `-o`
+        # takes; and a pattern is `leads`'s to read (#2294).
+        for script in ("sh $X", "sh x.sh $X P", "sh -c $X P", "sh -- $X P", "bash $X/x.sh P",
+                       "bash -o $X P", "bash [-]c P", "python3 $X P", "sh -e P"):
+            with self.subTest(script=script):
+                self.assertEqual([], forms.candidates(self.argv(script))[1])
+
+    def test_every_o_before_a_stdin_program_takes_a_value(self):
+        # `bash -oe pipefail <<'EOF'` reads its program from the heredoc.
+        for argv in (["bash", "-oe", "pipefail"], ["bash", "-eo", "pipefail", "-s"],
+                     ["bash", "-oo", "errexit", "pipefail"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+        self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))

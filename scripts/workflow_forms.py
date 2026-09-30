@@ -23,7 +23,9 @@ Three questions live here, each one a shape a step writes down:
                                on standard input (`stdin_program`,
                                `stdin_scripts`) -- compatibility imports split
                                out when this module ran short of room a third
-                               time; `within` the scripts a statement's command
+                               time; `unread_program` reports the programs it
+                               cannot read in place (`candidates`, #2344);
+                               `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
                                `carried` a download a step keeps in a variable
                                and hands to a shell (#2341);
@@ -66,7 +68,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
 from workflow_programs import (FOREIGN_PROGRAM as FOREIGN_PROGRAM, SHELL_PROGRAM as SHELL_PROGRAM,
-                               scripts, stdin_program as stdin_program, stdin_scripts)
+                               candidates, scripts, stdin_program as stdin_program, stdin_scripts)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -326,7 +328,7 @@ def step_credit(flat, shell=None):
 
 class Idle(str):
     """An unread reason `kept` keeps only where there are downloads: see
-    `substitution_script`."""
+    `substitution_script` and `unread_program`."""
 
 
 def substitution_script(argv, stage, walk):
@@ -344,13 +346,32 @@ def substitution_script(argv, stage, walk):
     handed = scripts(argv) + stdin_scripts(argv, stage)
     if not handed:
         return None
-    why = ("hands a script to `%s` inside a command substitution, where this guard "
-           "follows no download -- it cannot say whether that script fetches or runs "
-           "one unchecked; run it outside the substitution, or exempt the step with a "
-           "reason" % os.path.basename(argv[0]))
-    live = [walk(flattened(statements(text))) for text in handed]
+    return _weighed("hands a script to `%s` inside a command substitution, where this guard "
+                    "follows no download -- it cannot say whether that script fetches or runs "
+                    "one unchecked; run it outside the substitution, or exempt the step with a "
+                    "reason" % os.path.basename(argv[0]), handed, walk)
+
+
+def _weighed(why, texts, walk):
+    """`why` where a script among `texts`, flattened and walked, fetches or
+    holds an unread form, and `Idle(why)` where none does."""
+    live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else Idle(why)
+
+
+def unread_program(argv, stage, walk, inside):
+    """Why a program this stage hands a shell goes unread, or None: a script
+    handed to one `inside` a command substitution (`substitution_script`), or
+    the words a value where it reads its options may make its program
+    (`candidates`, #2344), weighed alike -- so `X=-c; sh $X 'echo hi'` is
+    `Idle`, and `sh $X`, with no word after the value, hands none."""
+    value, words = candidates(argv)
+    return (inside and substitution_script(argv, stage, walk) or words and _weighed(
+        "passes `%s` `%s` where it reads its options, a value this guard does not follow "
+        "-- any word after it may be the program the shell runs, and one here may fetch or "
+        "run a download unchecked; write the options out, or exempt the step with a reason"
+        % (os.path.basename(argv[0]), shell_reader.readable(value)), words, walk) or None)
 
 
 INSIDE = " inside a command substitution"

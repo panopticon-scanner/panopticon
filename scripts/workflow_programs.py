@@ -13,14 +13,17 @@ command -- which program it hands a shell -- and reads no statement around it:
                       input instead, which is the same act one REDIRECTION
                       away (`bash -s <<'EOF'`), and in what language
     `stdin_scripts`   the quoted body that program is, where it is shell
+    `candidates`      the words that may be the program, where a value this
+                      module does not follow stands in a shell's options
 
-`workflow_forms` imports all three: its `flattened` reads each script found
-here in place of the command handed it, and the guard takes `stdin_program`
-and `SHELL_PROGRAM` through it.
+`workflow_forms` imports all four: its `flattened` reads each script found
+here in place of the command handed it, its `unread_program` weighs the
+candidates, and the guard takes `stdin_program` and `SHELL_PROGRAM` through it.
 
 Stdlib only, like everything under it.
 """
 import os
+import re
 
 import shell_reader
 
@@ -87,6 +90,45 @@ def _past_options(argv, at):
             return [argv[at]]
 
 
+# A word bash expands, where a shell reads its options, that may spell one
+# (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
+# letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
+# `$'\x2dc'` the reader leaves undecoded (`shell_lex.ansi_c`), or a word
+# xargs puts a line of its input in (`{}`).
+_VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
+
+
+def _value(word):
+    """Whether `word` is such a value; a pattern is `leads`'s to read."""
+    if isinstance(word, shell_reader.Rewritten):
+        return getattr(word, "lead", None) is None
+    return bool(_VALUE.fullmatch(shell_reader.readable(word)))
+
+
+def candidates(argv):
+    """(the value, [the words it may make the program]) for a shell handed a
+    value where it reads its options (`_VALUE`, #2344): `X=-c; sh $X 'curl
+    … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
+    -I{} sh {} '…'` do. This module follows no value, so every literal word
+    after it may be the program; (None, []) where the options end first, at
+    a program, a `-c` whose string `scripts` reads, or a `--`.
+    """
+    if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
+        return None, []
+    owed = 0
+    for at, word in enumerate(argv[1:], start=1):
+        if owed:
+            owed -= 1
+        elif _value(word):
+            return word, [w for w in argv[at + 1:]
+                          if not shell_reader.dynamic(w, shell_reader.has_substitution)]
+        elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
+            break
+        elif word[:2] != "--":
+            owed = sum(letter in _VALUE_OPTIONS for letter in word[1:])
+    return None, []
+
+
 # An interpreter given no program to run reads one from its STANDARD INPUT, and
 # a heredoc is the shortest way a `run:` step writes one down: `bash -s <<'EOF'`
 # hands over a script exactly as `sh -c '<script>'` does, one redirection away
@@ -135,7 +177,11 @@ def stdin_program(argv):
             return None                     # the program is the `-c` string
         if shell and "s" in letters:
             return answer                   # the words after `-s` are parameters
-        if letters and letters[-1] in _VALUE_OPTIONS:
+        # A shell's option word takes a value for each `o` or `O` in it (#2344,
+        # `bash -oe pipefail`); another interpreter's, one where it ends so.
+        owed = (sum(letter in _VALUE_OPTIONS for letter in letters) if shell
+                else int(bool(letters) and letters[-1] in _VALUE_OPTIONS))
+        for _value in range(owed):
             next(rest, None)                # an option's value is not a program
     return answer
 

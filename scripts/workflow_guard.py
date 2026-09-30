@@ -82,6 +82,8 @@ that starts catching one fails there, and this list is edited with it.
   A download kept in a variable is followed to a shell whole (`carried`, #2341),
   not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
   and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
+  A value in a shell's options (`sh $X '…'`) is not followed; the literal words after it
+  are read as programs it may make (`candidates`, #2344), a `$` program (`sh -c "$P"`) not.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -194,7 +196,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOU
                             carried, chmod_executable, chmod_targets, clears, covers, described,
                             flattened, in_container, kept, may_run, names_file, parse_fetch,
                             regions, same_file, stdin_program, step_credit, streamed_fetch,
-                            substitution_script, swallowed, within)
+                            swallowed, unread_program, within)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -238,8 +240,8 @@ def _walk(stmts, stream_exec=False, inside=False):
     the downloaded bytes become behaviour, and so is one a variable carries
     (`carried`, where the walk found a fetch). Three forms are REPORTED unread:
     a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
-    stdin program not readable as written (`_unread_stdin`) and, `inside` a
-    substitution, a script handed to a shell (`substitution_script`), which `kept` weighs.
+    stdin program not readable as written (`_unread_stdin`), and a program a
+    shell may run that the walk cannot read (`unread_program`), which `kept` weighs.
     """
     found, unread = [], []
     for index, statement in enumerate(stmts):
@@ -261,7 +263,7 @@ def _walk(stmts, stream_exec=False, inside=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or inside and substitution_script(argv, stage, _walk)
+            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside)
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
@@ -611,8 +613,7 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
     `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
     checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
-    which `job_defects` has from each step's own read.
-    """
+    which `job_defects` has from each step's own read."""
     checks = _checks(stmts, credit)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
@@ -657,8 +658,7 @@ def job_defects(steps):
     Parsed STATEMENTS are concatenated, never the texts: each step is its own
     shell invocation, so one step's stray quote or unterminated heredoc must
     not reach into the next step's parse. Each defect is attributed to the step
-    that performed the fetch.
-    """
+    that performed the fetch."""
     stmts: list[shell_reader.Statement] = []
     owner = []
     conditions = {}
