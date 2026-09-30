@@ -1554,6 +1554,7 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
         body = json.loads(out.getvalue())["hookSpecificOutput"]
         self.assertEqual(body["permissionDecision"], "deny")
         self.assertIn("write guard crashed", body["permissionDecisionReason"])
+        self.assertIn("interpreter", body["permissionDecisionReason"])
 
     def test_the_lazy_constants_still_answer_as_module_attributes(self):
         self.assertEqual(list(wg._HOOK_ARGV),

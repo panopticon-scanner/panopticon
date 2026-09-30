@@ -578,7 +578,7 @@ def _resolve_allowlist_path(argv_path=None):
 
 
 def main(argv=None):
-    """`argv` is the arg list AFTER the program name; [] = a bare, nothing-baked-in invocation."""
+    """`argv` is the arg list AFTER the program name (default: the real one); [] = bare."""
     args = sys.argv[1:] if argv is None else argv
     try:
         payload = json.load(sys.stdin)
@@ -592,7 +592,7 @@ def main(argv=None):
     try:
         # #2391: the interpreter check and the adjudication, INSIDE the envelope. A non-2 exit is
         # NON-blocking in Claude Code (the Write proceeds), so an uncaught raise here would fail
-        # OPEN -- while every tolerant early return above is fail-closed-on-purpose.
+        # OPEN -- while every tolerant early return above is deliberately permissive.
         _trusted_hook_argv()
         allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
@@ -653,7 +653,7 @@ def _runs_this_script(command):
     Tokenizing is what keeps our own entry recognisable once the script path is quoted: an escaped
     checkout path no longer appears verbatim, and an unrecognised entry is one uninstall would
     orphan, leaving the guard armed and every later write denied. The substring test is the
-    fallback for a command no shell can parse: one naming this script is ours, and none raises."""
+    fallback for a command no shell can parse: naming this script is ours, else False, no raise."""
     mine = os.path.abspath(__file__)
     try:
         tokens = shlex.split(command)
