@@ -1366,8 +1366,95 @@ class TestHookCmdSelfLocating(unittest.TestCase):
         # survive paths with spaces. #1633: double quotes were how it survived
         # them, and they survive NOTHING else -- so the pin is what a shell
         # makes of the command, not which quote character it starts with.
-        self.assertEqual(["python3", os.path.abspath(wg.__file__)],
+        self.assertEqual([os.path.realpath(sys.executable), "-I",
+                          os.path.abspath(wg.__file__)],
                          shlex.split(wg._HOOK_CMD))
+
+    def test_the_registered_command_names_an_absolute_interpreter(self):
+        # #2161: the first element was the bare word `python3`, which nothing
+        # resolved -- the CHILD looks it up in ITS PATH, and `runners/children.py`
+        # rewrites that PATH through `executable.resolve`, dropping every entry
+        # inside the review root. An operator whose `python3` came from the
+        # reviewed repo's own `.venv/bin` therefore armed a hook the child could
+        # not start, and a hook that cannot start fails OPEN. PATH is emptied
+        # here so the interpreter running this suite cannot stand in for the very
+        # name the child had no entry for.
+        with tempfile.TemporaryDirectory() as d:
+            allowlist = os.path.join(d, "write-allowlist.json")
+            with mock.patch.dict(os.environ, {"PATH": ""}):
+                command = wg._hook_entry(allowlist)["hooks"][0]["command"]
+            first = shlex.split(command)[0]
+            self.assertTrue(os.path.isabs(first),
+                            "the interpreter is not an absolute path: %r" % first)
+            # The armed path is the one `_trusted_hook_argv` VALIDATED, i.e. the
+            # realpath; on a framework or venv python the two spellings differ.
+            self.assertEqual(os.path.realpath(sys.executable), first)
+            self.assertNotEqual("python3", first,
+                                "a bare interpreter name is resolved in the child's PATH")
+
+    def test_an_unusable_interpreter_refuses_to_build_an_entry(self):
+        # Mirrors tests/runners/test_kimi_home.py's arming-path refusal. A
+        # RELATIVE `sys.executable` is the case a check over the DRIVER's cwd
+        # cannot judge: the child resolves it against its own cwd (or its PATH,
+        # for a bare name), so it is a different file or none. An EMPTY one is
+        # real too (an embedded interpreter, a caller that overwrote it). Each is
+        # refused, naming the value, rather than falling back to a name a PATH
+        # gets to choose -- and a raise on the DRIVER side is the fail-closed
+        # direction, since the guard is then never armed at all.
+        for bad in ("", "python3", os.path.join("bin", "python3")):
+            with self.subTest(interpreter=bad):
+                with mock.patch.object(wg.sys, "executable", bad):
+                    with self.assertRaises(RuntimeError) as caught:
+                        wg._hook_entry()
+                message = str(caught.exception)
+                self.assertIn("not absolute", message)
+                self.assertIn(repr(bad), message)
+
+    def test_an_absolute_interpreter_that_cannot_run_is_refused_too(self):
+        # The SECOND branch: absolute, so the first check passes, and then either
+        # no file at all or one without the execute bit. Nothing in the tree
+        # reached it (the read guard and `kimi_home` each cover their own), so an
+        # inverted condition here would have shipped silently -- and it is the
+        # branch that catches an interpreter deleted or replaced under the driver.
+        with tempfile.TemporaryDirectory() as d:
+            plain = os.path.join(d, "not-an-interpreter")
+            with open(plain, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(plain, stat.S_IRUSR | stat.S_IWUSR)
+            for bad in (os.path.join(d, "missing-panopticon-python"), plain):
+                with self.subTest(interpreter=bad):
+                    with mock.patch.object(wg.sys, "executable", bad):
+                        with self.assertRaises(RuntimeError) as caught:
+                            wg._hook_entry()
+                    message = str(caught.exception)
+                    self.assertIn("interpreter", message)
+                    self.assertIn("unavailable", message)
+                    self.assertIn(bad, message)
+
+    def test_install_refuses_an_unusable_interpreter_before_writing_settings(self):
+        # install() goes through `_hook_entry`, so the refusal lands BEFORE the
+        # settings file is rewritten: an operator whose interpreter cannot be
+        # pinned gets a loud failure to arm, never a settings file carrying a
+        # hook command the child cannot start.
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "settings.local.json")
+            with open(sp, "w", encoding="utf-8") as fh:
+                json.dump({"permissions": {"allow": ["Read"]}}, fh)
+            with open(sp, encoding="utf-8") as fh:
+                before = fh.read()
+            with mock.patch.object(wg.sys, "executable", "python3"):
+                with self.assertRaises(RuntimeError):
+                    wg.install([{"out_file": os.path.join(d, "o.json")}],
+                               settings_path=sp,
+                               allowlist_path=os.path.join(d, "allow.json"))
+            with open(sp, encoding="utf-8") as fh:
+                self.assertEqual(before, fh.read())    # untouched, so never armed
+            # ... and nothing else was written either. The allowlist document
+            # used to be committed one statement BEFORE the refusal, leaving a
+            # grant file in the target's `.panopticon/` that a later
+            # `guard_state` reports against a guard which was never armed.
+            self.assertFalse(os.path.exists(os.path.join(d, "allow.json")),
+                             "install wrote an allowlist for a guard it refused to arm")
 
     def test_resolve_allowlist_path_finds_parent_dir(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1380,6 +1467,56 @@ class TestHookCmdSelfLocating(unittest.TestCase):
             with mock.patch("os.getcwd", return_value=sub_dir):
                 resolved = wg._resolve_allowlist_path()
                 self.assertEqual(os.path.abspath(resolved), os.path.abspath(allow_path))
+
+
+class TestTheHookNeverCrashesAtImport(unittest.TestCase):
+    """#2006, the write guard's half: the `_HOOK_*` names must be computed on
+    ACCESS, and nothing pinned that.
+
+    As module CONSTANTS, `_trusted_hook_argv()` ran while the module BODY
+    executed, so its RuntimeError escaped as an IMPORT-time raise. This module
+    has NO never-crash envelope at all: `main()` is tolerant per branch, so any
+    raise reaches the host as a non-2 exit, which it treats as a non-blocking
+    error -- the Write proceeds, fail-OPEN (#2391 is the envelope). Every consumer of these
+    names is on the DRIVER side instead, where the same raise is a loud refusal
+    to arm. Restoring the constants leaves every other test in this file green
+    (measured), so this class is what holds the lazy shape in place.
+    """
+
+    SCRIPT = os.path.abspath(wg.__file__)
+
+    def _import_with(self, executable):
+        """Import the module in a FRESH interpreter with `sys.executable` set.
+
+        A fresh process, not `mock.patch`: the defect is what happens while the
+        module body runs, which an already-imported module can no longer show.
+        `-I` mirrors the registered hook's own launch; the explicit
+        `sys.path.insert` stands in for the script directory that `-I <script>`
+        puts on the path and `-I -c` does not.
+        """
+        program = ("import sys; sys.path.insert(0, %r); sys.executable = %r; "
+                   "import write_guard_hook; print('imported')"
+                   % (os.path.dirname(self.SCRIPT), executable))
+        return subprocess.run(
+            [os.path.realpath(sys.executable), "-I", "-c", program],
+            capture_output=True, text=True, timeout=60)
+
+    def test_importing_with_an_unusable_interpreter_does_not_raise(self):
+        for executable in ("", "python3", "/missing/panopticon-python"):
+            with self.subTest(executable=executable):
+                proc = self._import_with(executable)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("imported", proc.stdout)
+                self.assertNotIn("RuntimeError", proc.stderr)
+
+    def test_the_lazy_constants_still_answer_as_module_attributes(self):
+        self.assertEqual(list(wg._HOOK_ARGV),
+                         [os.path.realpath(sys.executable), "-I", self.SCRIPT])
+        self.assertEqual(shlex.split(wg._HOOK_CMD), list(wg._HOOK_ARGV))
+        self.assertEqual(wg._HOOK_ENTRY["matcher"], wg._MATCHER)
+        self.assertEqual(wg._HOOK_ENTRY["hooks"][0]["command"], wg._HOOK_CMD)
+        with self.assertRaises(AttributeError):
+            wg._HOOK_NOT_A_REAL_NAME
 
 
 class TestAllowlistBoundAtInstall(unittest.TestCase):

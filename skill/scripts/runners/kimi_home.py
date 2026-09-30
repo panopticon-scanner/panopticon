@@ -186,9 +186,11 @@ def _interpreter():
 def _hook_entry(matcher, mode, data_path):
     # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element,
     # the interpreter path included (tests/test_hook_command_quoting.py).
+    # #2163: `-I` pairs with it, the read guard's precedent -- no `sitecustomize`
+    # may choose code for a confinement decision (#1996).
     return {"event": "PreToolUse", "matcher": matcher,
             "command": kimi_guard_hook.hook_command(
-                _interpreter(), _GUARD, mode, os.path.abspath(data_path)),
+                _interpreter(), "-I", _GUARD, mode, os.path.abspath(data_path)),
             "timeout": 30}
 
 

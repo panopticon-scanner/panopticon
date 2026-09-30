@@ -132,6 +132,11 @@ class TestPrepare(unittest.TestCase):
                                 "the interpreter is not an absolute path: %r" % argv[0])
                 self.assertNotEqual("python3", argv[0],
                                     "a bare interpreter name is resolved in the child's PATH")
+                # #2163: paired with `-I`, the read guard's precedent, so a
+                # `sitecustomize` cannot choose code for a confinement decision.
+                self.assertEqual("-I", argv[1],
+                                 "the %r hook does not run its interpreter isolated"
+                                 % hook["matcher"])
 
     def _refused_prepare(self, directory, interpreter):
         """The RuntimeError text `prepare` refuses with under `interpreter`."""
