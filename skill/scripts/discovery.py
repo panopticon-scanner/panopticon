@@ -51,6 +51,14 @@ else:
         from scripts import dot_paths
     except ModuleNotFoundError:
         import dot_paths                   # noqa: E402
+# #2450: the ONE confinement predicate (and its root memo): same fallback shape.
+if TYPE_CHECKING:
+    from scripts import claim_scope
+else:
+    try:
+        from scripts import claim_scope
+    except ModuleNotFoundError:
+        import claim_scope                 # noqa: E402
 # #1757: the SEC carve-out policy, its own module because this one is ratcheted.
 import exclude_carve_out  # noqa: E402
 import plan_contract  # noqa: E402
@@ -413,7 +421,8 @@ def collect_changed_files(repo, base=None, exclude=()):
         full = os.path.join(repo, p)
         # Untracked links have no hunks; a tracked link target change does.
         if p not in untracked or not os.path.islink(full):
-            reviewable = os.path.isfile(full) and _within(repo, full)
+            reviewable = (os.path.isfile(full)
+                          and claim_scope.confined_to_root(repo, p))
         else:
             reviewable = False
         if reviewable:
@@ -680,17 +689,6 @@ def load_catalog(repo):
     except ValueError as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
-@functools.lru_cache(maxsize=None)
-def _repo_realpath(repo):
-    """The repo root's realpath, cached: _within runs once per candidate file
-    on large expansions, and realpath lstats every path component."""
-    return os.path.realpath(repo)
-
-def _within(repo, path):
-    repo_r = _repo_realpath(repo)
-    p_r = os.path.realpath(path)
-    return p_r == repo_r or p_r.startswith(repo_r + os.sep)
-
 def test_candidates(path):
     """Generate candidate test file paths for a given implementation file."""
     d, base = os.path.split(path)
@@ -946,7 +944,7 @@ def _is_confined_regular(repo, rel):
     """True for a non-symlink regular file whose target remains in *repo*."""
     full = os.path.join(repo, rel)
     return (not os.path.islink(full) and os.path.isfile(full)
-            and _within(repo, full))
+            and claim_scope.confined_to_root(repo, rel))
 
 _PRUNE_CLASSES = ("dot_path", "exclude_dir", "git_segment")   # #2377 disclosure
 
@@ -1578,16 +1576,18 @@ def _confine_scope_path(repo, raw, universe, flag):
     again; test_discovery_scope.py pins that by mutating this function and
     requiring both to refuse.
 
-    Two conditions. ``_within`` is the confinement proper: it compares
-    realpaths, so neither a `..` walk nor a symlink whose target leaves the tree
-    resolves inside the root. Membership in ``universe`` -- the caller's
-    reviewed file set -- is the narrower one: a path can sit inside the repo and
-    still not be a file this scan reviews (untracked, gitignored, nonexistent,
-    or a fixture corpus in standard mode). An empty entry normalizes to "" and
-    fails the membership test, which is the true answer for it.
+    Two conditions. ``claim_scope.confined_to_root`` is the confinement proper:
+    it compares realpaths, so neither a `..` walk nor a symlink whose target
+    leaves the tree resolves inside the root. It is handed the NORMALIZED
+    repo-relative path and never `os.path.join(repo, p)`, because it joins onto
+    the root itself (#2450). Membership in ``universe`` -- the caller's reviewed
+    file set -- is the narrower one: a path can sit inside the repo and still
+    not be a file this scan reviews (untracked, gitignored, nonexistent, or a
+    fixture corpus in standard mode). An empty entry normalizes to "" and the
+    predicate refuses it outright, which is the true answer for it.
     """
     p = _norm_scope_path(repo, raw)
-    if not _within(repo, os.path.join(repo, p)):
+    if not claim_scope.confined_to_root(repo, p):
         print("%s %s resolves outside the repository root %s"
               % (flag, _echo_scope_path(raw), _echo_scope_path(repo)),
               file=sys.stderr)

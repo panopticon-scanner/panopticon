@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
+  third private `_within`, with its own cached root realpath, beside the two names that already
+  alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a
+  regression and not a cleanup: it JOINS the path onto the root it resolved, and all three callers
+  handed it a candidate they had already joined — so a RELATIVE repository root got double-prefixed
+  (`confined_to_root("repo", "repo/x")` resolves `repo/repo/x`), and a decoy directory of that
+  name, one a reviewed tree can simply commit, would have answered for an escaping symlink and
+  read it as confined. Each caller now passes its repo-relative path instead: the changed-files
+  listing, the git-listing `isfile` probe, and the `--scope-file`/`--scope-files` clamp. The cached
+  root realpath moved DOWN with it, into `claim_scope._real_root`, so the performance property the
+  private copy existed for survives the move — one `realpath` of the root per distinct root, not
+  one per candidate on a whole-tree expansion. Only an ABSOLUTE root is memoized there, because a
+  relative one names a different directory in every process cwd. Both shapes are now pinned, the
+  working-directory decoy and the escaping symlink, in `tests/test_claim_scope.py` (the predicate)
+  and `tests/test_discovery_scope.py` (the two call sites).
 - **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
   Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
   downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`

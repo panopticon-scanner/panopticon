@@ -28,6 +28,7 @@ tests/phases/test_verify.py call -- `phases/verify.py` calls this module
 directly). tests/test_claim_scope.py pins both identities, so a second
 implementation cannot appear behind either name.
 """
+import functools
 import os
 
 
@@ -45,6 +46,22 @@ _ROOT_PIN = ("Repo root: %s\nEvery relative path in the %s below resolves "
 _ARTIFACT_DIR = ".panopticon"
 
 
+@functools.lru_cache(maxsize=None)
+def _real_root(review_root):
+    """One `realpath` of the review root per distinct root, not per candidate.
+
+    #2450 moved this down from `discovery._repo_realpath`, which existed for
+    the same reason its private predicate did: the confinement question is
+    asked once per CANDIDATE on a whole-tree expansion, and `realpath` lstats
+    every component of what it is handed, so re-resolving the root for each
+    candidate is the one cost here that grows with the file count rather than
+    with the number of roots. Only an ABSOLUTE root reaches this memo (see the
+    caller): a relative one names a different directory in every process cwd,
+    so a cache keyed on the string would hand back another tree's answer.
+    """
+    return os.path.realpath(review_root)
+
+
 def confined_to_root(review_root, path):
     """True iff the claim path resolves inside review_root. An absolute path or a
     `../`-escape resolves outside and is rejected (#1096) -- the claim's
@@ -57,10 +74,20 @@ def confined_to_root(review_root, path):
     `src/evil -> /etc/passwd`) passed the old abspath check, then the backup
     advisor's unconfined Read followed it out of the repo. realpath on a
     non-existent tail resolves the existing prefix and appends the rest lexically,
-    so a legitimate not-yet-written path still confines correctly."""
+    so a legitimate not-yet-written path still confines correctly.
+
+    #2450: `path` is the ROOT-RELATIVE spelling, because this function joins it
+    onto the root itself. A caller that hands over a candidate it already
+    joined asks a different question -- with a relative root the join
+    double-prefixes it (`confined_to_root("repo", "repo/x")` resolves
+    `repo/repo/x`), and a decoy directory of that name, which a reviewed tree
+    can simply commit, would answer for an escaping path."""
     if not isinstance(path, str) or not path:
         return False
-    root = os.path.realpath(review_root)
+    if isinstance(review_root, str) and os.path.isabs(review_root):
+        root = _real_root(review_root)        # memoized: a stable cache key
+    else:
+        root = os.path.realpath(review_root)  # relative: cwd-dependent, fresh
     full = os.path.realpath(os.path.join(root, path))
     return full == root or full.startswith(root + os.sep)
 
