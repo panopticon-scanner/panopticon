@@ -7,9 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **security.yml's pull-or-build step can now finish its fallback build (#2509, #1818).** The
-  step ceiling equalled the 600 s pull deadline, so a stalled pull left the local build zero
-  seconds; the ceiling is 25 min (pull 10 + a measured ~11 min build + margin), under the job's 30.
+- **The security workflows' pull-or-build step can now finish its fallback build (#2509, #1818).**
+  In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
+  a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
+  ~11 min build + margin), under the job's 30, and a test pins the inequality.
 - **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
   `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
   class wider than every other fallback, so a package that resolved and then broke inside was
