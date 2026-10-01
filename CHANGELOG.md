@@ -11,6 +11,9 @@ evidence exposed.
   `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
   class wider than every other fallback, so a package that resolved and then broke inside was
   retried flat instead of surfacing; `tests/test_module_identity.py` now pins the narrow class.
+- **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
+  The module under test binds `scripts._version`; the in-test flat import built a second module
+  object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.
 - **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
   `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
   interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
