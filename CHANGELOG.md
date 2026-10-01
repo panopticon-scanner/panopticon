@@ -17,6 +17,10 @@ evidence exposed.
   correction. The rejection/backup policy is unchanged, and severity is still mutated only by the
   override discipline -- now measured against the PUBLISHED code's default, so a reason-less
   override reverts to the panel's code rather than to the advisor's.
+- **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
+  `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
+  class wider than every other fallback, so a package that resolved and then broke inside was
+  retried flat instead of surfacing; `tests/test_module_identity.py` now pins the narrow class.
 - **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
   The module under test binds `scripts._version`; the in-test flat import built a second module
   object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.
