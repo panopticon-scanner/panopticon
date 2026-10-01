@@ -517,7 +517,11 @@ on Claude hooks, and always uses the return-persist path.
   tokens were spent either way). Either kind counts toward a **per-entry cap of 3 consecutive failed
   launches**, after which the loop exits `error` naming the entry, the count and its last error; a
   clean, accepted launch clears that entry's streak, so the cap bounds an entry that is stuck rather
-  than one that is merely flaky. It is not a flag — re-run to resume from disk, which starts every
+  than one that is merely flaky. Before re-launching an entry whose last launch failed, the
+  **automatic** loop waits `min(2 ** streak, 8)` seconds plus up to 25% jitter first — 2 s
+  then 4 s, six seconds plus jitter in all before the cap parks it — and prints the wait on
+  `stderr`; a streak of 0 waits nothing, and session mode never waits, since a human advances
+  that loop (#2506). It is not a flag — re-run to resume from disk, which starts every
   streak at zero. In session mode the streak is per-invocation, since nothing there advances except
   a human persisting a reply that passes the phase's done predicate. A failure the **host** caused —
   an auth refusal, a quota, a plan or session limit, a rate limit, or the provider itself being down

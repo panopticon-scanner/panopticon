@@ -28,6 +28,13 @@ evidence exposed.
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
   nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
+  Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
+  launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
+  the third — so a transient hiccup no classifier recognises no longer spends all three of its
+  launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
+  advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
+  `orchestrate.py` gained one call and no lines.
 - **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
   whose effective `permissions:` would come from the repository default, while accepting job
   blocks and workflow-level blocks inherited by every job.
