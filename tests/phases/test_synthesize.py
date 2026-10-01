@@ -1250,14 +1250,23 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
         self.assertIn(self.NOT_PASSED % ("None", "None"), err)
 
     def test_a_non_string_run_id_passes_nothing_rather_than_crashing(self):
-        """Review round 1, finding 2. `run_manifest.load_manifest`
-        type-validates only `host`, and `run_tag` slugs the id through `str()`,
-        so a hand-edited `"run_id": 7` survives the load. It is truthy, and the
-        driver stamped the SAME integer onto the artifact, so an `==` check
-        matches and the int reaches `child._run_child` unconverted -- a bare
-        TypeError, which `child`'s OSError conversion does not cover and
+        """Review round 1, finding 2. `run_tag` slugs the id through `str()`,
+        so a hand-edited `"run_id": 7` reaches this phase intact. It is truthy,
+        and the driver stamped the SAME integer onto the artifact, so an `==`
+        check matches and the int reaches `child._run_child` unconverted -- a
+        bare TypeError, which `child`'s OSError conversion does not cover and
         `driver.run`'s `(DriverError, ValueError)` does not catch. No `status:`
-        line, just a traceback."""
+        line, just a traceback.
+
+        #2525 closed the way such a manifest reaches a real run, one layer up:
+        `run_manifest.load_manifest` now DISCARDS a manifest whose `run_id` is
+        not a non-empty string, and `phases/engine` hands every phase the dict
+        that loader returned. This test keeps measuring the phase ITSELF, which
+        is handed its manifest directly and is unchanged -- the residual `[7]`
+        below is still the honest answer for this entry point. The loader's own
+        cover, including the fact that `manifest.get("run_id") or ""` is a
+        `str` for everything it hands back, is
+        tests/test_run_manifest.py::TestManifestRejectsANonStringRunId."""
         cmd, err = self._run(dict(self.PAYLOAD, run_id=7),
                              manifest={"run_id": 7, "security_mode": "standard",
                                        "flags": {}})
@@ -1267,7 +1276,8 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
         # all. Measured, not assumed -- `--run-id` has threaded the manifest
         # value raw since long before this issue (`manifest.get("run_id") or
         # ""`), so ONE int survives this argv and is out of #2107's scope. What
-        # this branch must not do is add a second one.
+        # this branch must not do is add a second one; #2525 is what stops the
+        # first one arriving from a manifest on disk.
         self.assertEqual([a for a in cmd if not isinstance(a, str)], [7], cmd)
 
     def test_no_artifact_at_all_says_nothing(self):

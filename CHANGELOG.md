@@ -44,6 +44,40 @@ evidence exposed.
   mlflow `cross-version-tests.yml :: test1` and `:: test2` (`eval "$MATRIX_INSTALL"` and two
   more), vector `k8s_e2e.yml :: test-e2e-kubernetes` (`bash -c "$2"`) — and none of them fetches,
   so no job's answer changes.
+- **A hand-edited non-string manifest run_id is refused at the read, not crashed on in Popen
+  (#2525).** `phases/synthesize` and `phases/tools` both thread `manifest.get("run_id") or ""` into
+  the child's argv unconverted, and `run_manifest.load_manifest` type-validated only `host` while
+  `run_tag` slugs the id through `str()` — so a `"run_id": 7` edited into `run-manifest.json`
+  survived the load, stayed truthy, and reached `subprocess.Popen` as a non-string argv member. The
+  `TypeError` that raises is covered by neither `phases/child`'s `OSError` → `DriverError`
+  conversion nor `driver.run`'s `except (DriverError, ValueError)`: the driver died with a
+  traceback and no `status:` line at all. The loader now requires a PRESENT `run_id` to be a
+  non-empty string, which covers every phase that threads it at once rather than one flag at a
+  time — `phases/engine` hands each phase the dict this loader returned. A bad one is DISCARDED
+  with a stderr line naming the field and the value, exactly as an unknown `host` is, and never
+  raised: this same read is what `runio._run_tag` calls on every artifact path resolution, the
+  `--reset` recovery path included, so an exception here would be one `--reset` could not clear
+  (the failure `run_tag`'s own docstring records). The driver then takes its existing
+  corrupt-manifest path — clear the derived artifacts, rebuild from the real CLI args — and ends
+  with a `status:` line. An absent or null `run_id` is left alone, like an absent host: the setup
+  namespace and every pre-key manifest carry none, and the consumers already read it as an
+  absence. #2107's own residual assertion stays as it is, because it measures the phase handed a
+  manifest dict directly; its cover is the loader's new test class.
+- **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
+  third private `_within`, with its own cached root realpath, beside the two names that already
+  alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a
+  regression and not a cleanup: it JOINS the path onto the root it resolved, and all three callers
+  handed it a candidate they had already joined — so a RELATIVE repository root got double-prefixed
+  (`confined_to_root("repo", "repo/x")` resolves `repo/repo/x`), and a decoy directory of that
+  name, one a reviewed tree can simply commit, would have answered for an escaping symlink and
+  read it as confined. Each caller now passes its repo-relative path instead: the changed-files
+  listing, the git-listing `isfile` probe, and the `--scope-file`/`--scope-files` clamp. The cached
+  root realpath moved DOWN with it, into `claim_scope._real_root`, so the performance property the
+  private copy existed for survives the move — one `realpath` of the root per distinct root, not
+  one per candidate on a whole-tree expansion. Only an ABSOLUTE root is memoized there, because a
+  relative one names a different directory in every process cwd. Both shapes are now pinned, the
+  working-directory decoy and the escaping symlink, in `tests/test_claim_scope.py` (the predicate)
+  and `tests/test_discovery_scope.py` (the two call sites).
 - **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
   Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
   downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`

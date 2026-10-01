@@ -288,14 +288,18 @@ def synthesize_execute(review_root, manifest):
     #
     # ONE case withholds the path: a `run_id` that is not a non-empty STRING.
     # There is nothing to thread, and the value would reach `child._run_child`
-    # unconverted -- `run_manifest.load_manifest` type-validates only `host` and
-    # `run_tag` slugs the id through `str()`, so a hand-edited integer `run_id`
-    # survives the load, is truthy, and matches the integer stamp the driver
-    # wrote with it. A non-string argv token raises TypeError, which neither
+    # unconverted -- `run_tag` slugs the id through `str()`, so a hand-edited
+    # integer `run_id` is truthy and matches the integer stamp the driver wrote
+    # with it. A non-string argv token raises TypeError, which neither
     # `child`'s OSError conversion nor `driver.run`'s `(DriverError,
     # ValueError)` catches: a traceback with no `status:` line (finding 2).
     # `str()`-ing the argv value is NOT the fix -- the loader compares against
     # the JSON-parsed stamp, so the two seams would disagree about one pair.
+    # #2525 then closed the arrival route for the whole phase set:
+    # `run_manifest.load_manifest` discards a manifest whose `run_id` is not a
+    # non-empty string, so a real run cannot hand this phase one. The branch
+    # stays, because this function is also called with a manifest dict
+    # directly.
     diff_hunks = runio._pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
         run_id = manifest.get("run_id")

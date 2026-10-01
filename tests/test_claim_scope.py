@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tests._test_helpers import REPO_ROOT, SKILL_ROOT
 
@@ -179,6 +180,76 @@ class TestConfinedToRoot(unittest.TestCase):
             open(os.path.join(root, "src", "real.py"), "w").close()
             self.assertTrue(claim_scope.confined_to_root(root, "src/real.py"))
             self.assertTrue(claim_scope.confined_to_root(root, "src/new.py"))
+
+    def test_a_relative_root_resolves_exactly_like_the_absolute_one(self):
+        # #2450: this predicate JOINS `path` onto the root it resolved, so what
+        # a caller must hand it is the ROOT-RELATIVE path -- never a candidate
+        # already joined onto the root. `repo/repo/x` is the decoy that makes
+        # the direction load-bearing: a reviewed tree can simply commit that
+        # directory, and with a RELATIVE root a pre-joined `repo/x` would
+        # resolve against it instead of against the file asked about.
+        with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)
+            os.makedirs(os.path.join(base, "repo", "repo"))
+            open(os.path.join(base, "repo", "x"), "w").close()
+            open(os.path.join(base, "repo", "repo", "x"), "w").close()
+            absolute = os.path.join(base, "repo")
+            cwd = os.getcwd()
+            os.chdir(base)
+            try:
+                self.assertTrue(claim_scope.confined_to_root("repo", "x"))
+                self.assertFalse(claim_scope.confined_to_root("repo", "../x"))
+                for path in ("x", "../x", "repo/x"):
+                    self.assertEqual(claim_scope.confined_to_root("repo", path),
+                                     claim_scope.confined_to_root(absolute, path),
+                                     path)
+            finally:
+                os.chdir(cwd)
+
+    def test_an_escaping_symlink_under_a_relative_root_is_not_confined(self):
+        # The arm a pre-joined candidate gets WRONG rather than merely
+        # differently (#2450): `repo/link` leaves the tree, so the honest
+        # answer is False, while the pre-joined spelling `repo/link` asked of
+        # root `repo` lands on the in-tree decoy and comes back True. Both are
+        # pinned, because the second is why the callers pass `p` and not
+        # `os.path.join(repo, p)`.
+        with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)
+            os.makedirs(os.path.join(base, "repo", "repo"))
+            secret = os.path.join(base, "secret.txt")
+            open(secret, "w").close()
+            os.symlink(secret, os.path.join(base, "repo", "link"))
+            open(os.path.join(base, "repo", "repo", "link"), "w").close()
+            cwd = os.getcwd()
+            os.chdir(base)
+            try:
+                self.assertFalse(claim_scope.confined_to_root("repo", "link"))
+                self.assertTrue(claim_scope.confined_to_root("repo", "repo/link"))
+            finally:
+                os.chdir(cwd)
+
+    def test_the_root_realpath_is_resolved_once_per_distinct_root(self):
+        # The performance property #2450 moved here from discovery's private
+        # copy: the predicate runs once per CANDIDATE on a whole-tree
+        # expansion, and `realpath` lstats every component, so the root is
+        # resolved once per root and not once per candidate.
+        with tempfile.TemporaryDirectory() as root:
+            root = os.path.realpath(root)
+            open(os.path.join(root, "a.py"), "w").close()
+            claim_scope._real_root.cache_clear()
+            real = os.path.realpath
+            resolved_roots = []
+
+            def counting(path, *args, **kwargs):
+                if path == root:
+                    resolved_roots.append(path)
+                return real(path, *args, **kwargs)
+
+            with mock.patch.object(os.path, "realpath", counting):
+                self.assertTrue(claim_scope.confined_to_root(root, "a.py"))
+                self.assertTrue(claim_scope.confined_to_root(root, "b.py"))
+            self.assertEqual(resolved_roots, [root])
+            self.assertEqual(claim_scope._real_root.cache_info().hits, 1)
 
 
 class TestConfineClaimLocation(unittest.TestCase):

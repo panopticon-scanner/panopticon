@@ -292,6 +292,16 @@ def load_manifest(review_root):
     driver already has for a corrupt manifest -- clear the derived artifacts
     and rebuild from the real CLI args -- instead of raising from a path
     helper (#1344). Announced on stderr, never silently.
+
+    #2525: a PRESENT `run_id` that is not a non-empty string is unusable the
+    same way -- `phases/synthesize` and `phases/tools` thread
+    `manifest.get("run_id") or ""` into the child's argv unconverted, so a
+    hand-edited `"run_id": 7` survived this read and reached `Popen` as a
+    non-string member whose `TypeError` neither `child`'s `OSError ->
+    DriverError` nor `driver.run`'s `(DriverError, ValueError)` catches: a
+    traceback with no `status:` line. Refusing at the READ covers every phase
+    that threads it at once; it discards and never raises, for the reason
+    `run_tag` records above. Absent or null is left alone, like a host.
     """
     try:
         with open(manifest_path(review_root), encoding="utf-8") as fh:
@@ -305,6 +315,11 @@ def load_manifest(review_root):
         print("driver: discarding run-manifest.json naming unknown host %r "
               "(known: %s)" % (data.get("host"), "|".join(hosts.known_hosts())),
               file=sys.stderr, flush=True)
+        return None
+    rid = data.get("run_id")
+    if rid is not None and not (isinstance(rid, str) and rid):
+        print("driver: discarding run-manifest.json whose run_id is not a "
+              "non-empty string: %r" % (rid,), file=sys.stderr, flush=True)
         return None
     return data
 

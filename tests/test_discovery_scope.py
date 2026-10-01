@@ -902,6 +902,58 @@ def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys
     assert err.count("\n") == 1                  # one line, the refusal
 
 
+# --------------------------------------------------------------------------
+# #2450 (ARC-2262-F1): both confinement sites ask `claim_scope.
+# confined_to_root`, which JOINS the path onto the root it resolved. So each
+# caller hands over the REPO-RELATIVE path; a pre-joined candidate would
+# double-prefix a relative repository root and ask about `<repo>/<repo>/...`
+# -- a directory the reviewed tree can simply commit, which is what would
+# launder the escape. Both tests use a relative `--repo` spelling and plant
+# that decoy, so a pre-joined call MISCLASSIFIES and these fail.
+# --------------------------------------------------------------------------
+
+
+def _relative_repo_with_decoy(tmp_path, monkeypatch):
+    """`repo_with_matrix`, re-spelled relative to its parent, with the
+    `<repo>/<repo>/` decoy a double join would land in."""
+    repo = repo_with_matrix(tmp_path)
+    (repo / repo.name).mkdir()
+    monkeypatch.chdir(tmp_path.parent)
+    return repo, repo.name
+
+
+def test_confine_scope_path_does_not_double_join_a_relative_repo(tmp_path, capsys,
+                                                                 monkeypatch):
+    repo, rel_repo = _relative_repo_with_decoy(tmp_path, monkeypatch)
+    outside = _outside_file(tmp_path)
+    (repo / "escape.py").symlink_to(outside)
+    (repo / rel_repo / "escape.py").write_text("x = 1\n", encoding="utf-8")
+    universe = {"escape.py", "src/checkout/pay.py"}
+    # The in-tree file still confines under a relative root...
+    assert orchestrator._confine_scope_path(
+        rel_repo, "src/checkout/pay.py", universe, "--scope-files") == "src/checkout/pay.py"
+    # ...and the escaping symlink is still refused, decoy copy or not.
+    assert orchestrator._confine_scope_path(
+        rel_repo, "escape.py", universe, "--scope-files") is None
+    assert "resolves outside the repository root" in capsys.readouterr().err
+
+
+def test_is_confined_regular_refuses_a_file_behind_an_escaping_dir_symlink(tmp_path,
+                                                                           monkeypatch):
+    # The listing site's own arm, on the case its `islink` guard cannot see:
+    # the FINAL component is a regular file and an ANCESTOR is the symlink
+    # that leaves the tree, so only the realpath confinement answers it.
+    repo, rel_repo = _relative_repo_with_decoy(tmp_path, monkeypatch)
+    outside_dir = tmp_path.parent / ("pano-2450-%s" % tmp_path.name)
+    outside_dir.mkdir()
+    (outside_dir / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "dirlink").symlink_to(outside_dir, target_is_directory=True)
+    (repo / rel_repo / "dirlink").mkdir()
+    (repo / rel_repo / "dirlink" / "x.py").write_text("x = 1\n", encoding="utf-8")
+    assert not orchestrator._is_confined_regular(rel_repo, "dirlink/x.py")
+    assert orchestrator._is_confined_regular(rel_repo, "src/checkout/pay.py")
+
+
 # --- #2272: the delta path asks the SAME policy --repo-scan asks -------------
 
 # Every dot-path shape `dot_paths.allowed` distinguishes, plus the two non-dot
