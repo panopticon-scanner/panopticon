@@ -424,6 +424,39 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             self.assertGreater(len(parts), 0)     # findings still needed splitting
             self.assertLess(len(parts), 30)       # bounded — old bug: ~60 parts
 
+    def test_chunk_sizing_serializes_each_finding_once(self):
+        report = self._report(n_findings=80, n_discarded=0)
+        direct = {id(finding): 0 for finding in report["findings"]}
+        real_dumps = json.dumps
+        work = 0
+
+        sample = report["findings"][:3]
+        wrapper_bytes = len(b'{\n  "findings": [\n\n  ]\n}')
+        item_bytes = [
+            len(real_dumps(finding, indent=2).encode("utf-8"))
+            + 4 * (real_dumps(finding, indent=2).count("\n") + 1)
+            for finding in sample
+        ]
+        modelled = wrapper_bytes + sum(item_bytes) + 2 * (len(sample) - 1)
+        actual = len(real_dumps({"findings": sample}, indent=2).encode("utf-8"))
+        self.assertEqual(modelled, actual)
+
+        def tracked(value, *args, **kwargs):
+            nonlocal work
+            if id(value) in direct:
+                direct[id(value)] += 1
+                work += 1
+            elif isinstance(value, dict) and isinstance(value.get("findings"), list):
+                work += len(value["findings"])
+            return real_dumps(value, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = os.path.join(directory, "report.json")
+            with mock.patch.object(render_mod.json, "dumps", side_effect=tracked):
+                render_mod.write_report(report, out, max_bytes=8000)
+        self.assertEqual(set(direct.values()), {1})
+        self.assertLessEqual(work, 4 * len(report["findings"]))
+
     def test_sibling_replace_failure_leaves_no_dangling_main_report(self):
         # #run7 COD-F1A: the small-report branch used to commit the MAIN report
         # (with meta.discarded_claims_file set) before the sibling, so a failed
