@@ -14,6 +14,12 @@ evidence exposed.
   A `$` command word that may be a shell is read: `${X:-sh} -c P`, `$CMD -c P` (#2337).
   A double-quoted `-c` or `eval` program is read as bash hands it, `\$` unescaped (#2342).
   The program an `echo` or `printf` pipes into a shell is read: `echo 'sh tool' | sh` (#2333).
+- **Semgrep scans real test code despite target ignore files (#2109, #2055).** The pinned argv
+  owns its ignore policy, keeps generated/package-manager exclusions, drops the four default
+  test-path exclusions, and applies disclosed `exclude_paths`; live real-Git and non-Git probes
+  cover both target ignore formats. The bounded 5,000-result ingest cap retains the measured
+  2,274-result self-scan. For the initial baseline transition, CI rescans the exact base commit
+  with the new policy, so standing test findings match while PR-added findings still gate.
 - **PR worktree reuse parses Git's machine records (#2100).** Acquisition reads NUL-delimited
   porcelain paths, so spaces no longer hide a registered tree or truncate the main-worktree path
   in transport-setting remedies.

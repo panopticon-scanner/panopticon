@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.ingest_tools as ingest_tools
 from scripts import evidence
+from scripts import tools_manifest
 
 
 GATE_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
@@ -80,6 +81,7 @@ def load_manifest(path):
         raise ValueError("scanner manifest missing set is inconsistent")
     if set(excluded_scope) & set(selected):
         raise ValueError("scanner manifest excluded_scope overlaps selected")
+    data["scanner_scope"] = tools_manifest.validate_scanner_scope(data)
     ignore_files = data.get("ignore_files", {})
     if (not isinstance(ignore_files, dict)
             or any(k != "gitleaks" or v not in
@@ -336,9 +338,8 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
                   security_mode="standard"):
     """The base commit's gate population, or the reason there is none.
 
-    Returns `(findings, why_not)`, and a caller that gets a `why_not` runs
-    STRICT -- exactly as if no baseline had been named -- after saying so on
-    stderr. Every failure here is one: a directory the artifact download never
+    Returns `(findings, why_not)`; a `why_not` runs STRICT exactly as if no
+    baseline had been named. Every failure here is one: a directory the artifact
     created, a manifest that will not parse, an ingest that raised. FAIL TOWARD
     STRICTNESS, NEVER TOWARD SILENCE: the cost of a missing baseline is a red
     check on findings the owner has already ruled on, and the cost of pretending
@@ -651,18 +652,10 @@ def main(argv=None):
     ignore_posture = manifest.get("ignore_files", {}).get("gitleaks")
     if ignore_posture:
         note += "; gitleaks .gitleaksignore: %s" % ignore_posture
-    # The verdict line SPLITS only when a baseline was actually read. Strict is
-    # the historical line, byte for byte, because a named-but-unreadable
-    # baseline must look exactly like no baseline to everything downstream.
     tally = ("%d HIGH/CRITICAL new; %d HIGH/CRITICAL pre-existing"
              % (len(new), len(pre_existing)) if delta
              else "%d HIGH/CRITICAL" % len(high))
     if moved:
-        # #2309: a THIRD count, and only when there is one to report. `moved` is
-        # empty on the strict route by construction, and the delta line a run
-        # with nothing moved prints is the one it printed before this landed --
-        # the same conservatism the strict route gets, for the same reason: every
-        # other caller of this gate reads that line.
         tally += "; %d HIGH/CRITICAL moved" % len(moved)
     print("Ingested %d non-excluded tool findings; %s%s"
           % (len(findings), tally, note))

@@ -245,12 +245,15 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
             workflow = yaml.safe_load(fh.read())
         steps = workflow["jobs"]["scan"]["steps"]
         scan = [s for s in steps if "run_tools.py" in (s.get("run") or "")]
-        self.assertEqual(1, len(scan),
-                         "expected exactly one step invoking run_tools.py; the "
-                         "assertion below would otherwise pass over nothing")
-        self.assertIn("--progress", scan[0]["run"],
-                      "the CI scan step is the one place a long silent tools "
-                      "phase is actually watched")
+        self.assertEqual(
+            {"Run static-analysis tools", "Expand exact Semgrep scope baseline"},
+            {step["name"] for step in scan},
+            "every CI scanner invocation must be identified explicitly")
+        for step in scan:
+            with self.subTest(step=step["name"]):
+                self.assertIn(
+                    "--progress", step["run"],
+                    "a long CI tools phase must say which scanner is still running")
 
     def test_the_driver_does_not(self):
         from scripts.phases import child as child_mod, tools as tools_phase

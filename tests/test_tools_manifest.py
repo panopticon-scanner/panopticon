@@ -47,7 +47,7 @@ from tests.run_tools_test_helpers import _FakeResult
 # `SCANNER_OWNED_CONFIG` stages (so `scanner_config` fills), gitleaks is the one
 # tool an ignore-file observation may be published for, semgrep is the
 # ingest-lever suppression row and gosec the no-knob residual. Five tools fill
-# all four ledgers from one run.
+# all five ledgers from one run.
 _TOOLS = ("semgrep", "bandit", "gitleaks", "trivy", "gosec")
 # An adapter whose whole surface fell under the gate's globs, and the globs that
 # did it: both are published on every manifest, `[]` included.
@@ -100,11 +100,11 @@ _CASES = {
 
 
 def _drive(target, security_mode, tools):
-    """Fill the four ledgers the way a real scan does, with a faked runner.
+    """Fill the five ledgers the way a real scan does, with a faked runner.
 
     Through `run_tools()`, the public entry -- so the postures the golden pins
     are the ones the production loop observes itself granting, not values this
-    test composed. `run_tools()` clears all four ledgers on entry, so every case
+    test composed. `run_tools()` clears all five ledgers on entry, so every case
     is independent of the one before it.
     """
     def runner(cmd, **_kw):
@@ -190,6 +190,9 @@ GOLDEN: dict[str, str] = {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
   },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
+  },
   "sanitized": {
     "pip-audit": {
       "source": "requirements.txt",
@@ -273,6 +276,9 @@ GOLDEN: dict[str, str] = {
   "scanner_config": {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
+  },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
   },
   "sanitized": {
     "pip-audit": {
@@ -359,6 +365,9 @@ GOLDEN: dict[str, str] = {
   "scanner_config": {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
+  },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
   },
   "sanitized": {
     "pip-audit": {
@@ -466,6 +475,9 @@ GOLDEN: dict[str, str] = {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
   },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
+  },
   "sanitized": {
     "pip-audit": {
       "source": "requirements.txt",
@@ -550,6 +562,9 @@ GOLDEN: dict[str, str] = {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
   },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
+  },
   "sanitized": {
     "pip-audit": {
       "source": "requirements.txt",
@@ -617,6 +632,7 @@ GOLDEN: dict[str, str] = {
   "suppression_comments": {},
   "ignore_files": {},
   "scanner_config": {},
+  "scanner_scope": {},
   "sanitized": {
     "pip-audit": {
       "source": "requirements.txt",
@@ -701,6 +717,9 @@ GOLDEN: dict[str, str] = {
     "bandit": "scanner-owned",
     "trivy": "scanner-owned"
   },
+  "scanner_scope": {
+    "semgrep": "test-paths-v1"
+  },
   "sanitized": {
     "pip-audit": {
       "source": "requirements.txt",
@@ -744,7 +763,7 @@ GOLDEN: dict[str, str] = {
 
 
 class TestTheManifestBytesSurviveTheExtraction(unittest.TestCase):
-    """Seven manifests, all four ledgers populated by a real dispatch, both
+    """Seven manifests, all five ledgers populated by a real dispatch, both
     security modes, `run_id` set and unset, the eslint `file_coverage` read, an
     adapter refused its egress, and the docker-absent shape where nothing was
     produced. The comparison is the FILE, not the returned dict: the bytes are
@@ -1055,6 +1074,114 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
                                                 ["gitleaks"], [capture],
                                                 ignore_files={"gitleaks": value})
                     self.assertEqual(payload["ignore_files"], {})
+
+
+class TestSemgrepScopeBaselineTransition(unittest.TestCase):
+    @staticmethod
+    def _manifest(path, selected, produced, *, scope=None, globs=("fixtures/**",)):
+        payload = {"selected": selected, "produced": produced,
+                   "missing": sorted(set(selected) - set(produced)),
+                   "redacted": True,
+                   "network": {tool: "none" for tool in produced},
+                   "suppression_comments": ({"semgrep": "ignored"}
+                                             if "semgrep" in produced else {}),
+                   "scanner_config": {}, "exclude_globs": list(globs)}
+        if scope is not None:
+            payload["scanner_scope"] = scope
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+        return payload
+
+    def test_transition_requires_both_real_semgrep_captures_and_an_old_marker(self):
+        current = {"selected": ["semgrep"], "produced": ["semgrep"],
+                   "scanner_scope": {"semgrep": tm.SEMGREP_SCOPE_POLICY}}
+        baseline = {"selected": ["semgrep"], "produced": ["semgrep"]}
+        self.assertTrue(tm.semgrep_scope_transition_needed(current, baseline))
+        for changed_current, changed_base in (
+                ({**current, "produced": []}, baseline),
+                (current, {**baseline, "produced": []}),
+                (current, {**baseline, "scanner_scope": {
+                    "semgrep": tm.SEMGREP_SCOPE_POLICY}})):
+            with self.subTest(current=changed_current, baseline=changed_base):
+                self.assertFalse(tm.semgrep_scope_transition_needed(
+                    changed_current, changed_base))
+
+    def test_transition_cli_prints_the_workflow_boolean(self):
+        with tempfile.TemporaryDirectory() as root:
+            current = os.path.join(root, "current.json")
+            baseline = os.path.join(root, "baseline.json")
+            self._manifest(current, ["semgrep"], ["semgrep"],
+                           scope={"semgrep": tm.SEMGREP_SCOPE_POLICY})
+            self._manifest(baseline, ["semgrep"], ["semgrep"])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = tm.manifest_cli([
+                    "semgrep-scope-transition-needed",
+                    "--current-manifest", current,
+                    "--baseline-manifest", baseline,
+                ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(output.getvalue(), "true\n")
+
+    def test_preparation_replaces_only_semgrep_and_publishes_marker_last(self):
+        with tempfile.TemporaryDirectory() as root:
+            base_dir = os.path.join(root, "base")
+            expanded_dir = os.path.join(root, "expanded")
+            os.mkdir(base_dir)
+            os.mkdir(expanded_dir)
+            base_manifest = os.path.join(root, "base.json")
+            expanded_manifest = os.path.join(root, "expanded.json")
+            self._manifest(base_manifest, ["bandit", "semgrep"],
+                           ["bandit", "semgrep"])
+            self._manifest(expanded_manifest, ["semgrep"], ["semgrep"],
+                           scope={"semgrep": tm.SEMGREP_SCOPE_POLICY})
+            old = '{"runs":[{"properties":{"scope":"old"}}]}'
+            new = '{"runs":[{"properties":{"scope":"expanded"}}]}'
+            with open(os.path.join(base_dir, "semgrep.sarif"), "w") as stream:
+                stream.write(old)
+            with open(os.path.join(base_dir, "bandit.sarif"), "w") as stream:
+                stream.write("bandit stays")
+            with open(os.path.join(expanded_dir, "semgrep.sarif"), "w") as stream:
+                stream.write(new)
+
+            tm.prepare_semgrep_scope_baseline(
+                base_dir, base_manifest, expanded_dir, expanded_manifest)
+
+            with open(base_manifest, encoding="utf-8") as stream:
+                prepared = json.load(stream)
+            with open(os.path.join(base_dir, "semgrep.sarif"), encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), new)
+            with open(os.path.join(base_dir, "bandit.sarif"), encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "bandit stays")
+            self.assertEqual(prepared["selected"], ["bandit", "semgrep"])
+            self.assertEqual(prepared["scanner_scope"],
+                             {"semgrep": tm.SEMGREP_SCOPE_POLICY})
+
+    def test_different_exclusion_policy_refuses_without_mutating_baseline(self):
+        with tempfile.TemporaryDirectory() as root:
+            base_dir = os.path.join(root, "base")
+            expanded_dir = os.path.join(root, "expanded")
+            os.mkdir(base_dir)
+            os.mkdir(expanded_dir)
+            base_manifest = os.path.join(root, "base.json")
+            expanded_manifest = os.path.join(root, "expanded.json")
+            self._manifest(base_manifest, ["semgrep"], ["semgrep"])
+            self._manifest(expanded_manifest, ["semgrep"], ["semgrep"],
+                           scope={"semgrep": tm.SEMGREP_SCOPE_POLICY}, globs=())
+            capture = os.path.join(base_dir, "semgrep.sarif")
+            with open(capture, "w") as stream:
+                stream.write('{"runs":[]}')
+            with open(expanded_dir + "/semgrep.sarif", "w") as stream:
+                stream.write('{"runs":[]}')
+            before_manifest = open(base_manifest, "rb").read()
+            before_capture = open(capture, "rb").read()
+
+            with self.assertRaisesRegex(ValueError, "different scan policy"):
+                tm.prepare_semgrep_scope_baseline(
+                    base_dir, base_manifest, expanded_dir, expanded_manifest)
+
+            self.assertEqual(open(base_manifest, "rb").read(), before_manifest)
+            self.assertEqual(open(capture, "rb").read(), before_capture)
 
 
 if __name__ == "__main__":
