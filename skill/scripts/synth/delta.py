@@ -12,7 +12,7 @@ import scripts.evidence as evidence_mod
 # The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
 # here because `meta.coverage.delta`'s published description enumerates these
 # exact strings, so a literal typed in a second place can drift from the
-# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other three
+# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other four
 # leave the payload with no `base`, so the review is not a delta one and the
 # whole `meta.coverage.delta` block is null.
 MALFORMED_UNREADABLE = "unreadable"
@@ -23,6 +23,19 @@ MALFORMED_HUNKS_NOT_OBJECT = "hunks not an object"
 # fail-closed shape as `not an object`; an ABSENT key is accepted, because a
 # hand-written artifact predating the key is not a version mismatch.
 MALFORMED_SCHEMA_VERSION = "unsupported schema_version"
+# #2107: the hunks artifact and `groups.json` are written by ONE discovery child
+# and published as two independent atomic writes, and only the groups half
+# carried the run binding. `phases/discovery.py` now stamps both and threads the
+# expectation here as `--diff-hunks-run-id`; `main()` defaults it to the stamp on
+# the inventory it read, so the HAND-RUN pair is checked too. A pair from two
+# generations -- one generation's review cells scoped by another's diff -- is
+# therefore REJECTED instead of silently scoping the gate to someone else's hunk
+# map. A foreign stamp AND an absent one both reject: an expectation only exists
+# where a stamped inventory does, so an unstamped artifact beside one is not this
+# run's. With NO expectation -- no flag and an unstamped inventory -- the stamp is
+# not read at all, which keeps every direct caller and hand-written artifact
+# byte for byte as it was.
+MALFORMED_GENERATION = "generation-mismatch"
 
 # #2382: the seven keys `verdicts._delta_meta` copies VERBATIM out of the
 # artifact into `meta.coverage.delta`, with the type each one is published as.
@@ -51,9 +64,9 @@ class HunksLoad:
 
     `payload_malformed` is the reason the payload was rejected in whole or in
     part -- "unreadable", "not an object", "hunks not an object", "unsupported
-    schema_version" -- and None when there was nothing to reject. `files` and
-    `ranges` count the hunk map that survived: what the review is actually
-    scoped to.
+    schema_version", "generation-mismatch" -- and None when there was nothing to
+    reject. `files` and `ranges` count the hunk map that survived: what the
+    review is actually scoped to.
 
     `keys_repaired` names the artifact-carried keys of `meta.coverage.delta` that
     carried a value of the WRONG TYPE and were read as null (#2382), in
@@ -118,11 +131,23 @@ class DeltaContext:
         return bool(self.diff_hunks and self.diff_hunks.get("base"))
 
     @classmethod
-    def from_args(cls, args):
+    def from_args(cls, args, groups_run_id=None):
         """--diff-hunks / --diff-context as main() read them (WS-0 S3), with
         the #957 notice when a delta review is run without --fail-on, and the
-        artifact's own disclosures (#1783)."""
-        diff_hunks, report = (load_diff_hunks_report(args.diff_hunks)
+        artifact's own disclosures (#1783).
+
+        `groups_run_id` is the stamp on the `groups.json` main() actually read,
+        and it is the DEFAULT expectation (#2107 review round 1): the inventory
+        is the other half of the pair the stamp binds, so an operator hand-running
+        `synthesize.py` -- who inherits `--groups` by auto-discovery and supplies
+        `--diff-hunks` himself, the one mixing shape the probe could reach -- gets
+        the check without knowing the flag exists. `--diff-hunks-run-id` still
+        wins when passed, and an inventory with no stamp leaves no expectation at
+        all, which is what keeps a hand-written artifact reading as it always
+        did."""
+        expected_run_id = getattr(args, "diff_hunks_run_id", None) or groups_run_id
+        diff_hunks, report = (load_diff_hunks_report(args.diff_hunks,
+                                                     expected_run_id)
                               if args.diff_hunks else (None, None))
         if args.diff_hunks and not args.fail_on:
             # #957: a delta review is gate-first by intent, but the gate only
@@ -201,8 +226,8 @@ def _disclose_load(ctx, path):
         # `zero_hunk_gate_gap` composes below: a rejection and a loader drop are
         # each a KNOWN cause, named on a line of its own, and sending the
         # operator to compare a known-broken artifact is the wrong instruction.
-        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other three leave
-        # no `base` and no active delta (#2382 added the fourth).
+        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other four leave
+        # no `base` and no active delta (#2382 added the fourth, #2107 the fifth).
         regenerate = "regenerate it (the driver's discovery phase writes it)"
         if report.payload_malformed is not None:
             cause = ("The map is empty of ranges because the payload was "
@@ -408,6 +433,106 @@ def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
             "driver's discovery phase writes it)" % (eligible_count, cause))
 
 
+def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
+    """The certification reason when this run's GATE scoped against a diff-hunks
+    artifact that is PROVABLY broken, else None (#2405, owner ruling 2026-10-01).
+
+    #2386 split `paths_without_ranges` into the subset a damaged artifact
+    produced -- `paths_emptied_by_drops`, whose list arrived NON-empty and was
+    emptied by the range loop -- and the remainder that arrived `[]`, and left
+    what to do with the split to this issue. The ruling is candidate 1,
+    emptied-by-drops only: the gate reads INCONCLUSIVE when
+    `paths_emptied_by_drops`, `ranges_dropped` or `payload_malformed` says the
+    artifact is damaged, the one shape that is provably broken rather than a
+    change shape.
+
+    What it RECOVERS: a damaged map that still carries a real range, which
+    `zero_hunk_gate_gap` cannot see at all -- that rule needs `ranges == 0`
+    across the WHOLE map, so one surviving range anywhere silences it, while the
+    emptied path still admits every finding in its file to the gate's source set
+    by `diff_map.classify`'s changed-file fail-open.
+
+    What it KNOWINGLY MISSES: a truncated or hand-edited map whose paths arrived
+    `[]`. That is indistinguishable from a deletion-only, binary, mode-only or
+    same-content rename change -- `diff_map.parse` emits a rangeless key for one
+    on purpose -- so a rule over the remainder would turn a legitimate PR
+    INCONCLUSIVE, and the ruling accepts the miss instead. The remainder stays
+    DISCLOSED, never reclassified (ruling 2026-09-30): `_disclose_load` names
+    the paths and both report blocks publish the counts.
+
+    `paths_dropped` is not a measure, by the ruling's wording. It is named in
+    the reason through `_dropped_phrase` when it co-occurs with a dropped range,
+    but a path dropped on its own leaves the map, which sends its findings
+    OFF-diff: the gate loses them rather than admitting them, and the operator
+    reads that loss from `meta.coverage.delta` and the stderr line.
+
+    The four guard conditions are `zero_hunk_gate_gap`'s, each load-bearing for
+    its reasons: an INACTIVE delta degrades to the wider gate, which fails
+    closed; a run that ASKED for `--gate-scope all` already gates on every
+    active finding; a run with nothing this gate would have judged (#2222's
+    population, `eligible_count`) had nothing scoped away; and `ctx.report`
+    None means nothing measured the read, so there is no damage to trust. Only
+    the MEASURE differs -- and when both rules hold `zero_hunk_gate_gap` takes
+    precedence, which is what `delta_gate_gap` below composes.
+
+    That precedence PREEMPTS the `payload_malformed` arm outright. The measure
+    names the key so it is total over the closed vocabulary, but the one value
+    that reaches an active delta -- `hunks not an object` -- makes the loader
+    read an empty map, so `ranges == 0` and the zero-hunk reason is what any
+    real run publishes. This arm therefore answers a direct call only, and the
+    schema says so under both `payload_malformed` nodes."""
+    report = ctx.report
+    if not (ctx.active and report is not None and eligible_count > 0
+            and gate_scope == "on-diff"):
+        return None
+    if not (report.paths_emptied_by_drops > 0 or report.ranges_dropped > 0
+            or report.payload_malformed is not None):
+        return None
+    # Every arm that tripped, named with the counter it reads: this verdict is a
+    # statement about the artifact, so an operator has to be able to go to
+    # `meta.coverage.delta` and find the same number under the same name.
+    # `_dropped_phrase` is the shared wording (#2169 review, F2), so this note,
+    # the stderr disclosure and the zero-hunk reason cannot describe one read's
+    # losses three ways.
+    damage = []
+    if report.payload_malformed is not None:
+        damage.append("the payload was rejected (%s)" % report.payload_malformed)
+    dropped = _dropped_phrase(report)
+    if dropped:
+        damage.append(dropped)
+    if report.paths_emptied_by_drops:
+        damage.append("%d named path(s) were emptied of every range "
+                      "(paths_emptied_by_drops), so a finding in one of them "
+                      "still reaches this gate's source set on-diff"
+                      % report.paths_emptied_by_drops)
+    # The SHAPE is `zero_hunk_gate_gap`'s, clause for clause: the claim, then the
+    # count qualified exactly as #2222 qualifies it, then the cause, then the one
+    # remedy both rules have. The two notes ride the same `coverage_note`
+    # channel, and a reader must not have to learn two definitions of one number.
+    return ("broken-artifact delta gate — the diff-hunks map this run scoped "
+            "against is provably damaged, so the --gate-scope on-diff source "
+            "set for this run's %d gate-eligible finding(s) (the active set "
+            "after the gate's evidence policy and any --fail-on floor, before "
+            "delta scoping) was chosen by an artifact this run cannot trust; "
+            "%s: regenerate the diff-hunks artifact (the driver's discovery "
+            "phase writes it)" % (eligible_count, "; ".join(damage)))
+
+
+def delta_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
+    """The delta artifact's certification reason, whichever of the two rules
+    speaks: the zero-hunk refusal (#2178, narrowed by #2222) or the
+    broken-artifact one (#2405). ONE call site, `grading.grade_report`, and one
+    reason -- `certify` carries it in the single `delta_zero_hunks` channel.
+
+    Zero hunks is asked first and WINS: it says the gate's whole source set was
+    not a measured diff, which strictly contains "the map that chose it is
+    damaged", and a second note about one read would leave the operator
+    reconciling what looks like two problems (#2169's F1 lesson). Both reasons
+    end on the same remedy, so reading only the stronger one loses nothing."""
+    return (zero_hunk_gate_gap(ctx, eligible_count, gate_scope)
+            or broken_artifact_gate_gap(ctx, eligible_count, gate_scope))
+
+
 def count_hunks(hunks):
     """(files, ranges) over a loaded hunk map -- what a delta review is scoped
     to. One definition, so the loader's report and `meta.coverage.delta` cannot
@@ -430,12 +555,18 @@ def load_diff_hunks(path):
     return load_diff_hunks_report(path)[0]
 
 
-def load_diff_hunks_report(path):
+def load_diff_hunks_report(path, expected_run_id=None):
     """`load_diff_hunks`'s data, plus the `HunksLoad` saying what it cost.
 
     Same return contract for the data half, so every existing caller of the
     old name is unaffected; `from_args` takes this form and discloses the
-    report (#1783)."""
+    report (#1783).
+
+    `expected_run_id` is the GENERATION this payload must belong to (#2107),
+    threaded from `--diff-hunks-run-id` or, failing that, from the `groups.json`
+    `main()` read. None -- every existing caller, and a hand-run whose inventory
+    carries no stamp either -- reads the stamp not at all and behaves byte for
+    byte as it did before."""
     try:
         data = artifacts_mod.read_json(path)
     except (OSError, ValueError):
@@ -451,6 +582,15 @@ def load_diff_hunks_report(path):
         version = data["schema_version"]
         if isinstance(version, bool) or not isinstance(version, int) or version != 1:
             return {}, HunksLoad(payload_malformed=MALFORMED_SCHEMA_VERSION)
+    if expected_run_id is not None and data.get("run_id") != expected_run_id:
+        # #2107, with the whole-payload rejections because it IS one: the hunk
+        # map is not damaged, it is somebody else's, and reading half of it
+        # would scope this run's gate by a diff nothing here measured. No
+        # `base` survives, so the review degrades to a non-delta one and the
+        # gate widens -- the fail-closed direction. ABSENT rejects as well,
+        # unlike `schema_version` above: a version a reader does not know is a
+        # different fact from a binding a reader was promised and did not get.
+        return {}, HunksLoad(payload_malformed=MALFORMED_GENERATION)
 
     raw = data.get("hunks")
     malformed = None

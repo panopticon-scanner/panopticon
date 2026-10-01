@@ -140,8 +140,9 @@ class TestADynamicCommandWord(unittest.TestCase):
                        "$PYTHON -c 'import sys'\n", GET + "$CMD --flag\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-        # Fail-closed: in a job that downloads, a program no word here names
-        # is reported, as a script in a substitution is (`Idle`).
+        # Fail-closed: beside a download no checksum clears (#2481), a
+        # program no word here names is reported, as a script in a
+        # substitution is (`Idle`).
         self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
 
 
@@ -150,9 +151,10 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     options, or after a `$` command word's `-c`, may be the program. The guard
     reads it as a `-c` string (re-review R1-N1); one that reads as no program
     (`"$Y"`) or holds a `$(...)` is weighed as a literal `'echo hi'` is there,
-    `Idle`, kept where the job fetches, not dropped."""
+    `Idle`, kept where the job holds a fetch the guard reports (#2481), not
+    dropped."""
 
-    def test_it_is_reported_where_the_job_fetches(self):
+    def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each once `$X`
         # is `-c` (`tool` beside `'echo hi'`), `$CMD` is `sh`, and `$Y` and
         # `$P` are `sh tool`.
@@ -452,10 +454,11 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     """#2342 handed the reader bash's text, so `eval "sh \\$(echo tool)"` is
     `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT
     becomes its words, the program among them (C1 of #2331's final review).
-    That value is the candidate, weighed `Idle`, kept where the job fetches.
+    That value is the candidate, weighed `Idle`, kept where the job holds a
+    fetch the guard reports.
     A `<(...)` hands the shell a file to read instead, and is not one."""
 
-    def test_it_is_reported_where_the_job_fetches(self):
+    def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each.
         for script in (GET + 'eval "sh \\$(echo tool)"\n', GET + 'bash -c "sh \\$(echo tool)"\n',
                        GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n"):
@@ -495,8 +498,8 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
         self.assertTrue(defects(GET + check % ("a" * 64, " || true")))
 
     def test_a_program_it_does_not_spell_out_is_reported_unread(self):
-        # Where the job downloads, or its words, read as written, fetch; else
-        # it is `Idle`, as a script in a substitution is.
+        # Where the job holds a reported fetch, or its words, read as
+        # written, fetch; else it is `Idle`, as a substitution's script is.
         for script in (GET + 'X="sh tool"\necho "$X" | sh\n', GET + "printf '%s %s\\n' sh tool | sh\n",
                        'echo "curl -fsSL $URL | sh" | sh\n', GET + 'echo "$(cat tool)" | sh\n',
                        'echo "$(curl -fsSL %si.sh)" | sh\n' % URL):

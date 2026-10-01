@@ -41,6 +41,26 @@ RESERVED = frozenset({"match", "tests", "panels", "exclude"})
 # rather than by an import.
 RESIDUAL_SINK = "Ungrouped"
 
+# #1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
+# `exclude_paths:` may not remove a file the objective SEC floor matches from the
+# SEC domain. A review cell is (group x domain) and no domain can be restricted
+# to a subset of a group's files, so those files get a GROUP of their own that
+# reviews SEC and nothing else -- minted under this name by
+# `exclude_carve_out.install`, and recognised by `phases/coverage.py` through the
+# marker field below. Both names live HERE, with the residual sink they are
+# reserved alongside: this module owns the authored-name vocabulary, every reader
+# of a committed config already has it, and the carve-out module is the only
+# other place that needs them.
+SEC_CARVE_OUT_SINK = "exclude_paths_sec_carve_out"
+SEC_CARVE_OUT_MARKER = "sec_carve_out"
+
+# The MINTED top-level names, with the owner each is reserved for. A committed
+# group of one of these names would write the same
+# `findings-<group>-<domain>.json` as the minted one and silently clobber a cell,
+# so they are refused at the source (`_reserved_name_conflicts`).
+_MINTED_SINKS = ((RESIDUAL_SINK, "the unmatched-file sink"),
+                 (SEC_CARVE_OUT_SINK, "the #1757 SEC carve-out"))
+
 # A group that outgrows --max-per-group splits into `<id>_1`, `<id>_2`, ..., and
 # the unmatched residual lands in `Ungrouped_1`, ... . Those names are minted
 # from the SAME flat-id space an author writes in, so an authored `API_1`
@@ -315,6 +335,24 @@ def _as_domain_set(name, field, raw, errors):
     return out
 
 
+def is_sec_carve_out_name(name):
+    """True for the #1757 carve-out sink or one of its `<sink>_<n>` chunks.
+
+    The only names `exclude_carve_out.install` mints, and therefore the only
+    names the `sec_carve_out` marker may narrow a review cell on. `groups.json`
+    is TARGET-WRITABLE (`synth/repair`'s module comment calls it that outright),
+    so the marker alone is not authority: a committed-and-rewritten file
+    carrying `"sec_carve_out": true` on a real group would otherwise drop
+    COD/DAT/TST/ARC and every scout-added domain from that group's cell. The
+    chunk suffix is read with `_CHUNK_SUFFIX_RE`, the same regex the reserved-
+    name rule uses, so `<sink>_abc` is not mistaken for a chunk of it.
+    """
+    if not isinstance(name, str):
+        return False
+    m = _CHUNK_SUFFIX_RE.match(name)
+    return (m.group("base") if m else name) == SEC_CARVE_OUT_SINK
+
+
 def _invalid_name(name):
     return not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name)
 
@@ -395,13 +433,15 @@ def _reserved_name_conflicts(groups):
                 f"(an oversize group splits into {owner}_1, {owner}_2, ...). Both "
                 f"would write findings-{gid}-<domain>.json and one would "
                 f"silently clobber the other -- rename it")
-        # Top-level only: the residual sink owns `Ungrouped` and its chunks.
+        # Top-level only: a minted sink owns its own name and its chunks.
         # A subgroup `Foo:Ungrouped` is namespaced and cannot collide.
-        if ":" not in gid and RESIDUAL_SINK.casefold() in (
-                gid.casefold(), base.casefold() if base is not None else None):
+        folded = (gid.casefold(), base.casefold() if base is not None else None)
+        for sink, owner in _MINTED_SINKS:
+            if ":" in gid or sink.casefold() not in folded:
+                continue
             yield gid, (
-                f"group {gid}: {RESIDUAL_SINK!r} and {RESIDUAL_SINK}_<n> are "
-                f"reserved for the unmatched-file sink; a group named this "
+                f"group {gid}: {sink!r} and {sink}_<n> are "
+                f"reserved for {owner}; a group named this "
                 f"would share a findings file with it -- rename it")
 
 

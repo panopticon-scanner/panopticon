@@ -8,9 +8,10 @@ import unittest
 from unittest import mock
 
 from scripts import executable
+from scripts import groups_schema
 from tests.discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
-    git_cmd, git_output,
+    repo_with_exclude_and_sec_surface, git_cmd, git_output,
 )
 
 
@@ -256,6 +257,88 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     files = sorted(f for g in doc["groups"] for f in g["files"])
     assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
     assert doc["excluded_count"] == 1
+
+
+def test_repo_scan_scope_files_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
+    # #1757 delta-path parity: the carve-out works the same on the delta paths as
+    # on the whole-repo one. `--scope-files` names both excluded files; the one
+    # the objective SEC floor matches reaches the SEC-only carve-out group instead
+    # of no reviewer at all, and the other is still pruned from every domain. The
+    # ruling is explicit that an operator-authored `--pr` config gets this too.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "vendor/dep.py",
+                            "vendor/requirements.txt", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
+    assert by_name["Checkout"] == ["src/checkout/pay.py"]
+    assert doc["excluded_count"] == 1                  # vendor/dep.py, every domain
+    assert doc["exclude_paths_sec_carve_out"] == {
+        "globs": ["vendor/**"], "files": ["vendor/requirements.txt"], "count": 1}
+
+
+def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_path):
+    # #1757: `--scope-dir` / `--scope-file` / `--scope-group` narrow the
+    # already-pruned whole-repo listing, so unlike the two delta flags they never
+    # re-derive the exclusion -- and the carve-out universe sits OUTSIDE the
+    # narrowed one by construction. Without this the carve-out group carried
+    # `vendor/requirements.txt` into a `--scope-dir src` run: a review cell, and a
+    # read grant, over a path the operator had just scoped out.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    sink = groups_schema.SEC_CARVE_OUT_SINK
+    for flag, value in (("--scope-dir", "src"),
+                        ("--scope-file", "src/checkout/pay.py"),
+                        ("--scope-group", "Checkout")):
+        rc = orchestrator.main(["--repo", str(repo), "--repo-scan", flag, value,
+                                "--out", str(out)])
+        assert rc == 0, flag
+        doc = json.loads(out.read_text())
+        assert sink not in {g["name"] for g in doc["groups"]}, flag
+        assert doc["exclude_paths_sec_carve_out"]["count"] == 0, flag
+        assert doc["exclude_paths_sec_carve_out"]["globs"] == ["vendor/**"], flag
+    # Each of the three counts WHAT SURVIVED ITS OWN SCOPE, which is 0 for the
+    # two whose universes come out of pruned `allf` -- so `count: 0` on a scoped
+    # run means "nothing in this run's surface", never "nothing in the repo"
+    # (the schema and driver-setup.md say so; review round 1 item 7).
+    #
+    # A carved file INSIDE the narrowed directory still gets its SEC cell: the
+    # scope narrows the carve-out, it does not switch the policy off.
+    (repo / "src" / "helm").mkdir(parents=True)
+    (repo / "src" / "helm" / "values.yaml").write_text("x: 1\n")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+        "exclude_paths: ['vendor/**', 'src/helm/**']\n")
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-dir",
+                            "src", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[sink] == ["src/helm/values.yaml"]
+    assert doc["exclude_paths_sec_carve_out"]["files"] == ["src/helm/values.yaml"]
+
+
+def test_repo_scan_scope_changed_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
+    # The same parity on --scope-changed, which rebuilds the set from git-diff
+    # output and re-derives the exclusion from the CHANGED set.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    (repo / "vendor/requirements.txt").write_text("flask==1.0\n")
+    (repo / "vendor/dep.py").write_text("y=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
+    assert doc["excluded_count"] == 1
+    assert doc["exclude_paths_sec_carve_out"]["count"] == 1
 
 
 def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
@@ -817,6 +900,58 @@ def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys
     assert rc == 2
     assert "\\n" in err and "not-a-line" in err
     assert err.count("\n") == 1                  # one line, the refusal
+
+
+# --------------------------------------------------------------------------
+# #2450 (ARC-2262-F1): both confinement sites ask `claim_scope.
+# confined_to_root`, which JOINS the path onto the root it resolved. So each
+# caller hands over the REPO-RELATIVE path; a pre-joined candidate would
+# double-prefix a relative repository root and ask about `<repo>/<repo>/...`
+# -- a directory the reviewed tree can simply commit, which is what would
+# launder the escape. Both tests use a relative `--repo` spelling and plant
+# that decoy, so a pre-joined call MISCLASSIFIES and these fail.
+# --------------------------------------------------------------------------
+
+
+def _relative_repo_with_decoy(tmp_path, monkeypatch):
+    """`repo_with_matrix`, re-spelled relative to its parent, with the
+    `<repo>/<repo>/` decoy a double join would land in."""
+    repo = repo_with_matrix(tmp_path)
+    (repo / repo.name).mkdir()
+    monkeypatch.chdir(tmp_path.parent)
+    return repo, repo.name
+
+
+def test_confine_scope_path_does_not_double_join_a_relative_repo(tmp_path, capsys,
+                                                                 monkeypatch):
+    repo, rel_repo = _relative_repo_with_decoy(tmp_path, monkeypatch)
+    outside = _outside_file(tmp_path)
+    (repo / "escape.py").symlink_to(outside)
+    (repo / rel_repo / "escape.py").write_text("x = 1\n", encoding="utf-8")
+    universe = {"escape.py", "src/checkout/pay.py"}
+    # The in-tree file still confines under a relative root...
+    assert orchestrator._confine_scope_path(
+        rel_repo, "src/checkout/pay.py", universe, "--scope-files") == "src/checkout/pay.py"
+    # ...and the escaping symlink is still refused, decoy copy or not.
+    assert orchestrator._confine_scope_path(
+        rel_repo, "escape.py", universe, "--scope-files") is None
+    assert "resolves outside the repository root" in capsys.readouterr().err
+
+
+def test_is_confined_regular_refuses_a_file_behind_an_escaping_dir_symlink(tmp_path,
+                                                                           monkeypatch):
+    # The listing site's own arm, on the case its `islink` guard cannot see:
+    # the FINAL component is a regular file and an ANCESTOR is the symlink
+    # that leaves the tree, so only the realpath confinement answers it.
+    repo, rel_repo = _relative_repo_with_decoy(tmp_path, monkeypatch)
+    outside_dir = tmp_path.parent / ("pano-2450-%s" % tmp_path.name)
+    outside_dir.mkdir()
+    (outside_dir / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "dirlink").symlink_to(outside_dir, target_is_directory=True)
+    (repo / rel_repo / "dirlink").mkdir()
+    (repo / rel_repo / "dirlink" / "x.py").write_text("x = 1\n", encoding="utf-8")
+    assert not orchestrator._is_confined_regular(rel_repo, "dirlink/x.py")
+    assert orchestrator._is_confined_regular(rel_repo, "src/checkout/pay.py")
 
 
 # --- #2272: the delta path asks the SAME policy --repo-scan asks -------------

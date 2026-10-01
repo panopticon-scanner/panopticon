@@ -101,7 +101,8 @@ def _cli_args(**kw):
               tools_exclude=None, doc_paths=None, include_fixtures=False,
               tools_disabled_mid_run=False,
               emit_verify_queue=False, verdicts_dir=None, gate_unverified=False,
-              max_verify=None, diff_hunks=None, diff_context=5, gate_scope="on-diff",
+              max_verify=None, diff_hunks=None, diff_hunks_run_id=None,
+              diff_context=5, gate_scope="on-diff",
               files=[])
     ns.update(kw)
     return argparse.Namespace(**ns)

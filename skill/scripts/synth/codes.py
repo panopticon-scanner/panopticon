@@ -73,25 +73,25 @@ def validate_finding_codes(findings, bundle):
 _SEV_ORDINAL = {s: i for i, s in enumerate(reversed(findings_mod.SEV_ORDER))}
 
 def apply_verdict_quality(findings, matched, bundle):
-    """Apply the advisor's code confirm/correct and the severity-override
-    discipline; return the counters merged into meta.coverage.ocrdb.
+    """Apply the backup-corroboration flag and the severity-override discipline;
+    return the counters merged into meta.coverage.ocrdb.
 
     Deterministic: the advisor PROPOSES (via its matched verdict / the finding's
-    severity_override), synthesize APPLIES under fixed rules. Severity is mutated
-    only here, only by the disclosed override discipline. `matched` maps
-    id(finding) -> the winning verdict (or None) from build_report's match loop.
+    severity_override), synthesize APPLIES under fixed rules. SEVERITY is the
+    only axis this function mutates, and only by the disclosed override
+    discipline. The advisor's own OCRDb `code` is not applied, here or anywhere:
+    `evidence.apply_verdict` records a differing one at `provenance.advisor_code`
+    as a considered second opinion about the catalog, and that record is the
+    whole of it (#2101 -- this step used to apply it LATER in the live call
+    order, overwriting the very code the record was about, so each step read
+    correctly alone). The `code` read below is the FINDING's own, for its catalog
+    default severity. `matched` maps id(finding) -> the winning verdict (or None)
+    from build_report's match loop.
     """
-    code_corrections = 0
     ov_count = ov_up = ov_down = 0
     for f in findings:
         v = matched.get(id(f))
         if v:
-            vc = v.get("code")
-            if (vc and bundle is not None and ocrdb.validate_code(bundle, vc)
-                    and vc != f.get("code")):
-                f["code"] = vc
-                f["code_corrected_by"] = "agent:advisor"
-                code_corrections += 1
             if (str(v.get("stage")) == "backup"
                     and str(v.get("verdict", "")).upper() == "CONFIRMED"):
                 f["backup_confirmed"] = True
@@ -118,5 +118,4 @@ def apply_verdict_quality(findings, matched, bundle):
                     ov_up += 1
                 elif cur < base:
                     ov_down += 1
-    return {"code_corrections": code_corrections,
-            "overrides": {"count": ov_count, "up": ov_up, "down": ov_down}}
+    return {"overrides": {"count": ov_count, "up": ov_up, "down": ov_down}}

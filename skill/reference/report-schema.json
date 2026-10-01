@@ -387,7 +387,28 @@
                   "description": "How many TOOL findings those globs dropped at ingest. Distinct from `tools_suppressed`/`tools_suppressed_gated` in kind, not just in number: a suppression is this system's own inference from a conventional DIRECTORY NAME, and under `--security redteam` the gate counts it anyway (#1578/#1740), while an exclusion is a decision the operator or the repository made about scope -- so these findings are counted, disclosed, and never gated in any mode."
                 }
               },
-              "description": "#1740 (ARC-F2A, fix round 2): the exclusion POLICY this run's tool ingest applied, and what it removed. `exclude_paths:` is authored by the repository under review and (since #1740) scopes the scanners, this report and the gate, so a committed `['**']` that empties the tool axis is a fact the ARTIFACT must carry -- it was visible only in `groups.json`, `tools-manifest.json` and an ingest stderr line nobody keeps. Stated on every report, `{\"globs\": [], \"count\": 0}` included: the field's absence must never be readable as `nothing was excluded`. `security_gate.py` prints the same two numbers beside its own verdict line. What this count does NOT measure is the larger half of the same decision: on a driver run these globs ARE the committed `exclude_paths:`, and `discovery` prunes the matching files before any grouping (#1136, the `exclude_paths` prune in `discovery.py` -- they land in neither a group nor a leftover), so no REVIEW CELL of any domain saw them either, SEC included, which a per-group `exclude:` could never do (#1084). That is the feature, not a gap (run-14 SEC-1915770944, BY DESIGN), and the summary line says the same thing in one clause. A direct `synthesize --tools-exclude` is the exception: those globs scoped this ingest alone."
+              "description": "#1740 (ARC-F2A, fix round 2): the exclusion POLICY this run's tool ingest applied, and what it removed. `exclude_paths:` is authored by the repository under review and (since #1740) scopes the scanners, this report and the gate, so a committed `['**']` that empties the tool axis is a fact the ARTIFACT must carry -- it was visible only in `groups.json`, `tools-manifest.json` and an ingest stderr line nobody keeps. Stated on every report, `{\"globs\": [], \"count\": 0}` included: the field's absence must never be readable as `nothing was excluded`. `security_gate.py` prints the same two numbers beside its own verdict line. What this count does NOT measure is the larger half of the same decision: on a driver run these globs ARE the committed `exclude_paths:`, and `discovery` prunes the matching files before any grouping (#1136, the `exclude_paths` prune in `discovery.py` -- they land in neither a group nor a leftover), so no REVIEW CELL of any domain saw them either, SEC included, which a per-group `exclude:` could never do (#1084). Since #1757 (owner ruling 2026-09-25) that is true of every domain BUT SEC: a file the objective SEC floor matches may not be removed from the SEC domain by a target-authored exclusion, so `discovery` keeps those files in a dedicated SEC-only review group and publishes them under `exclude_paths_sec_carve_out` beside this block. The run-14 findings SEC-1915770944 / AGT-1355709320 are what that ruling answered, and this description used to call the whole-domain prune the feature rather than a gap; the summary line says the narrowed version in one clause. A direct `synthesize --tools-exclude` is the exception: those globs scoped this ingest alone."
+            },
+            "exclude_paths_sec_carve_out": {
+              "type": "object",
+              "properties": {
+                "globs": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "The committed top-level `exclude_paths:` globs that scoped this exclusion -- the same list `tools_excluded.globs` carries on a driver run. Published even when they carved nothing, because the policy scoped the run either way."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "The repo-relative paths those globs matched AND the objective SEC floor also matched (`coverage_model.applicable_sec_floor`, asked one file at a time) -- the files that reach the SEC domain anyway, in the dedicated `exclude_paths_sec_carve_out` review group. Repaired at the read (`synth.repair.repair_sec_carve_out`): a non-string or over-long path is DROPPED rather than cut, because a cut path names a file that does not exist, and the list is bounded -- so a list shorter than `count` is the honest reading of both."
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "How many files the carve-out kept for SEC review. The MEASUREMENT, not a recount of the list above: it survives the bound applied to `files`."
+                }
+              },
+              "description": "#1757 (AGT-1355709320), owner ruling 2026-09-25: *a target-authored `exclude_paths` may not remove a file the objective SEC floor matches from the SEC domain; such an exclusion is disclosed in the report's coverage section instead of silently applied. Other domains keep honouring the exclusion.* This key is that disclosure. The floor exists so operator taste cannot hide the attack surface (#run8 SEC-G2A), and SEC is already NON_EXCLUDABLE against a per-group `exclude:` (#1084) -- but the top-level path prune ran BEFORE grouping and reached the same outcome through an unguarded door, which is the asymmetry run-14 found. A review cell is (group x domain) and no domain can be restricted to a subset of a group's files, so `discovery` puts the carved files in one dedicated group named `exclude_paths_sec_carve_out` whose coverage is pinned to exactly `[\"SEC\"]` (`phases/coverage.py`, off the group entry's `sec_carve_out` marker); they do NOT rejoin their natural groups, so COD/ARC/TST and the rest still honour the exclusion. The TOOL axis is unchanged -- see `tools_excluded`. ABSENT, not zero, on a run that committed no `exclude_paths:` at all: zero behaviour change is zero output change, the rule `groups.json`'s own `exclude_paths` key already follows. Present with `count: 0` when globs were committed and matched no SEC surface. An operator-authored `--pr` config gets the same treatment, deliberately: the ruling's rationale is that nobody's taste hides the attack surface. SCOPE: like every other per-run disclosure this describes THIS RUN's surface, so a narrowing scope flag narrows it -- `--scope-dir` keeps the carved files under that directory, while `--scope-file` and `--scope-group` carve nothing at all (their universes come out of the already-pruned listing). A `count: 0` on a scoped run therefore means \"nothing in this run's scope\", not \"nothing in the repository\" -- unlike `groups.json`'s `excluded_count`, which those three flags leave at the whole-repo number."
             },
             "test_inventory": {
               "type": "object",
@@ -493,7 +514,7 @@
                     "integer",
                     "null"
                   ],
-                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Null when this context was not built by reading a file."
+                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Since #2405 a non-zero value here is one of the three shapes that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist: the map that chose the gate's scope is provably damaged. Null when this context was not built by reading a file."
                 },
                 "paths_dropped": {
                   "type": [
@@ -507,21 +528,21 @@
                     "integer",
                     "null"
                   ],
-                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; it is the input a gate rule would need to make a verdict out of the difference. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path, and `paths_emptied_by_drops` below is how many of the paths counted here are of that kind. Null when this context was not built by reading a file."
+                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; the gate reads only its `paths_emptied_by_drops` subset (#2405); the remainder is disclosed, never reclassified. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path, and `paths_emptied_by_drops` below is how many of the paths counted here are of that kind. Null when this context was not built by reading a file."
                 },
                 "paths_emptied_by_drops": {
                   "type": [
                     "integer",
                     "null"
                   ],
-                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. What it does NOT recover: a truncated or hand-edited map arrives `[]` exactly as those legitimate shapes do, so a path in the remainder is not thereby innocent, and this key is a lower bound on how much of the shape is artifact damage. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
+                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
                 },
                 "payload_malformed": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version`. Only `hunks not an object` can reach this block, because the other three -- `unsupported schema_version` included, which rejects the whole payload (#2382) -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. Null when nothing was rejected, and null when this context was not built by reading a file."
+                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version` / `generation-mismatch`. Only `hunks not an object` can reach this block, because the other four -- `unsupported schema_version` included, which rejects the whole payload (#2382), and `generation-mismatch`, which rejects an artifact whose `run_id` is not the one the reader was told to expect (#2107): a hunk map from a different discovery generation than this run's `groups.json`, so the review covered one surface and the gate would have scoped to another -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. The #2405 gate rule NAMES this key so its measure is total over that vocabulary, but no value here can publish its reason: `hunks not an object` leaves the hunk map empty, so `hunks_ranges` is 0 and such a run reads INCONCLUSIVE under the older zero-hunk refusal (#2178) instead. Null when nothing was rejected, and null when this context was not built by reading a file."
                 },
                 "on_diff_total": {
                   "type": "integer",
@@ -545,7 +566,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all four values can appear here, including the three (`unreadable` -- which covers a path that does not exist -- `not an object`, and `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1) that leave no `base` and so no `delta` block at all. Null when nothing was rejected."
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all five values can appear here, including the four (`unreadable` -- which covers a path that does not exist -- `not an object`, `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1, and `generation-mismatch`, which rejects a payload whose `run_id` is not the generation the reader was told to expect: the driver's discovery phase stamps both halves of a delta discovery and the synthesize phase passes `--diff-hunks-run-id`, so a hunk map from another generation than this run's `groups.json` -- or one carrying no stamp at all -- is refused rather than scoping this run's gate. A hand-run `synthesize.py` is covered too: with no flag the expectation defaults to the `run_id` on the `groups.json` that run read, and only an inventory carrying no stamp either leaves the payload unchecked. The refusal is published HERE rather than being withheld at the phase, so it is told apart from a run that was never a delta one, #2107) that leave no `base` and so no `delta` block at all. The #2405 gate rule names this key so its measure is total over the vocabulary, and no value here reaches that reason in a real run: `hunks not an object` is the only one that leaves an ACTIVE delta and it empties the hunk map, so the zero-hunk refusal (#2178) is what such a run publishes, while the other four degrade the gate to the wider scope, which fails closed. Null when nothing was rejected."
                 },
                 "keys_repaired": {
                   "type": "array",
@@ -556,7 +577,7 @@
                 },
                 "ranges_dropped": {
                   "type": "integer",
-                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped`; never null here, because this block is written only when a read was attempted."
+                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped` -- one of the three shapes that turn an on-diff PASS gate INCONCLUSIVE (#2405); never null here, because this block is written only when a read was attempted."
                 },
                 "paths_dropped": {
                   "type": "integer",
@@ -564,11 +585,11 @@
                 },
                 "paths_without_ranges": {
                   "type": "integer",
-                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings. `paths_emptied_by_drops` below splits them."
+                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings. `paths_emptied_by_drops` below splits them, and the gate reads only that subset (#2405); the remainder is disclosed, never reclassified."
                 },
                 "paths_emptied_by_drops": {
                   "type": "integer",
-                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact; it cannot recover a truncated map, which arrives `[]` and so still looks like a legitimate deletion-only, binary, mode-only or same-content rename change. Never null here, for the same reason as its siblings."
+                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. That rule needs an ACTIVE delta, i.e. a read that resolved a `base` and so published the `delta` block above; a payload rejected outright leaves no `base`, and there the gate degrades to the wider scope, which fails closed. Never null here, for the same reason as its siblings."
                 }
               }
             },
@@ -589,7 +610,6 @@
                     "down": {"type": "integer"}
                   }
                 },
-                "code_corrections": {"type": "integer"},
                 "domainless": {"type": "integer"},
                 "code_domain_mismatch": {"type": "integer"}
               }
@@ -1189,7 +1209,6 @@
               "reason": {"type": "string"}
             }
           },
-          "code_corrected_by": {"type": "string"},
           "backup_confirmed": {"type": "boolean"},
           "domain": {
             "type": "string",
@@ -1421,7 +1440,7 @@
               },
               "advisor_code": {
                 "type": "string",
-                "description": "The OCRDb code the verify advisor independently landed on, recorded ONLY when it differs from the finding's own `code`. Never applied \u2014 the advisor is a second opinion, not an authority on the catalog, so re-coding on one opinion is refused for the same reason severity is untouched. Its presence is the catalog-STRAIN flag: the panel filed one code and an independent re-read preferred another. A value ending `-X0X` means the advisor judged the panel's real code a mis-fit; an `-X0X` finding whose advisor_code is a real code means the reverse."
+                "description": "The OCRDb code the verify advisor independently landed on, recorded ONLY when it differs from the finding's own `code`. Never applied \u2014 the advisor is a second opinion, not an authority on the catalog, so re-coding on one opinion is refused for the same reason severity is untouched. Its presence is the catalog-STRAIN flag: the panel filed one code and an independent re-read preferred another. A value ending `-X0X` means the advisor judged the panel's real code a mis-fit; an `-X0X` finding whose advisor_code is a real code means the reverse. Since #2101 the SYNTHESIS step never applies it either: `synth.codes.apply_verdict_quality` ran later in the live call order and rewrote the finding's `code` from the same value this field records, so each step read correctly on its own and only the composition contradicted this field."
               }
             }
           },

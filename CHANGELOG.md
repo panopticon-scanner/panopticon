@@ -10,6 +10,129 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c` and past a value in the option slot,
   reported under a `$` command word (#2500, #2485, #2473).** The heredoc `eval 'bash -s'`, `sh $X`
   and `$CMD` run is caught; `X=script.sh; sh $X` and `$CMD <<'EOF'` are fail-closed over-reports.
+- **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
+  third private `_within`, with its own cached root realpath, beside the two names that already
+  alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a
+  regression and not a cleanup: it JOINS the path onto the root it resolved, and all three callers
+  handed it a candidate they had already joined — so a RELATIVE repository root got double-prefixed
+  (`confined_to_root("repo", "repo/x")` resolves `repo/repo/x`), and a decoy directory of that
+  name, one a reviewed tree can simply commit, would have answered for an escaping symlink and
+  read it as confined. Each caller now passes its repo-relative path instead: the changed-files
+  listing, the git-listing `isfile` probe, and the `--scope-file`/`--scope-files` clamp. The cached
+  root realpath moved DOWN with it, into `claim_scope._real_root`, so the performance property the
+  private copy existed for survives the move — one `realpath` of the root per distinct root, not
+  one per candidate on a whole-tree expansion. Only an ABSOLUTE root is memoized there, because a
+  relative one names a different directory in every process cwd. Both shapes are now pinned, the
+  working-directory decoy and the escaping symlink, in `tests/test_claim_scope.py` (the predicate)
+  and `tests/test_discovery_scope.py` (the two call sites).
+- **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
+  Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
+  downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`
+  candidate, a script handed to a shell inside a `$(...)` — was reported beside ANY fetch,
+  including a download its `sha256sum -c` cleared and an API `curl ... | jq` that is no download
+  at all. It is now reported only beside a fetch the guard itself reports: a download no checksum
+  clears (the unread program is counted as the use the checksum was owed, ADDED to the uses
+  `_defect` can read, so a checksum BEHIND such a program clears only the uses in front of it), a
+  `curl ... | sh` stream, an unresolved transfer, or a download no file holds — `x=$(curl ...)`,
+  the `carried` shape, and one a pipeline writes past the fetcher (`curl ... | cat > f`,
+  `| dd of=f`, `| sponge f`, `| cat | tee t`, none of which `parse_fetch` binds a destination to;
+  `workflow_forms.unbound`). Two readings are deliberate and fail closed: the report names the
+  unread program and not the download that makes it one (one sentence, as before), and a download
+  a variable holds keeps the reason even where only an `echo` reads it, because no file exists for
+  a checksum to name. The same predicate now governs the foreign-language stdin program
+  (`python3 - <<'EOF'`, `node <<'NODE'`, at the top level or inside a substitution), #2499's
+  owner ruling (b), decided once for both; the EXPANDING-heredoc report is
+  untouched and still loud with no fetch at all. Over the 3,200-workflow calibration pool 31 jobs
+  clear and none newly fails: metabase `pr-env.yml :: deploy_pr` (`$ADMIN -c` psql beside an
+  OIDC-token `curl | jq`) and 30 jobs whose heredoc program parses a `pom.xml`, YAML, HTML or
+  JSON and fetches nothing.
+- **`diff-hunks.json` is now bound to its `groups.json` generation (#2107).** One discovery child
+  writes the hunk map and then the inventory, as two independent atomic writes, and only the
+  inventory carried a run binding — so nothing compared the surface the review covered with the
+  diff the gate scoped to. A probe traced every driver path and could not assemble the mixed
+  pair (the pre-child clear, the hunks-before-groups write order and the per-run folder each stop
+  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does — `--groups` is
+  auto-discovered, `--diff-hunks` is not, so the operator supplies one half and inherits the
+  other — and it was accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against
+  the other generation's map, a green `--gate-scope on-diff` gate over a change nothing measured.
+  The driver now stamps both halves with this run's `run_id`, and the loader gains an optional
+  expected generation that rejects a foreign or absent stamp as the new `payload_malformed` value
+  `generation-mismatch`. The refusal is REPORT-VISIBLE, not stderr-only: the synthesize phase
+  hands the pair over with `--diff-hunks-run-id` even when it can already see the mismatch, so
+  `meta.coverage.delta_artifact` publishes the reason instead of reading null like a run that was
+  never a delta one — the gate is identical either way (no `base` survives, so the delta is
+  inactive and the scope widens to whole-repo, which fails closed). `synthesize.py` defaults that
+  expectation to the stamp on the `groups.json` it read, so the hand-run pair is bound too; an
+  explicit `--diff-hunks-run-id` overrides it, and an unstamped inventory expects nothing, which
+  keeps every direct caller and hand-written artifact reading byte for byte as before. The path
+  is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
+  nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **The self-scan matrix's `RepoProfiling` group has layers (#2273, #1784).** It sat AT the 48-file
+  group cap, so the last two discovery policies to come out of `discovery.py` were parked in
+  `Orchestration:Core` instead of claimed beside it — `dot_paths.py` (#1784) and
+  `exclude_carve_out.py` (#1757). Owner-approved split into `RepoProfiling:Discovery` (24 files),
+  the half that runs on every review — the file walk, the grouping of that listing against the
+  matrix, the delta map, the committed-plan contract and the tests axis — and
+  `RepoProfiling:Profiling` (26 files), the one-time setup and the durable profile it writes: the
+  grouping engine, the surfaces/floor model, the committed-config names and trust classes, setup
+  flow and proposal, and the catalog data those read. Both parks are reversed — the two modules
+  are claimed by `Discovery`, beside the module they came out of and their only runtime caller —
+  and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
+  `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
+  vacuous. Matrix and tests only: no Python module moved.
+- **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
+  Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
+  launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
+  the third — so a transient hiccup no classifier recognises no longer spends all three of its
+  launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
+  advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
+  `orchestrate.py` gained one call and no lines.
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
+- **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
+  A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
+  leaves its 700-line ceiling.
+- **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
+  `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
+  #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
+  process at the default disposition and orphaning a `docker run --rm` client. The capture in
+  `tools/base.py` now ends the child's tree on any interrupt mid-read, before closing the pipes.
+- **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
+  ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
+  matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
+  SEC-only review group, `exclude_paths_sec_carve_out`, whose coverage is pinned to `["SEC"]`; every
+  other domain still honours the exclusion and the files join no other group. Disclosed in three
+  places: `groups.json` and `meta.coverage.exclude_paths_sec_carve_out` carry the globs, the paths
+  and the count, and discovery's stderr line carries the globs and both counts. The report block
+  renders as one line in the Markdown and HTML coverage sections. Absent when nothing is
+  committed, `count: 0` when globs carved nothing. `--pr` mode is identical, the tool axis is
+  untouched, and the `/helm/` `/k8s/` substring half of SEC-71240568 was already fixed by #1838.
+- **The security workflows' pull-or-build step can now finish its fallback build (#2509, #1818).**
+  In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
+  a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
+  ~11 min build + margin), under the job's 30, and a test pins the inequality.
+- **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
+  On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
+  `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
+  findings — the map that chose the gate's scope is provably damaged. It is the
+  `zero_hunk_gate_gap` posture (#2178, narrowed by #2222) over a map that still carries ranges,
+  which in practice means the two drop arms: the older rule wins when both hold, and the one
+  `payload_malformed` value an active delta can carry empties the map, so #2178 answers there.
+  Knowingly missed: a truncated map whose paths arrived `[]`, which nothing tells apart from a
+  deletion-only, binary, mode-only or same-content rename change — the rest of
+  `paths_without_ranges` stays disclosed and is never gated on, and the schema descriptions now
+  say exactly that.
+- **An advisor's differing OCRDb code is recorded, never applied (#2101).** The schema and
+  `evidence.apply_verdict` always said so; `apply_verdict_quality`, later in the live call order,
+  rewrote the finding's `code` from the same value that record holds, so each step read correctly
+  alone. It no longer reads the verdict's `code` at all, and the two fields that described the
+  mutation are retired: the finding's `code_corrected_by` and
+  `meta.coverage.ocrdb.code_corrections`. The catalog-strain signal still reads
+  `provenance.advisor_code`, and the advisor prompt now asks for a second opinion rather than a
+  correction. The rejection/backup policy is unchanged, and severity is still mutated only by the
+  override discipline -- now measured against the PUBLISHED code's default, so a reason-less
+  override reverts to the panel's code rather than to the advisor's.
 - **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
   `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
   tolerated as per-record errors and the DB is verified by the size floor as before.

@@ -159,6 +159,24 @@ def _chunk_of_map(review_root):
             for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name") and g.get("chunk_of")}
 
+def _sec_carve_out_groups(review_root):
+    """The group names `discovery` stamped as the #1757 SEC carve-out, read off
+    `groups.json` the same way `_chunk_of_map` reads `chunk_of`.
+
+    A SET rather than a per-group lookup: the marker only ever says "this group
+    exists because a target's `exclude_paths:` could not take the objective SEC
+    surface out of the SEC domain". Two guards, both because `groups.json` is
+    TARGET-WRITABLE: `is True` (a truthy string or a 1 must not narrow a cell),
+    and the NAME must be one `exclude_carve_out.install` actually mints
+    (`groups_schema.is_sec_carve_out_name`) -- the marker on a real group would
+    otherwise drop COD/DAT/TST/ARC and every scout-added domain from its cell.
+    """
+    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
+    return {g["name"] for g in (data.get("groups") or [])
+            if isinstance(g, dict) and g.get("name")
+            and g.get(groups_schema.SEC_CARVE_OUT_MARKER) is True
+            and groups_schema.is_sec_carve_out_name(g["name"])}
+
 def _chunk_parent(name):
     """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
     if `name` is not a `<something>_<digits>` chunk. Leftover `._N` chunks map to
@@ -308,6 +326,7 @@ def coverage_execute(review_root, manifest):
     # Every group now has a scout output -> compute coverage (one group per call:
     # local work, no dispatch, so the cadence is unchanged and cheap).
     chunk_of = _chunk_of_map(review_root)
+    carve_out = _sec_carve_out_groups(review_root)
     for group, files in groups:
         if _coverage_ready(review_root, group, manifest):
             continue
@@ -350,6 +369,17 @@ def coverage_execute(review_root, manifest):
         # `panels:` nor the scout asked for it, so a mis-reporting or adversarial
         # config cannot silently skip its own security review.
         sec_floor = coverage_model.applicable_sec_floor(files)
+        # #1757 (AGT-1355709320), owner ruling 2026-09-25: this group exists ONLY
+        # so the objective SEC surface a target's `exclude_paths:` excluded still
+        # reaches the SEC domain. Every OTHER domain honours that exclusion -- so
+        # nothing here may widen the cell: not the surface-gated global floor,
+        # not a scout request (netted out, and still disclosed as `scout_added`
+        # would be: the answer is `[]`), and not a committed spec, which cannot
+        # exist because the name is reserved (`groups_schema._MINTED_SINKS`).
+        # `sec_floor` is `{"SEC"}` by construction -- every file here matched it.
+        carved = group in carve_out
+        if carved:
+            spec, floor, scout_added, gated_floor = {}, {"SEC"}, set(), frozenset()
         effective, disclosure = coverage_model.effective_panels(
             floor, scout_added, spec.get("exclude", set()),
             global_floor=gated_floor, signal_floor=sec_floor)
@@ -361,8 +391,12 @@ def coverage_execute(review_root, manifest):
             "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
             "scout_invalid": scout_invalid,             # dropped, disclosed
             "global_floor_suppressed": sorted(          # #5.0-19: surface absent
-                coverage_model.GLOBAL_FLOOR - gated_floor),
+                coverage_model.GLOBAL_FLOOR - gated_floor),   # -- or, when
+            # `sec_carve_out` is true, suppressed BY POLICY (#1757): all four
+            # are listed and none of them was measured as surfaceless. Read the
+            # two keys together; the carve-out flag is the discriminator.
             "sec_floor_applied": sorted(sec_floor),     # #run8 SEC-G2A: objective
+            "sec_carve_out": carved,                    # #1757: SEC-only by policy
             "effective": sorted(effective),             # security surface -> SEC forced on
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
@@ -373,8 +407,10 @@ def coverage_execute(review_root, manifest):
         # operator who reached for a fixture-corpus `exclude:`-sink got a SILENT
         # SEC panel on deliberately-vulnerable code, and 16 illusory HIGHs
         # reached the gate (run-6). Persist the override AND warn loudly: to drop
-        # a path corpus entirely (fixtures included, SEC included), use top-level
-        # `exclude_paths:`, which prunes before grouping so no domain reviews it.
+        # a path corpus entirely, use top-level `exclude_paths:`, which prunes
+        # before grouping so no domain reviews it -- every domain but SEC, since
+        # #1757: a file the objective SEC floor matches is carved back in for the
+        # SEC domain alone, so `exclude_paths:` no longer silences SEC either.
         # #1838 SEC-71240568 (review finding 1): `rejected` names every
         # NON_EXCLUDABLE domain the config tried to exclude, but that does not
         # mean the domain ran -- a docs-only group's `exclude: [SEC]` is
@@ -391,7 +427,8 @@ def coverage_execute(review_root, manifest):
                 print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
                       "-- these domains still run. To drop paths entirely (e.g. a "
                       "fixture corpus), use top-level `exclude_paths:` in %s, "
-                      "not per-group `exclude:`."
+                      "not per-group `exclude:` -- but that drops every domain "
+                      "BUT SEC, since #1757."
                       % (group, ", ".join(ran), repo_config.CONFIG_NAMES[0]),
                       file=sys.stderr)
             if idle:

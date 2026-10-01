@@ -206,3 +206,15 @@ def repo_with_exclude(tmp_path):
         "groups:\n"
         "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
         "exclude_paths: ['vendor/**']\n")
+
+
+def repo_with_exclude_and_sec_surface(tmp_path):
+    # #1757: one `vendor/**` glob over two kinds of file -- a plain module the
+    # objective SEC floor does not match, and a dependency manifest it does. The
+    # first is pruned from every domain; the second is carved back in for SEC.
+    return _git_repo(
+        tmp_path,
+        ["src/checkout/pay.py", "vendor/dep.py", "vendor/requirements.txt"],
+        "groups:\n"
+        "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+        "exclude_paths: ['vendor/**']\n")

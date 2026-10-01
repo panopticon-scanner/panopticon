@@ -117,6 +117,12 @@ def build_parser():
     ap.add_argument("--diff-hunks", metavar="PATH", default=None,
                     help="Path to the orchestrator's diff-hunks.json (#449); "
                          "stamps each finding with finding.delta")
+    ap.add_argument("--diff-hunks-run-id", metavar="ID", default=None,
+                    help="The run generation --diff-hunks must carry (#2107): a "
+                         "foreign or absent run_id rejects the payload, so the "
+                         "gate widens instead of scoping to another run's diff. "
+                         "Omitted, it defaults to the run_id on the --groups "
+                         "inventory this run read -- the other half of the pair")
     ap.add_argument("--diff-context", type=int, default=5, metavar="N",
                     help="Lines of tolerance for on-diff classification (default 5)")
     ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
@@ -333,12 +339,23 @@ def main(argv=None):
                                     # stderr the driver buffers and discards on
                                     # a SUCCESSFUL run, so the report is the
                                     # only human surface they can reach.
-                                    discovery=gj.get("discovery"))
+                                    discovery=gj.get("discovery"),
+                                    # #1757: and the exclusion this run did NOT
+                                    # apply -- the coverage section is where the
+                                    # owner ruling says it has to be disclosed.
+                                    sec_carve_out=gj.get(
+                                        "exclude_paths_sec_carve_out"))
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,
         tool_axis_mod.tools_produced_from_dispositions(dispositions))
-    delta = delta_mod.DeltaContext.from_args(args)
+    # #2107 review round 1: `gj` is the inventory this run actually read, and
+    # its `run_id` is the generation the hunk map must share. Passed as the
+    # DEFAULT expectation so the hand-run path -- `--groups` auto-discovered
+    # above, `--diff-hunks` supplied by the operator, no driver in sight -- is
+    # bound too; `--diff-hunks-run-id` overrides, and an unstamped inventory
+    # expects nothing.
+    delta = delta_mod.DeltaContext.from_args(args, gj.get("run_id"))
 
     # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can
     # tell apart from a gate FAIL (1) or INCONCLUSIVE (2). Validate it up front

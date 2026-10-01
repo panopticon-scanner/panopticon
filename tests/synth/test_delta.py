@@ -332,6 +332,102 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(delta_mod.load_diff_hunks(path),
                              delta_mod.load_diff_hunks_report(path)[0])
 
+class TestTheExpectedGenerationIsEnforced(unittest.TestCase):
+    """#2107: `groups.json` and `diff-hunks.json` are written by ONE discovery
+    child and published as two INDEPENDENT atomic writes, and only the groups
+    half carried a run binding.
+
+    The #2107 probe traced every driver path and found the mixed pair
+    unreachable (the pre-child clear in `phases/discovery.py`, the
+    hunks-before-groups write order, and the per-run folder each stop it), but
+    nothing declared the invariant and nothing tested it -- and a hand-run
+    `discovery.py` followed by a hand-run `synthesize.py` assembles it, because
+    `--groups` is auto-discovered from the flat path while `--diff-hunks` is
+    not. There the review cells come from one generation and the gate's scope
+    from another, so every finding the review produced classifies off-diff
+    against someone else's hunk map and a `--gate-scope on-diff` gate has
+    nothing left to fail on: a PASS over a change nothing measured.
+
+    So the stamp is a FIELD a reader checks, not an accident of three
+    mechanisms. The expectation is optional: absent, the stamp is not read at
+    all, which keeps every existing caller and every hand-written artifact
+    byte-for-byte unaffected."""
+
+    def _write(self, d, payload):
+        path = os.path.join(d, "diff-hunks.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        return path
+
+    PAYLOAD = {"base": "main", "hunks": {"a.py": [[1, 5]]}}
+
+    def test_the_vocabulary_value_is_the_published_one(self):
+        self.assertEqual(delta_mod.MALFORMED_GENERATION, "generation-mismatch")
+
+    def test_a_foreign_stamp_rejects_the_whole_payload(self):
+        # The Q2-c shape: a generation-A artifact met by a generation-B
+        # expectation. Rejected in WHOLE, so no `base` survives and the review
+        # degrades to a non-delta one -- the wider gate, which fails closed.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertEqual(data, {})
+            self.assertEqual(report.payload_malformed, "generation-mismatch")
+            self.assertEqual((report.files, report.ranges), (0, 0))
+
+    def test_an_absent_stamp_rejects_too(self):
+        # Unlike `schema_version`, where an ABSENT key is accepted because a
+        # hand-written artifact predating it is not a version mismatch. Here
+        # the expectation exists only on the driver path, where the discovery
+        # phase stamped the file it wrote -- so an unstamped artifact THERE is
+        # one this run did not produce, which is the orphan the probe's Q1
+        # crash leaves behind.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertEqual(data, {})
+            self.assertEqual(report.payload_malformed, "generation-mismatch")
+
+    def test_a_matching_stamp_is_accepted_and_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-2"))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertIsNone(report.payload_malformed)
+            self.assertEqual(data["base"], "main")
+            self.assertEqual((report.files, report.ranges), (1, 1))
+
+    def test_no_expectation_ignores_the_stamp_entirely(self):
+        # Today's behaviour, byte for byte, for all three stamp states: the
+        # hand-written artifact in half this module's fixtures carries none.
+        with tempfile.TemporaryDirectory() as d:
+            for stamp in ({}, {"run_id": "RUN-1"}, {"run_id": None}):
+                path = self._write(d, dict(self.PAYLOAD, **stamp))
+                data, report = delta_mod.load_diff_hunks_report(path)
+                self.assertIsNone(report.payload_malformed, stamp)
+                self.assertEqual(data["base"], "main", stamp)
+
+    def test_from_args_threads_the_expectation_and_discloses_the_refusal(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                ctx = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high",
+                              diff_hunks_run_id="RUN-2"))
+            self.assertFalse(ctx.active)
+            self.assertEqual(ctx.report.payload_malformed, "generation-mismatch")
+            self.assertIn("DELTA ARTIFACT MALFORMED", err.getvalue())
+            self.assertIn("generation-mismatch", err.getvalue())
+
+    def test_from_args_without_the_flag_keeps_the_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            with contextlib.redirect_stderr(io.StringIO()):
+                ctx = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+            self.assertTrue(ctx.active)
+            self.assertIsNone(ctx.report.payload_malformed)
+
 class TestDeltaLoadDisclosure(unittest.TestCase):
     """ARC-2340795244 (#1783): from_args says on stderr what the artifact cost,
     in the #957 register. A green gate over a change with findings is the
@@ -780,6 +876,183 @@ class TestZeroHunkGateGap(unittest.TestCase):
         self.assertTrue(ctx.active)
         self.assertIsNone(ctx.report)
         self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+
+
+class TestBrokenArtifactGateGap(unittest.TestCase):
+    """#2405 (owner ruling 2026-10-01, candidate 1): the gate consequence of the
+    SPLIT #2386 published. A provably damaged map chose this gate's scope, so an
+    on-diff run carrying findings the gate would have judged reads INCONCLUSIVE
+    -- `zero_hunk_gate_gap`'s posture (#2178, narrowed by #2222) over a different
+    measure. The measure is the provably broken shape and only it:
+    `paths_emptied_by_drops`, `ranges_dropped`, or a set `payload_malformed`. A
+    legitimately rangeless path -- a deletion-only, binary, mode-only or
+    same-content rename change -- never trips it, and a truncated map that
+    arrived `[]` is knowingly missed, because nothing here tells it from those."""
+
+    def _ctx(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                return delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+
+    def test_a_path_emptied_by_drops_is_a_gap_while_the_map_has_ranges(self):
+        # The case the zero-hunk rule cannot see: one real range anywhere leaves
+        # `ranges == 0` false, so THAT rule is silent and this one speaks.
+        ctx = self._ctx({"base": "main",
+                         "hunks": {"a.py": [[10, 12]], "c.py": ["nope"]}})
+        self.assertEqual(ctx.report.ranges, 1)
+        self.assertEqual(ctx.report.paths_emptied_by_drops, 1)
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+        gap = delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff")
+        self.assertIsNotNone(gap)
+        self.assertIn("broken-artifact delta gate", gap)
+        self.assertIn("paths_emptied_by_drops", gap)
+        self.assertIn("2 gate-eligible finding(s)", gap)
+        # The remedy, in the sibling rule's words: the artifact is written by a
+        # phase the operator can re-run, which is why the note names it.
+        self.assertIn("regenerate the diff-hunks artifact", gap)
+        self.assertIn("the driver's discovery phase writes it", gap)
+
+    def test_dropped_ranges_alone_are_a_gap_and_are_named(self):
+        # `_dropped_phrase`, shared with `_disclose_load` and with the zero-hunk
+        # rule, so no two of the three can name different losses for one read.
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}})
+        self.assertEqual((ctx.report.ranges, ctx.report.ranges_dropped,
+                          ctx.report.paths_emptied_by_drops), (1, 1, 0))
+        gap = delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("1 hunk range(s) were malformed and dropped", gap)
+        self.assertNotIn("paths_emptied_by_drops", gap)
+
+    def test_a_rejected_payload_is_a_gap_and_names_the_reason(self):
+        # FUNCTION-LEVEL only, never a production path: `hunks not an object` is
+        # the one value that reaches an active delta and it leaves the map empty,
+        # so `ranges == 0` and `delta_gate_gap` publishes the zero-hunk reason
+        # instead (review round 1, finding 1). The arm exists so the measure is
+        # total over the closed vocabulary.
+        ctx = self._ctx({"base": "main", "hunks": 7})
+        gap = delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("the payload was rejected", gap)
+        self.assertIn(delta_mod.MALFORMED_HUNKS_NOT_OBJECT, gap)
+
+    def test_the_count_is_qualified_as_the_gate_eligible_set(self):
+        # The same clause `zero_hunk_gate_gap` composes (#2222), so one operator
+        # reading either note reads one definition of the number.
+        gap = delta_mod.broken_artifact_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}}), 3,
+            "on-diff")
+        self.assertIn("3 gate-eligible finding(s) (the active set after the "
+                      "gate's evidence policy and any --fail-on floor, before "
+                      "delta scoping)", gap)
+
+    def test_a_legitimately_rangeless_path_is_no_gap(self):
+        # The ruling's carve-out, and the reason the measure is the SUBSET: three
+        # paths arrived `[]`, which a deletion-only, binary, mode-only or
+        # same-content rename change produces on purpose -- and which a truncated
+        # map produces too, the blind spot the ruling knowingly accepts.
+        ctx = self._ctx({"base": "main",
+                         "hunks": {"a.py": [[10, 12]], "b.py": [], "c.py": [],
+                                   "d.py": []}})
+        self.assertEqual(ctx.report.paths_without_ranges, 3)
+        self.assertEqual(ctx.report.paths_emptied_by_drops, 0)
+        self.assertEqual(ctx.report.ranges_dropped, 0)
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
+
+    def test_a_dropped_path_beside_a_surviving_range_is_no_gap(self):
+        # The ruling's chosen BOUNDARY, pinned: `paths_dropped` is not one of the
+        # three counters in the measure, so a map that lost a whole path while
+        # keeping a range elsewhere does not turn the gate INCONCLUSIVE -- even
+        # though it is broken by the same standard, and even though the direction
+        # is fail-OPEN (the dropped file leaves the map, so every finding in it
+        # classifies off-diff and leaves this gate's source set). Without this
+        # case, widening the measure to `paths_dropped` is a silent change.
+        # Tracked separately for an owner ruling, not fixed here.
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]], "b.py": 7}})
+        self.assertEqual((ctx.report.ranges, ctx.report.paths_dropped,
+                          ctx.report.ranges_dropped,
+                          ctx.report.paths_emptied_by_drops), (1, 1, 0, 0))
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
+        self.assertIsNone(delta_mod.delta_gate_gap(ctx, 2, "on-diff"))
+
+    def test_a_clean_populated_map_is_no_gap(self):
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}}), 2,
+            "on-diff"))
+
+    def test_an_inactive_delta_is_no_gap(self):
+        # No base: the review degrades to the WIDER gate, which fails closed, so
+        # the damaged map scoped nothing away.
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(
+            self._ctx({"hunks": {"a.py": [[1]]}}), 2, "on-diff"))
+
+    def test_the_wider_gate_scope_is_no_gap(self):
+        # A run that ASKED for `--gate-scope all` gates on every active finding,
+        # so the map it was handed chose nothing.
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}}), 2,
+            "all"))
+
+    def test_no_gate_eligible_findings_is_no_gap(self):
+        # The same carve-out the zero-hunk rule gets (#2222): a broken artifact
+        # over a run with nothing this gate would have judged scoped nothing away.
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}}), 0,
+            "on-diff"))
+
+    def test_an_unmeasured_context_is_no_gap(self):
+        # A context built straight from a payload carries no load report, so no
+        # counter measured its damage -- `_disclose_load` is silent there too.
+        ctx = delta_mod.DeltaContext(
+            diff_hunks={"base": "main", "hunks": {"a.py": []}})
+        self.assertTrue(ctx.active)
+        self.assertIsNone(ctx.report)
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
+
+    def test_the_emptied_arm_speaks_on_its_own(self):
+        # The loader cannot count an emptied path without also counting the range
+        # it dropped, so the clause is pinned on a hand-built report: whichever
+        # counter tripped has to be the one the note names.
+        ctx = delta_mod.DeltaContext(
+            diff_hunks={"base": "main",
+                        "hunks": {"a.py": [(10, 12)], "c.py": []}},
+            report=delta_mod.HunksLoad(files=2, ranges=1, paths_without_ranges=1,
+                                       paths_emptied_by_drops=1))
+        gap = delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("1 named path(s)", gap)
+        self.assertIn("paths_emptied_by_drops", gap)
+        self.assertNotIn("malformed and dropped", gap)
+
+
+class TestDeltaGateGap(unittest.TestCase):
+    """#2405: the composer, and the one call site `grading.grade_report` has. The
+    zero-hunk reason WINS when both rules hold -- it is the stronger statement,
+    that the gate's whole source set is unmeasured rather than merely damaged,
+    and two notes about one read leave the operator reconciling what looks like
+    two problems (#2169's F1 lesson)."""
+
+    _ctx = TestBrokenArtifactGateGap._ctx
+
+    def test_the_zero_hunk_reason_wins_when_both_hold(self):
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1]]}})
+        self.assertEqual((ctx.report.ranges, ctx.report.ranges_dropped), (0, 1))
+        gap = delta_mod.delta_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("zero-hunk delta gate", gap)
+        self.assertNotIn("broken-artifact delta gate", gap)
+
+    def test_the_broken_artifact_reason_is_returned_when_it_is_the_only_one(self):
+        gap = delta_mod.delta_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}}), 1,
+            "on-diff")
+        self.assertIn("broken-artifact delta gate", gap)
+        self.assertNotIn("zero-hunk delta gate", gap)
+
+    def test_a_clean_read_is_no_gap(self):
+        self.assertIsNone(delta_mod.delta_gate_gap(
+            self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]]}}), 2,
+            "on-diff"))
 
 
 class TestArtifactFacts(unittest.TestCase):

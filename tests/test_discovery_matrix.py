@@ -716,6 +716,9 @@ class TestOneOwnerForTheCommittedConfig:
         ("groups:\n  1:\n    match: ['a/**']\n", "group name 1 is invalid"),
         ("groups:\n  API:\n    match: src/**\n", "match must be a non-empty list"),
         ("groups:\n  Ungrouped:\n    match: ['a/**']\n", "reserved for the unmatched-file sink"),
+        # #1757: the second minted sink, reserved for the same reason.
+        ("groups:\n  exclude_paths_sec_carve_out:\n    match: ['a/**']\n",
+         "reserved for the #1757 SEC carve-out"),
     )
 
     def test_the_2189_probes_are_named_errors_never_tracebacks(self, tmp_path, capsys):

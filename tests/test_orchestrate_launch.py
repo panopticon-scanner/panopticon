@@ -572,3 +572,63 @@ class TestTheOutputSchemaShapeProof(LoopCase):
                       "--session-dir", self._session_root(d))
         self.assertEqual(0, probe.call_count)
 
+
+class TestTheLaunchBackoff(LoopCase):
+    """#2506: the automatic loop waits before re-launching an entry whose last
+    launch failed.
+
+    `skill/docs/guide/driver-run-loop.md` bounds a failed launch by a per-entry
+    cap of 3, and only a host-CLASS failure pauses the run. Nothing slept
+    between iterations, so a transient hiccup nobody recognised -- a reset
+    connection, a CLI that lost a socket -- burned an entry's three launches
+    inside a second or two and parked a cell that would have answered.
+    """
+
+    ENTRY = "verify-app-SEC-primary"
+
+    class Flaky(FakeRunner):
+        """`FAILURES` launches of `ENTRY` fail transiently, then it answers."""
+
+        FAILURES = 2
+        ENTRY = "verify-app-SEC-primary"
+
+        def run_entry(self, entry, env):
+            if (entry["id"] != self.ENTRY
+                    or self.launched.count(self.ENTRY) >= self.FAILURES):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            return base.RunResult.failed(entry["id"], "connection reset by peer")
+
+    def _loop(self, d, floor, runner):
+        """The loop with both backoff seams injected into the real method --
+        the schedule under test is the shipped one; only the sleeping and the
+        jitter are the test's."""
+        slept, real = [], outage.FailureTally.pause_before_launch
+
+        def recording(tally, mode, pending, sleep=None, jitter=None):
+            return real(tally, mode, pending, sleep=slept.append,
+                        jitter=lambda low, high: 0.0)
+
+        with mock.patch.object(outage.FailureTally, "pause_before_launch", recording):
+            return self._run_loop(d, floor, runner), slept
+
+    def test_a_flaky_entry_gets_the_backoff_and_its_third_launch_lands(self):
+        d, floor = self._repo()
+        runner = self.Flaky()
+        status, slept = self._loop(d, floor, runner)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual([2.0, 4.0], slept)
+        self.assertEqual(3, runner.launched.count(self.ENTRY))
+
+    def test_the_cap_still_parks_a_stuck_entry_and_never_sleeps_again(self):
+        # The schedule may not buy a fourth launch, and the parked iteration
+        # may not sleep for it: `exhausted` is read before anything is armed.
+        d, floor = self._repo()
+        runner = self.Flaky()
+        runner.FAILURES = 99
+        status, slept = self._loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertEqual([2.0, 4.0], slept)
+        self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
+                         runner.launched.count(self.ENTRY))
