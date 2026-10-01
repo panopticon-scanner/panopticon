@@ -383,6 +383,14 @@ def _write_scopes(permissions):
                   if isinstance(level, str) and level == "write")
 
 
+def _undeclared_permission_jobs(doc):
+    """Job names whose token scopes come from the repository default."""
+    if doc.get("permissions") is not None:
+        return []
+    return sorted(name for name, job in (doc.get("jobs") or {}).items()
+                  if isinstance(job, dict) and job.get("permissions") is None)
+
+
 def privilege_defect(doc):
     """Why this workflow is too privileged to carry an install exemption, or None.
 
@@ -411,18 +419,15 @@ def privilege_defect(doc):
         return "runs on pull_request_target, so a fork PR reaches it"
     workflow_block = doc.get("permissions")
     grants = [("workflow", _write_scopes(workflow_block))]
-    undeclared = []
     for name, job in (doc.get("jobs") or {}).items():
         if isinstance(job, dict):
-            block = job.get("permissions")   # one value, two questions below
+            block = job.get("permissions")
             grants.append(("job %s" % name, _write_scopes(block)))
-            if workflow_block is None and block is None:
-                undeclared.append(name)
     defects = ["%s holds %s" % (where, ", ".join(scopes))
                for where, scopes in grants if scopes]
     defects += ["job %s declares no `permissions:` block, so the token's scopes "
                 "come from the repository default" % name
-                for name in sorted(undeclared)]
+                for name in _undeclared_permission_jobs(doc)]
     if defects:
         return "; ".join(defects)
     return None
@@ -792,6 +797,20 @@ class TestExemptionPosture(unittest.TestCase):
             dict(self.NO_BLOCK,
                  jobs={"test": {"permissions": {"contents": "write"},
                                 "steps": []}})))
+
+
+class TestEveryWorkflowDeclaresTokenPosture(unittest.TestCase):
+    def test_every_job_has_an_effective_permissions_block(self):
+        defects = []
+        for path in _workflow_files():
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh.read()) or {}
+            defects.extend("%s / job %s" % (os.path.basename(path), job)
+                           for job in _undeclared_permission_jobs(doc))
+        self.assertEqual(
+            [], defects,
+            "workflow jobs with no effective `permissions:` block; their token "
+            "scopes come from the repository default:\n" + "\n".join(defects))
 
 
 class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):

@@ -517,7 +517,11 @@ on Claude hooks, and always uses the return-persist path.
   tokens were spent either way). Either kind counts toward a **per-entry cap of 3 consecutive failed
   launches**, after which the loop exits `error` naming the entry, the count and its last error; a
   clean, accepted launch clears that entry's streak, so the cap bounds an entry that is stuck rather
-  than one that is merely flaky. It is not a flag — re-run to resume from disk, which starts every
+  than one that is merely flaky. Before re-launching an entry whose last launch failed, the
+  **automatic** loop waits `min(2 ** streak, 8)` seconds plus up to 25% jitter first — 2 s
+  then 4 s, six seconds plus jitter in all before the cap parks it — and prints the wait on
+  `stderr`; a streak of 0 waits nothing, and session mode never waits, since a human advances
+  that loop (#2506). It is not a flag — re-run to resume from disk, which starts every
   streak at zero. In session mode the streak is per-invocation, since nothing there advances except
   a human persisting a reply that passes the phase's done predicate. A failure the **host** caused —
   an auth refusal, a quota, a plan or session limit, a rate limit, or the provider itself being down
@@ -622,7 +626,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   a missing attestation reads as unknown, not as tampered.
 - **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/groups.json` against the
   committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`) additionally write
-  `.panopticon/diff-hunks.json`. **Discovery completes only on a well-formed groups artifact**
+  `.panopticon/diff-hunks.json`. **Both halves carry this run's `run_id`** (#2107): the child
+  writes the hunk map first and the inventory second, as two independent atomic writes, so the
+  driver stamps the sibling with the same stamp it puts on `groups.json` — the surface the review
+  covers and the diff the gate scopes to are then one generation by construction, not by the
+  write order's good manners. **Discovery completes only on a well-formed groups artifact**
   (#1643): the driver stamps the artifact with this run's `run_id` and then requires it — a `groups`
   LIST whose every record carries a non-empty `name` and a `files` list of strings, and at least one
   group carrying at least one file (an empty leaf beside real ones is normal; an artifact whose
@@ -1026,7 +1034,19 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/diff-hunks.json` added when `discovery` emitted it) → `.panopticon/report.json`. A
+  .panopticon/diff-hunks.json` added when `discovery` emitted it, always beside
+  `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/report.json`. A foreign or absent
+  stamp is REFUSED (#2107): the pair is handed over WITH the expectation, so the child's loader
+  rejects the payload, one stderr line says so, the report publishes
+  `delta_artifact.payload_malformed: generation-mismatch`, and the gate degrades to whole-repo
+  scope rather than scoping this run to another generation's diff. Only a manifest whose `run_id`
+  is not a non-empty string withholds the path — there is no expectation to thread, and a
+  non-string argv token cannot launch the child at all. **A hand-run `synthesize.py` is bound
+  too**: the loader's expectation defaults to the stamp on the `groups.json` it read, so an
+  operator who inherits `--groups` by auto-discovery and supplies `--diff-hunks` himself — the
+  one mixing shape no driver path can reach — gets the check without passing the flag. Passing
+  `--diff-hunks-run-id` overrides it, and an inventory carrying no stamp expects nothing, which
+  is what keeps a hand-written artifact reading as it always did. A
   diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
   drops or repairs (#2382) are named on stderr, and every drop is counted in `meta.coverage.delta` when the payload
   resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
@@ -1060,12 +1080,14 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings
   (active, admitted by the evidence policy and by `--fail-on` when one is set) that run now reads
   `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
-  (unreadable, not an object, or a bad `schema_version`) carries no `base`, so the review stays a non-delta one and
-  `meta.coverage.delta` is null — the same null a run that was never passed `--diff-hunks`
-  writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart (#2169): an
-  object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that does not
-  exist included — active delta or not, carrying the `payload_malformed` reason, every counter and the
-  `keys_repaired` list (#2382), and null when no path was given, so the block's presence alone is the fact.
+  (unreadable, not an object, a bad `schema_version`, or a `generation-mismatch` — a `run_id` that
+  is not the one this run's `groups.json` carries, #2107) carries no `base`, so the review stays a
+  non-delta one and `meta.coverage.delta` is null — the same null a run that was never passed
+  `--diff-hunks` writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart
+  (#2169): an object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that
+  does not exist included — active delta or not, carrying the `payload_malformed` reason, every
+  counter and the `keys_repaired` list (#2382), and null when no path was given, so the block's
+  presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
   `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the

@@ -1,4 +1,5 @@
 """Core run_tools tests: selection, manifest, partitioning, output handling."""
+import ast
 import contextlib
 import io
 import json
@@ -1131,3 +1132,38 @@ class TestEslintFileCoverageCapture(unittest.TestCase):
                 result = json.load(fh)
         self.assertEqual(result["file_coverage"]["eslint-security"], facts)
         self.assertEqual(result["missing"], [])
+
+
+class TestTheCliRunsUnderTheSigtermWrapper(unittest.TestCase):
+    """#2507: a hand-run `run_tools.py` must end its scanner containers on a
+    SIGTERM the way a Ctrl-C already does.
+
+    The driver path was closed by #2199: `driver.py`'s `__main__` block runs
+    every verb through `procgroup.sigterm_as_interrupt`, so a supervisor's stop
+    raises the interrupt the teardown paths already handle, and the `docker run`
+    clients -- launched without `start_new_session`, so they sit in the driver's
+    own session -- get the signal and proxy it to each container's PID 1. Run by
+    hand there was no wrapper: a plain `kill` ended the process at SIGTERM's
+    default disposition, so no `finally` ran, the capture's watchdog timer died
+    with the process, and the `docker run --rm` client was orphaned with its
+    container running to its own end.
+
+    Read off the AST the way `tests/test_procgroup.py` reads the driver's, and
+    asserted to be INSIDE the `__main__` guard: the suite imports `run_tools`,
+    and installing a SIGTERM handler at import time would replace the default
+    disposition every other test runs against.
+    """
+
+    def test_the_main_guard_runs_main_under_it_and_nothing_else_does(self):
+        path = os.path.join(REPO_ROOT, "skill", "scripts", "run_tools.py")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), path)
+        guards = [node for node in tree.body if isinstance(node, ast.If)
+                  and ast.unparse(node.test) == "__name__ == '__main__'"]
+        self.assertEqual(1, len(guards), "run_tools.py has no single __main__ guard")
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func).endswith("sigterm_as_interrupt")]
+        self.assertEqual(1, len(calls), "the CLI installs it once, at its entry")
+        self.assertIn(calls[0], list(ast.walk(guards[0])),
+                      "installed outside the __main__ guard, i.e. at import time")
+        self.assertEqual(["main"], [ast.unparse(arg) for arg in calls[0].args])

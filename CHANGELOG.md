@@ -28,6 +28,58 @@ evidence exposed.
   clear and none newly fails: metabase `pr-env.yml :: deploy_pr` (`$ADMIN -c` psql beside an
   OIDC-token `curl | jq`) and 30 jobs whose heredoc program parses a `pom.xml`, YAML, HTML or
   JSON and fetches nothing.
+- **`diff-hunks.json` is now bound to its `groups.json` generation (#2107).** One discovery child
+  writes the hunk map and then the inventory, as two independent atomic writes, and only the
+  inventory carried a run binding — so nothing compared the surface the review covered with the
+  diff the gate scoped to. A probe traced every driver path and could not assemble the mixed
+  pair (the pre-child clear, the hunks-before-groups write order and the per-run folder each stop
+  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does — `--groups` is
+  auto-discovered, `--diff-hunks` is not, so the operator supplies one half and inherits the
+  other — and it was accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against
+  the other generation's map, a green `--gate-scope on-diff` gate over a change nothing measured.
+  The driver now stamps both halves with this run's `run_id`, and the loader gains an optional
+  expected generation that rejects a foreign or absent stamp as the new `payload_malformed` value
+  `generation-mismatch`. The refusal is REPORT-VISIBLE, not stderr-only: the synthesize phase
+  hands the pair over with `--diff-hunks-run-id` even when it can already see the mismatch, so
+  `meta.coverage.delta_artifact` publishes the reason instead of reading null like a run that was
+  never a delta one — the gate is identical either way (no `base` survives, so the delta is
+  inactive and the scope widens to whole-repo, which fails closed). `synthesize.py` defaults that
+  expectation to the stamp on the `groups.json` it read, so the hand-run pair is bound too; an
+  explicit `--diff-hunks-run-id` overrides it, and an unstamped inventory expects nothing, which
+  keeps every direct caller and hand-written artifact reading byte for byte as before. The path
+  is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
+  nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **The self-scan matrix's `RepoProfiling` group has layers (#2273, #1784).** It sat AT the 48-file
+  group cap, so the last two discovery policies to come out of `discovery.py` were parked in
+  `Orchestration:Core` instead of claimed beside it — `dot_paths.py` (#1784) and
+  `exclude_carve_out.py` (#1757). Owner-approved split into `RepoProfiling:Discovery` (24 files),
+  the half that runs on every review — the file walk, the grouping of that listing against the
+  matrix, the delta map, the committed-plan contract and the tests axis — and
+  `RepoProfiling:Profiling` (26 files), the one-time setup and the durable profile it writes: the
+  grouping engine, the surfaces/floor model, the committed-config names and trust classes, setup
+  flow and proposal, and the catalog data those read. Both parks are reversed — the two modules
+  are claimed by `Discovery`, beside the module they came out of and their only runtime caller —
+  and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
+  `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
+  vacuous. Matrix and tests only: no Python module moved.
+- **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
+  Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
+  launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
+  the third — so a transient hiccup no classifier recognises no longer spends all three of its
+  launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
+  advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
+  `orchestrate.py` gained one call and no lines.
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
+- **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
+  A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
+  leaves its 700-line ceiling.
+- **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
+  `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
+  #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
+  process at the default disposition and orphaning a `docker run --rm` client. The capture in
+  `tools/base.py` now ends the child's tree on any interrupt mid-read, before closing the pipes.
 - **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
   ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
   matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
