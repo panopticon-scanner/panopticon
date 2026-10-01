@@ -8,8 +8,10 @@ verdict is among the unbound, a real finding is reported as unverified.
 The issue quantified it without root-causing it and listed three candidates.
 Two are ruled out by reading:
 
-  - a code correction changing the domain prefix: `apply_verdict_quality`
-    rewrites `code`, never `domain`, and ids are already assigned by then;
+  - a code correction changing the domain prefix: `apply_verdict_quality` never
+    rewrote `domain` (and since #2101 does not rewrite `code` either: an advisor's
+    differing code is recorded, never applied), and ids are already assigned by
+    then;
   - normalization altering title/category: both sides normalize before
     assigning, which `matrix_finding_id`'s contract requires.
 
