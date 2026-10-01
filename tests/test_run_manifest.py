@@ -382,6 +382,98 @@ class TestManifestRejectsAnUnknownHost(unittest.TestCase):
                               host="evilhost", security_mode="standard")
 
 
+class TestManifestRejectsANonStringRunId(unittest.TestCase):
+    """#2525: `run_id` is type-validated at the READ, like `host`.
+
+    `phases/synthesize` and `phases/tools` both thread `manifest.get("run_id")
+    or ""` into the child's argv unconverted, and `run_tag` slugs the id
+    through `str()` -- so a hand-edited `"run_id": 7` used to survive the load,
+    stay truthy, and reach `subprocess.Popen` as a non-string argv member. The
+    `TypeError` that raises is covered by neither `child`'s `OSError ->
+    DriverError` conversion nor `driver.run`'s `except (DriverError,
+    ValueError)`: the driver died with a traceback and no `status:` line.
+
+    Refusing at the loader covers every phase that threads it at once, which
+    is why the check is here and not per flag. It DISCARDS rather than raises,
+    following the `host` precedent exactly: `load_manifest` is also what
+    `runio._run_tag` calls on every artifact path resolution, the --reset
+    recovery path included, so a raise here would turn a poisoned manifest
+    into an uncaught exception in the middle of path computation that --reset
+    could not clear -- the failure `run_tag`'s docstring already records.
+    """
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+
+    def _store(self, doc):
+        path = rm.manifest_path(self.root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+
+    def _load(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            return rm.load_manifest(self.root), err.getvalue()
+
+    def test_an_integer_run_id_is_discarded_and_named(self):
+        self._store({"host": "claude", "run_id": 7,
+                     "created": "2026-09-10T00:00:00Z"})
+        loaded, err = self._load()
+        self.assertIsNone(loaded)
+        self.assertIn("run_id", err)
+        self.assertIn("7", err)
+        self.assertIn("run-manifest.json", err)
+
+    def test_an_empty_run_id_is_discarded_and_named(self):
+        self._store({"host": "claude", "run_id": "",
+                     "created": "2026-09-10T00:00:00Z"})
+        loaded, err = self._load()
+        self.assertIsNone(loaded)
+        self.assertIn("run_id", err)
+
+    def test_a_string_run_id_is_loaded_untouched_and_silently(self):
+        self._store({"host": "claude", "run_id": "r1",
+                     "created": "2026-09-10T00:00:00Z"})
+        loaded, err = self._load()
+        self.assertEqual("r1", loaded["run_id"])
+        self.assertEqual("", err)
+
+    def test_an_absent_run_id_is_left_alone(self):
+        # The `host` rule, for the same reason: unknown is not absent. A
+        # manifest written before the key existed, and the setup namespace,
+        # carry none, and every consumer reads it as an absence already.
+        self._store({"host": "claude", "created": "2026-09-10T00:00:00Z"})
+        loaded, err = self._load()
+        self.assertEqual({"host": "claude", "created": "2026-09-10T00:00:00Z"},
+                         loaded)
+        self.assertEqual("", err)
+
+    def test_a_non_string_run_id_does_not_crash_path_resolution(self):
+        # Parity with the unknown-host case: the slugging stays total, because
+        # `runio._run_tag` calls it on every path resolution including --reset.
+        self.assertEqual("claude-standard-repo-20260910-7",
+                         rm.run_tag({"host": "claude", "run_id": 7,
+                                     "created": "2026-09-10"}))
+
+    def test_what_the_phases_thread_into_an_argv_is_always_a_string(self):
+        # The defect's own shape, at the seam that produced it: whatever this
+        # loader hands back, `manifest.get("run_id") or ""` -- the expression
+        # in `phases/synthesize` and `phases/tools` -- is a `str`, so the
+        # child's argv can no longer carry the hand-edited value.
+        for doc in ({"host": "claude", "run_id": 7},
+                    {"host": "claude", "run_id": ""},
+                    {"host": "claude", "run_id": ["r1"]},
+                    {"host": "claude"},
+                    {"host": "claude", "run_id": "r1"}):
+            with self.subTest(run_id=doc.get("run_id")):
+                self._store(doc)
+                loaded, _err = self._load()
+                token = (loaded or {}).get("run_id") or ""
+                self.assertIsInstance(token, str)
+
+
 class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
     """#1735 (SEC-D1C): `_rewrite` staged at `<manifest>.tmp` with a plain
     `open(tmp, "w")`.
