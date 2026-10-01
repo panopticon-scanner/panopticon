@@ -102,6 +102,14 @@
 #     (`ingest_tools.py`, in this cell) are one reviewer's question. Measured
 #     with discovery's own assignment, `Core` goes from 31 to 33 of the 48 cap
 #     (the #2289 line above says 30; it undercounted by one).
+#   - 2026-09-30 (#2315): `ToolAdapters:Integration` sat AT the 48 cap, grown
+#     there by its two directory globs, so the adapter contract surface
+#     (`tools/base.py`, `sarif_utils.py`, `legacy_sarif.py`, `egress.py`, the
+#     package marker's `ADAPTERS` registry) and its contract tests move to a
+#     fourth `ToolAdapters` layer, `Contract`, listed FIRST so its literal
+#     paths beat `Integration`'s globs. Measured with discovery's own
+#     assignment: Contract 17, Integration 31. A headroom guard in
+#     `tests/test_matrix_coverage.py` reds any `ToolAdapters` leaf above 40.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -112,14 +120,51 @@
 version: 1
 groups:
   ToolAdapters:
+    Contract:
+      # #2315: `Integration` sat at 48 of the 48 cap -- its two globs cover
+      # whole directories, so it grew there without anyone deciding to, and the
+      # next adapter or adapter test would have reddened the cap guard for
+      # whoever added it. Fourth `ToolAdapters` layer over the surface every
+      # adapter is written against: the base class, the SARIF normalization and
+      # prefix registry, the egress rule, the `ADAPTERS` registry in the package
+      # marker, and the contract tests that hold all of them to it.
+      # `Integration` keeps the scanner adapters, their per-tool and
+      # per-language tests, and `tests/tools/helpers.py`, the harness those
+      # tests share. `tests/tools/git_repo.py` sits here only because it lives
+      # under `tests/tools/`; its consumers are the driver, phase and diff-map
+      # tests, and reclaiming it beside them is a separate move. Listed FIRST
+      # because claims resolve in catalog order, first match wins -- these
+      # literal paths have to be read before `Integration`'s globs to beat
+      # them. Same move as #2233, which split `Image` out of `Core` one file
+      # under the cap.
+      match:
+      - skill/scripts/tools/base.py
+      - skill/scripts/tools/sarif_utils.py
+      - skill/scripts/tools/legacy_sarif.py
+      - skill/scripts/tools/egress.py
+      - skill/scripts/tools/__init__.py
+      tests:
+      - tests/tools/__init__.py
+      - tests/tools/git_repo.py
+      - tests/tools/test_base.py
+      - tests/tools/test_sarif_utils.py
+      - tests/tools/test_legacy_sarif.py
+      - tests/tools/test_legacy_sarif_integration.py
+      - tests/tools/test_normalization_contract.py
+      - tests/tools/test_prefix_registry.py
+      - tests/tools/test_egress.py
+      - tests/tools/test_adapter_cwd_confinement.py
+      - tests/test_adapter_expectations.py
+      - tests/test_no_unguarded_parse_index.py
+      panels:
+      - ARC
+      - SEC
     Integration:
       match:
       - skill/scripts/tools/**
       tests:
       - tests/tools/**
       - tests/test_integration_strictness.py
-      - tests/test_adapter_expectations.py
-      - tests/test_no_unguarded_parse_index.py
       panels:
       - ARC
       - SEC
