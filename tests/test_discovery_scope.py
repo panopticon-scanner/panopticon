@@ -145,6 +145,45 @@ def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
     assert hunks["base"] and "src/checkout/pay.py" in hunks["hunks"]
 
 
+def test_default_hunks_follow_selected_repo_not_caller(tmp_path, monkeypatch):
+    repo = repo_with_matrix(tmp_path / "selected")
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "c2")
+    caller = tmp_path / "caller"
+    caller_hunks = caller / ".panopticon" / "diff-hunks.json"
+    caller_hunks.parent.mkdir(parents=True)
+    caller_hunks.write_text("caller-owned\n")
+    monkeypatch.chdir(caller)
+
+    assert orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-changed",
+                              "--base", "HEAD~1"]) == 0
+    target_hunks = repo / ".panopticon" / "diff-hunks.json"
+    assert target_hunks.is_file()
+    assert caller_hunks.read_text() == "caller-owned\n"
+
+    assert orchestrator.main(["--repo", str(repo), "--repo-scan"]) == 0
+    assert not target_hunks.exists()
+    assert caller_hunks.read_text() == "caller-owned\n"
+
+
+def test_explicit_out_keeps_hunks_adjacent_in_run_directory(tmp_path, monkeypatch):
+    repo = repo_with_matrix(tmp_path / "selected")
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "c2")
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    run_dir = repo / ".panopticon" / "runs" / "direct"
+    out = run_dir / "groups.json"
+
+    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                              str(repo), "--out", str(out)]) == 0
+    assert (run_dir / "diff-hunks.json").is_file()
+    assert not (repo / ".panopticon" / "diff-hunks.json").exists()
+
+
 def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
