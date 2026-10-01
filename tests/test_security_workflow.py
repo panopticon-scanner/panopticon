@@ -408,7 +408,7 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
     scanner capture): a blind spot is exactly as wide as the argument for it.
     """
 
-    STEPS = ("Run static-analysis tools",
+    STEPS = ("Run static-analysis tools", "Expand exact Semgrep scope baseline",
              "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)")
     WORKFLOWS = (WORKFLOW, FORK_WORKFLOW)
 
@@ -733,7 +733,7 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 self.assertGreater(undeadlined, worst)
                 self.assertEqual(b["limit"], 1)   # one run id, parsed not matched
 
-    def test_the_step_succeeds_in_both_branches_and_writes_one_output(self):
+    def test_the_step_succeeds_in_both_branches_and_writes_both_outputs(self):
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
@@ -741,11 +741,12 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 self.assertIn("set -euo pipefail", run)
                 self.assertIn("else", run)
                 self.assertIn("::notice::", run)
-                # Both arms write the output the gate reads. A branch that
-                # wrote none would leave the gate reading an empty string,
-                # which is strict -- but by accident rather than by decision.
-                self.assertEqual(run.count('>> "$GITHUB_OUTPUT"'), 1)
+                # Both arms write the gate decision and the exact commit which
+                # supplied the artifact. A failed search clears the latter.
+                self.assertEqual(run.count('>> "$GITHUB_OUTPUT"'), 2)
                 self.assertIn('echo "found=$found" >> "$GITHUB_OUTPUT"', run)
+                self.assertIn('echo "sha=$sha" >> "$GITHUB_OUTPUT"', run)
+                self.assertIn('sha=""', run)
 
     def test_no_route_skips_the_fetch(self):
         # The `if: github.event_name == 'pull_request'` this replaces is what
@@ -829,6 +830,74 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         with open(FORK_WORKFLOW, encoding="utf-8") as fh:
             self.assertEqual(yaml.safe_load(fh)["permissions"],
                              {"contents": "read", "packages": "read"})
+
+
+class TestSemgrepScopeTransitionUsesAnExactBase(unittest.TestCase):
+    ROUTES = ((WORKFLOW, "scan"), (FORK_WORKFLOW, "fork-scan"))
+
+    @staticmethod
+    def _job(path, name):
+        with open(path, encoding="utf-8") as stream:
+            return yaml.safe_load(stream)["jobs"][name]
+
+    @staticmethod
+    def _step(job, name):
+        return next(step for step in job["steps"] if step.get("name") == name)
+
+    def test_transition_steps_are_conditional_and_run_before_the_gate(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                job = self._job(path, name)
+                steps = {step["name"]: step for step in job["steps"]
+                         if "name" in step}
+                detect = steps["Detect Semgrep scanner-scope transition"]
+                checkout = steps["Checkout exact Semgrep scope baseline"]
+                expand = steps["Expand exact Semgrep scope baseline"]
+                self.assertEqual(detect["if"],
+                                 "steps.baseline.outputs.found == 'true'")
+                condition = "steps.semgrep-scope-baseline.outputs.required == 'true'"
+                self.assertEqual(checkout["if"], condition)
+                self.assertEqual(expand["if"], condition)
+                order = [step.get("name") for step in job["steps"]]
+                self.assertLess(order.index("Run static-analysis tools"),
+                                order.index(detect["name"]))
+                self.assertLess(order.index(expand["name"]), order.index(
+                    "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"))
+
+    def test_checkout_is_the_artifact_commit_and_never_the_pr_head(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name),
+                                  "Checkout exact Semgrep scope baseline")
+                self.assertEqual(step["uses"],
+                                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+                self.assertEqual(step["with"]["repository"],
+                                 "${{ github.repository }}")
+                self.assertEqual(step["with"]["ref"],
+                                 "${{ steps.baseline.outputs.sha }}")
+                self.assertEqual(step["with"]["path"],
+                                 "semgrep-scope-baseline-target")
+                self.assertIs(step["with"]["persist-credentials"], False)
+
+    def test_expansion_scans_only_semgrep_then_prepares_the_downloaded_artifact(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                job = self._job(path, name)
+                detect = _without_comments(self._step(
+                    job, "Detect Semgrep scanner-scope transition")["run"])
+                expand = _without_comments(self._step(
+                    job, "Expand exact Semgrep scope baseline")["run"])
+                self.assertIn("semgrep-scope-transition-needed", detect)
+                self.assertIn("PYTHONPATH=controller/skill", detect)
+                self.assertIn("python -m scripts.tools_manifest", detect)
+                self.assertIn("--current-manifest", detect)
+                self.assertIn("--baseline-manifest", detect)
+                self.assertIn("--target semgrep-scope-baseline-target", expand)
+                self.assertIn("--tools semgrep", expand)
+                self.assertIn("prepare-semgrep-scope-baseline", expand)
+                self.assertIn("PYTHONPATH=controller/skill", expand)
+                self.assertIn("python -m scripts.tools_manifest", expand)
+                self.assertNotIn("--deps", expand)
 
 
 class TestStrictScheduledBackstop(unittest.TestCase):

@@ -16,14 +16,16 @@ Three questions live here, each one a shape a step writes down:
                                (`same_file`, `names_file`, `covers`, `may_run`,
                                `described`, `chmod_targets`), split out when
                                this module reached its size
-    where a script hides       `scripts` finds the shell handed to `eval` or
-                               `sh -c` as a STRING, which is the same act one
-                               quote away from a substitution; `stdin_program`
-                               the interpreter whose program arrives on standard
-                               input instead, which is the same act one
-                               REDIRECTION away (`bash -s <<'EOF'`), whose
-                               quoted body is `stdin_scripts`; `flattened`
-                               reads both in place of the command handed them;
+    where a script hides       `flattened` reads in place of the command handed
+                               them the scripts workflow_programs finds: the
+                               shell handed to `eval` or `sh -c` as a STRING
+                               (`scripts`), and the program an interpreter reads
+                               on standard input (`stdin_program`,
+                               `stdin_scripts`, a printer's among them, #2333)
+                               -- compatibility imports split out when this
+                               module ran short of room a third time;
+                               `unread_program` reports the programs it cannot
+                               read in place (`candidates`, `unprinted`);
                                `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
                                `carried` a download a step keeps in a variable
@@ -66,6 +68,9 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, candidates, scripts,
+                               stdin_program as stdin_program, stdin_scripts,
+                               unprinted as unprinted)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -150,101 +155,6 @@ def regions(stmts):
 
 # --- where a script hides ----------------------------------------------------
 
-# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
-# The text is shell and this module reads shell, so the quotes are not a
-# grammar it lacks -- only one it was not looking through. `python3 -c` and
-# `perl -e` are NOT here: that text is another language, and the gap list says
-# so.
-_SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
-
-
-def scripts(argv):
-    """The shell scripts this command is handed as a string, in order.
-
-    A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and the guard's `_walk` already credits what
-    is inside it.
-    """
-    if not argv:
-        return []
-    name, found = os.path.basename(argv[0]), []
-    if name == "eval":
-        found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING:
-        found = _after_dash_c(argv)
-    return [t for t in found if not shell_reader.is_marker(t)]
-
-
-def _after_dash_c(argv):
-    """The script operand of a shell's `-c`, wherever the flag was clustered.
-
-    `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
-    obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
-    no shell spells anything else that way, and `-c` consumes the next word
-    whatever else rides along with it. Requiring `-c` as its own token let
-    every clustered spelling through.
-    """
-    for position, token in enumerate(argv[1:], start=1):
-        if token == "--":
-            break
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
-            return argv[position + 1:][:1]
-    return []
-
-
-# An interpreter given no program to run reads one from its STANDARD INPUT, and
-# a heredoc is the shortest way a `run:` step writes one down: `bash -s <<'EOF'`
-# hands over a script exactly as `sh -c '<script>'` does, one redirection away
-# (#1839, run-14 SEC-3915165799). Three answers, because the guard needs three.
-SHELL_PROGRAM = "shell"        # the body is shell, which this module reads
-FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
-# The interpreters of the second kind. `python3 -c` and `perl -e` are already
-# ruled another language by `scripts` above, and a heredoc is the same text one
-# redirection over.
-_FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-# The operands that ARE standard input, and the only options a shell a `run:`
-# step writes spells with a separate value (`-o pipefail`, bash's `-O shopt`).
-_STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
-_VALUE_OPTIONS = "oO"
-
-
-def stdin_program(argv):
-    """Whether this command's PROGRAM is its standard input, and in what.
-
-    `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare
-    `sh`, `dash -`), `FOREIGN_PROGRAM` for a program in a language this module
-    does not read (`python3 -`), and None when the program is somewhere else --
-    a file (`bash x.sh`), a `-c` string, a `-m` module -- which makes stdin that
-    program's input DATA and not an act of this job's own.
-
-    Read as OPERANDS rather than as a full option grammar: an interpreter's
-    first word that is not an option is its program, and a shell's `-s` says
-    every word after it is a positional parameter instead. See the guard's gap
-    list for the spelling that leaves behind.
-    """
-    if not argv:
-        return None
-    name = os.path.basename(argv[0])
-    shell = name in _SHELL_STRING
-    if not shell and name not in _FOREIGN:
-        return None
-    answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM
-    rest = iter(argv[1:])
-    for token in rest:
-        if token in _STDIN_OPERANDS:
-            return answer
-        if not token.startswith(("-", "+")):
-            return None                     # the program is this file
-        letters = "" if token[:2] in ("--", "++") else token[1:]
-        if shell and "c" in letters:
-            return None                     # the program is the `-c` string
-        if shell and "s" in letters:
-            return answer                   # the words after `-s` are parameters
-        if letters and letters[-1] in _VALUE_OPTIONS:
-            next(rest, None)                # an option's value is not a program
-    return answer
-
-
 # Why a checksum in a script handed to a shell clears nothing, as `flattened`
 # finds it for the `credit` of each `Inlined` statement.
 _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
@@ -286,9 +196,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     fails = _errexit_states(stmts, pipefail, where, "pipefail", shell)
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
-        for stage in statement.stages:
-            argv = command(stage.argv)
-            for text in scripts(argv) + stdin_scripts(argv, stage):
+        for position, stage in enumerate(statement.stages):
+            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            for text in scripts(argv) + stdin_scripts(argv, stage, before):
                 name, ordinal = os.path.basename(argv[0]), ordinal + 1
                 gates = (stops and swallowed(stmts, index, statement, stage) is None
                          and (top or on[index] or index == last)
@@ -418,28 +328,17 @@ def step_credit(flat, shell=None):
     return credit
 
 
-def stdin_scripts(argv, stage):
-    """The QUOTED heredoc script this stage hands an interpreter, if it does.
-
-    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
-    quoted delimiter the interpreter reads the body as the text it was written
-    as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level; so is
-    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
-    `_unread_stdin`.
-    """
-    here = stage.stdin_heredoc
-    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
-        return []
-    return [here[0]]
-
-
 class Idle(str):
     """An unread reason `kept` keeps only where there are downloads: see
-    `substitution_script`."""
+    `substitution_script` and `unread_program`."""
 
 
-def substitution_script(argv, stage, walk):
+class _Unprinted(Idle):
+    """`unread_program`'s for a printer, which `kept` keeps only where no
+    other reason reports its statement: `carried`'s `echo "$x" | sh` (#2333)."""
+
+
+def substitution_script(argv, stage, walk, before=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
@@ -450,19 +349,60 @@ def substitution_script(argv, stage, walk):
     `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but
     the guard follows no download into a substitution, where a script may
     still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`.
+    `before` is the stage in front of this one, whose `echo` or `printf` may
+    pipe the shell its program (`stdin_scripts`, #2333).
     """
-    handed = scripts(argv) + stdin_scripts(argv, stage)
+    handed = scripts(argv) + stdin_scripts(argv, stage, before)
     if not handed:
         return None
-    why = ("hands a script to `%s` inside a command substitution, where this guard "
-           "follows no download -- it cannot say whether that script fetches or runs "
-           "one unchecked; run it outside the substitution, or exempt the step with a "
-           "reason" % os.path.basename(argv[0]))
-    live = [walk(flattened(statements(text))) for text in handed]
+    return _weighed("hands a script to `%s` inside a command substitution, where this guard "
+                    "follows no download -- it cannot say whether that script fetches or runs "
+                    "one unchecked; run it outside the substitution, or exempt the step with a "
+                    "reason" % os.path.basename(argv[0]), handed, walk)
+
+
+def _weighed(why, texts, walk, idle=Idle):
+    """`why` where a script among `texts`, flattened and walked, fetches or
+    holds an unread form, and `idle(why)` where none does."""
+    live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
-                      for found, unread in live) else Idle(why)
+                      for found, unread in live) else idle(why)
 
 
+def unread_program(argv, stage, walk, inside, before=None):
+    """Why a program this stage hands a shell goes unread, or None: a script
+    handed to one `inside` a command substitution (`substitution_script`),
+    the words a value where it reads its options may make its program
+    (`candidates`, #2344, #2337), or those of a printer that pipes it one
+    they do not spell out (`unprinted`, `before` being the stage in front of
+    it, #2333), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" |
+    sh` are `Idle`, and `sh $X`, with no word after the value, hands none.
+    A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
+    is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
+    guard reports unresolved (`sudo $CMD -c …`) is not read again here."""
+    handed = inside and substitution_script(argv, stage, walk, before)
+    (value, words), printer = candidates(argv), unprinted(argv, stage, before)
+    if handed or not (words or printer) or shell_reader.unresolved_wrapper(stage.argv):
+        return handed or None           # an unresolved command is reported whole
+    if printer:
+        return _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(printer[0])),
+                        [" ".join(printer[1:])], walk, _Unprinted)
+    return _weighed((
+        "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
+        "the word after its options is a program that may fetch or run a download unchecked; "
+        "name the command, or exempt the step with a reason" % shell_reader.readable(value)
+        if value is argv[0] else
+        "passes `%s` `%s` where it reads its options, a value this guard does not follow -- "
+        "any word after it may be the program the shell runs, and one here may fetch or run a "
+        "download unchecked; write the options out, or exempt the step with a reason"
+        % (os.path.basename(argv[0]), shell_reader.readable(value))),
+        [getattr(w, "spelled", w) for w in words
+         if not (shell_reader.is_marker(w) or isinstance(w, shell_reader.Rewritten))], walk)
+
+
+_PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not spell out -- it "
+            "cannot say whether that program fetches or runs a download unchecked; print literal "
+            "text or write it in a quoted heredoc, or exempt the step with a reason")
 INSIDE = " inside a command substitution"
 
 
@@ -592,7 +532,7 @@ def carried(stmts, executors):
             for word in words:
                 fetch = held.get(_held(word))
                 if fetch:
-                    consumer = to or [w for w in argv if w is not word
+                    consumer = to or [w for w in argv if getattr(w, "spelled", w) is not word
                                       and not shell_reader.is_marker(w)]
                     out.append((index, _CARRIES % (
                         shell_reader.readable(fetch.url), _held(word),
@@ -613,8 +553,11 @@ def carried(stmts, executors):
 
 def kept(unread, fetched):
     """The `(index, why)` of `unread` that stand where `fetched` are the
-    downloads: an `Idle` one only if there are any."""
-    return [(index, why) for index, why in unread if fetched or not isinstance(why, Idle)]
+    downloads: an `Idle` one only if there are any, and an `_Unprinted` one
+    not at a statement another reason reports (`carried`'s, #2333)."""
+    loud = {index for index, why in unread if not isinstance(why, Idle)}
+    return [(index, why) for index, why in unread if not isinstance(why, Idle)
+            or fetched and not (isinstance(why, _Unprinted) and index in loud)]
 
 
 # The container runners, and the subcommands of theirs that run a command. The

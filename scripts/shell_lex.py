@@ -171,6 +171,13 @@ _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
 _HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
 
 
+def ansi_c(body: str) -> str | None:
+    """The text bash makes of `$'body'` when its escapes are the four that are
+    the character (`\\\\`, `\\'`, `\\"`, `\\?`); None for any other (`\\x2d`,
+    `\\n`), which this module does not decode (#2344)."""
+    return None if set(_ANSI_ESCAPE.findall(body)) - set("\\'\"?") else _ANSI_ESCAPE.sub(r"\1", body)
+
+
 class Unreadable(Exception):
     """A script `lex` does not read: it nests `((` so deep that deciding each
     one, as bash does, would read it more than `_REREAD` times over, a
@@ -543,9 +550,9 @@ def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
             if single is not None:
                 parts.append(single)
             elif ansi is not None:      # the four escapes that are the character
-                if set(_ANSI_ESCAPE.findall(ansi)) - set("\\'\"?"):
+                if (decoded := ansi_c(ansi)) is None:
                     return start
-                parts.append(_ANSI_ESCAPE.sub(r"\1", ansi))
+                parts.append(decoded)
             else:
                 parts.append(_DQ_ESCAPE.sub(lambda m: m[1] or "", double))
             quoted, i = True, match.end()
@@ -581,8 +588,8 @@ def _string(text: str, i: int) -> tuple[str, int] | None:
             single, ansi, double = match.groups()
             if single is not None:
                 parts.append(single)
-            elif ansi is not None and not set(_ANSI_ESCAPE.findall(ansi)) - set("\\'\"?"):
-                parts.append(_ANSI_ESCAPE.sub(r"\1", ansi))
+            elif ansi is not None and (decoded := ansi_c(ansi)) is not None:
+                parts.append(decoded)
             elif (double is not None and match[0][0] == '"'
                   and not set("$`") & set(re.sub(r"\\.", "", double, flags=re.S))):
                 parts.append(_DQ_ESCAPE.sub(lambda m: m[1] or "", double))

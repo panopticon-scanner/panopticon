@@ -94,6 +94,15 @@ def _cases(mod):
     return out
 
 
+def _added_prefixed_args(cmd, original, prefix):
+    """Arguments with `prefix` added to an argv that may already own some."""
+    added = [arg for arg in cmd if arg.startswith(prefix)]
+    for arg in original:
+        if arg.startswith(prefix):
+            added.remove(arg)
+    return added
+
+
 # Captured from the tree at the commit this split branched from, BEFORE any code
 # moved. A difference here is the extraction being wrong: fix the extraction,
 # never this table.
@@ -141,25 +150,75 @@ GOLDEN = {
         '["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif", '
         '"--report-path", "/dev/stdout", "--no-banner", "--redact"]',
     "argv/semgrep/none/no-target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet", "/src"]',
     "argv/semgrep/none/target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet", "/src"]',
     "argv/semgrep/one/no-target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "--exclude=.venv", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet"'
+        ', "--exclude=.venv", "/src"]',
     "argv/semgrep/one/target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "--exclude=.venv", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet"'
+        ', "--exclude=.venv", "/src"]',
     "argv/semgrep/two/no-target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "--exclude=.venv", '
-        '"--exclude=a/b/.venv", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet"'
+        ', "--exclude=.venv", "--exclude=a/b/.venv", "/src"]',
     "argv/semgrep/two/target":
-        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off", '
-        '"--disable-version-check", "--sarif", "--quiet", "--exclude=.venv", '
-        '"--exclude=a/b/.venv", "/src"]',
+        '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
+        ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
+        ', "--no-git-ignore", "--exclude=.git", "--exclude=.svn", "--exclude=_darcs"'
+        ', "--exclude=build/", "--exclude=vendor/", "--exclude=dist/", "--exclude=*.min.js"'
+        ', "--exclude=.env/", "--exclude=.tox/", "--exclude=node_modules/"'
+        ', "--exclude=.npm/", "--exclude=.yarn/", "--exclude=.venv/", "--exclude=_opam/"'
+        ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
+        ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
+        ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--sarif", "--quiet"'
+        ', "--exclude=.venv", "--exclude=a/b/.venv", "/src"]',
     "argv/trivy/none/no-target":
         '["trivy", "fs", "--skip-db-update", "--offline-scan", "--format", "sarif", "/src"]',
     "argv/trivy/none/target":
@@ -297,11 +356,11 @@ class TestTheVirtualenvWalkAndItsExclusionKnobs(unittest.TestCase):
             "semgrep", list(rt.TOOL_CMD["semgrep"]), [{"path": "-rf", "reason": "name"}])
         self.assertEqual(cmd, list(rt.TOOL_CMD["semgrep"]))
         self.assertNotIn("-rf", " ".join(cmd))
-        for arg in vs._with_venv_excludes(
-                "semgrep", list(rt.TOOL_CMD["semgrep"]),
-                [{"path": ".venv", "reason": "name"}]):
-            if arg.startswith("--exclude"):
-                self.assertEqual(arg, "--exclude=.venv")   # attached, one arg
+        original = list(rt.TOOL_CMD["semgrep"])
+        cmd = vs._with_venv_excludes(
+            "semgrep", original, [{"path": ".venv", "reason": "name"}])
+        self.assertEqual(_added_prefixed_args(cmd, original, "--exclude="),
+                         ["--exclude=.venv"])  # attached, one arg
     def test_a_symlink_out_of_the_target_is_not_a_virtualenv(self):
         # F1: `os.walk` will not DESCEND a symlink, but `isfile` follows one, so
         # a link pointing at a venv outside the target was stat'd and flagged.
@@ -412,8 +471,9 @@ class TestAPlantedMarkerOrGlobNameCannotNarrowTheScan(unittest.TestCase):
                 {"path": "q?", "reason": vs.VENV_MARKER},
                 {"path": ".venv", "reason": vs.VENV_MARKER}]
         for tool, flag in (("semgrep", "--exclude="), ("trivy", "--skip-dirs=")):
-            cmd = vs._with_venv_excludes(tool, list(rt.TOOL_CMD[tool]), dirs)
-            self.assertEqual([a for a in cmd if a.startswith(flag)],
+            original = list(rt.TOOL_CMD[tool])
+            cmd = vs._with_venv_excludes(tool, original, dirs)
+            self.assertEqual(_added_prefixed_args(cmd, original, flag),
                              ["%s.venv" % flag], tool)
         cmd = vs._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), dirs)
         entries = [a for a in cmd if a.startswith("--exclude=")][0]
@@ -493,6 +553,7 @@ class TestNoTargetDirectoryNameReachesAnExclusionKnob(unittest.TestCase):
         # no flag for it.
         dirs = [{"path": "src", "reason": vs.VENV_MARKER_NO_SHAPE},
                 {"path": ".venv", "reason": vs.VENV_MARKER}]
-        cmd = vs._with_venv_excludes("semgrep", list(rt.TOOL_CMD["semgrep"]), dirs)
-        self.assertEqual([a for a in cmd if a.startswith("--exclude=")],
+        original = list(rt.TOOL_CMD["semgrep"])
+        cmd = vs._with_venv_excludes("semgrep", original, dirs)
+        self.assertEqual(_added_prefixed_args(cmd, original, "--exclude="),
                          ["--exclude=.venv"])

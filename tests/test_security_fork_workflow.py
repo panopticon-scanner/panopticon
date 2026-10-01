@@ -295,6 +295,14 @@ class TestTheTwoWorkflowsDoNotDrift(unittest.TestCase):
         self.assertEqual(base.get("continue-on-error"),
                          fork.get("continue-on-error"))
 
+    def test_the_scope_transition_commands_are_identical(self):
+        for name in ("Detect Semgrep scanner-scope transition",
+                     "Expand exact Semgrep scope baseline"):
+            with self.subTest(step=name):
+                base, fork = _step(self.base, name), _step(self.fork, name)
+                self.assertEqual(_script(base).split(), _script(fork).split())
+                self.assertEqual(base.get("if"), fork.get("if"))
+
     def test_the_image_step_is_identical(self):
         name = "Pull or build panopticon-tools image"
         base, fork = _step(self.base, name), _step(self.fork, name)
@@ -362,9 +370,11 @@ class TestBothWorkflowsScanInRedteam(unittest.TestCase):
 
     GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
     STEPS = {
-        BASE: ("scan", ("Run static-analysis tools", GATE, "Strict full-tree gate",
+        BASE: ("scan", ("Run static-analysis tools", "Expand exact Semgrep scope baseline",
+                        GATE, "Strict full-tree gate",
                         "Publish strict security snapshot and summary")),
-        FORK: ("fork-scan", ("Run static-analysis tools", GATE)),
+        FORK: ("fork-scan", ("Run static-analysis tools",
+                             "Expand exact Semgrep scope baseline", GATE)),
     }
 
     def test_every_scanner_run_gate_and_snapshot_names_redteam(self):
