@@ -232,8 +232,10 @@ jobs:
           done
           if [ "$found" != true ]; then
             echo "::notice::No completed security.yml run carrying raw-scanner-captures within $MAX_HOPS first-parent hop(s) back from ${BASE_SHA:-(this event has no base commit)}; this run is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
+            sha=""
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # Read-only history is fetched before any scan target is on disk. The
       # helper has no third-party imports on this path; deps are installed later.
@@ -355,6 +357,54 @@ jobs:
             --security redteam \
             --progress \
             --deps
+
+      # #2109: the first v1 scan cannot compare newly visible test findings to
+      # an old artifact that never scanned those paths. Rescan the exact commit
+      # which supplied that artifact with this job's controller and image, then
+      # replace only its Semgrep capture. This is a baseline expansion, never a
+      # finding waiver: a HIGH added by the PR is absent from the exact-base
+      # rescan and still fails below. Once main publishes a v1 artifact the
+      # detection is false and this one-time extra scan disappears.
+      - name: Detect Semgrep scanner-scope transition
+        id: semgrep-scope-baseline
+        if: steps.baseline.outputs.found == 'true'
+        run: |
+          required="$(PYTHONPATH=controller/skill python -m scripts.tools_manifest \
+            semgrep-scope-transition-needed \
+            --current-manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
+            --baseline-manifest "$RUNNER_TEMP/baseline/panopticon-tools-manifest.json")"
+          echo "required=$required" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact Semgrep scope baseline
+        if: steps.semgrep-scope-baseline.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: semgrep-scope-baseline-target
+          persist-credentials: false
+
+      - name: Expand exact Semgrep scope baseline
+        if: steps.semgrep-scope-baseline.outputs.required == 'true'
+        run: |
+          expanded_tools="$RUNNER_TEMP/semgrep-scope-baseline-tools"
+          expanded_manifest="$RUNNER_TEMP/semgrep-scope-baseline-manifest.json"
+          mkdir -p "$expanded_tools"
+          python controller/skill/scripts/run_tools.py \
+            --target semgrep-scope-baseline-target \
+            --out "$expanded_tools" \
+            --manifest "$expanded_manifest" \
+            --tools semgrep \
+            --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}' \
+            --security redteam \
+            --progress
+          PYTHONPATH=controller/skill python -m scripts.tools_manifest \
+            prepare-semgrep-scope-baseline \
+            --baseline-dir "$RUNNER_TEMP/baseline/panopticon-tools-output" \
+            --baseline-manifest "$RUNNER_TEMP/baseline/panopticon-tools-manifest.json" \
+            --expanded-dir "$expanded_tools" \
+            --expanded-manifest "$expanded_manifest"
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
       # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis

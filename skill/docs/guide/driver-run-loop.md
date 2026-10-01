@@ -806,9 +806,24 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `ignore_files.gitleaks` as
   `honoured`, `neutralised`, or `absent` in `tools-manifest.json`; the gate discloses that
   observed value beside its verdict. This field concerns an ignore FILE and stays separate
-  from `suppression_comments`, which concerns inline source comments. A `.semgrepignore`
-  committed at the scan root still narrows the scan in both modes; no flag disables it at
-  the pin; tracked on #2055.
+  from `suppression_comments`, which concerns inline source comments. **Semgrep 1.177.0 ignores
+  target-authored `.semgrepignore` and `.gitignore` files in both modes.** Its argv carries
+  `--x-ignore-semgrepignore-files` and `--no-git-ignore`, then repeats the pin's administrative,
+  generated-code and package-manager exclusions explicitly. The repeated list deliberately omits
+  Semgrep's four common-test defaults (`test/`, `tests/`, `testsuite/`, `*_test.go`) so real test
+  code is scanned. Three jobs fit the runner's four-CPU ceiling without Semgrep's nine-job default
+  oversubscription. The list also excludes Panopticon run/worktree/design data and generated Python
+  caches, so disabling Git ignores does not turn those artifacts into source. The x-flag is
+  internal and therefore guarded by the pinned live-tool regression. Committed `exclude_paths`
+  values are attached to Semgrep as `--exclude=` arguments and recorded in the manifest, so an
+  intentional fixture or golden corpus does not consume the expanded scan; ingest applies the same
+  disclosed policy to every tool. A target Semgrep file cannot make that choice. A produced capture
+  records `scanner_scope.semgrep: test-paths-v1` only when every scanner-owned scope argument was on
+  the launched argv. When a downloaded CI baseline predates that marker, CI scans the exact commit
+  which supplied the artifact with the current controller and image, then replaces only its Semgrep
+  capture. The ordinary delta gate therefore matches standing test findings while a finding added by
+  the PR is absent from the expanded base and still gates. The extra scan stops after main publishes
+  a baseline carrying the marker.
   **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was

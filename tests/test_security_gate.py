@@ -7,6 +7,7 @@ import unittest
 
 import scripts.ingest_tools as ingest_tools
 import scripts.security_gate as gate
+import scripts.tools_manifest as tools_manifest
 
 
 class TestGitleaksIgnoreDisclosure(unittest.TestCase):
@@ -66,6 +67,23 @@ class TestGitleaksIgnoreDisclosure(unittest.TestCase):
                         json.dump({"selected": ["gitleaks"], "produced": ["gitleaks"],
                                    "missing": [], "ignore_files": row}, fh)
                     with self.assertRaisesRegex(ValueError, "ignore_files is malformed"):
+                        gate.load_manifest(manifest)
+
+    def test_scanner_scope_is_optional_but_malformed_rows_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = os.path.join(root, "m.json")
+            base = {"selected": ["semgrep"], "produced": ["semgrep"],
+                    "missing": []}
+            with open(manifest, "w") as fh:
+                json.dump(base, fh)
+            self.assertEqual(gate.load_manifest(manifest)["scanner_scope"], {})
+            for row in ([], {"semgrep": "bad\nforged"}, {"": "scope-v1"},
+                        {"bad\nkey": "scope-v1"}, {"bandit": "scope-v1"}):
+                with self.subTest(row=row):
+                    with open(manifest, "w") as fh:
+                        json.dump({**base, "scanner_scope": row}, fh)
+                    with self.assertRaisesRegex(ValueError,
+                                                "scanner_scope is malformed"):
                         gate.load_manifest(manifest)
 
 
@@ -1269,7 +1287,7 @@ class TestTheDeltaAwareGate(unittest.TestCase):
     point of the gate.
     """
 
-    def _capture(self, root, name, payloads):
+    def _capture(self, root, name, payloads, scanner_scope=None):
         """A `<root>/<name>/` laid out the way the CI artifact is."""
         base = os.path.join(root, name)
         tools = os.path.join(base, "panopticon-tools-output")
@@ -1280,9 +1298,12 @@ class TestTheDeltaAwareGate(unittest.TestCase):
                       encoding="utf-8") as fh:
                 json.dump(doc, fh)
         manifest = os.path.join(base, "panopticon-tools-manifest.json")
+        manifest_row = {"selected": sorted(payloads), "produced": sorted(payloads),
+                        "missing": []}
+        if scanner_scope is not None:
+            manifest_row["scanner_scope"] = scanner_scope
         with open(manifest, "w", encoding="utf-8") as fh:
-            json.dump({"selected": sorted(payloads), "produced": sorted(payloads),
-                       "missing": []}, fh)
+            json.dump(manifest_row, fh)
         return tools, manifest
 
     def _run(self, head, baseline=None, extra=()):
@@ -1574,6 +1595,18 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         self.assertEqual(out.splitlines()[0],
                          "Ingested 2 non-excluded tool findings; "
                          "1 HIGH/CRITICAL new; 1 HIGH/CRITICAL pre-existing")
+
+    def test_scope_marker_alone_never_excuses_a_new_test_path_finding(self):
+        """The rollout rescans the exact base; a marker is not a gate waiver."""
+        marker = {"semgrep": tools_manifest.SEMGREP_SCOPE_POLICY}
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/tests/new.py"))}, marker)
+            base = self._capture(root, "base", {"semgrep": _delta_sarif()})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("1 HIGH/CRITICAL new", out)
+        self.assertIn("tests/new.py", out)
 
     def test_a_coverage_failure_on_the_head_still_exits_two(self):
         # Exit codes are unchanged, and the HEAD is the only side that can

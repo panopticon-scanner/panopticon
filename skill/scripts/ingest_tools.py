@@ -703,10 +703,10 @@ def _scanned_files(raw):
 # #1236 (OPS-D1B): no adapter capped its own result list. Filed against
 # bundler-audit's advisory loop, but the class is generic and THIS is where
 # every adapter's parse() is called, so the bound lives here once instead of
-# once per adapter. Set well above any honest scan: a repo that trips this has
-# a pathological lockfile or a rule loop, which is exactly the case the bound
-# is for.
-MAX_ADAPTER_FINDINGS = 2000
+# once per adapter. 5,000 is above the measured expanded Semgrep self-scan
+# (2,274 findings at #2109) while retaining a finite bound for pathological
+# lockfiles and rule loops.
+MAX_ADAPTER_FINDINGS = 5000
 
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 

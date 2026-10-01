@@ -14,6 +14,34 @@ from .base import (REDTEAM, STANDARD, ingest_policy_cv, run_tool,
 # eslint-security adapter with its bundled config.
 LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec"}
 
+# Semgrep 1.177.0 embeds these defaults before it reads a target's
+# `.semgrepignore`. Keep its administrative, generated and package-manager
+# exclusions, but deliberately omit the four "Common test paths" entries:
+# `test/`, `tests/`, `testsuite/` and `*_test.go`. The final entries cover
+# Panopticon's own run/worktree/coordination roots and ordinary Python caches;
+# `--no-git-ignore` would otherwise walk them when present below a target.
+SEMGREP_SCANNER_EXCLUDES = (
+    ".git", ".svn", "_darcs", "build/", "vendor/", "dist/", "*.min.js",
+    ".env/", ".tox/", "node_modules/", ".npm/", ".yarn/", ".venv/",
+    "_opam/", "_build/", "_cargo/", ".panopticon/", ".worktrees/",
+    ".superpowers/", "__pycache__/", ".ruff_cache/",
+    ".pytest_cache/", ".mypy_cache/", "*.egg-info/", ".DS_Store",
+)
+SEMGREP_SCANNER_SCOPE_ARGS = [
+    "--jobs=3",
+    "--x-ignore-semgrepignore-files",
+    "--no-git-ignore",
+] + ["--exclude=%s" % pattern for pattern in SEMGREP_SCANNER_EXCLUDES]
+
+
+def with_semgrep_excludes(tool, cmd, patterns):
+    """Add disclosed Panopticon exclusions to Semgrep before its scan root."""
+    if tool != "semgrep" or not patterns:
+        return cmd
+    at = cmd.index("/src")
+    return cmd[:at] + ["--exclude=%s" % pattern for pattern in patterns] + cmd[at:]
+
+
 # Per-tool argv producing SARIF on stdout. /src is substituted with the actual
 # target path at invocation time.
 TOOL_CMD = {
@@ -21,8 +49,14 @@ TOOL_CMD = {
     # separate calls home, and in a --network none container the version check
     # blocks until it times out. Measured on one trivial file: 2m10s with it,
     # 35s without.
-    "semgrep": ["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
-                "--disable-version-check", "--sarif", "--quiet", "/src"],
+    # The x-flag is internal, so the pin and the strict live-tool regression
+    # travel together. It disables both the embedded defaults and every target
+    # `.semgrepignore`; the explicit list above restores the non-test defaults.
+    # `--no-git-ignore` independently stops a target `.gitignore` hiding
+    # untracked review input. Neither file can now narrow the scanner silently.
+    "semgrep": (["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
+                 "--disable-version-check"] + SEMGREP_SCANNER_SCOPE_ARGS
+                + ["--sarif", "--quiet", "/src"]),
     # `--redact` is scanner-native redaction (#1639 P11): the one tool here
     # whose output is a list of other people's credentials masks them itself,
     # so the secret never leaves the container -- and it keeps every field
