@@ -102,9 +102,19 @@ jobs:
           echo "${DC_SHA256}  dc.zip" | sha256sum -c -
           unzip -q dc.zip     # -> ./dependency-check/
           mkdir -p odc-data
+          # #2508 (run-14 OPS-2602119269): two classes of non-zero status. A
+          # per-record error is tolerated and the DB is verified below; a sync
+          # KILLED by `timeout` (124, or 137 after SIGKILL) left the database
+          # mid-write, and a partial file can clear the size floor, so that
+          # status fails the step instead of publishing.
+          rc=0
           timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly \
-            --data odc-data ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"} \
-            || echo "::warning::updateonly returned non-zero (per-record errors are tolerated; verifying the DB below)"
+            --data odc-data ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"} || rc=$?
+          case "$rc" in
+            0) ;;
+            124|137) echo "::error::updateonly was killed by the 3000 s deadline (rc=$rc); not publishing a partial DB"; exit 1 ;;
+            *) echo "::warning::updateonly returned non-zero (rc=$rc; per-record errors are tolerated; verifying the DB below)" ;;
+          esac
           chmod -R a+rX odc-data
           test -f odc-data/odc.mv.db || { echo "::error::NVD database (odc.mv.db) was not produced"; exit 1; }
           size="$(stat -c%s odc-data/odc.mv.db)"
