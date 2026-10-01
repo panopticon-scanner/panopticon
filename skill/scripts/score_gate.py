@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 else:
     try:
         from scripts import evidence
-    except ImportError:
+    except ModuleNotFoundError:
         import evidence
 
 SEVERITY_WEIGHT = {"CRITICAL": 20, "HIGH": 5, "MEDIUM": 2, "LOW": 0, "INFO": 0}
