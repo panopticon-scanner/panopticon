@@ -12,11 +12,11 @@ evidence exposed.
   matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
   SEC-only review group, `exclude_paths_sec_carve_out`, whose coverage is pinned to `["SEC"]`; every
   other domain still honours the exclusion and the files join no other group. Disclosed in three
-  places with the same facts (globs, paths, count): `groups.json`, discovery's stderr line, and
-  `meta.coverage.exclude_paths_sec_carve_out` in the report, rendered as one line in the Markdown
-  and HTML coverage sections. Absent when nothing is committed, `count: 0` when globs carved
-  nothing. `--pr` mode is identical, the tool axis is untouched, and the `/helm/` `/k8s/` substring
-  half of SEC-71240568 was already fixed by #1838.
+  places: `groups.json` and `meta.coverage.exclude_paths_sec_carve_out` carry the globs, the paths
+  and the count, and discovery's stderr line carries the globs and both counts. The report block
+  renders as one line in the Markdown and HTML coverage sections. Absent when nothing is
+  committed, `count: 0` when globs carved nothing. `--pr` mode is identical, the tool axis is
+  untouched, and the `/helm/` `/k8s/` substring half of SEC-71240568 was already fixed by #1838.
 - **Direct discovery owns its implicit delta map under the selected repository (#2102).**
   Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
   runs clean that same path. Explicit outputs still keep the map beside `--out`.

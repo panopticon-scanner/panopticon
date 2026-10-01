@@ -291,7 +291,8 @@ def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_
     out = repo / ".panopticon" / "groups.json"
     sink = groups_schema.SEC_CARVE_OUT_SINK
     for flag, value in (("--scope-dir", "src"),
-                        ("--scope-file", "src/checkout/pay.py")):
+                        ("--scope-file", "src/checkout/pay.py"),
+                        ("--scope-group", "Checkout")):
         rc = orchestrator.main(["--repo", str(repo), "--repo-scan", flag, value,
                                 "--out", str(out)])
         assert rc == 0, flag
@@ -299,6 +300,11 @@ def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_
         assert sink not in {g["name"] for g in doc["groups"]}, flag
         assert doc["exclude_paths_sec_carve_out"]["count"] == 0, flag
         assert doc["exclude_paths_sec_carve_out"]["globs"] == ["vendor/**"], flag
+    # Each of the three counts WHAT SURVIVED ITS OWN SCOPE, which is 0 for the
+    # two whose universes come out of pruned `allf` -- so `count: 0` on a scoped
+    # run means "nothing in this run's surface", never "nothing in the repo"
+    # (the schema and driver-setup.md say so; review round 1 item 7).
+    #
     # A carved file INSIDE the narrowed directory still gets its SEC cell: the
     # scope narrows the carve-out, it does not switch the policy off.
     (repo / "src" / "helm").mkdir(parents=True)

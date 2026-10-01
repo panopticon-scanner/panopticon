@@ -1997,6 +1997,34 @@ class TestSecCarveOutInHtml(unittest.TestCase):
                                       "files": []}))
         self.assertIn("0 file(s) kept for SEC review only", out)
 
+    def test_a_cut_list_says_it_was_cut(self):
+        # Review round 1 item 4, the HTML twin: 20 names and a SAID tail.
+        files = ["vendor/f%02d.yaml" % i for i in range(26)]
+        out = hr.render(self._report({"globs": ["vendor/**"], "count": 26,
+                                      "files": files}))
+        self.assertIn("26 file(s) kept for SEC review only", out)
+        self.assertIn("(+6 more)", out)
+        self.assertIn("vendor/f19.yaml", out)
+        self.assertNotIn("vendor/f20.yaml", out)
+        out = hr.render(self._report({"globs": ["vendor/**"], "count": 20,
+                                      "files": files[:20]}))
+        self.assertNotIn("more)", out)
+
+    def test_the_compare_panels_carry_the_carve_out_too(self):
+        # Review round 1 item 6: an A/B compare is the one view where a
+        # carve-out posture change between two runs IS the finding, and the
+        # panel rendered `tools_excluded` without it.
+        head = self._report({"globs": ["head/**"], "count": 1,
+                             "files": ["head/requirements.txt"]})
+        base = self._report({"globs": ["base/**"], "count": 0, "files": []})
+        out = hr.render(head, compare_report=base)
+        # The compare view branches away from `_render_header` entirely, so the
+        # only two lines are the panels' own -- the same count the
+        # `tools_excluded` compare test pins beside it.
+        self.assertEqual(out.count("kept for SEC review only"), 2)
+        self.assertIn("head/requirements.txt", out)
+        self.assertIn("0 file(s) kept for SEC review only", out)
+
     def test_absent_and_malformed_blocks_make_no_claim(self):
         for carve in (_NO_KEY, None, "bad", 7, [], {}, {"count": "two"},
                       {"count": True}, {"count": -1}):

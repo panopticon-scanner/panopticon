@@ -165,13 +165,17 @@ def _sec_carve_out_groups(review_root):
 
     A SET rather than a per-group lookup: the marker only ever says "this group
     exists because a target's `exclude_paths:` could not take the objective SEC
-    surface out of the SEC domain", and `is True` is deliberate -- the file is
-    target-writable, so a truthy string in that field must not narrow a cell.
+    surface out of the SEC domain". Two guards, both because `groups.json` is
+    TARGET-WRITABLE: `is True` (a truthy string or a 1 must not narrow a cell),
+    and the NAME must be one `exclude_carve_out.install` actually mints
+    (`groups_schema.is_sec_carve_out_name`) -- the marker on a real group would
+    otherwise drop COD/DAT/TST/ARC and every scout-added domain from its cell.
     """
     data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
     return {g["name"] for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name")
-            and g.get(groups_schema.SEC_CARVE_OUT_MARKER) is True}
+            and g.get(groups_schema.SEC_CARVE_OUT_MARKER) is True
+            and groups_schema.is_sec_carve_out_name(g["name"])}
 
 def _chunk_parent(name):
     """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
@@ -387,7 +391,10 @@ def coverage_execute(review_root, manifest):
             "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
             "scout_invalid": scout_invalid,             # dropped, disclosed
             "global_floor_suppressed": sorted(          # #5.0-19: surface absent
-                coverage_model.GLOBAL_FLOOR - gated_floor),
+                coverage_model.GLOBAL_FLOOR - gated_floor),   # -- or, when
+            # `sec_carve_out` is true, suppressed BY POLICY (#1757): all four
+            # are listed and none of them was measured as surfaceless. Read the
+            # two keys together; the carve-out flag is the discriminator.
             "sec_floor_applied": sorted(sec_floor),     # #run8 SEC-G2A: objective
             "sec_carve_out": carved,                    # #1757: SEC-only by policy
             "effective": sorted(effective),             # security surface -> SEC forced on
@@ -400,8 +407,10 @@ def coverage_execute(review_root, manifest):
         # operator who reached for a fixture-corpus `exclude:`-sink got a SILENT
         # SEC panel on deliberately-vulnerable code, and 16 illusory HIGHs
         # reached the gate (run-6). Persist the override AND warn loudly: to drop
-        # a path corpus entirely (fixtures included, SEC included), use top-level
-        # `exclude_paths:`, which prunes before grouping so no domain reviews it.
+        # a path corpus entirely, use top-level `exclude_paths:`, which prunes
+        # before grouping so no domain reviews it -- every domain but SEC, since
+        # #1757: a file the objective SEC floor matches is carved back in for the
+        # SEC domain alone, so `exclude_paths:` no longer silences SEC either.
         # #1838 SEC-71240568 (review finding 1): `rejected` names every
         # NON_EXCLUDABLE domain the config tried to exclude, but that does not
         # mean the domain ran -- a docs-only group's `exclude: [SEC]` is
@@ -418,7 +427,8 @@ def coverage_execute(review_root, manifest):
                 print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
                       "-- these domains still run. To drop paths entirely (e.g. a "
                       "fixture corpus), use top-level `exclude_paths:` in %s, "
-                      "not per-group `exclude:`."
+                      "not per-group `exclude:` -- but that drops every domain "
+                      "BUT SEC, since #1757."
                       % (group, ", ".join(ran), repo_config.CONFIG_NAMES[0]),
                       file=sys.stderr)
             if idle:

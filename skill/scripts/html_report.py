@@ -601,8 +601,8 @@ def _render_header(report):
     # outranks one that did not.
     parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
+    parts.append(_render_sec_carve_out(meta))   # #1757: ABOVE, as the md ranks it
     parts.append(_render_excluded_tools(meta))
-    parts.append(_render_sec_carve_out(meta))   # #1757: and what it could not take
     return "\n".join(parts)
 
 
@@ -911,20 +911,19 @@ def _render_suppressed_gated_tools(meta):
 
 
 def _render_sec_carve_out(meta):
-    """#1757: the objective SEC surface a target's committed `exclude_paths:`
-    could not take out of the SEC domain (owner ruling 2026-09-25 -- disclosed,
-    never silently applied). Silent without a measurement, like its sibling."""
+    """#1757: the SEC surface a target's `exclude_paths:` could not hide."""
     coverage = meta.get("coverage")
     carve = coverage.get("exclude_paths_sec_carve_out") if isinstance(coverage, dict) else None
     if not isinstance(carve, dict) or not isinstance(carve.get("count"), int) \
             or isinstance(carve["count"], bool) or carve["count"] < 0:
         return ""
     kept = [f for f in (carve.get("files") or []) if isinstance(f, str) and f]
+    more = " &hellip; (+%d more)" % (len(kept) - 20) if len(kept) > 20 else ""
     return ("<div class='coverage'><code>exclude_paths:</code> %d file(s) kept "
-            "for SEC review only: %s &mdash; a target's own exclusion cannot "
+            "for SEC review only: %s%s &mdash; a target's own exclusion cannot "
             "hide the objective SEC surface</div>"
             % (carve["count"], ", ".join("<code>%s</code>" % _escape(f)
-                                         for f in kept[:20]) or "none"))
+                                         for f in kept[:20]) or "none", more))
 
 
 def _render_excluded_tools(meta):
@@ -968,6 +967,7 @@ def _render_compare_summary(label, report):
     meta = report.get("meta")
     host_caps = _render_host_capabilities(meta if isinstance(meta, dict) else {})
     excluded_tools = _render_excluded_tools(meta if isinstance(meta, dict) else {})
+    carve_out = _render_sec_carve_out(meta if isinstance(meta, dict) else {})
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
@@ -978,6 +978,7 @@ def _render_compare_summary(label, report):
 </div>
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}
+{carve_out}
 {excluded_tools}
 </div>
 """
@@ -1538,8 +1539,7 @@ def write_html(report, path, compare_report=None):
     #1735: `<tag>-report.json.html` is derived from the driver's `--out`, so it
     lands in the REVIEWED tree's `.panopticon` -- a name a target can pre-commit
     as a symlink. Confine the whole path BEFORE the makedirs (which would
-    traverse a symlinked directory) and never open through a link.
-    """
+    traverse a symlinked directory) and never open through a link."""
     safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
     with safe_write.open_w_nofollow(path) as fh:

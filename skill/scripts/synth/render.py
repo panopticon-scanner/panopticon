@@ -221,7 +221,7 @@ def _excluded_tools_line(value):
     # Silent without a policy: the clause is a disclosure about THIS run.
     # #1757: "every domain but SEC" -- the clause used to end "not just this
     # axis", which read as SEC included, and the owner ruling of 2026-09-25 made
-    # that false. The SEC surface it could not take is the line below this one.
+    # that false. The SEC surface it could not take is the line ABOVE this one.
     cells = (" — a committed `exclude_paths:` prunes review CELLS too, not just"
              " this axis (every domain but SEC)") if globs else ""
     return "**Tool findings excluded by policy:** %d — globs: %s%s" % (count, policy, cells)
@@ -240,9 +240,13 @@ def _sec_carve_out_line(value):
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         return ""
     kept = [f for f in (value.get("files") or []) if isinstance(f, str) and f]
-    # One LINE: 20 names, with the full list in the JSON block it summarizes.
+    # One LINE: 20 names, with the full list in the JSON block it summarizes --
+    # and the tail SAID, the way the leftover line says it, so a reader can
+    # never mistake a cut list for the whole carve-out.
     names = ", ".join(_code_span(json.dumps(f, ensure_ascii=False))
                       for f in kept[:20])
+    if len(kept) > 20:
+        names += " … (+%d more)" % (len(kept) - 20)
     return ("**`exclude_paths:` SEC carve-out:** %d file(s) kept for SEC review "
             "only: %s — a target's own exclusion cannot hide the objective SEC "
             "surface (#1757)" % (count, names or "none"))

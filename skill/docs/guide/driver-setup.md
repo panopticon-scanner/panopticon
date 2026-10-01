@@ -176,7 +176,10 @@ objective floor exists so that nobody's taste about scope can hide an attack sur
 reason `exclude: [SEC]` on a group is overridden), so this is deliberate, and it is **disclosed**
 rather than silent: the carved globs, paths and count appear in `groups.json`, on discovery's
 stderr line, and in the report's coverage section as
-`meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect.
+`meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect, and a
+narrowing scope flag narrows the carve-out with the rest of the run: `--scope-dir` keeps the carved
+files under that directory, `--scope-file` and `--scope-group` carve nothing, so a `count: 0` there
+means "nothing in this run's scope" rather than "nothing in the repository".
 
 To drop a path from SEC too, the exclusion has to stop being yours to make: remove the files from
 the repository, or run with `--security standard`, which prunes a recognised

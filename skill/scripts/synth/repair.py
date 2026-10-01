@@ -423,9 +423,12 @@ def repair_sec_carve_out(value, warn=None):
     measurement made. A count that is not an honest non-negative integer becomes
     0 for that same reason.
 
-    Always returns the full block. The KEY is omitted upstream when a run
-    committed no `exclude_paths:` at all (zero behaviour change, zero output
-    change), but a block that is present and unreadable must not read as zero.
+    Always returns the full block -- `{"globs": [], "files": [], "count": 0}`
+    included. The KEY is omitted upstream when a run committed no
+    `exclude_paths:` at all (zero behaviour change, zero output change), so
+    ABSENCE is the "no policy" answer and this function must never produce it:
+    a block that is present and unreadable repairs to the empty block, which
+    reads as "measured, nothing carved".
     """
     changes = []
     if not isinstance(value, dict):

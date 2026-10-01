@@ -335,6 +335,24 @@ def _as_domain_set(name, field, raw, errors):
     return out
 
 
+def is_sec_carve_out_name(name):
+    """True for the #1757 carve-out sink or one of its `<sink>_<n>` chunks.
+
+    The only names `exclude_carve_out.install` mints, and therefore the only
+    names the `sec_carve_out` marker may narrow a review cell on. `groups.json`
+    is TARGET-WRITABLE (`synth/repair`'s module comment calls it that outright),
+    so the marker alone is not authority: a committed-and-rewritten file
+    carrying `"sec_carve_out": true` on a real group would otherwise drop
+    COD/DAT/TST/ARC and every scout-added domain from that group's cell. The
+    chunk suffix is read with `_CHUNK_SUFFIX_RE`, the same regex the reserved-
+    name rule uses, so `<sink>_abc` is not mistaken for a chunk of it.
+    """
+    if not isinstance(name, str):
+        return False
+    m = _CHUNK_SUFFIX_RE.match(name)
+    return (m.group("base") if m else name) == SEC_CARVE_OUT_SINK
+
+
 def _invalid_name(name):
     return not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name)
 

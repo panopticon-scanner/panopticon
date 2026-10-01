@@ -588,6 +588,12 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["scout_added"], [])        # netted out, not honoured
         self.assertEqual(cov["sec_floor_applied"], ["SEC"])
         self.assertIs(cov["sec_carve_out"], True)       # why this cell is narrow
+        # Review round 1 item 9: all four universal domains are listed as
+        # suppressed here and NONE of them was measured surfaceless -- policy
+        # did it. `sec_carve_out` beside the list is the discriminator, which is
+        # why the two keys have to be read together.
+        self.assertEqual(cov["global_floor_suppressed"],
+                         ["ARC", "COD", "DAT", "TST"])
         # The control proving the marker did that, not the files: the SAME files
         # in an ORDINARY group draw the gated global floor as they always have.
         self._groups_json([{"name": "Api", "files": files}])
@@ -597,6 +603,48 @@ class TestCoveragePhase(unittest.TestCase):
         cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
         self.assertEqual(cov["effective"], ["ARC", "COD", "SEC"])
         self.assertIs(cov["sec_carve_out"], False)
+
+    def test_the_carve_out_marker_is_not_authority_on_a_real_group(self):
+        # Review round 1 item 2: `groups.json` is a TARGET-WRITABLE file, so a
+        # rewritten one carrying `"sec_carve_out": true` on a REAL group would
+        # otherwise narrow that cell to {"SEC"} and silently drop COD/DAT/TST/ARC
+        # and every scout-added domain. The marker only counts on a name
+        # `exclude_carve_out.install` actually mints.
+        files = ["deploy/k8s/x.yaml", "ci/Dockerfile"]
+        self._groups_yml("groups:\n  Api:\n    match: ['src/**']\n")
+        for name in ("Api", groups_schema.SEC_CARVE_OUT_SINK + "_abc",
+                     "Not" + groups_schema.SEC_CARVE_OUT_SINK):
+            with self.subTest(group=name):
+                self._groups_json([{"name": name, "files": files,
+                                    groups_schema.SEC_CARVE_OUT_MARKER: True}])
+                runio._write_json(runio._pano(self.root, "scout-%s.json" % name),
+                                   {"group": name, "domains": ["COD"]})
+                coverage.coverage_execute(self.root, self.manifest)
+                cov = runio._load_json(
+                    runio._pano(self.root, "coverage-%s.json" % name))
+                self.assertEqual(cov["effective"], ["ARC", "COD", "SEC"])
+                self.assertIs(cov["sec_carve_out"], False)
+
+    def test_a_truthy_non_true_marker_does_not_narrow_the_carve_out_cell(self):
+        # The `is True` half of the same guard: a target-written `"true"` or `1`
+        # in that field is not the driver's own marker and must not be read as
+        # one, even on the minted name.
+        sink = groups_schema.SEC_CARVE_OUT_SINK
+        files = ["deploy/k8s/x.yaml", "ci/Dockerfile"]
+        self._groups_yml("groups:\n  Api:\n    match: ['src/**']\n")
+        runio._write_json(runio._pano(self.root, "scout-%s.json" % sink),
+                           {"group": sink, "domains": ["COD"]})
+        for marker in ("true", 1, "yes", [True]):
+            with self.subTest(marker=repr(marker)):
+                self._groups_json([{"name": sink, "files": files,
+                                    groups_schema.SEC_CARVE_OUT_MARKER: marker}])
+                path = runio._pano(self.root, "coverage-%s.json" % sink)
+                if os.path.exists(path):
+                    os.remove(path)         # force a recompute per subtest
+                coverage.coverage_execute(self.root, self.manifest)
+                cov = runio._load_json(path)
+                self.assertEqual(cov["effective"], ["ARC", "COD", "SEC"])
+                self.assertIs(cov["sec_carve_out"], False)
 
     def test_surfaceless_group_gets_no_sec_floor(self):
         # #5.0-19 stays honored end-to-end: a group with no objective security

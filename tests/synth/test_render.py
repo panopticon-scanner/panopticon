@@ -662,6 +662,26 @@ class TestSecCarveOutLineIsRendered(unittest.TestCase):
             self._report({"globs": ["vendor/**"], "count": 0, "files": []}))
         self.assertIn("0 file(s) kept for SEC review only", out)
 
+    def test_a_cut_list_says_it_was_cut(self):
+        # Review round 1 item 4: one LINE holds 20 names, and the tail is SAID --
+        # the convention discovery's own leftover line uses. A silently cut list
+        # reads as the whole carve-out, which is the one thing this line exists
+        # to prevent.
+        files = ["vendor/f%02d.yaml" % i for i in range(26)]
+        out = render_mod.render_summary(self._report(
+            {"globs": ["vendor/**"], "count": 26, "files": files}))
+        self.assertIn("26 file(s) kept for SEC review only", out)
+        self.assertIn("(+6 more)", out)
+        self.assertIn("vendor/f19.yaml", out)
+        self.assertNotIn("vendor/f20.yaml", out)
+
+    def test_exactly_twenty_files_need_no_tail(self):
+        out = render_mod.render_summary(self._report(
+            {"globs": ["vendor/**"], "count": 20,
+             "files": ["vendor/f%02d.yaml" % i for i in range(20)]}))
+        self.assertIn("vendor/f19.yaml", out)
+        self.assertNotIn("more)", out)
+
     def test_absent_and_malformed_blocks_make_no_claim(self):
         for carve in (_OMIT, None, "bad", 7, {"count": "two"}, {"count": True},
                       {"count": -1}, {}):
