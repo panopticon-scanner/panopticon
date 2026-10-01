@@ -732,11 +732,15 @@ The scope is the **job**, not the step: a job's `run:` steps are folded in order
 the workspace and `/tmp` — `curl -o /tmp/x` in one step and `chmod +x /tmp/x; /tmp/x` in the next is
 one fetch-and-exec that no per-step reading can see, and a `sha256sum -c` in a later step is a real
 check of an earlier step's download. A step whose `shell:` is not bash/sh (pwsh, python, cmd) is
-reported **unread** rather than clean. Exemptions are `(workflow, step name, reason)` tuples on
-`tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held to the same staleness and posture checks as
-the install list. Run it by hand with `python3 scripts/workflow_guard.py .github/workflows/*.yml`;
-CI gets **no separate lint step**, because `tests/test_workflow_pins.py` already applies it to the
-whole fleet on every PR.
+reported **unread** rather than clean. So is a program the guard cannot read — a `$CMD -c` word,
+a script handed to a shell inside a `$(…)`, a heredoc body handed to `python3`/`node` — but only
+where the job holds a fetch the guard itself **reports**: a download no checksum clears, a
+`curl … | sh`, an unresolved transfer, or one no file holds (#2481, #2499). A credited download,
+or an API `curl … | jq` that is no download at all, keeps none of them standing. Exemptions are
+`(workflow, step name, reason)` tuples on `tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held
+to the same staleness and posture checks as the install list. Run it by hand with
+`python3 scripts/workflow_guard.py .github/workflows/*.yml`; CI gets **no separate lint step**,
+because `tests/test_workflow_pins.py` already applies it to the whole fleet on every PR.
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking

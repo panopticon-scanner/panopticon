@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
+  Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
+  downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`
+  candidate, a script handed to a shell inside a `$(...)` — was reported beside ANY fetch,
+  including a download its `sha256sum -c` cleared and an API `curl ... | jq` that is no download
+  at all. It is now reported only beside a fetch the guard itself reports: a download no checksum
+  clears (the unread program is counted as the use the checksum was owed, `_defect`), a
+  `curl ... | sh` stream, an unresolved transfer, or a download no file holds —
+  `x=$(curl ...)`, the `carried` shape (`workflow_forms.unbound`). The same predicate now governs
+  the foreign-language stdin program (`python3 - <<'EOF'`, `node <<'NODE'`, top level or inside a
+  substitution), #2499's owner ruling (b), decided once for both; the EXPANDING-heredoc report is
+  untouched and still loud with no fetch at all. Over the 3,200-workflow calibration pool 31 jobs
+  clear and none newly fails: metabase `pr-env.yml :: deploy_pr` (`$ADMIN -c` psql beside an
+  OIDC-token `curl | jq`) and 30 jobs whose heredoc program parses a `pom.xml`, YAML, HTML or
+  JSON and fetches nothing.
 - **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
   ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
   matches out of the SEC domain. Those files are no longer pruned — they form one dedicated

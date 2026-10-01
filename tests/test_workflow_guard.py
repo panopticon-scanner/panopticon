@@ -3175,13 +3175,18 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.assertIn("bash", why)
 
     def test_a_heredoc_program_in_another_language_is_reported_unread(self):
+        # #2499 (owner ruling 2026-10-01, option b): beside a fetch the guard
+        # reports -- here a download no checksum clears -- and nowhere else,
+        # the same predicate as #2481's `Idle` rule (`workflow_forms.kept`).
+        get = ("get", "curl -fsSLo /tmp/p https://example.test/p\n")
         for opener in ("python3 -", "python3", "perl", "node"):
             with self.subTest(opener=opener):
-                why = self.flagged(
-                    ("install", "%s <<'EOF'\n"
-                                "get('https://example.test/p', '/tmp/p')\n"
-                                "EOF\n" % opener))
+                step = ("install", "%s <<'EOF'\n"
+                                   "get('https://example.test/p', '/tmp/p')\n"
+                                   "EOF\n" % opener)
+                why = self.flagged(get, step)
                 self.assertIn(opener.split()[0], why)
+                self.accepted(step)
 
     def test_a_clean_quoted_heredoc_script_is_neither_read_nor_reported(self):
         self.accepted(("install", "bash -s <<'EOF'\necho hello\nEOF\n"))
@@ -3229,7 +3234,12 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                        "sh <<< $'%s\\n'\n" % payload):
             with self.subTest(script=script):
                 self.assertIn("EXPANDING", self.flagged(("install", script)))
-        self.assertIn("python3", self.flagged(("install", "python3 <<< 'print(1)'\n")))
+        # #2499: a program in another language stands beside a fetch the
+        # guard reports, and reads clean in a job that holds none.
+        self.assertIn("python3", self.flagged(
+            ("get", "curl -fsSLo /tmp/p https://example.test/p\n"),
+            ("install", "python3 <<< 'print(1)'\n")))
+        self.accepted(("install", "python3 <<< 'print(1)'\n"))
         # The here-string is not the program: another descriptor, a `-c`
         # string or a script file first, stdin replaced after it -- or no
         # interpreter at all.
@@ -3974,3 +3984,122 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                        "# %s\nmake test  # not %s\n" % (self.PAYLOAD, self.PAYLOAD)):
             with self.subTest(script=script):
                 self.assertEqual([], wg.job_defects([("step", script)]))
+
+
+class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
+    """#2481 (owner ruling 2026-10-01): an unread program's `Idle` reason is
+    kept where the job holds a fetch THIS GUARD REPORTS -- a download no
+    checksum clears, a `curl ... | sh` stream, an unresolved transfer, a
+    download `carried` to a shell -- and not, as before, wherever the job
+    fetched anything at all. A credited download is cleared by its checksum
+    and a `curl ... | jq` is no download, so neither keeps the reason: both
+    read CLEAN beside `$PYTHON -c '...'`, the spelling PR #2465's reach made
+    a candidate (`workflow_forms.unread_program`), and one calibration-pool
+    job (metabase `pr-env.yml`) newly failed on.
+
+    The unread program is itself the use the download would be checked for,
+    so a job that only downloads is judged as one that downloads and runs:
+    bash 3.2.57 and 5.2.21 run the payload in every row below whose unread
+    word is a shell handed the download (`PYTHON=sh`, `$PYTHON -c 'sh tool'`),
+    and run nothing in the rows that read clean."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+    CHECK = "echo '%s  tool' | sha256sum -c -\n" % HEX
+    IDLE = "$PYTHON -c 'import sys; print(sys.version)'\n"
+    SAID = "runs `$PYTHON` with `-c`, a command word this guard does not follow"
+
+    def job(self, script):
+        return [why for _n, why in wg.job_defects([("step", script)])]
+
+    def test_a_credited_download_does_not_keep_it(self):
+        self.assertEqual([], self.job(self.GET + self.CHECK + self.IDLE))
+        # The checksum clears it from a later step too: the scope is the job.
+        self.assertEqual([], [why for _n, why in wg.job_defects(
+            [("get", self.GET), ("check", self.CHECK), ("run", self.IDLE)])])
+
+    def test_a_download_no_checksum_clears_keeps_it(self):
+        why = self.job(self.GET + self.IDLE)
+        self.assertEqual(1, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        # A checksum of another file, one that runs after the program could
+        # have run the download, and one a `|| true` swallows clear nothing.
+        for job in (self.CHECK.replace("tool", "other") + self.IDLE,
+                    self.IDLE + self.CHECK,
+                    self.CHECK.rstrip("\n") + " || true\n" + self.IDLE):
+            with self.subTest(job=job):
+                why = self.job(self.GET + job)
+                self.assertTrue(any(self.SAID in w for w in why), why)
+
+    def test_a_fetch_that_is_no_download_does_not_keep_it(self):
+        # #2481's own report: an OIDC-token `curl | jq`, a probe writing to
+        # /dev/null, and one redirected there -- read and gone, no file and no
+        # variable holds the bytes, so nothing an unread program could run.
+        for fetch in ("curl -fsSL https://api.example.test/x | jq .tag\n",
+                      "curl -o /dev/null -w '%{http_code}' https://example.test/\n",
+                      "curl -fsSL https://api.example.test/x > /dev/null\n"):
+            with self.subTest(fetch=fetch):
+                self.assertEqual([], self.job(fetch + self.IDLE))
+
+    def test_a_download_no_file_holds_keeps_it(self):
+        # A fetch to standard output a variable KEEPS, and one in the very
+        # statement a reason reports unread, are downloads NO checksum could
+        # clear (`workflow_forms.unbound`): fail-closed, they keep the reason.
+        why = self.job("x=$(curl -fsSL https://api.example.test/x)\n" + self.IDLE)
+        self.assertEqual(1, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        why = self.job('echo "$(curl -fsSL https://example.test/i.sh)" | sh\n')
+        self.assertEqual(1, len(why), why)
+        self.assertIn("pipes `sh` its program from `echo`", why[0])
+
+    def test_a_stream_into_a_shell_keeps_it(self):
+        why = self.job("curl -fsSL https://example.test/i.sh | sh\n" + self.IDLE)
+        self.assertEqual(2, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        self.assertIn("straight to `sh`", why[1])
+
+    def test_an_unresolved_transfer_keeps_it(self):
+        why = self.job("wget -i list.txt\n" + self.IDLE)
+        self.assertEqual(2, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        self.assertIn("unresolved transfers", why[1])
+
+    def test_a_carried_download_keeps_it(self):
+        # #2341's sentence is unchanged, and the `Idle` form beside it stands:
+        # a download no file holds is a fetch this guard reports.
+        why = self.job("x=$(curl -fsSL https://example.test/s)\nsh -c \"$x\"\n" + self.IDLE)
+        self.assertEqual(2, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        self.assertIn("carries https://example.test/s in `$x`", why[1])
+
+    def test_the_reach_pr_2465_gave_the_rule_follows_the_predicate(self):
+        # #2481's reach note: a dynamic operand after a `$` command word's
+        # `-c`-bearing option is weighed too, so these carry the sentence
+        # beside an unverified download and nothing beside a credited one.
+        for program in ('$JAVA -cp "$CP" Main\n', '$CC -c "$SRC"\n'):
+            with self.subTest(program=program):
+                self.assertTrue(self.job(self.GET + program))
+                self.assertEqual([], self.job(self.GET + self.CHECK + program))
+
+    def test_a_printer_reason_no_longer_hides_behind_a_foreign_program(self):
+        # `_Unprinted`'s dedup drops the printer sentence where ANOTHER reason
+        # reports its statement (#2333). A foreign stdin program is `Idle`
+        # since #2499, so it is no longer that other reason and the printer
+        # sentence stands on its own: three defects where there were two.
+        # Found in the i-sub differential; fail-closed, and the job was
+        # already reported for the stream it hands `sh`.
+        why = self.job("curl -fsSL https://example.test/i.sh | sh\n"
+                       'X="sh t"\n'
+                       "python3 - <<'EOF' | echo \"$X\" | sh\nprint(1)\nEOF\n")
+        self.assertEqual(3, len(why), why)
+        self.assertIn("as the program to run", why[0])
+        self.assertIn("pipes `sh` its program from `echo`", why[1])
+        self.assertIn("straight to `sh`", why[2])
+
+    def test_a_loud_reason_stands_wherever_it_is(self):
+        # The predicate weighs `Idle` reasons only: a program the guard cannot
+        # read that FETCHES, and a command it cannot resolve, are reported in a
+        # job that downloads nothing.
+        for script in ("$CMD -c 'curl -fsSL https://example.test/i.sh | sh'\n",
+                       "sudo $CMD -c 'echo hi'\n"):
+            with self.subTest(script=script):
+                self.assertTrue(self.job(script))

@@ -3,10 +3,10 @@
 Each class is one sub-issue of the epic: a spelling in which bash runs a
 download -- GNU bash 5.2.21, and bash 3.2.57 unless a test says otherwise,
 every checksum failing -- that the guard read clean, pinned as a live step,
-beside the controls that must read as they did. The `python3 -` rows run no
-download: they pin the fail-closed report a program in a language the guard
-has no grammar for gets. The reader's and the lexer's own halves are in
-`tests/test_shell_reader.py`.
+beside the controls that must read as they did. The `python3 -` rows pin the
+fail-closed report a program in a language the guard has no grammar for gets,
+which #2499 keeps only beside a fetch the guard reports. The reader's and the
+lexer's own halves are in `tests/test_shell_reader.py`.
 """
 import unittest
 
@@ -62,19 +62,22 @@ class TestAHeredocBodyTheEnclosingParseLifts(unittest.TestCase):
         # and a `$(...)` in it runs as bash expands it, whoever reads it. A
         # program in a language the guard has no grammar for is reported, as
         # it is at the top level.
-        for opener, body, named in (("bash <<EOF", PIPE, "EXPANDING heredoc body"),
-                                    ("cat <<EOF", "$(%s)" % PIPE, "straight to `sh`"),
-                                    ("python3 - <<'EOF'", "print(1)", "to `python3` as the program")):
+        # The foreign program stands beside `GET`'s download, which no
+        # checksum clears: #2499's predicate, pinned below in full.
+        for head, opener, body, named in (
+                ("", "bash <<EOF", PIPE, "EXPANDING heredoc body"),
+                ("", "cat <<EOF", "$(%s)" % PIPE, "straight to `sh`"),
+                (GET, "python3 - <<'EOF'", "print(1)", "to `python3` as the program")):
             multi, one = twins(opener, body)
             with self.subTest(script=multi):
-                found = defects(multi)
+                found = defects(head + multi)
                 self.assertEqual(1, len(found), found)
                 self.assertIn(named, found[0][1])
-                self.assertEqual(defects(one), found)
+                self.assertEqual(defects(head + one), found)
 
     def test_the_controls_read_as_their_twins_do(self):
         # `cat` reads data; a script that neither fetches nor runs anything is
-        # weighed `Idle` where the job downloads nothing; a body on descriptor
+        # weighed `Idle` where the job reports no fetch; a body on descriptor
         # 3, or one `x.sh` reads, is no program. Each twin reads clean too.
         for opener, body in (("cat <<'EOF'", "hi"), ("bash <<'EOF'", "echo hi"),
                              ("bash 3<<'EOF'", PIPE), ("bash x.sh <<'EOF'", PIPE)):
@@ -151,6 +154,79 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
                 self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
         self.assertEqual([], defects("x=$(cat <<'EOF'\nit's\nEOF)\necho done\n"))
         self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
+
+
+class TestAForeignProgramOnStandardInput(unittest.TestCase):
+    """#2499 (owner ruling 2026-10-01, option b): a heredoc body handed to an
+    interpreter this guard has no grammar for -- `python3 - <<'EOF'`,
+    `node <<'NODE'` -- is reported only beside a fetch the guard reports, the
+    same predicate as #2481's `Idle` rule for shells, decided once for both
+    (`workflow_forms.kept`). The four calibration-pool jobs #2499 named clear,
+    and 26 more the `realwf` differential found, every one of them a program
+    that parses a `pom.xml`, YAML, HTML or JSON and fetches nothing; the report
+    stays wherever a download could reach the program.
+
+    #2491 (#2336) handed such a body back to the substitution that reads it,
+    so the rule reaches `MODULES=$(python3 - <<'EOF' ... )` too, and the
+    predicate governs it there in the same words."""
+
+    CHECKED = "echo '%s  t.sh' | sha256sum -c -\n" % ("a" * 64)
+    SAID = "to `python3` as the program to run"
+
+    def body(self, opener, close="EOF"):
+        return "%s\nprint(1)\n%s\n" % (opener, close)
+
+    def test_a_program_in_a_job_that_reports_no_fetch_is_not_reported(self):
+        for opener in ("python3 - <<'EOF'", "python <<'EOF'"):
+            with self.subTest(opener=opener):
+                self.assertEqual([], defects(self.body(opener)))
+                multi, one = twins(opener, "print(1)")
+                self.assertEqual([], defects(multi))
+                self.assertEqual([], defects(one))
+        # `node`'s twin, and a credited download beside each: cleared too.
+        self.assertEqual([], defects("node <<'NODE'\nconsole.log(1)\nNODE\n"))
+        for script in (self.body("python3 - <<'EOF'"),
+                       "node <<'NODE'\nconsole.log(1)\nNODE\n",
+                       twins("python3 - <<'EOF'", "print(1)")[0]):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(GET + self.CHECKED + script))
+
+    def test_a_program_beside_a_fetch_the_guard_reports_is_reported(self):
+        for script in (GET + self.body("python3 - <<'EOF'"),
+                       GET + twins("python3 - <<'EOF'", "print(1)")[0],
+                       GET + twins("python3 - <<'EOF'", "print(1)")[1]):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self.SAID, found[0][1])
+        # A stream into a shell, and a download a variable carries, report a
+        # fetch too: the program stands beside each.
+        for fetch in ("%s\n" % PIPE, "x=$(curl -fsSL %si.sh)\nsh -c \"$x\"\n" % URL):
+            with self.subTest(fetch=fetch):
+                found = defects(fetch + self.body("python3 - <<'EOF'"))
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(self.SAID in why for _n, why in found), found)
+        # An OIDC-token `curl | jq` is no download, and keeps none of them.
+        self.assertEqual([], defects("curl -fsSL %sx | jq .tag\n" % URL
+                                     + self.body("python3 - <<'EOF'")))
+
+    def test_an_expanding_shell_body_is_reported_with_no_fetch_at_all(self):
+        # The EXPANDING branch is untouched by the ruling: a shell body bash
+        # expands runs what this guard never sees, fetch or no fetch.
+        for opener in ("bash -s <<EOF", "sh <<EOF"):
+            with self.subTest(opener=opener):
+                found = defects("%s\necho $(date)\nEOF\n" % opener)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("EXPANDING heredoc body", found[0][1])
+        # A foreign body reaches that branch for no interpreter: `python3 -`
+        # is answered by the rule above it, so #2499's predicate governs it
+        # (the deviation #2499's pin list did not foresee). A `$(...)` lifted
+        # out of the body is still read where bash runs it, and reported.
+        self.assertEqual([], defects("python3 - <<EOF\nprint($(date))\nEOF\n"))
+        found = defects("python3 - <<EOF\nprint(\"$(%s)\")\nEOF\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertIn(self.SAID, found[0][1])
+        self.assertIn("straight to `python3 -`", found[1][1])
 
 
 if __name__ == "__main__":  # pragma: no cover
