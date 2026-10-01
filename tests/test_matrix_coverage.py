@@ -212,6 +212,31 @@ class TestMatrixCoverage(unittest.TestCase):
             "layers in panopticon.yml instead."
             % (len(over), cap, "\n  ".join(over)))
 
+    def test_tool_adapters_leaves_keep_headroom(self):
+        # #2315: `ToolAdapters:Integration` reached 48 of 48 the moment
+        # `tests/tools/test_sarif_utils.py` joined it through `tests/tools/**`,
+        # so the NEXT adapter or adapter test would have turned the cap
+        # assertion above red for whoever added it -- a stranger to the split
+        # decision, mid-PR. This leaf's growth surface is a glob over two whole
+        # directories, which is the one shape that grows without anybody
+        # choosing to, so it gets a guard with room to land in: the cap is the
+        # wall, and this is the fence in front of it.
+        headroom = 40
+        assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
+        tight = ["%s: %d files" % (name, len(files))
+                 for name, files in sorted(assigned.items())
+                 if name.split(":")[0] == "ToolAdapters" and len(files) > headroom]
+        self.assertEqual(
+            tight, [],
+            "%d ToolAdapters leaf(s) above the %d-file headroom (the cap is "
+            "%d):\n  %s\nsplit the leaf into another layer in panopticon.yml "
+            "now, while the split is still this PR's decision rather than the "
+            "next contributor's surprise (#2315). If `Integration` is the leaf "
+            "and nothing was added, a layer of literal paths was reordered "
+            "behind its globs: `Contract` must stay listed before it."
+            % (len(tight), headroom, discovery.DEFAULT_MAX_PER_GROUP,
+               "\n  ".join(tight)))
+
     def test_allowlist_entries_still_exist(self):
         stale = [path for path in sorted(ALLOWLIST)
                  if not os.path.isfile(os.path.join(REPO_ROOT, path))]
