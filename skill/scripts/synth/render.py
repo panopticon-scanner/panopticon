@@ -194,6 +194,19 @@ def _suppressed_gated_line(gated):
             % coverage_io.venv_tally(rows, MARKER_VENV_PREFIX))
 
 
+def _code_span(text):
+    """`text` in a Markdown code span whose fence is long enough that the text's
+    own backticks stay inert -- for a glob or a path the TARGET authored.
+
+    Callers JSON-quote the value first: that is what keeps a newline in a
+    target-written path from forging a line of its own in this summary.
+    """
+    ticks = "`"
+    while ticks in text:
+        ticks += "`"
+    return ticks + text + ticks
+
+
 def _excluded_tools_line(value):
     """Show a measured tool-policy exclusion without inventing legacy data."""
     if not isinstance(value, dict):
@@ -203,17 +216,36 @@ def _excluded_tools_line(value):
             or not isinstance(globs, list)
             or any(not isinstance(glob, str) or not glob for glob in globs)):
         return ""
-    # JSON quotes keep each glob exact; a longer code span keeps a target's backticks inert.
-    def code(glob):
-        quoted, ticks = json.dumps(glob, ensure_ascii=False), "`"
-        while ticks in quoted:
-            ticks += "`"
-        return ticks + quoted + ticks
-
-    policy = ", ".join(code(glob) for glob in globs) if globs else "none"
+    policy = ", ".join(_code_span(json.dumps(glob, ensure_ascii=False))
+                       for glob in globs) if globs else "none"
     # Silent without a policy: the clause is a disclosure about THIS run.
-    cells = " — a committed `exclude_paths:` prunes review CELLS too, not just this axis" if globs else ""
+    # #1757: "every domain but SEC" -- the clause used to end "not just this
+    # axis", which read as SEC included, and the owner ruling of 2026-09-25 made
+    # that false. The SEC surface it could not take is the line below this one.
+    cells = (" — a committed `exclude_paths:` prunes review CELLS too, not just"
+             " this axis (every domain but SEC)") if globs else ""
     return "**Tool findings excluded by policy:** %d — globs: %s%s" % (count, policy, cells)
+
+
+def _sec_carve_out_line(value):
+    """#1757 (AGT-1355709320): the objective SEC surface a target's committed
+    `exclude_paths:` could not take out of the SEC domain.
+
+    Owner ruling 2026-09-25 -- such an exclusion is DISCLOSED in the coverage
+    section rather than silently applied, and this is that disclosure on the
+    human surface. Silent without a measurement, like its sibling above: the key
+    is absent entirely on a run with no committed pruning policy.
+    """
+    count = value.get("count") if isinstance(value, dict) else None
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return ""
+    kept = [f for f in (value.get("files") or []) if isinstance(f, str) and f]
+    # One LINE: 20 names, with the full list in the JSON block it summarizes.
+    names = ", ".join(_code_span(json.dumps(f, ensure_ascii=False))
+                      for f in kept[:20])
+    return ("**`exclude_paths:` SEC carve-out:** %d file(s) kept for SEC review "
+            "only: %s — a target's own exclusion cannot hide the objective SEC "
+            "surface (#1757)" % (count, names or "none"))
 
 
 def _config_line(config):
@@ -309,6 +341,12 @@ def render_summary(report):
     excluded = _excluded_tools_line(_cov.get("tools_excluded"))
     if excluded:
         lines.insert(3, excluded)
+    # #1757: coded AFTER the exclusion line so it renders ABOVE it (every
+    # `insert(3, …)` here lands above whatever was already there) -- an
+    # exclusion that was REFUSED outranks one that was applied.
+    carve = _sec_carve_out_line(_cov.get("exclude_paths_sec_carve_out"))
+    if carve:
+        lines.insert(3, carve)
     sup = _suppressed_line(_cov.get("tools_suppressed"),
                            _cov.get("tools_suppressed_not_gated"))
     if sup:

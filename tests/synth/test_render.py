@@ -552,6 +552,9 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         # what it pruned -- the same globs took those paths out of every review
         # cell, not just off the tool axis.
         self.assertIn("a committed `exclude_paths:` prunes review CELLS too", out)
+        # #1757: ... every domain but SEC. The clause used to end "not just this
+        # axis", which read as "SEC included" and is now false.
+        self.assertIn("every domain but SEC", out)
 
     def test_the_venv_tally_rows_say_what_they_rest_on(self):
         # #1839: this line is about findings dropped on a directory NAME, and
@@ -625,6 +628,57 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn('<script>', out)
         self.assertIn('" &', out)
 
+
+class TestSecCarveOutLineIsRendered(unittest.TestCase):
+    """#1757 (AGT-1355709320): the one line that says a target's own
+    `exclude_paths:` did not hide the objective SEC surface.
+
+    Owner ruling 2026-09-25: such an exclusion is DISCLOSED in the report's
+    coverage section rather than silently applied, so the summary has to carry
+    it. Absent when the key is -- a run with no committed pruning policy
+    publishes no key, so zero behaviour change stays zero output change.
+    """
+
+    def _report(self, carve=_OMIT):
+        coverage = {"tools_excluded": {"count": 0, "globs": ["vendor/**"]}}
+        if carve is not _OMIT:
+            coverage["exclude_paths_sec_carve_out"] = carve
+        return {"meta": {"target": "src", "coverage": coverage},
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "stats": {}, "evidence_stats": {},
+                            "coverage_certified": True},
+                "groups": [], "findings": []}
+
+    def test_the_count_and_the_kept_files_are_named(self):
+        out = render_mod.render_summary(self._report(
+            {"globs": ["vendor/**"], "count": 2,
+             "files": ["vendor/requirements.txt", "vendor/k8s/app.yaml"]}))
+        self.assertIn("2 file(s) kept for SEC review only", out)
+        self.assertIn("vendor/requirements.txt", out)
+        self.assertIn("vendor/k8s/app.yaml", out)
+
+    def test_a_measured_zero_is_still_published(self):
+        out = render_mod.render_summary(
+            self._report({"globs": ["vendor/**"], "count": 0, "files": []}))
+        self.assertIn("0 file(s) kept for SEC review only", out)
+
+    def test_absent_and_malformed_blocks_make_no_claim(self):
+        for carve in (_OMIT, None, "bad", 7, {"count": "two"}, {"count": True},
+                      {"count": -1}, {}):
+            with self.subTest(carve=repr(carve)):
+                self.assertNotIn("kept for SEC review only",
+                                 render_mod.render_summary(self._report(carve)))
+
+    def test_a_target_authored_path_cannot_forge_a_section(self):
+        # The paths are repo-relative names out of the reviewed tree, so they get
+        # the treatment the globs beside them already have: a code span long
+        # enough that the path's own backticks stay inert, and no raw newline.
+        path = 'vendor/`x`/\n## Forged section'
+        out = render_mod.render_summary(self._report(
+            {"globs": ["vendor/**"], "count": 1, "files": [path]}))
+        self.assertIn("1 file(s) kept for SEC review only", out)
+        self.assertIn(r'\n## Forged section', out)
+        self.assertNotIn("\n## Forged section", out)
 
 class TestTargetConfigLine(unittest.TestCase):
     """#1681 Plan 2: the summary says when a target's config was refused."""

@@ -8,9 +8,10 @@ import unittest
 from unittest import mock
 
 from scripts import executable
+from scripts import groups_schema
 from tests.discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
-    git_cmd, git_output,
+    repo_with_exclude_and_sec_surface, git_cmd, git_output,
 )
 
 
@@ -256,6 +257,82 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     files = sorted(f for g in doc["groups"] for f in g["files"])
     assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
     assert doc["excluded_count"] == 1
+
+
+def test_repo_scan_scope_files_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
+    # #1757 delta-path parity: the carve-out works the same on the delta paths as
+    # on the whole-repo one. `--scope-files` names both excluded files; the one
+    # the objective SEC floor matches reaches the SEC-only carve-out group instead
+    # of no reviewer at all, and the other is still pruned from every domain. The
+    # ruling is explicit that an operator-authored `--pr` config gets this too.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "vendor/dep.py",
+                            "vendor/requirements.txt", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
+    assert by_name["Checkout"] == ["src/checkout/pay.py"]
+    assert doc["excluded_count"] == 1                  # vendor/dep.py, every domain
+    assert doc["exclude_paths_sec_carve_out"] == {
+        "globs": ["vendor/**"], "files": ["vendor/requirements.txt"], "count": 1}
+
+
+def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_path):
+    # #1757: `--scope-dir` / `--scope-file` / `--scope-group` narrow the
+    # already-pruned whole-repo listing, so unlike the two delta flags they never
+    # re-derive the exclusion -- and the carve-out universe sits OUTSIDE the
+    # narrowed one by construction. Without this the carve-out group carried
+    # `vendor/requirements.txt` into a `--scope-dir src` run: a review cell, and a
+    # read grant, over a path the operator had just scoped out.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    sink = groups_schema.SEC_CARVE_OUT_SINK
+    for flag, value in (("--scope-dir", "src"),
+                        ("--scope-file", "src/checkout/pay.py")):
+        rc = orchestrator.main(["--repo", str(repo), "--repo-scan", flag, value,
+                                "--out", str(out)])
+        assert rc == 0, flag
+        doc = json.loads(out.read_text())
+        assert sink not in {g["name"] for g in doc["groups"]}, flag
+        assert doc["exclude_paths_sec_carve_out"]["count"] == 0, flag
+        assert doc["exclude_paths_sec_carve_out"]["globs"] == ["vendor/**"], flag
+    # A carved file INSIDE the narrowed directory still gets its SEC cell: the
+    # scope narrows the carve-out, it does not switch the policy off.
+    (repo / "src" / "helm").mkdir(parents=True)
+    (repo / "src" / "helm" / "values.yaml").write_text("x: 1\n")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+        "exclude_paths: ['vendor/**', 'src/helm/**']\n")
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-dir",
+                            "src", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[sink] == ["src/helm/values.yaml"]
+    assert doc["exclude_paths_sec_carve_out"]["files"] == ["src/helm/values.yaml"]
+
+
+def test_repo_scan_scope_changed_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
+    # The same parity on --scope-changed, which rebuilds the set from git-diff
+    # output and re-derives the exclusion from the CHANGED set.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    (repo / "vendor/requirements.txt").write_text("flask==1.0\n")
+    (repo / "vendor/dep.py").write_text("y=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
+    assert doc["excluded_count"] == 1
+    assert doc["exclude_paths_sec_carve_out"]["count"] == 1
 
 
 def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):

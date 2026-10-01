@@ -13,6 +13,7 @@ from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
+import scripts.groups_schema as groups_schema
 import scripts.phases.review as review
 import scripts.model_resolver as model_resolver
 
@@ -566,6 +567,36 @@ class TestCoveragePhase(unittest.TestCase):
         # #1838 SEC-71240568 (review finding 1): the "ran" wording must survive
         # for a group where the rejected exclusion's domain genuinely runs.
         self.assertIn("still run", err.getvalue())
+
+    def test_sec_carve_out_group_reviews_sec_and_nothing_else(self):
+        # #1757 (AGT-1355709320), owner ruling 2026-09-25: the carve-out group
+        # exists only so the objective SEC surface a target's `exclude_paths:`
+        # excluded still reaches the SEC domain. Every OTHER domain honours that
+        # exclusion, so nothing may widen this cell -- not the surface-gated
+        # global floor (these two files objectively gate COD and ARC on), and not
+        # a scout that asks for COD.
+        sink = groups_schema.SEC_CARVE_OUT_SINK
+        files = ["deploy/k8s/x.yaml", "ci/Dockerfile"]
+        self._groups_json([{"name": sink, "files": files,
+                            groups_schema.SEC_CARVE_OUT_MARKER: True}])
+        self._groups_yml("groups:\n  Api:\n    match: ['src/**']\n")
+        runio._write_json(runio._pano(self.root, "scout-%s.json" % sink),
+                           {"group": sink, "domains": ["COD", "SEC"]})
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-%s.json" % sink))
+        self.assertEqual(cov["effective"], ["SEC"])
+        self.assertEqual(cov["scout_added"], [])        # netted out, not honoured
+        self.assertEqual(cov["sec_floor_applied"], ["SEC"])
+        self.assertIs(cov["sec_carve_out"], True)       # why this cell is narrow
+        # The control proving the marker did that, not the files: the SAME files
+        # in an ORDINARY group draw the gated global floor as they always have.
+        self._groups_json([{"name": "Api", "files": files}])
+        runio._write_json(runio._pano(self.root, "scout-Api.json"),
+                           {"group": "Api", "domains": ["COD", "SEC"]})
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
+        self.assertEqual(cov["effective"], ["ARC", "COD", "SEC"])
+        self.assertIs(cov["sec_carve_out"], False)
 
     def test_surfaceless_group_gets_no_sec_floor(self):
         # #5.0-19 stays honored end-to-end: a group with no objective security

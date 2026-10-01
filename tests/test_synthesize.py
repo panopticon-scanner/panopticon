@@ -1738,3 +1738,72 @@ class TestDiscoveryDisclosuresReachTheReport(unittest.TestCase):
         self.assertIsNone(report["meta"]["integrity"]["discovery_git_failure"])
         self.assertEqual(report["meta"]["integrity"]["discovery_files_truncated"], 0)
         self.assertNotIn("DISCOVERY", md)
+
+
+class TestSecCarveOutDisclosureReachesTheReport(unittest.TestCase):
+    """#1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
+    `exclude_paths:` may not remove a file the objective SEC floor matches from
+    the SEC domain, and *such an exclusion is disclosed in the report's coverage
+    section instead of silently applied*. The disclosure is the half of the
+    ruling that only the report can keep, so it is proved end to end through
+    `main()` -- discovery writes the block into `groups.json`, this is the thread
+    that carries it to `meta.coverage` and to the rendered summary.
+    """
+
+    CARVE = {"globs": ["vendor/**"], "files": ["vendor/requirements.txt"],
+             "count": 1}
+
+    def _run(self, d, carve):
+        run_dir = os.path.join(d, ".panopticon", "runs", "tag")
+        os.makedirs(run_dir)
+        groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}
+        if carve is not None:
+            groups["exclude_paths"] = carve.get("globs") or []
+            groups["exclude_paths_sec_carve_out"] = carve
+        with open(os.path.join(run_dir, "groups.json"), "w", encoding="utf-8") as fh:
+            json.dump(groups, fh)
+        with open(os.path.join(run_dir, "tools-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "run_id": "rid-1", "selected": [],
+                       "produced": [], "missing": [], "excluded_scope": []}, fh)
+        fp = os.path.join(run_dir, "findings-g1-COD.json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = syn.main(["--target", "src",
+                           "--groups", os.path.join(run_dir, "groups.json"),
+                           "--run-id", "rid-1", "--fail-on", "critical",
+                           "--out", out, fp])
+        with open(out, encoding="utf-8") as fh:
+            report = json.load(fh)
+        return rc, report, render_mod.render_summary(report)
+
+    def test_the_block_reaches_meta_coverage_and_the_summary(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            rc, report, md = self._run(d, self.CARVE)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["meta"]["coverage"]["exclude_paths_sec_carve_out"],
+                         self.CARVE)
+        self.assertIn("1 file(s) kept for SEC review only", md)
+
+    def test_no_pruning_policy_publishes_no_key_and_renders_nothing(self):
+        # Zero behaviour change is zero OUTPUT change, the rule `exclude_paths`
+        # itself follows in `groups.json`: a run with nothing committed carries
+        # no key at all rather than a zero nobody measured.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            _rc, report, md = self._run(d, None)
+        self.assertNotIn("exclude_paths_sec_carve_out", report["meta"]["coverage"])
+        self.assertNotIn("kept for SEC review only", md)
+
+    def test_a_target_authored_block_is_repaired_at_the_read(self):
+        # `groups.json` is read out of the target's own `.panopticon/`, and both
+        # lists here are target-authored, so the block is repaired on the way in
+        # exactly as `tools_excluded` is -- never published as it was written.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            _rc, report, _md = self._run(d, {"globs": ["vendor/**", 7],
+                                             "files": ["ok.yaml", None],
+                                             "count": "lots"})
+        self.assertEqual(report["meta"]["coverage"]["exclude_paths_sec_carve_out"],
+                         {"globs": ["vendor/**"], "files": ["ok.yaml"], "count": 0})

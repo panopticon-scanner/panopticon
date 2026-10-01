@@ -395,8 +395,7 @@ def _match_findings(a_findings, b_findings):
 
     Findings are grouped by fingerprint and paired greedily. Paired findings
     are marked 'unchanged' or 'severity changed'; unmatched head findings are
-    'new'; unmatched base findings are 'resolved'.
-    """
+    'new'; unmatched base findings are 'resolved'."""
     a_by_fp: dict[str, list[dict[str, Any]]] = {}
     for f in a_findings:
         a_by_fp.setdefault(_fingerprint(f), []).append(f)
@@ -493,8 +492,7 @@ def _render_host_capabilities(meta):
     `--compare`, a truncated artifact -- and `host_disclosure` then fails
     closed again on a non-str host / non-dict capabilities. Every interpolated
     value is escaped: `detail` quotes the REVIEWED tree's own paths and
-    filenames, which a hostile target chooses.
-    """
+    filenames, which a hostile target chooses."""
     hc = meta.get("host_capabilities")
     hc = hc if isinstance(hc, dict) else {}
     # D10 N3: carry `cli_flags` too -- see synth/render.py's note. Rebuilding
@@ -604,14 +602,14 @@ def _render_header(report):
     parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
     parts.append(_render_excluded_tools(meta))
+    parts.append(_render_sec_carve_out(meta))   # #1757: and what it could not take
     return "\n".join(parts)
 
 
 def _render_scanner_context(meta):
     """Scanner evidence and limitations measured for this run.
     Silent when no measured fact exists: older or foreign reports must not
-    acquire a fabricated zero.
-    """
+    acquire a fabricated zero."""
     tools = meta.get("tools") or {}
     block = tools.get("panels_with_scanner_context")
     parts = []
@@ -657,8 +655,7 @@ def _partial_audit_notes(sanitized):
     pre-#1646 report, or one fed to --compare, did not, and "0 lines not
     audited" would state a measurement nobody made. The block is copied from a
     target-writable manifest, so every shape here is checked rather than
-    trusted -- a malformed row renders no line, never a traceback mid-report.
-    """
+    trusted -- a malformed row renders no line, never a traceback mid-report."""
     if not isinstance(sanitized, dict):
         return []
     notes = []
@@ -682,8 +679,7 @@ def _egress_notes(network):
 
     The block is copied from a target-writable manifest, so every shape is
     checked rather than trusted and every value is escaped: a malformed row
-    renders no line, never a traceback and never markup, mid-report.
-    """
+    renders no line, never a traceback and never markup, mid-report."""
     if not isinstance(network, dict):
         return []
     notes = []
@@ -705,8 +701,7 @@ def _more(row):
 
     `dropped` is capped at 200 rows and the remainder counted, so the LISTED
     rows understate a large partial audit by exactly what the cap hid. The
-    sentence states the true total; the list is the sample.
-    """
+    sentence states the true total; the list is the sample."""
     more = row.get("dropped_truncated")
     return more if isinstance(more, int) and not isinstance(more, bool) else 0
 
@@ -725,8 +720,7 @@ def _render_test_inventory(meta):
     listing it would bury the two that are not. Silent when the whole matrix
     is complete, and silent on a report that never measured this (pre-#1638,
     or a foreign report on the --compare path) -- "nobody looked" must not
-    render as "every group is fine".
-    """
+    render as "every group is fine"."""
     inventory = (meta.get("coverage") or {}).get("test_inventory")
     if not isinstance(inventory, dict):
         return ""
@@ -770,8 +764,7 @@ def _render_suppressed_git_drivers(meta):
     (pre-#2013, or a foreign report on the --compare path) renders nothing for
     the same reason -- but note that `[]` and "not measured" both arrive here as
     `[]` (review M4), so this line says "no driver was emptied under this run's
-    probe" and cannot distinguish a manifest that predates the field.
-    """
+    probe" and cannot distinguish a manifest that predates the field."""
     rows = (meta.get("coverage") or {}).get("git_drivers_suppressed")
     if not isinstance(rows, list) or not rows:
         return ""
@@ -827,8 +820,7 @@ def _venv_tally(rows) -> str:
     `pyvenv.cfg:<dir>` key is put through `ascii()` first -- the same idiom the
     policy globs beside it use -- and there is one such row per virtualenv, so a
     monorepo's dozens are capped with the remainder named. The class rows are
-    never capped, and `meta.coverage.tools_suppressed` keeps every row.
-    """
+    never capped, and `meta.coverage.tools_suppressed` keeps every row."""
     out, seen, cut = [], 0, 0
     for segment, count in rows:
         if str(segment).startswith(MARKER_VENV_PREFIX):
@@ -861,8 +853,7 @@ def _render_suppressed_tools(meta):
     (pre-#1578, or a foreign report on the --compare path): "nobody counted"
     must not render as "nothing was dropped". Tolerant of a malformed block --
     the value is repaired at its boundary, and a renderer is not the place to
-    discover that it was not.
-    """
+    discover that it was not."""
     coverage = meta.get("coverage") or {}
     rows = _suppressed_rows(coverage.get("tools_suppressed"))
     if not rows:
@@ -890,8 +881,7 @@ def _suppressed_rows(value):
 
     Shared by both suppression blocks so they can never disagree about which
     rows exist. Tolerant of a malformed block -- the value is repaired at its
-    boundary, and a renderer is not the place to discover that it was not.
-    """
+    boundary, and a renderer is not the place to discover that it was not."""
     if not isinstance(value, dict):
         return []
     return [(seg, n) for seg, n in sorted(value.items())
@@ -906,8 +896,7 @@ def _render_suppressed_gated_tools(meta):
     above: those findings were not lost from the gate, they were lost from the
     REPORT while still setting it. Without it a redteam FAIL renders as a gate
     verdict over an empty findings table with nothing anywhere to explain it
-    (fix round 1, F2). Silent when nothing was gated -- every standard-mode run.
-    """
+    (fix round 1, F2). Silent when nothing was gated -- every standard-mode run."""
     rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed_gated"))
     if not rows:
         return ""
@@ -919,6 +908,23 @@ def _render_suppressed_gated_tools(meta):
             "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list</div>"
             % _venv_tally(rows))
+
+
+def _render_sec_carve_out(meta):
+    """#1757: the objective SEC surface a target's committed `exclude_paths:`
+    could not take out of the SEC domain (owner ruling 2026-09-25 -- disclosed,
+    never silently applied). Silent without a measurement, like its sibling."""
+    coverage = meta.get("coverage")
+    carve = coverage.get("exclude_paths_sec_carve_out") if isinstance(coverage, dict) else None
+    if not isinstance(carve, dict) or not isinstance(carve.get("count"), int) \
+            or isinstance(carve["count"], bool) or carve["count"] < 0:
+        return ""
+    kept = [f for f in (carve.get("files") or []) if isinstance(f, str) and f]
+    return ("<div class='coverage'><code>exclude_paths:</code> %d file(s) kept "
+            "for SEC review only: %s &mdash; a target's own exclusion cannot "
+            "hide the objective SEC surface</div>"
+            % (carve["count"], ", ".join("<code>%s</code>" % _escape(f)
+                                         for f in kept[:20]) or "none"))
 
 
 def _render_excluded_tools(meta):
@@ -952,8 +958,7 @@ def _render_compare_summary(label, report):
     Each panel takes its OWN report's meta. `--compare` is also the documented
     route by which a FOREIGN report.json reaches this renderer, so the envelope
     here is less trustworthy than the main path's, not more -- everything goes
-    through the same escaping and the same fail-closed handling.
-    """
+    through the same escaping and the same fail-closed handling."""
     summary = report.get("summary", {})
     stats = summary.get("stats", {})
     stat_cards = " ".join(
@@ -1023,8 +1028,7 @@ def _render_bar_chart(rows, color_class_fn, title):
 
     Bar width is the category's share of the total (0-100%), not max-normalized,
     so a bar's length reads as an absolute percentage of all findings rather than
-    relative to the largest category. The exact share is on the row's tooltip.
-    """
+    relative to the largest category. The exact share is on the row's tooltip."""
     row_html = []
     if rows:
         total = sum(count for _, count in rows) or 1
@@ -1078,8 +1082,7 @@ def _gate_card_mark(sev, roles, count):
     sensitive data by identifier name, and `note` matches its private-data family
     (notes/memo/diary), so the literal string "fails gate" flowed into write_html
     as a high-severity leak. The rename is the fix -- a suppression comment would
-    silence the query on this sink for every future flow through it too.
-    """
+    silence the query on this sink for every future flow through it too."""
     if sev in set(roles.get("contributing") or []):
         return "fails gate"
     if sev in set(roles.get("in_play") or []):
@@ -1288,8 +1291,7 @@ def _group_display_labels(report):
     label from the group's files so the heatmap and findings read usefully.
     A real, letter-bearing name is kept as-is. (run-9 A5 fixed the upstream
     naming -- the residual sink is now `Ungrouped_N` -- so this is a display
-    fallback for ARCHIVED reports written under the old `._N` scheme.)
-    """
+    fallback for ARCHIVED reports written under the old `._N` scheme.)"""
     labels = {}
     for g in report.get("groups") or []:
         name = g.get("name", "")
@@ -1302,8 +1304,7 @@ def _group_of(path, file_to_group, has_profile_groups):
     """Resolve a file's group name (mirrors report-common.js groupOf).
 
     With scope-profile groups, use them; otherwise fall back to the first two
-    path segments as a synthetic module name.
-    """
+    path segments as a synthetic module name."""
     p = re.sub(r"^\./", "", str(path or ""))
     if has_profile_groups:
         return file_to_group.get(p, "Ungrouped")
@@ -1340,8 +1341,7 @@ def _heatmap_grid(report):
     Each row is {"total": int, "cells": {panel: {"count", "worst"}}}. Rows cover
     every defined group (so a clean group still shows, all cells empty) plus any
     module fallback groups discovered from finding locations. Panels are the
-    canonical-order subset carrying findings or measured review evidence.
-    """
+    canonical-order subset carrying findings or measured review evidence."""
     findings = report.get("findings", [])
     file_to_group = _file_to_group(report)
     has_profile = len(file_to_group) > 0

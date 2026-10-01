@@ -153,8 +153,8 @@ own code out of security review (the override is disclosed as `exclude_rejected`
 `coverage-<group>.json` and printed loudly to stderr). To drop *paths* entirely — e.g. a
 deliberately-vulnerable test-fixture corpus that redteam mode would otherwise keep in scope — use
 the **top-level `exclude_paths:`** list of gitignore-flavored globs (sibling to `groups:`).
-`exclude_paths` prunes matching files *before* grouping, so they land in **no** review cell of
-**any** domain (SEC included). It prunes *discovery* only — the tool scanners read the tree
+`exclude_paths` prunes matching files *before* grouping, so they land in **no** review cell —
+**except SEC** (see below). It prunes *discovery* only — the tool scanners read the tree
 themselves, and their own findings are dropped with `--tools-exclude GLOB`. Prefer it over an
 `exclude:`-everything sink group:
 
@@ -163,5 +163,21 @@ groups:
   Auth:
     match: ['src/auth/**']
 exclude_paths:
-  - tests/fixtures/**   # deliberately-vulnerable corpora: reviewed by nobody
+  - tests/fixtures/**   # deliberately-vulnerable corpora: reviewed by SEC only
 ```
+
+**`exclude_paths` cannot hide the security surface (#1757).** A file your globs match that *also*
+carries an objective security surface — a CI workflow, a Dockerfile, a dependency manifest or
+lockfile, a `helm/`/`k8s/` path, a db/schema file, a secret-bearing file such as `.env` or a private
+key, or a path with `auth`/`token`/`secret`/`password` in it — is **not** pruned. It is moved into
+one dedicated review group named `exclude_paths_sec_carve_out` that reviews **SEC and nothing
+else**; every other domain still honours your exclusion, and the file joins no other group. The
+objective floor exists so that nobody's taste about scope can hide an attack surface (the same
+reason `exclude: [SEC]` on a group is overridden), so this is deliberate, and it is **disclosed**
+rather than silent: the carved globs, paths and count appear in `groups.json`, on discovery's
+stderr line, and in the report's coverage section as
+`meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect.
+
+To drop a path from SEC too, the exclusion has to stop being yours to make: remove the files from
+the repository, or run with `--security standard`, which prunes a recognised
+deliberately-vulnerable fixture corpus at discovery — before `exclude_paths` is consulted at all.

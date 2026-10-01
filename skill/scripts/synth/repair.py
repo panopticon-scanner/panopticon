@@ -382,6 +382,71 @@ def repair_tools_excluded(value, warn=None):
     return {"globs": globs, "count": count}
 
 
+def _bounded_strings(raw, path, limit, changes):
+    """`raw` as a bounded list of non-empty strings no longer than `limit`.
+
+    Over-long entries are DROPPED rather than cut, which is the rule both
+    callers need for their own reason: a cut glob is a different glob and would
+    misstate the policy, and a cut path names a file that does not exist.
+    """
+    if raw is not None and not isinstance(raw, list):
+        changes.append((path, "dropped: not a list"))
+        raw = []
+    kept = []
+    for entry in _bounded(list(raw or []), path, changes):
+        if not isinstance(entry, str) or not entry:
+            changes.append(("%s[%r]" % (path, entry),
+                            "dropped: not a non-empty string"))
+        elif len(entry) > limit:
+            changes.append(("%s.%s..." % (path, entry[:40]),
+                            "dropped: longer than %d characters in" % limit))
+        else:
+            kept.append(entry)
+    return kept
+
+
+def repair_sec_carve_out(value, warn=None):
+    """The #1757 (AGT-1355709320) SEC carve-out disclosure, normalized to what
+    the schema pins for `meta.coverage.exclude_paths_sec_carve_out`.
+
+    `{"globs": [str], "files": [str], "count": int}` -- which committed
+    `exclude_paths:` globs scoped the exclusion, which of the files they matched
+    the objective SEC floor also matched (so the SEC domain reviews them anyway,
+    per the owner ruling of 2026-09-25), and how many. Target-carried twice over:
+    the globs are authored in the reviewed repository's own root config and the
+    paths are repo-relative names out of the reviewed tree, so both lists are
+    repaired here exactly as `tools_excluded`'s globs and `groups[].files` are.
+
+    The COUNT is the measurement and survives a bound applied to the list beside
+    it: a repaired `files` shorter than `count` says both true things at once,
+    where recomputing the count from the kept rows would publish a number no
+    measurement made. A count that is not an honest non-negative integer becomes
+    0 for that same reason.
+
+    Always returns the full block. The KEY is omitted upstream when a run
+    committed no `exclude_paths:` at all (zero behaviour change, zero output
+    change), but a block that is present and unreadable must not read as zero.
+    """
+    changes = []
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append(("exclude_paths_sec_carve_out",
+                            "dropped: not an object"))
+        value = {}
+    globs = _bounded_strings(value.get("globs"),
+                             "exclude_paths_sec_carve_out.globs", NAME_MAX, changes)
+    files = _bounded_strings(value.get("files"),
+                             "exclude_paths_sec_carve_out.files", PATH_MAX, changes)
+    count = value.get("count", 0)
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        if count not in (None, 0):
+            changes.append(("exclude_paths_sec_carve_out.count",
+                            "dropped: not a non-negative integer"))
+        count = 0
+    warn_repairs("exclude_paths", changes, warn)
+    return {"globs": globs, "files": files, "count": count}
+
+
 def repair_git_drivers_suppressed(value, warn=None):
     """The suppressed-Git-driver disclosure, normalized to what the schema pins
     for `meta.coverage.git_drivers_suppressed` (#2013).

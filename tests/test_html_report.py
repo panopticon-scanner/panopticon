@@ -1967,6 +1967,50 @@ class TestExcludedToolFindingsInHtml(unittest.TestCase):
         self.assertEqual(out.count("Tool findings excluded by policy:"), 2)
 
 
+class TestSecCarveOutInHtml(unittest.TestCase):
+    """#1757 (AGT-1355709320): the HTML half of the carve-out disclosure.
+
+    Owner ruling 2026-09-25 -- a target-authored `exclude_paths:` may not take
+    the objective SEC surface out of the SEC domain, and the exclusion that was
+    NOT applied is disclosed in the report's coverage section. Both published
+    renderings have to say it, and both have to stay silent on a run that
+    carries no such measurement.
+    """
+
+    def _report(self, carve=_NO_KEY):
+        report = _minimal_report()
+        coverage = report["meta"].setdefault("coverage", {})
+        if carve is not _NO_KEY:
+            coverage["exclude_paths_sec_carve_out"] = carve
+        return report
+
+    def test_the_count_and_the_kept_files_are_named(self):
+        out = hr.render(self._report(
+            {"globs": ["vendor/**"], "count": 2,
+             "files": ["vendor/requirements.txt", "vendor/k8s/app.yaml"]}))
+        self.assertIn("2 file(s) kept for SEC review only", out)
+        self.assertIn("vendor/requirements.txt", out)
+        self.assertIn("vendor/k8s/app.yaml", out)
+
+    def test_a_measured_zero_is_still_published(self):
+        out = hr.render(self._report({"globs": ["vendor/**"], "count": 0,
+                                      "files": []}))
+        self.assertIn("0 file(s) kept for SEC review only", out)
+
+    def test_absent_and_malformed_blocks_make_no_claim(self):
+        for carve in (_NO_KEY, None, "bad", 7, [], {}, {"count": "two"},
+                      {"count": True}, {"count": -1}):
+            with self.subTest(carve=repr(carve)):
+                self.assertNotIn("kept for SEC review only",
+                                 hr.render(self._report(carve)))
+
+    def test_a_target_authored_path_is_escaped(self):
+        out = hr.render(self._report(
+            {"globs": ["vendor/**"], "count": 1,
+             "files": ["<script>alert(1)</script>/x.yaml"]}))
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;/x.yaml", out)
+        self.assertNotIn("<script>alert(1)</script>", out)
+
 class TestMeasuredHeatmap(unittest.TestCase):
     def _rows(self, report):
         table = _parse(hr._render_heatmap(report))
