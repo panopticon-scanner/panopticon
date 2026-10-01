@@ -15,14 +15,12 @@ Targets are GENERATED rather than vendored, for two independent reasons:
   It also matters mechanically: `tests/tools/` is NOT covered by the security
   gate's `tests/fixtures/*` exclusion, so a literal here would trip our own
   gitleaks in CI.
-* semgrep's built-in default ignore list drops `tests/` and `test/` RELATIVE TO
-  THE PROJECT ROOT, so a fixture committed under `tests/fixtures/` is invisible
-  to it. Measured directly: seven identical files planted in one git repo under
-  tests/, test/, src/, lib/, app/, fixtures/ and docs/ -- semgrep reported five,
-  omitting exactly `tests/` and `test/`. (The relative path is what matters, not
-  the directory name: the same file scanned with `/tmp/t/tests` AS the root is
-  found, because then it is not under a `tests/` prefix.) Filed separately as
-  #1584; here it simply means the target must be generated.
+* semgrep 1.177.0's built-in ignore list used to drop `tests/` and `test/` at a
+  project root. The scanner-owned argv now replaces that list without its four
+  common-test entries and ignores target `.semgrepignore`/`.gitignore` files.
+  The generated real-Git and non-Git regression below proves both paths remain
+  covered. Intentional fixture findings are still pruned and disclosed later by
+  the ingest policy; they are not a reason to hide the rest of `tests/` here.
 
 trivy is the exception -- it reads dependency manifests, the vendored
 `vulnerable-python` fixture already carries one, and it is not path-sensitive.
@@ -117,6 +115,35 @@ class TestSemgrepIntegration(_LiveTool):
             any(f["location"]["file"].endswith("app.js") for f in findings),
             "semgrep reported findings but none against the planted file: %s"
             % sorted(f["location"]["file"] for f in findings))
+
+    def test_semgrep_scans_test_code_despite_target_ignore_files(self):
+        planted = {
+            "src/control.js": "const value = process.argv[2];\neval(value);\n",
+            "app/semgrepignored.js": "const value = process.argv[2];\neval(value);\n",
+            "test/gitignored.js": "const value = process.argv[2];\neval(value);\n",
+            "tests/defaultignored.js": "const value = process.argv[2];\neval(value);\n",
+            ".semgrepignore": "app/\ntests/\n",
+            ".gitignore": "test/\n",
+        }
+        expected = {"src/control.js", "app/semgrepignored.js", "test/gitignored.js",
+                    "tests/defaultignored.js"}
+        for git_root in (False, True):
+            with self.subTest(git_root=git_root), tempfile.TemporaryDirectory() as root:
+                _materialise(root, planted)
+                if git_root:
+                    subprocess.run(["git", "init", "-q", root], check=True)
+                raw, rc = LegacySarifAdapter("semgrep").invoke(root)
+                self.assertIn(rc, OK_SCAN_EXIT_CODES)
+                findings = LegacySarifAdapter("semgrep").parse(raw, "g1")
+                locations = {
+                    f["location"]["file"].replace(os.sep, "/")
+                    for f in findings
+                    if (f.get("tool_evidence") or {}).get("rule_id") ==
+                    "opt.semgrep-rules.javascript.browser.security.eval-detected"
+                }
+                seen = {rel for rel in expected
+                        if any(path.endswith("/" + rel) for path in locations)}
+                self.assertEqual(seen, expected, (git_root, sorted(locations)))
 
 
 class TestBanditIntegration(_LiveTool):
