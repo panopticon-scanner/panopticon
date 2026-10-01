@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **security.yml's pull-or-build step can now finish its fallback build (#2509, #1818).** The
+  step ceiling equalled the 600 s pull deadline, so a stalled pull left the local build zero
+  seconds; the ceiling is 25 min (pull 10 + a measured ~11 min build + margin), under the job's 30.
 - **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
   `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
   interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
