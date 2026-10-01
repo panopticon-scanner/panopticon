@@ -217,12 +217,22 @@ def stdin_program(argv):
         return None
     found = scripts(argv)
     if found:
-        # `eval`'s own words join into ONE string bash runs (`eval bash
-        # script.sh` is `bash script.sh`, a FILE, never `bash` alone reading
-        # stdin) -- checking each word on its own, as `scripts()`'s callers
-        # that scan for literal text may, over-reports here (#2500 review
-        # I-1's sibling finding, d13).
-        parsed = shell_reader.statements(" ".join(found))
+        # bash's `eval` joins ALL of its own words -- `-`-prefixed ones too
+        # -- into ONE string before running it (`eval bash -s x.sh` is
+        # `bash -s x.sh`, still reading stdin, not `bash x.sh` alone); a
+        # shell's `-c` STRING is already one word, `_after_dash_c`'s own.
+        # `scripts()`'s OWN join drops `-`-words for its literal-text
+        # callers, a filter wrong for this join (review R1-I2) -- re-join
+        # eval's words here instead of using `scripts()`'s filtered list. A
+        # leading `--` of eval's OWN is dropped first either way (`eval --
+        # bash -s` still reads stdin, bash-true: `eval`'s own options end
+        # there, unjoined, same as any special builtin's).
+        is_eval = os.path.basename(argv[0]) == "eval"
+        words = [t for t in (argv[1:] if is_eval else found) if not shell_reader.is_marker(t)]
+        if is_eval and words and getattr(words[0], "spelled", words[0]) == "--":
+            words = words[1:]
+        text = " ".join(getattr(t, "spelled", t) for t in words)
+        parsed = shell_reader.statements(text)
         if (len(parsed) == 1 and len(parsed[0].stages) == 1
                 and stdin_program(shell_reader.command(parsed[0].stages[0].argv)) == SHELL_PROGRAM):
             return SHELL_PROGRAM

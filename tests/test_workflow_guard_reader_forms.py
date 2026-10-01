@@ -266,6 +266,27 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
+        # Review R1-I2: the join must be bash's OWN join, every word eval
+        # was given, not `scripts()`'s (which drops every `-`-prefixed word
+        # for ITS callers) -- dropping a `-s`/`-c`/`--` here silently turns
+        # the inner shell's OWN stdin-reading form into a bare name or a
+        # FILE instead, and reads CLEAN where bash RAN x3 (must-trip:
+        # reverting to `scripts()`'s filtered words reads all four CLEAN).
+        for script in ("eval bash -s x.sh <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "eval bash -c sh <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "eval sh -c 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "eval bash -s -- x <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
+        # eval's OWN leading `--` ends ITS options and is not joined either
+        # (bash-true: `eval -- bash -s` still reads the heredoc as `bash
+        # -s`'s); must-trip against the plainer "join argv[1:] outright"
+        # fix, which would join it as the literal command `-- bash -s` and
+        # read this CLEAN instead (neither bash nor a known shell is named
+        # `--`).
+        found = defects("eval -- bash -s <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
         # Review I-1: this inherited body is read under the ENCLOSING
         # command's `-e` (the step's default), not the inner `bash -s`'s own
         # (it has none) -- a check gated only by `-e` reads hardened, so this
@@ -382,6 +403,19 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # A literal name's FILE operand is unaffected: #2473 only reaches a
         # value-form command word, never a literal one.
         self.assertEqual([], defects("python3 x.py\n"))
+        # Review R1-I1: a `$(...)`/backquote command word's substitution is
+        # LIFTED before this sentence is built; naming it by the raw
+        # internal marker (`@@shell-<hex>@@`, fresh every parse) made the
+        # guard's own text differ from run to run. `shell_reader.readable`
+        # renders it back to the stable `$(...)` placeholder instead.
+        for script in ("$(echo sh) <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "`echo sh` <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                first, second = defects(script), defects(script)
+                self.assertEqual(first, second)
+                for _, sentence in first + second:
+                    self.assertNotIn("@@", sentence)
+                self.assertTrue(any("$(...)" in w for _, w in first), first)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):

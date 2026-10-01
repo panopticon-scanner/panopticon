@@ -302,7 +302,7 @@ def _unread_stdin(stage):
     kind = stdin_program(argv) if here else None
     if kind is None:
         return None
-    name = os.path.basename(argv[0])
+    name = os.path.basename(shell_reader.readable(argv[0]))
     if kind != SHELL_PROGRAM:
         return ("hands a heredoc body or here-string to `%s` as the program to "
                 "run, which this guard does not parse -- it cannot say whether "
