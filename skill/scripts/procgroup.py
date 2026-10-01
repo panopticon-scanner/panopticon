@@ -180,10 +180,11 @@ def kill_group(proc, grace=KILL_GRACE):
     driver had already reported the phase timed out. That is not "no timeout";
     it is a nominal deadline that bounds one process out of a tree.
 
-    SIGTERM first, so a scanner can flush and unlink its temp files, then
-    SIGKILL once the GROUP's grace window passes. The leader stays unreaped
-    during that window: its pid therefore cannot be recycled, and the retained
-    group id still reaches a descendant that ignored SIGTERM.
+    SIGTERM first, so a scanner can flush and unlink its temp files. SIGKILL
+    follows when the GROUP's grace passes, or immediately when its leader has
+    already exited. The leader stays unreaped until that decision: its pid
+    cannot be recycled, and the retained group id still reaches a descendant
+    that ignored SIGTERM.
 
     Returns whether the child was reaped. The final wait is BOUNDED rather
     than unconditional: a descendant that escaped the group (one that called
