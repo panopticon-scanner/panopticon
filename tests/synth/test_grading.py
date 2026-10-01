@@ -274,6 +274,56 @@ class TestAZeroHunkDeltaGateCannotReadPass(unittest.TestCase):
         self.assertNotIn("gate certified", r["coverage_note"])
 
 
+class TestABrokenArtifactDeltaGateCannotReadPass(unittest.TestCase):
+    """#2405 (owner ruling 2026-10-01): the SAME `delta_zero_hunks` channel also
+    carries `delta.broken_artifact_gate_gap`'s reason, because the posture is the
+    same one -- a PASS the gate cannot stand behind reads INCONCLUSIVE, a FAIL
+    and an OFF are untouched, and the reason is what names the cause in
+    `coverage_note`. `delta.delta_gate_gap` picks which of the two rules spoke,
+    so `certify` consumes one reason either way and takes no second argument."""
+
+    def _reason(self):
+        # The REAL string, from the rule that owns the decision: a pinned literal
+        # here would let the two drift and this class assert nothing.
+        return delta_mod.broken_artifact_gate_gap(
+            delta_mod.DeltaContext(
+                diff_hunks={"base": "main",
+                            "hunks": {"a.py": [(10, 12)], "c.py": []}},
+                report=delta_mod.HunksLoad(files=2, ranges=1, ranges_dropped=1,
+                                           paths_without_ranges=1,
+                                           paths_emptied_by_drops=1)),
+            1, "on-diff")
+
+    def _crit(self):
+        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+
+    def test_the_reason_turns_a_pass_into_inconclusive_and_writes_the_note(self):
+        reason = self._reason()
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                delta_zero_hunks=reason)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("broken-artifact delta gate", r["coverage_note"])
+        self.assertIn(reason, r["coverage_note"])
+
+    def test_a_confirmed_fail_still_fails(self):
+        # A damaged map can still leave a non-empty on-diff set -- the
+        # changed-file fail-open is how its rangeless path admits findings at all
+        # -- so FAIL is reachable here, and a real FAIL is never softened.
+        r = grading_mod.certify("F", self._crit(), "high", set(), [],
+                                delta_zero_hunks=self._reason())
+        self.assertEqual(r["gate"], "FAIL")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("broken-artifact delta gate", r["coverage_note"])
+
+    def test_off_is_preserved(self):
+        r = grading_mod.certify("A", [], None, set(), [],
+                                delta_zero_hunks=self._reason())
+        self.assertEqual(r["gate"], "OFF")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("broken-artifact delta gate", r["coverage_note"])
+
+
 class TestHealthScore(unittest.TestCase):
     """#1146: secondary health index = the share of reviewed LoC NOT under
     severity-weighted defect footprint, on a 0-100 scale, reported ALONGSIDE the
