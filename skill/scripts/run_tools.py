@@ -4,8 +4,7 @@ read-only mount of the target. Scan-time network is DISABLED for all tools
 (assets are baked into the image); parse-only adapters never execute target
 code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
-under --online. Degrades gracefully when Docker is absent. Stdlib-only.
-"""
+under --online. Degrades gracefully when Docker is absent. Stdlib-only."""
 import os
 import subprocess
 import sys
@@ -17,6 +16,7 @@ from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
 from scripts import plan_contract
+from scripts import procgroup
 from scripts import scanner_config
 from scripts import tool_capture
 from scripts import tools_manifest
@@ -812,4 +812,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(procgroup.sigterm_as_interrupt(main))  # #2507: as driver.py does; never at import
