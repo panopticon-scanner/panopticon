@@ -68,8 +68,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, candidates, scripts,
-                               stdin_program as stdin_program, stdin_scripts,
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, candidates,
+                               scripts, stdin_program as stdin_program, stdin_scripts,
                                unprinted as unprinted)
 
 
@@ -199,8 +199,10 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[position - 1] if position else None
             for text in scripts(argv) + stdin_scripts(argv, stage, before):
-                name, ordinal = os.path.basename(argv[0]), ordinal + 1
-                gates = (stops and swallowed(stmts, index, statement, stage) is None
+                value = stdin_program(argv) == VALUE_PROGRAM    # `$CMD` may not run it (#2473)
+                name = shell_reader.readable(argv[0]) if value else os.path.basename(argv[0])
+                ordinal += 1
+                gates = (not value and stops and swallowed(stmts, index, statement, stage) is None
                          and (top or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`

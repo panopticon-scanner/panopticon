@@ -65,14 +65,12 @@ file instead of naming it, a fetch inside an `eval`/`sh -c` STRING, and
 runs each live, so a change that catches one fails there and edits this list.
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
-  `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting
-  every command that might reach the network would be noise, not a gate, and
-  the `uses:` pin rule covers the action half. If one of these lands in a
-  workflow, the fetch-and-exec rule will not see it.
-  KEPT: every download this repo writes -- the fleet's two, the Dockerfiles'
-  ten -- is curl. A second tool needs a second option grammar (`gh`'s `-O` is
-  not curl's, and `aws s3 cp` copies locally too), and a fetch inside
-  `python3 -c` needs another language entirely.
+  `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting every command that
+  might reach the network would be noise, not a gate, and the `uses:` pin rule covers the action
+  half. If one of these lands in a workflow, the fetch-and-exec rule will not see it.
+  KEPT: every download this repo writes -- the fleet's two, the Dockerfiles' ten -- is curl. A
+  second tool needs a second option grammar (`gh`'s `-O` is not curl's, and `aws s3 cp` copies
+  locally too), and a fetch inside `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, and no `cd` is
@@ -97,11 +95,10 @@ runs each live, so a change that catches one fails there and edits this list.
   is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
   and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
-  KEPT: it is variable expansion wearing a checksum -- refusing it means
-  following a variable's VALUE. Only this spelling is open: with the digest in
-  a sums file the step wrote, what was recorded is the text `sha256sum x`,
-  which carries no digest, so the check does not count and the fetch is
-  already reported.
+  KEPT: it is variable expansion wearing a checksum -- refusing it means following a variable's
+  VALUE. Only this spelling is open: with the digest in a sums file the step wrote, what was
+  recorded is the text `sha256sum x`, which carries no digest, so the check does not count and the
+  fetch is already reported.
 * what runs inside a container, BEYOND the one shape that is read: `docker
   run … -v /tmp:/w img bash /w/x.sh` binds by basename (`workflow_forms.in_container`),
   because on the far side of a bind mount the basename is the only name the
@@ -130,9 +127,8 @@ runs each live, so a change that catches one fails there and edits this list.
   redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
   KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
-  OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
-  outside, and a workflow editing its own downloaded file is
-  author-deterministic -- that `sed` is in the repo under review.
+  OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from outside, and a workflow
+  editing its own downloaded file is author-deterministic -- that `sed` is in the repo under review.
 * a heredoc body printed inside a command substitution for `eval` to run
   (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the substitution's text
   carries it back to its redirection (#2336): a shell reading a quoted one as its program is
@@ -172,13 +168,11 @@ runs each live, so a change that catches one fails there and edits this list.
   (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step WRITES to a file and then runs
   (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business: the script is text in the repo
   under review, the `sed -i` entry's author-deterministic ruling.
-* `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
-  expression is stable between the check's step and the use's step. It is not
-  when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
-  `steps.<id>.*` reference.
-  KEPT: deciding it means EVALUATING a GitHub expression against a context
-  this module never sees. `continue-on-error: true` was the other half of this
-  entry and is now read -- see `job_defects`.
+* `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
+  between the check's step and the use's step. It is not when it reads `env.*` written through
+  `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
+  KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
+  `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
 `if` branches inside the shell are read flat for what they FETCH and what they
 RUN -- folding those in can only report more. Not for what they CHECK:
@@ -199,6 +193,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOU
                             described, flattened, in_container, kept, may_run, names_file,
                             parse_fetch, regions, same_file, stdin_program, step_credit,
                             streamed_fetch, swallowed, unbound, unread_program, within)
+from workflow_programs import VALUE_PROGRAM
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -298,7 +293,12 @@ def _unread_stdin(stage):
     kind = stdin_program(argv) if here else None
     if kind is None:
         return None
-    name = os.path.basename(shell_reader.readable(argv[0]))
+    name = shell_reader.readable(argv[0])
+    if kind == VALUE_PROGRAM:
+        return Idle("hands a heredoc body or here-string to `%s`, a command word this guard "
+                    "does not follow -- the body is read as shell, which it may not be; name the "
+                    "interpreter (`bash -s`, `python3 -`), or exempt the step with a reason" % name)
+    name = os.path.basename(name)
     if kind != SHELL_PROGRAM:
         return Idle("hands a heredoc body or here-string to `%s` as the program "
                     "to run, which this guard does not parse -- it cannot say whether "

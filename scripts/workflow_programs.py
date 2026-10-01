@@ -150,9 +150,10 @@ def candidates(argv):
 # An interpreter given no program to run reads one from its STANDARD INPUT, and
 # a heredoc is the shortest way a `run:` step writes one down: `bash -s <<'EOF'`
 # hands over a script exactly as `sh -c '<script>'` does, one redirection away
-# (#1839, run-14 SEC-3915165799). Three answers, because the guard needs three.
+# (#1839, run-14 SEC-3915165799). Four answers, because the guard needs four.
 SHELL_PROGRAM = "shell"        # the body is shell, which this module reads
 FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
+VALUE_PROGRAM = "value"        # the command word is a value no table places; the body may be shell
 # The interpreters of the second kind. `python3 -c` and `perl -e` are already
 # ruled another language by `scripts` above, and a heredoc is the same text one
 # redirection over.
@@ -244,12 +245,11 @@ def stdin_program(argv):
     # substitution always substitutes a real path, never empty, never word-
     # split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
     # `$(true)`). `yields_words` is the one already here that tells them apart.
-    if not shell and not foreign and _value(argv[0]) and (
-            not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0])):
-        foreign = True            # a `$` command word's language is unknown
-    if not shell and not foreign:
+    value = not shell and not foreign and _value(argv[0]) and (
+        not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
+    if not (shell or foreign or value):
         return None
-    answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM
+    answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
@@ -289,7 +289,7 @@ def stdin_scripts(argv, stage, before=None):
     if here is None and _piped(stage, before):
         text = printed(shell_reader.command(before.argv))
         here = None if text is None else (text, False)
-    if here is None or here[1] or stdin_program(argv) != SHELL_PROGRAM:
+    if here is None or here[1] or stdin_program(argv) not in (SHELL_PROGRAM, VALUE_PROGRAM):
         return []
     return [here[0]]
 
