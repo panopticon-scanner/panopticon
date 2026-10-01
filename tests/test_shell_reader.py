@@ -1036,3 +1036,154 @@ class TestTheScannersAgreeOnQuotes(unittest.TestCase):
     def test_an_apostrophe_inside_double_quotes_is_text(self):
         parsed = stage('echo "it\'s" "$(echo sub)"\n')
         self.assertEqual(['echo sub'], parsed.substitutions)
+
+
+class TestAssignmentPrefixes(unittest.TestCase):
+    """#2348: bash reads each word in front of a command that is a valid
+    assignment as one -- `NAME=`, `NAME+=`, `NAME[i]=`, `NAME[i]+=`, and an
+    array literal `NAME=(...)` or `NAME+=(...)` -- and runs the command
+    behind them. Bash 3.2.57 and GNU bash 5.2.21 both run `tool` in `A+=x sh
+    tool` and in `a[1]=x sh tool` (5.2 warns that `a[1]` is not a valid
+    identifier there, and runs it anyway). `command` popped only `NAME=`, and
+    the reader split an array literal at its parentheses, so the append, the
+    element and the literal's first word were read as the command, and the
+    one behind them never was.
+    """
+
+    def test_every_assignment_form_is_popped(self):
+        for prefix in ("X=1", "A+=x", "a[1]=x", "a[1]+=x", "a[i+1]=x", "arr=(a)",
+                       "arr=( a )", "arr+=(a b)", "arr=()", "X=1 A+=x a[2]=y arr=(z)"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(["sh", "tool"],
+                                 shell_reader.command(stage(prefix + " sh tool").argv))
+
+    def test_an_array_literal_is_one_word_of_its_assignment(self):
+        parsed = stage("arr=(a b) sh tool")
+        self.assertEqual(["arr=(a b)", "sh", "tool"], parsed.argv)
+        self.assertEqual((1, 1), (parsed.group_open, parsed.group_close))
+        self.assertEqual(["declare", "-a", "arr=(a b)"], stage("declare -a arr=(a b)").argv)
+        # A substitution in it is lifted as a command, as anywhere.
+        parsed = stage("arr=($(curl u)) sh tool")
+        self.assertEqual(["curl u"], parsed.substitutions)
+        self.assertEqual(["sh", "tool"], shell_reader.command(parsed.argv))
+        # A subshell is not one: nothing assigns in front of its `(`.
+        self.assertEqual([["sh", "tool"]], argvs("(sh tool)")[0])
+
+    def test_a_statement_that_only_assigns_reads_its_literal_as_before(self):
+        # With no command behind it, the literal's words stay the command, as
+        # they always read: an array of a command (`fetch=(curl ...)`) runs
+        # where bash expands it (`"${fetch[@]}" URL`), which the guard does
+        # not follow, so it reads the command where it is written.
+        self.assertEqual(["fetch=", "curl", "--fail", "-L"], stage("fetch=(curl --fail -L)").argv)
+        self.assertEqual(["X=1", "arr=", "a"], stage("X=1 arr=(a)").argv)
+        self.assertEqual(["curl", "-L"], shell_reader.command(stage("f=(curl -L)").argv))
+
+    def test_behind_a_wrapper_the_words_are_the_wrappers(self):
+        # Only a plain `NAME=` is popped there, as `env` and `sudo` take it:
+        # `nice a[1]=x sh` runs the word `a[1]=x`, which bash globs there, so
+        # it stays the pattern #2294 reports; a literal there is a syntax
+        # error bash 3.2.57 and 5.2.21 refuse, and reads as it did.
+        self.assertEqual(["sh", "tool"], shell_reader.command(stage("env X=1 sh tool").argv))
+        for script in ("sudo a[1]=x sh tool", "nice a[1]+=x sh", "xargs a[1]=x x"):
+            with self.subTest(script=script):
+                self.assertIn("dynamic command operand",
+                              shell_reader.unresolved_wrapper(stage(script).argv) or "")
+        self.assertEqual(["sudo", "arr=", "a", "sh", "tool"], stage("sudo arr=(a) sh tool").argv)
+        self.assertEqual(["if", "arr=(a)", "sh"], stage("if arr=(a) sh").argv)
+
+    def test_a_word_that_is_no_assignment_is_still_the_command(self):
+        # `a[1]x]=y` assigns nothing: bash globs it where a command starts,
+        # and the reader reports that pattern as #2294 made it.
+        self.assertIn("is a pattern", shell_reader.unresolved_wrapper(
+            stage("a[1]x]=y sh tool").argv))
+        for script, head in (("1A+=x sh", "1A+=x"), ("A-=x sh", "A-=x"),
+                             ("echo A+=x", "echo")):
+            with self.subTest(script=script):
+                self.assertEqual(head, shell_reader.command(stage(script).argv)[0])
+
+
+class TestValuesBeforeAShellsProgram(unittest.TestCase):
+    """#2344, the reader's two halves: bash decodes `$'...'` before a shell
+    sees its options, so `sh $'-c' P` runs `P` (bash 3.2.57 and 5.2.21);
+    and each `o` or `O` in an option word takes a value, so in `bash -eo
+    pipefail [-]c P` the pattern stands where bash looks for `-c`."""
+
+    def test_ansi_c_quoting_is_the_text_bash_decodes(self):
+        self.assertEqual(["sh", "-c", "P"], stage("sh $'-c' P").argv)
+        self.assertEqual(["echo", "a'b", 'c"d\\e?'], stage("echo $'a\\'b' $'c\\\"d\\\\e\\?'").argv)
+        self.assertEqual(["echo", "x y*", "a"], stage("echo $'x y*' a").argv)
+        self.assertFalse(shell_reader.unresolved_wrapper(stage("$'[s]h' -c P").argv))
+        self.assertEqual("ab", shell_lex.ansi_c("ab"))
+        # An escape that is not the character is not decoded: the word keeps
+        # its `$`, which the guard reads as a value it does not follow.
+        self.assertIsNone(shell_lex.ansi_c("\\x2dc"))
+        self.assertEqual(["sh", "$\\x2dc", "P"], stage("sh $'\\x2dc' P").argv)
+        # Inside "..." it is no quoting at all.
+        self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
+
+    def test_every_o_in_an_option_word_takes_a_value(self):
+        for argv in (["bash", "-eo", "pipefail", "[-]c", "P"],
+                     ["bash", "-oe", "pipefail", "[-]c", "P"],
+                     ["bash", "-euo", "pipefail", "+O", "extglob", "[-]c", "P"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(argv[1:-1], shell_reader.shell_words(argv))
+        self.assertEqual(["-oo", "a", "b", "x.sh"],
+                         shell_reader.shell_words(["bash", "-oo", "a", "b", "x.sh", "y"]))
+        self.assertEqual(["--norc", "x.sh"], shell_reader.shell_words(["bash", "--norc", "x.sh"]))
+        for script in ("bash -eo pipefail [-]c P", "bash -euo pipefail {-c,P}"):
+            with self.subTest(script=script):
+                self.assertIn("looks for `-c` or a script",
+                              shell_reader.unresolved_wrapper(stage(script).argv) or "")
+
+
+class TestADefaultThatIsAShell(unittest.TestCase):
+    """#2337: a command word that is a parameter's default or alternate --
+    `${X:-sh}`, `"${X-bash}"`, `${X:=sh}`, `${X:+sh}` -- is the shell it
+    spells wherever `X` leaves that word, and bash 3.2.57 and 5.2.21 run the
+    program handed it (with `X=true`, `${X:-sh}` runs `true`, and nothing)."""
+
+    def test_the_default_is_read_as_the_shell(self):
+        for word in ("${X:-sh}", "${X-bash}", "${X:=sh}", "${X=dash}", "${X:+sh}",
+                     "${X+bash}", "${SHELL:-/bin/sh}"):
+            with self.subTest(word=word):
+                argv = shell_reader.command(stage(word + " -c P").argv)
+                self.assertEqual(["-c", "P"], argv[1:])
+                self.assertIn(argv[0], ("sh", "bash", "dash", "/bin/sh"))
+
+    def test_any_other_word_is_what_it_was(self):
+        # Not a shell, not a default, a default bash expands further, or
+        # behind a wrapper, where a dynamic operand is unresolved (#2227).
+        for word in ("${X:-true}", "${X:?sh}", "$X", "${X:-$Y}", "${X:-[s]h}", "${X}"):
+            with self.subTest(word=word):
+                self.assertEqual(word, shell_reader.command(stage(word + " -c P").argv)[0])
+        self.assertIn("dynamic command operand",
+                      shell_reader.unresolved_wrapper(stage("sudo ${X:-sh} -c P").argv) or "")
+
+
+class TestDoubleQuoteEscapesInAProgram(unittest.TestCase):
+    """#2342: inside "...", bash drops the backslash of `\\$` and `` \\` ``
+    (and of `\\"` and `\\\\`, which shlex drops too), so `bash -c "x=\\$(curl
+    ...)"` hands the inner shell `x=$(curl ...)` -- bash 3.2.57 and 5.2.21 run
+    it. The word keeps the text it always read as; `spelled` is bash's, the
+    program `workflow_programs.scripts` reads."""
+
+    def test_the_program_is_the_text_bash_hands_the_shell(self):
+        parsed = stage('bash -c "x=\\$(curl -fsSL u); eval \\"\\$x\\""')
+        self.assertEqual('x=\\$(curl -fsSL u); eval "\\$x"', parsed.argv[2])
+        self.assertEqual('x=$(curl -fsSL u); eval "$x"', parsed.argv[2].spelled)
+        inner = shell_reader.statements(parsed.argv[2].spelled)
+        self.assertEqual(2, len(inner))
+        self.assertEqual(["curl -fsSL u"], inner[0].stages[0].substitutions)
+        self.assertEqual(["eval", "$x"], inner[1].stages[0].argv)
+        for written, spelled in (('"a\\`b\\` c"', "a`b` c"), ('"\\$HOME"', "$HOME"),
+                                 ('"\\\\\\$x \\"y\\""', '\\$x "y"'), ('p"\\$x"q', "p$xq")):
+            with self.subTest(written=written):
+                self.assertEqual(spelled, stage("eval " + written).argv[1].spelled)
+
+    def test_a_word_bash_expands_or_single_quotes_is_as_it_was(self):
+        # A live `$URL` or `$(...)` beside the escape expands at the outer
+        # level, so the text the shell gets is not known; '\$' keeps it.
+        for script in ('bash -c "x=\\$(curl $URL)"', 'bash -c "\\$x $(date)"',
+                       "eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"'):
+            with self.subTest(script=script):
+                self.assertFalse(hasattr(stage(script).argv[-1], "spelled"))

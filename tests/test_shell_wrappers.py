@@ -449,7 +449,8 @@ class TestAPatternBashExpands(GrammarCase):
         self.runs(["[", "-f", "x", "]"], "[ -f x ]")
         self.runs(["{}", "a"], "{} a")
         self.runs(["{a}", "a"], "{a} a")
-        self.runs(["a[1]=x"], "a[1]=x")
+        # `a[1]=x` is no pattern, and no command: bash assigns it (#2348).
+        self.runs([], "a[1]=x")
         # `${...}` and `$[...]` are no brace or pathname pattern.
         self.runs(["${X,}", "a"], "${X,} a")
         self.runs(["$[1+2]", "a"], "$[1+2] a")

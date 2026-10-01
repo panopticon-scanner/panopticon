@@ -109,7 +109,8 @@ def leads(word: str) -> bool:
     negated, a class, a `$`, a `-` of its own, anything quoted or marked in
     it -- so never `[a-c]*.sh` (re-review N-C of #1793's follow-ups). What
     such a head holds is a value the guard does not follow, in `sh $X/*.sh`
-    as in `sh $X`."""
+    as in `sh $X`; where it is the whole word, the words after it are read
+    as programs it may make (`workflow_programs.candidates`, #2344)."""
     word = _HEAD.sub("", word, count=1)
     if word.startswith("-"):
         return True
@@ -123,14 +124,20 @@ def leads(word: str) -> bool:
 
 def shell_words(argv: list[str]) -> list[str]:
     """The words of a shell's argv a pattern may turn into `-c` and its
-    script (review N-3): its options, their values and the first word that
-    is neither, its program -- none after `--`, which ends its options."""
-    words = []
-    for k, word in enumerate(argv[1:], 1):
+    script (review N-3): its options, their values -- one for each `o` or `O`
+    in a short option word, so `-eo pipefail` as `-o pipefail` (#2344) --
+    and the first word that is neither, its program; none after `--`, which
+    ends its options."""
+    words, owed = [], 0
+    for word in argv[1:]:
         if word == "--":
             break
         words.append(word)
-        if not word.startswith(("-", "+")) and argv[k - 1][1:] not in ("o", "O"):
+        if owed:
+            owed -= 1
+        elif word.startswith(("-", "+")):
+            owed = 0 if word[:2] == "--" else sum(letter in "oO" for letter in word[1:])
+        else:
             break
     return words
 
