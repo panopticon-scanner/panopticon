@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Timeout cleanup retains the session group identity (#2532, #1816).** An unpolled leader that
+  Darwin reports gone cannot hide its live descendants, which still receive the SIGKILL phase.
 - **Verdict ingestion has bounded resources (#2531, #1816).** Advisor verdicts use a shared
   8 MiB regular-file reader, and tolerant JSON extraction bounds memory and compatibility work.
 - **Runner batches name a broken outage stop predicate (#2544, #1817).** Work still continues,
