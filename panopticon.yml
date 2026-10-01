@@ -572,6 +572,7 @@ groups:
     - scripts/shell_lex.py
     - scripts/shell_patterns.py
     - scripts/shell_text.py
+    - scripts/shell_heredoc.py
     - scripts/shell_wrappers.py
     - scripts/workflow_forms.py
     - scripts/workflow_gating.py
