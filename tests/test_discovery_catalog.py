@@ -222,23 +222,96 @@ class TestCatalogMatchGroups(unittest.TestCase):
         # land in NEITHER a named group NOR the ._N leftover chunk -- and the
         # prune is disclosed (globs + count), never silently dropped.
         # (Uses paths NOT already pruned by the unrelated fixture-dir heuristic
-        # -- docs/secret/** would otherwise match the `docs` group's `*.md`,
+        # -- docs/notes/** would otherwise match the `docs` group's `*.md`,
         # vendor/** would otherwise fall to a ._N leftover -- to prove this is
         # exclude_paths doing the work, not #434's fixture pruning.)
+        #
+        # #1757 narrowed what this guard can use: the pruned files must carry NO
+        # objective SEC surface, or the carve-out keeps them for SEC rather than
+        # pruning them. `docs/secret/leak.md`, which this test used to prune,
+        # matches the floor's `secret` marker and is now carved -- the test
+        # directly below covers that, and this one stays about the prune.
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
-            touch(d, "docs/secret/leak.md")
+            touch(d, "docs/notes/leak.md")
             touch(d, "vendor/dep.py")
             _write_config(d, self.CATALOG
-                          + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
+                          + "exclude_paths: ['docs/notes/**', 'vendor/**']\n")
             out, _err = run_scan_with_err(d)
             all_files = [f for g in out["groups"] for f in g["files"]]
-            self.assertNotIn("docs/secret/leak.md", all_files)
+            self.assertNotIn("docs/notes/leak.md", all_files)
             self.assertNotIn("vendor/dep.py", all_files)
-            self.assertNotIn("docs/secret/leak.md", out.get("ungrouped_files", []))
+            self.assertNotIn("docs/notes/leak.md", out.get("ungrouped_files", []))
             self.assertNotIn("vendor/dep.py", out.get("ungrouped_files", []))
-            self.assertEqual(sorted(out["exclude_paths"]), ["docs/secret/**", "vendor/**"])
+            self.assertEqual(sorted(out["exclude_paths"]), ["docs/notes/**", "vendor/**"])
             self.assertEqual(out["excluded_count"], 2)
+            self.assertEqual(out["exclude_paths_sec_carve_out"]["count"], 0)
+
+    def test_exclude_paths_keeps_the_objective_sec_surface_in_its_own_group(self):
+        # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
+        # `exclude_paths:` may not remove a file the objective SEC floor matches
+        # from the SEC domain. `deploy/k8s/x.yaml` carries that surface, so it is
+        # CARVED into a dedicated SEC-only group instead of being pruned, while
+        # `deploy/README.md` -- which the same glob matched and the floor does not
+        # -- is pruned from every domain exactly as before. The carved file joins
+        # no OTHER group: every other domain still honours the exclusion, which is
+        # the half of the ruling that leaves `exclude_paths:` useful.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            touch(d, "deploy/k8s/x.yaml")
+            touch(d, "deploy/README.md")
+            _write_config(d, self.CATALOG + "exclude_paths: ['deploy/**']\n")
+            out, err = run_scan_with_err(d)
+            sink = groups_schema.SEC_CARVE_OUT_SINK
+            by_name = {g["name"]: g for g in out["groups"]}
+            self.assertEqual(by_name[sink]["files"], ["deploy/k8s/x.yaml"])
+            self.assertEqual(by_name[sink]["panels"], ["SEC"])
+            self.assertEqual(by_name[sink]["parent"], sink)
+            self.assertEqual(by_name[sink]["chunk_of"], sink)
+            self.assertIs(by_name[sink][groups_schema.SEC_CARVE_OUT_MARKER], True)
+            elsewhere = [f for name, g in by_name.items() if name != sink
+                         for f in g["files"]] + list(out.get("ungrouped_files") or [])
+            self.assertNotIn("deploy/k8s/x.yaml", elsewhere)
+            self.assertNotIn("deploy/README.md", elsewhere)
+            # `excluded_count` keeps meaning what it has always meant: files
+            # removed from EVERY domain. The carve-out is its own disclosure.
+            self.assertEqual(out["excluded_count"], 1)
+            self.assertEqual(out["exclude_paths_sec_carve_out"],
+                             {"globs": ["deploy/**"],
+                              "files": ["deploy/k8s/x.yaml"], "count": 1})
+            self.assertEqual(out["counts"]["groups"], len(out["groups"]))
+            self.assertIn("kept 1 file(s) for SEC review only", err)
+
+    def test_exclude_paths_with_no_sec_surface_carves_nothing_and_says_so(self):
+        # The control that proves the carve-out above is the objective SEC
+        # floor's work and not the exclusion's: a glob matching only files the
+        # floor does not match prunes all of them and mints no group -- and the
+        # disclosure is still published, with `count: 0`, because globs that
+        # carved nothing are a fact a reader comparing two runs has to see.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            touch(d, "deploy/README.md")
+            _write_config(d, self.CATALOG + "exclude_paths: ['deploy/**']\n")
+            out, _err = run_scan_with_err(d)
+            self.assertNotIn(groups_schema.SEC_CARVE_OUT_SINK,
+                             [g["name"] for g in out["groups"]])
+            self.assertEqual(out["exclude_paths_sec_carve_out"],
+                             {"globs": ["deploy/**"], "files": [], "count": 0})
+            self.assertEqual(out["excluded_count"], 1)
+
+    def test_a_committed_group_using_the_carve_out_name_refuses_the_run(self):
+        # The carve-out sink's name is MINTED, so a committed group of that name
+        # would write the same findings-<group>-<domain>.json and one would
+        # silently clobber the other -- reserved exactly like `Ungrouped`, and
+        # refused by the one matrix reader every path goes through.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            _write_config(d, "groups:\n  %s:\n    match: ['skill/**']\n"
+                          % groups_schema.SEC_CARVE_OUT_SINK)
+            rc, out, err = run_scan_helper(d)
+            self.assertEqual(rc, 1)
+            self.assertIn("reserved for the #1757 SEC carve-out", err)
+            self.assertEqual(out, {})
 
     def test_scoped_tests_warnings_reach_the_resolved_output(self):
         # The driver captures discovery's stderr; the JSON is what it reads.
@@ -266,6 +339,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             out, _err = run_scan_with_err(d)
             self.assertNotIn("exclude_paths", out)
             self.assertNotIn("excluded_count", out)
+            self.assertNotIn("exclude_paths_sec_carve_out", out)   # #1757
             self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
 
 

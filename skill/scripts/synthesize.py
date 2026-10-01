@@ -339,7 +339,12 @@ def main(argv=None):
                                     # stderr the driver buffers and discards on
                                     # a SUCCESSFUL run, so the report is the
                                     # only human surface they can reach.
-                                    discovery=gj.get("discovery"))
+                                    discovery=gj.get("discovery"),
+                                    # #1757: and the exclusion this run did NOT
+                                    # apply -- the coverage section is where the
+                                    # owner ruling says it has to be disclosed.
+                                    sec_carve_out=gj.get(
+                                        "exclude_paths_sec_carve_out"))
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,

@@ -275,6 +275,25 @@ class TestReportSchema(unittest.TestCase):
         cov = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
         self.assertIn("fan_out", cov)
 
+    def test_schema_declares_the_sec_carve_out_and_a_report_carrying_it_validates(self):
+        # #1757 (AGT-1355709320): the carve-out disclosure is a published key, so
+        # the schema has to describe it -- `meta` carries no
+        # `additionalProperties: false`, which is exactly how an undescribed
+        # section rode in a published report for eight reviews (#1602).
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        cov = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        block = cov["exclude_paths_sec_carve_out"]
+        self.assertEqual(sorted(block["properties"]), ["count", "files", "globs"])
+        # and the old `tools_excluded` sentence that called the whole-domain
+        # prune "BY DESIGN" is gone: the policy it described is no longer true.
+        self.assertNotIn("BY DESIGN", cov["tools_excluded"]["description"])
+        report = _minimal_report()
+        report["meta"].setdefault("coverage", {})["exclude_paths_sec_carve_out"] = {
+            "globs": ["vendor/**"], "files": ["vendor/requirements.txt"],
+            "count": 1}
+        jsonschema.validate(report, schema)
+
 
 if __name__ == "__main__":
     unittest.main()

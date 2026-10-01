@@ -28,6 +28,20 @@ evidence exposed.
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
   nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
+  ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
+  matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
+  SEC-only review group, `exclude_paths_sec_carve_out`, whose coverage is pinned to `["SEC"]`; every
+  other domain still honours the exclusion and the files join no other group. Disclosed in three
+  places: `groups.json` and `meta.coverage.exclude_paths_sec_carve_out` carry the globs, the paths
+  and the count, and discovery's stderr line carries the globs and both counts. The report block
+  renders as one line in the Markdown and HTML coverage sections. Absent when nothing is
+  committed, `count: 0` when globs carved nothing. `--pr` mode is identical, the tool axis is
+  untouched, and the `/helm/` `/k8s/` substring half of SEC-71240568 was already fixed by #1838.
+- **The security workflows' pull-or-build step can now finish its fallback build (#2509, #1818).**
+  In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
+  a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
+  ~11 min build + margin), under the job's 30, and a test pins the inequality.
 - **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
   On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
   `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
