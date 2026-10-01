@@ -48,6 +48,7 @@ ingest_policy_cv: contextvars.ContextVar[dict[str, Any] | None] = (
 # Adapters may drop results with no actionable location, or synthesize one.
 # Each adapter declares its policy explicitly.
 DROP_IF_NO_LOCATION = False  # default; adapters override if needed
+TARGET_MOUNT = "/src"  # Reviewed repository mount inside scanner containers.
 
 
 # The `--security <mode>` contract on `_run_adapter.py`'s argv (#1839, run-14
@@ -104,8 +105,7 @@ SEV_MAP = {
     "note": "LOW",
 }
 
-# Distinct unmapped values already reported, so a scanner that emits one on
-# every finding costs one line, not thousands.
+# Each distinct unmapped value is reported once, not once per finding.
 _warned_severities: set[str] = set()
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")

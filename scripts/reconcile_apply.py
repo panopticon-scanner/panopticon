@@ -2,9 +2,8 @@
 """Run-3 reconciliation, stage 2: act on a diff.json from
 skill/scripts/reconcile.py against the run-2 fingerprint-to-issue linkage.
 
-Dry-run by default, always. Mirrors scripts/triage.py's conventions:
-injectable runner/sleep for testability, throttle+backoff on gh calls
-(reused from triage.gh directly), validate-before-mutate.
+Dry-run by default, always. Mirrors scripts/triage.py's conventions: injectable runner/sleep
+for testability, throttle+backoff on gh calls (from triage.gh), validate-before-mutate.
 
 Usage:
   python3 scripts/reconcile_apply.py recover-linkage --report report.json --out linkage.json
@@ -14,16 +13,16 @@ Usage:
 Every recovered issue requires an authoritative matching source report; posted
 locations alone cannot establish original identity. Empty query results remain valid.
 
-Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json (override
-with --progress). Receipts bind to the unique, ordered, exact-content plan: retries skip
-acknowledged operations, including completed plans. Use --reset-progress to intentionally replay
-a plan or bind a changed/reordered plan. Valid v1 receipts migrate by keeping only exact
-acknowledgements in this plan. Dry runs preview unique requested actions without receipt I/O
-(including resets). Empty live plans are no-ops; explicit live reset requires a nonempty plan to
-identify the repository and replacement binding. Comment intent is durable before one bounded
-mutation attempt. Unacknowledged comments require a complete exact remote marker match;
-inconclusive probes block replay. Direct live callers must supply progress_path. Close remains
-idempotent. This is resume support, not an exactly-once protocol.
+Live apply saves acknowledgements beside the plan as actions.json.progress.json (override with
+--progress). Receipts bind to the unique, ordered, exact-content plan: retries skip acknowledged
+operations, including completed plans. Use --reset-progress to replay a plan or bind a
+changed/reordered one. Valid v1 receipts migrate by keeping only exact acknowledgements in this
+plan. Dry runs preview unique requested actions without receipt I/O (including resets). Empty live
+plans are no-ops; explicit live reset requires a nonempty plan to identify the repository and new
+binding. Comment intent is durable before one bounded mutation attempt. An unacknowledged comment
+requires a complete exact remote match of the body rebuilt under the root recorded when the
+receipt was bound, if any; inconclusive probes block replay. Direct live callers must supply
+progress_path. Close remains idempotent. This is resume support, not an exactly-once protocol.
 """
 import argparse
 import contextlib
@@ -169,7 +168,6 @@ def _recovered_key(body, rejected, sources, url):
     records = sources.get(pointers[0]) if pointers else None
     if records is None:
         # Even plain text can hide deleted controls or scrubbed root literals.
-        # Only the authoritative artifact can establish the original identity.
         raise IncompleteRecovery("%s: every recovered issue requires an authoritative matching source report" % url)
     record = records.get((fp, finding_id, rejected))
     if record is None:
@@ -192,8 +190,7 @@ def recover_linkage_from_github(label="self-scan", runner=None, *,
                         capture_output=True, text=True)
         if result.returncode != 0:
             raise IncompleteRecovery("gh issue list failed: " + (result.stderr or ""))
-        # Ordinary issue-list pagination (no --search) has no search envelope;
-        # a full requested cap cannot establish completeness.
+        # Ordinary issue-list pagination (no --search) has no search envelope.
         issues = json.loads(result.stdout)
         if not isinstance(issues, list) or len(issues) >= 1000:
             raise IncompleteRecovery("malformed or incomplete issue list (1000-item cap)")
@@ -320,26 +317,21 @@ def resolve_issue(record, ledger):
 def neutralize(text):
     """Make repo-derived text inert in a GitHub comment (#953).
 
-    Reason strings embed scanned-repo file paths verbatim, and these comments
-    are auto-posted by an authenticated identity — a hostile repo controls its
-    own paths, so markdown links, @-mentions, and backtick breakouts must not
-    activate. Collapse all whitespace/control chars (the CWE-117 convention
-    sarif_to_findings uses for titles), strip backticks so nothing escapes the
-    span, then wrap the whole value in ONE code span, inside which GitHub
-    renders markdown and @-mentions inert.
+    Reason strings embed scanned-repo file paths verbatim, and these comments are auto-posted
+    by an authenticated identity — a hostile repo controls its own paths, so markdown links,
+    @-mentions and backtick breakouts must not activate. The collapse follows the CWE-117
+    convention in skill/scripts/tools/sarif_utils.py; the ONE wrapping code span does the rest.
     """
     s = " ".join(str(text or "").split())
     # str.split() collapses the WHITESPACE class only; other C0/C1 control bytes (ESC, BEL,
-    # single-byte CSI \x9b, ...) survive it and would reach anyone reading the comment through
-    # gh/terminal pipelines as terminal escape sequences. Strip them outright.
+    # single-byte CSI \x9b, ...) survive it and would reach a gh/terminal reader as escapes.
     s = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", s)
     s = s.replace("`", "'")
     return "`%s`" % (s or "(empty)")
 
 
 def _bare(text):
-    """neutralize() minus the wrapping span — for templates that carry their
-    own `...` around the interpolant (the fingerprint slots)."""
+    """neutralize() minus the span; templates that carry their own `...` (fingerprint slots)."""
     return neutralize(text)[1:-1]
 
 
@@ -357,18 +349,16 @@ AMBIGUOUS_COMMENT = ("**Reconciliation: not seen, but area still active.** This 
                      "finding's exact/coarse identity did not recur, yet %s, so it "
                      "may have been re-worded or re-categorized. Left OPEN, not "
                      "auto-closed.")
-# #1807: when the new run's SCOPE is why nothing corroborated the fix, the
-# comment above would assert two falsehoods -- that the area is still active, and
-# that a re-word is the likely cause. Stage 1 says which it is on the entry's
-# `basis`, so this is selected off that field, never off the reason's wording.
+# #1807: when the new run's SCOPE is why nothing corroborated the fix, the comment above would
+# assert two falsehoods -- that the area is still active, and that a re-word is the likely cause.
+# Stage 1 says which it is on the entry's `basis`, so this is selected off that field.
 UNCORROBORATED_COMMENT = ("**Reconciliation: not corroborated.** This finding did not "
                           "recur, but the new run cannot corroborate a fix here: %s. "
                           "Left OPEN, not auto-closed.")
 
 
 def _cohort_actions(entries, cohort, close, comment_fn, ledger):
-    """Resolve each run2 record in *entries* to its issue and build the action
-    dict for one cohort. comment_fn(entry) -> the comment body for that entry."""
+    """One cohort's action dicts from *entries*; comment_fn(entry) -> its comment body."""
     out = []
     for entry in entries or []:
         for record in entry["run2"]:
@@ -426,11 +416,9 @@ def _owner_repo(url):
 def preflight_authorized(owner, repo, runner=None):
     runner = runner or triage.default_gh_runner()
     """Owner/admin gate for the mutating apply. Uses the AUTHENTICATED gh token
-    (`gh api repos/{o}/{r} --jq .permissions`), so it reflects whichever
-    GH_CONFIG_DIR/account is active — the loud catch for a wrong-account run.
-    (True, "") iff .permissions.admin is truthy; (False, reason) on non-zero exit,
-    404, or absent/unparseable permissions. Never infers admin:false from missing
-    data, never crashes on it.
+    (`gh api repos/{o}/{r} --jq .permissions`), so it reflects whichever GH_CONFIG_DIR/account
+    is active — the loud catch for a wrong-account run. (True, "") iff .permissions.admin is
+    truthy; (False, reason) on non-zero exit, 404, or absent/unparseable permissions.
     """
     r = runner(["gh", "api", "repos/%s/%s" % (owner, repo), "--jq", ".permissions"],
                capture_output=True, text=True)
@@ -513,8 +501,10 @@ def _load_progress(path, repo_slug):
         raise ValueError("invalid progress schema or repository: %s" % path)
     fields = {"version", "repo", "actions"}
     if loaded["version"] == PROGRESS_VERSION:
-        fields |= {"plan", "plan_hash"}
-    if set(loaded) != fields:
+        # A pre-#2157 v2 receipt carries no `root` and keeps the cwd detection.
+        fields |= {"plan", "plan_hash"} | (set(loaded) & {"root"})
+    if set(loaded) != fields or ("root" in fields
+                                 and not (isinstance(loaded["root"], str) and loaded["root"])):
         raise ValueError("invalid progress schema: %s" % path)
     if loaded["version"] == PROGRESS_VERSION:
         plan = loaded["plan"]
@@ -551,7 +541,7 @@ def _bind_progress(loaded, repo_slug, action_keys, reset):
         acknowledgements = {key: loaded["actions"][key] for key in action_keys
                             if key in loaded["actions"]}
     return {"version": PROGRESS_VERSION, "repo": repo_slug, "plan": action_keys,
-            "plan_hash": plan_hash, "actions": acknowledgements}
+            "plan_hash": plan_hash, "actions": acknowledgements, "root": file_issues.repo_root()}
 
 
 def _progress_bytes(progress):
@@ -562,9 +552,7 @@ def _progress_bytes(progress):
 
 
 def _reserve_progress(progress, action_keys):
-    # Reserve the largest possible intermediate state before any remote call.
-    # Pending intent is larger than acknowledgement; reserve it for every
-    # unacknowledged comment before auth or mutation. Duplicate keys collapse.
+    # Reserve the largest intermediate state -- pending intent, not acknowledgement -- before auth.
     reserved = dict(progress["actions"])
     for key in action_keys:
         if key not in reserved or not reserved[key]["commented"]:
@@ -601,17 +589,8 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
          runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
     """Return counts of operations performed in this invocation.
 
-    With progress_path, live runs resume successful comments/closes for one
-    unique ordered plan. reset_progress clears acknowledgements for deliberate
-    replay/rebinding, after validating the existing receipt and authorization.
-    Dry runs display unique requested actions and never read or write progress.
-    Pending comments require positive remote reconciliation before continuing;
-    no automatic replay occurs after a timeout or process death.
-
-    For compatibility, authorization/mixed-repository refusals print a diagnostic
-    and return (0, 0). The CLI uses _apply directly to distinguish these refusals
-    from completed resumes and empty no-ops.
-    """
+    Authorization/mixed-repository refusals print a diagnostic and return (0, 0) for compatibility;
+    the CLI uses _apply to tell them from completed resumes and empty no-ops."""
     try:
         return _apply(actions, dry, confirm_close, throttle, runner, sleep,
                       progress_path, reset_progress)
@@ -620,9 +599,11 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
         return (0, 0)
 
 
-def _comment_body(action, repo):
+def _comment_body(action, repo, root=None):
     """The scrubbed comment, then the marker _comment_present matches verbatim."""
-    return file_issues.scrub(action["comment"]) + "\n\n<!-- panopticon-reconcile:" + _action_key(action, repo) + " -->"
+    # `root` is the root recorded when the receipt was bound; _apply_locked proved it usable.
+    scrubbed = file_issues.scrub(action["comment"], root)
+    return scrubbed + "\n\n<!-- panopticon-reconcile:" + _action_key(action, repo) + " -->"
 
 
 def _comment_present(runner, repo, number, body):
@@ -646,7 +627,6 @@ def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
            runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
     actions = _unique_actions(actions)
     # Serialize receipt read, intent, mutation and acknowledgement as one unit.
-    # Empty plans and dry runs retain their existing no-I/O behavior.
     if not dry and actions and progress_path is not None:
         progress_path = _validated_system_alias(progress_path)
         _load_progress(progress_path, "%s/%s" % _owner_repo(actions[0].get("issue", "")))
@@ -672,7 +652,7 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
     runner = runner or triage.default_gh_runner()
     commented = closed = 0
     repo_slug = None
-    progress = None
+    progress = root = None
     action_keys = []
     if not dry and actions:
         owner, repo = _owner_repo(actions[0]["issue"])
@@ -695,6 +675,21 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
             _save_progress(progress, progress_path)
             if loaded is not None and loaded["version"] == 1:
                 print("migrated progress receipt v1 -> v2; bound to selected plan")
+            root = progress.get("root")
+            # Proved once, before the loop: a root that cannot rebuild a body must refuse
+            # before any close or probe. None is pre-#2157 -- _resolved_root owns that message.
+            if root is not None:
+                try:
+                    file_issues.scrub("", root=root)
+                except (RuntimeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "the repo root recorded when the receipt was bound (%s) is not a usable "
+                        "checkout here (%s): resume from that checkout, or reconcile the comment "
+                        "by hand and rebind with --reset-progress" % (root, exc)) from exc
+                with contextlib.suppress(RuntimeError):   # a warning must never abort a resume
+                    if root != file_issues.repo_root():
+                        print("receipt root %s is not this checkout (%s); --reset-progress rebinds"
+                              % (root, file_issues.repo_root()), file=sys.stderr)
     for index, a in enumerate(actions):
         n = _issue_number(a["issue"])
         if dry:
@@ -708,10 +703,15 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
             key = action_keys[index]
             receipt = progress["actions"].setdefault(key, {"commented": False, "closed": False})
         if receipt is not None and not receipt["commented"]:
-            body = _comment_body(a, repo_slug)
+            body = _comment_body(a, repo_slug, root)
             if receipt.get("comment_pending"):
                 if not _comment_present(runner, repo_slug, n, body):
-                    raise RuntimeError("comment pending; the posted body was not confirmed on the issue (an API error or a full comment page is inconclusive; a body built under a different repo root cannot match): resume from that checkout or reconcile the comment remotely")
+                    raise RuntimeError(
+                        "comment pending; the posted body was not confirmed on the issue (an API "
+                        "error or a full comment page is inconclusive; this body was built under "
+                        "the receipt's root %s, so a comment posted under a different one cannot "
+                        "match): reconcile the comment remotely, or resume from that checkout"
+                        % (root or "(unrecorded)"))
                 receipt.pop("comment_pending")
                 receipt["commented"] = True
                 _save_progress(progress, progress_path)

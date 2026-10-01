@@ -14,6 +14,45 @@ evidence exposed.
   A `$` command word that may be a shell is read: `${X:-sh} -c P`, `$CMD -c P` (#2337).
   A double-quoted `-c` or `eval` program is read as bash hands it, `\$` unescaped (#2342).
   The program an `echo` or `printf` pipes into a shell is read: `echo 'sh tool' | sh` (#2333).
+- **Golden captures reject image-mount paths (#2261, #1768).** SARIF normalization reads the
+  shared scanner mount, capture reroots fixture payloads before verification, and any surviving
+  fixture or probe prefix prevents the golden write (a surviving `src/` is a real directory).
+- **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
+  active findings by adapter, the HTML scanner context renders those counts, and the adapter
+  contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
+- **A literal matrix entry that stops existing now reds (#2454, #1784).** The ~320
+  `match:`/`tests:` entries with no glob character are checked against the tree, beside the
+  allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file
+  itself falls back to a sibling glob; a stale `!` negation is caught the same way.
+- **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
+  only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
+  longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
+- **`ToolAdapters` gains a `Contract` layer (#2315, #1784).** The adapter base, SARIF
+  normalization and their contract tests move out of `Integration`, which sat at the 48-file
+  cap; a headroom guard now reds any `ToolAdapters` leaf above 40 before the cap does.
+- **The readiness matrix row's remedy fits a refusal that names its own install (#2384, #1784).**
+  A config refusal that already names its own remedy (`pip install pyyaml`) no longer has
+  "fix it or re-run `driver setup`" appended, which setup could not deliver; every other
+  refusal keeps it.
+- **Pip-audit uses the shared path-confinement predicate (#2262, #1768).** Requirement
+  candidates become absolute before the shared check, so relative target roots still reject
+  escaping symlinks; the private duplicate is gone.
+- **One `setup_proposal` in a driver-shaped process, at call time too (#2413, #1766).** The
+  six lazy sites in `setup_flow` import it through the package inside their function bodies --
+  that module has no flat mode -- and `discovery`'s lazy site keeps the guarded flat fallback
+  its own flat mode needs, so the grouping engine imports it the same way and the call-time
+  census keeps its three named residuals.
+- **Adapter and rollback comments describe current behavior (#2190, #1784).** Brakeman's
+  fallback explains that it supplies CWE citations when a capture omits `cwe_id`; the existing
+  rollback prose already describes termination of registered child process groups.
+- **A delta run's fixture disclosure describes the changed set (#2410, #1784).** The
+  `--scope-changed` pass starts its fixture-root list empty, so `excluded.fixture_dirs` and the
+  stderr line name only roots pruned from the surface the run reviewed, like every other
+  disclosure on a delta run.
+- **A locus-free finding is legal in the prompt and legible in the gate (#2409, #1784).** The
+  domain-panel template now says a repo-wide catalog or coverage gap omits `location` instead
+  of inventing a `file`, and the security gate's row prints `?` for a file it does not have,
+  as the HTML and Markdown renderers already do.
 - **The workflow guard credits a checksum only where its failure stops the step (#2331).**
   A top-level `set +e`, `eval`'d or not, now turns errexit off for the checks after it (#2335).
   A step's `shell:` now seeds errexit and pipefail; a piped check gates only under pipefail (#2338).
@@ -21,6 +60,18 @@ evidence exposed.
   `shopt -uo` and `builtin set` turn either off too; bash's `shopt -so` turns one on (#2335, #2338).
   The guard reads `sh "$PWD/f"`, `x=$(sh f)`, `cd s; sh ../f*` and spaced `case` arms (#2345).
   `x=$(curl ...)` then `eval "$x"`, `sh -c "$x"` or `echo "$x" | sh` is now reported (#2341).
+- **setup_proposal has one identity in a driver-shaped process (#2256, #1766).** Its three
+  catalog imports take the guarded package-first shape its siblings use, so the flat copy every
+  setup path reaches binds the same catalog modules the package side does and the import-time
+  census's residual shrinks to the modules the flat `--repo-scan` entrypoint still owns.
+- **One owner for the container privilege drop (#2150, #1767).** The tool runner, the fixture
+  runner and the egress sidecar all splice `scanner_config.privilege_drop_flags`. The daily fixture
+  lanes spell the same two flags out, keeping the ceilings exemption the workflow now states. The
+  runner's private aliases are gone, so one patch of the owner reaches every launch.
+- **A reconcile resume rebuilds the comment it posted (#2157, #1780).** The progress receipt
+  records the repo root the scrubbed comment was built under, every body on that plan is built
+  under that root, so a resume from another checkout confirms the posted comment instead of
+  dead-ending on a body it could never match.
 - **Delta runs are capped and disclosed like whole-repo runs (#2376, #2377, #1784).** The
   `--scope-changed` surface is bounded by `DISCOVERED_FILES_MAX`, the `discovery` block says which
   surface its numbers describe (`surface`), and both paths publish what the policy pruned by class

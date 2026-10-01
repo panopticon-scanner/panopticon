@@ -559,7 +559,10 @@ def _capability_aliases():
     ever ADD credit, so running without them is safe."""
     import yaml
     try:
-        import setup_proposal
+        try:
+            from scripts import setup_proposal
+        except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
+            import setup_proposal  # type: ignore[no-redef]
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
     except (OSError, ValueError, ImportError, yaml.YAMLError):
         return {}
@@ -1052,9 +1055,8 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
     return _cap_discovered(sorted(out), info)
 
 # #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth` on
-# every groups.json entry for the 4.x plan contract retired in #1444. Nothing reads
-# `depth` now, and the 5.x review axis is the (domain, group) cell, not a per-group
-# depth. is_architecture_file / is_database_file survive: they feed group panels.
+# every groups.json entry for the 4.x plan contract retired in #1444.
+# is_architecture_file / is_database_file survive: they feed group panels.
 
 def _discovery_block(info):
     """The `discovery` block of groups.json: how the surface was found, how much
@@ -1361,14 +1363,11 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     commons_named, residual = assign_by_catalog(leftovers, commons)
     commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
-    # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
-    # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`
-    # -- invisible in `ls` and most editor trees) and rendered as a meaningless
-    # group name in the report. `Ungrouped_N` says what it is and stays visible.
-    # Both axes point at the sink itself: its chunks fold to the `Ungrouped`
-    # review unit, which then self-parents like any other top-level unit. A
-    # self-parenting CHUNK would make `Ungrouped_1` a report node in its own
-    # right, which is the chunk name leaking into the output again.
+    # run-9 A5: the sink used to be named `._N`; a leading dot made every derived
+    # artifact a hidden dotfile, and the group name in the report meaningless, so
+    # it is `Ungrouped_N` now. Both axes point at the sink itself: chunks fold to
+    # the `Ungrouped` review unit, which self-parents like any other top-level
+    # unit. A self-parenting CHUNK would leak the chunk name into the report.
     groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode,
                              parent=UNGROUPED_SINK, chunk_of=UNGROUPED_SINK)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
@@ -1618,9 +1617,7 @@ def main(argv=None):
 
     Discovery touches the target's git from several depths -- the changed-file
     diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
-    from any of them means the same thing and deserves the same sentence. An
-    unhandled OSError out of here is a stack trace the operator has to decode,
-    and it never says which setting was refused.
+    from any of them means the same thing and deserves the same sentence.
     """
     try:
         return _repo_scan(argv)
@@ -1803,7 +1800,10 @@ def _repo_scan(argv=None):
         # REVIEWED, not the listing it was filtered from. Then committed exclude_paths
         # prune, re-deriving excluded_files from the changed set, not the whole-repo
         # count the --scope-dir/-file/-group branches keep (they narrow pruned `allf`).
+        # `pruned_fixtures` is cleared before that pass (#2410) so the fixture roots
+        # the artifact discloses are this surface's too, not the listing's.
         info["surface"] = "changed"
+        del pruned_fixtures[:]
         scoped = _cap_discovered(_filter_reviewable(
             changed, include_fixtures=(args.security == "redteam"),
             pruned_fixtures=pruned_fixtures, info=info,

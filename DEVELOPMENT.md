@@ -461,6 +461,8 @@ docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 docker run --rm \
   --network none \
   --user scanner \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
   -v "$PWD:/work:ro" -w /work \
   -e HOME=/home/scanner \
   -e FIXTURE_ROOT=/opt/panopticon-fixtures \

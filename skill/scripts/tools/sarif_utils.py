@@ -10,7 +10,7 @@ import re
 import sys
 
 from scripts.provenance import tool_provenance
-from .base import SEV_MAP, cvss_bucket, inert_text, new_finding_id
+from .base import TARGET_MOUNT, SEV_MAP, cvss_bucket, inert_text, new_finding_id
 
 
 LEVEL_TO_SEV = {level: SEV_MAP[level] for level in ("error", "warning", "note", "none")}
@@ -20,6 +20,7 @@ SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gosec": "GS"}
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
+_TARGET_PREFIX = TARGET_MOUNT.rstrip("/") + "/"
 
 # #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C, fix round 1. Adapters
 # whose findings are secrets BY CONSTRUCTION: a hit is a credential someone
@@ -106,9 +107,9 @@ is_fixture_path = _is_fixture_path
 def norm_uri(uri):
     """Normalize a SARIF artifactLocation URI to a repo-relative path.
 
-    Strips the file:// scheme and the container-mount prefix (/src/), so tool
+    Strips the file:// scheme and the shared container-mount prefix, so tool
     findings share the same path space as agent findings. A plain relative
-    path (even one that starts with 'src/') is returned unchanged.
+    path whose first component matches the mount basename is returned unchanged.
 
     The path is TARGET-authored text and lands in `location.file`, which the
     terminal summary prints, so it comes back INERT (#1829 SEC-4277410777): this
@@ -121,8 +122,8 @@ def norm_uri(uri):
         return uri
     if uri.startswith("file://"):
         uri = uri[len("file://"):]
-    if uri.startswith("/src/"):
-        uri = uri[len("/src/"):]
+    if uri.startswith(_TARGET_PREFIX):
+        uri = uri[len(_TARGET_PREFIX):]
     else:
         uri = uri.lstrip("/")
     return inert_text(uri, mode="path")
@@ -152,7 +153,7 @@ class CaptureCoverage:
             return None
         # Keep full identities for counting; bound and neutralize display text
         # only when publishing it. A shared long prefix must not merge files.
-        path = path.removeprefix("file://").removeprefix("/src/").lstrip("/")
+        path = path.removeprefix("file://").removeprefix(_TARGET_PREFIX).lstrip("/")
         if not path:
             return None
         self.paths.add(path)

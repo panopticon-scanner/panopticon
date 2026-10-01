@@ -186,32 +186,12 @@ CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
 
 
-def privilege_drop_flags():
-    """Privilege-drop flags for every container this module and the fixture runner
-    launch: the tool/adapter dispatch below (#run10 SEC-C1A) and
-    `run_fixture_tests.py`'s two, which import them (#1767, ARC-3859414366). Both
-    run attacker-influenced build logic -- a .csproj/.targets executes arbitrary
-    code through build targets, the fixture corpus is hostile by design -- and
-    neither the ceilings above nor `--network none` stops a capability escalation.
-
-    Not repo-wide. The daily `adapter-integration` workflow runs the fixtures image
-    itself, four times, with its own `--user` (and `--network none` in the containment
-    lane) and none of these flags or the ceilings. `tools/egress.py` hardens its sidecar by
-    literal copy (`PROXY_HARDENING`, `PROXY_LIMITS`, the ceilings tighter on purpose).
-
-    --cap-drop=ALL removes the whole capability-abuse class (raw sockets, mknod, chroot,
-      ptrace-by-cap) and a scanner needs none of it; --security-opt=no-new-privileges
-      stops a setuid/setgid binary in the image raising privileges beyond the start.
-
-    NOT applied: `--read-only`. Scanners write inside the container
-    (dependency-check unpacks, dotnet/MSBuild builds, tools spill to /tmp), so it
-    needs a tuned tmpfs per tool and a real tool round to validate -- and a broken
-    tool round is the worse outcome. Tracked, not half-applied."""
-    return ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
-
-
 def resource_limit_flags():
-    """docker-run resource ceilings for the same containers as privilege_drop_flags.
+    """docker-run resource ceilings for the containers this module and
+    `run_fixture_tests.py` launch, beside `scanner_config.privilege_drop_flags`.
+    The two OTHER launch sites that splice those flags size their own footprint
+    instead: the egress sidecar (`egress.PROXY_LIMITS`, tighter on purpose) and
+    the daily `adapter-integration` fixture lanes (none, stated in the workflow).
 
     --memory-swap is pinned equal to --memory so an adversarial allocation is
     OOM-killed at the ceiling rather than spilling into swap and merely dragging
@@ -224,10 +204,6 @@ def resource_limit_flags():
     if CONTAINER_PIDS_LIMIT:
         flags += ["--pids-limit", CONTAINER_PIDS_LIMIT]
     return flags
-
-
-_privilege_drop_flags = privilege_drop_flags   # the private spellings the
-_resource_limit_flags = resource_limit_flags   # in-module call sites still use
 
 
 def validate_output_dir(target, out_dir):
@@ -630,8 +606,9 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     progress.note("[%d/%d] %s skipped: scanner-owned config "
                                   "could not be staged" % (index, total, tool))
                     continue
-                docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
-                          + _privilege_drop_flags() + _working_dir_flags(tool)
+                docker = ([docker_bin, "run", "--rm"] + resource_limit_flags()
+                          + scanner_config.privilege_drop_flags()
+                          + _working_dir_flags(tool)
                           + config_mount
                           + ["--network", "none",
                              "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
@@ -655,8 +632,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
-                      + _privilege_drop_flags())
+            docker = ([docker_bin, "run", "--rm"] + resource_limit_flags()
+                      + scanner_config.privilege_drop_flags())
             if online_egress.serves(tool):
                 docker.extend(online_egress.flags_for(tool))
                 _NETWORK_POSTURE[tool] = online_egress.posture_for(tool)

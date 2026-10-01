@@ -212,6 +212,31 @@ class TestMatrixCoverage(unittest.TestCase):
             "layers in panopticon.yml instead."
             % (len(over), cap, "\n  ".join(over)))
 
+    def test_tool_adapters_leaves_keep_headroom(self):
+        # #2315: `ToolAdapters:Integration` reached 48 of 48 the moment
+        # `tests/tools/test_sarif_utils.py` joined it through `tests/tools/**`,
+        # so the NEXT adapter or adapter test would have turned the cap
+        # assertion above red for whoever added it -- a stranger to the split
+        # decision, mid-PR. This leaf's growth surface is a glob over two whole
+        # directories, which is the one shape that grows without anybody
+        # choosing to, so it gets a guard with room to land in: the cap is the
+        # wall, and this is the fence in front of it.
+        headroom = 40
+        assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
+        tight = ["%s: %d files" % (name, len(files))
+                 for name, files in sorted(assigned.items())
+                 if name.split(":")[0] == "ToolAdapters" and len(files) > headroom]
+        self.assertEqual(
+            tight, [],
+            "%d ToolAdapters leaf(s) above the %d-file headroom (the cap is "
+            "%d):\n  %s\nsplit the leaf into another layer in panopticon.yml "
+            "now, while the split is still this PR's decision rather than the "
+            "next contributor's surprise (#2315). If `Integration` is the leaf "
+            "and nothing was added, a layer of literal paths was reordered "
+            "behind its globs: `Contract` must stay listed before it."
+            % (len(tight), headroom, discovery.DEFAULT_MAX_PER_GROUP,
+               "\n  ".join(tight)))
+
     def test_allowlist_entries_still_exist(self):
         stale = [path for path in sorted(ALLOWLIST)
                  if not os.path.isfile(os.path.join(REPO_ROOT, path))]
@@ -219,6 +244,50 @@ class TestMatrixCoverage(unittest.TestCase):
             stale, [],
             "allowlisted path(s) that no longer exist: %s -- drop the entry"
             % ", ".join(stale))
+
+    def test_literal_catalog_entries_still_exist(self):
+        # The guard above covers ALLOWLIST. The matrix carries literal entries
+        # beside its globs -- about 320 when this was written -- and a literal
+        # that stops existing is dead text rather than a failure: rename
+        # `tests/tools/test_base.py` and `ToolAdapters:Contract` goes on
+        # listing the old name while the renamed file falls back to
+        # `Integration`'s `tests/tools/**` glob -- the leaf split quietly
+        # un-splits itself, and the headroom guard above is the only thing
+        # that would ever notice (#2315 review, finding 6).
+        #
+        # A stale `!` negation is dead the same way: it holds out a path that
+        # is no longer there, so whatever it was written to keep out of the
+        # leaf has been renamed into it. Patterns are SKIPPED rather than
+        # resolved -- a glob matching nothing is a different question (every
+        # catalog glob matches today; a forward-written one is allowed).
+        #
+        # Resolution follows `discovery.glob_to_re`, not `os.path.exists`: a
+        # literal with no `/` is unanchored and matches its basename at any
+        # depth, so it is live while any reviewable file carries that name;
+        # one with a `/` is root-anchored (a leading `/` is stripped), names a
+        # tree when it ends in `/` and a file otherwise. A bare directory
+        # path without the slash matches nothing, so `exists` would bless
+        # dead text there (#2454 review).
+        stale = []
+        for group, body in sorted(self.catalog.items()):
+            for axis in ("match", "tests"):
+                for entry in (body.get(axis) or []):
+                    if any(ch in entry for ch in "*?["):
+                        continue
+                    target = entry[1:] if entry.startswith("!") else entry
+                    if "/" not in target:
+                        live = any(f == target or f.endswith("/" + target)
+                                   for f in self.files)
+                    else:
+                        probe = os.path.join(REPO_ROOT, target.lstrip("/"))
+                        live = (os.path.isdir(probe) if target.endswith("/")
+                                else os.path.isfile(probe))
+                    if not live:
+                        stale.append("%s: %s" % (group, entry))
+        self.assertEqual(
+            stale, [],
+            "literal catalog path(s) that no longer exist: %s -- drop or "
+            "rename the entry (#2454)" % ", ".join(stale))
 
 
 if __name__ == "__main__":

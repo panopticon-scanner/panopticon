@@ -96,6 +96,23 @@ def _collect_models_used(findings):
                 out.append({"model": confirmed_by_model, "role": "advisor"})
     return out
 
+
+def _unplaceable_by_tool(findings):
+    """Counts of active tool findings whose source file could not be placed."""
+    counts: dict[str, int] = {}
+    for finding in findings:
+        source = finding.get("source")
+        evidence = finding.get("tool_evidence")
+        if (not isinstance(source, str) or not source.startswith("tool:")
+                or not isinstance(evidence, dict)
+                or evidence.get("path_resolution") != "unresolved"):
+            continue
+        name = source.removeprefix("tool:")
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
 @dataclass(frozen=True)
 class RunConfig:
     """What the operator asked for (WS-0 S2): the target, the gate policy and
@@ -302,6 +319,7 @@ def assemble(run, resolved, reconciled, graded, cost):
                 # of a warning has to mean "measured and did not happen", the
                 # same rule surface 3 applies to the host posture.
                 "disabled_mid_run": bool(run.tools_disabled_mid_run),
+                "unplaceable": _unplaceable_by_tool(resolved.active),
                 # #1646: the dependency audit is PARTIAL by construction now --
                 # pip-audit is handed a generated requirements list, because
                 # resolving an editable/local/VCS/URL requirement runs the
