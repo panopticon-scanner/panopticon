@@ -569,6 +569,16 @@ def reconcile(plan, tools, resolved, run=None):
         # that was never given one. Both keys, one loader record.
         "delta_artifact": resolved.delta_artifact,
     }
+    # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
+    # `exclude_paths:` could not hide -- the objective SEC surface it excluded,
+    # kept for the SEC domain in a review group of its own. Conditional, unlike
+    # `tools_excluded` beside it: this one is a disclosure about a committed
+    # pruning policy, so a run with no such policy publishes no key, exactly as
+    # `exclude_paths` itself is absent from `groups.json` on that run. Repaired
+    # at the read -- the globs AND the paths are target-authored.
+    if plan.sec_carve_out is not None:
+        coverage["exclude_paths_sec_carve_out"] = repair_mod.repair_sec_carve_out(
+            plan.sec_carve_out)
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       delta_scope_suppressed_git_drivers=delta_scope_suppressed,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
