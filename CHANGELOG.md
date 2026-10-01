@@ -7,6 +7,25 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A hand-edited non-string manifest run_id is refused at the read, not crashed on in Popen
+  (#2525).** `phases/synthesize` and `phases/tools` both thread `manifest.get("run_id") or ""` into
+  the child's argv unconverted, and `run_manifest.load_manifest` type-validated only `host` while
+  `run_tag` slugs the id through `str()` — so a `"run_id": 7` edited into `run-manifest.json`
+  survived the load, stayed truthy, and reached `subprocess.Popen` as a non-string argv member. The
+  `TypeError` that raises is covered by neither `phases/child`'s `OSError` → `DriverError`
+  conversion nor `driver.run`'s `except (DriverError, ValueError)`: the driver died with a
+  traceback and no `status:` line at all. The loader now requires a PRESENT `run_id` to be a
+  non-empty string, which covers every phase that threads it at once rather than one flag at a
+  time — `phases/engine` hands each phase the dict this loader returned. A bad one is DISCARDED
+  with a stderr line naming the field and the value, exactly as an unknown `host` is, and never
+  raised: this same read is what `runio._run_tag` calls on every artifact path resolution, the
+  `--reset` recovery path included, so an exception here would be one `--reset` could not clear
+  (the failure `run_tag`'s own docstring records). The driver then takes its existing
+  corrupt-manifest path — clear the derived artifacts, rebuild from the real CLI args — and ends
+  with a `status:` line. An absent or null `run_id` is left alone, like an absent host: the setup
+  namespace and every pre-key manifest carry none, and the consumers already read it as an
+  absence. #2107's own residual assertion stays as it is, because it measures the phase handed a
+  manifest dict directly; its cover is the loader's new test class.
 - **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
   third private `_within`, with its own cached root realpath, beside the two names that already
   alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a
