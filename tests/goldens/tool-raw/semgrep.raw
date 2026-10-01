@@ -12,7 +12,7 @@
        },
        "level": "warning",
        "message": {
-        "text": "Syntax error at line /opt/panopticon-fixtures/railsgoat/app/views/sessions/new.html.erb:11:\n When parsing a snippet as Ruby for metavariable-pattern in rule 'opt.semgrep-rules.ruby.rails.security.brakeman.check-reverse-tabnabbing', `do` was unexpected"
+        "text": "Syntax error at line /src/app/views/sessions/new.html.erb:11:\n When parsing a snippet as Ruby for metavariable-pattern in rule 'opt.semgrep-rules.ruby.rails.security.brakeman.check-reverse-tabnabbing', `do` was unexpected"
        }
       },
       {
@@ -21,7 +21,7 @@
        },
        "level": "warning",
        "message": {
-        "text": "Other syntax error at line /opt/panopticon-fixtures/railsgoat/config/database.yml:7:\n (approximate error location; error nearby after) error calling parser: could not find expected ':' character 0 position 0 returned: 0"
+        "text": "Other syntax error at line /src/config/database.yml:7:\n (approximate error location; error nearby after) error calling parser: could not find expected ':' character 0 position 0 returned: 0"
        }
       },
       {
@@ -207,7 +207,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uri": "/src/.github/workflows/ci.yml",
          "uriBaseId": "%SRCROOT%"
         },
         "region": {
@@ -236,7 +236,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uri": "/src/.github/workflows/ci.yml",
          "uriBaseId": "%SRCROOT%"
         },
         "region": {
@@ -265,7 +265,7 @@
       {
        "physicalLocation": {
         "artifactLocation": {
-         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uri": "/src/.github/workflows/ci.yml",
          "uriBaseId": "%SRCROOT%"
         },
         "region": {

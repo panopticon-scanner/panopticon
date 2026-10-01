@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Golden captures reject image-mount paths (#2261, #1768).** SARIF normalization reads the
+  shared scanner mount, capture reroots fixture payloads before verification, and any surviving
+  fixture or probe prefix prevents the golden write (a surviving `src/` is a real directory).
 - **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
   active findings by adapter, the HTML scanner context renders those counts, and the adapter
   contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
