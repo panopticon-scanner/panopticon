@@ -27,7 +27,7 @@ evidence exposed.
   explicit `--diff-hunks-run-id` overrides it, and an unstamped inventory expects nothing, which
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
-  nothing to thread, and a non-string argv token cannot launch the child at all.
+  nothing to thread (the child cannot launch on such a manifest either way; #2525).
 - **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
   On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
   `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible

@@ -145,7 +145,7 @@ class DeltaContext:
         wins when passed, and an inventory with no stamp leaves no expectation at
         all, which is what keeps a hand-written artifact reading as it always
         did."""
-        expected_run_id = args.diff_hunks_run_id or groups_run_id
+        expected_run_id = getattr(args, "diff_hunks_run_id", None) or groups_run_id
         diff_hunks, report = (load_diff_hunks_report(args.diff_hunks,
                                                      expected_run_id)
                               if args.diff_hunks else (None, None))
