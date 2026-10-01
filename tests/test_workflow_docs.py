@@ -1,4 +1,8 @@
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from tests._test_helpers import SKILL_ROOT as ROOT, REPO_ROOT
@@ -79,9 +83,6 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
         #
         # skip_or_fail keeps a runner that IS meant to have node from
         # silently passing on a missing binary instead of skipping (#1422).
-        import shutil
-        import subprocess
-        import tempfile
         node = shutil.which("node")
         if not node:
             skip_or_fail(self, "node is not installed here; CI's runners have it")
@@ -101,6 +102,66 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
                 finally:
                     os.unlink(tmp_path)
                 self.assertEqual(0, proc.returncode, proc.stderr)
+
+    def test_family_review_caps_schema_and_runtime_fanout(self):
+        node = shutil.which("node")
+        if not node:
+            skip_or_fail(self, "node is not installed here; CI's runners have it")
+        with open(self.FAMILY_PR_REVIEW_WORKFLOW, encoding="utf-8") as fh:
+            body = self._as_workflow_body(fh.read())
+        harness = r"""
+const finderSize = 28
+const schemaCaps = []
+let verifierCalls = 0
+const logs = []
+const finding = i => ({
+  title: 'finding-' + i,
+  file: 'src/file-' + i + '.py',
+  line: i + 1,
+  severity: 'medium',
+  rule: 'rule-' + i,
+  evidence: 'evidence-' + i,
+})
+const agent = async (_prompt, opts) => {
+  if (opts.phase === 'Review') {
+    schemaCaps.push(opts.schema.properties.findings.maxItems ?? null)
+    return { findings: Array.from({ length: finderSize }, (_, i) => finding(i)) }
+  }
+  verifierCalls += 1
+  return { real: true, reason: 'confirmed' }
+}
+const parallel = async tasks => Promise.all(tasks.map(task => task()))
+const pipeline = async (dimensions, find, verify) => {
+  const results = []
+  for (const dimension of dimensions) {
+    results.push(await verify(await find(dimension), dimension))
+  }
+  return results
+}
+const result = await __workflow_body__(
+  { host: 'codex' }, agent, parallel, () => {}, message => logs.push(message), pipeline)
+process.stdout.write(JSON.stringify({ result, schemaCaps, verifierCalls, logs }))
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = os.path.join(directory, "family-review-harness.mjs")
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+                fh.write(harness)
+            proc = subprocess.run(["node", tmp_path], capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        observed = json.loads(proc.stdout)
+        result = observed["result"]
+        self.assertEqual([25] * 5, observed["schemaCaps"])
+        self.assertEqual(25, result["finding_cap"])
+        self.assertEqual(125, len(result["confirmed"]))
+        self.assertEqual(0, len(result["dropped"]))
+        self.assertEqual(15, result["findings_omitted"])
+        self.assertEqual(375, observed["verifierCalls"])
+        self.assertEqual(5, len(result["truncation"]))
+        self.assertTrue(all(row["received"] == 28 for row in result["truncation"]))
+        self.assertTrue(all(row["verified"] == 25 for row in result["truncation"]))
+        self.assertTrue(all(row["omitted"] == 3 for row in result["truncation"]))
+        self.assertIn("15 omitted by the 25-per-dimension cap", observed["logs"][-1])
 
     def test_skill_md_mandates_the_workflow_for_session_mode_on_claude(self):
         skill = _read_skill_md()
