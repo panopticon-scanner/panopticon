@@ -375,7 +375,16 @@ class TestTheImagePullIsBounded(unittest.TestCase):
         return steps[0]
 
     def test_the_step_carries_its_own_ceiling(self):
-        self.assertEqual(self._pull_step().get("timeout-minutes"), 10)
+        # #2509: the ceiling must exceed the 600 s pull deadline by a build's
+        # worth (about 11 min measured), or the fallback build starts with no
+        # time left in exactly the stalled-pull case it exists for.
+        self.assertEqual(self._pull_step().get("timeout-minutes"), 25)
+
+    def test_the_step_ceiling_leaves_room_for_the_fallback_build(self):
+        # #2509: the inequality itself, so a future edit to either bound that
+        # re-creates the dead fallback fails here rather than in a stalled CI.
+        ceiling = self._pull_step().get("timeout-minutes") * 60
+        self.assertGreaterEqual(ceiling - 600, 11 * 60)
 
     def test_the_pull_command_carries_a_deadline_of_its_own(self):
         run = _without_comments(self._pull_step()["run"])

@@ -75,6 +75,14 @@
 #     leaves (`claim_scope.py`, `safe_write.py`). The next module this
 #     subsystem grows needs a `RepoProfiling` layer, not another park; that
 #     layer split is tracked as #2273.
+#   - 2026-10-01 (#1757): `exclude_carve_out.py` is claimed by
+#     `Orchestration:Core`, not `RepoProfiling`, for the same reason and by the
+#     same precedent as `dot_paths.py` above: the SEC carve-out came out of
+#     `discovery.py` because that module is at its line ratchet, and
+#     `RepoProfiling` is AT the 48 cap, so claiming it there reds the cap guard.
+#     Parked beside `dot_paths.py`, the other discovery policy that came out for
+#     the same reason. This is the second park in a row on this subsystem; the
+#     `RepoProfiling` layer split tracked as #2273 is what stops the third.
 #   - 2026-09-28 (#2233): `ToolAdapters:Core` was at 47 of the 48 cap, and the
 #     `run_tools.py` split owed under #1762 adds six files to it (a module and
 #     a test file per part, three parts). Third `ToolAdapters` layer `Image`
@@ -115,8 +123,14 @@
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
 # but for THIS self-scan they are pure noise -- they are SUPPOSED to be
 # vulnerable. `exclude_paths:` (top-level, #1136) prunes them BEFORE grouping,
-# so no review cell of any domain sees them -- SEC included, which a per-group
-# `exclude:` can never silence (#1084).
+# so no review cell sees them -- EXCEPT SEC, since #1757: the owner ruling of
+# 2026-09-25 says a target-authored exclusion may not take a file the objective
+# SEC floor matches out of the SEC domain, and this repository is a target like
+# any other. Measured on this tree: 6 of the 19 tracked fixture files (the
+# dependency manifests and lockfiles) are carved into the dedicated
+# `exclude_paths_sec_carve_out` group under `--security redteam`, which is one
+# SEC cell over deliberately-vulnerable manifests. Standard mode is unaffected
+# (the corpora are pruned at discovery, before the exclusion runs at all).
 version: 1
 groups:
   ToolAdapters:
@@ -293,6 +307,7 @@ groups:
       - skill/scripts/dispatch.py
       - skill/scripts/claim_scope.py
       - skill/scripts/dot_paths.py
+      - skill/scripts/exclude_carve_out.py
       - skill/scripts/money.py
       - skill/scripts/ledger.py
       - skill/scripts/loop_batch.py
