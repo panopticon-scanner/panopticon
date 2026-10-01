@@ -10,6 +10,10 @@ evidence exposed.
 - **security.yml's pull-or-build step can now finish its fallback build (#2509, #1818).** The
   step ceiling equalled the 600 s pull deadline, so a stalled pull left the local build zero
   seconds; the ceiling is 25 min (pull 10 + a measured ~11 min build + margin), under the job's 30.
+- **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
+  `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
+  class wider than every other fallback, so a package that resolved and then broke inside was
+  retried flat instead of surfacing; `tests/test_module_identity.py` now pins the narrow class.
 - **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
   The module under test binds `scripts._version`; the in-test flat import built a second module
   object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.

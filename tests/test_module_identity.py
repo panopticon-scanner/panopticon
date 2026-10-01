@@ -885,5 +885,85 @@ class FlatSetupProposalImportTest(unittest.TestCase):
                 ["skill/scripts/a.py", "skill/scripts/tools/b.py"])
 
 
+def _broad_fallback_sites(source, label):
+    """`try: <import> / except ImportError: <import>` blocks, the WIDE spelling.
+
+    #2510 (QAL-2484373674 residual): the fallback arm exists for one cause, the
+    `scripts` package not being importable because `skill/scripts` itself is on
+    `sys.path`, and `ModuleNotFoundError` is that cause's own class. `except
+    ImportError` also swallows a package that resolved and then broke inside
+    (a missing name, a syntax error in the module body) and retries it flat,
+    where the same error surfaces a second time or, worse, binds a stale flat
+    module. Keyed like `_fallback_sites`: on an import in the handler body.
+    """
+    sites = []
+    for node in ast.walk(ast.parse(source, filename=label)):
+        if not isinstance(node, ast.Try):
+            continue
+        for handler in node.handlers:
+            if handler.type is None:
+                continue
+            clause = handler.type
+            caught = clause.elts if isinstance(clause, ast.Tuple) else [clause]
+            names = [ast.unparse(n).split(".")[-1] for n in caught]
+            if "ImportError" in names and any(
+                    isinstance(stmt, (ast.Import, ast.ImportFrom)) for stmt in handler.body):
+                sites.append("%s:%d" % (label, handler.lineno))
+    return sites
+
+
+def _broad_fallbacks(root=REPO_ROOT):
+    """Every wide-spelled fallback under `skill/scripts`, both portions.
+
+    `skill/scripts/tools/` is excluded for the reason `_package_fallbacks` gives:
+    the adapter family's `except ImportError: import xml.etree.ElementTree as ET`
+    substitutes a different implementation for a missing third-party package,
+    and `ImportError` is the right class for that.
+    """
+    base = pathlib.Path(root, "skill", "scripts")
+    offenders = []
+    for path in sorted(base.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith("skill/scripts/tools/"):
+            continue
+        offenders.extend(_broad_fallback_sites(path.read_text(encoding="utf-8"), relative))
+    return offenders
+
+
+class NarrowFallbackClassTest(unittest.TestCase):
+    """A flat-import fallback catches `ModuleNotFoundError` and nothing wider.
+
+    #2510: five modules (`score_gate`, `host_disclosure`, `diff_map`,
+    `model_resolver`, `safe_git`) spelled the arm `except ImportError` while
+    every other fallback in the tree spelled it `ModuleNotFoundError`. The
+    FlatImportModeTest in `tests/test_layout.py` keeps the shape; this keeps
+    the class uniform so a broken package import is never retried flat.
+    """
+
+    def test_every_flat_import_fallback_catches_module_not_found_only(self):
+        self.assertEqual(_broad_fallbacks(), [],
+                         "flat-import fallback catching ImportError (narrow it to "
+                         "ModuleNotFoundError):\n" + "\n".join(_broad_fallbacks()))
+
+    def test_the_detector_sees_a_planted_broad_catch_and_not_a_narrow_one(self):
+        wide = "try:\n    from scripts import x\nexcept ImportError:\n    import x\n"
+        self.assertEqual(_broad_fallback_sites(wide, "planted.py"), ["planted.py:3"])
+        narrow = wide.replace("ImportError", "ModuleNotFoundError")
+        self.assertEqual(_broad_fallback_sites(narrow, "planted.py"), [])
+        # A dependency check that catches ImportError and does NOT import in the
+        # handler (prints, returns, re-raises) is not a fallback and is left alone.
+        check = "try:\n    import yaml\nexcept ImportError as exc:\n    raise SystemExit(exc)\n"
+        self.assertEqual(_broad_fallback_sites(check, "planted.py"), [])
+
+    def test_the_tree_before_this_fix_would_have_failed(self):
+        # The pre-#2510 spelling of one of the five, fed to the detector: the
+        # gate is only worth having if it names what it was built to remove.
+        before = ("if TYPE_CHECKING:\n    from scripts import evidence\nelse:\n"
+                  "    try:\n        from scripts import evidence\n"
+                  "    except ImportError:\n        import evidence\n")
+        self.assertEqual(_broad_fallback_sites(before, "skill/scripts/score_gate.py"),
+                         ["skill/scripts/score_gate.py:6"])
+
+
 if __name__ == "__main__":
     unittest.main()
