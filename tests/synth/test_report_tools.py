@@ -338,6 +338,66 @@ class TestPanelsWithScannerContext(unittest.TestCase):
         self.assertIn("panels_with_scanner_context", block["properties"])
 
 
+class TestUnplaceableToolFindings(unittest.TestCase):
+    @staticmethod
+    def _finding(fid, source, file_name, tool_evidence):
+        return _make_finding(
+            id=fid, source=source,
+            location={"file": file_name, "line_start": 1},
+            tool_evidence=tool_evidence)
+
+    @staticmethod
+    def _report(findings, **finding_set):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=findings, **finding_set)))
+
+    def test_meta_tools_counts_each_active_unplaceable_adapter(self):
+        findings = [
+            self._finding("SB-001", "tool:spotbugs", "a.java",
+                          {"rule_id": "SB-A", "path_resolution": "unresolved"}),
+            self._finding("SB-002", "tool:spotbugs", "b.java",
+                          {"rule_id": "SB-B", "path_resolution": "unresolved"}),
+            self._finding("SG-001", "tool:semgrep", "c.py",
+                          {"rule_id": "SG-A", "path_resolution": "unresolved"}),
+            self._finding("SB-003", "tool:spotbugs", "d.java",
+                          {"rule_id": "SB-C"}),
+            self._finding("AG-001", "agent:panel_review", "e.py",
+                          {"path_resolution": "unresolved"}),
+            self._finding("SB-004", "tool:spotbugs", "f.java", "malformed"),
+        ]
+        self.assertEqual(
+            self._report(findings)["meta"]["tools"]["unplaceable"],
+            {"spotbugs": 2, "semgrep": 1})
+
+    def test_a_rejected_finding_is_not_counted(self):
+        finding = self._finding(
+            "SB-001", "tool:spotbugs", "a.java",
+            {"rule_id": "SB-A", "path_resolution": "unresolved"})
+        prepared, _ = corroborate_mod.prepare_for_queue([finding])
+        queue, _ = evidence_mod.build_verify_queue(prepared)
+        (entry,) = queue
+        verdicts = {entry["queue_id"]: {
+            "verdict": "REJECTED", "finding_id": finding["id"],
+            "reasoning": "the bytecode belongs to another source tree"}}
+        report = self._report([finding], verdicts=verdicts,
+                              verdicts_supplied=True)
+        self.assertEqual(report["meta"]["tools"]["unplaceable"], {})
+        self.assertEqual(len(report["discarded_claims"]), 1)
+
+    def test_the_schema_declares_the_count_map(self):
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["tools"]["properties"]
+        self.assertEqual(block["unplaceable"]["type"], "object")
+        self.assertEqual(block["unplaceable"]["additionalProperties"]["type"],
+                         "integer")
+        self.assertTrue(block["unplaceable"]["description"])
+
+
 class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
     """#1646 ruling 3: pip-audit is handed a GENERATED requirements list, so the
     dependency audit can be PARTIAL. The manifest records what was dropped; the

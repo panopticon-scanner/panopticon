@@ -13,6 +13,16 @@ evidence exposed.
   cover both target ignore formats. The bounded 5,000-result ingest cap retains the measured
   2,274-result self-scan. For the initial baseline transition, CI rescans the exact base commit
   with the new policy, so standing test findings match while PR-added findings still gate.
+- **Golden captures reject image-mount paths (#2261, #1768).** SARIF normalization reads the
+  shared scanner mount, capture reroots fixture payloads before verification, and any surviving
+  fixture or probe prefix prevents the golden write (a surviving `src/` is a real directory).
+- **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
+  active findings by adapter, the HTML scanner context renders those counts, and the adapter
+  contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
+- **A literal matrix entry that stops existing now reds (#2454, #1784).** The ~320
+  `match:`/`tests:` entries with no glob character are checked against the tree, beside the
+  allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file
+  itself falls back to a sibling glob; a stale `!` negation is caught the same way.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
