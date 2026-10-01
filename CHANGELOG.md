@@ -12,6 +12,10 @@ evidence exposed.
   #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
   process at the default disposition and orphaning a `docker run --rm` client. The capture in
   `tools/base.py` now ends the child's tree on any interrupt mid-read, before closing the pipes.
+- **The security workflows' pull-or-build step can now finish its fallback build (#2509, #1818).**
+  In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
+  a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
+  ~11 min build + margin), under the job's 30, and a test pins the inequality.
 - **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
   On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
   `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
