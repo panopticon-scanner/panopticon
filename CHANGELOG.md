@@ -10,6 +10,11 @@ evidence exposed.
 - **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
   A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
   leaves its 700-line ceiling.
+- **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
+  `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
+  #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
+  process at the default disposition and orphaning a `docker run --rm` client. The capture in
+  `tools/base.py` now ends the child's tree on any interrupt mid-read, before closing the pipes.
 - **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
   ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
   matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
