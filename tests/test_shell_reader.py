@@ -21,6 +21,7 @@ import gc
 import time
 import unittest
 
+import shell_heredoc
 import shell_lex
 import shell_reader
 
@@ -1325,3 +1326,12 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
                 self.assert_linear_growth(
                     1500, lambda size: "".join(line.replace("%d", str(k)) for k in range(size)),
                     lambda size, parsed: self.assertEqual(size, len(parsed)))
+
+
+class TestTheHeredocIndexIsOneImplementation(unittest.TestCase):
+    """#2496: `_Lines` moved out of `shell_lex` into `shell_heredoc`; `shell_lex` imports it
+    flat rather than keeping a second copy, so a body-end fix made in one module cannot go
+    stale in the other."""
+
+    def test_shell_lex_lines_is_shell_heredoc_lines(self):
+        self.assertIs(shell_lex._Lines, shell_heredoc._Lines)

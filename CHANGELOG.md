@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
+  A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
+  leaves its 700-line ceiling.
 - **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
   `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
   #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
