@@ -68,8 +68,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
-from workflow_programs import (FOREIGN_PROGRAM as FOREIGN_PROGRAM, SHELL_PROGRAM as SHELL_PROGRAM,
-                               candidates, scripts, stdin_program as stdin_program, stdin_scripts,
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, candidates, scripts,
+                               stdin_program as stdin_program, stdin_scripts,
                                unprinted as unprinted)
 
 
