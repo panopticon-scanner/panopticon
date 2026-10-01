@@ -361,7 +361,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for argv in (["eval", "bash", "script.sh"], ["eval", "set", "--", "$ARGS"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(forms.stdin_program(argv))
-        # The unquoted and quoted spellings of the same joined string agree.
+        # `stdin_program` answers the unquoted and quoted spellings of the
+        # same joined string alike.
         for argv in (["eval", "bash", "-s"], ["eval", "bash -s"]):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
@@ -372,7 +373,9 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # (`_value`) in the operand slot does not end the walk at a FILE,
         # so it reads on to the heredoc exactly as `sh -s` does. Quoting is
         # already lost by the time a word reaches here (`sh "$X"` and
-        # `sh $X` give the same argv), so the quoted spelling answers alike.
+        # `sh $X` give the same argv), so `stdin_program` answers the quoted
+        # spelling alike -- true of the reader's parse, not a claim that
+        # bash runs every quoted value exactly as the unquoted one.
         for script in ("sh $X", "bash $(true)", "bash $X"):
             with self.subTest(script=script):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv(script)))
@@ -383,10 +386,18 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # A `<(...)` is `_value`-shaped too (every substitution reads back as
         # `$(...)`), but it never vanishes: a process substitution always
         # substitutes a real path, so it stays a FILE, as `$(true)` (whose
-        # OUTPUT may vanish) does not. Found via the 11-corpus differential:
-        # `echo x | bash <(curl ...)` gained a spurious "pipes its program
-        # from echo" report until this was excluded.
+        # OUTPUT may vanish) does not. Found via the 11-corpus differential
+        # (i-sub row 106): `echo "$X" | bash <(curl ...)` gained a spurious
+        # "pipes `bash` its program from `echo`" report until this was
+        # excluded -- review I-3: a LITERAL `echo hi` would not have tripped
+        # it (`printed()` spells a literal out; `unprinted()`, the path this
+        # exclusion protects, is never reached for one).
         self.assertIsNone(forms.stdin_program(self.argv("bash <(curl https://example.test/i.sh)")))
+        # The same exclusion on the COMMAND WORD half (commit 4 touched
+        # both): a `<(...)` there is `_value`-shaped too, but it is a FILE
+        # path, not a name any table carries -- unaffected, None, not a
+        # spurious SHELL or FOREIGN guess.
+        self.assertIsNone(forms.stdin_program(self.argv("<(echo sh)")))
 
     def test_a_dollar_command_word_with_stdin_on_it_is_read_as_foreign(self):
         # Review I-2: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,

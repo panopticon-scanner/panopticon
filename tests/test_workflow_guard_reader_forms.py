@@ -206,6 +206,184 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
+    """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
+    walk, so the heredoc, here-string or pipe each runs on its own stdin is
+    taken for data instead of the program it is -- bash 3.2.57 and 5.2.21 run
+    every DEFECT pin below. A CLEAN control is not: `X=script.sh` runs a FILE
+    this guard never reads either way, so its download stays unseen; `python3
+    $S` (unset) really runs the heredoc as Python, kept a FILE here by the
+    brief's own ruling, a filed gap named in the guard's gap list, not this
+    batch's to close."""
+
+    def test_2500_eval_or_dash_c_behind_a_stdin_reading_shell_inherits_the_heredoc(self):
+        # `eval`'s or `-c`'s STRING is one statement whose own command is
+        # itself a stdin-reading shell (`bash -s`, `sh`): the enclosing
+        # `eval`/`-c` command answers SHELL_PROGRAM too, so its heredoc,
+        # here-string or pipe is read as that inner shell's program.
+        for script in ("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash -c 'sh' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "eval 'bash -s' <<< '%s'\n" % PIPE, "bash -c 'sh' <<< '%s'\n" % PIPE,
+                       "echo '%s' | eval 'bash -s'\n" % PIPE,
+                       "echo '%s' | bash -c 'sh'\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
+        # Inside a `$(...)` the same inheritance still answers SHELL_PROGRAM
+        # (`stdin_scripts` depends on it too), but `substitution_script`
+        # weighs anything handed to a shell there with its OWN, more
+        # conservative sentence -- no download is FOLLOWED into a
+        # substitution, not that none was found.
+        for script in ("x=$(eval 'bash -s' <<'EOF'\n%s\nEOF\n)\n" % PIPE,
+                       "x=$(bash -c 'sh' <<'EOF'\n%s\nEOF\n)\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("inside a command substitution" in w for _, w in found), found)
+        # The must-trip control: the literal spelling this already flagged.
+        self.assertTrue(defects("bash -s <<'EOF'\n%s\nEOF\n" % PIPE))
+        # An EXPANDING body is reported unread, as a bare shell's is.
+        found = defects("eval 'bash -s' <<EOF\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("EXPANDING", found[0][1])
+        # `echo hi` and `cat` do not read their own program from stdin, so
+        # the heredoc stays `eval`'s or `-c`'s DATA: CLEAN.
+        for script in ("eval 'echo hi' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash -c 'cat' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # Review I-1's sibling finding (d13): `eval`'s own several words join
+        # into the ONE string bash runs before this check, never read one at
+        # a time. `eval bash script.sh` is `bash script.sh` -- a FILE, not
+        # bare `bash` alone reading stdin -- and `eval set -- "$ARGS"` is not
+        # `set` alone either: both stay CLEAN. The quoted and unquoted
+        # spellings of `eval bash -s` agree (DEFECT), as they did before.
+        for script in ("eval bash script.sh <<'EOF'\n%s\nEOF\n" % PIPE,
+                       'eval set -- "$ARGS" <<\'EOF\'\n%s\nEOF\n' % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        for script in ("eval bash -s <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
+        # Review I-1: this inherited body is read under the ENCLOSING
+        # command's `-e` (the step's default), not the inner `bash -s`'s own
+        # (it has none) -- a check gated only by `-e` reads hardened, so this
+        # CLEAN is the documented, filed gap, not a claim nothing downloads:
+        # `bash t.sh` genuinely runs in all three shells regardless of
+        # `sha256sum -c -`'s failure, since the inner shell never had `-e`.
+        # The literal, un-inherited twin (`bash -s`, no `eval`) IS flagged,
+        # because ITS `-e` is the one actually in force over its own body.
+        check = "echo '%s  tool' | sha256sum -c -\nbash tool\n" % ("a" * 64)
+        gated_body = GET + check
+        self.assertEqual([], defects("eval 'bash -s' <<'EOF'\n%sEOF\n" % gated_body))
+        self.assertEqual([], defects("bash -ec 'sh' <<'EOF'\n%sEOF\n" % gated_body))
+        for script in ("bash -s <<'EOF'\n%sEOF\n" % gated_body,
+                       "bash -c 'sh' <<'EOF'\n%sEOF\n" % gated_body):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("no `-e` holds" in w for _, w in found), found)
+        # N-5's documented, filed gap: a pipeline whose FIRST stage reads
+        # stdin is never reached here (the recursive check keeps to a single
+        # STAGE, `len(parsed[0].stages) == 1`) -- bash runs `bash -s` as that
+        # first stage with `eval`'s own heredoc as ITS stdin regardless, so
+        # this CLEAN is a known false negative, not a claim nothing downloads.
+        self.assertEqual([], defects("eval 'bash -s | cat' <<'EOF'\n%s\nEOF\n" % PIPE))
+
+    def test_2485_a_value_or_a_vanishing_word_does_not_end_a_shells_walk(self):
+        # A value form (`$X`, quoted the same once the reader sees it) or a
+        # word bash may drop outright does not end the walk at a FILE
+        # operand, so the heredoc past it reads as the shell's program --
+        # fail-closed, same as `sh -s` already was.
+        for script in ("X=-s\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "sh $X <<'EOF'\n%s\nEOF\n" % PIPE,  # X unset: the empty word drops
+                       "X=-s\nsh \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash <<'EOF' $(true)\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
+        # A clean body stays clean: nothing about the value matters here.
+        self.assertEqual([], defects("X=-s\nsh $X <<'EOF'\necho hi\nEOF\n"))
+        # Fail-closed over-report, named in the guard's gap list: bash runs
+        # the FILE `$X` names, not the heredoc, but the reader cannot tell
+        # `X=script.sh` from `X=-s` -- both are just `$X` by the time this
+        # walk sees them.
+        found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+        # The must-trip control and the unaffected FOREIGN form.
+        self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
+        self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
+        # A `<(...)` is `_value`-shaped too (every substitution reads back as
+        # `$(...)`), but it never vanishes, so it is NOT such a word: found
+        # via the corpus differential, `echo "$X" | bash <(curl ...)` must
+        # answer exactly the one genuine finding `bash <(curl ...)` alone
+        # already does, not a spurious SECOND one claiming `bash`'s program
+        # instead pipes in unseen from `echo` (stdin was never its program;
+        # the process substitution FILE always is). Review I-3: the body
+        # must be UNPRINTED (`$X`) -- a literal `echo hi` is spelled out by
+        # `printed()`, so it passes whether or not this exclusion exists and
+        # never actually exercises the fix.
+        piped = defects('echo "$X" | bash <(curl -fsSL %si.sh)\n' % URL)
+        bare = defects("bash <(curl -fsSL %si.sh)\n" % URL)
+        self.assertEqual(bare, piped)
+        self.assertEqual(1, len(piped), piped)
+
+    def test_2473_a_dollar_command_word_with_stdin_on_it_is_read_as_foreign(self):
+        # Review I-2: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash, but a value-form command word gives `stdin_program`
+        # no shell NAME to stand behind -- reading it as SHELL anyway would
+        # read another language's program as though it were one (`$PYTHON -
+        # <<'EOF'` running Python once passed CLEAN this way). It answers
+        # FOREIGN instead, so EVERY body behind it is caught, clean or not,
+        # exactly as a literal unparseable interpreter's already was.
+        # Must-trip control, verified by removing this rule in a copy: with
+        # no table naming `$CMD`, `stdin_program` would answer neither SHELL
+        # nor FOREIGN for it, the heredoc would go unread, and both become
+        # `[]` -- CLEAN, not DEFECT.
+        for script in ("CMD=sh\n$CMD <<'EOF'\n%s\nEOF\n" % PIPE,
+                       'CMD=sh\n"$CMD" <<\'EOF\'\n%s\nEOF\n' % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(found, found)
+                self.assertIn("does not parse", found[0][1])
+        # The baseline must-trip control, as the sibling methods above have:
+        # a LITERAL `sh`, untouched by this rule (`_value` never matches a
+        # literal word), that every tree already flagged before any of
+        # #2500/#2485/#2473 existed.
+        self.assertTrue(defects("sh <<'EOF'\n%s\nEOF\n" % PIPE))
+        # An innocuous body is now caught too (the over-report this re-route
+        # adds, named beside `X=script.sh` in the gap list): the reader
+        # cannot tell `$CMD` will turn out to hold a shell from one that will
+        # not, so it reports every body alike.
+        found = defects("CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("does not parse", found[0][1])
+        # An EXPANDING body gets the SAME FOREIGN sentence, not an EXPANDING
+        # one: FOREIGN is decided before the body is even read.
+        found = defects("CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("does not parse", found[0][1])
+        self.assertNotIn("EXPANDING", found[0][1])
+        # S-1: `$PYTHON - <<'EOF'` now answers exactly as `python3 - <<'EOF'`
+        # does, bar the program's spelling -- innocuous, a `curl | sh` body,
+        # and an EXPANDING one alike (review's e01/e02, c06/c07).
+        innocuous = "print(1)\n"
+        curlsh = "import os\nos.system('%s')\n" % PIPE
+        for body in (innocuous, curlsh):
+            dollar = defects("PYTHON=python3\n$PYTHON - <<'EOF'\n%sEOF\n" % body)
+            literal = defects("python3 - <<'EOF'\n%sEOF\n" % body)
+            with self.subTest(body=body):
+                self.assertEqual(len(literal), len(dollar))
+                self.assertEqual(literal[0][1].replace("python3", "$PYTHON"), dollar[0][1])
+        dollar = defects("PYTHON=python3\n$PYTHON - <<EOF\n%sEOF\n" % innocuous)
+        literal = defects("python3 - <<EOF\n%sEOF\n" % innocuous)
+        self.assertEqual(literal[0][1].replace("python3", "$PYTHON"), dollar[0][1])
+        # A literal name's FILE operand is unaffected: #2473 only reaches a
+        # value-form command word, never a literal one.
+        self.assertEqual([], defects("python3 x.py\n"))
+
+
 class TestDoubleQuoteEscapes(unittest.TestCase):
     """#2342: the program a double-quoted `-c` or `eval` string hands a shell
     is the text bash makes of it, `\\$` and `` \\` `` without their backslash."""
@@ -311,152 +489,6 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
         for script in ("cat <<'EOF' | sh\n%s\nEOF\n" % PIPE, "X='%s'\necho \"$X\" | sh\n" % PIPE):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-
-
-class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
-    """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
-    walk, so the heredoc, here-string or pipe each runs on its own stdin is
-    taken for data instead of the program it is -- bash 3.2.57 and 5.2.21 run
-    every DEFECT pin below. A CLEAN control is not: `X=script.sh` runs a FILE
-    this guard never reads either way, so its download stays unseen; `python3
-    $S` (unset) really runs the heredoc as Python, kept a FILE here by the
-    brief's own ruling, a filed gap named in the guard's gap list, not this
-    batch's to close."""
-
-    def test_2500_eval_or_dash_c_behind_a_stdin_reading_shell_inherits_the_heredoc(self):
-        # `eval`'s or `-c`'s STRING is one statement whose own command is
-        # itself a stdin-reading shell (`bash -s`, `sh`): the enclosing
-        # `eval`/`-c` command answers SHELL_PROGRAM too, so its heredoc,
-        # here-string or pipe is read as that inner shell's program.
-        for script in ("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "bash -c 'sh' <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "x=$(eval 'bash -s' <<'EOF'\n%s\nEOF\n)\n" % PIPE,
-                       "x=$(bash -c 'sh' <<'EOF'\n%s\nEOF\n)\n" % PIPE,
-                       "eval 'bash -s' <<< '%s'\n" % PIPE, "bash -c 'sh' <<< '%s'\n" % PIPE,
-                       "echo '%s' | eval 'bash -s'\n" % PIPE,
-                       "echo '%s' | bash -c 'sh'\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertTrue(defects(script))
-        # The must-trip control: the literal spelling this already flagged.
-        self.assertTrue(defects("bash -s <<'EOF'\n%s\nEOF\n" % PIPE))
-        # An EXPANDING body is reported unread, as a bare shell's is.
-        found = defects("eval 'bash -s' <<EOF\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("EXPANDING", found[0][1])
-        # `echo hi` and `cat` do not read their own program from stdin, so
-        # the heredoc stays `eval`'s or `-c`'s DATA: CLEAN.
-        for script in ("eval 'echo hi' <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "bash -c 'cat' <<'EOF'\n%s\nEOF\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
-        # Review I-1's sibling finding (d13): `eval`'s own several words join
-        # into the ONE string bash runs before this check, never read one at
-        # a time. `eval bash script.sh` is `bash script.sh` -- a FILE, not
-        # bare `bash` alone reading stdin -- and `eval set -- "$ARGS"` is not
-        # `set` alone either: both stay CLEAN. The quoted and unquoted
-        # spellings of `eval bash -s` agree (DEFECT), as they did before.
-        for script in ("eval bash script.sh <<'EOF'\n%s\nEOF\n" % PIPE,
-                       'eval set -- "$ARGS" <<\'EOF\'\n%s\nEOF\n' % PIPE):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
-        for script in ("eval bash -s <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertTrue(defects(script))
-        # Review I-1: this inherited body is read under the ENCLOSING
-        # command's `-e` (the step's default), not the inner `bash -s`'s own
-        # (it has none) -- a check gated only by `-e` reads hardened, so this
-        # CLEAN is the documented, filed gap, not a claim nothing downloads:
-        # `bash t.sh` genuinely runs in all three shells regardless of
-        # `sha256sum -c -`'s failure, since the inner shell never had `-e`.
-        # The literal, un-inherited twin (`bash -s`, no `eval`) IS flagged,
-        # because ITS `-e` is the one actually in force over its own body.
-        check = "echo '%s  tool' | sha256sum -c -\nbash tool\n" % ("a" * 64)
-        gated_body = GET + check
-        self.assertEqual([], defects("eval 'bash -s' <<'EOF'\n%sEOF\n" % gated_body))
-        self.assertEqual([], defects("bash -ec 'sh' <<'EOF'\n%sEOF\n" % gated_body))
-        for script in ("bash -s <<'EOF'\n%sEOF\n" % gated_body,
-                       "bash -c 'sh' <<'EOF'\n%sEOF\n" % gated_body):
-            with self.subTest(script=script):
-                self.assertTrue(defects(script))
-
-    def test_2485_a_value_or_a_vanishing_word_does_not_end_a_shells_walk(self):
-        # A value form (`$X`, quoted the same once the reader sees it) or a
-        # word bash may drop outright does not end the walk at a FILE
-        # operand, so the heredoc past it reads as the shell's program --
-        # fail-closed, same as `sh -s` already was.
-        for script in ("X=-s\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "sh $X <<'EOF'\n%s\nEOF\n" % PIPE,  # X unset: the empty word drops
-                       "X=-s\nsh \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE,
-                       "bash <<'EOF' $(true)\n%s\nEOF\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertTrue(defects(script))
-        # A clean body stays clean: nothing about the value matters here.
-        self.assertEqual([], defects("X=-s\nsh $X <<'EOF'\necho hi\nEOF\n"))
-        # Fail-closed over-report, named in the guard's gap list: bash runs
-        # the FILE `$X` names, not the heredoc, but the reader cannot tell
-        # `X=script.sh` from `X=-s` -- both are just `$X` by the time this
-        # walk sees them.
-        found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("straight to `sh`", found[0][1])
-        # The must-trip control and the unaffected FOREIGN form.
-        self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
-        self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
-        # A `<(...)` is `_value`-shaped too (every substitution reads back as
-        # `$(...)`), but it never vanishes, so it is NOT such a word: found
-        # via the corpus differential, `echo hi | bash <(curl ...)` must
-        # answer exactly the one genuine finding `bash <(curl ...)` alone
-        # already does, not a spurious SECOND one claiming `bash`'s program
-        # instead pipes in unseen from `echo` (stdin was never its program;
-        # the process substitution FILE always is).
-        piped = defects("echo hi | bash <(curl -fsSL %si.sh)\n" % URL)
-        bare = defects("bash <(curl -fsSL %si.sh)\n" % URL)
-        self.assertEqual(bare, piped)
-        self.assertEqual(1, len(piped), piped)
-
-    def test_2473_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
-        # Review I-2: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
-        # 5.2.21 and dash, but a value-form command word gives `stdin_program`
-        # no shell NAME to stand behind -- reading it as SHELL anyway would
-        # read another language's program as though it were one (`$PYTHON -
-        # <<'EOF'` running Python once passed CLEAN this way). It answers
-        # FOREIGN instead, so EVERY body behind it is caught, clean or not,
-        # exactly as a literal unparseable interpreter's already was.
-        for script in ("CMD=sh\n$CMD <<'EOF'\n%s\nEOF\n" % PIPE,
-                       'CMD=sh\n"$CMD" <<\'EOF\'\n%s\nEOF\n' % PIPE):
-            with self.subTest(script=script):
-                self.assertTrue(defects(script))
-        # An innocuous body is now caught too (the over-report this re-route
-        # adds, named beside `X=script.sh` in the gap list): the reader
-        # cannot tell `$CMD` will turn out to hold a shell from one that will
-        # not, so it reports every body alike.
-        found = defects("CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n")
-        self.assertEqual(1, len(found), found)
-        self.assertIn("does not parse", found[0][1])
-        # An EXPANDING body gets the SAME FOREIGN sentence, not an EXPANDING
-        # one: FOREIGN is decided before the body is even read.
-        found = defects("CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("does not parse", found[0][1])
-        self.assertNotIn("EXPANDING", found[0][1])
-        # S-1: `$PYTHON - <<'EOF'` now answers exactly as `python3 - <<'EOF'`
-        # does, bar the program's spelling -- innocuous, a `curl | sh` body,
-        # and an EXPANDING one alike (review's e01/e02, c06/c07).
-        innocuous = "print(1)\n"
-        curlsh = "import os\nos.system('%s')\n" % PIPE
-        for body in (innocuous, curlsh):
-            dollar = defects("PYTHON=python3\n$PYTHON - <<'EOF'\n%sEOF\n" % body)
-            literal = defects("python3 - <<'EOF'\n%sEOF\n" % body)
-            with self.subTest(body=body):
-                self.assertEqual(len(literal), len(dollar))
-                self.assertEqual(literal[0][1].replace("python3", "$PYTHON"), dollar[0][1])
-        dollar = defects("PYTHON=python3\n$PYTHON - <<EOF\n%sEOF\n" % innocuous)
-        literal = defects("python3 - <<EOF\n%sEOF\n" % innocuous)
-        self.assertEqual(literal[0][1].replace("python3", "$PYTHON"), dollar[0][1])
-        # A literal name's FILE operand is unaffected: #2473 only reaches a
-        # value-form command word, never a literal one.
-        self.assertEqual([], defects("python3 x.py\n"))
 
 
 if __name__ == "__main__":
