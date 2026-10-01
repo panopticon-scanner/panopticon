@@ -237,6 +237,27 @@ class TestChunkNameCollision(unittest.TestCase):
             "API_1": {"match": ["a/**"]},
             "P": {"API": {"match": ["b/**"]}}}}), [])
 
+    def test_the_sec_carve_out_sink_name_is_reserved_the_same_way(self):
+        # #1757: the second minted sink. Same rule, same reason -- a committed
+        # group of that name would share `findings-<group>-<domain>.json` with
+        # the carve-out group discovery mints.
+        for name in (gs.SEC_CARVE_OUT_SINK, gs.SEC_CARVE_OUT_SINK + "_2"):
+            with self.subTest(name=name):
+                self.assertTrue(self._errs({"groups": {name: {"match": ["a/**"]}}}))
+        self.assertEqual(self._errs({"groups": {"P": {
+            gs.SEC_CARVE_OUT_SINK: {"match": ["a/**"]}}}}), [])
+
+    def test_is_sec_carve_out_name_accepts_only_the_minted_names(self):
+        # Review round 1 item 2: this predicate is a security guard, not a
+        # convenience -- `phases/coverage.py` narrows a cell to {"SEC"} on it,
+        # off a TARGET-WRITABLE file, so a near-miss name must not pass.
+        sink = gs.SEC_CARVE_OUT_SINK
+        for good in (sink, sink + "_1", sink + "_12"):
+            self.assertTrue(gs.is_sec_carve_out_name(good), good)
+        for bad in (sink + "_abc", sink + "x", "Not" + sink, sink.upper(),
+                    "Api", "Ungrouped", "", None, 7, ["x"]):
+            self.assertFalse(gs.is_sec_carve_out_name(bad), repr(bad))
+
     def test_sink_constant_matches_discoverys(self):
         # groups_schema stays import-pure, so the sink name is duplicated.
         # Pin them together rather than let them drift apart silently.
