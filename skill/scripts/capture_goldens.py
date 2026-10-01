@@ -294,8 +294,7 @@ def main(argv=None):
         except Exception as exc:                      # noqa: BLE001
             report[name] = {"status": "trim-broke-parse", "error": str(exc)[:160]}
             continue
-        if _has_mount_prefixed_path(
-                reparsed, (fixtures_root, probes_root, src_root)):
+        if _has_mount_prefixed_path(reparsed, (fixtures_root, probes_root)):
             report[name] = {"status": "mount-prefixed-path"}
             continue
         with open(os.path.join(out_dir, "%s.raw" % name), "wb") as fh:

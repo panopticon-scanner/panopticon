@@ -246,17 +246,25 @@ class TestMountPathGuard(unittest.TestCase):
         self.assertNotIn((target + "/").encode(), written)
         self.assertIn(b"/src/app.py", written)
 
-    def test_each_known_mount_prefix_refuses_the_golden(self):
+    def test_fixture_and_probe_mount_prefixes_refuse_the_golden(self):
         target = tempfile.mkdtemp()
         self.addCleanup(lambda: os.rmdir(target) if os.path.isdir(target) else None)
         paths = ("opt/panopticon-fixtures/railsgoat/app.rb",
-                 "mnt/gotify/main.go", "src/app.py")
+                 "mnt/gotify/main.go")
         for path in paths:
             with self.subTest(path=path):
                 adapter = _Adapter(parsed=[{"id": "X-001", "location": {"file": path}}])
                 report, written = self._run(adapter, target)
                 self.assertEqual(report["status"], "mount-prefixed-path")
                 self.assertIsNone(written)
+
+    def test_a_real_src_directory_is_not_a_mount_prefix(self):
+        target = tempfile.mkdtemp()
+        self.addCleanup(lambda: os.rmdir(target) if os.path.isdir(target) else None)
+        raw = json.dumps({"path": "src/app.py"}).encode()
+        report, written = self._run(_PathAdapter(raw=raw), target)
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(json.loads(written), {"path": "src/app.py"})
 
 
 class _RecordingAdapter(_Adapter):
