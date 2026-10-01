@@ -126,8 +126,8 @@ runs each live, so a change that catches one fails there and edits this list.
   KEPT: needs a construct this fleet does not have -- there is no Makefile and no package.json
   outside a test fixture, no `run:` step invokes either tool, and the repo builds with Python
   and Docker.
-* a download the PIPELINE writes under a name `workflow_forms._WRITERS` misses: the `> f`
-  redirect, `dd` and `sponge` are weighed (`unbound`, r0 finding 2), `| busybox dd of=f` is not.
+* a download the PIPELINE writes under a name `workflow_forms._WRITERS` does not carry: the `> f`
+  redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
   KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from

@@ -3337,7 +3337,7 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     # 12. a download the PIPELINE writes under a name `_WRITERS` misses
     # (review r0 finding 2's residual).
     def test_a_pipeline_writer_outside_the_table_is_not_weighed(self):
-        # The `> f` redirect, `dd` and `sponge` are weighed
+        # The `> f` redirect, `dd`, `sponge` and `tee` are weighed
         # (`workflow_forms.unbound`); a writer the table does not name is
         # not -- `parse_fetch` binds no destination to any of them, so no
         # checksum in the job can reach the file either way.
@@ -4133,6 +4133,8 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
                       "curl -fsSL https://example.test/tool | tr -d '\\r' > f\n",
                       "curl -fsSL https://example.test/tool | dd of=f\n",
                       "curl -fsSL https://example.test/tool | sponge f\n",
+                      "curl -fsSL https://example.test/tool | cat | tee t\n",
+                      "curl -fsSL https://example.test/tool | tr -d '\\r' | tee f\n",
                       "curl -fsSL https://example.test/tool | cat > f\nchmod +x f\n./f\n"):
             with self.subTest(fetch=fetch):
                 why = self.job(fetch + self.IDLE)
@@ -4145,6 +4147,20 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
         # A reader that writes nothing on keeps nothing: read and gone.
         self.assertEqual([], self.job("curl -fsSL https://api.example.test/x | jq .tag\n"
                                       + self.IDLE))
+
+    def test_a_write_that_is_not_the_fetched_bytes_does_not_keep_it(self):
+        # Review r1 finding 10 (NIT): `_written_on` asks what the pipeline did
+        # with the bytes it READ, so only the stdout sink of a stage BEHIND the
+        # fetcher counts. A log on another descriptor is not the payload, and
+        # neither is the HTTP status of #2481's own named exclusion -- the
+        # bytes went to /dev/null and `code.txt` holds three digits.
+        for fetch in ("curl -fsSL https://api.example.test/x | jq .tag 2> err.log\n",
+                      "curl -fsSL https://api.example.test/x 2> err.log | jq .tag\n",
+                      "curl -fsSL https://api.example.test/x | cat 2> err.log\n",
+                      "curl -o /dev/null -w '%{http_code}' https://example.test/ > code.txt\n",
+                      "curl -o /dev/null -w '%{http_code}' https://example.test/ 2> err.log\n"):
+            with self.subTest(fetch=fetch):
+                self.assertEqual([], self.job(fetch + self.IDLE))
 
     def test_a_printer_reason_no_longer_hides_behind_a_foreign_program(self):
         # `_Unprinted`'s dedup drops the printer sentence where ANOTHER reason

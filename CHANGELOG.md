@@ -17,7 +17,7 @@ evidence exposed.
   `_defect` can read, so a checksum BEHIND such a program clears only the uses in front of it), a
   `curl ... | sh` stream, an unresolved transfer, or a download no file holds — `x=$(curl ...)`,
   the `carried` shape, and one a pipeline writes past the fetcher (`curl ... | cat > f`,
-  `| dd of=f`, `| sponge f`, none of which `parse_fetch` binds a destination to;
+  `| dd of=f`, `| sponge f`, `| cat | tee t`, none of which `parse_fetch` binds a destination to;
   `workflow_forms.unbound`). Two readings are deliberate and fail closed: the report names the
   unread program and not the download that makes it one (one sentence, as before), and a download
   a variable holds keeps the reason even where only an `echo` reads it, because no file exists for

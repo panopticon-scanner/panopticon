@@ -555,19 +555,26 @@ def carried(stmts, executors):
 
 
 # A stage that writes on the bytes it READS, where the fetcher named no file
-# of its own: the `> f` redirect (`stage.writes`) and the writers that name
-# the file in their argv. `tee` and the unpackers are bound to their file by
-# `parse_fetch`, or reported as a stream, so they are not here.
-_WRITERS = ("dd", "sponge")
+# of its own: the stdout sink of a stage BEHIND the fetcher (`> f`) and the
+# writers that name the file in their argv. An ADJACENT `tee` is bound to its
+# file by `parse_fetch`, which reads `piped_to` -- the next stage only -- so it
+# never arrives here; one behind any reader (`| cat | tee t`) is bound by
+# nothing (review r1 finding 9). The unpackers are reported as streams into an
+# executor whatever stands in front of them, so they stay out.
+_WRITERS = ("dd", "sponge", "tee")
 
 
 def _written_on(statement):
     """Whether a stage of this statement writes the bytes it reads to a FILE:
-    a redirect to a real one (`> f`, and not `> /dev/null`), or a writer that
-    names it in its argv."""
+    the stdout SINK of a real one (`> f`, and not `> /dev/null`), or a writer
+    that names it in its argv. The fetcher's own stage is never asked -- its
+    `2> err.log` holds a log and its `-o /dev/null -w ... > code.txt` three
+    digits, and neither of those is the download (review r1 finding 10)."""
     for stage in statement.stages:
         argv = command(stage.argv)
-        if [name for name in stage.writes if name not in STDOUT]:
+        if argv and os.path.basename(argv[0]) in FETCHERS:
+            continue
+        if [name for name in stage.stdout_writes if name not in STDOUT]:
             return True
         if argv and os.path.basename(argv[0]) in _WRITERS:
             return True
@@ -589,16 +596,19 @@ def unbound(stmts, fetched, unread):
         reported unread          unread hold it, as `_Unprinted`'s
                                  `echo "$(curl ...)" | sh` does
         the PIPELINE writes it   `curl ... | cat > f`, `| tr ... > f`,
-                                 `| dd of=f`, `| sponge f` -- the redirect is
-                                 on the NEXT stage, so `parse_fetch` binds no
-                                 destination and no checksum in the job can
-                                 name the file (`_written_on`, review r0)
+                                 `| dd of=f`, `| sponge f`, `| cat | tee t`
+                                 -- the write is on a LATER stage, so
+                                 `parse_fetch` binds no destination and no
+                                 checksum in the job can name the file
+                                 (`_written_on`, review r0 and r1)
 
     One nothing keeps is read and gone -- `curl ... | jq`,
     `curl -o /dev/null -w ...` -- and keeps no unread reason standing. A
     reader that writes the bytes on is weighed whatever it wrote, so
     `curl ... | jq -r .url > f` counts too: a URL list, not a payload, and the
-    over-report this rule takes to fail closed."""
+    over-report this rule takes to fail closed. Its real-workflow face is
+    `curl ... | jq -r .tag >> "$GITHUB_OUTPUT"` (review r1 finding 11): beside
+    an unread program that is reported, and is meant to be."""
     at = {index for index, fetch in fetched if fetch.dest is None}
     return (any(any(_assigned(statement.stages[0], {}).values())
                 for statement in stmts if len(statement.stages) == 1)
