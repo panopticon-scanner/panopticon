@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 else:
     try:
         from scripts import executable
-    except ImportError:
+    except ModuleNotFoundError:
         import executable
 
 _MAX_REPOSITORIES = 64
