@@ -245,10 +245,12 @@ class ChildProcesses:
         grace = self.INTERRUPT_GRACE if grace is None else grace
         children = list(self.__dict__.get("_children") or ())
         self.__dict__["_children"] = []
-        for proc in children:
-            procgroup.end_group(proc, signal.SIGTERM)
+        groups = [(proc, procgroup.group_id(proc)) for proc in children]
+        for proc, pgid in groups:
+            procgroup.end_group(proc, signal.SIGTERM, pgid)
         deadline = time.monotonic() + max(0.0, float(grace))
-        for proc in children:
-            if not procgroup.reaped(proc, deadline - time.monotonic()):
-                procgroup.end_group(proc, signal.SIGKILL)
+        for proc, pgid in groups:
+            leader_reaped = procgroup.reaped(proc, deadline - time.monotonic())
+            if pgid is not None or not leader_reaped:
+                procgroup.end_group(proc, signal.SIGKILL, pgid)
         return children

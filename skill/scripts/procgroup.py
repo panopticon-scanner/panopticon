@@ -18,10 +18,11 @@ thing:
 
 * `kill_group(proc, grace)` -- the whole sequence for ONE child: SIGTERM to
   its group, `grace` to exit, then SIGKILL. What a timeout wants.
-* `end_group(proc, sig)` + `reaped(proc, timeout)` -- the same sequence taken
-  apart, so a caller with SEVERAL children can signal them all before waiting
-  on any of them. What an interrupt wants: `HostRunner.terminate_children`
-  bounds a Ctrl-C by ONE shared grace window, not one window per child.
+* `group_id(proc)` + `end_group(proc, sig, pgid)` + `reaped(proc, timeout)` --
+  the same sequence taken apart, so a caller with SEVERAL children can retain
+  their groups, signal them all, then wait. What an interrupt wants:
+  `HostRunner.terminate_children` bounds a Ctrl-C by ONE shared grace window,
+  not one window per child.
 
 Nothing in that kill path raises. Every one of these calls is made on a path
 that is already handling a failure -- a deadline that passed, an operator who
@@ -136,8 +137,13 @@ def _leader_exited_unreaped(proc):
     return bool(result and getattr(result, "si_pid", 0))
 
 
-def end_group(proc, sig):
-    """Send `sig` to `proc`'s current process group, and wait for nothing.
+def group_id(proc):
+    """Return `proc`'s validated group id for a caller that must retain it."""
+    return _pgid(proc)
+
+
+def end_group(proc, sig, pgid=None):
+    """Send `sig` to `proc`'s retained or current group, and wait for nothing.
 
     The child is spawned with `start_new_session=True` by both callers, so its
     pid IS its group id and one `killpg` reaches every process it started --
@@ -152,7 +158,7 @@ def end_group(proc, sig):
     want of a pid -- and it is recycle-safe, because `Popen.send_signal`
     refuses a handle whose `returncode` is set.
     """
-    _end_group(proc, sig, _pgid(proc))
+    _end_group(proc, sig, pgid if pgid is not None else _pgid(proc))
 
 
 def reaped(proc, timeout):

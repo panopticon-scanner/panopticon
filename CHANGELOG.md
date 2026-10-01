@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
+  validated group before the shared SIGTERM grace, so reaping its leader cannot hide a
+  resistant descendant from SIGKILL.
 - **Family PR review discloses missing agents (#2546, #1817).** Missing finders and verifier
   votes become explicit incomplete-review facts and log lines; a partly verified finding cannot
   enter the confirmed or dropped lists.

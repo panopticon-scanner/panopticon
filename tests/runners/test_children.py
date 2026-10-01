@@ -82,6 +82,24 @@ class GrandchildCase(unittest.TestCase):
     def tree_argv(self):
         return [sys.executable, "-c", _TREE % self.pidfile]
 
+    def exiting_tree_argv(self):
+        """A leader that exits after its SIGTERM-resistant worker is ready."""
+        worker = (
+            "import os, signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            f"open({self.pidfile!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n"
+        )
+        leader = (
+            "import os, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, '-c', {worker!r}])\n"
+            f"pidfile = {self.pidfile!r}\n"
+            "deadline = time.monotonic() + 10\n"
+            "while not os.path.exists(pidfile) and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+        )
+        return [sys.executable, "-c", leader]
+
     def grandchild(self, seconds=10):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -351,6 +369,39 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         self.assertEqual([proc], runner.terminate_children(grace=0.5))
         self.assertTrue(await_death(pid),
                         "terminate_children signalled the child only, not its group")
+
+    def test_an_exited_leader_does_not_hide_a_resistant_grandchild(self):
+        """The shared grace may reap the leader before its group is empty."""
+        if not hasattr(os, "waitid"):
+            self.skipTest("observing an exit without reaping requires waitid")
+        runner = base.HostRunner()
+        proc = subprocess.Popen(  # noqa: S603
+            self.exiting_tree_argv(), start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        runner.register_child(proc)
+        pid = self.grandchild()
+        deadline = time.monotonic() + 3.0
+        result = None
+        while result is None and time.monotonic() < deadline:
+            result = os.waitid(
+                os.P_PID, proc.pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            )
+            if result is None:
+                time.sleep(0.01)
+        self.assertIsNotNone(result, "the session leader did not exit")
+        self.assertIsNone(proc.returncode, "the fixture reaped its session leader")
+        self.assertTrue(alive(pid), "the resistant grandchild was never running")
+
+        self.assertEqual([proc], runner.terminate_children(grace=0.2))
+
+        self.assertTrue(
+            await_death(pid),
+            "reaping the leader discarded the group identity before SIGKILL",
+        )
 
     def test_the_registry_is_emptied_as_it_is_read(self):
         runner = base.HostRunner()
