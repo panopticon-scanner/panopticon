@@ -296,8 +296,8 @@ def _unread_stdin(stage):
         return None
     name = shell_reader.readable(argv[0])
     if kind == VALUE_PROGRAM:
-        return Idle("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- the body is read as shell, which it may not be; name the "
+        return Idle("hands a heredoc body or here-string to `%s`, a command word this guard does "
+                    "not follow -- a quoted body is read as shell, which it may not be; name the "
                     "interpreter (`bash -s`, `python3 -`), or exempt the step with a reason" % name)
     name = os.path.basename(name)
     if kind != SHELL_PROGRAM:

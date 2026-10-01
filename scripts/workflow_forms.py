@@ -341,6 +341,12 @@ class _Unprinted(Idle):
     other reason reports its statement: `carried`'s `echo "$x" | sh` (#2333)."""
 
 
+def _runner(argv):
+    """A script's runner as `flattened` names it: a `$` word as written (#2473), else a basename."""
+    return (shell_reader.readable(argv[0]) if stdin_program(argv) == VALUE_PROGRAM
+            else os.path.basename(argv[0]))
+
+
 def substitution_script(argv, stage, walk, before=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
@@ -361,7 +367,7 @@ def substitution_script(argv, stage, walk, before=None):
     return _weighed("hands a script to `%s` inside a command substitution, where this guard "
                     "follows no download -- it cannot say whether that script fetches or runs "
                     "one unchecked; run it outside the substitution, or exempt the step with a "
-                    "reason" % os.path.basename(argv[0]), handed, walk)
+                    "reason" % _runner(argv), handed, walk)
 
 
 def _weighed(why, texts, walk, idle=Idle):
