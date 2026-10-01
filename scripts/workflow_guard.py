@@ -145,28 +145,28 @@ runs each live, so a change that catches one fails there and edits this list.
   CLOSED outside a substitution for the OTHER heredoc spelling, the body handed
   to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
   `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
-  Two facts decide it and both are already parsed: whether a command's program
-  is its standard input at all (`workflow_programs.stdin_program`, an operand
-  walk -- a `-m` module and a script FILE still put it elsewhere), and which
-  body descriptor 0 finally reads, with the flag saying whether it EXPANDED
+  Two facts decide it and both are already parsed: whether a command's program is
+  its standard input at all (`workflow_programs.stdin_program`, an operand walk --
+  a `-m` module and a script FILE still put it elsewhere), and which body
+  descriptor 0 finally reads, with the flag saying whether it EXPANDED
   (`shell_reader`'s `Stage.stdin_heredoc`). A `-c` string or `eval`'s is such a
   place too UNLESS its one statement already reads ITS OWN program from stdin,
-  which then answers for the ENCLOSING command instead -- read under ITS `-e`,
-  not the inner's; a pipeline whose FIRST stage reads stdin is never reached
-  here either. Both filed. Nor, for a SHELL, does a value or a word that may
-  vanish end the walk at a FILE there (#2485): one naming a file, or quoted and
-  empty (`X=script.sh`), over-reports too, as `python3 $S` unset, a FOREIGN
+  which then answers for the ENCLOSING command instead -- read under ITS `-e`, not
+  the inner's, nor a redirect on its own line; a pipeline whose FIRST stage reads
+  stdin is never reached. All filed. Nor, for a SHELL, does a value or a word that
+  may vanish end the walk at a FILE there (#2485): one naming a file, or quoted
+  and empty (`X=script.sh`), over-reports too, as `python3 $S` unset, a FOREIGN
   word, is filed. Nor is a `$` command word with stdin on it a FILE (#2473): no
   table places its name, so FOREIGN over-reports an innocuous body as `python3
-  -`'s own does. A QUOTED body is read by `workflow_forms.flattened` exactly as
-  an `eval` string is -- a `curl … | sh` inside it is the defect it is at the
-  top level. An EXPANDING one is REPORTED unread (`_unread_stdin`): it runs what
-  bash expands it to. A program with no grammar here is `unparseable`. What that
-  leaves unread: an interpreter behind an option it reads as a filename / one
-  taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or a builtin
-  outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host
-  bash -s <<'EOF'`), read as the transport's own; one under a name its tables do
-  not carry (`python3.11 -`, `busybox sh`) -- keyed on the basename.
+  -`'s own does. A QUOTED body is read by `workflow_forms.flattened` exactly as an
+  `eval` string is -- a `curl … | sh` inside it is the defect it is at the top
+  level. An EXPANDING one is REPORTED unread (`_unread_stdin`): it runs what bash
+  expands it to. A program with no grammar here is `unparseable`. What that leaves
+  unread: an interpreter behind an option it reads as a filename / one taking a
+  value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or a builtin outside its
+  table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host bash -s
+  <<'EOF'`), the transport's; one under a name no table carries (`python3.11 -`,
+  `busybox sh`) -- keyed on the basename.
   A program `echo` or `printf` PIPES into a shell is read where their words spell it out;
   one they do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words
   fetch as written or the job downloads (#2333), and `cat <<'EOF' | sh` is not read at all.

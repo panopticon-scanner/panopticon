@@ -197,8 +197,9 @@ def stdin_program(argv):
     reading as the FILE it is (`yields_words` tells a process substitution
     from a command substitution, whose OUTPUT may vanish instead) -- true
     only where EVERY substitution in the word is a process one; a MIXED word
-    (`$(true)<(...)`) still reads as may-vanish, another unnamed over-report
-    the gap list now carries beside this one.
+    (`$(true)<(...)`) still reads as may-vanish even though bash always
+    substitutes a real path for it too -- an over-report the guard's gap
+    list does not separately name, beside the one it does (`X=script.sh`).
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`) with stdin on it
     answers FOREIGN, not SHELL (#2473): a name this module has no table for
