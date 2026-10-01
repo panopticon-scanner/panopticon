@@ -14,6 +14,9 @@ evidence exposed.
   launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
   advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
   `orchestrate.py` gained one call and no lines.
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
 - **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
   A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
   leaves its 700-line ceiling.
