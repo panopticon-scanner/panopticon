@@ -70,6 +70,14 @@ TEST_SURFACE = (
     "!tests/fixtures/**",
 )
 
+# Layered groups whose leaves are held under a 40-file fence in front of the
+# 48-file cap (#2315, #2273). Both earned it the same way: a leaf reached the
+# cap, and the file that would have tipped it over belonged to whoever happened
+# to add it next rather than to anyone who had decided where the split goes.
+# `test_every_guarded_group_is_in_the_matrix` keeps a stale name from making
+# the guard vacuous.
+GUARDED_BY_HEADROOM = ("ToolAdapters", "RepoProfiling")
+
 # Files that genuinely have no home in ONE group. Small and explicit on
 # purpose (never a glob): each entry is a decision, and a decision that stops
 # being true shows up as a stale-entry failure below.
@@ -212,30 +220,57 @@ class TestMatrixCoverage(unittest.TestCase):
             "layers in panopticon.yml instead."
             % (len(over), cap, "\n  ".join(over)))
 
-    def test_tool_adapters_leaves_keep_headroom(self):
+    def test_guarded_group_leaves_keep_headroom(self):
         # #2315: `ToolAdapters:Integration` reached 48 of 48 the moment
         # `tests/tools/test_sarif_utils.py` joined it through `tests/tools/**`,
         # so the NEXT adapter or adapter test would have turned the cap
         # assertion above red for whoever added it -- a stranger to the split
-        # decision, mid-PR. This leaf's growth surface is a glob over two whole
+        # decision, mid-PR. That leaf's growth surface is a glob over two whole
         # directories, which is the one shape that grows without anybody
         # choosing to, so it gets a guard with room to land in: the cap is the
         # wall, and this is the fence in front of it.
+        #
+        # #2273 parametrises it over `RepoProfiling` too, because that group
+        # reached the wall with no fence at all: it sat AT 48, and the two
+        # discovery policies that came out of `discovery.py` were parked in
+        # `Orchestration:Core` one after the other rather than claimed where
+        # they belong -- a cap hit twice, by two PRs, neither of which had
+        # chosen to decide the question. Guarding the group a split just
+        # relieved is the point: the fence is what makes the NEXT split this
+        # subsystem's own decision instead of the next contributor's surprise.
         headroom = 40
         assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
-        tight = ["%s: %d files" % (name, len(files))
-                 for name, files in sorted(assigned.items())
-                 if name.split(":")[0] == "ToolAdapters" and len(files) > headroom]
+        for group in GUARDED_BY_HEADROOM:
+            with self.subTest(group=group):
+                tight = ["%s: %d files" % (name, len(files))
+                         for name, files in sorted(assigned.items())
+                         if name.split(":")[0] == group and len(files) > headroom]
+                self.assertEqual(
+                    tight, [],
+                    "%d %s leaf(s) above the %d-file headroom (the cap is "
+                    "%d):\n  %s\nsplit the leaf into another layer in "
+                    "panopticon.yml now, while the split is still this PR's "
+                    "decision rather than the next contributor's surprise "
+                    "(#2315, #2273). If the leaf is one whose siblings are "
+                    "literal paths, a layer may have been reordered behind "
+                    "its globs: `ToolAdapters:Contract` must stay listed "
+                    "before `Integration`."
+                    % (len(tight), group, headroom,
+                       discovery.DEFAULT_MAX_PER_GROUP, "\n  ".join(tight)))
+
+    def test_every_guarded_group_is_in_the_matrix(self):
+        # The guard above is a list of NAMES, and a name that stops matching
+        # any leaf makes it vacuous rather than red: rename `RepoProfiling` and
+        # its leaves go unfenced while the loop still reports a pass over an
+        # empty comprehension. Same failure mode as a shallow surface glob.
+        missing = [group for group in GUARDED_BY_HEADROOM
+                   if not any(name.split(":")[0] == group
+                              for name in self.catalog)]
         self.assertEqual(
-            tight, [],
-            "%d ToolAdapters leaf(s) above the %d-file headroom (the cap is "
-            "%d):\n  %s\nsplit the leaf into another layer in panopticon.yml "
-            "now, while the split is still this PR's decision rather than the "
-            "next contributor's surprise (#2315). If `Integration` is the leaf "
-            "and nothing was added, a layer of literal paths was reordered "
-            "behind its globs: `Contract` must stay listed before it."
-            % (len(tight), headroom, discovery.DEFAULT_MAX_PER_GROUP,
-               "\n  ".join(tight)))
+            missing, [],
+            "GUARDED_BY_HEADROOM names no longer in panopticon.yml: %s -- the "
+            "headroom guard silently stopped covering them. Rename the entry "
+            "or drop it with the group." % ", ".join(missing))
 
     def test_allowlist_entries_still_exist(self):
         stale = [path for path in sorted(ALLOWLIST)

@@ -28,6 +28,19 @@ evidence exposed.
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
   nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **The self-scan matrix's `RepoProfiling` group has layers (#2273, #1784).** It sat AT the 48-file
+  group cap, so the last two discovery policies to come out of `discovery.py` were parked in
+  `Orchestration:Core` instead of claimed beside it — `dot_paths.py` (#1784) and
+  `exclude_carve_out.py` (#1757). Owner-approved split into `RepoProfiling:Discovery` (24 files),
+  the half that runs on every review — the file walk, the grouping of that listing against the
+  matrix, the delta map, the committed-plan contract and the tests axis — and
+  `RepoProfiling:Profiling` (26 files), the one-time setup and the durable profile it writes: the
+  grouping engine, the surfaces/floor model, the committed-config names and trust classes, setup
+  flow and proposal, and the catalog data those read. Both parks are reversed — the two modules
+  are claimed by `Discovery`, beside the module they came out of and their only runtime caller —
+  and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
+  `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
+  vacuous. Matrix and tests only: no Python module moved.
 - **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
   Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
   launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
