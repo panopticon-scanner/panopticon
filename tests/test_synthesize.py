@@ -385,7 +385,9 @@ class TestTwoPassCli(unittest.TestCase):
 
     def test_pass2_applies_verdicts(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            finding = _agentic()
+            # #2101: carries a real OCRDb code so the verdict below can carry a
+            # VALID differing one -- the shape that used to be applied.
+            finding = _agentic(code="SEC-A1A", domain="SEC")
             fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
@@ -397,6 +399,7 @@ class TestTwoPassCli(unittest.TestCase):
             with open(os.path.join(vd, "%s.json" % qid), "w") as fh:
                 json.dump(
                     {"finding_id": expected_fid, "verdict": "CONFIRMED",
+                     "code": "SEC-A2A",       # valid, and not the finding's
                      "reasoning": "verified"}, fh
                 )
             out = os.path.join(d, "report.json")
@@ -406,6 +409,16 @@ class TestTwoPassCli(unittest.TestCase):
                 report = json.load(fh)
             self.assertEqual(report["findings"][0]["evidence"]["status"], "advisor_confirmed")
             self.assertEqual(report["summary"]["gate"], "FAIL")
+            # #2101 through the REAL pipeline: the advisor's differing OCRDb code
+            # is recorded and never applied. The contradiction was a COMPOSITION
+            # gap -- evidence.apply_verdict then apply_verdict_quality, each
+            # correct alone -- so it is pinned here, where synthesize composes
+            # them itself, and not only by a hand-composed pair.
+            published = report["findings"][0]
+            self.assertEqual(published["code"], "SEC-A1A")        # the panel's
+            self.assertEqual(published["provenance"]["advisor_code"], "SEC-A2A")
+            self.assertNotIn("code_corrected_by", published)
+            self.assertNotIn("code_corrections", report["meta"]["coverage"]["ocrdb"])
 
     def test_gate_unverified_flag(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
