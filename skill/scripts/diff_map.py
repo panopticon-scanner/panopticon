@@ -30,7 +30,7 @@ else:
     try:
         import scripts.repo_config as repo_config
         import scripts.safe_git as safe_git
-    except ImportError:
+    except ModuleNotFoundError:
         import repo_config
         import safe_git
 
