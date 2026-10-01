@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
+  `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
+  tolerated as per-record errors and the DB is verified by the size floor as before.
 - **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
   `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
   interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
