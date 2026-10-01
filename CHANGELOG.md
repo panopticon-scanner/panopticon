@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
+  active findings by adapter, the HTML scanner context renders those counts, and the adapter
+  contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
 - **A literal matrix entry that stops existing now reds (#2454, #1784).** The ~320
   `match:`/`tests:` entries with no glob character are checked against the tree, beside the
   allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file

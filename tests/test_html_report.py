@@ -1529,6 +1529,33 @@ class TestScannerContextLine(unittest.TestCase):
         self.assertNotIn("Scanner context:", hr.render(_minimal_report()))
 
 
+class TestUnplaceableToolLine(unittest.TestCase):
+    @staticmethod
+    def _report(unplaceable):
+        report = _minimal_report()
+        report["meta"]["tools"] = {"unplaceable": unplaceable}
+        return report
+
+    def test_the_header_names_each_tool_and_count(self):
+        html_out = hr.render(self._report({"spotbugs": 2, "semgrep": 1}))
+        self.assertIn("Scanner context:", html_out)
+        self.assertIn(
+            "semgrep: 1 finding could not be placed under the target root",
+            html_out)
+        self.assertIn(
+            "spotbugs: 2 findings could not be placed under the target root",
+            html_out)
+
+    def test_malformed_rows_are_ignored_and_names_are_escaped(self):
+        html_out = hr.render(self._report({
+            "spotbugs": "2", "zero": 0, "boolean": True, "<b>tool</b>": 1}))
+        self.assertNotIn("spotbugs: 2 findings", html_out)
+        self.assertNotIn("zero: 0 findings", html_out)
+        self.assertNotIn("boolean: 1 finding", html_out)
+        self.assertNotIn("<b>tool</b>", html_out)
+        self.assertIn("&lt;b&gt;tool&lt;/b&gt;: 1 finding", html_out)
+
+
 class TestPartialDependencyAuditLine(unittest.TestCase):
     """#1646 ruling 3: pip-audit now audits a GENERATED requirements list, so
     the dependency audit can be partial. A person reading the report must meet
