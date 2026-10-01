@@ -387,19 +387,23 @@ def unread_program(argv, stage, walk, inside, before=None):
     A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
     is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
     guard reports unresolved (`sudo $CMD -c …`) is not read again here.
-    Last, the same word where the SHELL is spelled out (`dynamic_program`,
-    #2483): one rule for a dynamic program wherever a shell takes one, said
-    where `carried` does not say it louder of the same statement."""
+    LAST, where none of those speaks, the same word with the SHELL spelled
+    out (`dynamic_program`, #2483): one rule for a dynamic program wherever a
+    shell takes one, said where `carried` does not say it louder of the same
+    statement. Last because a value in the options answers for the whole
+    statement and `_weighed` makes that answer LOUD where a word after it
+    fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this
+    rule's droppable `_Quiet` would have replaced."""
     handed = inside and substitution_script(argv, stage, walk, before)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before)
     how, bare = (None, None) if handed else dynamic_program(argv)
     if handed or shell_reader.unresolved_wrapper(stage.argv) or not (words or printer or bare):
         return handed or None           # an unresolved command is reported whole
-    if bare:
-        return _Quiet(_DYNAMIC % (how, shell_reader.readable(bare)))
     if printer:
         return _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(printer[0])),
                         [" ".join(printer[1:])], walk, _Quiet)
+    if not words:                       # the LAST resort (r0 finding 1)
+        return _Quiet(_DYNAMIC % (how, shell_reader.readable(bare)))
     return _weighed((
         "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
         "the word after its options is a program that may fetch or run a download unchecked; "

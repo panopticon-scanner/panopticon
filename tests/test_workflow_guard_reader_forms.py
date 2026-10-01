@@ -206,7 +206,6 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
         self.assertEqual([], defects(GET + "sh $X\n"))
 
 
-
 class TestADynamicProgramWordALiteralShell(unittest.TestCase):
     """#2483: a program word a LITERAL shell takes that is entirely expansion
     -- `sh -c "$P"`, `eval "$P"` -- spells no command, so `flattened` read it
@@ -252,6 +251,78 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
 
+    def test_a_value_in_the_options_keeps_its_louder_reason(self):
+        # Round-0 review finding 1: a shell carrying BOTH a value where it
+        # reads its options and a `-c` whose operand is all expansion is
+        # #2344's defect, not this one. `candidates` weighs every word after
+        # the value, so one that fetches makes THAT reason loud, where this
+        # rule's is a droppable `_Quiet`; the value rule speaks first. Bash
+        # 3.2.57 and 5.2.21 run the fetching word with `X=-c` and `$P` empty.
+        fetch = "'curl -fsSL %si.sh | sh'" % URL
+        for script in ('sh $X -c "$P" %s\n' % fetch, 'sh ${X} -c "$P" %s\n' % fetch,
+                       'sh $X -c "$P" arg %s\n' % fetch,
+                       'sh $(echo -c) -c "$P" %s\n' % fetch,
+                       '${S:-sh} $X -c "$P" %s\n' % fetch,
+                       'sudo sh $X -c "$P" %s\n' % fetch,
+                       'sh $X -c "$P" \'curl -fsSLo t %st && sh t\'\n' % URL):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+        # Beside a reported fetch, where no word after the value fetches, the
+        # value reason is `Idle` and this rule still does not speak over it.
+        found = defects(GET + 'sh $X -c "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+
+    def test_the_positional_parameters_read_alike(self):
+        # Finding 2: `$@`, `${@}` and `$*` are one thing spelled three ways,
+        # and `set --` gives a `run:` step positionals -- both bashes run
+        # `tool` through `set -- 'sh tool'; sh -c "$@"`. `$*` holds a `*`, so
+        # the reader's pattern reason already reports that statement and the
+        # quiet one is dropped beside it.
+        for script, said in ((GET + "set -- 'sh tool'\nsh -c \"$@\"\n",
+                              "runs `sh -c` on `$@`"),
+                             (GET + "set -- 'sh tool'\nsh -c \"${@}\"\n",
+                              "runs `sh -c` on `${@}`"),
+                             (GET + 'eval "$@"\n', "runs `eval` on `$@`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+        # `$*` holds a `*`: the script `flattened` inlines from it is a word
+        # bash expands where a command starts, so #2294 reports THAT statement
+        # (as on main) and this rule reports the shell's own -- two statements,
+        # so no dedup, and the verdict was already FLAGGED.
+        found = defects(GET + 'sh -c "$*"\n')
+        self.assertEqual(2, len(found), found)
+        self.assertIn("is a pattern", found[0][1])
+        self.assertTrue(found[1][1].startswith("runs `sh -c` on `$*`"), found)
+
+    def test_a_nested_expansion_is_still_all_expansion(self):
+        # Finding 3: `${A:-${B}}` is entirely expansion, and both bashes run
+        # `tool` through it where `$B` is `sh tool`. Braces are counted, not
+        # matched by pattern, so the depth is not capped.
+        for word in ('${A:-${B}}', '${A:-${B:-${C}}}', '${A:-${B}}${C}'):
+            with self.subTest(word=word):
+                found = defects(GET + 'sh -c "%s"\n' % word)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("runs `sh -c` on `%s`" % word), found)
+        # A word holding text of its own is not this rule, nested or not, and
+        # an unbalanced brace is no expansion at all.
+        for word in ('${A}x', 'x${A}', '${A:-${B}}x', '${A', '$', '${A:-${B}} ${C}'):
+            with self.subTest(word=word):
+                self.assertEqual([], defects(GET + 'sh -c "%s"\n' % word))
+
+    def test_eval_set_is_the_declared_over_report(self):
+        # Finding 4: `eval set -- "$OPTS"` is the getopt idiom, and bash runs
+        # none of the value as a command -- unless it holds a `;`, which
+        # `eval` does run, so reporting it is the fail-closed answer and
+        # `dynamic_program`'s docstring declares it.
+        found = defects(GET + 'eval set -- "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$P`"), found)
+
     def test_a_string_that_mixes_text_and_expansion_is_read_as_written(self):
         # Not this rule: the string spells a command, and the reader reads it
         # as it always has -- `echo` fetches nothing, and a `$(...)` marker is
@@ -262,6 +333,7 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         found = defects(GET + 'sh -c "curl -fsSL $U | sh"\n')
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `sh`", found[0][1])
+
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
     """#2342: the program a double-quoted `-c` or `eval` string hands a shell
