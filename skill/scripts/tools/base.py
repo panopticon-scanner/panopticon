@@ -523,8 +523,7 @@ def _kill_process_tree(proc):
     A scanner launched through a shell wrapper (dependency-check.sh) leaves the
     real worker as a grandchild that proc.kill() never reaches. Callers that
     pass `start_new_session=True` make the child a group leader, and then the
-    group kill lands on the whole tree; without it this is exactly proc.kill().
-    """
+    group kill lands on the whole tree; without it this is exactly proc.kill()."""
     try:
         if os.getpgid(proc.pid) == proc.pid:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -577,8 +576,7 @@ def _raise_if_output_capped(watcher, path, cap):
 
     One helper because run_tool leaves by two doors -- the stdout-truncation
     early return and the normal one -- and both have to answer for the
-    write-time cap the same way.
-    """
+    write-time cap the same way."""
     if watcher is not None and watcher.exceeded:
         raise OutputCapExceeded(path, cap, watcher.size)
 
@@ -609,8 +607,7 @@ def scratch_cwd(prefix: str) -> Iterator[str]:
     file, pip's legacy in-cwd artifacts -- so "something wrote there" is the
     expected case. `os.rmdir` raised `Directory not empty`, `_run_adapter`
     caught it and returned FAIL_RC, and pip-audit landed in the manifest's
-    `missing`: the coverage gate degraded on a run whose audit had succeeded.
-    """
+    `missing`: the coverage gate degraded on a run whose audit had succeeded."""
     scratch = tempfile.mkdtemp(prefix=prefix)
     try:
         yield scratch
@@ -645,8 +642,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
     exactly.
     Pass `start_new_session=True` alongside it when the scanner is launched
     through a shell wrapper, so the kill reaches the worker and not just the
-    wrapper.
-    """
+    wrapper."""
     popen_kwargs = dict(kwargs)
     popen_kwargs.setdefault("stdout", subprocess.PIPE)
     popen_kwargs.setdefault("stderr", subprocess.PIPE)
@@ -732,6 +728,10 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
             if capture_stderr:
                 return stdout + marker, stderr, rc
             return stdout + marker, rc
+    except BaseException:                 # #2507: the tree FIRST -- the teardown
+        if proc.poll() is None:           # below closes both pipes and waits on the
+            _kill_process_tree(proc)      # drain, and a second stop in that window
+        raise                             # would leave the container running
     finally:
         timer.cancel()
         if watcher is not None:
