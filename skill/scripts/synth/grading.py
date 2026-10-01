@@ -147,6 +147,15 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     gate for it -- so it joins `gate_relevant_gap` directly (PASS -> INCONCLUSIVE,
     FAIL and OFF untouched) and sinks `coverage_certified` through that, rather
     than being named a second time in the expression.
+
+    Since #2405 (owner ruling 2026-10-01) this same channel also carries
+    `delta.broken_artifact_gate_gap`'s reason: a map that CARRIES ranges and is
+    provably damaged anyway -- `paths_emptied_by_drops`, `ranges_dropped` or
+    `payload_malformed` -- chose this gate's scope, which is the same doubt about
+    the same artifact and so the same posture. `delta.delta_gate_gap` picks which
+    rule spoke; the parameter keeps its name because nothing about how `certify`
+    treats the reason changes, and a second argument would have two channels
+    doing one job.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
@@ -616,11 +625,14 @@ def grade_report(run, resolved, reconciled, delta=None):
     # `zero_hunk_population` re-applies this run's evidence policy and
     # `--fail-on` floor to that active list, minus the delta scoping the empty
     # map broke.
+    # #2405: `delta_gate_gap` composes the two rules over the same three inputs
+    # -- the zero-hunk refusal, and the broken-artifact one when the map carries
+    # a range and is damaged anyway -- and answers with one reason.
     delta_zero_hunks = None
     if delta is not None:
         would_have_judged = delta_mod.zero_hunk_population(
             resolved.active, run.fail_on, run.gate_unverified)
-        delta_zero_hunks = delta_mod.zero_hunk_gate_gap(
+        delta_zero_hunks = delta_mod.delta_gate_gap(
             delta, len(would_have_judged), run.gate_scope)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,

@@ -10,6 +10,17 @@ evidence exposed.
 - **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
   A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
   leaves its 700-line ceiling.
+- **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
+  On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
+  `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
+  findings — the map that chose the gate's scope is provably damaged. It is the
+  `zero_hunk_gate_gap` posture (#2178, narrowed by #2222) over a map that still carries ranges,
+  which in practice means the two drop arms: the older rule wins when both hold, and the one
+  `payload_malformed` value an active delta can carry empties the map, so #2178 answers there.
+  Knowingly missed: a truncated map whose paths arrived `[]`, which nothing tells apart from a
+  deletion-only, binary, mode-only or same-content rename change — the rest of
+  `paths_without_ranges` stays disclosed and is never gated on, and the schema descriptions now
+  say exactly that.
 - **An advisor's differing OCRDb code is recorded, never applied (#2101).** The schema and
   `evidence.apply_verdict` always said so; `apply_verdict_quality`, later in the live call order,
   rewrote the finding's `code` from the same value that record holds, so each step read correctly
