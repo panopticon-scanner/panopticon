@@ -438,6 +438,43 @@ class TestTheZeroHunkGateRuling(unittest.TestCase):
         self.assertIn("1 gate-eligible finding(s)", note)
 
 
+class TestTheBrokenArtifactGateRuling(unittest.TestCase):
+    """#2405 (owner ruling 2026-10-01), end to end through `build_report`: a map
+    with a real range, one path the loader emptied because every range under it
+    was malformed, and one finding this gate would have judged. The zero-hunk
+    rule is silent -- the map HAS a range -- and the run still refuses to
+    certify, because the artifact that chose the gate's scope is provably
+    damaged. The twin is the carve-out: the same shape arriving `[]` is a
+    legitimate deletion-only change and keeps the PASS it earned."""
+
+    # The zero-hunk class's builders, by reference: one fixture for both rulings,
+    # so the two cases differ only in the artifact they are handed.
+    _findings = TestTheZeroHunkGateRuling._findings
+    _report = TestTheZeroHunkGateRuling._report
+
+    def test_a_path_emptied_by_dropped_ranges_is_inconclusive(self):
+        rep = self._report({"a.py": [[10, 12]], "c.py": ["nope"]},
+                           self._findings(1))
+        self.assertEqual(rep["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIs(rep["summary"]["coverage_certified"], False)
+        note = rep["summary"]["coverage_note"]
+        self.assertIn("broken-artifact delta gate", note)
+        self.assertIn("paths_emptied_by_drops", note)
+        self.assertIn("1 gate-eligible finding(s)", note)
+        cov = rep["meta"]["coverage"]["delta"]
+        self.assertEqual((cov["hunks_ranges"], cov["paths_without_ranges"],
+                          cov["paths_emptied_by_drops"]), (1, 1, 1))
+
+    def test_a_legitimately_rangeless_path_keeps_the_pass(self):
+        rep = self._report({"a.py": [[10, 12]], "c.py": []}, self._findings(1))
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIs(rep["summary"]["coverage_certified"], True)
+        self.assertIsNone(rep["summary"]["coverage_note"])
+        cov = rep["meta"]["coverage"]["delta"]
+        self.assertEqual((cov["paths_without_ranges"],
+                          cov["paths_emptied_by_drops"]), (1, 0))
+
+
 class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
     """#2169, end to end through the report builder: a run rejected the
     diff-hunks artifact, said so on stderr, and published a report in which the

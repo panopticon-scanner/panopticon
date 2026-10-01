@@ -1,11 +1,8 @@
 """Shared test helpers used across multiple test modules."""
 import errno
-import json
 import os
-import shlex
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -395,54 +392,6 @@ def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
         f"first five (rule, file, package): {summary!r}",
     )
     return findings
-
-
-# --- #1633: what a real shell makes of a generated hook command --------------
-# A registered PreToolUse `command` is a SHELL STRING -- Claude Code and Kimi
-# Code both hand it to `sh -c` -- so a path interpolated into one is shell
-# SOURCE, not an argument. The only faithful way to ask "what argv does the
-# host actually deliver, and does anything ELSE run?" is to let a shell parse
-# it, which is why the tests that use this run one on purpose.
-#
-# The stub below is the ONLY program that command can reach: the interpreter it
-# names resolves to a script that prints its own argv and exits, so neither the
-# real hook nor any host binary is launched (family guardrails section 3),
-# while a substitution that escaped its quotes still lands as a visible side
-# effect in `cwd`.
-
-def argv_through_shell(command, cwd, interpreter="python3"):
-    """The argv `command` delivers when a shell parses it, as a list.
-
-    `interpreter` (the command's first word) is stubbed in a temporary
-    directory placed first on PATH. Fails loudly when the stub did not run or
-    printed something no JSON argv can be read out of -- both of which mean the
-    command did something other than invoke the hook.
-    """
-    with tempfile.TemporaryDirectory(prefix="panopticon-hook-stub-") as stub_dir:
-        stub = os.path.join(stub_dir, interpreter)
-        with open(stub, "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/sh\nexec %s -c 'import json, sys;"
-                     " print(json.dumps(sys.argv[1:]))' \"$@\"\n"
-                     % shlex.quote(sys.executable))
-        os.chmod(stub, 0o755)
-        env = dict(os.environ)
-        env["PATH"] = stub_dir + os.pathsep + env.get("PATH", "")
-        # The SHELL is named rather than implied (#1839 fix round 1): this
-        # helper exists to prove a hook command survives a real shell, and
-        # `shell=True` runs exactly `/bin/sh -c <command>` on POSIX, so saying
-        # so changes nothing about what runs and leaves no `# nosec` behind for
-        # a redteam scan of our own tree to trip over.
-        proc = subprocess.run(["/bin/sh", "-c", command], cwd=cwd, env=env,
-                              capture_output=True, text=True, timeout=60)
-    lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    assert lines, ("the stubbed %s printed no argv (rc %s, stderr %r) -- the "
-                   "command ran something else: %r"
-                   % (interpreter, proc.returncode, proc.stderr, command))
-    try:
-        return json.loads(lines[-1])
-    except ValueError as exc:
-        raise AssertionError("the stubbed %s printed no JSON argv (%s): %r"
-                             % (interpreter, exc, proc.stdout)) from exc
 
 
 # --- #1642: the hard-link fixture -------------------------------------------

@@ -408,6 +408,106 @@ def zero_hunk_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
             "driver's discovery phase writes it)" % (eligible_count, cause))
 
 
+def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
+    """The certification reason when this run's GATE scoped against a diff-hunks
+    artifact that is PROVABLY broken, else None (#2405, owner ruling 2026-10-01).
+
+    #2386 split `paths_without_ranges` into the subset a damaged artifact
+    produced -- `paths_emptied_by_drops`, whose list arrived NON-empty and was
+    emptied by the range loop -- and the remainder that arrived `[]`, and left
+    what to do with the split to this issue. The ruling is candidate 1,
+    emptied-by-drops only: the gate reads INCONCLUSIVE when
+    `paths_emptied_by_drops`, `ranges_dropped` or `payload_malformed` says the
+    artifact is damaged, the one shape that is provably broken rather than a
+    change shape.
+
+    What it RECOVERS: a damaged map that still carries a real range, which
+    `zero_hunk_gate_gap` cannot see at all -- that rule needs `ranges == 0`
+    across the WHOLE map, so one surviving range anywhere silences it, while the
+    emptied path still admits every finding in its file to the gate's source set
+    by `diff_map.classify`'s changed-file fail-open.
+
+    What it KNOWINGLY MISSES: a truncated or hand-edited map whose paths arrived
+    `[]`. That is indistinguishable from a deletion-only, binary, mode-only or
+    same-content rename change -- `diff_map.parse` emits a rangeless key for one
+    on purpose -- so a rule over the remainder would turn a legitimate PR
+    INCONCLUSIVE, and the ruling accepts the miss instead. The remainder stays
+    DISCLOSED, never reclassified (ruling 2026-09-30): `_disclose_load` names
+    the paths and both report blocks publish the counts.
+
+    `paths_dropped` is not a measure, by the ruling's wording. It is named in
+    the reason through `_dropped_phrase` when it co-occurs with a dropped range,
+    but a path dropped on its own leaves the map, which sends its findings
+    OFF-diff: the gate loses them rather than admitting them, and the operator
+    reads that loss from `meta.coverage.delta` and the stderr line.
+
+    The four guard conditions are `zero_hunk_gate_gap`'s, each load-bearing for
+    its reasons: an INACTIVE delta degrades to the wider gate, which fails
+    closed; a run that ASKED for `--gate-scope all` already gates on every
+    active finding; a run with nothing this gate would have judged (#2222's
+    population, `eligible_count`) had nothing scoped away; and `ctx.report`
+    None means nothing measured the read, so there is no damage to trust. Only
+    the MEASURE differs -- and when both rules hold `zero_hunk_gate_gap` takes
+    precedence, which is what `delta_gate_gap` below composes.
+
+    That precedence PREEMPTS the `payload_malformed` arm outright. The measure
+    names the key so it is total over the closed vocabulary, but the one value
+    that reaches an active delta -- `hunks not an object` -- makes the loader
+    read an empty map, so `ranges == 0` and the zero-hunk reason is what any
+    real run publishes. This arm therefore answers a direct call only, and the
+    schema says so under both `payload_malformed` nodes."""
+    report = ctx.report
+    if not (ctx.active and report is not None and eligible_count > 0
+            and gate_scope == "on-diff"):
+        return None
+    if not (report.paths_emptied_by_drops > 0 or report.ranges_dropped > 0
+            or report.payload_malformed is not None):
+        return None
+    # Every arm that tripped, named with the counter it reads: this verdict is a
+    # statement about the artifact, so an operator has to be able to go to
+    # `meta.coverage.delta` and find the same number under the same name.
+    # `_dropped_phrase` is the shared wording (#2169 review, F2), so this note,
+    # the stderr disclosure and the zero-hunk reason cannot describe one read's
+    # losses three ways.
+    damage = []
+    if report.payload_malformed is not None:
+        damage.append("the payload was rejected (%s)" % report.payload_malformed)
+    dropped = _dropped_phrase(report)
+    if dropped:
+        damage.append(dropped)
+    if report.paths_emptied_by_drops:
+        damage.append("%d named path(s) were emptied of every range "
+                      "(paths_emptied_by_drops), so a finding in one of them "
+                      "still reaches this gate's source set on-diff"
+                      % report.paths_emptied_by_drops)
+    # The SHAPE is `zero_hunk_gate_gap`'s, clause for clause: the claim, then the
+    # count qualified exactly as #2222 qualifies it, then the cause, then the one
+    # remedy both rules have. The two notes ride the same `coverage_note`
+    # channel, and a reader must not have to learn two definitions of one number.
+    return ("broken-artifact delta gate — the diff-hunks map this run scoped "
+            "against is provably damaged, so the --gate-scope on-diff source "
+            "set for this run's %d gate-eligible finding(s) (the active set "
+            "after the gate's evidence policy and any --fail-on floor, before "
+            "delta scoping) was chosen by an artifact this run cannot trust; "
+            "%s: regenerate the diff-hunks artifact (the driver's discovery "
+            "phase writes it)" % (eligible_count, "; ".join(damage)))
+
+
+def delta_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
+    """The delta artifact's certification reason, whichever of the two rules
+    speaks: the zero-hunk refusal (#2178, narrowed by #2222) or the
+    broken-artifact one (#2405). ONE call site, `grading.grade_report`, and one
+    reason -- `certify` carries it in the single `delta_zero_hunks` channel.
+
+    Zero hunks is asked first and WINS: it says the gate's whole source set was
+    not a measured diff, which strictly contains "the map that chose it is
+    damaged", and a second note about one read would leave the operator
+    reconciling what looks like two problems (#2169's F1 lesson). Both reasons
+    end on the same remedy, so reading only the stronger one loses nothing."""
+    return (zero_hunk_gate_gap(ctx, eligible_count, gate_scope)
+            or broken_artifact_gate_gap(ctx, eligible_count, gate_scope))
+
+
 def count_hunks(hunks):
     """(files, ranges) over a loaded hunk map -- what a delta review is scoped
     to. One definition, so the loader's report and `meta.coverage.delta` cannot

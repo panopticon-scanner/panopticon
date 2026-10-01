@@ -10,6 +10,59 @@ evidence exposed.
 - **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
   whose effective `permissions:` would come from the repository default, while accepting job
   blocks and workflow-level blocks inherited by every job.
+- **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
+  `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
+  #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
+  process at the default disposition and orphaning a `docker run --rm` client. The capture in
+  `tools/base.py` now ends the child's tree on any interrupt mid-read, before closing the pipes.
+- **A target's `exclude_paths` no longer hides the SEC surface (#1757, AGT-1355709320).** Owner
+  ruling 2026-09-25: a target-authored `exclude_paths:` may not take a file the objective SEC floor
+  matches out of the SEC domain. Those files are no longer pruned — they form one dedicated
+  SEC-only review group, `exclude_paths_sec_carve_out`, whose coverage is pinned to `["SEC"]`; every
+  other domain still honours the exclusion and the files join no other group. Disclosed in three
+  places: `groups.json` and `meta.coverage.exclude_paths_sec_carve_out` carry the globs, the paths
+  and the count, and discovery's stderr line carries the globs and both counts. The report block
+  renders as one line in the Markdown and HTML coverage sections. Absent when nothing is
+  committed, `count: 0` when globs carved nothing. `--pr` mode is identical, the tool axis is
+  untouched, and the `/helm/` `/k8s/` substring half of SEC-71240568 was already fixed by #1838.
+- **The security workflows' pull-or-build step can now finish its fallback build (#2509, #1818).**
+  In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
+  a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
+  ~11 min build + margin), under the job's 30, and a test pins the inequality.
+- **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
+  On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
+  `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
+  findings — the map that chose the gate's scope is provably damaged. It is the
+  `zero_hunk_gate_gap` posture (#2178, narrowed by #2222) over a map that still carries ranges,
+  which in practice means the two drop arms: the older rule wins when both hold, and the one
+  `payload_malformed` value an active delta can carry empties the map, so #2178 answers there.
+  Knowingly missed: a truncated map whose paths arrived `[]`, which nothing tells apart from a
+  deletion-only, binary, mode-only or same-content rename change — the rest of
+  `paths_without_ranges` stays disclosed and is never gated on, and the schema descriptions now
+  say exactly that.
+- **An advisor's differing OCRDb code is recorded, never applied (#2101).** The schema and
+  `evidence.apply_verdict` always said so; `apply_verdict_quality`, later in the live call order,
+  rewrote the finding's `code` from the same value that record holds, so each step read correctly
+  alone. It no longer reads the verdict's `code` at all, and the two fields that described the
+  mutation are retired: the finding's `code_corrected_by` and
+  `meta.coverage.ocrdb.code_corrections`. The catalog-strain signal still reads
+  `provenance.advisor_code`, and the advisor prompt now asks for a second opinion rather than a
+  correction. The rejection/backup policy is unchanged, and severity is still mutated only by the
+  override discipline -- now measured against the PUBLISHED code's default, so a reason-less
+  override reverts to the panel's code rather than to the advisor's.
+- **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
+  `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
+  tolerated as per-record errors and the DB is verified by the size floor as before.
+- **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
+  `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
+  class wider than every other fallback, so a package that resolved and then broke inside was
+  retried flat instead of surfacing; `tests/test_module_identity.py` now pins the narrow class.
+- **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
+  The module under test binds `scripts._version`; the in-test flat import built a second module
+  object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.
+- **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
+  `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
+  interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
 - **Direct discovery owns its implicit delta map under the selected repository (#2102).**
   Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
   runs clean that same path. Explicit outputs still keep the map beside `--out`.

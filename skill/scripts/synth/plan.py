@@ -51,11 +51,19 @@ class PlanInputs:
     # like every other target-carried block. None when this run did not measure
     # it: a direct synthesize.py call has no driver to ask.
     git_drivers_suppressed: Any = None
+    # #1757 (AGT-1355709320): the SEC carve-out block of the run's `groups.json`
+    # -- the objective SEC surface a target's own `exclude_paths:` could not take
+    # out of the SEC domain. Held RAW and repaired where it is read into the
+    # artifact (`tool_axis.reconcile`, via `repair.repair_sec_carve_out`), like
+    # every other target-carried block. None when this run committed no
+    # `exclude_paths:` at all, or had no discovery run to ask -- and the report
+    # then carries no key, because zero behaviour change is zero output change.
+    sec_carve_out: Any = None
 
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
-             discovery=None):
+             discovery=None, sec_carve_out=None):
         """main()'s plan stage (WS-0 S3), in its original order: lane
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
@@ -72,7 +80,10 @@ class PlanInputs:
         holds the parsed file (`load_groups_json`), the block is a run
         disclosure rather than anything this loader measures, and a direct
         synthesize.py call over hand-collected findings has no discovery run to
-        ask, so it publishes "not measured"."""
+        ask, so it publishes "not measured". `sec_carve_out` is that same
+        file's `exclude_paths_sec_carve_out` block (#1757), on the same seam and
+        for the same reason -- a disclosure discovery recorded, not anything this
+        loader measures."""
         plan_lists, plans_seen, invalid_plans = plans
         queue_obj, invalid_verify_queue = queue
         plan = [e for pl in plan_lists for e in pl]
@@ -97,7 +108,8 @@ class PlanInputs:
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
                    coverages=coverages, integrity=integrity, resume=resume,
                    test_inventory=load_test_inventory(run_dir),
-                   git_drivers_suppressed=git_drivers_suppressed)
+                   git_drivers_suppressed=git_drivers_suppressed,
+                   sec_carve_out=sec_carve_out)
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize

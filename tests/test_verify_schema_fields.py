@@ -57,17 +57,19 @@ def test_verdict_schema_rejects_invalid_input():
                             schema)                                 # missing required
 
 
-def test_report_finding_has_override_and_correction_fields():
+def test_report_finding_has_override_and_backup_fields():
     fprops = _load("report-schema.json")["properties"]["findings"]["items"]["properties"]
     assert set(fprops["severity_override"]["properties"]) == {"from", "to", "reason"}
-    assert fprops["code_corrected_by"]["type"] == "string"
     assert fprops["backup_confirmed"]["type"] == "boolean"
+    # #2101: `code_corrected_by` described a mutation the synthesis step no longer
+    # makes. A schema that still named it would promise a field no producer writes.
+    assert "code_corrected_by" not in fprops
 
 def test_report_ocrdb_coverage_has_override_counters():
     ocrdb = (_load("report-schema.json")["properties"]["meta"]["properties"]
              ["coverage"]["properties"]["ocrdb"]["properties"])
     assert set(ocrdb["overrides"]["properties"]) == {"count", "up", "down"}
-    assert ocrdb["code_corrections"]["type"] == "integer"
+    assert "code_corrections" not in ocrdb            # retired with #2101
 
 
 def test_verdict_bundle_inlines_the_advisor_verdict_verbatim():
