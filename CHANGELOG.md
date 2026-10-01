@@ -17,6 +17,16 @@ evidence exposed.
   renders as one line in the Markdown and HTML coverage sections. Absent when nothing is
   committed, `count: 0` when globs carved nothing. `--pr` mode is identical, the tool axis is
   untouched, and the `/helm/` `/k8s/` substring half of SEC-71240568 was already fixed by #1838.
+- **An advisor's differing OCRDb code is recorded, never applied (#2101).** The schema and
+  `evidence.apply_verdict` always said so; `apply_verdict_quality`, later in the live call order,
+  rewrote the finding's `code` from the same value that record holds, so each step read correctly
+  alone. It no longer reads the verdict's `code` at all, and the two fields that described the
+  mutation are retired: the finding's `code_corrected_by` and
+  `meta.coverage.ocrdb.code_corrections`. The catalog-strain signal still reads
+  `provenance.advisor_code`, and the advisor prompt now asks for a second opinion rather than a
+  correction. The rejection/backup policy is unchanged, and severity is still mutated only by the
+  override discipline -- now measured against the PUBLISHED code's default, so a reason-less
+  override reverts to the panel's code rather than to the advisor's.
 - **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
   `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
   tolerated as per-record errors and the DB is verified by the size floor as before.

@@ -239,6 +239,17 @@ def normalize_finding(f):
 # Only ingest_tools (tool output), dedupe's real merge branches, and
 # cross_panel_corroboration may set these. `evidence` specifically is set
 # only by derive_evidence, downstream of this strip.
+#
+# `code_corrected_by` is set by NOTHING since #2101 retired the mutation it
+# marked (an advisor's differing OCRDb code is recorded, never applied). It
+# stays on this list anyway: the finding definitions in
+# findings-envelope-schema.json carry no `additionalProperties: false`, so this
+# strip is the only thing standing between an agent-authored
+# `code_corrected_by` and a published finding -- a forged authority claim that
+# the report schema no longer even describes. Follow-up: envelope
+# additionalProperties (no issue number yet) -- put `additionalProperties:
+# false` on those two definitions and the barrier becomes structural, at which
+# point this entry can go.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
                           "evidence", "fingerprint", "delta", "doc_policy",
                           "code_corrected_by", "backup_confirmed")
