@@ -367,6 +367,13 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         self.assertIsNone(forms.stdin_program(self.argv("python3 $S")))
         # A literal word still ends the walk at a file, value-form or not.
         self.assertIsNone(forms.stdin_program(self.argv("sh x.sh")))
+        # A `<(...)` is `_value`-shaped too (every substitution reads back as
+        # `$(...)`), but it never vanishes: a process substitution always
+        # substitutes a real path, so it stays a FILE, as `$(true)` (whose
+        # OUTPUT may vanish) does not. Found via the 11-corpus differential:
+        # `echo x | bash <(curl ...)` gained a spurious "pipes its program
+        # from echo" report until this was excluded.
+        self.assertIsNone(forms.stdin_program(self.argv("bash <(curl https://example.test/i.sh)")))
 
     def test_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
         # #2473: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,

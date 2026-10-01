@@ -191,7 +191,11 @@ def stdin_program(argv):
     and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
     word outright. Read IN PLACE rather than weighed, fail-closed: `X` may
     just as well spell a FILE (`X=script.sh`), so this over-reports there --
-    see the guard's gap list, which names it.
+    see the guard's gap list, which names it. A `<(...)`/`>(...)` is NOT
+    such a word, though `_value` matches its marker too: it always
+    substitutes a real path, never empty, so `bash <(curl ...)` keeps
+    reading as the FILE it is (`yields_words` tells a process substitution
+    from a command substitution, whose OUTPUT may vanish instead).
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`) with stdin on it
     may itself be a shell (#2473, route (b) of #2337's sibling: a name this
@@ -209,7 +213,13 @@ def stdin_program(argv):
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
-    if not shell and not foreign and _value(argv[0]):
+    # `<(...)`/`>(...)` are a `_value`-matching marker too (`readable` renders
+    # every substitution alike), but they never vanish -- a process
+    # substitution always substitutes a real path, never empty, never word-
+    # split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
+    # `$(true)`). `yields_words` is the one already here that tells them apart.
+    if not shell and not foreign and _value(argv[0]) and (
+            not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0])):
         shell = True                            # a `$` command word may be a shell
     if not shell and not foreign:
         return None
@@ -219,7 +229,8 @@ def stdin_program(argv):
         if token in _STDIN_OPERANDS:
             return answer
         if not token.startswith(("-", "+")):
-            if shell and _value(token):
+            if shell and _value(token) and (
+                    not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 continue                    # the walk goes on as if absent
             return None                     # the program is this file
         letters = "" if token[:2] in ("--", "++") else token[1:]

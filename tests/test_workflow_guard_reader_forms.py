@@ -369,6 +369,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # The must-trip control and the unaffected FOREIGN form.
         self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
         self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
+        # A `<(...)` is `_value`-shaped too (every substitution reads back as
+        # `$(...)`), but it never vanishes, so it is NOT such a word: found
+        # via the corpus differential, `echo hi | bash <(curl ...)` must
+        # answer exactly the one genuine finding `bash <(curl ...)` alone
+        # already does, not a spurious SECOND one claiming `bash`'s program
+        # instead pipes in unseen from `echo` (stdin was never its program;
+        # the process substitution FILE always is).
+        piped = defects("echo hi | bash <(curl -fsSL %si.sh)\n" % URL)
+        bare = defects("bash <(curl -fsSL %si.sh)\n" % URL)
+        self.assertEqual(bare, piped)
+        self.assertEqual(1, len(piped), piped)
 
     def test_2473_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
         # `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57, 5.2.21 and
