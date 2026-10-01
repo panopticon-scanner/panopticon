@@ -121,7 +121,7 @@ class TestFreshnessWorkflow(unittest.TestCase):
             self.assertIs(checkout["with"]["persist-credentials"], False)
             self.assertIn(".github/scripts", checkout["with"]["sparse-checkout"])
 
-    def _run_with_fake_gh(self, gh_body, max_age_days="3"):
+    def _run_with_fake_gh(self, gh_body, max_age_days="3", event_name="push"):
         run = next(step["run"] for step in self.job["steps"]
                    if "image-freshness.sh" in step.get("run", ""))
         with tempfile.TemporaryDirectory() as temp:
@@ -135,21 +135,29 @@ class TestFreshnessWorkflow(unittest.TestCase):
             fake_gh.chmod(0o755)
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                        MAX_AGE_DAYS=max_age_days, IMAGE_NAME="panopticon-tools",
-                       OWNER="example", GH_TOKEN="unused")
+                       OWNER="example", GH_TOKEN="unused",
+                       GITHUB_EVENT_NAME=event_name)
             return subprocess.run(["bash", "-c", run], cwd=root, env=env,
                                   capture_output=True, text=True, timeout=30)
 
-    def test_gh_failure_reports_diagnostic_and_skips_as_warning(self):
-        proc = self._run_with_fake_gh(
-            "printf 'lookup denied: token unavailable\\n::error::injected\\n' >&2\nexit 42\n")
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("gh api diagnostic:", proc.stderr)
-        self.assertIn("lookup", proc.stderr)
-        self.assertIn("unavailable", proc.stderr)
-        self.assertNotIn("\n::error::", proc.stderr)
-        self.assertIn("::warning::", proc.stdout)
-        self.assertIn("Failed to look up", proc.stdout)
-        self.assertNotIn("::notice::", proc.stdout)
+    def test_gh_failure_warns_on_push_and_fails_monitor_runs(self):
+        body = "printf 'lookup denied: token unavailable\\n::error::injected\\n' >&2\nexit 42\n"
+        for event_name, returncode, annotation in (
+                ("push", 0, "::warning::"),
+                ("schedule", 1, "::error::"),
+                ("workflow_dispatch", 1, "::error::")):
+            with self.subTest(event_name=event_name):
+                proc = self._run_with_fake_gh(body, event_name=event_name)
+                self.assertEqual(proc.returncode, returncode, proc.stdout + proc.stderr)
+                self.assertIn("gh api diagnostic:", proc.stderr)
+                self.assertIn("lookup", proc.stderr)
+                self.assertIn("unavailable", proc.stderr)
+                self.assertNotIn("\n::error::", proc.stderr)
+                self.assertIn(annotation, proc.stdout)
+                self.assertIn("Failed to look up", proc.stdout)
+                if event_name != "push":
+                    self.assertIn(event_name + " freshness monitor", proc.stdout)
+                self.assertNotIn("::notice::", proc.stdout)
 
     def test_missing_latest_timestamp_has_distinct_warning(self):
         proc = self._run_with_fake_gh("printf '[]\\n'\n")
