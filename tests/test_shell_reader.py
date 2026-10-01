@@ -1289,9 +1289,19 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
         # in, so the step is refused by name. Queued at the top, as before.
         with self.assertRaises(shell_lex.Unreadable) as refused:
             self.lexed("x=$(cat <<A <<'B'\na\nA)\nit's\nB\n)\n%s\n" % self.PIPE)
-        self.assertIn("a heredoc queued after one a line like `EOF)` ends in a substitution",
+        self.assertIn("a heredoc queued in a substitution after one whose body ends at a line "
+                      "like `EOF)`: bash 5.2 reads its body from the next line",
                       str(refused.exception))
         self.assertEqual(["A)", "b"], self.lexed("cat <<A <<B\nA)\nA\nb\nB\n")[1])
+
+    def test_an_empty_delimiter_queued_second_at_the_end_reads_an_empty_body(self):
+        # A `<<''` queued after a body whose terminator is the script's last
+        # line, no newline after it, gets the empty body bash 3.2, 5.2 and
+        # dash hand over, as with that newline; a word no line spells stays
+        # text, as it always has.
+        self.assertEqual([["hi", ""], ["hi", ""], ["hi"]],
+                         [self.lexed(script)[1] for script in (
+                             "cat <<A <<''\nhi\nA", "cat <<A <<''\nhi\nA\n", "cat <<A <<B\nhi\nA")])
 
     def test_outside_a_substitution_or_unended_a_body_reads_as_it_did(self):
         # At the top level -- in a subshell there too -- an `EOF)` line is a

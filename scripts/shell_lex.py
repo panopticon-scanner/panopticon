@@ -522,9 +522,9 @@ class _Lexer:
         cut = False
         for slot, delimiter, quoted, strip, fd in frame.queue:
             if cut:
-                raise Unreadable("a heredoc queued after one a line like `EOF)` ends in a "
-                                 "substitution: bash 5.2 reads it from the next line, and the "
-                                 "rest of that `EOF)` line as code after it")
+                raise Unreadable("a heredoc queued in a substitution after one whose body ends at "
+                                 "a line like `EOF)`: bash 5.2 reads its body from the next line, "
+                                 "and the rest of that `EOF)` line as code after it")
             expands = not quoted        # and folds `\`-newline, as bash reads it
             if expands not in self.lines:
                 self.lines[expands] = _Lines(self.text, folded=expands)
