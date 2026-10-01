@@ -1,9 +1,11 @@
 """#2331, batch 4: the heredocs the shell lexer reads inside a substitution.
 
 Each class is one sub-issue of the epic: a spelling in which bash runs a
-download -- bash 3.2.57 and GNU bash 5.2.21, every checksum failing -- that
-the guard read clean, pinned as a live step, beside the controls that must
-read as they did. The reader's and the lexer's own halves are in
+download -- GNU bash 5.2.21, and bash 3.2.57 unless a test says otherwise,
+every checksum failing -- that the guard read clean, pinned as a live step,
+beside the controls that must read as they did. The `python3 -` rows run no
+download: they pin the fail-closed report a program in a language the guard
+has no grammar for gets. The reader's and the lexer's own halves are in
 `tests/test_shell_reader.py`.
 """
 import unittest
@@ -137,7 +139,10 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
     def test_a_quote_or_a_subshell_there_reads_as_bash_reads_it(self):
         # An apostrophe in a one-line body was read as code, its quote open
         # to the end of the step; `EOF (...)` is a subshell 5.2 runs, not a
-        # body line. At the top, as in bash, an `EOF)` line is a body line.
+        # body line. Both run in 5.2 only: 3.2 finds the `)` by counting
+        # parentheses and quotes, so it errors on the first and hands `cat`
+        # the second as its body. At the top, as in bash, an `EOF)` line is a
+        # body line.
         for script in ("x=$(cat <<'EOF'\nit's\nEOF)\n%s\n" % PIPE,
                        "x=$(cat <<EOF\nEOF (%s)\nEOF\n)\n" % PIPE):
             with self.subTest(script=script):

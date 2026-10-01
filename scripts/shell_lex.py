@@ -27,7 +27,7 @@ one forward pass, from the state it is in, and so does `lex`:
     here-strings   the word after a `<<<` outside `$(...)`, spelled as bash
                    hands it over, where nothing in it expands (`_string`)
 
-One reading is not bash's. A `<<` with no terminator line below it is left as
+Two readings are not bash's. A `<<` with no terminator line below it is left as
 text rather than swallowing the rest of the script: bash runs nothing below
 it, so reading it as code can only report more. A heredoc inside `$(...)` is
 read in the text around it, as bash 5.2 reads it, and its marker goes with
@@ -38,7 +38,7 @@ pattern -- has no reading short of bash's: a body ended at a guessed spelling
 swallows what bash runs, and a body read as code hides it behind a quote left
 open there (#2224). So `lex` reads it as a word and, at the metacharacter
 ending it, raises `Unreadable` naming it; a script that ends inside the word
-leaves no line below it for a body to hide.
+leaves no line below it for a body to hide. The other: an `EOF)` line's rest.
 
 A command's `((` is decided the way bash decides it. Its first group is read
 to its close -- through quotes, backquotes, escapes and `$(...)`, not
@@ -56,13 +56,13 @@ a group again is what nesting costs -- `((((` N deep is read N times -- so
 channel for a step it cannot read: `workflow_guard.job_defects` catches it
 and reports that step by name, accepting nothing in it.
 
-A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its
-body would follow -- `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash
-3.2 reads the lines below it as code; 5.2 warns, reads them as that body and
-runs what follows its terminator. Read as code, a quote in them hides what
-5.2 runs; read as a body, they hide what 3.2 runs. A body on the lines inside
-a substitution still open is read there -- ended by a line like `EOF)` too,
-as 5.2 ends it, whose rest is code (#2343); one queued after such a body is
+A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its body would follow --
+`echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash 3.2 reads the lines below it as code; 5.2
+warns, reads them as that body and runs what follows its terminator. Read as code, a quote in them
+hides what 5.2 runs; read as a body, they hide what 3.2 runs. A body on the lines inside a
+substitution still open is read there -- ended by a line like `EOF)` too, as 5.2 ends it, whose rest
+is code (#2343). That rest is the other reading not bash's: `lex` reads it as written, where 5.2.21
+drops its first `;` and rejects a rest that starts with one. A heredoc queued after such a body is
 refused: 5.2 reads it from the next line, and that rest after it.
 
 A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
