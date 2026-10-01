@@ -10,6 +10,10 @@ evidence exposed.
 - **`ToolAdapters` gains a `Contract` layer (#2315, #1784).** The adapter base, SARIF
   normalization and their contract tests move out of `Integration`, which sat at the 48-file
   cap; a headroom guard now reds any `ToolAdapters` leaf above 40 before the cap does.
+- **The readiness matrix row's remedy fits a refusal that names its own install (#2384, #1784).**
+  A config refusal that already names its own remedy (`pip install pyyaml`) no longer has
+  "fix it or re-run `driver setup`" appended, which setup could not deliver; every other
+  refusal keeps it.
 - **Pip-audit uses the shared path-confinement predicate (#2262, #1768).** Requirement
   candidates become absolute before the shared check, so relative target roots still reject
   escaping symlinks; the private duplicate is gone.
