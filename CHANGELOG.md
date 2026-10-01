@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A literal matrix entry that stops existing now reds (#2454, #1784).** The ~320
+  `match:`/`tests:` entries with no glob character are checked against the tree, beside the
+  allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file
+  itself falls back to a sibling glob; a stale `!` negation is caught the same way.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
