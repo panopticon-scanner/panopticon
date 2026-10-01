@@ -140,9 +140,10 @@ def tools_execute(review_root, manifest):
     # demotes an adapter whose entire applicable surface is excluded from
     # `selected` to `excluded_scope` (disclosed, not required, so the gate
     # cannot read its absence as lost coverage) and records the globs in the
-    # manifest as `exclude_globs`. It does not narrow any scanner's own argv
-    # -- the scanners still walk the tree, and the findings are dropped at
-    # ingest, where `--tools-exclude` applies the same policy.
+    # manifest as `exclude_globs`. Semgrep also receives attached `--exclude=`
+    # values, so intentional fixture/golden corpora do not consume its expanded
+    # test-path scan; other findings are dropped at ingest, where
+    # `--tools-exclude` applies the same policy.
     for glob in runio.committed_exclude_paths(review_root):
         cmd += ["--exclude", glob]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")

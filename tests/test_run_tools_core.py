@@ -467,18 +467,57 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._venv(d, ".venv")
             rt.run_tools(d, ["semgrep", "trivy", "gitleaks"],
-                         os.path.join(d, "out"), runner=runner)
+                         os.path.join(d, "out"), runner=runner,
+                         exclude_globs=["tests/fixtures/**"])
             semgrep, trivy, gitleaks = calls
             # Attached form (F7): a directory named `-rf` can never read as a flag.
             self.assertIn("--exclude=.venv", semgrep)
+            self.assertIn("--exclude=tests/fixtures/**", semgrep)
             self.assertEqual(semgrep[-1], "/src")     # the scan target stays last
             self.assertIn("--skip-dirs=.venv", trivy)  # trivy matches root-relative
+            self.assertNotIn("--exclude=tests/fixtures/**", trivy)
             self.assertEqual(trivy[-1], "/src")
             # Gitleaks has no path-exclusion flag; the adapter owns its rule
             # config and the ingest filter handles virtualenv paths.
             self.assertEqual(gitleaks[-5:],
                              ["python3", "/opt/panopticon/scripts/_run_adapter.py",
                               "--security", "standard", "gitleaks"])
+
+    def test_semgrep_owns_its_ignore_policy_without_dropping_test_code(self):
+        cmd = rt.TOOL_CMD["semgrep"]
+        self.assertIn("--jobs=3", cmd)
+        self.assertIn("--x-ignore-semgrepignore-files", cmd)
+        self.assertIn("--no-git-ignore", cmd)
+        for pattern in (".git", ".svn", "_darcs", "build/", "vendor/", "dist/",
+                        "*.min.js", ".env/", ".tox/", "node_modules/", ".npm/",
+                        ".yarn/", ".venv/", "_opam/", "_build/", "_cargo/",
+                        ".panopticon/", ".worktrees/", ".superpowers/",
+                        "__pycache__/", ".ruff_cache/", ".pytest_cache/",
+                        ".mypy_cache/", "*.egg-info/", ".DS_Store"):
+            self.assertIn("--exclude=%s" % pattern, cmd)
+        for test_pattern in ("test/", "tests/", "testsuite/", "*_test.go"):
+            self.assertNotIn("--exclude=%s" % test_pattern, cmd)
+        self.assertEqual(cmd[-1], "/src")
+
+    def test_manifest_records_the_semgrep_scope_observed_on_the_argv(self):
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+        with tempfile.TemporaryDirectory() as root:
+            complete = rt.run_tools(
+                root, ["semgrep"], os.path.join(root, "complete"),
+                runner=lambda cmd, **kw: fake)
+            observed = tm.write_manifest(
+                os.path.join(root, "complete.json"), ["semgrep"], complete)
+            without_policy = [arg for arg in rt.TOOL_CMD["semgrep"]
+                              if arg != "--x-ignore-semgrepignore-files"]
+            with mock.patch.dict(rt.TOOL_CMD, {"semgrep": without_policy}):
+                incomplete = rt.run_tools(
+                    root, ["semgrep"], os.path.join(root, "incomplete"),
+                    runner=lambda cmd, **kw: fake)
+            missing = tm.write_manifest(
+                os.path.join(root, "incomplete.json"), ["semgrep"], incomplete)
+        self.assertEqual(observed["scanner_scope"], {
+            "semgrep": tm.SEMGREP_SCOPE_POLICY})
+        self.assertEqual(missing["scanner_scope"], {})
 
     def test_no_venv_means_no_added_flags(self):
         calls = []
@@ -693,8 +732,10 @@ class TestVirtualenvExclusion(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
                 rt.main(["--target", d, "--out", os.path.join(d, "out"),
-                         "--tools", "semgrep", "--security", "redteam"])
+                         "--tools", "semgrep", "--security", "redteam",
+                         "--exclude", "tests/fixtures/**"])
         self.assertEqual(captured["venv_dirs"], [])   # #1839 ruling 2
+        self.assertEqual(captured["exclude_globs"], ["tests/fixtures/**"])
 
     def test_the_default_mode_is_standard(self):
         # Under `standard` nothing changes: both spellings stay out of the scan.

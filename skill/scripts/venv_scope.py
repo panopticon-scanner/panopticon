@@ -355,7 +355,7 @@ def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
     entries (`.worktrees` and bandit's own parser defaults) have to reach the
     argv whether or not the ini arrived, because an ini that fails to arrive is
     fail-open. semgrep and trivy keep the "no venv, no flag" shape -- their
-    scanner-owned exclusions are in their own configs, not here.
+    scanner-owned exclusions are already in their base argvs, not added here.
 
     Accepted trade-off (#1638 P09 F4): trivy's python-pkg analyzer reads
     `.dist-info`/`.egg-info` METADATA under `site-packages`, so skipping the
