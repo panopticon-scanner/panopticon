@@ -10,6 +10,9 @@ evidence exposed.
 - **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
   `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
   tolerated as per-record errors and the DB is verified by the size floor as before.
+- **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
+  The module under test binds `scripts._version`; the in-test flat import built a second module
+  object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.
 - **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
   `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
   interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
