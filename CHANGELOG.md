@@ -28,6 +28,9 @@ evidence exposed.
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
   nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
 - **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
   A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
   leaves its 700-line ceiling.
