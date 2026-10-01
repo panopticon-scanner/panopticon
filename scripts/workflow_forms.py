@@ -329,8 +329,9 @@ def step_credit(flat, shell=None):
 
 
 class Idle(str):
-    """An unread reason `kept` keeps only where there are downloads: see
-    `substitution_script` and `unread_program`."""
+    """An unread reason `kept` keeps only where the job holds a fetch the
+    guard REPORTS (#2481): see `substitution_script`, `unread_program` and
+    `workflow_guard._unread_stdin`'s foreign-language program (#2499)."""
 
 
 class _Unprinted(Idle):
@@ -363,7 +364,9 @@ def substitution_script(argv, stage, walk, before=None):
 
 def _weighed(why, texts, walk, idle=Idle):
     """`why` where a script among `texts`, flattened and walked, fetches or
-    holds an unread form, and `idle(why)` where none does."""
+    holds an unread form, and `idle(why)` where none does. A foreign stdin
+    program there is `Idle`, so it is not an unread form and the reason that
+    hands the script is `Idle` too: #2499's predicate governs both (r0)."""
     live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else idle(why)
@@ -412,11 +415,11 @@ def within(statement, where=""):
     backquotes, `<(...)` -- read as scripts of their own (#2345), as the
     guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
     those. A script handed to a shell there as a string (`sh -c '...'`) is
-    not read: `substitution_script` reports it where the job downloads. Nor
-    is a check (the guard's `_checks` walks the outer stages only), so
-    `x=$(echo "<sha>  t" | sha256sum -c - && sh t)` reports its use though
-    the check gates it: fail-closed. Each fetch's `_uses` parses the later
-    substitutions again."""
+    not read: `substitution_script` reports it where the job holds a fetch the
+    guard reports (`kept`, #2481). Nor is a check (the guard's `_checks` walks
+    the outer stages only), so `x=$(echo "<sha>  t" | sha256sum -c - && sh t)`
+    reports its use though the check gates it: fail-closed. Each fetch's
+    `_uses` parses the later substitutions again."""
     for position, stage in enumerate(statement.stages):
         yield statement, position, stage, where
         for text in stage.substitutions:
@@ -551,13 +554,78 @@ def carried(stmts, executors):
     return out
 
 
-def kept(unread, fetched):
-    """The `(index, why)` of `unread` that stand where `fetched` are the
-    downloads: an `Idle` one only if there are any, and an `_Unprinted` one
-    not at a statement another reason reports (`carried`'s, #2333)."""
+# A stage that writes on the bytes it READS, where the fetcher named no file
+# of its own: the stdout sink of a stage BEHIND the fetcher (`> f`) and the
+# writers that name the file in their argv. An ADJACENT `tee` is bound to its
+# file by `parse_fetch`, which reads `piped_to` -- the next stage only -- so it
+# never arrives here; one behind any reader (`| cat | tee t`) is bound by
+# nothing (review r1 finding 9). The unpackers are reported as streams into an
+# executor whatever stands in front of them, so they stay out.
+_WRITERS = ("dd", "sponge", "tee")
+
+
+def _written_on(statement):
+    """Whether a stage of this statement writes the bytes it reads to a FILE:
+    the stdout SINK of a real one (`> f`, and not `> /dev/null`), or a writer
+    that names it in its argv. The fetcher's own stage is never asked -- its
+    `2> err.log` holds a log and its `-o /dev/null -w ... > code.txt` three
+    digits, and neither of those is the download (review r1 finding 10)."""
+    for stage in statement.stages:
+        argv = command(stage.argv)
+        if argv and os.path.basename(argv[0]) in FETCHERS:
+            continue
+        if [name for name in stage.stdout_writes if name not in STDOUT]:
+            return True
+        if argv and os.path.basename(argv[0]) in _WRITERS:
+            return True
+    return False
+
+
+def unbound(stmts, fetched, unread):
+    """Whether this job holds a download NO checksum could ever clear.
+
+    A fetch to standard output leaves no file the guard can bind a checksum
+    to, so `kept`'s predicate counts it as a fetch the guard reports (#2481)
+    wherever its bytes can still reach a program. Three ways they can:
+
+        a variable KEEPS it      `_assigned`'s own answer for the statement --
+                                 no chain is followed, because the statement
+                                 that first holds the download answers already,
+                                 and so does every one `carried` reports
+        the statement is itself  the words of a statement a reason reports
+        reported unread          unread hold it, as `_Unprinted`'s
+                                 `echo "$(curl ...)" | sh` does
+        the PIPELINE writes it   `curl ... | cat > f`, `| tr ... > f`,
+                                 `| dd of=f`, `| sponge f`, `| cat | tee t`
+                                 -- the write is on a LATER stage, so
+                                 `parse_fetch` binds no destination and no
+                                 checksum in the job can name the file
+                                 (`_written_on`, review r0 and r1)
+
+    One nothing keeps is read and gone -- `curl ... | jq`,
+    `curl -o /dev/null -w ...` -- and keeps no unread reason standing. A
+    reader that writes the bytes on is weighed whatever it wrote, so
+    `curl ... | jq -r .url > f` counts too: a URL list, not a payload, and the
+    over-report this rule takes to fail closed. Its real-workflow face is
+    `curl ... | jq -r .tag >> "$GITHUB_OUTPUT"` (review r1 finding 11): beside
+    an unread program that is reported, and is meant to be."""
+    at = {index for index, fetch in fetched if fetch.dest is None}
+    return (any(any(_assigned(statement.stages[0], {}).values())
+                for statement in stmts if len(statement.stages) == 1)
+            or bool(at & {index for index, _why in unread})
+            or any(index in at and _written_on(statement)
+                   for index, statement in enumerate(stmts)))
+
+
+def kept(unread, unverified):
+    """The `(index, why)` of `unread` that stand where `unverified` says the
+    job holds a fetch this guard REPORTS -- a download no checksum clears, a
+    stream handed to a shell, an unresolved transfer: an `Idle` one only
+    there (#2481, #2499), and an `_Unprinted` one not at a statement another
+    reason reports (`carried`'s, #2333)."""
     loud = {index for index, why in unread if not isinstance(why, Idle)}
     return [(index, why) for index, why in unread if not isinstance(why, Idle)
-            or fetched and not (isinstance(why, _Unprinted) and index in loud)]
+            or unverified and not (isinstance(why, _Unprinted) and index in loud)]
 
 
 # The container runners, and the subcommands of theirs that run a command. The
