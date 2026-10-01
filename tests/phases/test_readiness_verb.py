@@ -45,6 +45,7 @@ import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.readiness_checks as readiness_checks
+import scripts.repo_config as repo_config
 from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
@@ -111,8 +112,13 @@ class _VerbCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, path, ignore_errors=True)
         return path
 
-    def _repo(self, groups_yml=None):
-        """The review target: a plain directory that needs no binary to exist."""
+    def _repo(self, groups_yml=None, legacy=False):
+        """The review target: a plain directory that needs no binary to exist.
+
+        `legacy=True` also plants the retired matrix file
+        (`repo_config.LEGACY_GROUPS_PATH`), which `read_document` REFUSES when
+        no root config is beside it and merely discloses when one is (#2453).
+        """
         root = self._tmpdir()
         for relative, body in FILES.items():
             path = os.path.join(root, relative)
@@ -124,6 +130,11 @@ class _VerbCase(unittest.TestCase):
             with open(os.path.join(root, "panopticon.yml"), "w",
                       encoding="utf-8") as fh:
                 fh.write("version: 1\n" + groups_yml)
+        if legacy:
+            path = os.path.join(root, repo_config.LEGACY_GROUPS_PATH)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(GROUPS_YML)
         return root
 
     def _git_repo(self, groups_yml=None):
@@ -378,7 +389,15 @@ raise SystemExit(scripts.driver.main(["readiness", sys.argv[3], "--json"]))
         The SECOND config is the fail-open a substring rule had: PyYAML's
         error text echoes the offending line, so target-authored text could
         name an install and suppress the tail. The rule reads the refusal's
-        own opening instead, so a quoted install changes nothing."""
+        own opening instead, so a quoted install changes nothing.
+
+        The THIRD is that same attack aimed at the legacy opening (#2453),
+        and it is the case that tells `startswith` apart from `in` for it: the
+        version refusal reproduces the committed value VERBATIM and in full
+        (PyYAML truncates the snippet it echoes), so a config whose `version:`
+        IS that opening is the one planted document that carries the whole
+        opening into a refusal. Position 0 stays the config path, so the tail
+        survives; a substring rule drops it."""
         d = self._repo(groups_yml="groups: [unclosed\n")
         _code, body = self._json(d, which=READY_CLI)
         self.assertIs(False, body["matrix"]["ok"])
@@ -389,6 +408,43 @@ raise SystemExit(scripts.driver.main(["readiness", sys.argv[3], "--json"]))
         self.assertIs(False, body["matrix"]["ok"])
         self.assertIn("pip install pyyaml", body["matrix"]["detail"])
         self.assertIn("fix it or re-run `driver setup`", body["matrix"]["detail"])
+        opening = "`%s` is no longer read" % repo_config.LEGACY_GROUPS_PATH
+        versioned = self._repo()
+        with open(os.path.join(versioned, repo_config.CONFIG_NAMES[0]), "w",
+                  encoding="utf-8") as fh:
+            fh.write('version: "%s"\n' % opening)
+        _code, body = self._json(versioned, which=READY_CLI)
+        self.assertIs(False, body["matrix"]["ok"])
+        self.assertIn(opening, body["matrix"]["detail"])
+        self.assertTrue(
+            body["matrix"]["detail"].endswith("-- fix it or re-run `driver setup`"),
+            body["matrix"]["detail"])
+
+    # #2453: the twin of the two cases above, found by #2384's review. The
+    # legacy-only config refusal already names the move that fixes the tree
+    # (`driver migrate-config`), and `driver setup` REFUSES that tree -- its
+    # `provision` raises "fix it or delete it; nothing was written" on any
+    # config refusal -- so the appended tail pointed at a verb that cannot
+    # help. No child process is needed: nothing is blocked here, the refusal
+    # fires on the legacy file's presence with no root config beside it.
+    def test_the_legacy_only_config_refusal_keeps_its_own_remedy(self):
+        d = self._repo(legacy=True)  # no root config, so the legacy file is alone
+        _code, body = self._json(d, which=READY_CLI)
+        self.assertIs(False, body["matrix"]["ok"])
+        self.assertIn("migrate-config", body["matrix"]["detail"])
+        self.assertNotIn("driver setup", body["matrix"]["detail"])
+
+    def test_the_legacy_file_beside_a_root_config_is_not_the_refusal(self):
+        """What divides the case above from an ordinary tree: the same file
+        BESIDE a valid root config is a DISCLOSURE ("present but no longer
+        read; delete it"), not a refusal, so `doc.errors` is empty, the row
+        reads the matrix, and `_with_remedy` is not reached at all. This is
+        not a control on the matching rule -- no value of it can change this
+        row. The rule's control is the planted `version:` case above."""
+        d = self._repo(groups_yml=GROUPS_YML, legacy=True)
+        _code, body = self._json(d, which=READY_CLI)
+        self.assertIs(True, body["matrix"]["ok"], body["matrix"]["detail"])
+        self.assertNotIn("migrate-config", body["matrix"]["detail"])
 
 
 class TestTheReadyMachine(_VerbCase):

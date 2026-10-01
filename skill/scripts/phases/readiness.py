@@ -334,9 +334,24 @@ def _guide_row():
                          os.path.join("docs", hosts.GUIDE))}
 
 
+#: The openings of the `repo_config` refusals that NAME THEIR OWN REMEDY, and
+#: so must not have `driver setup` appended by `_with_remedy`: the missing
+#: pyyaml refusal (exempted by #2384, which names `pip install pyyaml`) and
+#: the legacy-only config refusal (exempted by #2453, which names
+#: `migrate-config`). Both numbers are the EXEMPTIONS, like the docstring
+#: below. The second opening is built from `repo_config.LEGACY_GROUPS_PATH`
+#: rather than spelled, both because that module owns every config filename
+#: and so that renaming the path reds this end too instead of quietly
+#: restoring the tail.
+_SELF_REMEDYING = ("pyyaml is not usable",
+                   "`%s` is no longer read" % repo_config.LEGACY_GROUPS_PATH)
+
+
 def _with_remedy(error):
     """One `repo_config` refusal, with the setup remedy appended unless it is
-    the missing-pyyaml refusal, which names its own install (#2384).
+    one of the two refusals that name their own remedy -- missing pyyaml
+    (`pip install pyyaml`, #2384) and a legacy-only config tree
+    (`migrate-config`, #2453).
 
     `driver setup` is where a config problem is addressed: `setup_flow.provision`
     refuses a config it cannot read -- with its own "fix it or delete it;
@@ -344,14 +359,22 @@ def _with_remedy(error):
     "fix it or re-run `driver setup`" is the right pointer for those refusals.
     It is the wrong pointer for the missing-pyyaml refusal #2369 added: that
     one names `pip install pyyaml`, because setup will not install a package.
+    And it is the wrong pointer for the legacy-only tree, which that same
+    `provision` refuses outright -- so the tail named a verb that will not
+    move the file the refusal is asking for.
 
-    Matched on the refusal's own OPENING, not on an install named anywhere in
+    Matched on the refusal's own OPENING, not on a remedy named anywhere in
     it: several refusals quote target-authored text (PyYAML echoes the
     offending line, the version refusal interpolates the committed value), so
-    a substring rule let a planted config suppress the tail. The opening is
-    pinned by equality in `tests/test_repo_config.py`, so a reword reds both
-    ends rather than silently restoring the contradiction."""
-    if error.startswith("pyyaml is not usable"):
+    a substring rule let a planted config suppress the tail. The legacy
+    DISCLOSURE ("present but no longer read; delete it") does not reach here
+    at all, and not because of the anchor: `_matrix_row` passes only
+    `doc.errors` and the `_matrix_catalog` refusal, and a disclosure is
+    neither. The anchor is what keeps the rule correct if that ever changes.
+    The pyyaml opening is pinned by equality in `tests/test_repo_config.py`,
+    so a reword reds both ends rather than silently restoring the
+    contradiction."""
+    if error.startswith(_SELF_REMEDYING):
         return error
     return "%s -- fix it or re-run `driver setup`" % error
 
