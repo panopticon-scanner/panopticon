@@ -11,6 +11,9 @@ evidence exposed.
   In `security.yml` and `security-fork.yml` the step ceiling equalled the 600 s pull deadline, so
   a stalled pull left the local build zero seconds; the ceiling is 25 min (pull 10 + a measured
   ~11 min build + margin), under the job's 30, and a test pins the inequality.
+- **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
+  `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
+  tolerated as per-record errors and the DB is verified by the size floor as before.
 - **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
   `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
   class wider than every other fallback, so a package that resolved and then broke inside was
