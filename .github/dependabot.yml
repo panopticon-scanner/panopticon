@@ -33,7 +33,7 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
-      # Semgrep 1.177.0 pins these dependency families to the current major
+      # Semgrep 1.178.0 pins these dependency families to the current major
       # or minor line through its transitive requirements.
       - dependency-name: "boltons"
         update-types:

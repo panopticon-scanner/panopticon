@@ -32,7 +32,8 @@ from the guard until it was:
                     words of them, so no command they may start is resolved
 
 The first three are settled on the TEXT, before any command is read, in the
-one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793).
+one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
+and the substitutions are lifted out of it by `scripts/shell_text.py`.
 The wrappers' table, and the option grammar each one is read with, are
 `scripts/shell_wrappers.py`'s (#2227).
 
@@ -46,8 +47,10 @@ import re
 import secrets
 import shlex
 
-from shell_lex import closing, lex
+from shell_lex import ansi_c, lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
+from shell_text import (Process, _lift_substitutions, join_continuations as join_continuations,
+                        without_comments as without_comments)
 from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -94,15 +97,28 @@ KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
 # to it. A guard reading exit statuses has to know the difference.
 CONDITIONS = ("if", "elif", "while", "until")
 
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# A word bash reads as an assignment in front of a command (#2348): `NAME=`,
+# `NAME+=`, and to an array element, `a[1]=x` or `a[1]+=x`, which bash globs
+# nothing in; an array literal (`a=(1 2)`) is folded into its word by `_stage`.
+# Behind a wrapper the words are the wrapper's, and only `NAME=` is popped
+# there, as `env X=1` and `sudo X=1` take it: `sudo a[1]=x` is a pattern.
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
+_ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
+_DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# An assignment to an array element, `a[1]=x`: bash globs no assignment word.
-_SUBSCRIPTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=")
 # The shells whose options and program word a pattern may rewrite into a `-c`
-# and its script (`sh {-c,'…'}`, review N-3): `workflow_forms._SHELL_STRING`.
+# and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
 _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
+# A command word that is a parameter's default or alternate (#2337): `${X:-sh}`,
+# `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
+# that shell, which bash runs wherever `X` leaves the word to it.
+_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+# Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
+# which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
+_ESCAPED = "\ue002"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -172,102 +188,22 @@ def is_arm(token):
                for key, (kind, _value) in _markers(token).items())
 
 
-_SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
-
 # --- reading the shell -------------------------------------------------------
-
-def without_comments(script):
-    """The script with whole-line comments dropped.
-
-    Half this repo's workflow prose QUOTES the command it is explaining, and a
-    guard that reads its own documentation as an act flags the explanation.
-    Shared with `tests/test_workflow_pins.py`'s install rule, which learned the
-    same lesson (#1641).
-    """
-    return "\n".join(line for line in script.splitlines()
-                     if not line.lstrip().startswith("#"))
-
-
-def join_continuations(script):
-    """`\\`-continuations folded in, so a fetch written across four lines reads
-    as the one command it is."""
-    return re.sub(r"\\\n\s*", " ", script)
-
-
-def _lift_substitutions(text, context, arithmetic_body=False):
-    """(text with parse-local substitution tokens, inner shell texts).
-
-    `$(...)`, `<(...)` and backticks are commands, and a `|` or `;` inside one
-    belongs to THAT command, not to the statement around it -- so they come out
-    before the statement split, and go back in as commands of their own. This is
-    where `eval "$(curl -fsSL ... )"` and `bash <(curl ...)` keep their fetch.
-    """
-    inners, out, i, quote = [], [], 0, None
-    while i < len(text):
-        ch = text[i]
-        if quote in ("'", "$'"):                # single quotes suppress all of it
-            step = 2 if ch == "\\" and quote == "$'" else 1
-            out.append(text[i:i + step])
-            quote = None if ch == "'" else quote
-            i += step
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            out.append(text[i:i + 2])
-            i += 2
-            continue
-        if (ch == '"' or not quote) and (ch in "'\"" or text.startswith("$'", i)):
-            opener = text[i:i + 2] if ch == "$" else ch   # an apostrophe in "..." is text
-            quote = None if quote == ch else opener
-            out.append(opener)
-            i += len(opener)
-            continue
-        if ch == "`":
-            end = text.find("`", i + 1)
-            if end != -1:
-                inners.append(text[i + 1:end])
-                out.append(context.new("subst", inners[-1]))
-                i = end + 1
-                continue
-        if arithmetic_body and text.startswith("$((", i):
-            # The enclosing arithmetic marker protects these parentheses from
-            # _split. Leave nested arithmetic literal; keep scanning its body
-            # for real command substitutions without another Python frame.
-            out.append("$((")
-            i += 3
-            continue
-        if text.startswith("$((", i):
-            end = closing(text, i + 1)
-            if end and text[end - 2:end] == "))":
-                body, nested = _lift_substitutions(
-                    text[i + 3:end - 2], context, arithmetic_body=True)
-                inners.extend(nested)
-                out.append(context.new("arithmetic", "$((" + body + "))"))
-                i = end
-                continue
-        opening = _SUBST_OPEN.match(text, i)
-        if opening:
-            end = closing(text, opening.end() - 1)
-            inner = text[opening.end():end - 1] if end else ""
-            if end and not inner.startswith("("):   # `$((...))` is arithmetic
-                inners.append(inner)
-                out.append(context.new("subst", inners[-1]))
-                i = end
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out), inners
-
 
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
+    A `$'...'` whose escapes `shell_lex.ansi_c` decodes becomes the '...' of
+    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
+    double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
+    shlex, reading what is left, no longer knows the quote it was in.
     """
     statements = []
     stages = []
     buf: list[str] = []
-    quote, i, n = None, 0, len(text)
+    quote, i, n, opened = None, 0, len(text), 0
     cases: list[str] = []
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
@@ -300,17 +236,20 @@ def _split(text, context):
     while i < n:
         ch = text[i]
         if quote:
-            buf.append(ch)
+            buf.append(_ESCAPED if quote == '"' and text[i:i + 2] in ("\\$", "\\`") else ch)
             if ch == "\\" and quote != "'" and i + 1 < n:   # "..." and $'...'
                 buf.append(text[i + 1])
                 i += 2
                 continue
             if ch == quote[-1]:
+                body = ansi_c("".join(buf[opened + 1:-1])) if quote == "$'" else None
+                if body is not None:        # bash's text for a `$'...'`, quoted (#2344)
+                    buf[opened:] = ["'%s'" % body.replace("'", "'\"'\"'")]
                 quote = None
             i += 1
             continue
         if ch in "'\"" or text.startswith("$'", i):
-            quote = text[i:i + 2] if ch == "$" else ch
+            quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
             i += len(quote)
             continue
@@ -440,13 +379,26 @@ def input_alias_fd(word):
     return None
 
 
+def _assigns(words):
+    """Whether bash reads the word after `words` as an assignment: behind
+    keywords and assignments only, or among a declaration's words. After any
+    other command word an array literal is a syntax error, read as before."""
+    words = [word for word in words if word not in KEYWORDS and not _ASSIGNMENT.match(word)]
+    return not words or words[0] in _DECLARATIONS
+
+
 def _stage(text, context):
-    """Read lexical redirect operators in order, copying fd sinks by value."""
+    """Read lexical redirect operators in order, copying fd sinks by value,
+    and an array literal as part of the word that assigns it (#2348). A word
+    with a double-quoted `\\$` or `` \\` `` and no other `$` or backtick in it
+    carries the text bash makes of it, `spelled`, which is the program a
+    shell handed it runs (#2342); it reads as before."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
-    argv, writes, reads = [], [], []
+    argv: list[str] = []
+    writes, reads = [], []
     group_open = group_close = 0
     substitutions: list[str] = []
     heredoc = None
@@ -465,6 +417,8 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    literal: int | None = None          # where an array literal's words start
+    words: list[str] = []               # argv with no literal folded
 
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
@@ -478,16 +432,28 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        word = context.token(context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")))
+        plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, ""))
+        raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
             setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
+        elif plain.count(_ESCAPED) == plain.count("$") + plain.count("`") > 0 and not _markers(word):
+            word = _Token(word, {})
+            setattr(word, "spelled", plain.replace(_ESCAPED, ""))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
                 group_open += 1
+                # `a=(1 2)` is no subshell: bash reads an array literal as the
+                # rest of the word that assigns it, so it is one here (#2348).
+                literal = len(argv) if argv and _ASSIGNMENT.fullmatch(argv[-1]) and _assigns(
+                    argv[:-1]) else None
             else:
                 group_close += 1
+                if literal is not None:
+                    argv[literal - 1:] = [context.token(
+                        "%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))]
+                literal = None
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
@@ -546,6 +512,9 @@ def _stage(text, context):
             continue
         take(word)
         argv.append(word)
+        words.append(word)
+    if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
+        argv = words        # it only assigns: an array of a command is read as run
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -555,9 +524,12 @@ def _stage(text, context):
 
 
 def statements(script):
-    """Every statement in a `run:` script, in order, as parsed stages."""
+    """Every statement in a `run:` script, in order, as parsed stages; in a
+    lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
+    for marker, (kind, value) in getattr(script, "heredocs", {}).items():
+        text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
     out = []
     for raw, separator in _split(text, context):
@@ -570,7 +542,8 @@ def statements(script):
 def _command_result(argv):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
-    the words read as wrappers, as written."""
+    the words read as wrappers, as written. A command word that is a shell's
+    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -578,7 +551,7 @@ def _command_result(argv):
     # an argv that is not the one that runs (#2227).
     appended, behind = False, None
     while argv:
-        if _ASSIGNMENT.match(argv[0]) and not argv[0].startswith("-"):
+        if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]):
             argv.pop(0)
             continue
         if argv[0] in KEYWORDS:
@@ -596,10 +569,13 @@ def _command_result(argv):
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
             del argv[0:2]
             continue
+        default = None if heads else _DEFAULTS.fullmatch(argv[0])
+        if default and os.path.basename(default[1]) in _SHELLS:
+            argv[0] = default[1]
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
-        if isinstance(argv[0], Rewritten) and not _SUBSCRIPTED.match(argv[0]):
+        if isinstance(argv[0], Rewritten):
             return argv, "`%s` is a pattern bash expands before anything runs" % readable(
                 argv[0]), heads
         if head not in WRAPPERS:
@@ -697,3 +673,10 @@ def is_marker(token):
 def has_substitution(token):
     """Whether a word/path depends on a substitution generated by its parse."""
     return any(kind == "subst" for kind, _value in _markers(token).values())
+
+
+def yields_words(token):
+    """Whether a `$(...)` or backquote in this word hands on its OUTPUT as
+    words; a `<(...)` or `>(...)` (`shell_text.Process`) hands a file."""
+    return any(kind == "subst" and not isinstance(value, Process)
+               for kind, value in _markers(token).values())
