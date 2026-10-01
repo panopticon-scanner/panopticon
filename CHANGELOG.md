@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
+  Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
+  launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
+  the third — so a transient hiccup no classifier recognises no longer spends all three of its
+  launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
+  advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
+  `orchestrate.py` gained one call and no lines.
 - **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
   `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
   tolerated as per-record errors and the DB is verified by the size floor as before.

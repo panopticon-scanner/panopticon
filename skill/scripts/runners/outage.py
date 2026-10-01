@@ -8,7 +8,10 @@ asks this module to classify a failure nobody classified -- so there is no
 cycle, and `runners/*` still imports no `phases` (layout rule 3).
 """
 import json
+import random
 import re
+import sys
+import time
 
 import scripts.redact as redact
 import scripts.runners.resume as resume
@@ -368,6 +371,11 @@ UNIFORM_FAILURE = (
     "failed launches left nothing behind, so fix the cause and re-run the loop to resume this "
     "run where it stopped: `%s`")
 
+# #2506: `pause_before_launch`'s two bounds -- the ceiling on one wait, and the
+# share of that wait jitter may add -- and the line it prints.
+LAUNCH_BACKOFF_CAP_S, LAUNCH_BACKOFF_JITTER = 8, 0.25
+LAUNCH_BACKOFF = "driver loop: waiting %.1fs before re-launching %d entr%s after a failed launch"
+
 
 class FailureTally:
     """The loop's failure bookkeeping for one INVOCATION: which entries are
@@ -378,6 +386,11 @@ class FailureTally:
     refused both count: neither advanced the entry, and neither gets likelier
     on the fortieth attempt. A clean, accepted launch clears the streak -- this
     bounds an entry that is STUCK, not one that is merely flaky.
+
+    A merely flaky one is `pause_before_launch`'s business (#2506): nothing was
+    slept between iterations, so an unrecognised hiccup spent all three of an
+    entry's launches in seconds. A re-launch now waits `min(2 ** streak,
+    LAUNCH_BACKOFF_CAP_S)` seconds plus jitter: 2 then 4, and 0 for a streak of 0.
 
     In memory, and per INVOCATION. In session mode that means a re-entry starts
     every entry at zero, deliberately: nothing there advances except a human
@@ -646,6 +659,21 @@ class FailureTally:
         # credential ("Incorrect API key provided: sk-ant-...").
         return HOST_OUTAGE % (self.host, len(host), len(batch), HOST_FAILURE,
                               unlaunched, redact.redact(host[-1][1]), self.resume_command())
+
+    def pause_before_launch(self, mode, pending, sleep=None, jitter=None):
+        """The seconds this iteration waits before re-launching an entry whose
+        last launch failed -- printed, slept and returned, and 0 both in session
+        mode (a human advances that) and for a streak of 0. The seams are tests'."""
+        streaks = [self.streaks.get(e.get("id"), 0) for e in pending or ()
+                   if isinstance(e, dict) and self.streaks.get(e.get("id"), 0)]
+        if mode != "headless" or not streaks:
+            return 0.0
+        wait = float(min(2 ** max(streaks), LAUNCH_BACKOFF_CAP_S))
+        wait += wait * (jitter or random.uniform)(0, LAUNCH_BACKOFF_JITTER)
+        plural = "y" if len(streaks) == 1 else "ies"
+        print(LAUNCH_BACKOFF % (wait, len(streaks), plural), file=sys.stderr, flush=True)
+        (sleep or time.sleep)(wait)
+        return wait
 
     def exhausted(self, pending, cap):
         """The `error` message for the first pending entry that has spent `cap`

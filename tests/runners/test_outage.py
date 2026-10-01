@@ -1,5 +1,7 @@
 """`runners/outage.py`: whose failure was that, and what the loop does about a
 batch of them (#1623)."""
+import contextlib
+import io
 import time
 import shlex
 import unittest
@@ -713,6 +715,98 @@ class TestTheFailureTally(unittest.TestCase):
                                          host_error="429 Too Many Requests"))
             tally.settle()
         self.assertIsNone(tally.exhausted([{"id": "a"}], 3))
+
+    # #2506: the backoff, which is the cap above read the other way round. The
+    # cap bounds an entry that is STUCK; with nothing at all between iterations
+    # an unrecognised host hiccup spends all three of a merely flaky entry's
+    # launches within seconds and parks it.
+
+    def _waited(self, tally, pending, mode="headless", jitter=0.0):
+        """One iteration's wait: what was returned, what was slept, what the
+        operator was told, and what the rng was asked for. Both seams are
+        injected -- a unit test may not sleep, and a jittered schedule is not
+        a schedule anyone can assert."""
+        slept, asked, err = [], [], io.StringIO()
+
+        def rng(low, high):
+            asked.append((low, high))
+            return jitter
+
+        with contextlib.redirect_stderr(err):
+            returned = tally.pause_before_launch(mode, pending, sleep=slept.append,
+                                                 jitter=rng)
+        return returned, slept, err.getvalue(), asked
+
+    def _streak(self, tally, entry_id, n, host_error=None):
+        """`n` consecutive failed launches of `entry_id`, one batch each."""
+        for _ in range(n):
+            tally.record(entry_id, self._fail("transient", host_error=host_error))
+            tally.settle()
+        return tally
+
+    def test_an_entry_that_has_not_failed_is_not_waited_for(self):
+        tally = outage.FailureTally("claude", self._args())
+        self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
+
+    def test_the_wait_doubles_with_the_streak_and_stops_at_the_cap(self):
+        # 2 s then 4 s are the only two waits a re-launch is ever reached on,
+        # since the cap parks the entry at the third failure: six seconds plus
+        # jitter is the whole schedule's cost to an entry. The ceiling is
+        # pinned anyway -- it is what bounds a cap a later run raises.
+        for streak, expected in ((1, 2.0), (2, 4.0), (3, 8.0), (9, 8.0)):
+            with self.subTest(streak=streak):
+                tally = self._streak(outage.FailureTally("claude", self._args()),
+                                     "a", streak)
+                returned, slept, line, _asked = self._waited(tally, [{"id": "a"}])
+                self.assertEqual(expected, returned)
+                self.assertEqual([expected], slept)
+                self.assertIn("waiting %.1fs" % expected, line)
+        self.assertEqual(8, outage.LAUNCH_BACKOFF_CAP_S)
+
+    def test_the_jitter_adds_at_most_a_quarter_of_the_wait(self):
+        # Entries that failed together would otherwise come back in lockstep.
+        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 1)
+        returned, slept, _line, asked = self._waited(tally, [{"id": "a"}], jitter=0.25)
+        self.assertEqual([(0, outage.LAUNCH_BACKOFF_JITTER)], asked)
+        self.assertEqual(0.25, outage.LAUNCH_BACKOFF_JITTER)
+        self.assertEqual(2.5, returned)
+        self.assertEqual([2.5], slept)
+
+    def test_session_mode_never_waits_because_a_human_advances_it(self):
+        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        self.assertEqual((0.0, [], "", []),
+                         self._waited(tally, [{"id": "a"}], mode="session"))
+
+    def test_the_line_is_printed_once_and_counts_what_is_re_launched(self):
+        tally = outage.FailureTally("claude", self._args())
+        self._streak(tally, "a", 2)
+        self._streak(tally, "b", 1)
+        _returned, _slept, line, _asked = self._waited(
+            tally, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+        # The worst streak among them sets the wait; the count is what is
+        # being RE-launched, which is neither the batch nor the whole pool.
+        self.assertEqual(["driver loop: waiting 4.0s before re-launching 2 entries "
+                          "after a failed launch"], line.splitlines())
+        _r, _s, one, _a = self._waited(tally, [{"id": "b"}])
+        self.assertIn("re-launching 1 entry after", one)
+
+    def test_a_clean_launch_clears_the_wait_with_the_streak(self):
+        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        tally.record("a", self._ok())
+        tally.settle()
+        self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
+
+    def test_an_entry_the_host_failed_is_never_waited_for_either(self):
+        # The wait is keyed on the streak, and a host-class failure charges
+        # none of it -- the same reason such an entry never reaches the cap.
+        tally = self._streak(outage.FailureTally("kimi", self._args()), "a", 3,
+                             host_error="429 Too Many Requests")
+        self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
+
+    def test_a_pending_entry_that_is_not_a_dict_is_not_waited_for(self):
+        # `exhausted` reads `pending` the same defensive way.
+        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        self.assertEqual((0.0, [], "", []), self._waited(tally, ["a", None]))
 
     def test_the_resume_command_names_the_program_this_process_was_started_as(self):
         # #495: `python3 skill/scripts/driver.py` is the GUIDE's placeholder

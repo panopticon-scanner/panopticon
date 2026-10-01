@@ -441,10 +441,10 @@ def loop(args):
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
             handled = []
+            tally.pause_before_launch(mode, pending)   # #2506, before any launch
             # #1732: the run's ONE shape proof, here rather than at posture
             # time -- the guards are armed NOW, so it is confined like a cell.
-            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending,
-                                                 guards.env_for)
+            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending, guards.env_for)
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
