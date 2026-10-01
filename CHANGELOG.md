@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
+  only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
+  longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
 - **`ToolAdapters` gains a `Contract` layer (#2315, #1784).** The adapter base, SARIF
   normalization and their contract tests move out of `Integration`, which sat at the 48-file
   cap; a headroom guard now reds any `ToolAdapters` leaf above 40 before the cap does.
