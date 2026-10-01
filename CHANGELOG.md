@@ -28,6 +28,9 @@ evidence exposed.
   keeps every direct caller and hand-written artifact reading byte for byte as before. The path
   is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
   nothing to thread (the child cannot launch on such a manifest either way; #2525).
+- **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
+  A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
+  leaves its 700-line ceiling.
 - **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
   `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
   #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
