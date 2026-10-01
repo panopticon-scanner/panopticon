@@ -133,15 +133,15 @@ runs each live, so a change that catches one fails there and edits this list.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* a heredoc body read inside a command substitution, `EOF` and `)` each on a
-  line (`eval "$(cat <<'EOF' … EOF)"`; `x=$(bash -s <<'EOF' … EOF)`, review
-  I-4). The OUTER parse lifts the body and leaves a marker: a re-read sees a
-  word meaning nothing to it, and what `eval` or `bash` runs is unread.
-  KEPT: resolving it means handing one parse's tables to another, or teaching
-  the reader that a heredoc read by `cat` inside a substitution is a SCRIPT --
-  a second expansion model. The fleet writes one heredoc-ish construct (a
-  `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
-  longer CRASHES, which is what it did until #1697's review.
+* a heredoc body printed inside a command substitution for `eval` to run
+  (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the
+  substitution's text carries it back to its redirection (#2336): a shell
+  reading a quoted one as its program is reported as `x=$(sh -c '…')` is
+  (review I-4), but `cat` reads data, and what `eval` runs is unread. KEPT:
+  reading it means teaching the reader that a heredoc `cat` reads inside a
+  substitution is a SCRIPT -- a second expansion model. The fleet writes one
+  heredoc-ish construct (a `<<<` here-string in docker-publish.yml) and no
+  `cat <<EOF`. It no longer CRASHES, which is what it did until #1697's review.
   CLOSED outside a substitution for the OTHER heredoc spelling, the body handed
   to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
   `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
@@ -154,9 +154,8 @@ runs each live, so a change that catches one fails there and edits this list.
   interpreter as the text it was written as, so `workflow_forms.flattened`
   reads it exactly as it reads an `eval` string -- a `curl … | sh` inside it
   is the defect it is at the top level. An EXPANDING one is REPORTED unread
-  (`_unread_stdin`): it runs what bash expands it to, and a body's `$(...)`
-  were lifted into the enclosing parse's table before this text was reached
-  -- this entry's own gap, one redirection over. A program in a language this
+  (`_unread_stdin`): it runs what bash expands it to, values and `$(...)`
+  output this guard never sees. A program in a language this
   module has no grammar for is reported too, the answer `unparseable` gives a
   `shell: python` step. What that leaves unread: an interpreter whose program
   is on stdin in a spelling the operand walk does not resolve -- behind an

@@ -573,6 +573,7 @@ groups:
     - tests/test_workflow_pins.py
     - tests/test_workflow_guard.py
     - tests/test_workflow_guard_reader_forms.py
+    - tests/test_workflow_guard_lexer_heredocs.py
     - tests/test_shell_reader.py
     - tests/test_shell_wrappers.py
     - tests/test_workflow_forms_regressions.py

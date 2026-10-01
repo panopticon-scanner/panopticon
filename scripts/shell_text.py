@@ -8,7 +8,9 @@ and program forms still to make. The three functions here read text and
 nothing the reader builds from it. `_lift_substitutions` takes the `$(...)`,
 `<(...)`, `>(...)` and backquote texts out of a script before its statements
 are split, each replaced by a marker the parse it is handed (`context`) records,
-a `<(...)` or `>(...)` text as a `Process`: a file bash hands the command.
+a `$(...)`, `<(...)` or `>(...)` text as a `Lifted` carrying the heredoc
+bodies read around it (#2336), a `<(...)` or `>(...)` one as a `Process`: a
+file bash hands the command.
 `without_comments` and `join_continuations` are the whole-line passes the
 reader made before `scripts/shell_lex.py` settled comments and continuations
 in one quote-aware pass; the tests that read workflow and Dockerfile text
@@ -24,7 +26,22 @@ from shell_lex import closing
 _SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
 
 
-class Process(str):
+class Lifted(str):
+    """The text of a `$(...)`, `<(...)` or `>(...)`, read again as a script of
+    its own. `lex` reads a heredoc body inside one where bash does, in the text
+    around it, and leaves a marker where its redirection stands; `heredocs`
+    holds those markers' entries, which `shell_reader.statements` files there
+    (#2336): a parse of its own would read the marker as a word."""
+
+    heredocs: dict[str, tuple[str, object]]
+
+    def __new__(cls, text, heredocs=None):
+        lifted = super().__new__(cls, text)
+        lifted.heredocs = heredocs or {}
+        return lifted
+
+
+class Process(Lifted):
     """The text of a `<(...)` or `>(...)`: bash hands the command a FILE to
     read or write, where a `$(...)` or backquote hands it the OUTPUT as words."""
 
@@ -54,6 +71,7 @@ def _lift_substitutions(text, context, arithmetic_body=False):
     belongs to THAT command, not to the statement around it -- so they come out
     before the statement split, and go back in as commands of their own. This is
     where `eval "$(curl -fsSL ... )"` and `bash <(curl ...)` keep their fetch.
+    The heredoc markers in a text go with it, entries and all (`Lifted`).
     """
     inners, out, i, quote = [], [], 0, None
     while i < len(text):
@@ -102,7 +120,9 @@ def _lift_substitutions(text, context, arithmetic_body=False):
             end = closing(text, opening.end() - 1)
             inner = text[opening.end():end - 1] if end else ""
             if end and not inner.startswith("("):   # `$((...))` is arithmetic
-                inners.append(inner if opening.group() == "$(" else Process(inner))
+                bodies = {key: context.entries[key] for key in context.pattern.findall(inner)
+                          if context.entries.get(key, ("",))[0] == "heredoc"}
+                inners.append((Lifted if opening.group() == "$(" else Process)(inner, bodies))
                 out.append(context.new("subst", inners[-1]))
                 i = end
                 continue
