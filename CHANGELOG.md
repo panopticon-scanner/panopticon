@@ -20,6 +20,9 @@ evidence exposed.
   and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
   `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
   vacuous. Matrix and tests only: no Python module moved.
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
 - **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
   A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
   leaves its 700-line ceiling.
