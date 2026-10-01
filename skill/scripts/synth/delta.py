@@ -12,7 +12,7 @@ import scripts.evidence as evidence_mod
 # The closed `payload_malformed` vocabulary (#1783, ARC-2340795244). Named once
 # here because `meta.coverage.delta`'s published description enumerates these
 # exact strings, so a literal typed in a second place can drift from the
-# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other three
+# contract. Only MALFORMED_HUNKS_NOT_OBJECT can reach that block: the other four
 # leave the payload with no `base`, so the review is not a delta one and the
 # whole `meta.coverage.delta` block is null.
 MALFORMED_UNREADABLE = "unreadable"
@@ -23,6 +23,19 @@ MALFORMED_HUNKS_NOT_OBJECT = "hunks not an object"
 # fail-closed shape as `not an object`; an ABSENT key is accepted, because a
 # hand-written artifact predating the key is not a version mismatch.
 MALFORMED_SCHEMA_VERSION = "unsupported schema_version"
+# #2107: the hunks artifact and `groups.json` are written by ONE discovery child
+# and published as two independent atomic writes, and only the groups half
+# carried the run binding. `phases/discovery.py` now stamps both and threads the
+# expectation here as `--diff-hunks-run-id`; `main()` defaults it to the stamp on
+# the inventory it read, so the HAND-RUN pair is checked too. A pair from two
+# generations -- one generation's review cells scoped by another's diff -- is
+# therefore REJECTED instead of silently scoping the gate to someone else's hunk
+# map. A foreign stamp AND an absent one both reject: an expectation only exists
+# where a stamped inventory does, so an unstamped artifact beside one is not this
+# run's. With NO expectation -- no flag and an unstamped inventory -- the stamp is
+# not read at all, which keeps every direct caller and hand-written artifact
+# byte for byte as it was.
+MALFORMED_GENERATION = "generation-mismatch"
 
 # #2382: the seven keys `verdicts._delta_meta` copies VERBATIM out of the
 # artifact into `meta.coverage.delta`, with the type each one is published as.
@@ -51,9 +64,9 @@ class HunksLoad:
 
     `payload_malformed` is the reason the payload was rejected in whole or in
     part -- "unreadable", "not an object", "hunks not an object", "unsupported
-    schema_version" -- and None when there was nothing to reject. `files` and
-    `ranges` count the hunk map that survived: what the review is actually
-    scoped to.
+    schema_version", "generation-mismatch" -- and None when there was nothing to
+    reject. `files` and `ranges` count the hunk map that survived: what the
+    review is actually scoped to.
 
     `keys_repaired` names the artifact-carried keys of `meta.coverage.delta` that
     carried a value of the WRONG TYPE and were read as null (#2382), in
@@ -118,11 +131,23 @@ class DeltaContext:
         return bool(self.diff_hunks and self.diff_hunks.get("base"))
 
     @classmethod
-    def from_args(cls, args):
+    def from_args(cls, args, groups_run_id=None):
         """--diff-hunks / --diff-context as main() read them (WS-0 S3), with
         the #957 notice when a delta review is run without --fail-on, and the
-        artifact's own disclosures (#1783)."""
-        diff_hunks, report = (load_diff_hunks_report(args.diff_hunks)
+        artifact's own disclosures (#1783).
+
+        `groups_run_id` is the stamp on the `groups.json` main() actually read,
+        and it is the DEFAULT expectation (#2107 review round 1): the inventory
+        is the other half of the pair the stamp binds, so an operator hand-running
+        `synthesize.py` -- who inherits `--groups` by auto-discovery and supplies
+        `--diff-hunks` himself, the one mixing shape the probe could reach -- gets
+        the check without knowing the flag exists. `--diff-hunks-run-id` still
+        wins when passed, and an inventory with no stamp leaves no expectation at
+        all, which is what keeps a hand-written artifact reading as it always
+        did."""
+        expected_run_id = getattr(args, "diff_hunks_run_id", None) or groups_run_id
+        diff_hunks, report = (load_diff_hunks_report(args.diff_hunks,
+                                                     expected_run_id)
                               if args.diff_hunks else (None, None))
         if args.diff_hunks and not args.fail_on:
             # #957: a delta review is gate-first by intent, but the gate only
@@ -201,8 +226,8 @@ def _disclose_load(ctx, path):
         # `zero_hunk_gate_gap` composes below: a rejection and a loader drop are
         # each a KNOWN cause, named on a line of its own, and sending the
         # operator to compare a known-broken artifact is the wrong instruction.
-        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other three leave
-        # no `base` and no active delta (#2382 added the fourth).
+        # Only MALFORMED_HUNKS_NOT_OBJECT reaches here -- the other four leave
+        # no `base` and no active delta (#2382 added the fourth, #2107 the fifth).
         regenerate = "regenerate it (the driver's discovery phase writes it)"
         if report.payload_malformed is not None:
             cause = ("The map is empty of ranges because the payload was "
@@ -530,12 +555,18 @@ def load_diff_hunks(path):
     return load_diff_hunks_report(path)[0]
 
 
-def load_diff_hunks_report(path):
+def load_diff_hunks_report(path, expected_run_id=None):
     """`load_diff_hunks`'s data, plus the `HunksLoad` saying what it cost.
 
     Same return contract for the data half, so every existing caller of the
     old name is unaffected; `from_args` takes this form and discloses the
-    report (#1783)."""
+    report (#1783).
+
+    `expected_run_id` is the GENERATION this payload must belong to (#2107),
+    threaded from `--diff-hunks-run-id` or, failing that, from the `groups.json`
+    `main()` read. None -- every existing caller, and a hand-run whose inventory
+    carries no stamp either -- reads the stamp not at all and behaves byte for
+    byte as it did before."""
     try:
         data = artifacts_mod.read_json(path)
     except (OSError, ValueError):
@@ -551,6 +582,15 @@ def load_diff_hunks_report(path):
         version = data["schema_version"]
         if isinstance(version, bool) or not isinstance(version, int) or version != 1:
             return {}, HunksLoad(payload_malformed=MALFORMED_SCHEMA_VERSION)
+    if expected_run_id is not None and data.get("run_id") != expected_run_id:
+        # #2107, with the whole-payload rejections because it IS one: the hunk
+        # map is not damaged, it is somebody else's, and reading half of it
+        # would scope this run's gate by a diff nothing here measured. No
+        # `base` survives, so the review degrades to a non-delta one and the
+        # gate widens -- the fail-closed direction. ABSENT rejects as well,
+        # unlike `schema_version` above: a version a reader does not know is a
+        # different fact from a binding a reader was promised and did not get.
+        return {}, HunksLoad(payload_malformed=MALFORMED_GENERATION)
 
     raw = data.get("hunks")
     malformed = None

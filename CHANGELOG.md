@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`diff-hunks.json` is now bound to its `groups.json` generation (#2107).** One discovery child
+  writes the hunk map and then the inventory, as two independent atomic writes, and only the
+  inventory carried a run binding — so nothing compared the surface the review covered with the
+  diff the gate scoped to. A probe traced every driver path and could not assemble the mixed
+  pair (the pre-child clear, the hunks-before-groups write order and the per-run folder each stop
+  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does — `--groups` is
+  auto-discovered, `--diff-hunks` is not, so the operator supplies one half and inherits the
+  other — and it was accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against
+  the other generation's map, a green `--gate-scope on-diff` gate over a change nothing measured.
+  The driver now stamps both halves with this run's `run_id`, and the loader gains an optional
+  expected generation that rejects a foreign or absent stamp as the new `payload_malformed` value
+  `generation-mismatch`. The refusal is REPORT-VISIBLE, not stderr-only: the synthesize phase
+  hands the pair over with `--diff-hunks-run-id` even when it can already see the mismatch, so
+  `meta.coverage.delta_artifact` publishes the reason instead of reading null like a run that was
+  never a delta one — the gate is identical either way (no `base` survives, so the delta is
+  inactive and the scope widens to whole-repo, which fails closed). `synthesize.py` defaults that
+  expectation to the stamp on the `groups.json` it read, so the hand-run pair is bound too; an
+  explicit `--diff-hunks-run-id` overrides it, and an unstamped inventory expects nothing, which
+  keeps every direct caller and hand-written artifact reading byte for byte as before. The path
+  is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
+  nothing to thread (the child cannot launch on such a manifest either way; #2525).
 - **The self-scan matrix's `RepoProfiling` group has layers (#2273, #1784).** It sat AT the 48-file
   group cap, so the last two discovery policies to come out of `discovery.py` were parked in
   `Orchestration:Core` instead of claimed beside it — `dot_paths.py` (#1784) and

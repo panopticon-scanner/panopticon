@@ -96,6 +96,45 @@ def discovery_done(review_root, manifest):
     return not groups_artifact_errors(
         runio._load_json(runio._pano(review_root, "groups.json")), manifest)
 
+
+def _stamp_diff_hunks(review_root, manifest):
+    """Bind `diff-hunks.json` to the `groups.json` generation just stamped
+    (#2107).
+
+    One discovery child writes both halves of a delta review -- the hunk map
+    first (`discovery.py:1852-1862`), the inventory second
+    (`discovery.py:1911-1923`) -- as two INDEPENDENT atomic writes, and only
+    the inventory carried the run binding. The two halves answer different
+    questions for the same run: `groups.json` is what the review cells cover,
+    `diff-hunks.json` is what the gate scopes to. A pair from two generations
+    therefore reviews one surface and gates on another, and under the default
+    `--gate-scope on-diff` every finding the review produced classifies
+    off-diff against a stranger's hunk map: a PASS over a change nothing
+    measured.
+
+    The #2107 probe could not reach that state through the driver -- the
+    pre-child clear above, the hunks-before-groups write order and the per-run
+    folder each stop it -- but the invariant was STRUCTURAL and undeclared:
+    one reordering of `discovery.main`, or one "the old groups.json is still
+    good" optimisation, converts it into the reachable mixed pair the probe
+    built by hand. So it becomes a FIELD, stamped by the only party that knows
+    the run (the child also serves `panopticon discovery` by hand, so it has
+    no run to stamp), and `phases/synthesize.py` requires it.
+
+    Only a JSON OBJECT is stamped. A non-object or unreadable artifact is left
+    exactly as the child wrote it, for `synth/delta.py`'s loader to reject on
+    its own terms -- rewriting it would replace one broken payload with a
+    differently broken one and lose the operator's evidence. A non-delta run
+    has no file here at all (`discovery.py:1864-1870` removes a stale one), so
+    there is nothing to stamp and nothing is created: conjuring an empty one
+    would hand synthesize a hunk map to scope by.
+    """
+    path = runio._pano(review_root, "diff-hunks.json")
+    doc = runio._load_json(path)
+    if isinstance(doc, dict):
+        doc["run_id"] = manifest.get("run_id")
+        runio._write_json(path, doc)
+
 def discovery_execute(review_root, manifest):
     _groups, errors = runio.load_committed_groups(review_root)
     if errors:
@@ -170,6 +209,10 @@ def discovery_execute(review_root, manifest):
         # this run's, which is the same "looks done, reviewed nothing" shape.
         doc["run_id"] = manifest.get("run_id")
         runio._write_json(out, doc)
+        # #2107: and the sibling the same child just wrote, with the same
+        # stamp, so the pair the review and the gate read is ONE generation by
+        # construction rather than by the write order's good manners.
+        _stamp_diff_hunks(review_root, manifest)
     errors = groups_artifact_errors(doc, manifest)
     if errors:
         n = _bump_discovery_attempts(review_root)
