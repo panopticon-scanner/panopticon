@@ -7,7 +7,8 @@ line under the 700-line flat-module ceiling with four fixes to its command
 and program forms still to make. The three functions here read text and
 nothing the reader builds from it. `_lift_substitutions` takes the `$(...)`,
 `<(...)`, `>(...)` and backquote texts out of a script before its statements
-are split, each replaced by a marker the parse it is handed (`context`) records.
+are split, each replaced by a marker the parse it is handed (`context`) records,
+a `<(...)` or `>(...)` text as a `Process`: a file bash hands the command.
 `without_comments` and `join_continuations` are the whole-line passes the
 reader made before `scripts/shell_lex.py` settled comments and continuations
 in one quote-aware pass; the tests that read workflow and Dockerfile text
@@ -21,6 +22,11 @@ import re
 from shell_lex import closing
 
 _SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
+
+
+class Process(str):
+    """The text of a `<(...)` or `>(...)`: bash hands the command a FILE to
+    read or write, where a `$(...)` or backquote hands it the OUTPUT as words."""
 
 
 def without_comments(script):
@@ -96,7 +102,7 @@ def _lift_substitutions(text, context, arithmetic_body=False):
             end = closing(text, opening.end() - 1)
             inner = text[opening.end():end - 1] if end else ""
             if end and not inner.startswith("("):   # `$((...))` is arithmetic
-                inners.append(inner)
+                inners.append(inner if opening.group() == "$(" else Process(inner))
                 out.append(context.new("subst", inners[-1]))
                 i = end
                 continue

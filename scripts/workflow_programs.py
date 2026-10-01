@@ -125,7 +125,10 @@ def candidates(argv):
     the options end first, at a program, a `-c` whose string `scripts` reads,
     or a `-` or `--`. A value that is the command word, handed a `-c` cluster,
     may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after
-    the options is the candidate.
+    the options is the candidate. A `$(…)` or backquote value with no word
+    after it is its own: bash makes the shell's words of its output, the
+    program among them (`sh $(echo tool)`), where a `<(…)` hands it a file
+    (`shell_reader.yields_words`).
     """
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
@@ -136,7 +139,7 @@ def candidates(argv):
         if owed:
             owed -= 1
         elif _value(word):
-            return word, argv[at + 1:]
+            return word, argv[at + 1:] or ([word] if shell_reader.yields_words(word) else [])
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":

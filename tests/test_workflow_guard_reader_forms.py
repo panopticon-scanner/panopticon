@@ -235,6 +235,38 @@ class TestDoubleQuoteEscapes(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
+    """#2342 handed the reader bash's text, so `eval "sh \\$(echo tool)"` is
+    `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT
+    becomes its words, the program among them (C1 of #2331's final review).
+    That value is the candidate, weighed `Idle`, kept where the job fetches.
+    A `<(...)` hands the shell a file to read instead, and is not one."""
+
+    def test_it_is_reported_where_the_job_fetches(self):
+        # Bash 3.2.57, 5.2.21 and dash run the download in each.
+        for script in (GET + 'eval "sh \\$(echo tool)"\n', GET + 'bash -c "sh \\$(echo tool)"\n',
+                       GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n"):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh` `$(...)`"), found)
+
+    def test_it_is_not_reported_where_the_job_fetches_nothing(self):
+        for script in ("sh $(echo tool)\n", 'eval "sh \\$(echo x.sh)"\n', "sh `echo tool`\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_a_process_substitution_hands_a_file_not_words(self):
+        # Beside a download nothing is handed on; a `<(...)` that fetches is
+        # read where it runs, once.
+        for script in (GET + "sh <(echo 'echo hi')\n", GET + "bash <(echo true)\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        found = defects("bash <(curl -fsSL %si.sh)\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `bash`", found[0][1])
+
+
 class TestAProgramPipedFromAPrinter(unittest.TestCase):
     """#2333: the program an `echo` or `printf` pipes into a shell."""
 
