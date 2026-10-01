@@ -195,18 +195,33 @@ def stdin_program(argv):
     such a word, though `_value` matches its marker too: it always
     substitutes a real path, never empty, so `bash <(curl ...)` keeps
     reading as the FILE it is (`yields_words` tells a process substitution
-    from a command substitution, whose OUTPUT may vanish instead).
+    from a command substitution, whose OUTPUT may vanish instead) -- true
+    only where EVERY substitution in the word is a process one; a MIXED word
+    (`$(true)<(...)`) still reads as may-vanish, another unnamed over-report
+    the gap list now carries beside this one.
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`) with stdin on it
-    may itself be a shell (#2473, route (b) of #2337's sibling: a name this
-    module has no table for gives no FOREIGN reading either, so SHELL is the
-    only one this walk can still make good on): `CMD=sh; $CMD <<'EOF'` is
-    then read as `sh <<'EOF'` is, fail-closed.
+    answers FOREIGN, not SHELL (#2473): a name this module has no table for
+    gives it no SHELL to stand behind either, and guessing SHELL would read
+    another language's program as though it were one -- `$PYTHON - <<'EOF'`
+    running a Python download once read CLEAN this way, while the literal
+    `python3 - <<'EOF'` was always FLAGGED (review I-2). `_unread_stdin`'s
+    existing FOREIGN sentence already reports every body behind a program it
+    cannot parse, read or EXPANDING alike, clean or not -- so `CMD=sh; $CMD
+    <<'EOF'` is caught exactly as `python3 - <<'EOF'` is, fail-closed and
+    over-reporting an innocuous body too (the reader cannot tell `$CMD` will
+    turn out to hold a shell from one that will not).
     """
     if not argv:
         return None
-    for inner in scripts(argv):
-        parsed = shell_reader.statements(inner)
+    found = scripts(argv)
+    if found:
+        # `eval`'s own words join into ONE string bash runs (`eval bash
+        # script.sh` is `bash script.sh`, a FILE, never `bash` alone reading
+        # stdin) -- checking each word on its own, as `scripts()`'s callers
+        # that scan for literal text may, over-reports here (#2500 review
+        # I-1's sibling finding, d13).
+        parsed = shell_reader.statements(" ".join(found))
         if (len(parsed) == 1 and len(parsed[0].stages) == 1
                 and stdin_program(shell_reader.command(parsed[0].stages[0].argv)) == SHELL_PROGRAM):
             return SHELL_PROGRAM
@@ -220,7 +235,7 @@ def stdin_program(argv):
     # `$(true)`). `yields_words` is the one already here that tells them apart.
     if not shell and not foreign and _value(argv[0]) and (
             not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0])):
-        shell = True                            # a `$` command word may be a shell
+        foreign = True            # a `$` command word's language is unknown
     if not shell and not foreign:
         return None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM

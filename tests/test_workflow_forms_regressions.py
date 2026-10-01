@@ -6,6 +6,7 @@ import shell_reader
 import workflow_fetch as fetches
 import workflow_forms as forms
 import workflow_guard as guard
+import workflow_programs
 
 URL = 'https://example.test/tool'
 CHECK = "echo '" + 'a' * 64 + "  tool' | sha256sum -c -"
@@ -347,11 +348,23 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         # `echo hi` and `cat` do not read their own program from stdin, so
-        # nothing is inherited: the string stays `eval`'s or `-c`'s DATA, as
-        # a literal filename behind `eval` does too.
+        # nothing is inherited: it is the HEREDOC that stays `eval`'s or
+        # `-c`'s DATA, as one behind a literal filename does too.
         for argv in (["eval", "echo hi"], ["bash", "-c", "cat"], ["eval", "sh x.sh"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(forms.stdin_program(argv))
+        # Review I-1's sibling finding (d13): `eval`'s own several words join
+        # into the ONE string bash runs before this check, never read one at
+        # a time -- `eval bash script.sh` is `bash script.sh`, a FILE (bash
+        # runs the file, not the heredoc), not bare `bash` alone reading
+        # stdin, and `eval set -- "$ARGS"` is not `set` alone either.
+        for argv in (["eval", "bash", "script.sh"], ["eval", "set", "--", "$ARGS"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(forms.stdin_program(argv))
+        # The unquoted and quoted spellings of the same joined string agree.
+        for argv in (["eval", "bash", "-s"], ["eval", "bash -s"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
 
     def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
         # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,
@@ -375,16 +388,19 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # from echo" report until this was excluded.
         self.assertIsNone(forms.stdin_program(self.argv("bash <(curl https://example.test/i.sh)")))
 
-    def test_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
-        # #2473: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
-        # 5.2.21 and dash -- a value-form COMMAND word gives the walk no
-        # shell NAME to key its tables on, so, fail-closed, it is read as
-        # one: the only reading this walk can still make good on, since an
-        # unknown name gives no FOREIGN reading either (`not shell and not
-        # foreign` would otherwise leave it None, as it did before #2473).
+    def test_a_dollar_command_word_with_stdin_on_it_is_read_as_foreign(self):
+        # Review I-2: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash, but a value-form COMMAND word gives the walk no
+        # shell NAME to key its tables on, and reading it as SHELL anyway
+        # would read another language's program as though it were one
+        # (`$PYTHON -` with a Python download once passed CLEAN this way).
+        # It answers FOREIGN instead (#2473): the only reading that catches
+        # every body behind it, since an unknown name gives no SHELL grammar
+        # to parse it with either.
         for script in ("$CMD", '"$CMD"', "${CMD}"):
             with self.subTest(script=script):
-                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv(script)))
+                self.assertEqual(workflow_programs.FOREIGN_PROGRAM,
+                                  forms.stdin_program(self.argv(script)))
         # A literal path is not a value form: unaffected, as it always was.
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
 
