@@ -263,9 +263,34 @@ def synthesize_execute(review_root, manifest):
                       ("--gate-scope", "gate_scope")):
         if flags.get(key):
             cmd += [flag, str(flags[key])]
+    # #2107: the hunk map must come from the SAME discovery child as this run's
+    # `groups.json`. The inventory decides what the review covered and the hunk
+    # map decides what the gate scopes to, so a pair from two generations
+    # reviews one surface and gates on another -- and under the default
+    # `--gate-scope on-diff` every finding the review produced then classifies
+    # off-diff against a stranger's diff, which reports a green gate over a
+    # change nothing measured. `phases/discovery.py` stamps both halves with
+    # this run's `run_id`; a foreign or absent stamp is refused HERE by not
+    # passing the flag, which degrades the gate to whole-repo scope -- the
+    # fail-closed direction, and the scope a non-delta run already takes.
+    #
+    # Fail-closed on BOTH sides: an unstamped artifact beside a manifest with no
+    # `run_id` is two absences, not a binding, so it is refused too. The
+    # expectation rides along as `--diff-hunks-run-id`, so the child's loader
+    # rejects the same pair on its own (`synth/delta.MALFORMED_GENERATION`) --
+    # two seams for one fact, and the loader's seam is the one a hand-run
+    # `synthesize.py` passes through.
     diff_hunks = runio._pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
-        cmd += ["--diff-hunks", diff_hunks]
+        run_id = manifest.get("run_id")
+        hunks_doc = runio._load_json(diff_hunks)
+        stamp = hunks_doc.get("run_id") if isinstance(hunks_doc, dict) else None
+        if run_id and stamp == run_id:
+            cmd += ["--diff-hunks", diff_hunks, "--diff-hunks-run-id", run_id]
+        else:
+            print("synthesize: diff-hunks.json carries run_id %s, this run is "
+                  "%s: not passed; the gate degrades to whole-repo scope "
+                  "(#2107)" % (stamp, run_id), file=sys.stderr, flush=True)
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     if flags.get("max_verify") is not None:

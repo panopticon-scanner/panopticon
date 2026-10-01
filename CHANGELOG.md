@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`diff-hunks.json` is now bound to its `groups.json` generation (#2107).** One discovery child
+  writes the hunk map and then the inventory, as two independent atomic writes, and only the
+  inventory carried a run binding — so nothing compared the surface the review covered with the
+  diff the gate scoped to. A probe traced every driver path and could not assemble the mixed
+  pair (the pre-child clear, the hunks-before-groups write order and the per-run folder each stop
+  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does, and it was
+  accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against the other
+  generation's map, a green `--gate-scope on-diff` gate over a change nothing measured. The
+  driver now stamps both halves with this run's `run_id`; the synthesize phase passes
+  `--diff-hunks` only for a file carrying it, naming the refusal on stderr and letting the gate
+  degrade to whole-repo scope; and the loader gains an optional expected generation, threaded as
+  `--diff-hunks-run-id`, which rejects a foreign or absent stamp as the new `payload_malformed`
+  value `generation-mismatch`. With no expectation the stamp is not read at all, so every direct
+  caller and every hand-written artifact is unaffected.
 - **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
   On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
   `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible

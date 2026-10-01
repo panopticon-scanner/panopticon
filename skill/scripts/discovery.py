@@ -797,15 +797,15 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
                      exclude=()):
     """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
 
-    ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real
-    commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
-    exact delta even if branch tips move.
+    ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real commits
+    (``diff_map.diff_anchors``) so a later reviewer can reconstruct the exact delta even if
+    branch tips move. The RUN binding is stamped by ``phases/discovery.py`` after this write and
+    ``phases/synthesize.py`` passes the file only when it is this run's (#2107).
 
     ``exclude`` goes straight to ``diff_map.hunk_map``: non-empty only for a ``--pr``
     worktree naming the root config filenames the operator's sync just overwrote
     there (#1681) -- without it that overwrite is attributed to the PR in this very
-    artifact. One disclosure line documents the exclusion, so it is never a silent gap.
-    """
+    artifact. One disclosure line documents the exclusion, so it is never a silent gap."""
     if exclude:
         print("panopticon --pr: excluding %s from the delta map (this "
               "worktree's root config is the operator's, never the PR's)"

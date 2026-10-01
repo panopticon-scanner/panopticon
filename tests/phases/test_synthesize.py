@@ -1128,3 +1128,117 @@ class TestTheConfigResolutionSeam(unittest.TestCase):
         self.assertEqual(loaded["clamped"][0]["requested"], 5000)
         self.assertEqual([r["key"] for r in loaded["refused"]], ["allow_unenforced"])
         self.assertTrue(loaded["disclosures"])
+
+
+class TestTheDiffHunksGenerationGate(unittest.TestCase):
+    """#2107: the gate's scope and the review's cells must come from ONE
+    discovery generation.
+
+    `groups.json` and `diff-hunks.json` are written by one child as two
+    independent atomic writes. The groups half has carried a run binding since
+    #1643 (`discovery.groups_artifact_errors`); the hunks half carried none, so
+    nothing on this path compared the two. The #2107 probe showed what that
+    costs where it is reachable -- a hand-run `discovery.py` then a hand-run
+    `synthesize.py`, since `--groups` is auto-discovered from the flat path and
+    `--diff-hunks` is not: the review covered generation A's files, the gate
+    scoped to generation B's hunk map, and 0 of 1 gate-eligible HIGH classified
+    on-diff. A green `--gate-scope on-diff` gate over a change nothing measured.
+
+    A foreign or absent stamp is refused HERE by not passing the flag at all,
+    which degrades the gate to whole-repo scope -- the probe's Q3-a fail-closed
+    direction, and the same scope a non-delta run already takes. The expectation
+    is threaded beside the path as `--diff-hunks-run-id`, so the child's loader
+    refuses the same pair on its own terms: two seams, one fact."""
+
+    REFUSAL = ("synthesize: diff-hunks.json carries run_id %s, this run is %s: "
+               "not passed; the gate degrades to whole-repo scope (#2107)")
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard",
+                         "flags": {"fail_on": "high"}}
+
+    PAYLOAD = {"schema_version": 1, "base": "main", "hunks": {"a.py": [[1, 5]]}}
+
+    def _run(self, payload=None, raw=None, manifest=None):
+        """Returns (argv, stderr) for a synthesize phase over the artifact."""
+        if payload is not None or raw is not None:
+            with open(runio._pano(self.root, "diff-hunks.json"), "w") as fh:
+                fh.write(raw) if raw is not None else json.dump(payload, fh)
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+                synthesize.synthesize_execute(self.root,
+                                              manifest or self.manifest)
+        return captured["cmd"], err.getvalue()
+
+    def test_a_matching_stamp_is_passed_with_its_expectation(self):
+        cmd, err = self._run(dict(self.PAYLOAD, run_id="R"))
+        self.assertEqual(cmd[cmd.index("--diff-hunks") + 1],
+                         runio._pano(self.root, "diff-hunks.json"))
+        self.assertEqual(cmd[cmd.index("--diff-hunks-run-id") + 1], "R")
+        self.assertNotIn("#2107", err)
+
+    def test_a_foreign_stamp_is_refused_and_disclosed(self):
+        # Probe state Q2-c: generation A's artifact left beside generation B's
+        # groups inventory. Accepted silently before this issue.
+        cmd, err = self._run(dict(self.PAYLOAD, run_id="RUN-1"))
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertNotIn("--diff-hunks-run-id", cmd)
+        self.assertIn(self.REFUSAL % ("RUN-1", "R"), err)
+
+    def test_an_unstamped_artifact_is_refused_too(self):
+        # The probe's Q1 orphan, and every hand-written artifact: no stamp is
+        # no binding, so it cannot be this run's.
+        cmd, err = self._run(dict(self.PAYLOAD))
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertIn(self.REFUSAL % ("None", "R"), err)
+
+    def test_a_non_object_artifact_is_refused(self):
+        cmd, err = self._run(["not", "an", "object"])
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertIn("#2107", err)
+
+    def test_an_unreadable_artifact_is_refused(self):
+        cmd, err = self._run(raw="{not json")
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertIn("#2107", err)
+
+    def test_a_manifest_with_no_run_id_binds_nothing_and_refuses(self):
+        # Fail-closed on BOTH sides: a stamp of None matching a run_id of None
+        # is not a binding, it is two absences, and a run the driver did not
+        # stamp has no generation to compare against.
+        cmd, err = self._run(dict(self.PAYLOAD),
+                             manifest={"security_mode": "standard", "flags": {}})
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertIn("#2107", err)
+
+    def test_no_artifact_at_all_says_nothing(self):
+        # A whole-repo run: the flag was never passed before this issue either,
+        # and a refusal line there would be noise about a file that is absent
+        # on purpose.
+        cmd, err = self._run()
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertNotIn("#2107", err)
+
+    def test_the_driver_argv_tokens_are_flags_synthesize_accepts(self):
+        # The #1602 parity rule: `tests/synth/helpers._cli_args` sets the
+        # attribute directly, so renaming or dropping the option in
+        # `synthesize.py` alone leaves every test above green while the real
+        # child exits 2. Parsed by the CHILD's own parser.
+        cmd, _ = self._run(dict(self.PAYLOAD, run_id="R"))
+        index = cmd.index("--diff-hunks")
+        parsed = syn.build_parser().parse_args(cmd[index:index + 4])
+        self.assertEqual(parsed.diff_hunks,
+                         runio._pano(self.root, "diff-hunks.json"))
+        self.assertEqual(parsed.diff_hunks_run_id, "R")

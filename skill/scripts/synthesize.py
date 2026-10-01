@@ -117,6 +117,11 @@ def build_parser():
     ap.add_argument("--diff-hunks", metavar="PATH", default=None,
                     help="Path to the orchestrator's diff-hunks.json (#449); "
                          "stamps each finding with finding.delta")
+    ap.add_argument("--diff-hunks-run-id", metavar="ID", default=None,
+                    help="The run generation --diff-hunks must carry (#2107): a "
+                         "foreign or absent run_id rejects the payload, so the "
+                         "gate widens instead of scoping to another run's diff. "
+                         "Omitted, the stamp is not read at all")
     ap.add_argument("--diff-context", type=int, default=5, metavar="N",
                     help="Lines of tolerance for on-diff classification (default 5)")
     ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",

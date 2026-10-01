@@ -332,6 +332,102 @@ class TestLoadDiffHunksReport(unittest.TestCase):
             self.assertEqual(delta_mod.load_diff_hunks(path),
                              delta_mod.load_diff_hunks_report(path)[0])
 
+class TestTheExpectedGenerationIsEnforced(unittest.TestCase):
+    """#2107: `groups.json` and `diff-hunks.json` are written by ONE discovery
+    child and published as two INDEPENDENT atomic writes, and only the groups
+    half carried a run binding.
+
+    The #2107 probe traced every driver path and found the mixed pair
+    unreachable (the pre-child clear in `phases/discovery.py`, the
+    hunks-before-groups write order, and the per-run folder each stop it), but
+    nothing declared the invariant and nothing tested it -- and a hand-run
+    `discovery.py` followed by a hand-run `synthesize.py` assembles it, because
+    `--groups` is auto-discovered from the flat path while `--diff-hunks` is
+    not. There the review cells come from one generation and the gate's scope
+    from another, so every finding the review produced classifies off-diff
+    against someone else's hunk map and a `--gate-scope on-diff` gate has
+    nothing left to fail on: a PASS over a change nothing measured.
+
+    So the stamp is a FIELD a reader checks, not an accident of three
+    mechanisms. The expectation is optional: absent, the stamp is not read at
+    all, which keeps every existing caller and every hand-written artifact
+    byte-for-byte unaffected."""
+
+    def _write(self, d, payload):
+        path = os.path.join(d, "diff-hunks.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        return path
+
+    PAYLOAD = {"base": "main", "hunks": {"a.py": [[1, 5]]}}
+
+    def test_the_vocabulary_value_is_the_published_one(self):
+        self.assertEqual(delta_mod.MALFORMED_GENERATION, "generation-mismatch")
+
+    def test_a_foreign_stamp_rejects_the_whole_payload(self):
+        # The Q2-c shape: a generation-A artifact met by a generation-B
+        # expectation. Rejected in WHOLE, so no `base` survives and the review
+        # degrades to a non-delta one -- the wider gate, which fails closed.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertEqual(data, {})
+            self.assertEqual(report.payload_malformed, "generation-mismatch")
+            self.assertEqual((report.files, report.ranges), (0, 0))
+
+    def test_an_absent_stamp_rejects_too(self):
+        # Unlike `schema_version`, where an ABSENT key is accepted because a
+        # hand-written artifact predating it is not a version mismatch. Here
+        # the expectation exists only on the driver path, where the discovery
+        # phase stamped the file it wrote -- so an unstamped artifact THERE is
+        # one this run did not produce, which is the orphan the probe's Q1
+        # crash leaves behind.
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertEqual(data, {})
+            self.assertEqual(report.payload_malformed, "generation-mismatch")
+
+    def test_a_matching_stamp_is_accepted_and_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-2"))
+            data, report = delta_mod.load_diff_hunks_report(path, "RUN-2")
+            self.assertIsNone(report.payload_malformed)
+            self.assertEqual(data["base"], "main")
+            self.assertEqual((report.files, report.ranges), (1, 1))
+
+    def test_no_expectation_ignores_the_stamp_entirely(self):
+        # Today's behaviour, byte for byte, for all three stamp states: the
+        # hand-written artifact in half this module's fixtures carries none.
+        with tempfile.TemporaryDirectory() as d:
+            for stamp in ({}, {"run_id": "RUN-1"}, {"run_id": None}):
+                path = self._write(d, dict(self.PAYLOAD, **stamp))
+                data, report = delta_mod.load_diff_hunks_report(path)
+                self.assertIsNone(report.payload_malformed, stamp)
+                self.assertEqual(data["base"], "main", stamp)
+
+    def test_from_args_threads_the_expectation_and_discloses_the_refusal(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                ctx = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high",
+                              diff_hunks_run_id="RUN-2"))
+            self.assertFalse(ctx.active)
+            self.assertEqual(ctx.report.payload_malformed, "generation-mismatch")
+            self.assertIn("DELTA ARTIFACT MALFORMED", err.getvalue())
+            self.assertIn("generation-mismatch", err.getvalue())
+
+    def test_from_args_without_the_flag_keeps_the_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, dict(self.PAYLOAD, run_id="RUN-1"))
+            with contextlib.redirect_stderr(io.StringIO()):
+                ctx = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=path, fail_on="high"))
+            self.assertTrue(ctx.active)
+            self.assertIsNone(ctx.report.payload_malformed)
+
 class TestDeltaLoadDisclosure(unittest.TestCase):
     """ARC-2340795244 (#1783): from_args says on stderr what the artifact cost,
     in the #957 register. A green gate over a change with findings is the

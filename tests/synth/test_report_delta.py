@@ -632,3 +632,86 @@ class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
         self.assertEqual(set(cov["delta_artifact"]), fields - set(renamed))
         self.assertLessEqual({renamed.get(f, f) for f in fields - artifact_only},
                              set(cov["delta"]))
+
+
+class TestTheMixedGenerationRefusal(unittest.TestCase):
+    """#2107 probe state Q2-c, end to end through `build_report`: the review's
+    cells came from one discovery generation and the hunk map from another.
+
+    The probe built it by hand -- a complete delta discovery, then the anchor
+    moves and a second discovery crashes on the groups write -- and fed
+    `phases/synthesize.py` exactly what it passes. The pair was accepted with
+    `payload_malformed=None`, the gate scoped to generation B's files while the
+    review had covered generation A's, and 0 of 1 gate-eligible HIGH classified
+    on-diff: a PASS from a `--gate-scope on-diff` gate with nothing to fire on.
+    The zero-hunk refusal (#2178) cannot see it -- the map is NOT empty, just
+    unrelated -- and neither can the broken-artifact one (#2405): nothing in the
+    payload is damaged.
+
+    With the expectation threaded, the payload is rejected in whole, so no
+    `base` survives, the review is a non-delta one and the gate widens to every
+    active finding. FAIL here, not PASS: the wider gate is the fail-closed
+    direction, and the findings this run produced are judged by it rather than
+    by someone else's diff."""
+
+    HUNKS = {"base": "main", "base_source": "explicit", "diff_context": 5,
+             "files_changed": 1, "hunks": {"b.py": [[1, 5]]}}
+
+    def _report(self, run_id, expected):
+        """The review covered `a.py` (generation A); the hunk map names `b.py`
+        (generation B). One HIGH in `a.py`, which generation B's map classifies
+        off-diff because it does not carry that file at all."""
+        findings = [{"id": "A-1", "title": "t", "severity": "HIGH",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                     "location": {"file": "a.py", "line_start": 11}}]
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "diff-hunks.json")
+            with open(hp, "w", encoding="utf-8") as fh:
+                json.dump(dict(self.HUNKS, run_id=run_id), fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                delta = delta_mod.DeltaContext.from_args(
+                    _cli_args(diff_hunks=hp, fail_on="high",
+                              gate_scope="on-diff", diff_hunks_run_id=expected))
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z",
+                    gate_unverified=True, gate_scope="on-diff"),
+                findings=findings_mod.FindingSet(findings=findings),
+                delta=delta,
+                plan=plan_mod.PlanInputs(
+                    groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+            ))
+
+    def test_a_mixed_pair_no_longer_reads_a_vacuous_on_diff_pass(self):
+        rep = self._report("RUN-1", "RUN-2")
+        self.assertEqual(rep["summary"]["gate"], "FAIL")
+        self.assertIsNone(rep["meta"]["coverage"]["delta"])
+        self.assertEqual(
+            rep["meta"]["coverage"]["delta_artifact"]["payload_malformed"],
+            delta_mod.MALFORMED_GENERATION)
+
+    def test_an_unstamped_artifact_is_refused_the_same_way(self):
+        rep = self._report(None, "RUN-2")
+        self.assertEqual(rep["summary"]["gate"], "FAIL")
+        self.assertEqual(
+            rep["meta"]["coverage"]["delta_artifact"]["payload_malformed"],
+            delta_mod.MALFORMED_GENERATION)
+
+    def test_one_generation_keeps_the_delta_scope_it_measured(self):
+        # The other half, and the shape every real driver run takes: the stamp
+        # matches, the artifact is read, and the off-diff HIGH is scoped away
+        # exactly as it was before this issue -- the PASS here is EARNED, by a
+        # map this run can prove is its own.
+        rep = self._report("RUN-2", "RUN-2")
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIsNone(rep["meta"]["coverage"]["delta"]["payload_malformed"])
+        self.assertEqual(rep["meta"]["coverage"]["delta"]["hunks_ranges"], 1)
+
+    def test_no_expectation_leaves_the_pair_as_it_was_read_before(self):
+        # The direct-reader contract: absent expectation, the stamp is not read,
+        # so a hand-written artifact and every existing caller are unaffected --
+        # and this is the vacuous PASS the probe demonstrated, kept here as the
+        # before/after witness for what the expectation buys.
+        rep = self._report("RUN-1", None)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIsNone(rep["meta"]["coverage"]["delta"]["payload_malformed"])
