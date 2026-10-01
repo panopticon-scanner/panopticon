@@ -22,6 +22,27 @@ evidence exposed.
   relative one names a different directory in every process cwd. Both shapes are now pinned, the
   working-directory decoy and the escaping symlink, in `tests/test_claim_scope.py` (the predicate)
   and `tests/test_discovery_scope.py` (the two call sites).
+- **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
+  Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
+  downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`
+  candidate, a script handed to a shell inside a `$(...)` — was reported beside ANY fetch,
+  including a download its `sha256sum -c` cleared and an API `curl ... | jq` that is no download
+  at all. It is now reported only beside a fetch the guard itself reports: a download no checksum
+  clears (the unread program is counted as the use the checksum was owed, ADDED to the uses
+  `_defect` can read, so a checksum BEHIND such a program clears only the uses in front of it), a
+  `curl ... | sh` stream, an unresolved transfer, or a download no file holds — `x=$(curl ...)`,
+  the `carried` shape, and one a pipeline writes past the fetcher (`curl ... | cat > f`,
+  `| dd of=f`, `| sponge f`, `| cat | tee t`, none of which `parse_fetch` binds a destination to;
+  `workflow_forms.unbound`). Two readings are deliberate and fail closed: the report names the
+  unread program and not the download that makes it one (one sentence, as before), and a download
+  a variable holds keeps the reason even where only an `echo` reads it, because no file exists for
+  a checksum to name. The same predicate now governs the foreign-language stdin program
+  (`python3 - <<'EOF'`, `node <<'NODE'`, at the top level or inside a substitution), #2499's
+  owner ruling (b), decided once for both; the EXPANDING-heredoc report is
+  untouched and still loud with no fetch at all. Over the 3,200-workflow calibration pool 31 jobs
+  clear and none newly fails: metabase `pr-env.yml :: deploy_pr` (`$ADMIN -c` psql beside an
+  OIDC-token `curl | jq`) and 30 jobs whose heredoc program parses a `pom.xml`, YAML, HTML or
+  JSON and fetches nothing.
 - **`diff-hunks.json` is now bound to its `groups.json` generation (#2107).** One discovery child
   writes the hunk map and then the inventory, as two independent atomic writes, and only the
   inventory carried a run binding — so nothing compared the surface the review covered with the

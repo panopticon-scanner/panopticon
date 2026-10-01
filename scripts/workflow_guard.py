@@ -113,22 +113,22 @@ runs each live, so a change that catches one fails there and edits this list.
   image the container came from is NOT pinned either, and that is a decided
   residual rather than an oversight: this fleet pulls the tools image by its
   mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
-  each consumer: the "Pull or build panopticon-tools image" step of
-  `security.yml` and of `security-fork.yml`, and both "Pull the nightly tools
-  image" steps of `adapter-integration.yml`. DEVELOPMENT.md states
-  the consequence in its own voice twice, in the "One residual to know about"
-  paragraph under "Key design decisions" and in the "Weekly strict security
-  backstop" paragraph ("the tools image remains unpinned"). The `uses:`
-  rule pins ACTIONS by SHA and `tests/test_dockerfile.py` pins what the
-  Dockerfile FETCHES (`test_all_fetched_binaries_are_checksum_verified`,
-  `test_nvd_data_ref_default_is_digest`); neither governs a `docker pull` of a
-  tag.
-* an executor that reads the file by convention rather than by argument
-  (`make`, `npm install`): the download is never an operand, so no use names
-  it.
-  KEPT: needs a construct this fleet does not have -- there is no Makefile and
-  no package.json outside a test fixture, no `run:` step invokes either tool,
-  and the repo builds with Python and Docker.
+  each consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
+  `security-fork.yml`, and both "Pull the nightly tools image" steps of
+  `adapter-integration.yml`. DEVELOPMENT.md states the consequence in its own voice twice, in the
+  "One residual to know about" paragraph under "Key design decisions" and in the "Weekly strict
+  security backstop" paragraph ("the tools image remains unpinned"). The `uses:` rule pins
+  ACTIONS by SHA and `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
+  (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
+  neither governs a `docker pull` of a tag.
+* an executor that reads the file by convention rather than by argument (`make`, `npm install`):
+  the download is never an operand, so no use names it.
+  KEPT: needs a construct this fleet does not have -- there is no Makefile and no package.json
+  outside a test fixture, no `run:` step invokes either tool, and the repo builds with Python
+  and Docker.
+* a download the PIPELINE writes under a name `workflow_forms._WRITERS` does not carry: the `> f`
+  redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
+  KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
@@ -150,16 +150,15 @@ runs each live, so a change that catches one fails there and edits this list.
   -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
   then the body is that program's input DATA), and which body descriptor 0
   finally reads, with the flag saying whether it EXPANDED
-  (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the
-  interpreter as the text it was written as, so `workflow_forms.flattened`
-  reads it exactly as it reads an `eval` string -- a `curl … | sh` inside it
-  is the defect it is at the top level. An EXPANDING one is REPORTED unread
-  (`_unread_stdin`): it runs what bash expands it to, values and `$(...)`
-  output this guard never sees. A program in a language this
-  module has no grammar for is reported too, the answer `unparseable` gives a
-  `shell: python` step. What that leaves unread: an interpreter whose program
-  is on stdin in a spelling the operand walk does not resolve -- behind an
-  option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
+  (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the interpreter as the text
+  it was written as, so `workflow_forms.flattened` reads it exactly as it reads an `eval`
+  string -- a `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is
+  REPORTED unread (`_unread_stdin`): it runs what bash expands it to, values and `$(...)` output
+  this guard never sees. A program in a language this module has no grammar for is reported too
+  (the answer `unparseable` gives a `shell: python` step), and THAT report is weighed: kept,
+  since #2499, only where the job holds a fetch this guard reports. What that leaves unread: an
+  interpreter whose program is on stdin in a spelling the operand walk does not resolve -- behind
+  an option it reads as a filename (`bash --rcfile f <<'EOF'`), since it knows
   only `-o`/`-O` as options taking a separate value, or named as a FILE by a
   builtin outside its table (`. /dev/stdin <<'EOF'`); an interpreter behind a
   TRANSPORT (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`,
@@ -167,13 +166,12 @@ runs each live, so a change that catches one fails there and edits this list.
   and, as everywhere in this module, an interpreter under a name its tables do
   not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
   program's basename.
-  A program `echo` or `printf` PIPES into a shell is read where their words spell it out;
-  one they do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words
-  fetch as written or the job downloads (#2333), and `cat <<'EOF' | sh` is not read at all.
-  A heredoc the step WRITES to a file and then runs
-  (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business at all: the
-  script is text in the repo under review, which is the `sed -i` entry's
-  author-deterministic ruling.
+  A program `echo` or `printf` PIPES into a shell is read where their words spell it out; one
+  they do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch
+  as written or the job holds a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read.
+  A heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not
+  this rule's business at all: the script is text in the repo under review, which is the
+  `sed -i` entry's author-deterministic ruling.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
@@ -187,8 +185,7 @@ RUN -- folding those in can only report more. Not for what they CHECK:
 `workflow_forms.regions` reads the `then`/`else`/`do` bodies -- and each arm of
 a `case` -- back out of the statement stream, and a checksum written inside a
 branch clears only a use written inside the same branch (#1697 item 3), which
-is `_binds` again in the shell's own grammar.
-"""
+is `_binds` again in the shell's own grammar."""
 import collections
 import os
 import re
@@ -197,11 +194,11 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Reach,
-                            carried, chmod_executable, chmod_targets, clears, covers, described,
-                            flattened, in_container, kept, may_run, names_file, parse_fetch,
-                            regions, same_file, stdin_program, step_credit, streamed_fetch,
-                            swallowed, unread_program, within)
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
+                            carried, chmod_executable, chmod_targets, clears, covers,
+                            described, flattened, in_container, kept, may_run, names_file,
+                            parse_fetch, regions, same_file, stdin_program, step_credit,
+                            streamed_fetch, swallowed, unbound, unread_program, within)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -289,14 +286,13 @@ def _fetch_records(stmts, stream_exec=False):
 def _unread_stdin(stage):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
-    A heredoc body or here-string handed to an interpreter is a program, not
-    data (`workflow_programs.stdin_program`), and two kinds of it cannot be read:
-    one in a language this module has no grammar for, and one the shell would
-    EXPAND -- a body whose `$(...)` were lifted into the enclosing parse's
-    table before it reached here, a here-string whose word bash expands first
-    (#2293) -- so what the interpreter runs is not the text this module holds.
-    Quoted shell is the third kind and is READ, in `workflow_programs.stdin_scripts`.
-    """
+    A heredoc body or here-string handed to an interpreter is a program, not data
+    (`workflow_programs.stdin_program`), and two kinds of it cannot be read: one in a language
+    this module has no grammar for -- `Idle`, which `kept` stands only beside a fetch this guard
+    reports (#2499) -- and one the shell would EXPAND, a body whose `$(...)` were lifted into the
+    enclosing parse's table before it reached here or a here-string whose word bash expands first
+    (#2293), reported fetch or no fetch. Quoted shell is the third kind and is READ, in
+    `workflow_programs.stdin_scripts`."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc
     kind = stdin_program(argv) if here else None
@@ -304,10 +300,10 @@ def _unread_stdin(stage):
         return None
     name = os.path.basename(argv[0])
     if kind != SHELL_PROGRAM:
-        return ("hands a heredoc body or here-string to `%s` as the program to "
-                "run, which this guard does not parse -- it cannot say whether "
-                "that program downloads and executes anything; write it in "
-                "bash/sh, or exempt the step with a reason" % name)
+        return Idle("hands a heredoc body or here-string to `%s` as the program "
+                    "to run, which this guard does not parse -- it cannot say whether "
+                    "that program downloads and executes anything; write it in "
+                    "bash/sh, or exempt the step with a reason" % name)
     if here[1]:
         return ("hands an EXPANDING heredoc body or here-string to `%s` as the "
                 "script to run: it runs what bash expands it to -- values and "
@@ -542,8 +538,9 @@ def _binds(conditions, check, use):
     return when is None or when == conditions.get(use)
 
 
-def _defect(fetch, index, stmts, checks, conditions=None):
-    """Why this one fetch is unverified, or None."""
+def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
+    """Why this one fetch is unverified, or None; the statements of `unread`
+    forms are ADDED to the uses it reads, never a fallback for them (r0)."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`:
         # a download whose target this guard cannot name is not a clean step,
@@ -569,6 +566,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
                 % (shell_reader.readable(fetch.url) or "a download",
                    shell_reader.readable(fetch.dest)))
     names, uses = _uses(stmts, fetch.dest, after=index)
+    uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
     # A checksum naming any name the file goes by is a checksum of this file.
@@ -614,16 +612,18 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
     `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
     checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
-    which `job_defects` has from each step's own read."""
+    which `job_defects` has from each step's own read.
+
+    An unread form stands only where some fetch here is one `_defect` reports --
+    asked again with those forms as uses -- or an `unbound` download (#2481)."""
     checks = _checks(stmts, credit)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
-    found = kept(unread, fetched)
-    for index, fetch in fetched:
-        why = _defect(fetch, index, stmts, checks, conditions)
-        if why:
-            found.append((index, why))
-    return found
+    found = [(index, why) for index, fetch in fetched
+             if (why := _defect(fetch, index, stmts, checks, conditions))]
+    return kept(unread, bool(found) or bool(unread) and (unbound(stmts, fetched, unread) or any(
+        _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread])
+        for index, fetch in fetched))) + found
 
 
 def fetch_exec_defects(script):
