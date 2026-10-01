@@ -17,6 +17,12 @@ evidence exposed.
   correction. The rejection/backup policy is unchanged, and severity is still mutated only by the
   override discipline -- now measured against the PUBLISHED code's default, so a reason-less
   override reverts to the panel's code rather than to the advisor's.
+- **`tests/test_citations.py` no longer imports `_version` flat inside a test (#2511, #1824).**
+  The module under test binds `scripts._version`; the in-test flat import built a second module
+  object, the double-module hazard `tests/test_layout.py` rule 2 exists to prevent.
+- **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
+  `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
+  interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
 - **Direct discovery owns its implicit delta map under the selected repository (#2102).**
   Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
   runs clean that same path. Explicit outputs still keep the map beside `--out`.
