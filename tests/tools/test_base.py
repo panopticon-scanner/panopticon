@@ -547,6 +547,76 @@ class TestRunTool(unittest.TestCase):
         self.assertTrue(fake.stdout.closed)
         self.assertTrue(fake.stderr.closed)
 
+    def test_an_interrupt_mid_read_ends_the_tree_before_the_teardown(self):
+        """#2507: an operator stop that lands in the middle of the capture's
+        read ends the child's whole tree BEFORE it propagates.
+
+        The `docker run` client this capture supervises proxies its own signals
+        to the container's PID 1, so ending the client tree is what ends the
+        scanner container; leaving it alive leaves a `--rm` container running to
+        its own end. The `finally` below does kill a child that is still
+        running, but only after closing stdout and waiting up to half a second
+        on the stderr drain -- and a second interrupt anywhere in that window
+        leaves the function without ever reaching the kill. So the order is the
+        property under test, not merely that a kill happened: the tree goes
+        first, the pipes after.
+
+        `FakePopen` has no OS pid, so `_kill_process_tree` falls through its
+        `getpgid` arm to `proc.kill()` -- which is why `kill` is the hook the
+        order is read off. `KeyboardInterrupt` rather than a plain exception
+        because that is what both an operator's Ctrl-C and, since #2199, a
+        SIGTERM raise here (`procgroup.Terminated` is a subclass).
+        """
+        events = []
+
+        class _InterruptedStdout(FakeStream):
+            """A pipe that hands back one chunk and takes the interrupt on the
+            next read, with the child still running."""
+
+            def read(self, size=-1):
+                events.append("read")
+                if events.count("read") > 1:
+                    raise KeyboardInterrupt("operator stop mid-read")
+                return super().read(size)
+
+            def close(self):
+                events.append("close")
+                super().close()
+
+        class _Watched(FakePopen):
+            def kill(self):
+                events.append("kill")
+                super().kill()
+
+        fake = _Watched(["t"], stderr=b"", pending=True)
+        fake.stdout = _InterruptedStdout([b"partial", b"rest"])
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
+            with self.assertRaises(KeyboardInterrupt):
+                base.run_tool(["t"], timeout=30)
+        self.assertIn("kill", events)
+        self.assertEqual(1, events.count("kill"), "the tree was ended more than once")
+        self.assertLess(events.index("kill"), events.index("close"),
+                        "stdout was closed before the tree was ended")
+        self.assertEqual(-9, fake.returncode)
+
+    def test_a_capture_that_reads_to_eof_kills_nothing(self):
+        """The twin of the arm above: with no interrupt there is no kill. The
+        child has already been reaped by `wait`, and shooting at a reaped pid is
+        the hazard `procgroup._pgid` documents -- the number may already name
+        somebody else's group."""
+        events = []
+
+        class _Watched(FakePopen):
+            def kill(self):
+                events.append("kill")
+                super().kill()
+
+        fake = _Watched(["t"], stdout=[b"{", b"}"], stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
+            out, rc = base.run_tool(["t"], timeout=30)
+        self.assertEqual((out, rc), (b"{}", 0))
+        self.assertEqual([], events)
+
     def test_output_exceeds_cap_truncates_with_marker_and_nonzero_rc(self):
         err = io.StringIO()
         with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024):
