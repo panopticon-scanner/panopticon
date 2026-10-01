@@ -20,6 +20,9 @@ evidence exposed.
   and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
   `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
   vacuous. Matrix and tests only: no Python module moved.
+- **The shell lexer's heredoc body index moves to `scripts/shell_heredoc.py` (#2496).**
+  A pure move: answers are byte-identical on the 11 corpora and the calibration pool; the lexer
+  leaves its 700-line ceiling.
 - **A SIGTERM to a hand-run `run_tools.py` now ends its scanner containers (#2507, #1814).**
   `__main__` runs `main` through `procgroup.sigterm_as_interrupt`, as `driver.py` has since
   #2199, so a plain `kill` raises the interrupt the teardown handles instead of ending the
