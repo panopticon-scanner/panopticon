@@ -1,11 +1,14 @@
-import contextlib, io, os, json, tempfile, unittest
+import contextlib, io, os, json, inspect, tempfile, unittest
 from unittest.mock import patch
 
 import scripts.ingest_tools as it
 from tests._test_helpers import first, only
 import json as _json
 import scripts.evidence as ev
+import scripts.scanner_config as scanner_config
 import scripts.tools as tools_mod
+import scripts.tools.base as tool_base
+import scripts.tools.sarif_utils as sarif_utils
 
 SARIF = {
   "runs": [{
@@ -355,12 +358,16 @@ class TestIngest(unittest.TestCase):
             self.assertIn("broken.sarif", stderr.getvalue())
 
     def test_norm_uri_variants(self):
-        self.assertEqual(it._norm_uri("file:///src/db/engine.py"), "db/engine.py")
+        mount = getattr(tool_base, "TARGET_MOUNT", None)
+        self.assertEqual(mount, scanner_config.TARGET_MOUNT)
+        self.assertEqual(it._norm_uri("file://%s/db/engine.py" % mount),
+                         "db/engine.py")
         self.assertEqual(it._norm_uri("src/main.py"), "src/main.py")          # top-level src/ preserved
         self.assertEqual(it._norm_uri("backend/src/handlers/db.py"), "backend/src/handlers/db.py")
         self.assertEqual(it._norm_uri("app/db.py"), "app/db.py")
         self.assertEqual(it._norm_uri("/abs/x.py"), "abs/x.py")
         self.assertIsNone(it._norm_uri(None))
+        self.assertNotIn('"/src/"', inspect.getsource(sarif_utils))
 
     def test_ingest_dir_survives_deeply_nested_json(self):
         with tempfile.TemporaryDirectory() as d:

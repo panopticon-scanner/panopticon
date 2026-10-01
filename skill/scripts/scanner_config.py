@@ -12,12 +12,12 @@ two, the network posture and the gitleaks ignore-file posture, live beside that
 writer; `run_tools` binds all four back and is where each is filled).
 
 Beside them sits the container LAUNCH policy those same containers share:
-`TARGET_MOUNT` and, since #2150 (ARC-A3A), `privilege_drop_flags`. That is policy
-about the CONTAINER rather than about a scanner's configuration, and it lives here
-for the reason this file exists: the egress sidecar under `tools/` needs the
-privilege drop and MAY NOT reach `run_tools`, which imports `tools/egress.py`
-itself. The fixture runner is under no such rule and imports both owners on one
-argv -- `run_tools.resource_limit_flags()` for the ceilings, this file for the drop.
+the leaf-owned `TARGET_MOUNT`, re-exported here, and since #2150 (ARC-A3A),
+`privilege_drop_flags`. That is policy about the CONTAINER rather than about a
+scanner's configuration. The egress sidecar under `tools/` needs the privilege
+drop and MAY NOT reach `run_tools`, which imports `tools/egress.py` itself. The
+fixture runner imports both owners on one argv: `run_tools.resource_limit_flags()`
+for the ceilings, this file for the drop.
 
 Separate from `run_tools` because it is a POLICY surface, and it grew like one:
 #1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
@@ -42,14 +42,10 @@ import stat
 import sys
 import tempfile
 
-from scripts.tools.base import REDTEAM, SECURITY_FLAG
+from scripts.tools.base import REDTEAM, SECURITY_FLAG, TARGET_MOUNT as _TARGET_MOUNT
 
-# Where the target is mounted inside every scanner container. One name, so the
-# `-v` mount and the `-w` working directory cannot come to disagree about which
-# path the two mount-cwd scanners are pointed at. (`venv_scope._with_venv_excludes`
-# and bandit's `--ini` pin still spell it literally; both are outside #1877's
-# scope.)
-TARGET_MOUNT = "/src"
+# Re-export the leaf-owned mount so existing runner imports remain stable.
+TARGET_MOUNT = _TARGET_MOUNT
 
 
 def privilege_drop_flags():
