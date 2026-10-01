@@ -468,10 +468,11 @@ def pip_install_commands(script):
     installer script past a gate whose standing requirement is to fail CLOSED.
 
     So is a heredoc body consumed INSIDE a substitution -- `eval "$(cat <<'EOF'
-    … pip install … EOF)"` -- which was the one shape narrower than the text
-    split this replaced: the outer parse held that body in a table the inner
-    re-read could not reach, until the reader handed it over with the
-    substitution's text (#2336).
+    … pip install … EOF)"`, or with the `)"` a line below. The outer parse
+    reads that body into a table the inner re-read cannot reach, and the
+    reader hands it over with the substitution's text (#2336). With the `)"`
+    below, that was the one shape narrower than the text split this replaced;
+    the `EOF)"` spelling's body the inner re-read read itself until #2343.
     """
     out = []
     for statement in _statements(script):
@@ -619,8 +620,10 @@ class TestInstallPinRule(unittest.TestCase):
         # The one shape that was narrower than the raw-text split this
         # replaced: the body lived in the OUTER parse's table, which the
         # re-read of the substitution's text could not reach before #2336.
+        # Its `EOF)"` twin's body has been in that table since #2343.
         for script in ('eval "$(cat <<\'EOF\'\npip install evil\nEOF\n)"\n',
-                       'X="$(cat <<\'EOF\'\npip install evil\nEOF\n)"\n'):
+                       'X="$(cat <<\'EOF\'\npip install evil\nEOF\n)"\n',
+                       'eval "$(cat <<\'EOF\'\npip install evil\nEOF)"\n'):
             self.assertEqual(["pip install evil"], pip_install_commands(script), script)
 
     def test_a_script_with_no_install_is_left_alone(self):

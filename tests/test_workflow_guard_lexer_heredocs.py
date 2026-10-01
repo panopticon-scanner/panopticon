@@ -91,5 +91,62 @@ class TestAHeredocBodyTheEnclosingParseLifts(unittest.TestCase):
         self.assertEqual(defects(GET + one), found)
 
 
+class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
+    """#2343: bash 5.2 ends a heredoc body inside a substitution at a line its
+    delimiter starts with a `)` after it -- `EOF)` -- and reads the rest of
+    that line as code. The lexer ended one only at a line that IS the
+    delimiter, so a later heredoc's `EOF` ended it, and every statement
+    between went into the body: a fetch piped into a shell there was read by
+    nobody. Each body now ends where 5.2 ends it."""
+
+    EARLIER = "echo $(cat <<'EOF'\nhi\nEOF)\n"
+    LATER = "%s | echo \"$(cat <<EOF)\"\nbody\nEOF\n" % PIPE
+    # The differential row it was found in (i-sub:12057).
+    ROW = ("echo $(eval \"echo \\\"%s  t\\\" | sha256sum -c -\") | echo $(bash -s <<'EOF'\n%s\n"
+           "EOF) && sudo -u x %s | env sh | echo \"$(cat <<EOF)\"\nit's\nEOF || bash -s <<'EOF'\n"
+           "%s\nEOF; python3 - <<'EOF'\nprint(1)\nEOF\n" % ("a" * 64, PIPE, PIPE[:-5], PIPE))
+
+    def test_the_statement_after_an_earlier_heredoc_is_read(self):
+        # Without the earlier heredoc the later one is refused by name; with
+        # it the step read clean, and is now refused in the same words.
+        alone = defects(self.LATER)
+        self.assertEqual(1, len(alone), alone)
+        self.assertIn("cannot read this step: a heredoc inside a `$(...)`", alone[0][1])
+        self.assertEqual(alone, defects(self.EARLIER + self.LATER))
+        # With no later one, the fetch is flagged as it was.
+        found = defects(self.EARLIER + PIPE + "\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_row_it_was_found_in_is_refused(self):
+        # Both bashes run its payload. Its `EOF)` ends the body `bash -s`
+        # reads, and the `"$(cat <<EOF)"` after it is refused as above.
+        self.assertEqual(defects(self.LATER), defects(self.ROW))
+
+    def test_each_of_three_heredocs_keeps_the_fetch_after_it(self):
+        # One-line, multi-line, one-line: a fetch after each is read, wherever
+        # it stands, and a later heredoc ends no earlier body.
+        three = ("echo $(cat <<'EOF'\nhi\nEOF)\n{}\ny=$(cat <<'EOF'\nbody\nEOF\n)\n{}\n"
+                 "z=$(cat <<'EOF'\nmore\nEOF)\n{}\ncat <<'EOF'\ndata\nEOF\n")
+        for pipes in ((PIPE, PIPE, PIPE), (PIPE, "", ""), ("", PIPE, ""), ("", "", PIPE)):
+            with self.subTest(pipes=pipes):
+                found = defects(three.format(*pipes))
+                self.assertEqual(sum(map(bool, pipes)), len(found), found)
+        self.assertEqual([], defects(three.format("", "", "")))
+
+    def test_a_quote_or_a_subshell_there_reads_as_bash_reads_it(self):
+        # An apostrophe in a one-line body was read as code, its quote open
+        # to the end of the step; `EOF (...)` is a subshell 5.2 runs, not a
+        # body line. At the top, as in bash, an `EOF)` line is a body line.
+        for script in ("x=$(cat <<'EOF'\nit's\nEOF)\n%s\n" % PIPE,
+                       "x=$(cat <<EOF\nEOF (%s)\nEOF\n)\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+        self.assertEqual([], defects("x=$(cat <<'EOF'\nit's\nEOF)\necho done\n"))
+        self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

