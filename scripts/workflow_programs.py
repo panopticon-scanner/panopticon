@@ -150,8 +150,9 @@ def candidates(argv):
 
 
 # What a `$` may carry without braces: a name, or the positional SET `$@` or
-# `$*`, three spellings of one thing (review r0 finding 2). Not `$-`, `$#`,
-# `$$` or `$?`, whose value names no program a step could have downloaded.
+# `$*`, three spellings of one thing (review r0 finding 2). Not the bare `$-`,
+# `$#`, `$$` or `$?` (their braced forms ARE matched): a program named by one
+# of those is a path the fetch-and-exec rule or #2294 already reports.
 _NAME = re.compile(r"\w+|[@*]")
 
 
