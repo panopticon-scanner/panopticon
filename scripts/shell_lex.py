@@ -27,12 +27,12 @@ one forward pass, from the state it is in, and so does `lex`:
     here-strings   the word after a `<<<` outside `$(...)`, spelled as bash
                    hands it over, where nothing in it expands (`_string`)
 
-Two readings are not bash's. A `<<` with no terminator line below it is left
-as text rather than swallowing the rest of the script: bash runs nothing below
-it, so reading it as code can only report more. And a heredoc inside `$(...)`
-is lifted into the enclosing parse, so the text that substitution is re-read
-from holds a marker instead of the body -- a gap `scripts/workflow_guard.py`
-documents. A delimiter bash has to PARSE to spell -- a `$(...)`, `${...}`,
+One reading is not bash's. A `<<` with no terminator line below it is left as
+text rather than swallowing the rest of the script: bash runs nothing below
+it, so reading it as code can only report more. A heredoc inside `$(...)` is
+read in the text around it, as bash 5.2 reads it, and its marker goes with
+the substitution's text to the parse that reads it again (`shell_text.Lifted`,
+#2336). A delimiter bash has to PARSE to spell -- a `$(...)`, `${...}`,
 `$[...]` or backquote in the word, an escape `$'...'` decodes, an extglob
 pattern -- has no reading short of bash's: a body ended at a guessed spelling
 swallows what bash runs, and a body read as code hides it behind a quote left

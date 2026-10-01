@@ -467,15 +467,11 @@ def pip_install_commands(script):
     the argv alone would have let `X=$(pip install evil)` and a `cat <<EOF`
     installer script past a gate whose standing requirement is to fail CLOSED.
 
-    One exception, and it is narrower than the text split this replaced: a
-    heredoc body consumed INSIDE a substitution -- `eval "$(cat <<'EOF' … pip
-    install … EOF)"`. The outer parse holds that body in a table the inner
-    re-read cannot reach, so what the `eval` runs is unread. Reaching it means
-    handing one parse's tables to another, which is the same gap the
-    fetch-and-exec guard records for the same shape (see its docstring). Not
-    reachable today -- no `cat <<EOF` in any workflow or Dockerfile -- and
-    pinned below, so the day it starts being seen this paragraph is edited
-    with it.
+    So is a heredoc body consumed INSIDE a substitution -- `eval "$(cat <<'EOF'
+    … pip install … EOF)"` -- which was the one shape narrower than the text
+    split this replaced: the outer parse held that body in a table the inner
+    re-read could not reach, until the reader handed it over with the
+    substitution's text (#2336).
     """
     out = []
     for statement in _statements(script):
@@ -619,14 +615,13 @@ class TestInstallPinRule(unittest.TestCase):
         script = "cat <<'EOF' > setup.sh\npip install evil\nEOF\n"
         self.assertEqual(1, len(pip_install_commands(script)))
 
-    def test_an_install_inside_a_heredoc_inside_a_substitution_is_unread(self):
-        # The one shape narrower than the raw-text split this replaced, and
-        # the twin of the fetch guard's own documented gap: the body lives in
-        # the OUTER parse's table, which the re-read of the substitution's
-        # text cannot reach.
+    def test_an_install_inside_a_heredoc_inside_a_substitution_is_seen(self):
+        # The one shape that was narrower than the raw-text split this
+        # replaced: the body lived in the OUTER parse's table, which the
+        # re-read of the substitution's text could not reach before #2336.
         for script in ('eval "$(cat <<\'EOF\'\npip install evil\nEOF\n)"\n',
                        'X="$(cat <<\'EOF\'\npip install evil\nEOF\n)"\n'):
-            self.assertEqual([], pip_install_commands(script), script)
+            self.assertEqual(["pip install evil"], pip_install_commands(script), script)
 
     def test_a_script_with_no_install_is_left_alone(self):
         self.assertEqual([], pip_install_commands("python -m pytest tests/ -q\n"))

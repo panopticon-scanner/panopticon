@@ -57,7 +57,7 @@ PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 829,
     "scripts/triage.py": 792,
-    "scripts/workflow_guard.py": 777,
+    "scripts/workflow_guard.py": 776,
     "skill/scripts/diff_map.py": 1215,
     "skill/scripts/discovery.py": 1931,
     "skill/scripts/driver.py": 1238,

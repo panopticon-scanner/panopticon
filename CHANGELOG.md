@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The shell lexer reads, or refuses by name, a heredoc delivered inside a substitution (#2331).**
+  The body of a heredoc in `$(...)` whose `EOF` and `)` stand on lines of their own is read (#2336).
 - **The workflow guard reads the command and program forms its reviews found unread (#2331).**
   The command behind an `A+=x`, `a[1]=x` or `arr=(a b)` prefix is now read, as `X=1`'s is (#2348).
   The program after option words that follow `-c` is read: `sh -c -e P`, `sh -c -- P` (#2332).

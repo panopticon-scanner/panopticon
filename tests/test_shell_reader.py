@@ -1187,3 +1187,35 @@ class TestDoubleQuoteEscapesInAProgram(unittest.TestCase):
                        "eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"'):
             with self.subTest(script=script):
                 self.assertFalse(hasattr(stage(script).argv[-1], "spelled"))
+
+
+class TestAHeredocBodyGoesBackWithItsSubstitution(unittest.TestCase):
+    """#2336: the body of a heredoc inside `$(...)`, `<(...)` or `>(...)` is
+    read in the text around it, and its marker left in the substitution's
+    text. Each lifted text carries the entries of the markers in it, so the
+    parse that reads it again files each body under the redirection that
+    stands where its marker does."""
+
+    def test_the_stage_reads_the_body_its_redirection_queued(self):
+        outer = stage("x=$(bash -s 3<<'B' <<'A'\ndata\nB\nscript\nA\n)\n")
+        self.assertEqual(1, len(outer.substitutions), outer.substitutions)
+        inner = stage(outer.substitutions[0])
+        self.assertEqual((["bash", "-s"], ("script", False), "script"),
+                         (inner.argv, inner.stdin_heredoc, inner.heredoc))
+        # Two substitutions deep, and in a process substitution.
+        outer = stage('x=$(echo "$(cat <<EOF\nbody $X\nEOF\n)")\n')
+        self.assertEqual(1, len(outer.substitutions), outer.substitutions)
+        middle = stage(outer.substitutions[0])
+        self.assertEqual(1, len(middle.substitutions), middle.substitutions)
+        self.assertEqual(("body $X", True), stage(middle.substitutions[0]).stdin_heredoc)
+        outer = stage("cat <(sh <<'EOF'\nscript\nEOF\n)\n")
+        self.assertEqual(1, len(outer.substitutions), outer.substitutions)
+        self.assertEqual(("script", False), stage(outer.substitutions[0]).stdin_heredoc)
+
+    def test_a_text_that_carries_no_body_reads_as_it_did(self):
+        # A plain string spelled like a marker is a word, and a substitution
+        # with no heredoc in it carries nothing.
+        outer = stage("x=$(echo @@shell-0@@)\n")
+        self.assertEqual(1, len(outer.substitutions), outer.substitutions)
+        self.assertEqual(["echo", "@@shell-0@@"], stage(outer.substitutions[0]).argv)
+        self.assertEqual({}, outer.substitutions[0].heredocs)
