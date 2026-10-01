@@ -203,6 +203,31 @@ class TestNormalizationContract(unittest.TestCase):
                 for f in findings:
                     self._assert_normalized(name, adapter, f)
 
+    def test_empty_location_is_reserved_for_disclosed_unplaceable_findings(self):
+        raw = (
+            '<BugCollection version="4.8.6">'
+            '<BugInstance type="COMMAND_INJECTION" rank="12" priority="2">'
+            '<Class classname=""/>'
+            '<SourceLine classname="" start="65" sourcepath="/etc/passwd"/>'
+            '</BugInstance></BugCollection>').encode()
+        with tempfile.TemporaryDirectory() as root:
+            token = base.target_root_cv.set(root)
+            try:
+                finding = only(ADAPTERS["spotbugs"].parse(raw, "Probe"))
+            finally:
+                base.target_root_cv.reset(token)
+        self.assertEqual(finding["location"]["file"], "")
+        self.assertEqual(finding["tool_evidence"]["path_resolution"], "unresolved")
+        self._assert_normalized("spotbugs", ADAPTERS["spotbugs"], finding)
+
+        for evidence in ({}, {"path_resolution": "resolved"}):
+            with self.subTest(tool_evidence=evidence):
+                invalid = dict(finding, tool_evidence=evidence)
+                with self.assertRaisesRegex(AssertionError,
+                                            "location.file is empty"):
+                    self._assert_normalized(
+                        "spotbugs", ADAPTERS["spotbugs"], invalid)
+
     def _assert_normalized(self, name, adapter, f):
         for key in ENVELOPE_KEYS:
             self.assertIn(key, f, "%s: finding is missing %r" % (name, key))
@@ -229,14 +254,20 @@ class TestNormalizationContract(unittest.TestCase):
         # a finding without it cannot be placed.
         loc = f["location"]
         self.assertIsInstance(loc, dict, "%s: location is not an object" % name)
-        self.assertTrue(loc.get("file"), "%s: location.file is empty" % name)
-        # ...and a repo-relative one: see PATH_DEBT above for the half of this
-        # a bytes-only contract cannot check, which no adapter owes today.
-        shape = _path_shape_error(loc["file"])
-        self.assertIsNone(
-            shape, "%s: location.file %r is %s -- the delta gate, the advisor's "
-            "read grant and every exclude glob resolve it against the repo root"
-            % (name, loc["file"], shape))
+        if loc.get("file") == "":
+            evidence = f.get("tool_evidence")
+            self.assertEqual(
+                evidence.get("path_resolution") if isinstance(evidence, dict) else None,
+                "unresolved", "%s: location.file is empty without an "
+                "unresolved path_resolution disclosure" % name)
+        else:
+            self.assertTrue(loc.get("file"), "%s: location.file is empty" % name)
+            # See PATH_DEBT above for what a bytes-only contract cannot check.
+            shape = _path_shape_error(loc["file"])
+            self.assertIsNone(
+                shape, "%s: location.file %r is %s -- the delta gate, the "
+                "advisor's read grant and every exclude glob resolve it against "
+                "the repo root" % (name, loc["file"], shape))
         self.assertIsInstance(loc.get("line_start"), int,
                               "%s: location.line_start is not an int" % name)
         # `>= 1`, not `>= 0`: the report schema's own `minimum` for this field

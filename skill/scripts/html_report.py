@@ -608,17 +608,9 @@ def _render_header(report):
 
 
 def _render_scanner_context(meta):
-    """#1637 P08 ruling 5: how many panels reviewed with scanner evidence.
-
-    Next to the coverage line because it answers the same question from the
-    reviewer's side -- meta.coverage says which adapters produced output, and
-    this says how many reviewers were actually shown any. Run-13's report
-    looked complete while 85 of its panels had seen none.
-
-    Silent on a report with no such block: a pre-#1637 report, or one fed to
-    --compare, did not measure this, and rendering "0 of 0" would state a
-    measurement nobody made. A run that dispatched no panel is the same shape
-    for the same reason.
+    """Scanner evidence and limitations measured for this run.
+    Silent when no measured fact exists: older or foreign reports must not
+    acquire a fabricated zero.
     """
     tools = meta.get("tools") or {}
     block = tools.get("panels_with_scanner_context")
@@ -636,6 +628,14 @@ def _render_scanner_context(meta):
     # panel at all -- it is a fact about what this run could still have found.
     if tools.get("disabled_mid_run") is True:
         parts.append("the tool scan was disabled mid-run with --no-tools")
+    unplaceable = tools.get("unplaceable")
+    if isinstance(unplaceable, dict):
+        for name, count in sorted(unplaceable.items(), key=lambda item: str(item[0])):
+            if (not isinstance(name, str) or not name or not isinstance(count, int)
+                    or isinstance(count, bool) or count < 1):
+                continue
+            parts.append("%s: %d finding%s could not be placed under the target root"
+                         % (_escape(name), count, "" if count == 1 else "s"))
     parts.extend(_partial_audit_notes(tools.get("sanitized")))
     parts.extend(_egress_notes(tools.get("network")))
     if not parts:
