@@ -521,7 +521,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version`. Only `hunks not an object` can reach this block, because the other three -- `unsupported schema_version` included, which rejects the whole payload (#2382) -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. Since #2405 a set value here does what a non-zero `ranges_dropped` does: a PASS gate under `--gate-scope on-diff` with gate-eligible findings reads INCONCLUSIVE. Null when nothing was rejected, and null when this context was not built by reading a file."
+                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version`. Only `hunks not an object` can reach this block, because the other three -- `unsupported schema_version` included, which rejects the whole payload (#2382) -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. The #2405 gate rule NAMES this key so its measure is total over that vocabulary, but no value here can publish its reason: `hunks not an object` leaves the hunk map empty, so `hunks_ranges` is 0 and such a run reads INCONCLUSIVE under the older zero-hunk refusal (#2178) instead. Null when nothing was rejected, and null when this context was not built by reading a file."
                 },
                 "on_diff_total": {
                   "type": "integer",
@@ -545,7 +545,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all four values can appear here, including the three (`unreadable` -- which covers a path that does not exist -- `not an object`, and `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1) that leave no `base` and so no `delta` block at all. Only `hunks not an object` can therefore trip the #2405 gate rule, which requires an active delta; the other three degrade the gate to the wider scope, which fails closed. Null when nothing was rejected."
+                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all four values can appear here, including the three (`unreadable` -- which covers a path that does not exist -- `not an object`, and `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1) that leave no `base` and so no `delta` block at all. The #2405 gate rule names this key so its measure is total over the vocabulary, and no value here reaches that reason in a real run: `hunks not an object` is the only one that leaves an ACTIVE delta and it empties the hunk map, so the zero-hunk refusal (#2178) is what such a run publishes, while the other three degrade the gate to the wider scope, which fails closed. Null when nothing was rejected."
                 },
                 "keys_repaired": {
                   "type": "array",

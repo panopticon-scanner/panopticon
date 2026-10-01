@@ -1049,7 +1049,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `paths_emptied_by_drops`, a non-zero `ranges_dropped` or a set `payload_malformed` turns a run
   carrying gate-eligible findings from PASS to `gate: INCONCLUSIVE`, because the map that chose
   the gate's scope is provably damaged — the `zero_hunk_gate_gap` posture over a map that still
-  carries ranges. The blind spot is deliberate: a truncated map whose paths arrived `[]` cannot be
+  carries ranges, which in practice means the two drop arms: the older rule wins when both hold,
+  and the one `payload_malformed` value an active delta can carry empties the map, so #2178
+  answers there. The blind spot is deliberate: a truncated map whose paths arrived `[]` cannot be
   told from a deletion-only, binary, mode-only or same-content rename change, so the rest of
   `paths_without_ranges` stays disclosed and is never gated on. An ACTIVE delta
   whose map is empty (`hunks_files: 0`) matches no

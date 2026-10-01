@@ -832,6 +832,11 @@ class TestBrokenArtifactGateGap(unittest.TestCase):
         self.assertNotIn("paths_emptied_by_drops", gap)
 
     def test_a_rejected_payload_is_a_gap_and_names_the_reason(self):
+        # FUNCTION-LEVEL only, never a production path: `hunks not an object` is
+        # the one value that reaches an active delta and it leaves the map empty,
+        # so `ranges == 0` and `delta_gate_gap` publishes the zero-hunk reason
+        # instead (review round 1, finding 1). The arm exists so the measure is
+        # total over the closed vocabulary.
         ctx = self._ctx({"base": "main", "hunks": 7})
         gap = delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff")
         self.assertIn("the payload was rejected", gap)
@@ -859,6 +864,22 @@ class TestBrokenArtifactGateGap(unittest.TestCase):
         self.assertEqual(ctx.report.paths_emptied_by_drops, 0)
         self.assertEqual(ctx.report.ranges_dropped, 0)
         self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
+
+    def test_a_dropped_path_beside_a_surviving_range_is_no_gap(self):
+        # The ruling's chosen BOUNDARY, pinned: `paths_dropped` is not one of the
+        # three counters in the measure, so a map that lost a whole path while
+        # keeping a range elsewhere does not turn the gate INCONCLUSIVE -- even
+        # though it is broken by the same standard, and even though the direction
+        # is fail-OPEN (the dropped file leaves the map, so every finding in it
+        # classifies off-diff and leaves this gate's source set). Without this
+        # case, widening the measure to `paths_dropped` is a silent change.
+        # Tracked separately for an owner ruling, not fixed here.
+        ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]], "b.py": 7}})
+        self.assertEqual((ctx.report.ranges, ctx.report.paths_dropped,
+                          ctx.report.ranges_dropped,
+                          ctx.report.paths_emptied_by_drops), (1, 1, 0, 0))
+        self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
+        self.assertIsNone(delta_mod.delta_gate_gap(ctx, 2, "on-diff"))
 
     def test_a_clean_populated_map_is_no_gap(self):
         self.assertIsNone(delta_mod.broken_artifact_gate_gap(
@@ -910,7 +931,7 @@ class TestBrokenArtifactGateGap(unittest.TestCase):
 
 
 class TestDeltaGateGap(unittest.TestCase):
-    """#2405: the composer, and the one call site `grading.build_report` has. The
+    """#2405: the composer, and the one call site `grading.grade_report` has. The
     zero-hunk reason WINS when both rules hold -- it is the stronger statement,
     that the gate's whole source set is unmeasured rather than merely damaged,
     and two notes about one read leave the operator reconciling what looks like

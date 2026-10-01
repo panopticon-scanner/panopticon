@@ -448,7 +448,14 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     population, `eligible_count`) had nothing scoped away; and `ctx.report`
     None means nothing measured the read, so there is no damage to trust. Only
     the MEASURE differs -- and when both rules hold `zero_hunk_gate_gap` takes
-    precedence, which is what `delta_gate_gap` below composes."""
+    precedence, which is what `delta_gate_gap` below composes.
+
+    That precedence PREEMPTS the `payload_malformed` arm outright. The measure
+    names the key so it is total over the closed vocabulary, but the one value
+    that reaches an active delta -- `hunks not an object` -- makes the loader
+    read an empty map, so `ranges == 0` and the zero-hunk reason is what any
+    real run publishes. This arm therefore answers a direct call only, and the
+    schema says so under both `payload_malformed` nodes."""
     report = ctx.report
     if not (ctx.active and report is not None and eligible_count > 0
             and gate_scope == "on-diff"):
@@ -471,7 +478,7 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     if report.paths_emptied_by_drops:
         damage.append("%d named path(s) were emptied of every range "
                       "(paths_emptied_by_drops), so a finding in one of them "
-                      "still reaches this gate on-diff"
+                      "still reaches this gate's source set on-diff"
                       % report.paths_emptied_by_drops)
     # The SHAPE is `zero_hunk_gate_gap`'s, clause for clause: the claim, then the
     # count qualified exactly as #2222 qualifies it, then the cause, then the one
