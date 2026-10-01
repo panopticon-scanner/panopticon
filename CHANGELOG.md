@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Evidence-scope import scans are bounded and memoized (#2533, #1816).** Each source is a
+  regular file read at most once per entry and only through a 4 MiB byte cap before parsing.
 - **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
   `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
   and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`
