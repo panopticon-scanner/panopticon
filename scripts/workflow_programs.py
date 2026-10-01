@@ -224,9 +224,9 @@ def stdin_program(argv):
         # `scripts()`'s OWN join drops `-`-words for its literal-text
         # callers, a filter wrong for this join (review R1-I2) -- re-join
         # eval's words here instead of using `scripts()`'s filtered list. A
-        # leading `--` of eval's OWN is dropped first either way (`eval --
-        # bash -s` still reads stdin, bash-true: `eval`'s own options end
-        # there, unjoined, same as any special builtin's).
+        # leading `--` is dropped first: bash's `eval` ends its own options
+        # there (`eval -- bash -s` reads stdin), but dash's runs `--` as a
+        # command and nothing runs -- fail-closed where a step's `sh` is dash.
         is_eval = os.path.basename(argv[0]) == "eval"
         words = [t for t in (argv[1:] if is_eval else found) if not shell_reader.is_marker(t)]
         if is_eval and words and getattr(words[0], "spelled", words[0]) == "--":
