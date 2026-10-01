@@ -258,10 +258,16 @@ class TestMatrixCoverage(unittest.TestCase):
         # A stale `!` negation is dead the same way: it holds out a path that
         # is no longer there, so whatever it was written to keep out of the
         # leaf has been renamed into it. Patterns are SKIPPED rather than
-        # resolved -- a glob matching nothing is a different question, and a
-        # surface glob is allowed to be written ahead of the tree
-        # (`test_the_runtime_surface_reaches_nested_paths` relies on that).
-        # `exists`, not `isfile`: an entry may name a directory.
+        # resolved -- a glob matching nothing is a different question (every
+        # catalog glob matches today; a forward-written one is allowed).
+        #
+        # Resolution follows `discovery.glob_to_re`, not `os.path.exists`: a
+        # literal with no `/` is unanchored and matches its basename at any
+        # depth, so it is live while any reviewable file carries that name;
+        # one with a `/` is root-anchored (a leading `/` is stripped), names a
+        # tree when it ends in `/` and a file otherwise. A bare directory
+        # path without the slash matches nothing, so `exists` would bless
+        # dead text there (#2454 review).
         stale = []
         for group, body in sorted(self.catalog.items()):
             for axis in ("match", "tests"):
@@ -269,7 +275,14 @@ class TestMatrixCoverage(unittest.TestCase):
                     if any(ch in entry for ch in "*?["):
                         continue
                     target = entry[1:] if entry.startswith("!") else entry
-                    if not os.path.exists(os.path.join(REPO_ROOT, target)):
+                    if "/" not in target:
+                        live = any(f == target or f.endswith("/" + target)
+                                   for f in self.files)
+                    else:
+                        probe = os.path.join(REPO_ROOT, target.lstrip("/"))
+                        live = (os.path.isdir(probe) if target.endswith("/")
+                                else os.path.isfile(probe))
+                    if not live:
                         stale.append("%s: %s" % (group, entry))
         self.assertEqual(
             stale, [],
