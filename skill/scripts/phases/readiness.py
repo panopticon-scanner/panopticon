@@ -334,6 +334,28 @@ def _guide_row():
                          os.path.join("docs", hosts.GUIDE))}
 
 
+def _with_remedy(error):
+    """One `repo_config` refusal, with the setup remedy appended unless it is
+    the missing-pyyaml refusal, which names its own install (#2384).
+
+    `driver setup` is where a config problem is addressed: `setup_flow.provision`
+    refuses a config it cannot read -- with its own "fix it or delete it;
+    nothing was written" -- and seeds a fresh one once it is gone, so the tail
+    "fix it or re-run `driver setup`" is the right pointer for those refusals.
+    It is the wrong pointer for the missing-pyyaml refusal #2369 added: that
+    one names `pip install pyyaml`, because setup will not install a package.
+
+    Matched on the refusal's own OPENING, not on an install named anywhere in
+    it: several refusals quote target-authored text (PyYAML echoes the
+    offending line, the version refusal interpolates the committed value), so
+    a substring rule let a planted config suppress the tail. The opening is
+    pinned by equality in `tests/test_repo_config.py`, so a reword reds both
+    ends rather than silently restoring the contradiction."""
+    if error.startswith("pyyaml is not usable"):
+        return error
+    return "%s -- fix it or re-run `driver setup`" % error
+
+
 def _matrix_row(review_root):
     """The committed matrix and what it has to review. Gating: without a
     committed root config every file falls back to `._N` chunks, which is a
@@ -349,8 +371,10 @@ def _matrix_row(review_root):
     counts = {"groups": 0, "code_files": 0, "tests_files": 0, "config": "none"}
     doc = repo_config.read_document(review_root)
     if doc.errors:
-        return dict(counts, ok=False, detail="%s -- fix it or re-run `driver setup`"
-                    % "; ".join(doc.errors))
+        # Per refusal, not one tail for the whole join: #2384. The refusals
+        # differ in what fixes them, and `_with_remedy` holds that rule.
+        return dict(counts, ok=False,
+                    detail="; ".join(_with_remedy(e) for e in doc.errors))
     if doc.path is None:
         # A REFUSAL resolves to no document and no error -- a symlink at
         # either config name is the case that matters (`repo_config.resolve`
@@ -364,8 +388,11 @@ def _matrix_row(review_root):
     try:
         catalog = discovery._matrix_catalog(review_root) or {}
     except ValueError as exc:
-        return dict(counts, ok=False,
-                    detail="%s -- fix it or re-run `driver setup`" % exc)
+        # Through `_with_remedy` as well, so the tail literal has ONE owner
+        # (#2384). `_matrix_catalog` re-reads the document and re-raises its
+        # refusals; the ones that reach here are ordinary refusals (the first
+        # read already proved yaml imports), and they get the same tail.
+        return dict(counts, ok=False, detail=_with_remedy(str(exc)))
     code_files, _commons, tests_files = grouping_engine.count_code_files(
         discovery.discover_repo_files(review_root))
     counts = dict(counts, groups=len(catalog), code_files=code_files,
