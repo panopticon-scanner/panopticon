@@ -353,6 +353,21 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertIsNone(forms.stdin_program(argv))
 
+    def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
+        # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash, as `bash $(true)` does -- the value form
+        # (`_value`) in the operand slot does not end the walk at a FILE,
+        # so it reads on to the heredoc exactly as `sh -s` does. Quoting is
+        # already lost by the time a word reaches here (`sh "$X"` and
+        # `sh $X` give the same argv), so the quoted spelling answers alike.
+        for script in ("sh $X", "bash $(true)", "bash $X"):
+            with self.subTest(script=script):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv(script)))
+        # Limited to shells: a FOREIGN interpreter's file operand is unaffected.
+        self.assertIsNone(forms.stdin_program(self.argv("python3 $S")))
+        # A literal word still ends the walk at a file, value-form or not.
+        self.assertIsNone(forms.stdin_program(self.argv("sh x.sh")))
+
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):
     """#2337: any other dynamic command word handed a `-c` cluster may be a

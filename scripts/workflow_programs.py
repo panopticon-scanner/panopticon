@@ -184,6 +184,14 @@ def stdin_program(argv):
     ENCLOSING command, so its heredoc, here-string or pipe is `bash -s`'s or
     `sh`'s program, not `eval`'s or `-c`'s. `eval 'echo hi'` and `bash -c
     'cat'` are not stdin-reading shells, so they are unaffected.
+
+    For a SHELL, a value form or a word that may vanish (`_value`) does not
+    END the walk there either (#2485): `X=-s; sh $X <<'EOF'` runs the
+    heredoc in bash 3.2.57, 5.2.21 and dash alike, as `bash <<'EOF' $(true)`
+    and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
+    word outright. Read IN PLACE rather than weighed, fail-closed: `X` may
+    just as well spell a FILE (`X=script.sh`), so this over-reports there --
+    see the guard's gap list, which names it.
     """
     if not argv:
         return None
@@ -202,6 +210,8 @@ def stdin_program(argv):
         if token in _STDIN_OPERANDS:
             return answer
         if not token.startswith(("-", "+")):
+            if shell and _value(token):
+                continue                    # the walk goes on as if absent
             return None                     # the program is this file
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if shell and "c" in letters:

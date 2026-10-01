@@ -346,6 +346,30 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
+    def test_2485_a_value_or_a_vanishing_word_does_not_end_a_shells_walk(self):
+        # A value form (`$X`, quoted the same once the reader sees it) or a
+        # word bash may drop outright does not end the walk at a FILE
+        # operand, so the heredoc past it reads as the shell's program --
+        # fail-closed, same as `sh -s` already was.
+        for script in ("X=-s\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "sh $X <<'EOF'\n%s\nEOF\n" % PIPE,  # X unset: the empty word drops
+                       "X=-s\nsh \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash <<'EOF' $(true)\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # A clean body stays clean: nothing about the value matters here.
+        self.assertEqual([], defects("X=-s\nsh $X <<'EOF'\necho hi\nEOF\n"))
+        # Fail-closed over-report, named in the guard's gap list: bash runs
+        # the FILE `$X` names, not the heredoc, but the reader cannot tell
+        # `X=script.sh` from `X=-s` -- both are just `$X` by the time this
+        # walk sees them.
+        found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+        # The must-trip control and the unaffected FOREIGN form.
+        self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
+        self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
+
 
 if __name__ == "__main__":
     unittest.main()
