@@ -377,9 +377,9 @@ def unread_program(argv, stage, walk, inside, before=None):
     they do not spell out (`unprinted`, `before` being the stage in front of
     it, #2333), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" |
     sh` are `Idle`, and `sh $X`, with no word after the value, hands none.
-    A dynamic candidate (`sh $X "$Y"`) is not walked, so alone it is `Idle`
-    too (review N2 of #2331). A command the guard reports unresolved (`sudo
-    $CMD -c …`) is not read again here."""
+    A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
+    is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
+    guard reports unresolved (`sudo $CMD -c …`) is not read again here."""
     handed = inside and substitution_script(argv, stage, walk, before)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before)
     if handed or not (words or printer) or shell_reader.unresolved_wrapper(stage.argv):
@@ -396,7 +396,8 @@ def unread_program(argv, stage, walk, inside, before=None):
         "any word after it may be the program the shell runs, and one here may fetch or run a "
         "download unchecked; write the options out, or exempt the step with a reason"
         % (os.path.basename(argv[0]), shell_reader.readable(value))),
-        [w for w in words if not shell_reader.dynamic(w, shell_reader.has_substitution)], walk)
+        [getattr(w, "spelled", w) for w in words
+         if not (shell_reader.is_marker(w) or isinstance(w, shell_reader.Rewritten))], walk)
 
 
 _PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not spell out -- it "

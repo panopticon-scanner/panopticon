@@ -82,8 +82,8 @@ runs each live, so a change that catches one fails there and edits this list.
   A download kept in a variable is followed to a shell whole (`carried`, #2341),
   not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
   and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
-  A value in a shell's options (`sh $X '…'`) is not followed: each word after it may be the
-  program (`candidates`, #2344), reported where a literal one fetches or the job downloads.
+  A value in a shell's options (`sh $X '…'`) is not followed: the words after it read as
+  `-c` strings (#2344), a `$(…)` or `Rewritten` one reported where the job downloads.
   Nor is a `$` command word: `${X:-sh}` reads as the shell it defaults to, another handed
   `-c` makes its program a candidate (#2337); `sh -c "$P"` and `$CMD --flag` read nothing.
   A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it (#2342).

@@ -121,7 +121,7 @@ def candidates(argv):
     … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
     -I{} sh {} '…'` do. This module follows no value, so every word after it
     may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern),
-    which `unread_program` cannot read (review N2 of #2331); (None, []) where
+    which `unread_program` weighs too (review N2 of #2331); (None, []) where
     the options end first, at a program, a `-c` whose string `scripts` reads,
     or a `-` or `--`. A value that is the command word, handed a `-c` cluster,
     may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after

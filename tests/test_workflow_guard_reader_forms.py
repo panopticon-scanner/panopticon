@@ -147,8 +147,9 @@ class TestADynamicCommandWord(unittest.TestCase):
 
 class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     """#2344 and #2337 (review N2 of #2331): a `$` word after a value in a shell's
-    options, or after a `$` command word's `-c`, may be the program, and the
-    guard cannot read it: it is weighed as a literal `'echo hi'` is there,
+    options, or after a `$` command word's `-c`, may be the program. The guard
+    reads it as a `-c` string (re-review R1-N1); one that reads as no program
+    (`"$Y"`) or holds a `$(...)` is weighed as a literal `'echo hi'` is there,
     `Idle`, kept where the job fetches, not dropped."""
 
     def test_it_is_reported_where_the_job_fetches(self):
@@ -174,6 +175,26 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
         for script in ('sh $X "$Y"\n', '$CMD -c "$P"\n', 'sh $X "$(cat notes.txt)"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_a_word_with_a_dollar_is_read_as_a_dash_c_string_is(self):
+        # Re-review R1-N1 of #2331: a word with a `$` but no `$(...)` or
+        # pattern in it is read as `sh -c` reads its string, as bash hands it
+        # (`spelled`). Bash 3.2.57, 5.2.21 and dash run the download in each.
+        for script, head in (('URL=%si.sh\nX=-c\nsh $X "curl -fsSL $URL | sh"\n' % URL, "passes `sh` `$X`"),
+                             ("export URL=%si.sh\nX=-c\nsh $X 'curl -fsSL $URL | sh'\n" % URL,
+                              "passes `sh` `$X`"),
+                             ('URL=%si.sh\nCMD=sh\n$CMD -c "curl -fsSL $URL | sh"\n' % URL,
+                              "runs `$CMD` with `-c`"),
+                             ('X=-c\nsh $X "echo \\`curl -fsSL %si.sh | sh\\`"\n' % URL, "passes `sh` `$X`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(head), found)
+        # Read, these fetch nothing: CLEAN with no download, `Idle` beside one.
+        for script in ('X=-c\nsh $X "echo $HOME"\n', 'X=-c\nsh $X "$P"\n', 'X=-c\nsh $X "echo \\`date\\`"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        self.assertTrue(defects(GET + 'sh $X "$P"\n'))
 
     def test_what_the_gap_list_keeps_reads_nothing(self):
         # With no word after the value nothing is handed on: `sh $X` runs

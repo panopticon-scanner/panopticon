@@ -301,8 +301,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be
     `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
     under bash 3.2.57 and 5.2.21 -- so each word after it may be the
-    program. The guard does not follow the value; it reads the literal words
-    and hands on a dynamic one, which it cannot read (review N2 of #2331)."""
+    program. The guard does not follow the value; `candidates` hands on every
+    word after it, a dynamic one too, for `unread_program` (review N2 of #2331)."""
 
     @staticmethod
     def argv(script):
@@ -355,7 +355,7 @@ class TestADynamicCommandWordHandedDashC(unittest.TestCase):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words))
-        # A dynamic program is a candidate too, handed on unread (review N2 of #2331).
+        # A dynamic program is a candidate too (review N2 of #2331).
         self.assertEqual(["$P"], forms.candidates(self.argv('$CMD -c "$P"'))[1])
 
     def test_none_without_a_dash_c(self):
