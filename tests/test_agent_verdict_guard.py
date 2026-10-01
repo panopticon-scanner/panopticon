@@ -364,11 +364,11 @@ ADJUDICATION_FUNCTIONS = (
                              "scope_limited_paths", "resolve_duplicates")),
     ("scripts/synth/verdicts.py", ("resolve_findings",)),
     ("scripts/group_runner.py", ("verdict_is_done", "pending_verdicts")),
-    # #1679: reads the winning verdict's `code` and can rewrite a finding's
-    # `code` and `severity`. `matched` comes from `match_verdict` /
-    # `match_verdict_by_id` above, so what reaches it is already sanitized --
-    # this entry closes the gap in the FUNCTION list, which is what would have
-    # named a future key.
+    # #1679: reads the winning verdict and can rewrite a finding's `severity`
+    # -- since #2101 the only axis, the verdict's `code` no longer being read
+    # here at all. `matched` comes from `match_verdict` / `match_verdict_by_id`
+    # above, so what reaches it is already sanitized -- this entry closes the
+    # gap in the FUNCTION list, which is what would have named a future key.
     ("scripts/synth/codes.py", ("apply_verdict_quality",)),
 )
 
@@ -381,12 +381,13 @@ ADJUDICATION_FUNCTIONS = (
 # being either read or repairable, so this cannot rot into a blanket.
 REPAIR_EXEMPT = {
     ("scripts/synth/codes.py", "code"):
-        "apply_verdict_quality gates the advisor's `code` through "
-        "ocrdb.validate_code before it can replace a finding's, and the only "
-        "values the repair can PRODUCE are the string spelling of a number "
-        "(every other shape is dropped) -- no catalog contains one, so the "
-        "repair cannot change which code is applied. Pinned by "
-        "TestARepairedCodeCannotChangeAFinding.",
+        "the `code` apply_verdict_quality reads is the FINDING's own, looked up "
+        "for that code's catalog default severity -- never the verdict's. Since "
+        "#2101 the advisor's code is read nowhere in the adjudication: "
+        "evidence.apply_verdict records it at provenance.advisor_code and no "
+        "step applies it, so there is nothing for the repair to steer. The walk "
+        "above is receiver-blind, which is the only reason the key still appears "
+        "here. Pinned by TestARepairedCodeCannotChangeAFinding.",
 }
 
 
@@ -453,12 +454,18 @@ class TestRepairTouchesPresentationOnly(unittest.TestCase):
 class TestARepairedCodeCannotChangeAFinding(unittest.TestCase):
     """The outcome REPAIR_EXEMPT's one entry claims, measured rather than argued.
 
-    `apply_verdict_quality` reads the winning verdict's `code`, and `code` is
-    repairable -- so the repair could in principle decide which OCRDb code a
-    finding is published under, and through that code's default severity, its
-    severity. It cannot: the repair's output is gated by `ocrdb.validate_code`,
-    and every shape the repair can produce is either dropped or the string
-    spelling of a number. No catalog entry is named `7`.
+    `code` is repairable, so a repaired code could in principle decide which
+    OCRDb code a finding is published under, and through that code's default
+    severity, its severity. It cannot -- and since #2101 not even a well-formed
+    one can, because `apply_verdict_quality` no longer reads the verdict's
+    `code` at all. The advisor's code is recorded by `evidence.apply_verdict` at
+    `provenance.advisor_code` and applied nowhere, which is the record-only
+    contract the schema and that function's docstring always stated.
+
+    Not vacuous by accident: `_applied` calls the real `apply_verdict_quality`,
+    so a rename or a removal errors here instead of passing, and the
+    non-application is pinned against a REAL catalog code below -- the one shape
+    that used to go through.
     """
 
     BUNDLE = {"domains": {"SEC": {"entries": {
@@ -485,10 +492,20 @@ class TestARepairedCodeCannotChangeAFinding(unittest.TestCase):
                 self.assertNotIn("code_corrected_by", finding)
                 self.assertEqual("HIGH", finding["severity"])
 
-    def test_the_pin_is_not_vacuous_a_real_catalog_code_still_applies(self):
-        finding = self._applied("SEC-B2B")
-        self.assertEqual("SEC-B2B", finding["code"])
-        self.assertEqual("agent:advisor", finding["code_corrected_by"])
+    def test_not_even_a_real_catalog_code_applies_it_is_only_recorded(self):
+        verdict = validate_schema_mod.repair_verdict(
+            {"code": "SEC-B2B", "verdict": "CONFIRMED", "stage": "primary"},
+            warn=lambda _message: None)
+        finding = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH",
+                   "domain": "SEC"}
+        evidence.apply_verdict(finding, verdict)      # the live step before it
+        codes_mod.apply_verdict_quality([finding], {id(finding): verdict},
+                                        self.BUNDLE)
+        self.assertEqual("SEC-A1A", finding["code"])  # #2101: still the panel's
+        self.assertNotIn("code_corrected_by", finding)
+        self.assertEqual("HIGH", finding["severity"])
+        # Where it DID land, so this pin cannot pass by the key going missing.
+        self.assertEqual("SEC-B2B", finding["provenance"]["advisor_code"])
 
     def test_the_presentation_path_is_deliberately_not_guarded(self):
         # `derive_evidence` reads `reasoning` and the controller carrier: it is
