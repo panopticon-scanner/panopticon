@@ -71,20 +71,19 @@ runs each live, so a change that catches one fails there and edits this list.
   KEPT: every download this repo writes -- the fleet's two, the Dockerfiles' ten -- is curl. A
   second tool needs a second option grammar (`gh`'s `-O` is not curl's, and `aws s3 cp` copies
   locally too), and a fetch inside `python3 -c` needs another language entirely.
-* variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
-  tracks the NAME a step writes. A checksum naming the same variable binds; a
-  path spelled differently at fetch and at use matches nothing, and no `cd` is
-  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last parts
-  where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv only),
-  and for a glob where one spells the download's or the download is a bare name.
-  A download kept in a variable is followed to a shell whole (`carried`, #2341),
-  not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
-  and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
-  A value in a shell's options (`sh $X '…'`) is not followed: the words after it read as
-  `-c` strings (`candidates`, #2344), a `$(…)` or `Rewritten` one reported where the job
-  downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another handed
-  `-c` has its program read so (#2337); `sh -c "$P"` and `$CMD --flag` read nothing.
-  A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it (#2342).
+* variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
+  writes. A checksum naming the same variable binds; a path spelled differently at fetch and at use
+  matches nothing, and no `cd` is followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS
+  compares last parts where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv
+  only), and for a glob where one spells the download's or the download is a bare name. A download
+  kept in a variable is followed to a shell whole (`carried`, #2341), not through a cut
+  (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`, and `( x=1 )` empties it only
+  with the `(` alone on its line, which the reader drops. A value in a shell's options (`sh $X '…'`)
+  is not followed: the words after it read as `-c` strings (`candidates`, #2344), a `$(…)` or
+  `Rewritten` one reported where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as
+  its default, another handed `-c` has its program read so (#2337); `sh -c "$P"` and `$CMD --flag`
+  read nothing. A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it
+  (#2342).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -105,17 +104,16 @@ runs each live, so a change that catches one fails there and edits this list.
   bytes have. What is still unread is everything that needs the mount table
   itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument
   the image's ENTRYPOINT supplies, and whatever the image itself runs.
-  KEPT: those need another executor's mounts and entrypoint modelled, which is
-  reading a second program's configuration rather than this job's shell. The
-  image the container came from is NOT pinned either, and that is a decided
-  residual rather than an oversight: this fleet pulls the tools image by its
-  mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
-  each consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
-  `security-fork.yml`, and both "Pull the nightly tools image" steps of
-  `adapter-integration.yml`. DEVELOPMENT.md states the consequence in its own voice twice, in the
-  "One residual to know about" paragraph under "Key design decisions" and in the "Weekly strict
-  security backstop" paragraph ("the tools image remains unpinned"). The `uses:` rule pins
-  ACTIONS by SHA and `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
+  KEPT: those need another executor's mounts and entrypoint modelled, which is reading a second
+  program's configuration rather than this job's shell. The image the container came from is NOT
+  pinned either, and that is a decided residual rather than an oversight: this fleet pulls the tools
+  image by its mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in each
+  consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
+  `security-fork.yml`, and both "Pull the nightly tools image" steps of `adapter-integration.yml`.
+  DEVELOPMENT.md states the consequence in its own voice twice, in the "One residual to know about"
+  paragraph under "Key design decisions" and in the "Weekly strict security backstop" paragraph
+  ("the tools image remains unpinned"). The `uses:` rule pins ACTIONS by SHA and
+  `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
   (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
   neither governs a `docker pull` of a tag.
 * an executor that reads the file by convention rather than by argument (`make`, `npm install`):
@@ -154,12 +152,15 @@ runs each live, so a change that catches one fails there and edits this list.
   (`_unread_stdin`): it runs what bash expands it to, values and `$(...)` output this guard never
   sees. A program in a language this module has no grammar for is reported too (the answer
   `unparseable` gives a `shell: python` step), and THAT report is weighed: kept, since #2499, only
-  where the job holds a fetch this guard reports. So is one behind a `$` command word, a value no
-  table places (#2473): `CMD=sh; $CMD <<'EOF'` running a download reads CLEAN beside no reported
-  fetch, though bash runs it, and a pipe into it (`echo P | $CMD`) is unread, filed under #2331.
-  What that leaves unread: an interpreter behind an option it reads as a filename / one taking a
-  value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or named as a FILE by a builtin outside
-  its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host bash -s <<'EOF'`,
+  where the job holds a fetch this guard reports. So is the hand-off to a `$` command word, a value
+  no table places (#2473), whose QUOTED body is read as shell besides: a `curl … | sh` there is
+  caught, a check there clears nothing. An EXPANDING body is unread: one running a download reads
+  CLEAN beside no reported fetch, though bash runs it (#2499's price, as `python3 - <<EOF` pays it);
+  so does any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it whose text no
+  printer spells out (`echo "$X" | $CMD`) is unread, both filed under #2331. What that leaves
+  unread: an interpreter behind an option it reads as a filename / one taking a value other than
+  `-o`/`-O` (`bash --rcfile f <<'EOF'`), or named as a FILE by a builtin outside its table
+  (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host bash -s <<'EOF'`,
   `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`), whose argv this walk reads as
   the transport's; and one under a name no table carries (`python3.11 -`, `busybox sh`) -- keyed, as
   everywhere in this module, on the program's basename. A program `echo` or `printf` PIPES into a
@@ -282,12 +283,12 @@ def _unread_stdin(stage):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
     A heredoc body or here-string handed to an interpreter is a program, not data
-    (`workflow_programs.stdin_program`), and two kinds of it cannot be read: one in a language
-    this module has no grammar for -- `Idle`, which `kept` stands only beside a fetch this guard
-    reports (#2499) -- and one the shell would EXPAND, a body whose `$(...)` were lifted into the
-    enclosing parse's table before it reached here or a here-string whose word bash expands first
-    (#2293), reported fetch or no fetch. Quoted shell is the third kind and is READ, in
-    `workflow_programs.stdin_scripts`."""
+    (`workflow_programs.stdin_program`). One in a language this module has no grammar for, and one
+    handed to a `$` command word no table places (#2473), are `Idle`, which `kept` stands only
+    beside a fetch this guard reports (#2499); one a shell would EXPAND -- a body whose `$(...)`
+    were lifted into the enclosing parse's table before it reached here, or a here-string whose word
+    bash expands first (#2293) -- is reported fetch or no fetch. A QUOTED one handed to a shell or a
+    `$` command word is READ as shell, in `workflow_programs.stdin_scripts`."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc
     kind = stdin_program(argv) if here else None
@@ -542,9 +543,8 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
     """Why this one fetch is unverified, or None; the statements of `unread`
     forms are ADDED to the uses it reads, never a fallback for them (r0)."""
     if fetch.url is None and fetch.dest is None:
-        # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`:
-        # a download whose target this guard cannot name is not a clean step,
-        # it is an unread one.
+        # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
+        # target this guard cannot name is not a clean step, it is an unread one.
         return ("runs `%s` with unresolved transfers: no URL and no destination "
                 "this guard could parse, so it cannot say what arrived or whether "
                 "anything checked it -- use explicit single-download commands "

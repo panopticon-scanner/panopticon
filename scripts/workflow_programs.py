@@ -12,18 +12,21 @@ only, for a program piped into it, the stage in front of it (#2333):
                       which is the same act one quote away from a substitution
     `stdin_program`   whether an interpreter's program arrives on its standard
                       input instead, which is the same act one REDIRECTION
-                      away (`bash -s <<'EOF'`), and in what language
-    `stdin_scripts`   the quoted body that program is, where it is shell, or
-                      the text an `echo` or `printf` pipes in (`printed`)
+                      away (`bash -s <<'EOF'`), and in what language, where a
+                      table names it (`$CMD` is a value none places)
+    `stdin_scripts`   the quoted body that program is, where it is or may be
+                      shell, or the text an `echo` or `printf` pipes in
+                      (`printed`)
     `unprinted`       the printer piping one in whose text `printed` cannot
                       spell out, for `unread_program` to weigh
     `candidates`      the words that may be the program, where a value this
                       module does not follow stands in a shell's options
 
 `workflow_forms` imports all five: its `flattened` reads each script found
-here in place of the command handed it, its `unread_program` weighs the
-candidates and the unprinted, and the guard takes `stdin_program` and
-`SHELL_PROGRAM` through it.
+here in place of the command handed it -- under a `$` command word
+(`VALUE_PROGRAM`) with no check in it counted -- its `unread_program` weighs
+the candidates and the unprinted, and the guard takes `stdin_program` and
+`SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
 
 Stdlib only, like everything under it.
 """
@@ -169,9 +172,11 @@ def stdin_program(argv):
 
     `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare
     `sh`, `dash -`), `FOREIGN_PROGRAM` for a program in a language this module
-    does not read (`python3 -`), and None when the program is somewhere else --
-    a file (`bash x.sh`), a `-c` string, a `-m` module -- which makes stdin that
-    program's input DATA and not an act of this job's own.
+    does not read (`python3 -`), `VALUE_PROGRAM` for one under a value-form
+    command word no table places (`$CMD`, `$PYTHON -`), and None when the
+    program is somewhere else -- a file (`bash x.sh`), a `-c` string, a `-m`
+    module -- which makes stdin that program's input DATA and not an act of
+    this job's own.
 
     Read as OPERANDS rather than as a full option grammar: an interpreter's
     first word that is not an option is its program, and a shell's `-s` says
@@ -202,17 +207,23 @@ def stdin_program(argv):
     substitutes a real path for it too -- an over-report the guard's gap
     list does not separately name, beside the one it does (`X=script.sh`).
 
-    A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`) with stdin on it
-    answers FOREIGN, not SHELL (#2473): a name this module has no table for
-    gives it no SHELL to stand behind either, and guessing SHELL would read
-    another language's program as though it were one -- `$PYTHON - <<'EOF'`
-    running a Python download once read CLEAN this way, while the literal
-    `python3 - <<'EOF'` was always FLAGGED (review I-2). `_unread_stdin`'s
-    existing FOREIGN sentence already reports every body behind a program it
-    cannot parse, read or EXPANDING alike, clean or not -- so `CMD=sh; $CMD
-    <<'EOF'` is caught exactly as `python3 - <<'EOF'` is, fail-closed and
-    over-reporting an innocuous body too (the reader cannot tell `$CMD` will
-    turn out to hold a shell from one that will not).
+    A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
+    `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
+    table places may hold a shell, another language's interpreter or `true`.
+    SHELL would read another language's program as though it were one, and
+    report nothing for `$PYTHON - <<'EOF'` even beside a fetch (review I-2);
+    FOREIGN leaves the body unread, an `Idle` report `kept` drops beside no
+    reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... |
+    sh` read CLEAN. As VALUE its QUOTED body is read as shell all the same,
+    additively (`stdin_scripts`; `workflow_forms.flattened` counts no check
+    in it, since `$CMD` may not run it), and the guard's `_unread_stdin`
+    reports the hand-off `Idle` under a sentence of its own. Its walk is a
+    foreign interpreter's -- its first word that is no option is its FILE --
+    and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
+    reads CLEAN beside no reported fetch: option b's price, which `python3 -
+    <<EOF` pays too. #2500's credit stays SHELL_PROGRAM's: an inner `$CMD`
+    makes no enclosing `eval` or `-c` string a stdin shell, so `CMD=sh; eval
+    "$CMD" <<'EOF'` stays unread, though bash runs the body.
     """
     if not argv:
         return None
@@ -284,6 +295,13 @@ def stdin_scripts(argv, stage, before=None):
     `_unread_stdin`. Read here too is the text an `echo` or `printf` in front
     of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
     'sh tool' | sh`; where it does not, `unprinted` has the printer.
+
+    Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
+    printed text are read the same way, as shell, though the word may hold
+    none: what they fetch or run is read as at the top level, and
+    `workflow_forms.flattened` counts no check there. `unprinted` weighs a
+    shell's printer only, so a pipe into it whose text no printer spells out
+    (`echo "$X" | $CMD`) is unread, filed under #2331.
     """
     here = stage.stdin_heredoc
     if here is None and _piped(stage, before):

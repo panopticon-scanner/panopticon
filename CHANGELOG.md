@@ -7,9 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow guard: a stdin program is read behind `eval`/`-c` and past a value in the option slot,
-  reported under a `$` command word (#2500, #2485, #2473).** The heredoc `eval 'bash -s'`, `sh $X`
-  and `$CMD` run is caught; `X=script.sh; sh $X` and `$CMD <<'EOF'` are fail-closed over-reports.
+- **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
+  under a `$` command word (#2500, #2485, #2473).** The heredoc `eval 'bash -s'`, `sh $X` and `$CMD`
+  run is caught; `X=script.sh` over-reports; the `$CMD` hand-off is `Idle` beside a reported fetch.
 - **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
   third private `_within`, with its own cached root realpath, beside the two names that already
   alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a
