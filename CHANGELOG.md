@@ -7,6 +7,38 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The workflow guard checks shell option letters against the shell's own table (#2443, #2444,
+  #2475).** Three readings of a shell's options read the WORDS and not the letters, so each took a
+  spelling the shell refuses for one it runs. A `set` carrying a letter bash's builtin lacks —
+  `set -Z -e`, `set -eO foo` — was read as turning errexit back on after a `set +e`, so a checksum
+  written after it was credited; bash answers `set: -Z: invalid option` with rc 2 and changes
+  nothing, and bash 3.2.57 and 5.2.21 both run the download with the check failing (#2443). A
+  child shell's `-O shopt` was read as the `set` builtin's `-O`, which takes no value, so
+  `bash -O extglob -ec '…'` read `extglob` as the end of the options and never saw the `-ec`: the
+  step was refused as running where no `-e` holds, though both bashes stop the child at the
+  failing check and a `sh` that refuses `-O` runs nothing at all (#2444). And the option skip
+  after `-c` (#2332) read on to the program through a word no shell takes, so
+  `sh -c -K 'curl … | sh'` was FLAGGED although bash 3.2.57, bash 5.2.21, dash and bash-as-`sh`
+  all exit 2 before they read the program (#2475). One table of letters answers all three, in
+  `workflow_programs` (`SET_OPTIONS`, `SHELL_OPTIONS`), read there by `_past_options` and above it
+  by `workflow_gating._errexit`: bash's `set` letters for the builtin, and for a command line
+  their union with its own `-c`, `-i`, `-l`, `-r`, `-s`, `-D`, `-O` and the `-I`/`-V` dash takes,
+  every letter measured on the three shells. Both directions fail CLOSED: a `set` with an unknown
+  letter turns NOTHING on (a `+e` in it still reads as off, and bash leaves errexit where it was),
+  and an invocation with one hands over no program, so nothing runs and the rule is silent — which
+  the gap list now says in the guard's own voice. `set` keeps its own reading, where `-O` is no
+  option at all (the `set -O foo -e` pin is unchanged). Two spellings stay fail-closed on purpose:
+  a letter in a SEPARATE word ahead of `-c` (`sh -K -c '…'`) is read on, and so is an option word
+  that is not all letters — every shell measured refuses `-1`, `-I{}` and `-nw5` too, but
+  `sh -c -u$X P` runs `P` wherever `X` is empty, and a value is a word this reader does not
+  follow. Over the 11 probe corpora (439,716 rows) 10 rows go FLAGGED→CLEAN, every one an option
+  word of letters after `-c` that bash 3.2.57, bash 5.2.21, dash and bash-as-`sh` all refuse —
+  `-F`, `-g`, `-K`, `-fR`, `-S`, `-w`, each rc 2 with nothing fetched and nothing run — and 4
+  two-step rows lose exactly the sentence of the step that went clean; 0 rows go CLEAN→FLAGGED and
+  no other answer moves, because the `set` shape appears in no corpus row. Over the
+  3,200-workflow calibration pool (4,642 jobs) no job's answer changes, and a text census finds no
+  job carrying a `set` letter outside the table, a refused option word after `-c`, or an `-O` at
+  all.
 - **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
   `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
   and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`

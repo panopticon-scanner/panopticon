@@ -286,6 +286,35 @@ class TestTheProgramAfterDashC(unittest.TestCase):
             with self.subTest(spelling=spelling):
                 self.assertEqual(["P"], self.program(spelling + " P x"))
 
+    def test_an_option_letter_no_shell_takes_hands_over_no_program(self):
+        # #2475: `sh -c -K P` and `sh -cK P` are refused outright -- bash
+        # 3.2.57, 5.2.21 and dash all exit before they read `P` -- so the
+        # step runs nothing and no program is handed over. The letters are
+        # bash's (`workflow_programs.SHELL_OPTIONS`), which is the union:
+        # dash takes fewer, and a letter dash alone refuses still runs.
+        for spelling in ("sh -c -K", "sh -cK", "bash -c -Z -e", "bash -c -e -Z",
+                         "bash -c -o pipefail -K", "sh -c -ex +Z"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual([], self.program(spelling + " P x"))
+        pipe = f'curl -fsSL {URL} | sh'
+        for script in (f"sh -c -K '{pipe}'", f"sh -cK '{pipe}'", f"bash -c -e -Z '{pipe}'"):
+            with self.subTest(script=script):
+                self.assertEqual([], guard.fetch_exec_defects(script))
+        # A word that is not all LETTERS is read ON, as it was and fail-closed:
+        # every shell measured refuses `-1`, `-I{}` and `-nw5` too, but an
+        # expansion is a word this module cannot read -- `sh -c -u$X P` runs
+        # `P` under all four wherever `X` is empty.
+        for spelling in ("sh -c -1", "sh -c -I{}", "sh -c -nw5", "sh -c -u$X"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+        # The controls: a letter both shells take reads on to the program as
+        # it did, `-O` is one bash takes WITH a value, and a value where the
+        # shell reads its options is unfollowed still (#2344).
+        for script in (f"sh -c -e '{pipe}'", f"bash -c -o pipefail '{pipe}'",
+                       f"bash -c -O extglob '{pipe}'", f"X=-K\nsh $X -c '{pipe}'"):
+            with self.subTest(script=script):
+                self.assertTrue(guard.fetch_exec_defects(script), script)
+
     def test_the_first_operand_is_the_program_as_it_was(self):
         self.assertEqual(["P"], self.program("sh -c P x"))
         self.assertEqual(["P"], self.program("bash -euc P"))

@@ -25,7 +25,9 @@ only, for a program piped into it, the stage in front of it (#2333):
 `workflow_forms` imports all six: its `flattened` reads each script found
 here in place of the command handed it, its `unread_program` weighs the
 candidates, the unprinted and the dynamic program, and the guard takes
-`stdin_program` and `SHELL_PROGRAM` through it.
+`stdin_program` and `SHELL_PROGRAM` through it. The option-letter tables
+below are read here and in `workflow_gating._errexit`, the one layer up that
+reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
 """
@@ -79,6 +81,34 @@ def _after_dash_c(argv):
     return []
 
 
+# The short option letters a shell takes, where it reads them: bash's `set`
+# builtin (`set -eo pipefail`, `set +x`), and besides those its own COMMAND
+# LINE (`sh -c`, `bash -ilr`, `bash -D`, `bash -O extglob`, and the `-I`/`-V`
+# dash takes where bash does not). A letter outside the table is one the
+# shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option changed;
+# `sh -c -K P` exits before it reads `P` -- which is what `_past_options` and
+# `workflow_gating._errexit` read it as (#2443, #2475). Each table is the
+# fail-closed pick over the three shells measured (bash 3.2.57, bash 5.2.21,
+# dash): their UNION on a command line, where an unknown letter reads as
+# nothing RUN, and bash's for the builtin, where one reads as nothing SET --
+# dash refuses more `set` letters than bash, and reading a `set` it refuses
+# as setting nothing is the same direction. Which take a VALUE: `-o name`,
+# and bash's `-O shopt` on a command line.
+SET_OPTIONS = "abefhkmnptuvxBCEHPTo"
+SHELL_OPTIONS = SET_OPTIONS + "cilrsDOIV"
+VALUE_OPTIONS = "oO"
+
+
+def _refused(word):
+    """Whether a shell refuses this option word outright, running nothing: a
+    cluster of LETTERS with one outside `SHELL_OPTIONS` (`-K`, `-eZ`, `+Z`).
+    A word that is not all letters is read ON, as before and fail-closed: a
+    digit or a brace (`-1`, `-I{}`) is one every shell measured refuses too,
+    but an EXPANSION is a word this module cannot read -- bash runs the
+    program after `sh -c -u$X P` wherever `X` is empty."""
+    return word[1:].isalpha() and any(letter not in SHELL_OPTIONS for letter in word[1:])
+
+
 def _past_options(argv, at):
     """The first operand after `argv[at]`, the cluster that carries `-c`.
 
@@ -87,12 +117,14 @@ def _past_options(argv, at):
     in a word takes the next word as its value (`-c -o pipefail P`, `-co
     pipefail P`); a `-` or `--` ends the options, and the word after it is
     the program even if it begins with `-`; a `--long` word after `-c` is
-    one both shells refuse, and nothing runs. Option letters are not
-    checked: one both shells refuse (`sh -c -K P`) is read on to `P`,
-    fail-closed, though nothing runs.
+    one both shells refuse, and nothing runs. So is a word of letters one of
+    which no shell takes (`sh -c -K P`, `sh -cK P`, `_refused`): it exits
+    before it reads `P`, so no program is handed over (#2475).
     """
     while True:
-        at += 1 + sum(letter in _VALUE_OPTIONS for letter in argv[at][1:])
+        if _refused(argv[at]):
+            return []                           # the shell exits before the program
+        at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
         if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
             return []
         if argv[at] in ("-", "--"):
@@ -145,7 +177,7 @@ def candidates(argv):
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":
-            owed = sum(letter in _VALUE_OPTIONS for letter in word[1:])
+            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return None, []
 
 
@@ -217,10 +249,8 @@ FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
 # ruled another language by `scripts` above, and a heredoc is the same text one
 # redirection over.
 _FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-# The operands that ARE standard input, and the only options a shell a `run:`
-# step writes spells with a separate value (`-o pipefail`, bash's `-O shopt`).
+# The operands that ARE standard input.
 _STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
-_VALUE_OPTIONS = "oO"
 
 
 def stdin_program(argv):
@@ -257,8 +287,8 @@ def stdin_program(argv):
             return answer                   # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`); another interpreter's, one where it ends so.
-        owed = (sum(letter in _VALUE_OPTIONS for letter in letters) if shell
-                else int(bool(letters) and letters[-1] in _VALUE_OPTIONS))
+        owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell
+                else int(bool(letters) and letters[-1] in VALUE_OPTIONS))
         for _ in range(owed):
             next(rest, None)                # an option's value is not a program
     return answer

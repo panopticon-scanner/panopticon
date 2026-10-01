@@ -1488,6 +1488,22 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
             self.assertReported("sh -c 'eval \"%s | cat\"'", "piped into a command whose status",
                                 self.CHECK.replace('"', '\\"'))
 
+    def test_a_child_shells_dash_O_takes_a_value_as_a_command_line_does(self):
+        # #2444: on a shell's COMMAND LINE `-O extglob` is one option with
+        # its value, so the `-ec` behind it is read and the failing check
+        # stops the child before `./tool` -- bash 3.2.57 and 5.2.21 both stop
+        # it, and a `sh` that refuses `-O` runs nothing at all. The step's
+        # own `shell:` template was read so already (`seed`, #2338); a child
+        # shell was read as the `set` builtin is, where `-O` is no option.
+        for form in ("bash -O extglob -ec '%s; echo ok'", "sh +O extglob -ec '%s; echo ok'",
+                     "bash -O extglob -eo pipefail -c '%s | cat; echo ok'",
+                     "bash -eO extglob -c '%s; echo ok'"):
+            with self.subTest(form=form):
+                self.assertEqual([], self.job(form))
+        # The must-trip control: with no `-e` the child carries on past the
+        # failing check, as it did.
+        self.assertReported("bash -O extglob -c '%s; echo ok'", "carries on past its failure")
+
     def test_a_script_whose_failure_the_step_goes_on_past_is_reported(self):
         for form in ("sh -c '%s' || true", "sh <<< '%s' || true",
                      "sh -ec '%s; echo ok' || true", "if sh -c '%s'; then :; fi",
@@ -1647,6 +1663,25 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("runs after a `set +e`", found[0][1])
         self.assertEqual([], self.job("set +e\nset -e\n%s\n"))
+
+    def test_a_set_carrying_a_letter_the_builtin_lacks_turns_nothing_on(self):
+        # #2443: bash answers the whole `set` with `set: -Z: invalid option`,
+        # rc 2, and changes no option, so errexit stays off and the check
+        # after it stops nothing -- bash 3.2.57 and 5.2.21 run the download
+        # with the checksum failing. A `+e` in such a word still reads as
+        # off, which is fail-closed either way.
+        for body in ("set +e\nset -Z -e\n%s\n", "set +e\nset -eO foo\n%s\n",
+                     "set +e\nset -e -Z\n%s\n", "set +e\nset +Ze\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        # The controls: a `set` of letters the builtin has turns it on as it
+        # did, and so does the `-o` name no letter spells.
+        for body in ("set +e\nset -e\n%s\n", "set +e\nset -eux\n%s\n",
+                     "set +e\nset -o errexit\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
 
     def test_the_script_twins_take_the_steps_pipefail(self):
         # The child's own pipefail covers its inner pipe, not the outer one

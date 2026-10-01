@@ -22,10 +22,11 @@ The layers run one way: this module imports nothing from `workflow_forms`,
 which sits above it and hosts `step_credit`, the step's own answer -- the one
 gating question that needs that layer's readers, the branch bodies
 (`regions`) and the `set`s (`_errexit_states`) -- and `workflow_guard` sits
-on top of both. `Inlined` -- a statement of a script
-`workflow_forms.flattened` reads in place -- lives here because both layers
-read it, and so does `_errexit`, the option words `seed` and `flattened`
-share.
+on top of both. It reads `workflow_programs` BELOW it, for the option letters
+a shell takes, which that module reads too (#2443). `Inlined` -- a statement
+of a script `workflow_forms.flattened` reads in place -- lives here because
+both layers read it, and so does `_errexit`, the option words `seed` and
+`flattened` share.
 
 Stdlib only, like everything under it.
 """
@@ -35,6 +36,7 @@ import re
 
 import shell_reader
 from shell_reader import command, conditional, negated
+from workflow_programs import SET_OPTIONS, VALUE_OPTIONS
 
 
 # A statement of a script handed to a shell, as `flattened` inlines it, with
@@ -44,20 +46,49 @@ from shell_reader import command, conditional, negated
 Inlined = collections.namedtuple("Inlined", "stages separator region credit")
 
 
-def _errexit(words, state=False, name="errexit", template=False):
+def _rejected(words):
+    """Whether bash refuses this `set` WHOLE: one of its option words carries
+    a letter the builtin lacks (`set -Z -e`, `set -eO foo`), which it answers
+    with `set: -Z: invalid option`, rc 2, and no option changed (#2443, and
+    dash likewise). Read over the words `_errexit` reads, each `-o name`
+    value skipped: the letter may be in any of them."""
+    words = iter(words)
+    for word in words:
+        if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
+            return False
+        if word[:2] == "--":
+            continue                            # bash's long options carry no letter
+        if any(letter not in SET_OPTIONS for letter in word[1:]):
+            return True
+        for _ in range(sum(letter in VALUE_OPTIONS for letter in word[1:])):
+            next(words, None)                   # an option's value is no option word
+    return False
+
+
+def _errexit(words, state=False, name="errexit", invocation=False):
     """Whether these shell or `set` options leave `-e` on, from `state` -- or
-    the option `-o name` sets, for `pipefail`, which no letter spells. Only a
-    `shell:` `template` takes a value after `-O`: bash's `set` rejects `-O`."""
+    the option `-o name` sets, for `pipefail`, which no letter spells.
+
+    `invocation`: these words are a shell's COMMAND LINE -- a `shell:`
+    template's (`seed`) or a child shell's (`flattened`, #2444) -- where
+    `-O shopt` takes a value, which bash's `set` does not: it rejects `-O`.
+    A `set` bash refuses whole turns NOTHING on (`_rejected`, #2443); a `+e`
+    in it still reads as off, fail-closed either way.
+    """
+    words = list(words)
+    rejected = not invocation and _rejected(words)
     words = iter(words)
     for word in words:
         if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
             break
         if word[:2] != "--":                    # bash's long options carry none
-            if "e" in word[1:] and name == "errexit":
+            turns_on = not (rejected and word[0] == "-")
+            if "e" in word[1:] and name == "errexit" and turns_on:
                 state = word[0] == "-"
-            if "o" in word[1:] and next(words, None) == name:
+            if "o" in word[1:] and next(words, None) == name and turns_on:
                 state = word[0] == "-"
-            if template and "O" in word[1:]: next(words, None)   # `bash -O extglob {0}`
+            if invocation and "O" in word[1:]:
+                next(words, None)               # `bash -O extglob {0}`
     return state
 
 
@@ -73,7 +104,7 @@ def seed(shell):
     words = (shell or "").split()
     if len(words) < 2:
         return True, words == ["bash"]
-    return _errexit(words[1:], template=True), _errexit(words[1:], False, "pipefail", True)
+    return _errexit(words[1:], invocation=True), _errexit(words[1:], False, "pipefail", True)
 
 
 # --- whether a command's failure is allowed to matter -------------------------

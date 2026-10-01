@@ -179,8 +179,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     step's own shell runs, whose failure `swallowed` and `step_credit` judge
     as they judge a check written there -- where one ahead of `&&` reaches
     only the rest of its list (#2334). A child shell has `-e` only from its
-    options or a `set`, and `pipefail` so too (re-review N-D); the step's own
-    shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
+    options or a `set`, and `pipefail` so too (re-review N-D), read off the
+    COMMAND LINE they are, where `-O shopt` takes a value (#2444); the step's
+    own shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
     moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
     where the shell suspends it.
     `stops`: this script's failure reaches the step's own shell; `errexit`:
@@ -205,10 +206,12 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                          and (top or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
-                out.extend(flattened(statements(text), gates, on[index] and statement.separator
-                                     not in ("&&", "||") if own else _errexit(argv[1:]),
-                                     fails[index] if own else _errexit(argv[1:], False, "pipefail"),
-                                     name, region, key + ((index, ordinal),)))
+                out.extend(flattened(
+                    statements(text), gates,
+                    on[index] and statement.separator not in ("&&", "||") if own
+                    else _errexit(argv[1:], invocation=True),
+                    fails[index] if own else _errexit(argv[1:], False, "pipefail", True),
+                    name, region, key + ((index, ordinal),)))
         if top:
             out.append(statement)
             continue

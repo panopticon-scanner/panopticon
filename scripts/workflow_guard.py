@@ -73,20 +73,20 @@ runs each live, so a change that catches one fails there and edits this list.
   ten -- is curl. A second tool needs a second option grammar (`gh`'s `-O` is
   not curl's, and `aws s3 cp` copies locally too), and a fetch inside
   `python3 -c` needs another language entirely.
-* variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
-  tracks the NAME a step writes. A checksum naming the same variable binds; a
-  path spelled differently at fetch and at use matches nothing, and no `cd` is
-  followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS compares last parts
-  where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv only),
-  and for a glob where one spells the download's or the download is a bare name.
-  A download kept in a variable is followed to a shell whole (`carried`, #2341),
-  not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`,
-  and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
-  A value in a shell's options (`sh $X '…'`) is not followed: the words after it read as
-  `-c` strings (`candidates`, #2344), a `$(…)` or `Rewritten` one reported where the job
-  downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another handed `-c` has
-  its program read so (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483).
-  A `-c`/`eval` string loses `\$` escapes as bash does, not with another `$` in it (#2342).
+* variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a
+  step writes. A checksum naming the same variable binds; a path spelled differently at fetch and
+  at use matches nothing, and no `cd` is followed (`curl -o d/x; cd d; sh x`) -- but the side that
+  RUNS compares last parts where a `$` spells the use's directory (`may_run` #2310, `covers`
+  #2345; argv only), and for a glob where one spells the download's or the download is a bare
+  name. A download kept in a variable is followed to a shell whole (`carried`, #2341), not
+  through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`, and `( x=1 )`
+  empties it only with the `(` alone on its line, which the reader drops. A value in a shell's
+  options (`sh $X '…'`) is not followed: the words after it read as `-c` strings (`candidates`,
+  #2344), a `$(…)` or `Rewritten` one reported where the job downloads. Nor is a `$` command
+  word: `${X:-sh}` reads as its default, another handed `-c` has its program read so (#2337);
+  `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses `\$`
+  escapes as bash does, not with another `$` in it (#2342). An option LETTER no shell takes is
+  the shell's own refusal: `sh -c -K '…'` runs nothing, `set -Z -e` sets nothing (#2443, #2475).
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
