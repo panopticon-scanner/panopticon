@@ -75,6 +75,20 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity"], "MEDIUM")                 # reverted to code default
         self.assertNotIn("severity_override", f)
         self.assertEqual(cov["overrides"]["count"], 0)
+        # #2101's ONE severity consequence, pinned. The revert target is the
+        # PUBLISHED code's default. The deleted code-application branch ran
+        # earlier in this same loop iteration, so an applied advisor code used to
+        # decide this default too: SEC-B2B (HIGH) would have reverted the finding
+        # to HIGH. Severity is still mutated only by the override discipline --
+        # it is the default the discipline measures against that moved, onto the
+        # code the report actually publishes.
+        g = {"id": "SEC-2", "code": "SEC-A1A", "severity": "CRITICAL", "domain": "SEC",
+             "severity_override": {"from": "MEDIUM", "to": "CRITICAL"}}   # no reason
+        cov = codes_mod.apply_verdict_quality(
+            [g], {id(g): {"code": "SEC-B2B", "verdict": "CONFIRMED", "stage": "primary"}}, b)
+        self.assertEqual(g["severity"], "MEDIUM")     # SEC-A1A's default, not SEC-B2B's HIGH
+        self.assertNotIn("severity_override", g)
+        self.assertEqual(cov["overrides"]["count"], 0)
 
     def test_valid_override_kept_and_counted_up(self):
         b = _bundle()

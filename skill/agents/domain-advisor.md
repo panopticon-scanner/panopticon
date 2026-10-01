@@ -52,9 +52,13 @@ For EACH claim above, verify it by exploring the repository yourself:
 1. Read the cited file at the cited lines; grep for the symbols it names.
 2. Chase the cross-file references that bear on the claim (callers, middleware,
    configuration, tests). A claim cannot be judged from the cited snippet alone.
-3. Decide the verdict, confirm or correct its OCRDb `code` against the menu (and
-   the explicit criteria above where the code has them), and adjudicate any
-   severity override the claim carries.
+3. Decide the verdict, state the OCRDb `code` you independently land on against
+   the menu (and the explicit criteria above where the code has them), and
+   adjudicate any severity override the claim carries. Give the code you
+   actually read, not the claim's: a differing one is RECORDED as your second
+   opinion about the catalog and never applied to the finding, so disagreeing
+   costs the claim nothing and is the only catalog mis-fit signal the pipeline
+   produces.
 
 ## Backup round
 
@@ -91,7 +95,7 @@ Each verdict is one object per claim:
       "finding_id": "<the id field from the claim, echoed verbatim>",
       "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO",
       "confidence": "CERTAIN|LIKELY|POSSIBLE",
-      "code": "<the confirmed or corrected menu code for this claim>",
+      "code": "<the menu code you land on; a differing one is recorded, never applied>",
       "reasoning": "...",
       "explored": ["every/file/you/read/or/grepped"],
       "references": ["..."],
