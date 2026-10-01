@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
+  On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
+  `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible
+  findings — the map that chose the gate's scope is provably damaged. It is the
+  `zero_hunk_gate_gap` posture (#2178, narrowed by #2222) over a map that still carries ranges,
+  and that older rule still wins when both hold, so one read yields one note. Knowingly missed: a
+  truncated map whose paths arrived `[]`, which nothing tells apart from a deletion-only, binary,
+  mode-only or same-content rename change — the rest of `paths_without_ranges` stays disclosed and
+  is never gated on, and the schema descriptions now say exactly that.
 - **The last `0o755` chmod literal in a test is gone with its dead helper (#2389, #1777).**
   `tests/_test_helpers.argv_through_shell` had no callers after #2161 pinned an absolute
   interpreter; deleting it removes the standing bandit B103 MEDIUM the HIGH-only gate let stand.
