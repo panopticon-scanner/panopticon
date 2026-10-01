@@ -25,15 +25,16 @@ MALFORMED_HUNKS_NOT_OBJECT = "hunks not an object"
 MALFORMED_SCHEMA_VERSION = "unsupported schema_version"
 # #2107: the hunks artifact and `groups.json` are written by ONE discovery child
 # and published as two independent atomic writes, and only the groups half
-# carried the run binding. `phases/discovery.py` now stamps both, and
-# `phases/synthesize.py` threads the expectation here as `--diff-hunks-run-id`,
-# so a pair from two generations -- one generation's review cells scoped by
-# another's diff -- is REJECTED instead of silently scoping the gate to someone
-# else's hunk map. A foreign stamp AND an absent one both reject: the
-# expectation only ever comes from a driver that stamped the file it wrote, so
-# an unstamped artifact there is one this run did not produce. With NO
-# expectation the stamp is not read at all, which is every direct caller and
-# every hand-written artifact.
+# carried the run binding. `phases/discovery.py` now stamps both and threads the
+# expectation here as `--diff-hunks-run-id`; `main()` defaults it to the stamp on
+# the inventory it read, so the HAND-RUN pair is checked too. A pair from two
+# generations -- one generation's review cells scoped by another's diff -- is
+# therefore REJECTED instead of silently scoping the gate to someone else's hunk
+# map. A foreign stamp AND an absent one both reject: an expectation only exists
+# where a stamped inventory does, so an unstamped artifact beside one is not this
+# run's. With NO expectation -- no flag and an unstamped inventory -- the stamp is
+# not read at all, which keeps every direct caller and hand-written artifact
+# byte for byte as it was.
 MALFORMED_GENERATION = "generation-mismatch"
 
 # #2382: the seven keys `verdicts._delta_meta` copies VERBATIM out of the
@@ -130,12 +131,23 @@ class DeltaContext:
         return bool(self.diff_hunks and self.diff_hunks.get("base"))
 
     @classmethod
-    def from_args(cls, args):
+    def from_args(cls, args, groups_run_id=None):
         """--diff-hunks / --diff-context as main() read them (WS-0 S3), with
         the #957 notice when a delta review is run without --fail-on, and the
-        artifact's own disclosures (#1783)."""
+        artifact's own disclosures (#1783).
+
+        `groups_run_id` is the stamp on the `groups.json` main() actually read,
+        and it is the DEFAULT expectation (#2107 review round 1): the inventory
+        is the other half of the pair the stamp binds, so an operator hand-running
+        `synthesize.py` -- who inherits `--groups` by auto-discovery and supplies
+        `--diff-hunks` himself, the one mixing shape the probe could reach -- gets
+        the check without knowing the flag exists. `--diff-hunks-run-id` still
+        wins when passed, and an inventory with no stamp leaves no expectation at
+        all, which is what keeps a hand-written artifact reading as it always
+        did."""
+        expected_run_id = args.diff_hunks_run_id or groups_run_id
         diff_hunks, report = (load_diff_hunks_report(args.diff_hunks,
-                                                     args.diff_hunks_run_id)
+                                                     expected_run_id)
                               if args.diff_hunks else (None, None))
         if args.diff_hunks and not args.fail_on:
             # #957: a delta review is gate-first by intent, but the gate only
@@ -551,9 +563,10 @@ def load_diff_hunks_report(path, expected_run_id=None):
     report (#1783).
 
     `expected_run_id` is the GENERATION this payload must belong to (#2107),
-    threaded from `--diff-hunks-run-id`. None -- every existing caller, and any
-    direct `synthesize.py` invocation that does not pass the flag -- reads the
-    stamp not at all and behaves byte for byte as it did before."""
+    threaded from `--diff-hunks-run-id` or, failing that, from the `groups.json`
+    `main()` read. None -- every existing caller, and a hand-run whose inventory
+    carries no stamp either -- reads the stamp not at all and behaves byte for
+    byte as it did before."""
     try:
         data = artifacts_mod.read_json(path)
     except (OSError, ValueError):

@@ -1144,14 +1144,33 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
     scoped to generation B's hunk map, and 0 of 1 gate-eligible HIGH classified
     on-diff. A green `--gate-scope on-diff` gate over a change nothing measured.
 
-    A foreign or absent stamp is refused HERE by not passing the flag at all,
-    which degrades the gate to whole-repo scope -- the probe's Q3-a fail-closed
-    direction, and the same scope a non-delta run already takes. The expectation
-    is threaded beside the path as `--diff-hunks-run-id`, so the child's loader
-    refuses the same pair on its own terms: two seams, one fact."""
+    A foreign or absent stamp is refused by threading the expectation this run
+    DOES hold -- `--diff-hunks-run-id <manifest run_id>` beside the path -- so
+    the child's loader rejects the payload and the REPORT publishes
+    `delta_artifact.payload_malformed: generation-mismatch` (review round 1,
+    finding 3). The gate outcome is identical to withholding the path: no `base`
+    survives a rejection, the delta is inactive, and the gate degrades to
+    whole-repo scope -- the probe's Q3-a fail-closed direction, and the scope a
+    non-delta run already takes. What publishing buys is that the refusal is
+    visible in the artifact rather than only on a stderr the driver buffers.
 
-    REFUSAL = ("synthesize: diff-hunks.json carries run_id %s, this run is %s: "
-               "not passed; the gate degrades to whole-repo scope (#2107)")
+    The flag is withheld in exactly one case: a manifest whose `run_id` is not a
+    non-empty STRING. There is no expectation to thread, and the value would
+    reach `child._run_child` unconverted -- a hand-edited integer `run_id` is
+    truthy, matches the integer stamp the driver wrote, and raises a bare
+    TypeError that neither `child`'s OSError conversion nor `driver.run`'s
+    `(DriverError, ValueError)` catch, i.e. a traceback with no `status:` line
+    (review round 1, finding 2). Refusing is fail-closed; `str()`-ing the argv
+    value is NOT the fix, because the loader compares against the JSON-parsed
+    stamp and the two seams would then disagree about the same pair."""
+
+    REFUSED = ("synthesize: diff-hunks.json carries run_id %s, this run is %s: "
+               "refused; the gate degrades to whole-repo scope and the report "
+               "publishes delta_artifact.payload_malformed = "
+               "generation-mismatch (#2107)")
+    NOT_PASSED = ("synthesize: diff-hunks.json carries run_id %s, this run is "
+                  "%s: not passed; the gate degrades to whole-repo scope "
+                  "(#2107)")
 
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
@@ -1182,46 +1201,74 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
                                               manifest or self.manifest)
         return captured["cmd"], err.getvalue()
 
-    def test_a_matching_stamp_is_passed_with_its_expectation(self):
-        cmd, err = self._run(dict(self.PAYLOAD, run_id="R"))
+    def _expect_published(self, cmd):
+        """The refusal shape: BOTH flags on the argv, so the loader rejects the
+        payload and the report carries the reason."""
         self.assertEqual(cmd[cmd.index("--diff-hunks") + 1],
                          runio._pano(self.root, "diff-hunks.json"))
         self.assertEqual(cmd[cmd.index("--diff-hunks-run-id") + 1], "R")
+
+    def test_a_matching_stamp_is_passed_with_its_expectation(self):
+        cmd, err = self._run(dict(self.PAYLOAD, run_id="R"))
+        self._expect_published(cmd)
         self.assertNotIn("#2107", err)
 
-    def test_a_foreign_stamp_is_refused_and_disclosed(self):
+    def test_a_foreign_stamp_is_published_as_a_rejection_and_disclosed(self):
         # Probe state Q2-c: generation A's artifact left beside generation B's
-        # groups inventory. Accepted silently before this issue.
+        # groups inventory. Accepted silently before this issue; now the path is
+        # handed over WITH the expectation, so the loader refuses it and
+        # `meta.coverage.delta_artifact` says why.
         cmd, err = self._run(dict(self.PAYLOAD, run_id="RUN-1"))
-        self.assertNotIn("--diff-hunks", cmd)
-        self.assertNotIn("--diff-hunks-run-id", cmd)
-        self.assertIn(self.REFUSAL % ("RUN-1", "R"), err)
+        self._expect_published(cmd)
+        self.assertIn(self.REFUSED % ("RUN-1", "R"), err)
 
     def test_an_unstamped_artifact_is_refused_too(self):
         # The probe's Q1 orphan, and every hand-written artifact: no stamp is
         # no binding, so it cannot be this run's.
         cmd, err = self._run(dict(self.PAYLOAD))
-        self.assertNotIn("--diff-hunks", cmd)
-        self.assertIn(self.REFUSAL % ("None", "R"), err)
+        self._expect_published(cmd)
+        self.assertIn(self.REFUSED % ("None", "R"), err)
 
     def test_a_non_object_artifact_is_refused(self):
         cmd, err = self._run(["not", "an", "object"])
-        self.assertNotIn("--diff-hunks", cmd)
-        self.assertIn("#2107", err)
+        self._expect_published(cmd)
+        self.assertIn(self.REFUSED % ("None", "R"), err)
 
     def test_an_unreadable_artifact_is_refused(self):
         cmd, err = self._run(raw="{not json")
-        self.assertNotIn("--diff-hunks", cmd)
-        self.assertIn("#2107", err)
+        self._expect_published(cmd)
+        self.assertIn(self.REFUSED % ("None", "R"), err)
 
-    def test_a_manifest_with_no_run_id_binds_nothing_and_refuses(self):
+    def test_a_manifest_with_no_run_id_passes_nothing(self):
         # Fail-closed on BOTH sides: a stamp of None matching a run_id of None
-        # is not a binding, it is two absences, and a run the driver did not
-        # stamp has no generation to compare against.
+        # is not a binding, it is two absences -- and there is no expectation to
+        # hand the loader, so the path is withheld instead.
         cmd, err = self._run(dict(self.PAYLOAD),
                              manifest={"security_mode": "standard", "flags": {}})
         self.assertNotIn("--diff-hunks", cmd)
-        self.assertIn("#2107", err)
+        self.assertNotIn("--diff-hunks-run-id", cmd)
+        self.assertIn(self.NOT_PASSED % ("None", "None"), err)
+
+    def test_a_non_string_run_id_passes_nothing_rather_than_crashing(self):
+        """Review round 1, finding 2. `run_manifest.load_manifest`
+        type-validates only `host`, and `run_tag` slugs the id through `str()`,
+        so a hand-edited `"run_id": 7` survives the load. It is truthy, and the
+        driver stamped the SAME integer onto the artifact, so an `==` check
+        matches and the int reaches `child._run_child` unconverted -- a bare
+        TypeError, which `child`'s OSError conversion does not cover and
+        `driver.run`'s `(DriverError, ValueError)` does not catch. No `status:`
+        line, just a traceback."""
+        cmd, err = self._run(dict(self.PAYLOAD, run_id=7),
+                             manifest={"run_id": 7, "security_mode": "standard",
+                                       "flags": {}})
+        self.assertNotIn("--diff-hunks", cmd)
+        self.assertIn(self.NOT_PASSED % ("7", "7"), err)
+        # The defect this guards: a non-string argv token cannot be launched at
+        # all. Measured, not assumed -- `--run-id` has threaded the manifest
+        # value raw since long before this issue (`manifest.get("run_id") or
+        # ""`), so ONE int survives this argv and is out of #2107's scope. What
+        # this branch must not do is add a second one.
+        self.assertEqual([a for a in cmd if not isinstance(a, str)], [7], cmd)
 
     def test_no_artifact_at_all_says_nothing(self):
         # A whole-repo run: the flag was never passed before this issue either,

@@ -270,27 +270,50 @@ def synthesize_execute(review_root, manifest):
     # `--gate-scope on-diff` every finding the review produced then classifies
     # off-diff against a stranger's diff, which reports a green gate over a
     # change nothing measured. `phases/discovery.py` stamps both halves with
-    # this run's `run_id`; a foreign or absent stamp is refused HERE by not
-    # passing the flag, which degrades the gate to whole-repo scope -- the
-    # fail-closed direction, and the scope a non-delta run already takes.
+    # this run's `run_id`, and what this phase does is thread the EXPECTATION
+    # (`--diff-hunks-run-id`) so the child's loader can check it.
     #
-    # Fail-closed on BOTH sides: an unstamped artifact beside a manifest with no
-    # `run_id` is two absences, not a binding, so it is refused too. The
-    # expectation rides along as `--diff-hunks-run-id`, so the child's loader
-    # rejects the same pair on its own (`synth/delta.MALFORMED_GENERATION`) --
-    # two seams for one fact, and the loader's seam is the one a hand-run
-    # `synthesize.py` passes through.
+    # The expectation is threaded even when this phase can already see that the
+    # stamp does not match (review round 1, finding 3). Withholding the path
+    # would reach the same gate -- a rejected payload leaves no `base`, so the
+    # delta is inactive and the gate widens to whole-repo scope, the fail-closed
+    # direction a non-delta run already takes -- but it would leave
+    # `meta.coverage.delta_artifact` NULL, indistinguishable from a run that was
+    # never a delta one, and the only record of the refusal would be a stderr
+    # the driver buffers and discards on a successful run. Handing the pair over
+    # publishes `payload_malformed: generation-mismatch` in the report instead.
+    # (`evidence.match_verdict`'s run-id binding does the same: it publishes
+    # `misrouted` AND prints.) Neither INCONCLUSIVE arm can fire on it, because
+    # `delta_gate_gap` and `broken_artifact_gate_gap` both require `ctx.active`.
+    #
+    # ONE case withholds the path: a `run_id` that is not a non-empty STRING.
+    # There is nothing to thread, and the value would reach `child._run_child`
+    # unconverted -- `run_manifest.load_manifest` type-validates only `host` and
+    # `run_tag` slugs the id through `str()`, so a hand-edited integer `run_id`
+    # survives the load, is truthy, and matches the integer stamp the driver
+    # wrote with it. A non-string argv token raises TypeError, which neither
+    # `child`'s OSError conversion nor `driver.run`'s `(DriverError,
+    # ValueError)` catches: a traceback with no `status:` line (finding 2).
+    # `str()`-ing the argv value is NOT the fix -- the loader compares against
+    # the JSON-parsed stamp, so the two seams would disagree about one pair.
     diff_hunks = runio._pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
         run_id = manifest.get("run_id")
         hunks_doc = runio._load_json(diff_hunks)
         stamp = hunks_doc.get("run_id") if isinstance(hunks_doc, dict) else None
-        if run_id and stamp == run_id:
-            cmd += ["--diff-hunks", diff_hunks, "--diff-hunks-run-id", run_id]
-        else:
+        if not (isinstance(run_id, str) and run_id):
             print("synthesize: diff-hunks.json carries run_id %s, this run is "
                   "%s: not passed; the gate degrades to whole-repo scope "
                   "(#2107)" % (stamp, run_id), file=sys.stderr, flush=True)
+        else:
+            cmd += ["--diff-hunks", diff_hunks, "--diff-hunks-run-id", run_id]
+            if stamp != run_id:
+                print("synthesize: diff-hunks.json carries run_id %s, this run "
+                      "is %s: refused; the gate degrades to whole-repo scope "
+                      "and the report publishes "
+                      "delta_artifact.payload_malformed = generation-mismatch "
+                      "(#2107)" % (stamp, run_id),
+                      file=sys.stderr, flush=True)
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     if flags.get("max_verify") is not None:

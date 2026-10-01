@@ -12,7 +12,8 @@ import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
-from tests.synth.helpers import _cli_args
+import scripts.synthesize as syn
+from tests.synth.helpers import _chdir, _cli_args
 
 
 class TestDeltaClassify(unittest.TestCase):
@@ -708,10 +709,112 @@ class TestTheMixedGenerationRefusal(unittest.TestCase):
         self.assertEqual(rep["meta"]["coverage"]["delta"]["hunks_ranges"], 1)
 
     def test_no_expectation_leaves_the_pair_as_it_was_read_before(self):
-        # The direct-reader contract: absent expectation, the stamp is not read,
-        # so a hand-written artifact and every existing caller are unaffected --
-        # and this is the vacuous PASS the probe demonstrated, kept here as the
-        # before/after witness for what the expectation buys.
+        # The direct-reader contract at the LOADER: with no expectation reaching
+        # it, the stamp is not read, so a caller that holds a payload and builds
+        # the context itself is unaffected. This is the vacuous PASS the probe
+        # demonstrated, kept as the witness for what the expectation buys -- and
+        # `synthesize.main` no longer leaves the expectation absent, which
+        # `TestTheHandRunPairIsBoundToo` below is about.
         rep = self._report("RUN-1", None)
         self.assertEqual(rep["summary"]["gate"], "PASS")
         self.assertIsNone(rep["meta"]["coverage"]["delta"]["payload_malformed"])
+
+
+class TestTheHandRunPairIsBoundToo(unittest.TestCase):
+    """#2107 review round 1, finding 1: the ONE reachable state, closed.
+
+    The probe found every driver path shut (the pre-child clear, the
+    hunks-before-groups write order, the per-run folder) and exactly one route
+    open: a hand-run `discovery.py` -- which does NOT clear `groups.json` --
+    followed by a hand-run `synthesize.py`, where `--groups` is auto-discovered
+    from flat `.panopticon/groups.json` (`synthesize.py:207-211`) and
+    `--diff-hunks` never is. The operator therefore supplies one half and
+    INHERITS the other, which is precisely the shape that mixes, and the driver
+    seam cannot help: there is no driver.
+
+    So `synthesize.main` defaults the expectation to the inventory it actually
+    read. The inventory is the other half of the pair, it already carries the
+    run binding (#1643), and it is in hand at the `DeltaContext.from_args` call
+    -- so the operator gets the check without having to know the flag exists.
+    An explicit `--diff-hunks-run-id` still wins, and an inventory with NO stamp
+    (hand-written, or any artifact predating this) yields no expectation at all,
+    which keeps the byte-for-byte contract.
+
+    Through the REAL `synthesize.main`, because the whole finding was that the
+    function-level tests passed while this entry point did not."""
+
+    HUNKS = {"base": "main", "base_source": "explicit", "diff_context": 5,
+             "files_changed": 1, "hunks": {"b.py": [[1, 5]]}}
+
+    def _hand_run(self, groups_stamp, hunks_stamp, argv=()):
+        """The probe's Q2-c invocation: `--diff-hunks` by hand, `--groups`
+        inherited. One gate-eligible HIGH in `a.py`, which the hunk map does not
+        name at all -- so an accepted map scopes it off-diff (the vacuous PASS)
+        and a rejected one leaves the wider gate to fail on it."""
+        groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}
+        if groups_stamp is not None:
+            groups["run_id"] = groups_stamp
+        hunks = dict(self.HUNKS)
+        if hunks_stamp is not None:
+            hunks["run_id"] = hunks_stamp
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
+                json.dump(groups, fh)
+            hp = os.path.join(d, ".panopticon", "diff-hunks.json")
+            with open(hp, "w") as fh:
+                json.dump(hunks, fh)
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [
+                    {"id": "CD-001", "title": "t", "severity": "HIGH",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                     "location": {"file": "a.py", "line_start": 11}}]}, fh)
+            out = os.path.join(d, "report.json")
+            with _chdir(d), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(["--target", "t", "--fail-on", "high",
+                               "--gate-unverified", "--diff-hunks", hp,
+                               "--out", out, *argv, fp])
+            with open(out, encoding="utf-8") as fh:
+                return rc, json.load(fh)
+
+    def test_the_inherited_inventory_stamp_refuses_a_foreign_hunk_map(self):
+        rc, rep = self._hand_run("RUN-2", "RUN-1")
+        self.assertEqual(rc, 1)                       # FAIL, not the PASS (0)
+        self.assertEqual(rep["summary"]["gate"], "FAIL")
+        self.assertIsNone(rep["meta"]["coverage"]["delta"])
+        self.assertEqual(
+            rep["meta"]["coverage"]["delta_artifact"]["payload_malformed"],
+            delta_mod.MALFORMED_GENERATION)
+
+    def test_an_unstamped_hunk_map_is_refused_against_a_stamped_inventory(self):
+        rc, rep = self._hand_run("RUN-2", None)
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            rep["meta"]["coverage"]["delta_artifact"]["payload_malformed"],
+            delta_mod.MALFORMED_GENERATION)
+
+    def test_one_generation_keeps_the_delta_scope_it_measured(self):
+        rc, rep = self._hand_run("RUN-2", "RUN-2")
+        self.assertEqual(rc, 0)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertEqual(rep["meta"]["coverage"]["delta"]["hunks_ranges"], 1)
+
+    def test_an_unstamped_inventory_yields_no_expectation(self):
+        # The twin, and the byte-for-byte contract: a hand-written or
+        # pre-#2107 `groups.json` carries no binding, so there is nothing to
+        # compare and the pair reads exactly as it did before this issue. The
+        # operator who wants the check anyway passes the flag.
+        rc, rep = self._hand_run(None, "RUN-1")
+        self.assertEqual(rc, 0)
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIsNone(rep["meta"]["coverage"]["delta"]["payload_malformed"])
+
+    def test_an_explicit_flag_still_wins_over_the_inherited_stamp(self):
+        rc, rep = self._hand_run("RUN-1", "RUN-1",
+                                 argv=("--diff-hunks-run-id", "RUN-9"))
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            rep["meta"]["coverage"]["delta_artifact"]["payload_malformed"],
+            delta_mod.MALFORMED_GENERATION)

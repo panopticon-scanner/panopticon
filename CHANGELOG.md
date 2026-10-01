@@ -12,15 +12,22 @@ evidence exposed.
   inventory carried a run binding — so nothing compared the surface the review covered with the
   diff the gate scoped to. A probe traced every driver path and could not assemble the mixed
   pair (the pre-child clear, the hunks-before-groups write order and the per-run folder each stop
-  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does, and it was
-  accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against the other
-  generation's map, a green `--gate-scope on-diff` gate over a change nothing measured. The
-  driver now stamps both halves with this run's `run_id`; the synthesize phase passes
-  `--diff-hunks` only for a file carrying it, naming the refusal on stderr and letting the gate
-  degrade to whole-repo scope; and the loader gains an optional expected generation, threaded as
-  `--diff-hunks-run-id`, which rejects a foreign or absent stamp as the new `payload_malformed`
-  value `generation-mismatch`. With no expectation the stamp is not read at all, so every direct
-  caller and every hand-written artifact is unaffected.
+  it), but a hand-run `discovery.py` followed by a hand-run `synthesize.py` does — `--groups` is
+  auto-discovered, `--diff-hunks` is not, so the operator supplies one half and inherits the
+  other — and it was accepted in silence: 0 of 1 gate-eligible HIGH classified on-diff against
+  the other generation's map, a green `--gate-scope on-diff` gate over a change nothing measured.
+  The driver now stamps both halves with this run's `run_id`, and the loader gains an optional
+  expected generation that rejects a foreign or absent stamp as the new `payload_malformed` value
+  `generation-mismatch`. The refusal is REPORT-VISIBLE, not stderr-only: the synthesize phase
+  hands the pair over with `--diff-hunks-run-id` even when it can already see the mismatch, so
+  `meta.coverage.delta_artifact` publishes the reason instead of reading null like a run that was
+  never a delta one — the gate is identical either way (no `base` survives, so the delta is
+  inactive and the scope widens to whole-repo, which fails closed). `synthesize.py` defaults that
+  expectation to the stamp on the `groups.json` it read, so the hand-run pair is bound too; an
+  explicit `--diff-hunks-run-id` overrides it, and an unstamped inventory expects nothing, which
+  keeps every direct caller and hand-written artifact reading byte for byte as before. The path
+  is withheld in one case only, a manifest whose `run_id` is not a non-empty string: there is
+  nothing to thread, and a non-string argv token cannot launch the child at all.
 - **A provably broken diff-hunks artifact now turns the delta gate INCONCLUSIVE (#2405, #1783).**
   On an ACTIVE delta under `--gate-scope on-diff`, a non-zero `paths_emptied_by_drops`, a non-zero
   `ranges_dropped` or a set `payload_malformed` refuses a PASS for a run carrying gate-eligible

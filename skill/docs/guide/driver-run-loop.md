@@ -1030,12 +1030,19 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
   (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/diff-hunks.json` added when `discovery` emitted it AND the artifact carries this
-  run's `run_id`) → `.panopticon/report.json`. A foreign or absent stamp is REFUSED here (#2107):
-  the flag is not passed, one stderr line says so, and the gate degrades to whole-repo scope
-  rather than scoping this run to another generation's diff. `--diff-hunks-run-id` rides along
-  with the path, so the child's own loader rejects the same pair as `generation-mismatch` — two
-  seams for one fact, and the loader's is the one a hand-run `synthesize.py` passes through. A
+  .panopticon/diff-hunks.json` added when `discovery` emitted it, always beside
+  `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/report.json`. A foreign or absent
+  stamp is REFUSED (#2107): the pair is handed over WITH the expectation, so the child's loader
+  rejects the payload, one stderr line says so, the report publishes
+  `delta_artifact.payload_malformed: generation-mismatch`, and the gate degrades to whole-repo
+  scope rather than scoping this run to another generation's diff. Only a manifest whose `run_id`
+  is not a non-empty string withholds the path — there is no expectation to thread, and a
+  non-string argv token cannot launch the child at all. **A hand-run `synthesize.py` is bound
+  too**: the loader's expectation defaults to the stamp on the `groups.json` it read, so an
+  operator who inherits `--groups` by auto-discovery and supplies `--diff-hunks` himself — the
+  one mixing shape no driver path can reach — gets the check without passing the flag. Passing
+  `--diff-hunks-run-id` overrides it, and an inventory carrying no stamp expects nothing, which
+  is what keeps a hand-written artifact reading as it always did. A
   diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
   drops or repairs (#2382) are named on stderr, and every drop is counted in `meta.coverage.delta` when the payload
   resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
