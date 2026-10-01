@@ -16,7 +16,7 @@ else:
     try:
         from scripts import _version
         from scripts import hosts
-    except ImportError:
+    except ModuleNotFoundError:
         import _version
         import hosts
 

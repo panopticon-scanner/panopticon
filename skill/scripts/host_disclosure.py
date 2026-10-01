@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 else:
     try:
         from scripts import hosts
-    except ImportError:
+    except ModuleNotFoundError:
         import hosts
 
 # The probe that records the operational CLI facts (D10 F1/N1); named here
