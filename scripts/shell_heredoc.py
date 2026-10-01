@@ -6,28 +6,29 @@ at the 700-line flat-module ceiling with no room left for the next lexer
 fix. `_Lines` is the index through which `shell_lex._Lexer.bodies` reads a
 queued heredoc's body; `shell_lex` still decides whether a heredoc is
 queued at all and refuses what it cannot read -- this module only decides
-where a queued body stops.
+where a queued body stops and what text it holds.
 
 A later line equal to the delimiter ends a body everywhere; inside a
 `$(...)`, `<(...)` or `>(...)` still open, a line that only STARTS with the
-delimiter and holds a `)` somewhere after it ends one too, as bash 5.2 ends
-it (#2343): the rest of that line past its delimiter is left as code, read
-as written, where 5.2.21 drops that rest's first `;` and rejects a rest that
-starts with one. `<<-` strips each candidate line's leading tabs before
-comparing it with the delimiter, except where the delimiter itself starts
-with a tab, the only case that still matches unstripped. An unquoted
+delimiter and holds a `)` somewhere after it ends one too -- bar a `<<-`
+delimiter that starts with a tab, which only its exact line ends --, as bash
+5.2 ends it (#2343): the rest of that line past its delimiter is left as
+code, read as written, where 5.2.21 drops that rest's first `;` and rejects
+a rest that starts with one. `<<-` strips each candidate line's leading tabs
+before comparing it with the delimiter, except where the delimiter itself
+starts with a tab, the only case that still matches unstripped. An unquoted
 delimiter's body has `\\`-newline folded away first, so its lines are the
 LOGICAL ones compared with it -- `E\\` + `OF` ends it where `x \\` + `EOF`
 does not; a quoted delimiter's body is compared physical line by physical
 line.
 
-A body that finds no end this way leaves its heredoc's operator in the
-output as written and marks the reading `unended`: every later heredoc
-queued inside a substitution, in that same reading, is then found by the
-plain exact-line index instead of the line-by-line scan. Bash 5.2 runs
-nothing past an unterminated heredoc either, so none of those later
-answers can change what it runs -- the index only keeps reading them
-linear rather than quadratic in the heredocs queued.
+A body inside a substitution that finds no end this way leaves its heredoc's
+operator in the output as written and marks the reading `unended`: every
+later heredoc queued inside a substitution, in that same reading, is then
+found by the plain exact-line index instead of the line-by-line scan. Bash
+5.2 runs nothing past an unterminated heredoc either, so none of those later
+answers can change what it runs -- the index only keeps reading them linear
+rather than quadratic in the heredocs queued.
 
 Stdlib only."""
 import bisect

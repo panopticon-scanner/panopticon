@@ -60,8 +60,9 @@ A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its bod
 `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash 3.2 reads the lines below it as code; 5.2
 warns, reads them as that body and runs what follows its terminator. Read as code, a quote in them
 hides what 5.2 runs; read as a body, they hide what 3.2 runs. A heredoc queued after a body that
-ends at a line like `EOF)` is refused: 5.2 reads it from the next line, and that rest after it.
-Bodies are indexed and ended by `shell_heredoc._Lines`, whose docstring argues the choices.
+ends at a line like `EOF)` is refused: 5.2 reads it from the next line, and the `EOF)` line's rest
+after it. Bodies are indexed and ended by `shell_heredoc._Lines`; `shell_heredoc`'s docstring
+argues the choices.
 
 A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
 `]` however many lines on -- only where bash reads an assignment: at the head
