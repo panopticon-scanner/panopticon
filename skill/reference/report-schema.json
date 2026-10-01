@@ -589,7 +589,6 @@
                     "down": {"type": "integer"}
                   }
                 },
-                "code_corrections": {"type": "integer"},
                 "domainless": {"type": "integer"},
                 "code_domain_mismatch": {"type": "integer"}
               }
@@ -1189,7 +1188,6 @@
               "reason": {"type": "string"}
             }
           },
-          "code_corrected_by": {"type": "string"},
           "backup_confirmed": {"type": "boolean"},
           "domain": {
             "type": "string",
@@ -1421,7 +1419,7 @@
               },
               "advisor_code": {
                 "type": "string",
-                "description": "The OCRDb code the verify advisor independently landed on, recorded ONLY when it differs from the finding's own `code`. Never applied \u2014 the advisor is a second opinion, not an authority on the catalog, so re-coding on one opinion is refused for the same reason severity is untouched. Its presence is the catalog-STRAIN flag: the panel filed one code and an independent re-read preferred another. A value ending `-X0X` means the advisor judged the panel's real code a mis-fit; an `-X0X` finding whose advisor_code is a real code means the reverse."
+                "description": "The OCRDb code the verify advisor independently landed on, recorded ONLY when it differs from the finding's own `code`. Never applied \u2014 the advisor is a second opinion, not an authority on the catalog, so re-coding on one opinion is refused for the same reason severity is untouched. Its presence is the catalog-STRAIN flag: the panel filed one code and an independent re-read preferred another. A value ending `-X0X` means the advisor judged the panel's real code a mis-fit; an `-X0X` finding whose advisor_code is a real code means the reverse. Since #2101 the SYNTHESIS step never applies it either: `synth.codes.apply_verdict_quality` ran later in the live call order and rewrote the finding's `code` from this very record, so each step read correctly on its own and only the composition contradicted this field."
               }
             }
           },

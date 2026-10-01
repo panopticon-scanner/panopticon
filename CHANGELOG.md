@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An advisor's differing OCRDb code is recorded, never applied (#2101).** The schema and
+  `evidence.apply_verdict` always said so; `apply_verdict_quality`, later in the live call order,
+  rewrote the finding's `code` from that very record, so each step read correctly alone. It no
+  longer reads the verdict's `code` at all, and the two fields that described the mutation are
+  retired: the finding's `code_corrected_by` and `meta.coverage.ocrdb.code_corrections`. The
+  catalog-strain signal still reads `provenance.advisor_code`. Severity and the rejection/backup
+  policy are unchanged.
 - **Direct discovery owns its implicit delta map under the selected repository (#2102).**
   Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
   runs clean that same path. Explicit outputs still keep the map beside `--out`.
