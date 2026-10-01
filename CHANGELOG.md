@@ -13,11 +13,17 @@ evidence exposed.
   candidate, a script handed to a shell inside a `$(...)` — was reported beside ANY fetch,
   including a download its `sha256sum -c` cleared and an API `curl ... | jq` that is no download
   at all. It is now reported only beside a fetch the guard itself reports: a download no checksum
-  clears (the unread program is counted as the use the checksum was owed, `_defect`), a
-  `curl ... | sh` stream, an unresolved transfer, or a download no file holds —
-  `x=$(curl ...)`, the `carried` shape (`workflow_forms.unbound`). The same predicate now governs
-  the foreign-language stdin program (`python3 - <<'EOF'`, `node <<'NODE'`, top level or inside a
-  substitution), #2499's owner ruling (b), decided once for both; the EXPANDING-heredoc report is
+  clears (the unread program is counted as the use the checksum was owed, ADDED to the uses
+  `_defect` can read, so a checksum BEHIND such a program clears only the uses in front of it), a
+  `curl ... | sh` stream, an unresolved transfer, or a download no file holds — `x=$(curl ...)`,
+  the `carried` shape, and one a pipeline writes past the fetcher (`curl ... | cat > f`,
+  `| dd of=f`, `| sponge f`, none of which `parse_fetch` binds a destination to;
+  `workflow_forms.unbound`). Two readings are deliberate and fail closed: the report names the
+  unread program and not the download that makes it one (one sentence, as before), and a download
+  a variable holds keeps the reason even where only an `echo` reads it, because no file exists for
+  a checksum to name. The same predicate now governs the foreign-language stdin program
+  (`python3 - <<'EOF'`, `node <<'NODE'`, at the top level or inside a substitution), #2499's
+  owner ruling (b), decided once for both; the EXPANDING-heredoc report is
   untouched and still loud with no fetch at all. Over the 3,200-workflow calibration pool 31 jobs
   clear and none newly fails: metabase `pr-env.yml :: deploy_pr` (`$ADMIN -c` psql beside an
   OIDC-token `curl | jq`) and 30 jobs whose heredoc program parses a `pom.xml`, YAML, HTML or

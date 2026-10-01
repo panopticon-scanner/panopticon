@@ -210,6 +210,19 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
         self.assertEqual([], defects("curl -fsSL %sx | jq .tag\n" % URL
                                      + self.body("python3 - <<'EOF'")))
 
+    def test_an_enclosing_reason_is_idle_where_its_only_unread_form_is_one(self):
+        # Review r0 NIT 7: `_weighed` reads "an inner `Idle` is not unread",
+        # so a wrapper whose handed script holds no unread form BUT a foreign
+        # stdin program is `Idle` too, and #2499's predicate governs it as it
+        # governs the program itself. 13 of the differential's reasons-only
+        # sentences are this shape; a handed script that FETCHES stays loud.
+        inner = "python3 - <<'PY'\nprint(1)\nPY\n"
+        for script in ('V=$(sh -c "%s")\n' % inner, '$CMD -c "%s"\n' % inner):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+                self.assertTrue(defects(GET + script))
+        self.assertTrue(defects('V=$(sh -c \'%s\')\n' % PIPE))
+
     def test_an_expanding_shell_body_is_reported_with_no_fetch_at_all(self):
         # The EXPANDING branch is untouched by the ruling: a shell body bash
         # expands runs what this guard never sees, fetch or no fetch.

@@ -113,22 +113,22 @@ runs each live, so a change that catches one fails there and edits this list.
   image the container came from is NOT pinned either, and that is a decided
   residual rather than an oversight: this fleet pulls the tools image by its
   mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
-  each consumer: the "Pull or build panopticon-tools image" step of
-  `security.yml` and of `security-fork.yml`, and both "Pull the nightly tools
-  image" steps of `adapter-integration.yml`. DEVELOPMENT.md states
-  the consequence in its own voice twice, in the "One residual to know about"
-  paragraph under "Key design decisions" and in the "Weekly strict security
-  backstop" paragraph ("the tools image remains unpinned"). The `uses:`
-  rule pins ACTIONS by SHA and `tests/test_dockerfile.py` pins what the
-  Dockerfile FETCHES (`test_all_fetched_binaries_are_checksum_verified`,
-  `test_nvd_data_ref_default_is_digest`); neither governs a `docker pull` of a
-  tag.
-* an executor that reads the file by convention rather than by argument
-  (`make`, `npm install`): the download is never an operand, so no use names
-  it.
-  KEPT: needs a construct this fleet does not have -- there is no Makefile and
-  no package.json outside a test fixture, no `run:` step invokes either tool,
-  and the repo builds with Python and Docker.
+  each consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
+  `security-fork.yml`, and both "Pull the nightly tools image" steps of
+  `adapter-integration.yml`. DEVELOPMENT.md states the consequence in its own voice twice, in the
+  "One residual to know about" paragraph under "Key design decisions" and in the "Weekly strict
+  security backstop" paragraph ("the tools image remains unpinned"). The `uses:` rule pins
+  ACTIONS by SHA and `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
+  (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
+  neither governs a `docker pull` of a tag.
+* an executor that reads the file by convention rather than by argument (`make`, `npm install`):
+  the download is never an operand, so no use names it.
+  KEPT: needs a construct this fleet does not have -- there is no Makefile and no package.json
+  outside a test fixture, no `run:` step invokes either tool, and the repo builds with Python
+  and Docker.
+* a download the PIPELINE writes under a name `workflow_forms._WRITERS` misses: the `> f`
+  redirect, `dd` and `sponge` are weighed (`unbound`, r0 finding 2), `| busybox dd of=f` is not.
+  KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
@@ -539,8 +539,8 @@ def _binds(conditions, check, use):
 
 
 def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
-    """Why this one fetch is unverified, or None; `unread` holds the statements
-    of forms this guard cannot read, the uses a download could still reach."""
+    """Why this one fetch is unverified, or None; the statements of `unread`
+    forms are ADDED to the uses it reads, never a fallback for them (r0)."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`:
         # a download whose target this guard cannot name is not a clean step,
@@ -566,7 +566,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
                 % (shell_reader.readable(fetch.url) or "a download",
                    shell_reader.readable(fetch.dest)))
     names, uses = _uses(stmts, fetch.dest, after=index)
-    uses = uses or [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
+    uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
     # A checksum naming any name the file goes by is a checksum of this file.

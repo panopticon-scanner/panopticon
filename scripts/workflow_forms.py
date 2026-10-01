@@ -364,7 +364,9 @@ def substitution_script(argv, stage, walk, before=None):
 
 def _weighed(why, texts, walk, idle=Idle):
     """`why` where a script among `texts`, flattened and walked, fetches or
-    holds an unread form, and `idle(why)` where none does."""
+    holds an unread form, and `idle(why)` where none does. A foreign stdin
+    program there is `Idle`, so it is not an unread form and the reason that
+    hands the script is `Idle` too: #2499's predicate governs both (r0)."""
     live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else idle(why)
@@ -552,26 +554,57 @@ def carried(stmts, executors):
     return out
 
 
+# A stage that writes on the bytes it READS, where the fetcher named no file
+# of its own: the `> f` redirect (`stage.writes`) and the writers that name
+# the file in their argv. `tee` and the unpackers are bound to their file by
+# `parse_fetch`, or reported as a stream, so they are not here.
+_WRITERS = ("dd", "sponge")
+
+
+def _written_on(statement):
+    """Whether a stage of this statement writes the bytes it reads to a FILE:
+    a redirect to a real one (`> f`, and not `> /dev/null`), or a writer that
+    names it in its argv."""
+    for stage in statement.stages:
+        argv = command(stage.argv)
+        if [name for name in stage.writes if name not in STDOUT]:
+            return True
+        if argv and os.path.basename(argv[0]) in _WRITERS:
+            return True
+    return False
+
+
 def unbound(stmts, fetched, unread):
     """Whether this job holds a download NO checksum could ever clear.
 
-    A fetch to standard output leaves no file to check, so `kept`'s predicate
-    counts it as a fetch the guard reports (#2481) wherever its bytes can
-    still reach a program: a variable KEEPS it (`_assigned`, the map `carried`
-    reads, so every download `carried` reports answers here too), or it stands
-    in the very statement a reason reports unread, whose own words then hold it
-    (`_Unprinted`'s `echo "$(curl ...)" | sh`). One nothing keeps is read and
-    gone -- `curl ... | jq`, `curl -o /dev/null -w ...` -- and keeps no unread
-    reason standing."""
-    held: dict[str, Fetch | None] = {}
-    for statement in stmts:
-        if len(statement.stages) == 1:
-            now = _assigned(statement.stages[0], held)
-            if any(now.values()):
-                return True
-            held.update(now)
-    return bool({index for index, fetch in fetched if fetch.dest is None}
-                & {index for index, _why in unread})
+    A fetch to standard output leaves no file the guard can bind a checksum
+    to, so `kept`'s predicate counts it as a fetch the guard reports (#2481)
+    wherever its bytes can still reach a program. Three ways they can:
+
+        a variable KEEPS it      `_assigned`'s own answer for the statement --
+                                 no chain is followed, because the statement
+                                 that first holds the download answers already,
+                                 and so does every one `carried` reports
+        the statement is itself  the words of a statement a reason reports
+        reported unread          unread hold it, as `_Unprinted`'s
+                                 `echo "$(curl ...)" | sh` does
+        the PIPELINE writes it   `curl ... | cat > f`, `| tr ... > f`,
+                                 `| dd of=f`, `| sponge f` -- the redirect is
+                                 on the NEXT stage, so `parse_fetch` binds no
+                                 destination and no checksum in the job can
+                                 name the file (`_written_on`, review r0)
+
+    One nothing keeps is read and gone -- `curl ... | jq`,
+    `curl -o /dev/null -w ...` -- and keeps no unread reason standing. A
+    reader that writes the bytes on is weighed whatever it wrote, so
+    `curl ... | jq -r .url > f` counts too: a URL list, not a payload, and the
+    over-report this rule takes to fail closed."""
+    at = {index for index, fetch in fetched if fetch.dest is None}
+    return (any(any(_assigned(statement.stages[0], {}).values())
+                for statement in stmts if len(statement.stages) == 1)
+            or bool(at & {index for index, _why in unread})
+            or any(index in at and _written_on(statement)
+                   for index, statement in enumerate(stmts)))
 
 
 def kept(unread, unverified):

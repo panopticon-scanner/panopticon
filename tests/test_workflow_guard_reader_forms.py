@@ -154,7 +154,7 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     `Idle`, kept where the job holds a fetch the guard reports (#2481), not
     dropped."""
 
-    def test_it_is_reported_where_the_job_fetches(self):
+    def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each once `$X`
         # is `-c` (`tool` beside `'echo hi'`), `$CMD` is `sh`, and `$Y` and
         # `$P` are `sh tool`.
@@ -245,7 +245,7 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     fetch the guard reports.
     A `<(...)` hands the shell a file to read instead, and is not one."""
 
-    def test_it_is_reported_where_the_job_fetches(self):
+    def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each.
         for script in (GET + 'eval "sh \\$(echo tool)"\n', GET + 'bash -c "sh \\$(echo tool)"\n',
                        GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n"):

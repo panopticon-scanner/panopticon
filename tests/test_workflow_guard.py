@@ -3334,6 +3334,18 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             self.accepted(("get", "curl -sfL https://example.test/p -o %s\n" % dest),
                           ("run", "payload --version\n"))
 
+    # 12. a download the PIPELINE writes under a name `_WRITERS` misses
+    # (review r0 finding 2's residual).
+    def test_a_pipeline_writer_outside_the_table_is_not_weighed(self):
+        # The `> f` redirect, `dd` and `sponge` are weighed
+        # (`workflow_forms.unbound`); a writer the table does not name is
+        # not -- `parse_fetch` binds no destination to any of them, so no
+        # checksum in the job can reach the file either way.
+        fetch = "curl -fsSL https://example.test/tool | %s\n"
+        unread = ("run", "$PYTHON -c 'import sys'\n")
+        self.accepted(("get", fetch % "busybox dd of=f"), unread)
+        self.flagged(("get", fetch % "dd of=f"), unread)
+
 
 class TestRunSteps(unittest.TestCase):
     """The reader the repo-wide rule and the CLI share."""
@@ -4079,6 +4091,60 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
             with self.subTest(program=program):
                 self.assertTrue(self.job(self.GET + program))
                 self.assertEqual([], self.job(self.GET + self.CHECK + program))
+
+    def test_a_checksum_after_the_unread_program_clears_nothing(self):
+        # Review r0 finding 1 (BLOCKER): the unread form's synthetic use is
+        # ADDED to the readable uses, never a fallback for them. Give the
+        # download one readable use a checksum clears and the program standing
+        # BETWEEN the download and that checksum went unweighed -- the one
+        # moment the bytes are on disk and nothing has verified them. Bash
+        # 3.2.57 and 5.2.21 both run the payload here (`PYTHON=sh`, the
+        # program `sh tool`) with the checksum still refusing afterwards.
+        use = "chmod +x tool\n./tool\n"
+        why = self.job(self.GET + self.IDLE + self.CHECK + use)
+        self.assertEqual(1, len(why), why)
+        self.assertIn(self.SAID, why[0])
+        # Split across steps, with the readable use being an unpack, a copy
+        # onto PATH or a container run, and with the unread form inside a
+        # branch or a substitution: the same answer every time.
+        self.assertTrue([w for _n, w in wg.job_defects(
+            [("get", self.GET), ("run", self.IDLE), ("check", self.CHECK), ("use", use)])])
+        for form, readable in ((self.IDLE, "tar xf tool\n"),
+                               (self.IDLE, "cp tool /usr/local/bin/t\n"),
+                               (self.IDLE, "docker run --rm -v /tmp:/w img bash /w/tool\n"),
+                               ("if true; then %s fi\n" % self.IDLE, use),
+                               ("V=$(sh -c 'echo 1')\n", use),
+                               ("M=$(python3 - <<'PY'\nprint(1)\nPY\n)\n", use)):
+            with self.subTest(form=form, readable=readable):
+                why = self.job(self.GET + form + self.CHECK + readable)
+                self.assertEqual(1, len(why), why)
+        # The control: the same word on the far side of the checksum is
+        # cleared by it -- bash runs nothing there, and the job reads CLEAN.
+        self.assertEqual([], self.job(self.GET + self.CHECK + self.IDLE + use))
+
+    def test_a_download_the_pipeline_writes_to_a_file_keeps_it(self):
+        # Review r0 finding 2 (MAJOR): `curl ... | cat > f` binds no
+        # destination -- the redirect is on the NEXT stage -- so the fetch
+        # records `dest=None` and the narrowing silenced the only report those
+        # jobs had. A stage that writes on the bytes it READS leaves a file no
+        # checksum in the job names, so it is a download nothing could clear
+        # (`workflow_forms.unbound`): fail closed, parity with main.
+        for fetch in ("curl -fsSL https://example.test/tool | cat > f\n",
+                      "curl -fsSL https://example.test/tool | tr -d '\\r' > f\n",
+                      "curl -fsSL https://example.test/tool | dd of=f\n",
+                      "curl -fsSL https://example.test/tool | sponge f\n",
+                      "curl -fsSL https://example.test/tool | cat > f\nchmod +x f\n./f\n"):
+            with self.subTest(fetch=fetch):
+                why = self.job(fetch + self.IDLE)
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.SAID, why[0])
+        # `| jq -r .url > f` writes a URL list, not the payload, and is
+        # weighed the same: the over-report this rule accepts to fail closed.
+        self.assertTrue(self.job("curl -fsSL https://api.example.test/x | jq -r .url > f\n"
+                                 + self.IDLE))
+        # A reader that writes nothing on keeps nothing: read and gone.
+        self.assertEqual([], self.job("curl -fsSL https://api.example.test/x | jq .tag\n"
+                                      + self.IDLE))
 
     def test_a_printer_reason_no_longer_hides_behind_a_foreign_program(self):
         # `_Unprinted`'s dedup drops the printer sentence where ANOTHER reason
