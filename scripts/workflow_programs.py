@@ -19,11 +19,13 @@ only, for a program piped into it, the stage in front of it (#2333):
                       spell out, for `unread_program` to weigh
     `candidates`      the words that may be the program, where a value this
                       module does not follow stands in a shell's options
+    `dynamic_program` the program word a LITERAL shell is handed that is all
+                      expansion (`sh -c "$P"`), which spells no command at all
 
-`workflow_forms` imports all five: its `flattened` reads each script found
+`workflow_forms` imports all six: its `flattened` reads each script found
 here in place of the command handed it, its `unread_program` weighs the
-candidates and the unprinted, and the guard takes `stdin_program` and
-`SHELL_PROGRAM` through it.
+candidates, the unprinted and the dynamic program, and the guard takes
+`stdin_program` and `SHELL_PROGRAM` through it.
 
 Stdlib only, like everything under it.
 """
@@ -145,6 +147,64 @@ def candidates(argv):
         elif word[:2] != "--":
             owed = sum(letter in _VALUE_OPTIONS for letter in word[1:])
     return None, []
+
+
+# What a `$` may carry without braces: a name, or the positional SET `$@` or
+# `$*`, three spellings of one thing (review r0 finding 2). Not the bare `$-`,
+# `$#`, `$$` or `$?` (their braced forms ARE matched): a program named by one
+# of those is a path the fetch-and-exec rule or #2294 already reports.
+_NAME = re.compile(r"\w+|[@*]")
+
+
+def _all_expansion(text):
+    """Whether `text` is nothing but parameter expansion -- `$P`, `${P}`,
+    `"$P"` as the reader hands it on with its quotes dropped, `$P$Q`, `$@`,
+    and a nest of any depth (`${A:-${B:-${C}}}`, r0 finding 3) -- and so
+    spells no command at all for `flattened` to read (#2483). `${A}x`,
+    `echo $X` and an unbalanced `${A` are not: they hold text of their own.
+    Braces are counted rather than matched by pattern, because no regular
+    expression can balance them."""
+    at = 0
+    while at < len(text):
+        if text[at] != "$" or at + 1 >= len(text):
+            return False
+        if text[at + 1] == "{":
+            depth, at = 1, at + 2
+            while at < len(text) and depth:
+                depth += (text[at] == "{") - (text[at] == "}")
+                at += 1
+            if depth:
+                return False                # `${A`: no closing brace, no expansion
+            continue
+        name = _NAME.match(text, at + 1)
+        if not name:
+            return False
+        at = name.end()
+    return at > 0                           # `sh -c ""` hands over no program
+
+
+def dynamic_program(argv):
+    """(how this command hands a shell a program, the word it hands it) where
+    that word is ENTIRELY parameter expansion, else (None, None).
+
+    `sh -c "$P"`, `bash -c "${P}"`, `sh -ec "$P"`, `eval "$P"`, `sh -c "$@"`
+    and `${X:-sh} -c "$P"`, whose command word the reader rewrites to its
+    default, so the shell is literal by the time it arrives here
+    (`_all_expansion`). `flattened` reads such a word as no command at all,
+    which left the program UNREAD wherever a literal shell took one while the
+    `$CMD -c "$P"` twin `candidates` finds was reported: `unread_program` now
+    says it of both. A lifted `$(...)` marker is not one -- `scripts` drops it
+    and the guard's `_walk` reads what is inside it -- and neither is a string
+    that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
+    read as written. `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs
+    nothing of the value as a command: an accepted over-report, because a `;`
+    in that value does run (r0 finding 4).
+    """
+    name = os.path.basename(argv[0]) if argv else ""
+    for word in scripts(argv):
+        if _all_expansion(shell_reader.readable(word)):
+            return (name if name == "eval" else name + " -c"), word
+    return None, None
 
 
 # An interpreter given no program to run reads one from its STANDARD INPUT, and

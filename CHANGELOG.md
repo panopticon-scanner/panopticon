@@ -7,6 +7,43 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
+  `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
+  and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`
+  to read, so `curl -fsSLo tool …` beside `sh -c "$P"` read CLEAN while bash 3.2.57 and 5.2.21
+  both run the download once `$P` is `sh tool`; so did `bash -c "${P}"`, `eval "$P"`,
+  `sh -ec "$P"` and `${X:-sh} -c "$P"`. The `$CMD -c "$P"` twin has been REPORTED since #2465's
+  fix round (`candidates` hands a `$` command word's program to `unread_program`): one dynamic
+  program word, two answers, decided by whether the shell happened to be spelled out.
+  `dynamic_program` now reads that word wherever a shell takes one, and `unread_program` reports
+  it `Idle`, kept under #2481's predicate exactly as the twin is — beside a fetch this guard
+  reports, and nowhere else, so a credited download leaves it standing nowhere. `$@`, `${@}` and
+  `$*` are one thing in three spellings and read alike (`set --` gives a step positionals), and a
+  nest of any depth is still all expansion (`${A:-${B:-${C}}}`), since braces are counted rather
+  than matched by pattern. Three spellings are NOT this rule and read as they did: a lifted
+  `$(...)` marker, whose inside the guard's own walk reads (`sh -c "$(cat tool)"`), a string
+  MIXING literal text with an expansion (`sh -c "echo $X"`), and a word holding text of its own
+  (`sh -c "${A}x"`). The rule also speaks LAST: a value where a shell reads its options keeps
+  #2344's reason, which `_weighed` makes LOUD where a word after it fetches
+  (`sh $X -c "$P" 'curl … | sh'`), and this rule's droppable one would have replaced it. Where
+  #2341's `carried` names the same statement louder — `x=$(curl …)` then `sh -c "$x"` — the quiet
+  sentence is dropped and the carried one stands alone, the dedup `_Unprinted` already had for
+  printers (one class for both now, `_Quiet`). Five readings fail CLOSED on purpose: the reader
+  drops quotes, so `sh -c '$x'` is reported though bash runs nothing unless `$x` is exported;
+  `eval set -- "$P"` is the getopt idiom and runs none of the value as a command, unless it holds
+  a `;`, which `eval` does run; a cut (`eval "${x//$'\r'/}"`) is reported as an unread word,
+  though the guard still does not follow the download through it; `curl … | sh -c "$P"` says both
+  of its defects, the stream and the unread program; and `sh -c "$*"` says this rule's sentence
+  beside the pattern one #2294 already gave the script inlined from it. The value gap the gap list
+  keeps is untouched: `sh -c "sh $X"` runs `tool` where `$X` names it and still reads clean,
+  because no word follows the value. Over the 11 probe corpora (439,716 rows) 42 rows gain the
+  sentence, all of them already flagged, with 0 CLEAN→FLAGGED, 0 FLAGGED→CLEAN and no reason lost;
+  over a 1,372-row grid of the shape itself 190 rows go CLEAN→FLAGGED, every one beside an
+  uncredited download or a carried one, and its 70 `sh $X -c` rows read exactly as main does. Over
+  the 3,200-workflow calibration pool (4,642 jobs) three jobs hand a literal shell such a word —
+  mlflow `cross-version-tests.yml :: test1` and `:: test2` (`eval "$MATRIX_INSTALL"` and two
+  more), vector `k8s_e2e.yml :: test-e2e-kubernetes` (`bash -c "$2"`) — and none of them fetches,
+  so no job's answer changes.
 - **A hand-edited non-string manifest run_id is refused at the read, not crashed on in Popen
   (#2525).** `phases/synthesize` and `phases/tools` both thread `manifest.get("run_id") or ""` into
   the child's argv unconverted, and `run_manifest.load_manifest` type-validated only `host` while

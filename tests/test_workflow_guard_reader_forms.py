@@ -201,11 +201,138 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     def test_what_the_gap_list_keeps_reads_nothing(self):
         # With no word after the value nothing is handed on: `sh $X` runs
         # `tool` where `$X` names it, the value gap the gap list keeps, CLEAN
-        # before this fix too; and the gap list's `sh -c "$P"` reads nothing,
-        # though bash 3.2.57, 5.2.21 and dash run `tool` where `$P` is `sh tool`.
-        for script in (GET + "sh $X\n", GET + 'sh -c "$P"\n'):
+        # before this fix too. The literal shell's own `sh -c "$P"` was the
+        # other half of that entry and is read now (#2483, below).
+        self.assertEqual([], defects(GET + "sh $X\n"))
+
+
+class TestADynamicProgramWordALiteralShell(unittest.TestCase):
+    """#2483: a program word a LITERAL shell takes that is entirely expansion
+    -- `sh -c "$P"`, `eval "$P"` -- spells no command, so `flattened` read it
+    as nothing at all and the step read CLEAN while bash runs the download
+    once `$P` is `sh tool`. One rule now for such a word wherever a shell
+    takes one: `Idle`, kept where the job holds a fetch the guard reports,
+    exactly as the `$CMD -c "$P"` twin is."""
+
+    def test_each_spelling_is_reported_beside_a_reported_fetch(self):
+        # Bash 3.2.57 and 5.2.21 run `tool` in each once `$P` is `sh tool`;
+        # the reader rewrites `${X:-sh}` to its default, so that shell is
+        # literal here and the same rule reads it.
+        for script, said in ((GET + 'sh -c "$P"\n', 'runs `sh -c` on `$P`'),
+                             (GET + 'bash -c "${P}"\n', 'runs `bash -c` on `${P}`'),
+                             (GET + 'eval "$P"\n', 'runs `eval` on `$P`'),
+                             (GET + '${X:-sh} -c "$P"\n', 'runs `sh -c` on `$P`'),
+                             (GET + 'sh -ec "$P"\n', 'runs `sh -c` on `$P`')):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
+    def test_it_is_not_reported_where_no_fetch_of_the_job_is(self):
+        # #2481's predicate decides it, as it decides the twin's: no fetch at
+        # all, and a download a checksum credits, leave it standing nowhere.
+        check = "echo '%s  tool' | sha256sum -c -\n" % ("a" * 64)
+        for script in ('sh -c "$P"\n', 'eval "$P"\n', 'bash -c "${P}"\n',
+                       GET + check + 'sh -c "$P"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_a_download_the_word_carries_keeps_its_own_sentence(self):
+        # #2341's `carried` says it louder, in the same statement: one
+        # sentence, not two (`kept` drops the quiet one beside a loud one).
+        for use in ('sh -c "$x"\n', 'eval "$x"\n', 'bash -c "${x}"\n'):
+            with self.subTest(use=use):
+                found = defects('x=$(curl -fsSL %si.sh)\n' % URL + use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("carries", found[0][1])
+
+    def test_the_dynamic_shell_twin_is_unchanged(self):
+        found = defects(GET + '$CMD -c "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
+
+    def test_a_value_in_the_options_keeps_its_louder_reason(self):
+        # Round-0 review finding 1: a shell carrying BOTH a value where it
+        # reads its options and a `-c` whose operand is all expansion is
+        # #2344's defect, not this one. `candidates` weighs every word after
+        # the value, so one that fetches makes THAT reason loud, where this
+        # rule's is a droppable `_Quiet`; the value rule speaks first. Bash
+        # 3.2.57 and 5.2.21 run the fetching word with `X=-c` and `$P` empty.
+        fetch = "'curl -fsSL %si.sh | sh'" % URL
+        for script in ('sh $X -c "$P" %s\n' % fetch, 'sh ${X} -c "$P" %s\n' % fetch,
+                       'sh $X -c "$P" arg %s\n' % fetch,
+                       'sh $(echo -c) -c "$P" %s\n' % fetch,
+                       '${S:-sh} $X -c "$P" %s\n' % fetch,
+                       'sudo sh $X -c "$P" %s\n' % fetch,
+                       'sh $X -c "$P" \'curl -fsSLo t %st && sh t\'\n' % URL):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+        # Beside a reported fetch, where no word after the value fetches, the
+        # value reason is `Idle` and this rule still does not speak over it.
+        found = defects(GET + 'sh $X -c "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+
+    def test_the_positional_parameters_read_alike(self):
+        # Finding 2: `$@`, `${@}` and `$*` are one thing spelled three ways,
+        # and `set --` gives a `run:` step positionals -- both bashes run
+        # `tool` through `set -- 'sh tool'; sh -c "$@"`. `$*` holds a `*`, so
+        # the reader's pattern reason already reports that statement and the
+        # quiet one is dropped beside it.
+        for script, said in ((GET + "set -- 'sh tool'\nsh -c \"$@\"\n",
+                              "runs `sh -c` on `$@`"),
+                             (GET + "set -- 'sh tool'\nsh -c \"${@}\"\n",
+                              "runs `sh -c` on `${@}`"),
+                             (GET + 'eval "$@"\n', "runs `eval` on `$@`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+        # `$*` holds a `*`: the script `flattened` inlines from it is a word
+        # bash expands where a command starts, so #2294 reports THAT statement
+        # (as on main) and this rule reports the shell's own -- two statements,
+        # so no dedup, and the verdict was already FLAGGED.
+        found = defects(GET + 'sh -c "$*"\n')
+        self.assertEqual(2, len(found), found)
+        self.assertIn("is a pattern", found[0][1])
+        self.assertTrue(found[1][1].startswith("runs `sh -c` on `$*`"), found)
+
+    def test_a_nested_expansion_is_still_all_expansion(self):
+        # Finding 3: `${A:-${B}}` is entirely expansion, and both bashes run
+        # `tool` through it where `$B` is `sh tool`. Braces are counted, not
+        # matched by pattern, so the depth is not capped.
+        for word in ('${A:-${B}}', '${A:-${B:-${C}}}', '${A:-${B}}${C}'):
+            with self.subTest(word=word):
+                found = defects(GET + 'sh -c "%s"\n' % word)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("runs `sh -c` on `%s`" % word), found)
+        # A word holding text of its own is not this rule, nested or not, and
+        # an unbalanced brace is no expansion at all.
+        for word in ('${A}x', 'x${A}', '${A:-${B}}x', '${A', '$', '${A:-${B}} ${C}'):
+            with self.subTest(word=word):
+                self.assertEqual([], defects(GET + 'sh -c "%s"\n' % word))
+
+    def test_eval_set_is_the_declared_over_report(self):
+        # Finding 4: `eval set -- "$OPTS"` is the getopt idiom, and bash runs
+        # none of the value as a command -- unless it holds a `;`, which
+        # `eval` does run, so reporting it is the fail-closed answer and
+        # `dynamic_program`'s docstring declares it.
+        found = defects(GET + 'eval set -- "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$P`"), found)
+
+    def test_a_string_that_mixes_text_and_expansion_is_read_as_written(self):
+        # Not this rule: the string spells a command, and the reader reads it
+        # as it always has -- `echo` fetches nothing, and a `$(...)` marker is
+        # text the guard's own walk reads.
+        for script in (GET + 'sh -c "echo $X"\n', GET + 'sh -c "$(cat tool)"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        found = defects(GET + 'sh -c "curl -fsSL $U | sh"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
