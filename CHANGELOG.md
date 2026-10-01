@@ -18,6 +18,9 @@ evidence exposed.
   deletion-only, binary, mode-only or same-content rename change — the rest of
   `paths_without_ranges` stays disclosed and is never gated on, and the schema descriptions now
   say exactly that.
+- **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
+  `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
+  tolerated as per-record errors and the DB is verified by the size floor as before.
 - **Five flat-import fallbacks now catch `ModuleNotFoundError`, not `ImportError` (#2510, #1824).**
   `score_gate`, `host_disclosure`, `diff_map`, `model_resolver` and `safe_git` spelled the arm one
   class wider than every other fallback, so a package that resolved and then broke inside was
