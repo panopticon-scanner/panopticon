@@ -52,7 +52,14 @@ else:
     except ModuleNotFoundError:
         import dot_paths                   # noqa: E402
 # #2450: the ONE claim-path confinement predicate, not a third private copy.
-import claim_scope  # noqa: E402
+# Same fallback shape as above, so its root-realpath memo is one cache, not two.
+if TYPE_CHECKING:
+    from scripts import claim_scope
+else:
+    try:
+        from scripts import claim_scope
+    except ModuleNotFoundError:
+        import claim_scope                 # noqa: E402
 # #1757: the SEC carve-out policy, its own module because this one is ratcheted.
 import exclude_carve_out  # noqa: E402
 import plan_contract  # noqa: E402
