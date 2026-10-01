@@ -368,6 +368,19 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # A literal word still ends the walk at a file, value-form or not.
         self.assertIsNone(forms.stdin_program(self.argv("sh x.sh")))
 
+    def test_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
+        # #2473: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash -- a value-form COMMAND word gives the walk no
+        # shell NAME to key its tables on, so, fail-closed, it is read as
+        # one: the only reading this walk can still make good on, since an
+        # unknown name gives no FOREIGN reading either (`not shell and not
+        # foreign` would otherwise leave it None, as it did before #2473).
+        for script in ("$CMD", '"$CMD"', "${CMD}"):
+            with self.subTest(script=script):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv(script)))
+        # A literal path is not a value form: unaffected, as it always was.
+        self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
+
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):
     """#2337: any other dynamic command word handed a `-c` cluster may be a

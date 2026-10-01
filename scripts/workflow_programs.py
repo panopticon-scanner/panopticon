@@ -192,6 +192,12 @@ def stdin_program(argv):
     word outright. Read IN PLACE rather than weighed, fail-closed: `X` may
     just as well spell a FILE (`X=script.sh`), so this over-reports there --
     see the guard's gap list, which names it.
+
+    A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`) with stdin on it
+    may itself be a shell (#2473, route (b) of #2337's sibling: a name this
+    module has no table for gives no FOREIGN reading either, so SHELL is the
+    only one this walk can still make good on): `CMD=sh; $CMD <<'EOF'` is
+    then read as `sh <<'EOF'` is, fail-closed.
     """
     if not argv:
         return None
@@ -202,7 +208,10 @@ def stdin_program(argv):
             return SHELL_PROGRAM
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
-    if not shell and name not in _FOREIGN:
+    foreign = name in _FOREIGN
+    if not shell and not foreign and _value(argv[0]):
+        shell = True                            # a `$` command word may be a shell
+    if not shell and not foreign:
         return None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM
     rest = iter(argv[1:])

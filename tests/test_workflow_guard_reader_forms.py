@@ -370,6 +370,22 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
         self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
 
+    def test_2473_a_dollar_command_word_with_stdin_on_it_may_be_a_shell(self):
+        # `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57, 5.2.21 and
+        # dash: a value-form command word gives `stdin_program` no shell
+        # NAME, so it is read as one (fail-closed), exactly as `sh <<'EOF'`
+        # already was. `"$CMD"` answers the same, quoting already lost.
+        for script in ("CMD=sh\n$CMD <<'EOF'\n%s\nEOF\n" % PIPE,
+                       'CMD=sh\n"$CMD" <<\'EOF\'\n%s\nEOF\n' % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # A clean body stays clean.
+        self.assertEqual([], defects("CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n"))
+        # An EXPANDING body is reported unread, as a literal shell's is.
+        found = defects("CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("EXPANDING", found[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()
