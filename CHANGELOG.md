@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
+  whose effective `permissions:` would come from the repository default, while accepting job
+  blocks and workflow-level blocks inherited by every job.
 - **Direct discovery owns its implicit delta map under the selected repository (#2102).**
   Delta runs without `--out` write `<target>/.panopticon/diff-hunks.json`, and whole-repository
   runs clean that same path. Explicit outputs still keep the map beside `--out`.
