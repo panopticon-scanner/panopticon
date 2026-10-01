@@ -7,6 +7,34 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
+  `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
+  and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`
+  to read, so `curl -fsSLo tool …` beside `sh -c "$P"` read CLEAN while bash 3.2.57 and 5.2.21
+  both run the download once `$P` is `sh tool`; so did `bash -c "${P}"`, `eval "$P"`,
+  `sh -ec "$P"` and `${X:-sh} -c "$P"`. The `$CMD -c "$P"` twin has been REPORTED since #2465's
+  fix round (`candidates` hands a `$` command word's program to `unread_program`): one dynamic
+  program word, two answers, decided by whether the shell happened to be spelled out.
+  `dynamic_program` now reads that word wherever a shell takes one, and `unread_program` reports
+  it `Idle`, kept under #2481's predicate exactly as the twin is — beside a fetch this guard
+  reports, and nowhere else, so a credited download leaves it standing nowhere. Two spellings are
+  NOT this rule and read as they did: a lifted `$(...)` marker, whose inside the guard's own walk
+  reads (`sh -c "$(cat tool)"`), and a string MIXING literal text with an expansion
+  (`sh -c "echo $X"`). Where #2341's `carried` names the same statement louder — `x=$(curl …)`
+  then `sh -c "$x"` — the quiet sentence is dropped and the carried one stands alone, the dedup
+  `_Unprinted` already had for printers (one class for both now, `_Quiet`). Three readings fail
+  CLOSED on purpose: the reader drops quotes, so `sh -c '$x'` is reported though bash runs nothing
+  unless `$x` is exported; a cut (`eval "${x//$'\r'/}"`) is reported as an unread word, though the
+  guard still does not follow the download through it; and `curl … | sh -c "$P"` says both of its
+  defects, the stream and the unread program. The value gap the gap list keeps is untouched:
+  `sh -c "sh $X"` runs `tool` where `$X` names it and still reads clean, because no word follows
+  the value. Over the 11 probe corpora (439,716 rows) 42 rows gain the sentence, all of them
+  already flagged, with 0 CLEAN→FLAGGED, 0 FLAGGED→CLEAN and no reason lost; over a 1,001-row grid
+  of the shape itself 130 rows go CLEAN→FLAGGED and every one stands beside an uncredited download
+  or a carried one. Over the 3,200-workflow calibration pool (4,642 jobs) three jobs hand a
+  literal shell such a word — mlflow `cross-version-tests.yml :: test1` and `:: test2`
+  (`eval "$MATRIX_INSTALL"` and two more), vector `k8s_e2e.yml :: test-e2e-kubernetes`
+  (`bash -c "$2"`) — and none of them fetches, so no job's answer changes.
 - **The workflow guard keeps an unread program only beside an unverified fetch (#2481, #2499).**
   Owner rulings 2026-10-01. The job-level predicate in `workflow_forms.kept` was "the job
   downloads something", so a program the guard cannot read — `$PYTHON -c '...'`, a `$CMD -c`

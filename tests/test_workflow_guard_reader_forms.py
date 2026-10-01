@@ -201,12 +201,67 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     def test_what_the_gap_list_keeps_reads_nothing(self):
         # With no word after the value nothing is handed on: `sh $X` runs
         # `tool` where `$X` names it, the value gap the gap list keeps, CLEAN
-        # before this fix too; and the gap list's `sh -c "$P"` reads nothing,
-        # though bash 3.2.57, 5.2.21 and dash run `tool` where `$P` is `sh tool`.
-        for script in (GET + "sh $X\n", GET + 'sh -c "$P"\n'):
+        # before this fix too. The literal shell's own `sh -c "$P"` was the
+        # other half of that entry and is read now (#2483, below).
+        self.assertEqual([], defects(GET + "sh $X\n"))
+
+
+
+class TestADynamicProgramWordALiteralShell(unittest.TestCase):
+    """#2483: a program word a LITERAL shell takes that is entirely expansion
+    -- `sh -c "$P"`, `eval "$P"` -- spells no command, so `flattened` read it
+    as nothing at all and the step read CLEAN while bash runs the download
+    once `$P` is `sh tool`. One rule now for such a word wherever a shell
+    takes one: `Idle`, kept where the job holds a fetch the guard reports,
+    exactly as the `$CMD -c "$P"` twin is."""
+
+    def test_each_spelling_is_reported_beside_a_reported_fetch(self):
+        # Bash 3.2.57 and 5.2.21 run `tool` in each once `$P` is `sh tool`;
+        # the reader rewrites `${X:-sh}` to its default, so that shell is
+        # literal here and the same rule reads it.
+        for script, said in ((GET + 'sh -c "$P"\n', 'runs `sh -c` on `$P`'),
+                             (GET + 'bash -c "${P}"\n', 'runs `bash -c` on `${P}`'),
+                             (GET + 'eval "$P"\n', 'runs `eval` on `$P`'),
+                             (GET + '${X:-sh} -c "$P"\n', 'runs `sh -c` on `$P`'),
+                             (GET + 'sh -ec "$P"\n', 'runs `sh -c` on `$P`')):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
+    def test_it_is_not_reported_where_no_fetch_of_the_job_is(self):
+        # #2481's predicate decides it, as it decides the twin's: no fetch at
+        # all, and a download a checksum credits, leave it standing nowhere.
+        check = "echo '%s  tool' | sha256sum -c -\n" % ("a" * 64)
+        for script in ('sh -c "$P"\n', 'eval "$P"\n', 'bash -c "${P}"\n',
+                       GET + check + 'sh -c "$P"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
+    def test_a_download_the_word_carries_keeps_its_own_sentence(self):
+        # #2341's `carried` says it louder, in the same statement: one
+        # sentence, not two (`kept` drops the quiet one beside a loud one).
+        for use in ('sh -c "$x"\n', 'eval "$x"\n', 'bash -c "${x}"\n'):
+            with self.subTest(use=use):
+                found = defects('x=$(curl -fsSL %si.sh)\n' % URL + use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("carries", found[0][1])
+
+    def test_the_dynamic_shell_twin_is_unchanged(self):
+        found = defects(GET + '$CMD -c "$P"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
+
+    def test_a_string_that_mixes_text_and_expansion_is_read_as_written(self):
+        # Not this rule: the string spells a command, and the reader reads it
+        # as it always has -- `echo` fetches nothing, and a `$(...)` marker is
+        # text the guard's own walk reads.
+        for script in (GET + 'sh -c "echo $X"\n', GET + 'sh -c "$(cat tool)"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        found = defects(GET + 'sh -c "curl -fsSL $U | sh"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
     """#2342: the program a double-quoted `-c` or `eval` string hands a shell

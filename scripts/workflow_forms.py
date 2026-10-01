@@ -25,7 +25,8 @@ Three questions live here, each one a shape a step writes down:
                                -- compatibility imports split out when this
                                module ran short of room a third time;
                                `unread_program` reports the programs it cannot
-                               read in place (`candidates`, `unprinted`);
+                               read in place (`candidates`, `unprinted`,
+                               `dynamic_program`);
                                `within` the scripts a statement's command
                                substitutions run, where a use may be (#2345);
                                `carried` a download a step keeps in a variable
@@ -68,8 +69,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, candidates, scripts,
-                               stdin_program as stdin_program, stdin_scripts,
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, candidates, dynamic_program,
+                               scripts, stdin_program as stdin_program, stdin_scripts,
                                unprinted as unprinted)
 
 
@@ -334,9 +335,12 @@ class Idle(str):
     `workflow_guard._unread_stdin`'s foreign-language program (#2499)."""
 
 
-class _Unprinted(Idle):
-    """`unread_program`'s for a printer, which `kept` keeps only where no
-    other reason reports its statement: `carried`'s `echo "$x" | sh` (#2333)."""
+class _Quiet(Idle):
+    """An `Idle` `kept` keeps only where no other reason reports its statement:
+    `unread_program`'s for a printer whose words it cannot spell out (#2333)
+    and for a dynamic program word (#2483), both of which `carried` says
+    louder where a variable carries the download -- `echo "$x" | sh` and
+    `sh -c "$x"` are its own."""
 
 
 def substitution_script(argv, stage, walk, before=None):
@@ -382,14 +386,20 @@ def unread_program(argv, stage, walk, inside, before=None):
     sh` are `Idle`, and `sh $X`, with no word after the value, hands none.
     A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
     is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
-    guard reports unresolved (`sudo $CMD -c …`) is not read again here."""
+    guard reports unresolved (`sudo $CMD -c …`) is not read again here.
+    Last, the same word where the SHELL is spelled out (`dynamic_program`,
+    #2483): one rule for a dynamic program wherever a shell takes one, said
+    where `carried` does not say it louder of the same statement."""
     handed = inside and substitution_script(argv, stage, walk, before)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before)
-    if handed or not (words or printer) or shell_reader.unresolved_wrapper(stage.argv):
+    how, bare = (None, None) if handed else dynamic_program(argv)
+    if handed or shell_reader.unresolved_wrapper(stage.argv) or not (words or printer or bare):
         return handed or None           # an unresolved command is reported whole
+    if bare:
+        return _Quiet(_DYNAMIC % (how, shell_reader.readable(bare)))
     if printer:
         return _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(printer[0])),
-                        [" ".join(printer[1:])], walk, _Unprinted)
+                        [" ".join(printer[1:])], walk, _Quiet)
     return _weighed((
         "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
         "the word after its options is a program that may fetch or run a download unchecked; "
@@ -403,6 +413,9 @@ def unread_program(argv, stage, walk, inside, before=None):
          if not (shell_reader.is_marker(w) or isinstance(w, shell_reader.Rewritten))], walk)
 
 
+_DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word spells no "
+            "command it can read, and what it expands to may fetch or run a download unchecked; "
+            "write the program out, or exempt the step with a reason")
 _PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not spell out -- it "
             "cannot say whether that program fetches or runs a download unchecked; print literal "
             "text or write it in a quoted heredoc, or exempt the step with a reason")
@@ -593,7 +606,7 @@ def unbound(stmts, fetched, unread):
                                  that first holds the download answers already,
                                  and so does every one `carried` reports
         the statement is itself  the words of a statement a reason reports
-        reported unread          unread hold it, as `_Unprinted`'s
+        reported unread          unread hold it, as `_Quiet`'s
                                  `echo "$(curl ...)" | sh` does
         the PIPELINE writes it   `curl ... | cat > f`, `| tr ... > f`,
                                  `| dd of=f`, `| sponge f`, `| cat | tee t`
@@ -621,11 +634,11 @@ def kept(unread, unverified):
     """The `(index, why)` of `unread` that stand where `unverified` says the
     job holds a fetch this guard REPORTS -- a download no checksum clears, a
     stream handed to a shell, an unresolved transfer: an `Idle` one only
-    there (#2481, #2499), and an `_Unprinted` one not at a statement another
-    reason reports (`carried`'s, #2333)."""
+    there (#2481, #2499), and a `_Quiet` one not at a statement another
+    reason reports (`carried`'s, #2333, #2483)."""
     loud = {index for index, why in unread if not isinstance(why, Idle)}
     return [(index, why) for index, why in unread if not isinstance(why, Idle)
-            or unverified and not (isinstance(why, _Unprinted) and index in loud)]
+            or unverified and not (isinstance(why, _Quiet) and index in loud)]
 
 
 # The container runners, and the subcommands of theirs that run a command. The
