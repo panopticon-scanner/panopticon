@@ -509,5 +509,69 @@ class TestRepairToolsExcluded(unittest.TestCase):
         self.assertEqual(len(got["globs"]), repair_mod.ROWS_MAX)
 
 
+class TestRepairSecCarveOut(unittest.TestCase):
+    """#1757 (AGT-1355709320): `meta.coverage.exclude_paths_sec_carve_out` -- the
+    objective SEC surface a target's committed `exclude_paths:` could not hide.
+
+    Repaired like `tools_excluded` and for the same reason, twice over: the globs
+    are authored in the reviewed repository's own `panopticon.yml`, and the file
+    list is repo-relative paths read out of the reviewed tree. Both reach a
+    published artifact, so a glob or a path that is not a bounded non-empty
+    string is DROPPED rather than cut -- a cut glob is a different glob and a cut
+    path names a file that does not exist.
+    """
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = repair_mod.repair_sec_carve_out(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_block_passes_through(self):
+        block = {"globs": ["vendor/**"], "files": ["vendor/requirements.txt"],
+                 "count": 1}
+        got, err = self._repair(block)
+        self.assertEqual(got, block)
+        self.assertEqual(err, "")
+
+    def test_nothing_measured_is_the_empty_block_not_a_missing_key(self):
+        for bad in (None, {}, [], 7, "globs"):
+            with self.subTest(value=repr(bad)):
+                self.assertEqual(self._repair(bad)[0],
+                                 {"globs": [], "files": [], "count": 0})
+
+    def test_a_non_integer_or_negative_count_is_dropped_to_zero(self):
+        for bad in ("lots", True, -1, [1]):
+            with self.subTest(count=repr(bad)):
+                self.assertEqual(
+                    self._repair({"globs": [], "files": [], "count": bad})[0]["count"],
+                    0)
+
+    def test_non_string_and_over_long_entries_are_dropped_from_both_lists(self):
+        got, err = self._repair({"globs": ["ok/**", 7, "x" * 500],
+                                 "files": ["a/ok.yaml", None, "y" * 5000],
+                                 "count": 3})
+        self.assertEqual(got["globs"], ["ok/**"])
+        self.assertEqual(got["files"], ["a/ok.yaml"])
+        self.assertIn("globs", err)
+        self.assertIn("files", err)
+        # The count is the MEASUREMENT and survives the bound on the list: a
+        # repaired list shorter than the count is the honest reading of both.
+        self.assertEqual(got["count"], 3)
+
+    def test_both_lists_are_bounded(self):
+        got, _err = self._repair({"globs": ["g%d/**" % i for i in range(500)],
+                                  "files": ["f%d.yaml" % i for i in range(500)],
+                                  "count": 500})
+        self.assertEqual(len(got["globs"]), repair_mod.ROWS_MAX)
+        self.assertEqual(len(got["files"]), repair_mod.ROWS_MAX)
+
+    def test_a_non_list_for_either_list_is_dropped_not_exploded(self):
+        got, err = self._repair({"globs": "vendor/**", "files": {"a": 1}, "count": 1})
+        self.assertEqual(got["globs"], [])
+        self.assertEqual(got["files"], [])
+        self.assertIn("not a list", err)
+
+
 if __name__ == "__main__":
     unittest.main()

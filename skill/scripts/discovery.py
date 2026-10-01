@@ -51,6 +51,8 @@ else:
         from scripts import dot_paths
     except ModuleNotFoundError:
         import dot_paths                   # noqa: E402
+# #1757: the SEC carve-out policy, its own module because this one is ratcheted.
+import exclude_carve_out  # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
@@ -218,8 +220,7 @@ def compute_group_panels(files, security_mode="standard"):
     """Return default panel schedule for a group.
 
     Panels are a starting plan; the scout may refine them based on the actual
-    code surfaces. In redteam mode the security panel is replaced by redteam.
-    """
+    code surfaces. In redteam mode the security panel is replaced by redteam."""
     panels = ["code"]
     if any(is_test_file(f) for f in files):
         panels.append("test")
@@ -248,8 +249,7 @@ def _git(repo, args, timeout=30, text=True):
     target's effective config so a command filter is refused rather than
     executed. That refusal arrives as OSError, which every caller's
     `except Exception` already treats as "git failed" -- loud, never an
-    empty answer that reads as clean.
-    """
+    empty answer that reads as clean."""
     proc = safe_git.probe(repo, list(args), timeout=timeout, text=text)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, proc.args,
@@ -263,8 +263,7 @@ def _refused(exc):
     same refusal -- prefix, what was refused, the cause in parentheses (which
     names the setting), the consequence -- because an operator who meets this
     at two phases should not have to learn two messages. The cause is the only
-    place the refused key appears, so it is never trimmed away.
-    """
+    place the refused key appears, so it is never trimmed away."""
     return ("discovery: target Git probe REFUSED (%s); the reviewed tree's own "
             "Git configuration is not trusted to run, so discovery fails closed"
             % exc)
@@ -278,8 +277,7 @@ def _nul_separated_paths(raw):
     which a filename may legally carry -- a fragment is then a path that does
     not exist, and the real file is lost. os.fsdecode is the spelling every
     other surface here uses (`_git_listed_files`, diff_map's hunk keys), so
-    the file sets stay comparable as plain strings.
-    """
+    the file sets stay comparable as plain strings."""
     return [os.fsdecode(chunk) for chunk in (raw or b"").split(b"\0") if chunk]
 
 
@@ -306,8 +304,7 @@ def _worktree_dirty(repo, exclude=()):
     -- the SAME ones `write_diff_hunks` and `collect_changed_files` exclude --
     because `diff_map._sync_config` wrote the operator's config into that worktree
     before this ran: without it the answer is True on every --pr run, and the
-    driver's own sync is declared as the PR author's uncommitted work.
-    """
+    driver's own sync is declared as the PR author's uncommitted work."""
     r = _git(repo, ["status", "--porcelain", "-z"], text=False)
     names = set(exclude)
     records = (r.stdout or b"").split(b"\0")
@@ -350,8 +347,7 @@ def collect_changed_files(repo, base=None, exclude=()):
     (non-PR) delta review passes none.
 
     Only files that still exist in the working tree are returned. Returns
-    None if no git history is available.
-    """
+    None if no git history is available."""
     if base is not None:
         try:
             mb = _git(repo, ["merge-base", "HEAD", base]).stdout.strip()
@@ -440,8 +436,7 @@ def _even_sizes(total, n_chunks):
     the count is `m` by construction, and no size exceeds `max_per`: with no
     remainder every size is `total / m <= max_per`; with a remainder
     `total / m` is not a whole number, so it is strictly under `max_per` and
-    the larger size `floor(total / m) + 1` is still at most `max_per`.
-    """
+    the larger size `floor(total / m) + 1` is still at most `max_per`."""
     base, rem = divmod(total, n_chunks)
     return [base + 1] * rem + [base] * (n_chunks - rem)
 
@@ -464,8 +459,7 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     while `b`(25) `c`(23) `z`(2) -- the same 50 files -- chunked 2, and 30/30/37
     re-created a starved 4-file tail. Sizes are now DECIDED first and the blocks
     packed into them, so neither the count nor the balance can depend on
-    directory names.
-    """
+    directory names."""
     if max_per < 1:
         raise ValueError("max_per must be >= 1")
     files = list(files)
@@ -599,8 +593,7 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
     Returns ``(assigned, leftovers, warnings)``: ``assigned`` maps group ->
     sorted files (empty groups omitted), ``leftovers`` are files no group
     credited, ``warnings`` name every wildcard ``tests:`` glob that matched
-    files but credited none -- the "your glob is too broad" signal.
-    """
+    files but credited none -- the "your glob is too broad" signal."""
     if aliases is None:
         aliases = _capability_aliases()
     if prefixes is None:
@@ -1108,8 +1101,7 @@ def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     chunks carry ``chunk_of="Product:API"`` and ``parent="Product"``, so the
     fold is two hops -- chunks to their review unit, then the unit to its
     authored parent -- and "subgroups cannot nest" stays literally true.
-    Both axes self-reference at the top, so either walk terminates.
-    """
+    Both axes self-reference at the top, so either walk terminates."""
     panels = compute_group_panels(files, security_mode)
     return {
         "name": name,
@@ -1283,8 +1275,7 @@ def sweep_tests(leftovers, homes, catalog=None):
     ``Tests`` instead. Without it every attachment stands.
 
     Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
-    empty), ``{group: [files]}`` to extend, and the untouched leftovers.
-    """
+    empty), ``{group: [files]}`` to extend, and the untouched leftovers."""
     seeds = (tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
     swept = sorted(f for f in leftovers if match_patterns(f, seeds))
     remaining = sorted(f for f in leftovers if f not in set(swept))
@@ -1331,8 +1322,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     findings silently clobber the other's) and produce a duplicate report node.
     Committed groups always win, so any Commons category the committed catalog
     already defines (e.g. an authored ``Docs`` group) is dropped before Commons
-    ever runs.
-    """
+    ever runs."""
     named, leftovers, scoped_warnings = assign_scoped(files, catalog)
     for w in scoped_warnings:
         print("%s: %s" % (repo_config.CONFIG_NAMES[0], w), file=sys.stderr)
@@ -1382,8 +1372,7 @@ def _assert_unique_names(groups):
     clobbers the first cell's findings and the report is quietly short a cell.
     ``groups_schema._reserved_name_errors`` rejects the collisions visible in
     the committed catalog; this is the backstop for the ones that only exist
-    once chunking has run (a Commons group's chunk name, the residual sink).
-    """
+    once chunking has run (a Commons group's chunk name, the residual sink)."""
     seen: dict[str, str] = {}
     dupes: set[str] = set()
     for g in groups:
@@ -1407,8 +1396,7 @@ def build_result(repo, mode, target, facet, impl, tests,
 
     Groups are chunked from ``group_files`` when provided, else from ``impl``.
     Passing ``group_files`` lets a caller (e.g. --repo-scan) surface test
-    sources in groups while keeping counts["implementation"] impl-only.
-    """
+    sources in groups while keeping counts["implementation"] impl-only."""
     chunks = chunk_files(impl if group_files is None else group_files, max_per_group)
     base = os.path.basename(target.rstrip("/")) or target or "root"
     # Non-catalog path: the target itself is the review unit and every group is
@@ -1617,8 +1605,7 @@ def main(argv=None):
 
     Discovery touches the target's git from several depths -- the changed-file
     diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
-    from any of them means the same thing and deserves the same sentence.
-    """
+    from any of them means the same thing and deserves the same sentence."""
     try:
         return _repo_scan(argv)
     except safe_git.RepositoryRefused as exc:
@@ -1686,8 +1673,8 @@ def _repo_scan(argv=None):
                                info=info)
     # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
     # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
-    # catalog_groups/assign_by_catalog all consume `allf` from here on) -- excluded
-    # files land in NEITHER a group NOR a leftover; with none committed it is a no-op.
+    # catalog_groups/assign_by_catalog all consume `allf` from here on): a pruned file
+    # reaches NO group and no leftover. #1757 carves the SEC surface back out of that.
     try:
         committed_doc = _committed_document(repo)
         exclude_globs = _committed_exclude_paths(repo, committed_doc)
@@ -1700,17 +1687,12 @@ def _repo_scan(argv=None):
     _exclude_re = [_glob_to_re(g) for g in exclude_globs]
 
     def _apply_exclude(fs):
-        """Split ``fs`` into (kept, excluded) by the committed exclude_paths
-        globs; identity (no exclusions) when none are committed."""
-        if not _exclude_re:
-            return fs, []
-        kept: list[str] = []
-        dropped: list[str] = []
-        for f in fs:
-            (dropped if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
-        return kept, dropped
+        """Split ``fs`` into (kept, pruned, carved) by the committed
+        `exclude_paths:` globs -- `exclude_carve_out.split` owns the policy,
+        including the #1757 SEC carve-out; identity when none are committed."""
+        return exclude_carve_out.split(fs, _exclude_re)
 
-    allf, excluded_files = _apply_exclude(allf)
+    allf, excluded_files, carved_files = _apply_exclude(allf)
     impl, tests = partition_test_files(allf)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
@@ -1754,6 +1736,7 @@ def _repo_scan(argv=None):
             allf, catalog,
             prefixes=tests_axis.distinguishing_prefixes(catalog))
         scoped = assigned.get(args.scope_group, [])
+        carved_files = []           # #1757: carved files reach no catalog group
         if not scoped:
             # The third member of --scope-file/--scope-dir's family: a group
             # that EXISTS in the committed matrix but whose `match` assigns no
@@ -1766,6 +1749,7 @@ def _repo_scan(argv=None):
     elif args.scope_dir:
         d = args.scope_dir.strip("/") + "/"
         scoped = [f for f in allf if f.startswith(d)]
+        carved_files = [f for f in carved_files if f.startswith(d)]      # #1757
         if not scoped:
             print("--scope-dir %r matched no tracked files"
                   % args.scope_dir, file=sys.stderr)
@@ -1780,6 +1764,7 @@ def _repo_scan(argv=None):
         if sf is None:
             return 2
         scoped = [sf] + [t for t in related_tests(repo, [sf]) if t in allf]
+        carved_files = []           # #1757: `sf` came OUT of pruned `allf`
     elif args.scope_changed:
         res = resolve_base_or_die(repo, args.base, args.pr_base)
         if res is None:
@@ -1808,7 +1793,7 @@ def _repo_scan(argv=None):
             changed, include_fixtures=(args.security == "redteam"),
             pruned_fixtures=pruned_fixtures, info=info,
             isfile=lambda rel: _is_confined_regular(repo, rel)), info)
-        scoped, excluded_files = _apply_exclude(scoped)
+        scoped, excluded_files, carved_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
         # #2023: confine EVERY entry the way the singular confines its one --
@@ -1826,7 +1811,7 @@ def _repo_scan(argv=None):
         # membership test. `prune_fixture_files` cannot fire on that universe any more
         # (standard mode pruned the corpora before `excluded_files` came off the
         # listing, redteam keeps them); it stays for a universe that ever widens.
-        universe = set(allf) | set(excluded_files)
+        universe = set(allf) | set(excluded_files) | set(carved_files)
         entries: list[str] = []
         for raw in args.scope_files:
             p = _confine_scope_path(repo, raw, universe, "--scope-files")
@@ -1834,7 +1819,7 @@ def _repo_scan(argv=None):
                 return 2
             entries.append(p)
         scoped = prune_fixture_files(entries, args.security == "redteam")
-        scoped, excluded_files = _apply_exclude(scoped)   # delta-path parity (#1136)
+        scoped, excluded_files, carved_files = _apply_exclude(scoped)  # parity (#1136)
         _delta = None
         if args.base:
             res = resolve_base_or_die(repo, args.base, None)
@@ -1889,6 +1874,15 @@ def _repo_scan(argv=None):
                      ", ".join(leftovers[:10])
                      + (" …" if len(leftovers) > 10 else "")),
                   file=sys.stderr)
+    # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target's `exclude_paths:`
+    # may not take the objective SEC surface out of the SEC domain, so the carved
+    # files get one SEC-only group here instead of reaching no reviewer at all.
+    # After BOTH grouping paths, and never back into `allf`: the other domains
+    # keep honouring the exclusion. The sink name is reserved (`groups_schema`),
+    # so a committed group cannot already own it -- the matrix read refused above.
+    # `carved_files` is whatever the run's own scope left: the two delta flags
+    # re-derive it with the exclusion, and each narrowing flag narrows it above.
+    exclude_carve_out.install(result, carved_files, args.max_per_group, chunk_files)
     if pruned_fixtures:
         result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
         print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
@@ -1902,8 +1896,14 @@ def _repo_scan(argv=None):
         # compat: zero-behavior-change means zero-output-change too).
         result["exclude_paths"] = exclude_globs
         result["excluded_count"] = len(excluded_files)
-        print("exclude_paths: pruned %d file(s) matching %s before grouping"
-              % (len(excluded_files), ", ".join(exclude_globs)), file=sys.stderr)
+        # #1757: `excluded_count` still counts what left EVERY domain; the files
+        # the SEC floor matched are the other number, in their own block.
+        result["exclude_paths_sec_carve_out"] = exclude_carve_out.disclosure(
+            exclude_globs, carved_files)
+        print("exclude_paths: pruned %d file(s) matching %s before grouping, and "
+              "kept %d file(s) for SEC review only (#1757)"
+              % (len(excluded_files), ", ".join(exclude_globs), len(carved_files)),
+              file=sys.stderr)
 
     if "schema_version" not in result:
         result["schema_version"] = 1
