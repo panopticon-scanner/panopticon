@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Kimi credential cleanup reports partial failures (#2545, #1817).** Cleanup distinguishes
+  removed, absent and failed paths; retained-home and exit messages no longer claim secrets are
+  gone when an unlink failed.
 - **Timeout cleanup retains the session group identity (#2532, #1816).** An unpolled leader that
   Darwin reports gone cannot hide its live descendants, which still receive the SIGKILL phase.
 - **Verdict ingestion has bounded resources (#2531, #1816).** Advisor verdicts use a shared

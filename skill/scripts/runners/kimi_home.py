@@ -57,6 +57,7 @@ of its credential files on every other way out (N6, R2-2).
 PR evidence must quote capabilities, never this directory.
 """
 
+import dataclasses
 import os
 import shutil
 import stat
@@ -363,22 +364,36 @@ def _write_text(path, text):
     os.replace(tmp, path)
 
 
+@dataclasses.dataclass(frozen=True)
+class SecretStripResult:
+    """Counts from one bounded pass over the per-run credential paths."""
+
+    removed: int
+    absent: int
+    failures: tuple[str, ...]
+
+
 def strip_secrets(home):
     """Remove the credential-bearing files from a per-run home, leaving the
-    children's transcripts; returns the names removed (N6). `config.toml`
-    carries whatever the operator's config holds, `api_key` included;
-    `credentials`/`oauth` are SYMLINKS, so unlinking drops the handle, never
-    the store."""
-    removed = []
+    children's transcripts; report removed, absent, and failed paths (N6).
+    `config.toml` carries whatever the operator's config holds, `api_key`
+    included; `credentials`/`oauth` are SYMLINKS, so unlinking drops the
+    handle, never the store. Failure details are exception TYPES only: no
+    credential path or content crosses this boundary."""
+    removed = 0
+    absent = 0
+    failures = []
     for name in ("config.toml",) + _CREDENTIAL_ITEMS:
         path = os.path.join(home, name)
         try:
-            if os.path.islink(path) or os.path.isfile(path):
-                os.unlink(path)
-                removed.append(name)
-        except OSError:
-            pass
-    return removed
+            os.unlink(path)
+        except FileNotFoundError:
+            absent += 1
+        except OSError as exc:
+            failures.append(type(exc).__name__)
+        else:
+            removed += 1
+    return SecretStripResult(removed, absent, tuple(failures))
 
 def pointer_path(run_dir):
     """Where the run folder records this run's home. Write-only, by design

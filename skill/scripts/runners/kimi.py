@@ -270,7 +270,24 @@ class Runner(base.HostRunner):
         home, so two runs on one machine cannot interfere."""
         home = self.kimi_home
         if home and kimi_home_mod.is_temp_home(home):
-            kimi_home_mod.strip_secrets(home)
+            result = kimi_home_mod.strip_secrets(home)
+            if result.failures:
+                print("%s: %s" % (self.host or "runner", self._strip_note(result)),
+                      file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _strip_note(result):
+        """A content-free account of one credential cleanup attempt."""
+        if result.failures:
+            total = result.removed + result.absent + len(result.failures)
+            kinds = ", ".join(sorted(set(result.failures)))
+            return ("credential cleanup was incomplete: %d of %d paths failed (%s), "
+                    "so this home may still carry a credential"
+                    % (len(result.failures), total, kinds))
+        if result.removed:
+            return ("its config.toml and credential links were removed, so nothing left "
+                    "there carries a credential")
+        return "it held no credential files"
 
     def _arm_crash_strippers(self):
         """Strip the secrets on the ways out that never reach `teardown` (R2-2):
@@ -377,9 +394,8 @@ class Runner(base.HostRunner):
                 # how a later `--skills-dir=<gone>` would get built (R1-7).
                 self.kimi_home = self.run_home = self.skills_dir = None
             else:
-                removed = kimi_home_mod.strip_secrets(home)   # R3-6: fixed text below, never the names it returned
-                note = ("its config.toml and credential links were removed, so nothing left "
-                        "there carries a credential" if removed else "it held no credential files")
+                result = kimi_home_mod.strip_secrets(home)
+                note = self._strip_note(result)  # R3-6: counts/types only, never path names
                 print("driver loop: the kimi run home is kept for debugging at %s; %s"
                       % (home, note), file=sys.stderr, flush=True)
         self._disarm_crash_strippers()    # LAST (#1662): a Ctrl-C above leaves the exit stripper armed
