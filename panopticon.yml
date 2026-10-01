@@ -547,6 +547,7 @@ groups:
       match:
       - skill/scripts/reconcile.py
       - skill/scripts/evidence.py
+      - skill/scripts/tolerant_json.py
       - skill/scripts/evidence_sections.py
       - skill/scripts/integrity_messages.py
       - skill/scripts/citations.py

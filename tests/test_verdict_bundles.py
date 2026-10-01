@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import tracemalloc
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -21,6 +22,91 @@ def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):
     return str(d)
 
 class TestVerdictBundles(unittest.TestCase):
+    def test_unclosed_braces_have_linear_access_bound(self):
+        class CountingText(str):
+            def __new__(cls, value):
+                item = super().__new__(cls, value)
+                item.probes = 0
+                return item
+
+            def find(self, *args, **kwargs):
+                self.probes += 1
+                return super().find(*args, **kwargs)
+
+            def __getitem__(self, key):
+                self.probes += 1
+                return super().__getitem__(key)
+
+        body = CountingText("{" * 512)
+        self.assertIsNone(evidence._first_balanced_json(body))
+        self.assertLessEqual(body.probes, 5 * len(body))
+
+    def test_tolerant_parser_reaches_json_after_advisor_prose_shapes(self):
+        bundle = {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}]}
+        encoded = json.dumps(bundle)
+        prefixes = (
+            'I checked "if (x) { y" in app.py.\n',
+            "".join("{n%d}" % index for index in range(300)),
+            '"{a{b{c{d{e}}}}}"' * 30,
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix[:30]):
+                self.assertEqual(evidence.load_json_tolerant(prefix + encoded), bundle)
+
+    def test_many_balanced_spans_use_bounded_auxiliary_memory(self):
+        body = "{}" * 500_000
+        tracemalloc.start()
+        try:
+            self.assertEqual(evidence._first_balanced_json(body), {})
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_oversize_bundle_is_rejected_before_tolerant_parsing(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = Path(d) / "verdicts"
+            vdir.mkdir()
+            path = vdir / "verdicts-app-SEC.json"
+            path.write_text('{"verdicts": []}' + " " * 64, encoding="utf-8")
+            with mock.patch.object(evidence, "MAX_VERDICT_BYTES", 32), \
+                    mock.patch.object(evidence, "load_json_tolerant") as tolerant:
+                by_fid, bad = evidence.load_verdict_bundles(str(vdir))
+                _verdicts, strict_bad = evidence.load_verdicts_detailed(str(vdir))
+        self.assertEqual(by_fid, {})
+        self.assertEqual([row["file"] for row in bad], [path.name])
+        self.assertTrue(bad[0]["reason"].startswith("oversized: "), bad)
+        self.assertIn("32-byte", bad[0]["reason"])
+        self.assertTrue(strict_bad[0]["reason"].startswith("oversized: "), strict_bad)
+        tolerant.assert_not_called()
+
+    def test_parser_resource_error_is_disclosed_by_both_verdict_loaders(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = Path(d) / "verdicts"
+            vdir.mkdir()
+            path = vdir / "deep.json"
+            path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(evidence.json, "loads", side_effect=RecursionError):
+                _verdicts, strict_bad = evidence.load_verdicts_detailed(str(vdir))
+            with mock.patch.object(evidence, "load_json_tolerant",
+                                   side_effect=MemoryError):
+                _bundles, tolerant_bad = evidence.load_verdict_bundles(str(vdir))
+        self.assertEqual([row["file"] for row in strict_bad], [path.name])
+        self.assertEqual([row["file"] for row in tolerant_bad], [path.name])
+
+    def test_symlinked_verdict_leaf_is_disclosed_and_not_followed(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            vdir = root / "verdicts"
+            vdir.mkdir()
+            target = root / "outside"
+            target.write_text('{"verdicts": []}', encoding="utf-8")
+            link = vdir / "linked.json"
+            link.symlink_to(target)
+            bundles, bad = evidence.load_verdict_bundles(str(vdir))
+        self.assertEqual(bundles, {})
+        self.assertEqual([row["file"] for row in bad], [link.name])
+
     def test_bundle_loader_reports_bad_files_and_retains_wrapped_and_plain_bundles(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -37,14 +123,15 @@ class TestVerdictBundles(unittest.TestCase):
             (vdir / "wrapped.json").write_text(
                 "Advisor response:\n```json\n" + json.dumps(wrapped) + "\n```",
                 encoding="utf-8")
-            real_open = open
+            real_read = evidence._read_verdict_text
 
-            def selective_open(path, *args, **kwargs):
+            def selective_read(path):
                 if os.fspath(path) == str(unreadable):
                     raise OSError("read denied\nsecond line")
-                return real_open(path, *args, **kwargs)
+                return real_read(path)
 
-            with mock.patch("builtins.open", side_effect=selective_open):
+            with mock.patch.object(evidence, "_read_verdict_text",
+                                   side_effect=selective_read):
                 by_fid, bad = evidence.load_verdict_bundles(str(vdir))
             reasons = {entry["file"]: entry["reason"] for entry in bad}
             self.assertEqual(set(reasons), {"bad.json", "unreadable.json"})

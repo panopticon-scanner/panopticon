@@ -17,14 +17,14 @@ import uuid
 from types import ModuleType
 
 if TYPE_CHECKING:
-    from scripts import safe_write
+    from scripts import safe_write, tolerant_json
     from scripts._version import __version__
 else:
     try:
-        from scripts import safe_write
+        from scripts import safe_write, tolerant_json
         from scripts._version import __version__
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import safe_write
+        import safe_write, tolerant_json
         from _version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
@@ -70,6 +70,7 @@ EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
 GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed",
                                    BACKUP_SCOPE_LIMITED})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
+MAX_VERDICT_BYTES = 8 * 1024 * 1024
 
 # Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
 # scope-limited backup named, hung on the PRIMARY verdict that survived it so
@@ -505,79 +506,19 @@ def merge_citations(best, other):
             bc[key] = value
 
 
-def _first_balanced_json(body):
-    """Return the first balanced, parseable ``{...}`` object embedded in ``body``,
-    or None. Scans brace depth while respecting string literals and escapes, so a
-    stray brace in surrounding prose -- before OR after the object -- does not
-    derail extraction the way a greedy ``\\{.*\\}`` span does (it runs from the
-    first ``{`` to the LAST ``}``, swallowing any prose brace at either end).
-    Advances to the next ``{`` when a balanced span fails to parse, so a non-JSON
-    ``{see note}`` ahead of the real object is skipped, not mistaken for it.
-    Pure; never raises."""
-    n = len(body)
-    i = 0
-    while True:
-        start = body.find("{", i)
-        if start < 0:
-            return None
-        depth, in_str, esc = 0, False, False
-        for j in range(start, n):
-            c = body[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-            elif c == '"':
-                in_str = True
-            elif c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(body[start:j + 1])
-                    except json.JSONDecodeError:
-                        break   # not parseable; try the next '{'
-        i = start + 1
+_first_balanced_json = tolerant_json.first_balanced_object
 
 
-def load_json_tolerant(body):
-    """Parse JSON from text, stripping markdown code blocks and searching for JSON object."""
-    body = body.strip()
-    if body.startswith("```"):
-        body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
-        body = re.sub(r"\s*```\s*$", "", body).strip()
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError as first_err:
-        # #1058: first-class brace extraction. Narrative wrapping ("Here is my
-        # verdict: {...}. Set {x} in config.") lost 8/79 advisor verdicts in
-        # run-5; 3 repeated on retry, so it is prompt-induced, not noise. The
-        # balanced scanner accepts the first well-formed object regardless of
-        # prose braces at either end; the greedy regex stays as a last-resort
-        # fallback for shapes the scanner can't balance. A total miss re-raises
-        # so a genuinely-corrupt return still lands in `unloadable` (#938).
-        obj = _first_balanced_json(body)
-        if obj is not None:
-            return obj
-        m = re.search(r"(\{.*\})", body, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except json.JSONDecodeError:
-                pass
-        raise first_err
+def _read_verdict_text(path):
+    """Read a capped regular verdict, refusing symlink and special-file leaves."""
+    return safe_write.read_regular_bytes(path, MAX_VERDICT_BYTES).decode("utf-8")
+
+
+load_json_tolerant = tolerant_json.loads
 
 
 def _iter_verdict_files(verdicts_dir):
-    """Yield (name, path) for every *.json in verdicts_dir, sorted by name.
-
-    Yields nothing when verdicts_dir is falsy or not a directory -- callers
-    rely on this to preserve their empty-accumulator early-return behavior.
-    """
+    """Yield sorted ``(name, path)`` JSON files; nothing for a missing directory."""
     if not verdicts_dir or not os.path.isdir(verdicts_dir):
         return
     for name in sorted(os.listdir(verdicts_dir)):
@@ -594,12 +535,8 @@ def load_verdicts_detailed(verdicts_dir):
     ``*.json`` that failed to parse, was malformed, or lacked a valid verdict key
     or finding_id echo.
 
-    Single-verdict files are parsed strictly with ``json.load`` (#1193): a
-    markdown fence or surrounding prose makes the file unloadable, so an LLM
-    that failed to follow the output contract cannot bypass the echo-check by
-    accident. The echo-check itself (match_verdict) already requires a
-    ``finding_id``; load_verdicts_detailed now enforces the same requirement at
-    load time so a verdict without a finding_id can never be treated as "done".
+    Single-verdict files use strict JSON (#1193), and require a ``finding_id``
+    echo at load time; markdown fences or surrounding prose are unloadable.
     Callers surface ``unloadable`` in the report so a corrupt verdict is visible,
     not silently dropped (#938).
 
@@ -613,12 +550,14 @@ def load_verdicts_detailed(verdicts_dir):
     unloadable = []
     for name, path in _iter_verdict_files(verdicts_dir):
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError) as e:
+            data = json.loads(_read_verdict_text(path))
+        except (OSError, ValueError, RecursionError, MemoryError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)
-            kind = "unreadable" if isinstance(e, OSError) else "unparseable"
+            if isinstance(e, safe_write.ReadLimitExceeded):
+                kind = "oversized"
+            else:
+                kind = "unreadable" if isinstance(e, OSError) else "unparseable"
             unloadable.append({"file": name,
                                "reason": "%s: %s"
                                % (kind, (str(e).splitlines() or [""])[0])})
@@ -722,10 +661,12 @@ def load_verdict_bundles(verdicts_dir):
     unloadable = []
     for name, path in _iter_verdict_files(verdicts_dir):
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = load_json_tolerant(fh.read())
-        except (OSError, ValueError) as e:
-            unloadable.append({"file": name, "reason": (str(e).splitlines() or [""])[0]})
+            data = load_json_tolerant(_read_verdict_text(path))
+        except (OSError, ValueError, RecursionError, MemoryError) as e:
+            reason = (str(e).splitlines() or [type(e).__name__])[0]
+            if isinstance(e, safe_write.ReadLimitExceeded):
+                reason = "oversized: " + reason
+            unloadable.append({"file": name, "reason": reason})
             continue
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             continue   # not a bundle
