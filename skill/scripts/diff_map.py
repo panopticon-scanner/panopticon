@@ -904,20 +904,23 @@ def _sync_config(repo, wt_path):
     return list(res.disclosures) + notes
 
 
+def _worktree_paths(listing_out):
+    """Paths from NUL-delimited `git worktree list --porcelain -z` records."""
+    prefix = "worktree "
+    return [field[len(prefix):] for field in listing_out.split("\0")
+            if field.startswith(prefix)]
+
+
 def _main_worktree(listing_out, repo):
     """The path an `[includeIf "gitdir:..."]` pattern has to name for `repo`.
 
     git matches `gitdir:` against `$GIT_DIR`, which for a LINKED worktree is
     `<main>/.git/worktrees/<name>` -- not under the linked checkout's own path
     -- so a pattern built from `repo` matches nothing there (measured, #2041
-    review 2). The main worktree is the first line of `git worktree list`,
-    which acquisition already holds; only an empty listing falls back to
-    `repo` itself.
+    review 2). The main worktree is the first porcelain record acquisition
+    already holds; only an empty listing falls back to `repo` itself.
     """
-    for line in listing_out.splitlines():
-        if line.strip():
-            return line.split()[0]
-    return os.path.abspath(repo)
+    return next(iter(_worktree_paths(listing_out)), os.path.abspath(repo))
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
@@ -1045,18 +1048,13 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     wt = _worktree_dir(repo, pr_number)
     if os.path.islink(wt):
         raise RuntimeError("panopticon --pr: insecure symlink detected at worktree path %s" % wt)
-    # `git worktree list` (no --porcelain) prints one line per worktree:
-    # "<path>  <sha> [<branch>]" or "<path>  <sha> (detached HEAD)" — column
-    # widths vary with the longest path, so match on the first whitespace-
-    # split token rather than a fixed-width slice (verified against real
-    # `git worktree list` output, not assumed from the porcelain format).
+    # NUL-delimited porcelain records preserve spaces and record boundaries.
     # #run7 QAL-C2D: route through _safe so a stalled `git worktree list` raises
     # RuntimeError (which driver.run's #5.0-14 handler catches) instead of leaking
     # a raw TimeoutExpired as an uncaught traceback, and so a non-zero listing
     # fails loud rather than silently falling through to the create path.
-    listing_out = _safe(repo, ["worktree", "list"])
-    if any(line.split()[:1] == [wt]
-           for line in listing_out.splitlines() if line.strip()):
+    listing_out = _safe(repo, ["worktree", "list", "--porcelain", "-z"])
+    if wt in _worktree_paths(listing_out):
         # #1841: a registered worktree's directory can be `chmod`-ed after git
         # created it, and this branch is the one a resume takes -- so the
         # ownership and mode check runs here too, before anything reads the tree.
