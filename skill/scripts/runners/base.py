@@ -391,9 +391,9 @@ class HostRunner(children.ChildProcesses):
         The bound on launches after `stop` says yes is the same pool width as
         above: up to `width` entries were already running when the answer came
         back, and those are the ones drained. Cancelled futures are skipped,
-        never `.result()`-ed. A `stop` that RAISES is read as "carry on": it is
-        the consumer's own predicate, not an interrupt, and letting it reach
-        the arm below would terminate this batch's children.
+        never `.result()`-ed. A `stop` that RAISES is read as "carry on" and
+        named once: it is the consumer's own predicate, not an interrupt, and
+        letting it reach the arm below would terminate this batch's children.
         """
         entries = list(entries)
         if not entries:
@@ -418,16 +418,23 @@ class HostRunner(children.ChildProcesses):
         futures, stopped = [], False
         try:
             futures = [pool.submit(one, e) for e in entries]
-            yielded, asked = set(), False
+            yielded, asked, stop_error_reported = set(), False, False
             for f in concurrent.futures.as_completed(futures):
                 yielded.add(f)
                 yield f.result()
                 try:
                     asked = stop is not None and bool(stop())
-                except Exception:      # noqa: BLE001 -- the consumer's own predicate, and
+                except Exception as exc:      # noqa: BLE001 -- the consumer's own predicate,
                     # a broken one means "carry on". Unwrapped it fell into the arm
                     # below, which terminates this batch's children -- the one thing
                     # the stop path promises never to do -- and re-raised into the loop.
+                    if not stop_error_reported:
+                        detail = " ".join((stderr_head(str(exc)) or "").split())
+                        print("%s: batch stop predicate failed; continuing: %s%s"
+                              % (self.host or "runner", type(exc).__name__,
+                                 (": " + detail) if detail else ""),
+                              file=sys.stderr, flush=True)
+                        stop_error_reported = True
                     asked = False
                 if asked:
                     break
