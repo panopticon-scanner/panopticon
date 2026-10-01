@@ -10,6 +10,10 @@ evidence exposed.
 - **Reports disclose tool findings that cannot be placed (#2260, #1768).** The JSON counts
   active findings by adapter, the HTML scanner context renders those counts, and the adapter
   contract accepts an empty `location.file` only beside `path_resolution: unresolved`.
+- **A literal matrix entry that stops existing now reds (#2454, #1784).** The ~320
+  `match:`/`tests:` entries with no glob character are checked against the tree, beside the
+  allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file
+  itself falls back to a sibling glob; a stale `!` negation is caught the same way.
 - **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
   only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
   longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
