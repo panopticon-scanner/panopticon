@@ -4161,6 +4161,11 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
                       "curl -o /dev/null -w '%{http_code}' https://example.test/ 2> err.log\n"):
             with self.subTest(fetch=fetch):
                 self.assertEqual([], self.job(fetch + self.IDLE))
+        # The control (review r2, RV9): a log on fd 2 beside a payload sink on
+        # fd 1 is still the payload written -- bash runs it; fail closed.
+        why = self.job("curl -fsSL https://example.test/tool | cat > f 2> err.log\n" + self.IDLE)
+        self.assertEqual(1, len(why), why)
+        self.assertIn(self.SAID, why[0])
 
     def test_a_printer_reason_no_longer_hides_behind_a_foreign_program(self):
         # `_Unprinted`'s dedup drops the printer sentence where ANOTHER reason
