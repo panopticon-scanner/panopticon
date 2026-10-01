@@ -197,26 +197,43 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
     timed_out = {"hit": False}
 
+    def _cleanup_diagnostic(reason):
+        print("%s %s container cleanup incomplete: %s" % (label, tool, reason),
+              file=sys.stderr)
+
     def _kill_container():
         # #run9 OPS-D1A: proc.kill() SIGKILLs the `docker run` CLI client, which
         # cannot forward the signal to the daemon -- the `--rm` container keeps
         # running (and is never removed). When we recorded its id via --cidfile,
-        # stop it directly. Best-effort: an empty/absent cidfile (container not
-        # started yet) or a docker error is a no-op.
+        # stop it directly. Cleanup remains best-effort, but a cidfile or Docker
+        # failure is named so an ordinary timeout never implies cleanup succeeded.
         if not (docker_bin and cidfile):
             return
         try:
             with open(cidfile, encoding="utf-8") as fh:
                 cid = fh.read().strip()
-        except OSError:
+        except OSError as e:
+            _cleanup_diagnostic("container id file could not be read (%s)"
+                                % type(e).__name__)
             return
         if not cid:
+            _cleanup_diagnostic("container id file was empty")
             return
         try:
-            subprocess.run([docker_bin, "kill", cid], capture_output=True, timeout=10,
-                           env=docker_env)
-        except (subprocess.SubprocessError, OSError):
-            pass
+            result = subprocess.run(
+                [docker_bin, "kill", cid], capture_output=True, timeout=10,
+                env=docker_env)
+        except (subprocess.SubprocessError, OSError) as e:
+            _cleanup_diagnostic("docker kill could not run (%s)" % type(e).__name__)
+            return
+        if result.returncode:
+            raw = result.stderr or b""
+            excerpt = (raw[-500:].decode("utf-8", errors="replace")
+                       if isinstance(raw, bytes) else str(raw)[-500:])
+            excerpt = " ".join(excerpt.split())
+            _cleanup_diagnostic(
+                "docker kill exited %s%s" % (
+                    result.returncode, (" — " + excerpt) if excerpt else ""))
 
     def _watchdog():
         # Kill the child so the blocking read()/drain unblocks at EOF, and stop the
