@@ -399,21 +399,33 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # spurious SHELL or FOREIGN guess.
         self.assertIsNone(forms.stdin_program(self.argv("<(echo sh)")))
 
-    def test_a_dollar_command_word_with_stdin_on_it_is_read_as_foreign(self):
-        # Review I-2: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
+    def test_a_dollar_command_word_with_stdin_on_it_is_a_value_program(self):
+        # #2473: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
         # 5.2.21 and dash, but a value-form COMMAND word gives the walk no
-        # shell NAME to key its tables on, and reading it as SHELL anyway
-        # would read another language's program as though it were one
-        # (`$PYTHON -` with a Python download once passed CLEAN this way).
-        # It answers FOREIGN instead (#2473): the only reading that catches
-        # every body behind it, since an unknown name gives no SHELL grammar
-        # to parse it with either.
-        for script in ("$CMD", '"$CMD"', "${CMD}"):
+        # NAME to key its tables on -- it may hold a shell, `python3` or
+        # `true`. It answers VALUE_PROGRAM, not SHELL -- under which
+        # `$PYTHON -` was never reported, even beside a fetch (review I-2) --
+        # nor FOREIGN, whose body goes unread: `Idle` under #2499, so the
+        # issue's own `curl ... | sh` body read CLEAN beside no other fetch.
+        for script in ("$CMD", '"$CMD"', "${CMD}", "$(echo sh)", "$PYTHON -"):
             with self.subTest(script=script):
-                self.assertEqual(workflow_programs.FOREIGN_PROGRAM,
-                                  forms.stdin_program(self.argv(script)))
-        # A literal path is not a value form: unaffected, as it always was.
+                self.assertEqual(workflow_programs.VALUE_PROGRAM,
+                                 forms.stdin_program(self.argv(script)))
+        # A literal name keeps its table's answer, and a literal path is not a
+        # value form: unaffected, as they always were.
+        self.assertEqual(workflow_programs.FOREIGN_PROGRAM, forms.stdin_program(self.argv("python3 -")))
+        self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
+        # Its QUOTED heredoc body is read as shell, as a shell's is; an
+        # expanding body is read nowhere, and a FOREIGN program's never.
+
+        def handed(script):
+            stage = shell_reader.statements(script)[0].stages[-1]
+            return forms.stdin_scripts(shell_reader.command(stage.argv), stage)
+        self.assertEqual(["sh tool"], handed("$CMD <<'EOF'\nsh tool\nEOF"))
+        for script in ("$CMD <<EOF\nsh tool\nEOF", "python3 - <<'EOF'\nsh tool\nEOF"):
+            with self.subTest(script=script):
+                self.assertEqual([], handed(script))
 
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):
@@ -464,7 +476,8 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
                              ("printf %s 'sh tool' | sh", "sh tool"), ("printf %b 'sh tool' | sh", "sh tool"),
                              ("printf 'sh tool\\nsh x\\n' | sh", "sh tool\nsh x\n"),
                              ("printf -- 'sh tool' a | sudo sh", "sh tool"),
-                             ('echo "x=\\$(curl -fsSL u)" | sh', "x=$(curl -fsSL u)\n")):
+                             ('echo "x=\\$(curl -fsSL u)" | sh', "x=$(curl -fsSL u)\n"),
+                             ("echo 'sh tool' | $CMD", "sh tool\n")):     # #2473
             with self.subTest(script=script):
                 self.assertEqual([text], self.handed(script))
 
@@ -479,6 +492,11 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], self.handed(script))
                 self.assertTrue(forms.unprinted(*self.parts(script)))
+        # Behind a `$` command word (#2473) `unprinted` has no printer either:
+        # it weighs a shell's only, so `echo "$X" | $CMD` is unread -- the gap
+        # the guard's list files under #2331.
+        self.assertEqual([], self.handed('echo "$X" | $CMD'))
+        self.assertEqual([], forms.unprinted(*self.parts('echo "$X" | $CMD')))
 
     def test_no_program_where_the_shell_reads_none_from_the_printer(self):
         # A `-c` string or a script file makes stdin data; a printer writing
