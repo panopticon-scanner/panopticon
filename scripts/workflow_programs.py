@@ -176,9 +176,22 @@ def stdin_program(argv):
     first word that is not an option is its program, and a shell's `-s` says
     every word after it is a positional parameter instead. See the guard's gap
     list for the spelling that leaves behind.
+
+    A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the
+    `-c` string itself, not stdin, is the program) -- UNLESS that string is
+    itself one statement whose own command is a stdin-reading shell (#2500):
+    `eval 'bash -s'` and `bash -c 'sh'` then answer SHELL_PROGRAM for the
+    ENCLOSING command, so its heredoc, here-string or pipe is `bash -s`'s or
+    `sh`'s program, not `eval`'s or `-c`'s. `eval 'echo hi'` and `bash -c
+    'cat'` are not stdin-reading shells, so they are unaffected.
     """
     if not argv:
         return None
+    for inner in scripts(argv):
+        parsed = shell_reader.statements(inner)
+        if (len(parsed) == 1 and len(parsed[0].stages) == 1
+                and stdin_program(shell_reader.command(parsed[0].stages[0].argv)) == SHELL_PROGRAM):
+            return SHELL_PROGRAM
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     if not shell and name not in _FOREIGN:

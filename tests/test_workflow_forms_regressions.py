@@ -336,6 +336,23 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
 
+    def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
+        # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
+        # heredoc in bash 3.2.57 and 5.2.21 alike -- the program string is one
+        # statement whose own command (`bash -s`, `sh`) already answers
+        # SHELL_PROGRAM, so the command handing it to `eval`/`-c` does too,
+        # and its own heredoc/here-string/pipe is read as that inner shell's.
+        for argv in (["eval", "bash -s"], ["bash", "-c", "sh"], ["eval", "sh"],
+                     ["sh", "-c", "bash -s"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+        # `echo hi` and `cat` do not read their own program from stdin, so
+        # nothing is inherited: the string stays `eval`'s or `-c`'s DATA, as
+        # a literal filename behind `eval` does too.
+        for argv in (["eval", "echo hi"], ["bash", "-c", "cat"], ["eval", "sh x.sh"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(forms.stdin_program(argv))
+
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):
     """#2337: any other dynamic command word handed a `-c` cluster may be a

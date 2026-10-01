@@ -313,5 +313,39 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
+    """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
+    walk, so the heredoc, here-string or pipe each runs on its own stdin is
+    taken for data instead of the program it is -- bash 3.2.57 and 5.2.21
+    run every pin below."""
+
+    def test_2500_eval_or_dash_c_behind_a_stdin_reading_shell_inherits_the_heredoc(self):
+        # `eval`'s or `-c`'s STRING is one statement whose own command is
+        # itself a stdin-reading shell (`bash -s`, `sh`): the enclosing
+        # `eval`/`-c` command answers SHELL_PROGRAM too, so its heredoc,
+        # here-string or pipe is read as that inner shell's program.
+        for script in ("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash -c 'sh' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "x=$(eval 'bash -s' <<'EOF'\n%s\nEOF\n)\n" % PIPE,
+                       "x=$(bash -c 'sh' <<'EOF'\n%s\nEOF\n)\n" % PIPE,
+                       "eval 'bash -s' <<< '%s'\n" % PIPE, "bash -c 'sh' <<< '%s'\n" % PIPE,
+                       "echo '%s' | eval 'bash -s'\n" % PIPE,
+                       "echo '%s' | bash -c 'sh'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script))
+        # The must-trip control: the literal spelling this already flagged.
+        self.assertTrue(defects("bash -s <<'EOF'\n%s\nEOF\n" % PIPE))
+        # An EXPANDING body is reported unread, as a bare shell's is.
+        found = defects("eval 'bash -s' <<EOF\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("EXPANDING", found[0][1])
+        # `echo hi` and `cat` do not read their own program from stdin, so
+        # the heredoc stays `eval`'s or `-c`'s DATA: CLEAN.
+        for script in ("eval 'echo hi' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash -c 'cat' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 if __name__ == "__main__":
     unittest.main()
