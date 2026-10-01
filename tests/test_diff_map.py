@@ -843,7 +843,7 @@ class _PrRunner:
             else:
                 assert "env" in kwargs, argv  # confined safe_git launch
                 assert root in (self.repo, os.path.realpath(self.repo), self.wt), argv
-                if command == ["worktree", "list"]:
+                if command == ["worktree", "list", "--porcelain", "-z"]:
                     assert root == self.repo, argv
                     phase = "worktree_list"
                 elif command == ["config", "--null", "--list", "--includes"]:
@@ -877,7 +877,8 @@ class _PrRunner:
         if phase == self.fail_on:
             return subprocess.CompletedProcess(argv, 1, "", f"injected {phase} failure")
         if phase == "worktree_list":
-            result = (0, f"{self.wt}  deadbeef [detached HEAD]\n" if self.registered else "", "")
+            listing = f"worktree {self.wt}\0HEAD deadbeef\0detached\0\0"
+            result = (0, listing if self.registered else "", "")
         elif phase == "scope_listing":
             result = (0, _REPO_SCOPE_LISTING, "")
         elif phase in ("reuse_head", "fetched_head"):
@@ -1076,7 +1077,7 @@ class TestPrWorktree(unittest.TestCase):
                     diff_map.acquire_pr(7, repo=".", runner=runner)
             self.assertEqual(runner.fetches, 0)
             self.assertEqual(runner.adds, 0)
-            self.assertTrue(any(argv[-2:] == ["worktree", "list"]
+            self.assertTrue(any(argv[-4:] == ["worktree", "list", "--porcelain", "-z"]
                                 for argv, _ in runner.calls))
 
     def test_worktree_add_failure_deletes_temporary_ref(self):
@@ -1438,7 +1439,7 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         if mode is not None:
             os.chmod(path, mode)
 
-    def _fixture(self):
+    def _fixture(self, *, spaced=False):
         """(base, clone, pr_sha): a hostile PR head fetchable from a bare remote.
 
         The hooks live on MAIN as well as on the PR branch, because a relative
@@ -1448,7 +1449,11 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         shape anyway -- the operator ran the repository's own setup line, and the
         repository's committed `.githooks/` is what it points at.
         """
-        base = self.enterContext(tempfile.TemporaryDirectory())
+        if spaced:
+            base = self.enterContext(tempfile.TemporaryDirectory(
+                prefix="panopticon repo "))
+        else:
+            base = self.enterContext(tempfile.TemporaryDirectory())
         origin = os.path.join(base, "origin.git")
         seed = os.path.join(base, "seed")
         clone = os.path.join(base, "clone")
@@ -1582,20 +1587,35 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         either of those refused, which is the whole reason this one is real
         (#1877's lesson, in the small).
         """
-        base, clone, pr_sha = self._fixture()
+        base, clone, pr_sha = self._fixture(spaced=True)
         self._prove_the_fixture_is_live(base, clone, pr_sha)
-        wt = diff_map._worktree_dir(clone, 7)
+        wt = os.path.join(os.path.realpath(base), "PR worktree with spaces")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
-        with contextlib.redirect_stderr(io.StringIO()):
-            first = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
-            second = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        calls = []
+        real_runner = self._runner()
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            return real_runner(argv, **kwargs)
+
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt), \
+             contextlib.redirect_stderr(io.StringIO()):
+            first = diff_map.acquire_pr(7, repo=clone, runner=runner)
+            main_sha = self._read(clone, "rev-parse", "origin/main")
+            self.assertNotEqual(pr_sha, main_sha)
+            _git(os.path.join(base, "origin.git"), "update-ref",
+                 "refs/pull/7/head", main_sha)
+            second = diff_map.acquire_pr(7, repo=clone, runner=runner)
         self.assertEqual(first, second)
         self.assertEqual(second["head_sha"], pr_sha)
+        self.assertEqual(sum("fetch" in argv for argv in calls), 1, calls)
+        self.assertEqual(sum("worktree" in argv and "add" in argv
+                             for argv in calls), 1, calls)
         # Reused, not re-created: the main worktree and exactly one throwaway.
-        listing = [line for line in self._read(clone, "worktree", "list").splitlines()
-                   if line.strip()]
+        listing = diff_map._worktree_paths(
+            self._read(clone, "worktree", "list", "--porcelain", "-z"))
         self.assertEqual(len(listing), 2, listing)
-        self.assertTrue(any(line.split()[:1] == [wt] for line in listing), listing)
+        self.assertIn(wt, listing)
         for name in self.MARKERS:
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code on the resume path" % name)
@@ -1664,11 +1684,11 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         # reason for the setting is that it is per-repository (a deploy key), so
         # the message also names the shape that keeps it per-repository from the
         # global file, and the command that finds which file carries the key.
-        # The path as `git worktree list` prints the MAIN worktree (review 2):
+        # The path `git worktree list` prints for the MAIN worktree (review 2):
         # git matches `gitdir:` against `$GIT_DIR`, which a linked worktree's
         # own path never is, and the listing resolves symlinks (`/private/var`
         # here) where `abspath` would not.
-        main_path = self._read(clone, "worktree", "list").splitlines()[0].split()[0]
+        main_path = os.path.realpath(clone)
         self.assertIn('includeIf "gitdir:%s/"' % main_path, message)
         self.assertIn("git config --show-origin --get", message)
         # The KEY, never the VALUE: these are command lines (#2013's rule).
@@ -1691,11 +1711,11 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         pattern built from the linked checkout's own path matches nothing and
         an operator who followed it would lose the setting on the fetch. The
         message names the MAIN worktree, from either side."""
-        base, clone, _pr_sha = self._fixture()
+        base, clone, _pr_sha = self._fixture(spaced=True)
         _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
         linked = os.path.join(os.path.dirname(clone), "linked")
         _git(clone, "worktree", "add", "--detach", linked, "HEAD")
-        main_path = self._read(linked, "worktree", "list").splitlines()[0].split()[0]
+        main_path = os.path.realpath(clone)
         self.assertNotEqual(os.path.realpath(main_path), os.path.realpath(linked))
         for repo in (clone, linked):
             wt = diff_map._worktree_dir(repo, 7)

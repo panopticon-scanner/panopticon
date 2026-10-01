@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **PR worktree reuse parses Git's machine records (#2100).** Acquisition reads NUL-delimited
+  porcelain paths, so spaces no longer hide a registered tree or truncate the main-worktree path
+  in transport-setting remedies.
 - **Golden captures reject image-mount paths (#2261, #1768).** SARIF normalization reads the
   shared scanner mount, capture reroots fixture payloads before verification, and any surviving
   fixture or probe prefix prevents the golden write (a surviving `src/` is a real directory).
