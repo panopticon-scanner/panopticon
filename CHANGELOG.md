@@ -7,10 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow guard: a stdin program is read behind `eval`/`-c` and past a value in the option
-  slot, and reported under a `$` command word (#2500, #2485, #2473).** The heredoc that `eval
-  'bash -s'`, `sh $X` and `$CMD` run is now caught; `X=script.sh; sh $X <<'EOF'` and `$CMD
-  <<'EOF'` are named fail-closed over-reports.
+- **Workflow guard: a stdin program is read behind `eval`/`-c` and past a value in the option slot,
+  reported under a `$` command word (#2500, #2485, #2473).** The heredoc `eval 'bash -s'`, `sh $X`
+  and `$CMD` run is caught; `X=script.sh; sh $X` and `$CMD <<'EOF'` are fail-closed over-reports.
 - **nvd-cache.yml no longer publishes a database whose sync the deadline killed (#2508, #1818).**
   `timeout` exit statuses 124 and 137 now fail the sync step; other non-zero statuses stay
   tolerated as per-record errors and the DB is verified by the size floor as before.

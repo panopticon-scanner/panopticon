@@ -353,11 +353,11 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for argv in (["eval", "echo hi"], ["bash", "-c", "cat"], ["eval", "sh x.sh"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(forms.stdin_program(argv))
-        # Review I-1's sibling finding (d13): `eval`'s own several words join
-        # into the ONE string bash runs before this check, never read one at
-        # a time -- `eval bash script.sh` is `bash script.sh`, a FILE (bash
-        # runs the file, not the heredoc), not bare `bash` alone reading
-        # stdin, and `eval set -- "$ARGS"` is not `set` alone either.
+        # r0's N-4 (d13): `eval`'s own several words join into the ONE
+        # string bash runs before this check, never read one at a time --
+        # `eval bash script.sh` is `bash script.sh`, a FILE (bash runs the
+        # file, not the heredoc), not bare `bash` alone reading stdin, and
+        # `eval set -- "$ARGS"` is not `set` alone either.
         for argv in (["eval", "bash", "script.sh"], ["eval", "set", "--", "$ARGS"]):
             with self.subTest(argv=argv):
                 self.assertIsNone(forms.stdin_program(argv))

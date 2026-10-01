@@ -209,12 +209,13 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
 class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
     walk, so the heredoc, here-string or pipe each runs on its own stdin is
-    taken for data instead of the program it is -- bash 3.2.57 and 5.2.21 run
-    every DEFECT pin below. A CLEAN control is not: `X=script.sh` runs a FILE
-    this guard never reads either way, so its download stays unseen; `python3
-    $S` (unset) really runs the heredoc as Python, kept a FILE here by the
-    brief's own ruling, a filed gap named in the guard's gap list, not this
-    batch's to close."""
+    taken for data instead of the program it is. Bash 3.2.57 and 5.2.21 RUN
+    every pin below this class calls a genuine catch (DEFECT, true
+    positive). Two read the opposite of their own verdict, both filed in
+    the guard's gap list and neither this batch's to close: `X=script.sh`
+    is a DEFECT no shell runs (fail-closed, an over-report), and `python3
+    $S` (unset) is a CLEAN pin python DOES run, as its own program
+    (fail-open)."""
 
     def test_2500_eval_or_dash_c_behind_a_stdin_reading_shell_inherits_the_heredoc(self):
         # `eval`'s or `-c`'s STRING is one statement whose own command is
@@ -251,10 +252,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                        "bash -c 'cat' <<'EOF'\n%s\nEOF\n" % PIPE):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-        # Review I-1's sibling finding (d13): `eval`'s own several words join
-        # into the ONE string bash runs before this check, never read one at
-        # a time. `eval bash script.sh` is `bash script.sh` -- a FILE, not
-        # bare `bash` alone reading stdin -- and `eval set -- "$ARGS"` is not
+        # r0's N-4 (d13): `eval`'s own several words join into the ONE
+        # string bash runs before this check, never read one at a time.
+        # `eval bash script.sh` is `bash script.sh` -- a FILE, not bare
+        # `bash` alone reading stdin -- and `eval set -- "$ARGS"` is not
         # `set` alone either: both stay CLEAN. The quoted and unquoted
         # spellings of `eval bash -s` agree (DEFECT), as they did before.
         for script in ("eval bash script.sh <<'EOF'\n%s\nEOF\n" % PIPE,
@@ -291,7 +292,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # command's `-e` (the step's default), not the inner `bash -s`'s own
         # (it has none) -- a check gated only by `-e` reads hardened, so this
         # CLEAN is the documented, filed gap, not a claim nothing downloads:
-        # `bash t.sh` genuinely runs in all three shells regardless of
+        # `bash tool` genuinely runs in all three shells regardless of
         # `sha256sum -c -`'s failure, since the inner shell never had `-e`.
         # The literal, un-inherited twin (`bash -s`, no `eval`) IS flagged,
         # because ITS `-e` is the one actually in force over its own body.
