@@ -524,9 +524,12 @@ def _stage(text, context):
 
 
 def statements(script):
-    """Every statement in a `run:` script, in order, as parsed stages."""
+    """Every statement in a `run:` script, in order, as parsed stages; in a
+    lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
+    for marker, (kind, value) in getattr(script, "heredocs", {}).items():
+        text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
     out = []
     for raw, separator in _split(text, context):
