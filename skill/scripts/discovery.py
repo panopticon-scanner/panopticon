@@ -51,8 +51,7 @@ else:
         from scripts import dot_paths
     except ModuleNotFoundError:
         import dot_paths                   # noqa: E402
-# #2450: the ONE claim-path confinement predicate, not a third private copy.
-# Same fallback shape as above, so its root-realpath memo is one cache, not two.
+# #2450: the ONE confinement predicate (and its root memo): same fallback shape.
 if TYPE_CHECKING:
     from scripts import claim_scope
 else:
