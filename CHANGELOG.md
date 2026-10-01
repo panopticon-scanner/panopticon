@@ -11,6 +11,9 @@ evidence exposed.
   `match:`/`tests:` entries with no glob character are checked against the tree, beside the
   allowlist guard, so a renamed file cannot leave its leaf listing dead text while the file
   itself falls back to a sibling glob; a stale `!` negation is caught the same way.
+- **The legacy-only config refusal keeps its own remedy too (#2453, #1784).** A tree carrying
+  only `.panopticon/groups.yml` is refused with the `migrate-config` move that fixes it, and no
+  longer with "fix it or re-run `driver setup`" appended -- setup refuses that tree outright.
 - **`ToolAdapters` gains a `Contract` layer (#2315, #1784).** The adapter base, SARIF
   normalization and their contract tests move out of `Integration`, which sat at the 48-file
   cap; a headroom guard now reds any `ToolAdapters` leaf above 40 before the cap does.
