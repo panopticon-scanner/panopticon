@@ -239,9 +239,8 @@ class TestEpss(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             cit.epss_lookup(["CVE-2023-1234"], os.path.join(d, "c.json"), opener=opener)
-        from _version import __version__
-
-        self.assertEqual(holder["req"].get_header("User-agent"), "panopticon/%s" % __version__)
+        self.assertEqual(holder["req"].get_header("User-agent"),
+                         "panopticon/%s" % cit._version.__version__)
         self.assertEqual(holder["resp"].last_read_size, 1000000)
 
 
