@@ -20,6 +20,13 @@ evidence exposed.
   and `tests/test_matrix_coverage.py`'s 40-file headroom guard is now parametrised over
   `RepoProfiling` as well as `ToolAdapters`, with a second guard so a renamed group cannot make it
   vacuous. Matrix and tests only: no Python module moved.
+- **The driver loop waits a bounded backoff before re-launching a failed entry (#2506, #1813).**
+  Headless only: `min(2 ** streak, 8)` seconds plus up to 25% jitter before an entry whose last
+  launch failed is launched again — 2 s then 4 s, since the per-entry cap of 3 parks it after
+  the third — so a transient hiccup no classifier recognises no longer spends all three of its
+  launches in seconds. A streak of 0 waits nothing and session mode never waits, a human
+  advancing that loop. `runners/outage.py` owns the schedule, the line and the mode check, so
+  `orchestrate.py` gained one call and no lines.
 - **Every workflow job declares its token posture (#2247, #1784).** A fleet test rejects jobs
   whose effective `permissions:` would come from the repository default, while accepting job
   blocks and workflow-level blocks inherited by every job.
