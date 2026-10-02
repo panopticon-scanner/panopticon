@@ -5,6 +5,10 @@ import re
 
 
 _SCAN_CANDIDATES = 256
+# A short reply can spend a length-scaled budget on prose braces before reaching
+# its verdict. This constant floor covers those wrappers; large inputs retain
+# the linear multipliers below.
+_SCAN_BUDGET_FLOOR = 64 * 1024
 
 
 def first_balanced_object(body):
@@ -39,7 +43,7 @@ def first_balanced_object(body):
             start = starts.pop()
             if len(spans) < _SCAN_CANDIDATES:
                 spans.append((start, pos + 1))
-    budget = 2 * len(body)
+    budget = max(_SCAN_BUDGET_FLOOR, 2 * len(body))
     for start, end in sorted(spans):
         size = end - start
         if size > budget:
@@ -49,7 +53,11 @@ def first_balanced_object(body):
             return json.loads(body[start:end])
         except (json.JSONDecodeError, RecursionError, MemoryError):
             pass
-    replay_budget, cursor, length = 4 * len(body), 0, len(body)
+    # The replay also pays once for locating candidate starts. Keep that linear
+    # pass and fixed candidate bookkeeping outside the 64 KiB scan floor.
+    replay_budget, cursor, length = (
+        max(_SCAN_BUDGET_FLOOR, 4 * len(body))
+        + len(body) + 4 * _SCAN_CANDIDATES, 0, len(body))
     while replay_budget > 0:
         start = body.find("{", cursor)
         if start < 0:

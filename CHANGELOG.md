@@ -20,6 +20,9 @@ evidence exposed.
   files, respectively, keep each test beside its code, and put `CI` behind the shared 40-file
   headroom guard. This costs one extra review cell now; waiting would make the next unrelated CI
   contributor inherit an automatic split and its unplanned test inventories.
+- **Tolerant verdict extraction keeps small wrapped bundles (#2553, #1816).** A fixed 64 KiB
+  minimum scan budget reaches JSON after shallow nested or 256-open-brace prose while the
+  length-scaled caps still bound large inputs.
 - **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
   validated group, waits once for the shared SIGTERM grace, and escalates before reaping any
   leader, so a resistant descendant cannot escape SIGKILL. The price: a retained leader is a
