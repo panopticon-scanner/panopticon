@@ -39,7 +39,7 @@ from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
                                      _SET_E as _SET_E, _control_depths, _function_scope,
                                      _function_syntax, _posture_barrier, _stops_the_job,
-                                     _stops_step as _stops_step, clears as clears)
+                                     _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
 
@@ -221,7 +221,70 @@ def _piped_function_end(stmts, index):
     return None
 
 
-def swallowed(stmts, index, statement, stage, credit=None):
+_OWN_RESCUE = ("is followed by that use in its own `||` rescue branch, which runs only after "
+               "the checksum fails")
+_BOUNDED_RESCUE = ("; a use in its own `||` rescue branch runs only after the checksum fails, "
+                   "and a use after that reach still runs")
+
+
+class RescueGate(Reach):
+    """A check that gates only uses after its stopping rescue finishes."""
+
+    def __new__(cls, start, through, outside=None):
+        gate = str.__new__(cls, _OWN_RESCUE if outside is None
+                           else str(outside) + _BOUNDED_RESCUE)
+        gate.span = outside.span if isinstance(outside, Reach) else None
+        gate.start, gate.through, gate.outside = start, through, outside
+        return gate
+
+    def at_use(self, _check, use):
+        """This refusal inside the rescue; the original answer outside it."""
+        return self if self.start <= use <= self.through else self.outside
+
+
+def clears(why, check, use):
+    """Whether a check clears this use, excluding its own rescue body."""
+    if isinstance(why, RescueGate):
+        contextual = why.at_use(check, use)
+        if contextual is why:
+            return False
+        why = contextual
+    return _clears(why, check, use)
+
+
+def _rescue_bounds(stmts, branch):
+    """Inclusive statement bounds for the rescue after an `||` separator."""
+    start = branch + 1
+    if start >= len(stmts):
+        return None
+    depth = 0
+    for end, statement in enumerate(stmts[start:], start):
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
+        if end == start and depth <= 0:
+            return start, start
+        if depth <= 0:
+            return start, end
+    return None
+
+
+def _stopping_rescue(stmts, index, errexit=True, pipefail=False):
+    """Bounds and status proof for this check's later stopping rescue."""
+    branch = index
+    while branch < len(stmts) and stmts[branch].separator == "&&":
+        branch += 1
+    if branch >= len(stmts) or stmts[branch].separator != "||":
+        return None
+    stops = _stops_the_job(stmts, branch, errexit, pipefail)
+    bounds = _rescue_bounds(stmts, branch) if stops else None
+    return (*bounds, stops) if bounds is not None else None
+
+
+_UNMEASURED = object()
+
+
+def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
@@ -235,6 +298,9 @@ def swallowed(stmts, index, statement, stage, credit=None):
     its list runs, its own command where the list's end is lost, or a group
     gate that takes effect only after its concurrent pipeline (`clears`).
     """
+    measuring_uses = credit is not _UNMEASURED
+    if credit is _UNMEASURED:
+        credit = None
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
     if statement.separator == "&":
@@ -255,9 +321,12 @@ def swallowed(stmts, index, statement, stage, credit=None):
         if isinstance(stops, FunctionGate) and why and errexit:
             # Keep the proved call as a lower bound and a Reach as its upper
             # bound; an ordinary refusal still applies to the whole check.
-            return FunctionGate(stops.through, why) if isinstance(why, Reach) else why
+            answer = FunctionGate(stops.through, why) if isinstance(why, Reach) else why
+            rescue = _rescue_bounds(stmts, index) if measuring_uses else None
+            return RescueGate(rescue[0], rescue[1], answer) if rescue is not None else answer
         if isinstance(stops, Reach):
-            return stops
+            rescue = _rescue_bounds(stmts, index) if measuring_uses else None
+            return RescueGate(rescue[0], rescue[1], stops) if rescue is not None else stops
         if not stops:
             return why if not errexit and why else _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
@@ -279,5 +348,17 @@ def swallowed(stmts, index, statement, stage, credit=None):
         # reader statements, so use it before applying the function's bound.
         why = credit[1] if credit else None
         piped_end = function_end
-    return (PipelineGate(piped_end, why)
-            if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    answer = (PipelineGate(piped_end, why)
+              if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    if measuring_uses and (answer is None or isinstance(answer, Reach)):
+        pair = credit if isinstance(credit, tuple) else (None, None)
+        errexit = not (pair[0] == _SET_E or
+                       isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
+        rescue = _stopping_rescue(
+            stmts, index, errexit, isinstance(credit, tuple) and pair[1] is None
+        )
+        if rescue is not None:
+            start, through, stops = rescue
+            outside = stops if isinstance(stops, Reach) else answer
+            return RescueGate(start, through, outside)
+    return answer

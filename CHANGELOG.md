@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Checksum rescues no longer certify their own failure-only body (#2417, #2331).** A use
+  inside the check's `||` branch is reported even when that branch later exits. The same
+  stopping rescue still certifies uses after it, and unrelated checks retain their existing
+  ordering and file-binding diagnoses.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught.
