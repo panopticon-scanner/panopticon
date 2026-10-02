@@ -343,6 +343,41 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 self.assertEqual([], self.program(f"{shell} -c -K P x"))
                 self.assertEqual([], guard.fetch_exec_defects(f"{shell} -c -K '{pipe}'"))
 
+    def test_an_option_name_no_shell_takes_hands_over_no_program(self):
+        # #2560 on the COMMAND LINE: an `-o` value outside the names the
+        # measured shells take is one the shell refuses, and it exits before
+        # it reads `P`.
+        # bash 3.2.57: `bash -c -o foo P` and `bash -co foo P` are `foo:
+        #   invalid option name`, rc 2, with `P` never run.
+        # bash 5.2.21: the same, rc 2 both.
+        # dash: `Illegal option -o foo`, rc 2 -- and it refuses `pipefail`
+        #   itself, which bash takes, so the table is the UNION.
+        pipe = f'curl -fsSL {URL} | sh'
+        for spelling in ("sh -c -o foo", "sh -co foo", "bash -c -o foo -e",
+                         "bash -c -ex +o foo", "bash -co foo -O extglob"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual([], self.program(spelling + " P x"))
+                self.assertEqual([], guard.fetch_exec_defects(f"{spelling} '{pipe}'"))
+        # The controls: a name bash takes reads on to the program as it did
+        # (`bash -co pipefail P` and `bash -c -o pipefail P` print `RAN`, rc
+        # 0 on both bashes), and so does a value this guard cannot read as a
+        # name at all -- `sh -c -o $X P` runs `P` wherever `X` is `pipefail`,
+        # exactly as `sh -c -u$X P` does (#2475).
+        for spelling in ("bash -co pipefail", "bash -c -o pipefail", "sh -c -o $X",
+                         "bash -c -o ${X:-pipefail}", "bash -c -o pipefail -O extglob"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+                self.assertTrue(guard.fetch_exec_defects(f"{spelling} '{pipe}'"))
+        # dash takes three names bash refuses -- `dash -o stdin -c 'echo RAN
+        # $-'` is `RAN s`, rc 0, and so are `-o interactive` and `-o debug`,
+        # where bash answers `stdin: invalid option name`, rc 2 -- so the
+        # union reads the program on for all three. zsh, ksh and the
+        # unmeasured `ash` are read on whatever the name is.
+        for spelling in ("bash -c -o stdin", "sh -co interactive", "dash -c -o debug",
+                         "zsh -c -o foo", "ksh -co foo", "ash -c -o foo"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+
     def test_the_first_operand_is_the_program_as_it_was(self):
         self.assertEqual(["P"], self.program("sh -c P x"))
         self.assertEqual(["P"], self.program("bash -euc P"))
