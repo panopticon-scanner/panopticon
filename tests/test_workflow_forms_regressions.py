@@ -344,6 +344,41 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 self.assertEqual([], self.program(f"{shell} -c -K P x"))
                 self.assertEqual([], guard.fetch_exec_defects(f"{shell} -c -K '{pipe}'"))
 
+    def test_an_option_name_no_shell_takes_hands_over_no_program(self):
+        # #2560 on the COMMAND LINE: an `-o` value outside the names the
+        # measured shells take is one the shell refuses, and it exits before
+        # it reads `P`.
+        # bash 3.2.57: `bash -c -o foo P` and `bash -co foo P` are `foo:
+        #   invalid option name`, rc 2, with `P` never run.
+        # bash 5.2.21: the same, rc 2 both.
+        # dash: `Illegal option -o foo`, rc 2 -- and it refuses `pipefail`
+        #   itself, which bash takes, so the table is the UNION.
+        pipe = f'curl -fsSL {URL} | sh'
+        for spelling in ("sh -c -o foo", "sh -co foo", "bash -c -o foo -e",
+                         "bash -c -ex +o foo", "bash -co foo -O extglob"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual([], self.program(spelling + " P x"))
+                self.assertEqual([], guard.fetch_exec_defects(f"{spelling} '{pipe}'"))
+        # The controls: a name bash takes reads on to the program as it did
+        # (`bash -co pipefail P` and `bash -c -o pipefail P` print `RAN`, rc
+        # 0 on both bashes), and so does a value this guard cannot read as a
+        # name at all -- `sh -c -o $X P` runs `P` wherever `X` is `pipefail`,
+        # exactly as `sh -c -u$X P` does (#2475).
+        for spelling in ("bash -co pipefail", "bash -c -o pipefail", "sh -c -o $X",
+                         "bash -c -o ${X:-pipefail}", "bash -c -o pipefail -O extglob"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+                self.assertTrue(guard.fetch_exec_defects(f"{spelling} '{pipe}'"))
+        # dash takes three names bash refuses -- `dash -o stdin -c 'echo RAN
+        # $-'` is `RAN s`, rc 0, and so are `-o interactive` and `-o debug`,
+        # where bash answers `stdin: invalid option name`, rc 2 -- so the
+        # union reads the program on for all three. zsh, ksh and the
+        # unmeasured `ash` are read on whatever the name is.
+        for spelling in ("bash -c -o stdin", "sh -co interactive", "dash -c -o debug",
+                         "zsh -c -o foo", "ksh -co foo", "ash -c -o foo"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+
     def test_the_first_operand_is_the_program_as_it_was(self):
         self.assertEqual(["P"], self.program("sh -c P x"))
         self.assertEqual(["P"], self.program("bash -euc P"))
@@ -555,7 +590,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                                  forms.stdin_program(self.argv(script)))
         # A literal name keeps its table's answer, and a literal path is not a
         # value form: unaffected, as they always were.
-        self.assertEqual(workflow_programs.FOREIGN_PROGRAM, forms.stdin_program(self.argv("python3 -")))
+        self.assertEqual(workflow_programs.FOREIGN_PROGRAM,
+                         forms.stdin_program(self.argv("python3 -")))
         self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
         # Its QUOTED heredoc body is read as shell, as a shell's is; an
@@ -568,6 +604,67 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for script in ("$CMD <<EOF\nsh tool\nEOF", "python3 - <<'EOF'\nsh tool\nEOF"):
             with self.subTest(script=script):
                 self.assertEqual([], handed(script))
+
+    def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
+        # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;
+        # `stdin_program`'s answer is unchanged for each.
+        def read(step):
+            stage = shell_reader.statements(step + " <<'EOF'\necho hi\nEOF")[0].stages[-1]
+            argv = shell_reader.command(stage.argv)
+            return argv, forms.stdin_program(argv), forms.stdin_scripts(argv, stage)[0].reader
+
+        # The argv of a literal shell at the step's own level, whatever its options, a `-c` string
+        # among them that names no shell reading stdin too.
+        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s", "bash -s -c 'echo hi'"):
+            with self.subTest(step=step):
+                argv, program, reader = read(step)
+                self.assertIs(argv, reader)
+                self.assertEqual(forms.SHELL_PROGRAM, program)
+        # `()` behind a `-c` string naming a stdin shell, where the holder's own options read stdin.
+        for step in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
+            with self.subTest(step=step):
+                self.assertEqual((forms.SHELL_PROGRAM, ()), read(step)[1:])
+        # None where no shell is sure to read it: behind an `eval` or `-c` string that names the
+        # shell reading it, past a word that may vanish, under a `$` command word.
+        for step in ("eval 'bash -s'", "bash -c 'sh'", "bash -ec 'sh -e'", "bash $X -s -c 'sh'",
+                     "$CMD -s -c 'sh'", "sh $X", "$CMD", "eval '! bash -s'", "eval 'bash -s &'",
+                     "eval 'bash -s < /dev/null'", "eval 'bash -n -s'", "bash -nc 'sh'",
+                     "eval 'bash -s' $(printf %s -n)", "eval " * 65 + "bash -s",
+                     "sudo bash -c 'sh'"):
+            with self.subTest(step=step):
+                program = (workflow_programs.VALUE_PROGRAM if step.startswith("$CMD")
+                           else forms.SHELL_PROGRAM)
+                self.assertEqual((program, None), read(step)[1:])
+        # A shell read behind a string is no reader at any depth, whatever its
+        # options: `_stdin` names one only at the step's own level.
+        for depth in (1, 64):
+            with self.subTest(depth=depth):
+                self.assertEqual((forms.SHELL_PROGRAM, None),
+                                 workflow_programs._stdin(["bash", "-e", "-s"], depth))
+
+    def test_flattened_marks_each_statement_no_shell_is_sure_to_read(self):
+        # `workflow_forms.Unsure`: a statement of a body no shell is sure to read, or of a body
+        # inside one, whatever reads that; a body the holder's own options read stays `Inlined`.
+        def kinds(text):
+            return [(type(statement), " ".join(shell_reader.command(statement.stages[0].argv)))
+                    for statement in forms.flattened(shell_reader.statements(text))]
+        unsure, inlined, top = forms.Unsure, forms.Inlined, shell_reader.Statement
+        # A literal `bash -s` inside a `$CMD` body: its own body is `Unsure` too, and so is that of
+        # a holder whose own options read stdin.
+        self.assertEqual(
+            [(unsure, "echo inner"), (unsure, "bash -s"), (unsure, "echo outer"), (top, "$CMD")],
+            kinds("$CMD <<'EOF'\nbash -s <<'IN'\necho inner\nIN\necho outer\nEOF"))
+        self.assertEqual(
+            [(unsure, "sh"), (unsure, "echo inner"), (unsure, "bash -s -c sh"), (top, "$CMD")],
+            kinds("$CMD <<'EOF'\nbash -s -c 'sh' <<'IN'\necho inner\nIN\nEOF"))
+        # A `$CMD` body inside a literal one is `Unsure`; the literal body's own statements are not.
+        self.assertEqual(
+            [(unsure, "echo inner"), (inlined, "$CMD"), (inlined, "echo outer"), (top, "bash -s")],
+            kinds("bash -s <<'EOF'\n$CMD <<'IN'\necho inner\nIN\necho outer\nEOF"))
+        # `bash -s -c 'sh'`: the body is the step's own, `Inlined`, but no check in it counts.
+        found = forms.flattened(shell_reader.statements("bash -s -c 'sh' <<'EOF'\necho hi\nEOF"))
+        self.assertEqual([inlined, inlined, top], [type(statement) for statement in found])
+        self.assertEqual((forms._UNGATED % "bash",) * 2, found[1].credit)
 
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):

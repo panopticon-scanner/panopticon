@@ -36,6 +36,9 @@ one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
 and the substitutions are lifted out of it by `scripts/shell_text.py`.
 The wrappers' table, and the option grammar each one is read with, are
 `scripts/shell_wrappers.py`'s (#2227).
+The words a parse hands back, and the markers in them that say what was
+lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
+module's size and imported back here, so no caller moved.
 
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
@@ -44,13 +47,18 @@ back for a human reading an error message.
 import collections
 import os
 import re
-import secrets
 import shlex
 
-from shell_lex import ansi_c, lex
+from shell_lex import lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
-from shell_text import (Process, _lift_substitutions, join_continuations as join_continuations,
+from shell_quote import ansi_c
+from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
+from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
+                          _markers as _markers, derived as derived,
+                          has_substitution as has_substitution, is_arm as is_arm,
+                          is_marker as is_marker, readable as readable,
+                          yields_words as yields_words)
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -122,72 +130,6 @@ _ESCAPED = "\ue002"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
-class _Token(str):
-    """String-compatible shell word with capabilities from its own parse.
-
-    String operations deliberately discard provenance. Consumers deriving a
-    path must use `derived` to retain only the markers actually in that path.
-    Re-parsing a word starts a fresh context, never reuses these capabilities.
-    """
-    def __new__(cls, text, markers):
-        token = super().__new__(cls, text)
-        token.markers = markers
-        return token
-
-    markers: dict[str, tuple[str, object]]
-
-
-class _Expanded(_Token, Rewritten):
-    """A word bash expands as a pattern (#2294), lifted text in it or not;
-    `covers` knows one by its `lead`: may it begin with `-` (`leads`)."""
-
-
-def _markers(text):
-    return text.markers if isinstance(text, _Token) else {}
-
-
-def derived(text, *sources):
-    """Carry provenance through an explicit substring/path transformation."""
-    markers = {key: value for source in sources
-               for key, value in _markers(source).items() if key in text}
-    return _Token(text, markers) if markers else text
-
-
-class _Parse:
-    def __init__(self, source):
-        # No source spelling can collide, even if a nonce source is replaced
-        # in a test. No global registry: tokens retain only their own entries.
-        self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
-        while self.prefix in source:
-            self.prefix += "x"
-        self.entries: dict[str, tuple[str, object]] = {}
-        self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
-
-    def new(self, kind, value=None):
-        marker = self.prefix + str(len(self.entries)) + "@@"
-        self.entries[marker] = (kind, value)
-        return marker
-
-    def token(self, text):
-        markers = {m: self.entries[m] for m in self.pattern.findall(text)
-                   if m in self.entries}
-        return _Token(text, markers) if markers else text
-
-    def restore_arithmetic(self, text):
-        """Put opaque arithmetic text back after shell structure is split."""
-        def restore(match):
-            marker = match.group()
-            kind, value = self.entries[marker]
-            return value if kind == "arithmetic" else marker
-
-        return self.pattern.sub(restore, text)
-
-
-def is_arm(token):
-    return any(kind == "arm" and token.startswith(key)
-               for key, (kind, _value) in _markers(token).items())
-
-
 # --- reading the shell -------------------------------------------------------
 
 def _split(text, context):
@@ -195,7 +137,7 @@ def _split(text, context):
 
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
-    A `$'...'` whose escapes `shell_lex.ansi_c` decodes becomes the '...' of
+    A `$'...'` whose escapes `shell_quote.ansi_c` decodes becomes the '...' of
     the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
     double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
     shlex, reading what is left, no longer knows the quote it was in.
@@ -217,16 +159,30 @@ def _split(text, context):
     # 0.02 s before the probe existed, from a `run:` block this module reads
     # out of the TARGET repository (fix round on #1714, Critical 1).
     header_words, header_live = 0, True
+    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and
+    # `>` in it are the conditional's operators, not list separators, subshells
+    # or redirections (#2441) -- split at them, `CHECK && [[ -f a || -f b ]] ||
+    # exit 1` lost the `|| exit 1` that ends the real list. `cond` is 0 outside
+    # one and, inside, 1 plus the `(` it holds open, so a `)` it did not open
+    # ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern.
+    # `at_head` says every word this stage closed is a keyword or an assignment
+    # -- where bash reads `[[` as the conditional, not as `echo [[ a`'s word.
+    # The test ends with the STATEMENT, not with a stage: bash makes one word
+    # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
+    # nothing had opened -- the unbalanced count #2334 reads as a lost list.
+    cond, at_head = 0, True
 
     def end_stage():
-        nonlocal header_words, header_live, word_start, redirect_target
+        nonlocal header_words, header_live, word_start, redirect_target, at_head
         stages.append("".join(buf))
         del buf[:]
         header_words, header_live, word_start = 0, True, 0
-        redirect_target = False
+        redirect_target, at_head = False, True
 
     def end_statement(separator):
+        nonlocal cond
         end_stage()
+        cond = 0
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
             if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
@@ -267,19 +223,31 @@ def _split(text, context):
         # a source-text test miscounted that as a word and killed the probe
         # one word early, losing the second header of `case ... esac; case
         # ... in ...`. Whitespace inside a quote never reaches this branch.
-        if ch.isspace() and header_live and buf and not buf[-1][-1].isspace():
-            header_words += 1
-            try:
-                words = shlex.split("".join(buf))
-            except ValueError:
-                words = []
-            words = [w for w in words if w not in groups]
-            if len(words) == 3 and words[0] == "case" and words[-1] == "in":
-                end_statement(";")
-                cases.append("pattern")
-            elif header_words >= 3 or (words and words[0] != "case"):
-                header_live = False         # this buffer is not a header
+        if ch.isspace() and buf and not buf[-1][-1].isspace():
+            # The word that closed, quotes and all: `"[["` is the ordinary
+            # word, never the conditional; empty just past a `case` arm token.
+            closed = "".join(buf[word_start:])
+            if closed == "[[" and at_head or closed == "]]" and cond:
+                cond = int(closed == "[[")
+            at_head = at_head and bool(not closed or closed in KEYWORDS
+                                       or _ASSIGNMENT.match(closed))
+            if header_live:
+                header_words += 1
+                try:
+                    words = shlex.split("".join(buf))
+                except ValueError:
+                    words = []
+                words = [w for w in words if w not in groups]
+                if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                    end_statement(";")
+                    cases.append("pattern")
+                elif header_words >= 3 or (words and words[0] != "case"):
+                    header_live = False     # this buffer is not a header
         if ch == "(" and not (cases and cases[-1] == "pattern"):
+            if cond:                        # `[[ ( -f a || -f b ) ]]`: no subshell
+                cond, i = cond + 1, i + 1
+                buf.append(ch)
+                continue
             # Preserve function headers: `f()` and `f ()` are not subshells.
             if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
                 buf.append("()")
@@ -290,16 +258,20 @@ def _split(text, context):
             i += 1
             continue
         if ch == ")":
+            cond = max(cond - 1, 0)         # one it did not open ends it
             if cases and cases[-1] == "pattern":
                 buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
                 cases[-1] = "body"
+            elif cond:
+                buf.append(ch)              # the `(` the test opened, closed
             else:
                 buf.append(" " + groups[1] + " ")
                 word_start, redirect_target = len(buf), False
             i += 1
             continue
         redirect = _REDIRECT.match(text, i)
-        if redirect and not (cases and cases[-1] == "pattern"):
+        # `[[ $a < $b ]]` compares two strings: no descriptor is redirected.
+        if redirect and not cond and not (cases and cases[-1] == "pattern"):
             # Only unquoted, unescaped digits comprising the whole preceding
             # word are an IO number. An attached URL (or quoted "2") is argv.
             word = "".join(buf[word_start:])
@@ -327,6 +299,13 @@ def _split(text, context):
         if ch in ";\n&|":
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
+            # Inside the test they join its expressions, and a `]]` that the
+            # operator itself closes (`[[ -f a ]]&& USE`) ends it first; a `;`,
+            # `&` or newline there is a syntax error bash stops on, read as ever.
+            if cond and pair in ("&&", "||") and "".join(buf[word_start:]) != "]]":
+                buf.append(" %s " % pair)
+                word_start, i = len(buf), i + 2
+                continue
             end_statement(separator)
             # Every terminator that ENDS a case arm, not just `;;`: bash also
             # spells it `;&` (fall through into the next arm's body) and `;;&`
@@ -655,28 +634,3 @@ def conditional(argv):
             continue
         return False
     return False
-
-
-def readable(text):
-    """Render only this token's genuine lifted substitutions for diagnostics."""
-    for key, (kind, _value) in _markers(text).items():
-        if kind == "subst":
-            text = text.replace(key, "$(...)")
-    return text
-
-
-def is_marker(token):
-    """True only for actual lifted text, never a target-authored lookalike."""
-    return bool(_markers(token))
-
-
-def has_substitution(token):
-    """Whether a word/path depends on a substitution generated by its parse."""
-    return any(kind == "subst" for kind, _value in _markers(token).values())
-
-
-def yields_words(token):
-    """Whether a `$(...)` or backquote in this word hands on its OUTPUT as
-    words; a `<(...)` or `>(...)` (`shell_text.Process`) hands a file."""
-    return any(kind == "subst" and not isinstance(value, Process)
-               for kind, value in _markers(token).values())

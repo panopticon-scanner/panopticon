@@ -15,6 +15,7 @@ import workflow_guard as wg
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
 GET = "curl -fsSLo t.sh %si.sh\n" % URL
+PAREN = "a `)` in a substitution heredoc body"
 
 
 def defects(script):
@@ -66,8 +67,8 @@ class TestAHeredocBodyTheEnclosingParseLifts(unittest.TestCase):
         # checksum clears: #2499's predicate, pinned below in full.
         for head, opener, body, named in (
                 ("", "bash <<EOF", PIPE, "EXPANDING heredoc body"),
-                ("", "cat <<EOF", "$(%s)" % PIPE, "straight to `sh`"),
-                (GET, "python3 - <<'EOF'", "print(1)", "to `python3` as the program")):
+                ("", "cat <<EOF", "$(%s)" % PIPE, PAREN),
+                (GET, "python3 - <<'EOF'", "print(1)", PAREN)):
             multi, one = twins(opener, body)
             with self.subTest(script=multi):
                 found = defects(head + multi)
@@ -112,21 +113,34 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
            "%s\nEOF; python3 - <<'EOF'\nprint(1)\nEOF\n" % ("a" * 64, PIPE, PIPE[:-5], PIPE))
 
     def test_the_statement_after_an_earlier_heredoc_is_read(self):
-        # Without the earlier heredoc the later one is refused by name; with
-        # it the step read clean, and is now refused in the same words.
+        # Without the earlier heredoc and with it, the early-close body is
+        # read and the pipeline beside it keeps its own finding.
         alone = defects(self.LATER)
         self.assertEqual(1, len(alone), alone)
-        self.assertIn("cannot read this step: a heredoc inside a `$(...)`", alone[0][1])
+        self.assertIn("hands %si.sh straight to `sh`" % URL, alone[0][1])
         self.assertEqual(alone, defects(self.EARLIER + self.LATER))
         # With no later one, the fetch is flagged as it was.
         found = defects(self.EARLIER + PIPE + "\n")
         self.assertEqual(1, len(found), found)
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
-    def test_the_row_it_was_found_in_is_refused(self):
-        # Both bashes run its payload. Its `EOF)` ends the body `bash -s`
-        # reads, and the `"$(cat <<EOF)"` after it is refused as above.
-        self.assertEqual(defects(self.LATER), defects(self.ROW))
+    def test_the_discovery_row_fails_closed_by_name(self):
+        # #2493's later ruling supersedes the specific findings where this
+        # row's substitution body itself contains a `)`.
+        found = defects(self.ROW)
+        self.assertEqual(1, len(found), found)
+        self.assertIn(PAREN, found[0][1])
+
+    def test_an_early_close_with_only_data_is_clean(self):
+        self.assertEqual([], defects('echo "$(cat <<EOF)"\nbody\nEOF\n'))
+        found = defects('echo "$(cat <<EOF)"\nbody\nEOF\n%s\n' % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_close_line_rest_is_code_after_the_body(self):
+        found = defects("x=$(cat <<EOF) && %s\nbody\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
     def test_each_of_three_heredocs_keeps_the_fetch_after_it(self):
         # One-line, multi-line, one-line: a fetch after each is read, wherever
@@ -154,6 +168,54 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
                 self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
         self.assertEqual([], defects("x=$(cat <<'EOF'\nit's\nEOF)\necho done\n"))
         self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
+
+
+class TestAParenInsideASubstitutionHeredoc(unittest.TestCase):
+    """#2493: Bash 3.2 may close a substitution at a `)` in its heredoc
+    body and run the rest as code. The owner ruled that every such body must
+    fail closed under a named finding rather than choose a reading."""
+
+    def test_each_body_with_a_paren_is_named(self):
+        for close in ("EOF\n)\n", "EOF)\n"):
+            script = "x=$(cat <<'EOF'\na)\n%s\n%s" % (PIPE, close)
+            with self.subTest(close=close):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(PAREN, found[0][1])
+
+    def test_a_body_without_a_paren_stays_clean(self):
+        self.assertEqual([], defects("x=$(cat <<'EOF'\na\nEOF\n)\n"))
+        self.assertTrue(defects(PIPE + "\n"))
+
+
+class TestATabPrefixedSubstitutionHeredocDelimiter(unittest.TestCase):
+    """#2584: a `<<-` delimiter starting with a tab bypasses the `EOF)`
+    terminator reading. #2493 now refuses the `)` left in its body instead;
+    pin that protection without changing the Bash 5.2 delimiter reading."""
+
+    DATA = "x=$(cat <<-'\tB'\n\thi\n\tB\n)\n"
+
+    def test_the_bash32_early_close_is_refused_in_every_posture(self):
+        # Bash 3.2 runs the pipe then exits 2; Bash 5.2 runs no pipe and
+        # exits 0. Dash exits 2 without running it. This was CLEAN before
+        # #2493, even though the literal tab prevents the EOF)-line reading.
+        script = "x=$(cat <<-'\tB'\n\thi\n\tB)\n%s\n\tB\n)\n" % PIPE
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("step", script, shell=shell)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(PAREN, found[0][1])
+
+    def test_data_without_a_body_paren_keeps_its_reading(self):
+        # Both bashes read data; dash cannot close this tab-prefixed word.
+        # The direct pipe is the must-trip control under all three shells.
+        self.assertEqual([], defects(self.DATA))
+        self.assertTrue(defects(PIPE))
+
+    def test_a_pipe_after_the_exact_terminator_remains_visible(self):
+        found = defects(self.DATA + PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
 class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
@@ -256,6 +318,35 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestACaseOnAnEOFParenLineReadsEveryArm(unittest.TestCase):
+    """#2580: a case pattern closes its arm, not the substitution heredoc."""
+
+    def assert_pipeline_is_reported(self, rest):
+        script = "x=$(cat <<'EOF'\nhi\nEOF%s)\n" % rest
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_second_arm_on_the_close_line_is_read(self):
+        self.assert_pipeline_is_reported("case 2 in 1) true;; 2) %s;; esac" % PIPE)
+
+    def test_the_third_arm_on_the_close_line_is_read(self):
+        rest = "case 3 in 1) true;; 2) true;; 3) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_parenthesized_later_pattern_is_read(self):
+        rest = "case 2 in 1) true;; (2) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_nested_substitution_in_a_later_arm_stays_read(self):
+        rest = "case 2 in 1) true;; 2) echo $(%s);; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_the_first_arm_control_stays_read(self):
+        rest = "case 1 in 1) %s;; 2) true;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+
 class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
     """#2494: after one body finds no end, a later body's fallback scan still
     reaches its `B)` line before the exact `B` line that bounds that scan."""
@@ -280,6 +371,45 @@ class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestQueuedBodiesAfterAnEOFParenEnd(unittest.TestCase):
+    """#2497: Bash 5.2 reads later queued bodies before parsing the first
+    body's `A)`-line rest, so neither source of a pipeline stays a refusal."""
+
+    BODY_PAYLOAD = ("x=$(bash -s <<'A' <<'B'\nignored\nA)\n"
+                    "%s\nB\n" % PIPE)
+    REST_PAYLOAD = ("x=$(cat <<'A' <<'B'\nignored\n"
+                    "A %s)\nbody\nB\n" % PIPE)
+
+    def test_the_later_body_is_the_shell_program(self):
+        found = defects(self.BODY_PAYLOAD)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `bash` inside a command substitution", found[0][1])
+
+    def test_the_saved_rest_is_read_after_both_bodies(self):
+        found = defects(self.REST_PAYLOAD)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_saved_rest_keeps_a_dropped_separator_word_boundary(self):
+        script = ("x=$(cat <<'A' <<'B'\nignored\n"
+                  "Ash -c;'%s')\nbody\nB\n" % PIPE)
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `sh` inside a command substitution", found[0][1])
+
+    def test_two_eof_paren_ends_remain_fail_closed(self):
+        script = "x=$(bash -s <<'A' <<'B'\nignored\nA)\n%s\nB)\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("cannot read this step", found[0][1])
+
+    def test_a_top_level_queue_is_unchanged(self):
+        script = "bash -s <<'A' <<'B'\nignored\nA)\nA\n%s\nB\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+
 class TestAForeignProgramOnStandardInput(unittest.TestCase):
     """#2499 (owner ruling 2026-10-01, option b): a heredoc body handed to an
     interpreter this guard has no grammar for -- `python3 - <<'EOF'`,
@@ -292,7 +422,8 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
 
     #2491 (#2336) handed such a body back to the substitution that reads it,
     so the rule reaches `MODULES=$(python3 - <<'EOF' ... )` too, and the
-    predicate governs it there in the same words."""
+    predicate governs it there in the same words unless #2493's later ruling
+    fails closed because the body itself contains a `)`."""
 
     CHECKED = "echo '%s  t.sh' | sha256sum -c -\n" % ("a" * 64)
     SAID = "to `python3` as the program to run"
@@ -305,24 +436,31 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
             with self.subTest(opener=opener):
                 self.assertEqual([], defects(self.body(opener)))
                 multi, one = twins(opener, "print(1)")
-                self.assertEqual([], defects(multi))
-                self.assertEqual([], defects(one))
-        # `node`'s twin, and a credited download beside each: cleared too.
+                for script in (multi, one):
+                    found = defects(script)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(PAREN, found[0][1])
+        # A top-level `node`, and a credited download beside top-level forms,
+        # are still cleared; #2493 governs the substitution twin instead.
         self.assertEqual([], defects("node <<'NODE'\nconsole.log(1)\nNODE\n"))
         for script in (self.body("python3 - <<'EOF'"),
-                       "node <<'NODE'\nconsole.log(1)\nNODE\n",
-                       twins("python3 - <<'EOF'", "print(1)")[0]):
+                       "node <<'NODE'\nconsole.log(1)\nNODE\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(GET + self.CHECKED + script))
+        found = defects(GET + self.CHECKED + twins("python3 - <<'EOF'", "print(1)")[0])
+        self.assertEqual(1, len(found), found)
+        self.assertIn(PAREN, found[0][1])
 
     def test_a_program_beside_a_fetch_the_guard_reports_is_reported(self):
-        for script in (GET + self.body("python3 - <<'EOF'"),
-                       GET + twins("python3 - <<'EOF'", "print(1)")[0],
+        found = defects(GET + self.body("python3 - <<'EOF'"))
+        self.assertEqual(1, len(found), found)
+        self.assertIn(self.SAID, found[0][1])
+        for script in (GET + twins("python3 - <<'EOF'", "print(1)")[0],
                        GET + twins("python3 - <<'EOF'", "print(1)")[1]):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
-                self.assertIn(self.SAID, found[0][1])
+                self.assertIn(PAREN, found[0][1])
         # A stream into a shell, and a download a variable carries, report a
         # fetch too: the program stands beside each.
         for fetch in ("%s\n" % PIPE, "x=$(curl -fsSL %si.sh)\nsh -c \"$x\"\n" % URL):
