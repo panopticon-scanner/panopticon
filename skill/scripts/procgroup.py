@@ -191,7 +191,9 @@ def wait_interrupt_grace(groups, deadline):
     """Wait once for retained groups to stop, without reaping their leaders.
 
     Retaining each leader keeps its pid unavailable for reuse until the caller
-    has sent every required SIGKILL. A group that empties ends the wait early.
+    has sent every required SIGKILL. The retained leader is a zombie that keeps
+    its group alive to `killpg`, so the wait runs the FULL window: nothing in
+    POSIX tells a zombie-only group from a live one without reaping (#2550).
     Handle-only children keep their recycle-safe legacy wait in the caller.
     """
     groups = tuple(groups)
