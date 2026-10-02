@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three

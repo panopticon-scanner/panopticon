@@ -224,6 +224,27 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
             50 * 1024 // 4, lambda size: "case " + "a" * size + " in x) :; esac\n", check)
 
 
+class TestNestedCaseHeaders(unittest.TestCase):
+    """#2617: a parent arm must not become the first word of an inner header."""
+
+    def test_each_nested_header_and_arm_remains_a_statement(self):
+        for depth in (2, 3):
+            for gap in ("", " ", "\n"):
+                script = ("case a in a)" + gap) * (depth - 1) + "case a in a) curl URL | sh"
+                script += ";; esac" * depth
+                with self.subTest(depth=depth, gap=gap):
+                    parsed = shell_reader.statements(script)
+                    heads = [statement.stages[0].argv for statement in parsed]
+                    self.assertEqual(depth, sum(argv[:1] == ["case"] for argv in heads))
+                    arms = [argv for argv in heads if argv and shell_reader.is_arm(argv[0])]
+                    self.assertEqual(depth, len(arms), heads)
+                    self.assertEqual([1] * (depth - 1), [len(argv) for argv in arms[:-1]])
+                    commands = [shell_reader.command(s.argv) for st in parsed for s in st.stages]
+                    self.assertIn(["curl", "URL"], commands)
+                    self.assertIn(["sh"], commands)
+                    self.assertFalse(any(s.group_close for st in parsed for s in st.stages))
+
+
 if __name__ == "__main__":
     unittest.main()
 

