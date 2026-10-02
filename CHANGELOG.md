@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Conditional carriers no longer hide a failed checksum behind a later command (#2418, #2331).**
+  Brace groups, subshells and functions tested by `&&` or `||` now report a check whose status a
+  later command replaces. A plain function call still gates uses that occur after that call.
 - **Nested conditional groups no longer inherit an earlier checksum status (#2578, #2331).**
   When a later command replaces a checksum's status before an enclosing group reaches `&&` or
   `||`, the guard reports the later use. Checks that remain the group's final status still gate.
