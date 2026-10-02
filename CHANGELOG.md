@@ -10,6 +10,10 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across
