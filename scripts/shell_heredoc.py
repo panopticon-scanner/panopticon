@@ -77,8 +77,8 @@ class _Lines:
 
     def body(
         self, at: int, word: str, strip: bool, sub: bool
-    ) -> tuple[str, int, bool, int, bool] | None:
-        """Body, resume index, `EOF)` end, drop boundary and rejection."""
+    ) -> tuple[str, int, bool, int, bool, int] | None:
+        """Body, resume, `EOF)` end, drop boundary, rejection and next line."""
         k = bisect.bisect(self.starts, at) - 1
         n, offset = self.of[k], self.offset[k] + at - self.starts[k]
         text = self.texts[n]
@@ -114,8 +114,8 @@ class _Lines:
             rest = ended[cut:]
             first = cut + len(rest) - len(rest.lstrip(" \t"))
             rejected = ended[first:first + 1] == ";"
-            return body, self.source(end, cut), True, following, rejected
-        return body, following, False, 0, False
+            return body, self.source(end, cut), True, following, rejected, following
+        return body, following, False, 0, False, following
 
     def source(self, line: int, offset: int) -> int:
         """Source offset for `offset` in one logical line."""

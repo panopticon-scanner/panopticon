@@ -20,6 +20,12 @@ evidence exposed.
   is now pinned against the two shell-name lists it has to agree with (#2561). Rejected: keeping
   the per-WORD value count the #2551 docstring defended, which is what read `set -oo pipefail
   errexit` as arming nothing at all.
+- **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
+  guard used a generic refusal because one pass met the first body's same-line rest before the
+  later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies
+  from the next line, then parses the saved rest, so body and rest payloads get specific
+  findings. A second lexing pass was rejected because it would duplicate state and cost; two
+  `EOF)` ends remain fail-closed because Bash reports a syntax error.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
