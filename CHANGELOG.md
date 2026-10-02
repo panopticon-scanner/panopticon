@@ -10,6 +10,14 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
+  drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
+  `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
+  omission to that logical line and command, preserving its word break; a rest beginning with `;`
+  is refused because Bash 5.2 rejects it while 3.2 can run later code. A candidate before `then`
+  or `do`, including across a folded `\\`-newline, is refused too: Bash keeps that required
+  separator, and omitting it hid an executable compound body. An unbounded Boolean and a
+  character-only omission were rejected because they hid later-line and no-space payloads.
 - **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
   dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
 - **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
