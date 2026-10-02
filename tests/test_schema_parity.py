@@ -276,6 +276,10 @@ def _build_report(tmpdir):
                                   [sarif_path, dc_path], run_id="parity-run",
                                   network={"bandit": "none",
                                            "pip-audit": "proxied:pypi.org"},
+                                  cleanup_failures={"bandit": {
+                                      "kind": "kill_failed",
+                                      "detail": "docker kill exited 125",
+                                  }},
                                   sanitized={"pip-audit": {
                                       "source": "requirements.txt", "kept": 2,
                                       "dropped": [{"line": "-e .", "reason": "editable"}],
@@ -470,6 +474,11 @@ class TestSchemaParity(unittest.TestCase):
         self.assertEqual(meta["tools"]["network"]["pip-audit"],
                          "proxied:pypi.org",
                          "no egress posture: that value is unwalked")
+        self.assertEqual(
+            meta["coverage"]["tools_cleanup_failures"]["bandit"]["kind"],
+            "kill_failed",
+            "no cleanup failure: that structured row is unwalked",
+        )
 
     def test_the_delta_blocks_are_property_pinned_so_the_walk_descends(self):
         """#2169: `meta.coverage.delta` was `{"type": ["object","null"]}` with no

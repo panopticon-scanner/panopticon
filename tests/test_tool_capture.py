@@ -398,6 +398,12 @@ class TestTheCapturePathIsUnchangedByTheMove(unittest.TestCase):
 
 
 class TestContainerCleanupDiagnostics(unittest.TestCase):
+    def setUp(self):
+        tc._CONTAINER_CLEANUP_FAILURES.clear()
+
+    def tearDown(self):
+        tc._CONTAINER_CLEANUP_FAILURES.clear()
+
     class _LingeringProc:
         def __init__(self):
             self.stdout = io.BytesIO(b"")
@@ -431,24 +437,43 @@ class TestContainerCleanupDiagnostics(unittest.TestCase):
             missing = os.path.join(d, "missing-cid")
             empty = os.path.join(d, "empty-cid")
             Path(empty).touch()
-            for cidfile, reason in (
-                    (missing, "container id file could not be read"),
-                    (empty, "container id file was empty")):
-                with self.subTest(reason=reason):
+            for cidfile, kind, reason in (
+                    (missing, "cidfile_unreadable",
+                     "container id file could not be read"),
+                    (empty, "cidfile_empty", "container id file was empty")):
+                with self.subTest(kind=kind):
+                    tc._CONTAINER_CLEANUP_FAILURES.clear()
                     err, launch = self._capture(cidfile)
                     self.assertIn("container cleanup incomplete", err)
                     self.assertIn(reason, err)
+                    row = tc._CONTAINER_CLEANUP_FAILURES["semgrep"]
+                    self.assertEqual(row["kind"], kind)
+                    self.assertIn(reason, row["detail"])
                     launch.assert_not_called()
 
     def test_nonzero_docker_kill_is_named_with_a_bounded_diagnostic(self):
         with tempfile.TemporaryDirectory() as d:
             cidfile = os.path.join(d, "cid")
             Path(cidfile).write_text("deadbeefcafe\n")
+            secret = "-".join(("sk", "c" * 32))
             err, launch = self._capture(
-                cidfile, _FakeResult(returncode=125, stderr=b"daemon\nunavailable\n"))
+                cidfile, _FakeResult(
+                    returncode=125,
+                    stderr=("daemon %s\nunavailable\n" % secret).encode()))
         self.assertIn("container cleanup incomplete", err)
         self.assertIn("docker kill exited 125", err)
-        self.assertIn("daemon unavailable", err)
+        self.assertIn("unavailable", err)
+        self.assertNotIn(secret, err)
+        self.assertIn("[REDACTED_KEY]", err)
+        self.assertEqual(
+            tc._CONTAINER_CLEANUP_FAILURES,
+            {"semgrep": {
+                "kind": "kill_failed",
+                "detail": "docker kill exited 125 — daemon [REDACTED_KEY] unavailable",
+            }},
+        )
+        detail = tc._CONTAINER_CLEANUP_FAILURES["semgrep"]["detail"]
+        self.assertIn("container cleanup incomplete: %s\n" % detail, err)
         launch.assert_called_once_with(
             ["/trusted/docker", "kill", "deadbeefcafe"],
             capture_output=True, timeout=10, env={"PATH": "/trusted"})
@@ -460,6 +485,11 @@ class TestContainerCleanupDiagnostics(unittest.TestCase):
             err, launch = self._capture(cidfile, error=OSError("launch refused"))
         self.assertIn("container cleanup incomplete", err)
         self.assertIn("docker kill could not run (OSError)", err)
+        self.assertEqual(
+            tc._CONTAINER_CLEANUP_FAILURES["semgrep"],
+            {"kind": "kill_launch_failed",
+             "detail": "docker kill could not run (OSError)"},
+        )
         self.assertEqual(1, launch.call_count)
 
 

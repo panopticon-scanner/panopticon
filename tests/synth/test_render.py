@@ -563,6 +563,51 @@ class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
                     "suppressed", render_mod.render_summary(self._report(bad)))
 
 
+class TestToolCleanupFailuresAreRendered(unittest.TestCase):
+    def _report(self, failures=_OMIT):
+        coverage = {}
+        if failures is not _OMIT:
+            coverage["tools_cleanup_failures"] = failures
+        return {"meta": {"target": "src", "coverage": coverage},
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "stats": {}, "evidence_stats": {},
+                            "coverage_certified": True},
+                "groups": [], "findings": []}
+
+    def test_the_tool_kind_and_redacted_detail_are_named(self):
+        out = render_mod.render_summary(self._report({"semgrep": {
+            "kind": "kill_failed",
+            "detail": "docker kill exited 125 — [REDACTED_KEY]",
+        }}))
+        self.assertIn("**Tool container cleanup incomplete:**", out)
+        self.assertIn("semgrep", out)
+        self.assertIn("kill_failed", out)
+        self.assertIn("[REDACTED_KEY]", out)
+
+    def test_absent_empty_and_malformed_blocks_make_no_claim(self):
+        for failures in (_OMIT, {}, None, "bad", {"semgrep": "bad"}):
+            with self.subTest(failures=failures):
+                self.assertNotIn(
+                    "Tool container cleanup incomplete",
+                    render_mod.render_summary(self._report(failures)))
+
+    def test_target_writable_text_cannot_forge_a_second_summary_line(self):
+        failures = {
+            "tool-%d" % n: {
+                "kind": "kind\n**Grade:** A",
+                "detail": "detail\x1b[2J\n## forged",
+            }
+            for n in range(8)
+        }
+        out = render_mod.render_summary(self._report(failures))
+        lines = [line for line in out.splitlines()
+                 if "Tool container cleanup incomplete" in line]
+        self.assertEqual(len(lines), 1, out)
+        self.assertNotIn("\x1b", lines[0])
+        self.assertIn("and 3 more", lines[0])
+        self.assertNotIn("\n## forged", out)
+
+
 class TestExcludedToolFindingsAreRendered(unittest.TestCase):
     def _report(self, excluded=_OMIT):
         coverage = {"tools_suppressed": {"vendor": 2}}

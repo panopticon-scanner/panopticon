@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import scripts.safe_write as safe_write
 from scripts.synth import artifacts, cost, coverage_io, delta, integrity, plan, tool_axis
 
 
@@ -112,8 +113,16 @@ def test_exact_byte_limit_is_inclusive_and_not_a_character_limit(tmp_path, raw, 
     path = tmp_path / "input.json"
     path.write_bytes(raw)
     assert artifacts.read_json(path, limit=len(raw)) == expected
-    with pytest.raises(ValueError, match="read limit"):
+    with pytest.raises(safe_write.ReadLimitExceeded, match="read limit"):
         artifacts.read_json(path, limit=len(raw)-1)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+def test_invalid_limit_uses_the_shared_reader_contract(tmp_path, limit):
+    path = tmp_path / "input.json"
+    path.write_text("{}")
+    with pytest.raises(ValueError, match="^read limit must be a positive integer$"):
+        artifacts.read_json(path, limit=limit)
 
 
 def test_oversize_input_never_reaches_decoder(tmp_path, monkeypatch):
@@ -122,7 +131,7 @@ def test_oversize_input_never_reaches_decoder(tmp_path, monkeypatch):
     def unexpected_decode(*_args):
         pytest.fail("oversize bytes reached JSON decoder")
     monkeypatch.setattr(artifacts.json, "loads", unexpected_decode)
-    with pytest.raises(ValueError, match="read limit"):
+    with pytest.raises(safe_write.ReadLimitExceeded, match="read limit"):
         artifacts.read_json(path, limit=64)
 
 
@@ -203,5 +212,5 @@ def test_descriptor_closes_when_inspection_or_wrapping_fails(tmp_path, monkeypat
 
 
 def test_device_is_refused_without_reading_bytes():
-    with pytest.raises(ValueError, match="regular file"):
+    with pytest.raises(safe_write.NonRegularFileError, match="regular file"):
         artifacts.read_json(os.devnull)

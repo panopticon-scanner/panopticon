@@ -7,7 +7,8 @@ the egress each tool was granted, whether every capture went through the
 redaction choke point, what the run did with the target's own inline suppression
 comments and its `.gitleaksignore`, which configuration file each pinned scanner
 ran under, the adapters the gate's globs disqualified, the virtualenv
-directories the scan pruned and what an adapter refused to hand its scanner.
+directories the scan pruned, what an adapter refused to hand its scanner, and
+scanner containers whose best-effort cleanup failed.
 `security_gate` reads it, the tools phase copies `redacted` out of it and
 `synthesize` refuses to certify against another run's, so every key here is a
 published contract and the order they are written in is part of it.
@@ -23,7 +24,8 @@ two -- inline suppression and scanner config -- belong to
 `scanner_config`, which stages the files they are about. `run_tools` binds all
 five back and is where each is cleared at the top of a scan and filled where the
 argv is built; a ledger is the SAME dict object either way, so one name is one
-ledger.
+ledger. The operational cleanup-failure ledger lives in `tool_capture`, where
+the failure happens; this writer reads it after `run_tools` clears it per run.
 
 Separate from `run_tools` because that module was 2215 lines, outside this
 repo's own 700-line ratchet, and absorbing every new scanner policy because
@@ -50,7 +52,8 @@ from scripts import safe_write
 # function body, so reaching a new constant that way needs a module ALIAS
 # (`scanner_config as _scanner_config`) rather than the bare import.
 from scripts.scanner_config import _SCANNER_CONFIG_POSTURE, _SUPPRESSION_POSTURE
-from scripts.tool_capture import MAX_TOOL_OUTPUT_BYTES, _REDACTED_CAPTURES
+from scripts.tool_capture import (
+    MAX_TOOL_OUTPUT_BYTES, _CONTAINER_CLEANUP_FAILURES, _REDACTED_CAPTURES)
 from scripts.tools import egress
 
 # How deep the virtualenv walk that found `excluded_dirs` looked, published as
@@ -210,7 +213,8 @@ def _excluded_dir_row(d):
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
                    network=None, exclude_globs=(), suppression_comments=None,
-                   scanner_config=None, ignore_files=None, scanner_scope=None):
+                   scanner_config=None, ignore_files=None, scanner_scope=None,
+                   cleanup_failures=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -318,6 +322,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     launched argv. Its Semgrep v1 value marks the first policy that restores
     real test paths after disabling the target and embedded ignore files, and
     lets CI request an exact-base transition scan instead of waiving findings.
+
+    `cleanup_failures` records a scanner container the best-effort timeout
+    cleanup could not prove stopped, keyed by tool with a bounded, redacted
+    `{kind, detail}` row. It defaults to the capture ledger populated at the
+    same point as the stderr diagnostic and is omitted when no failure occurred;
+    old manifests therefore remain readable without inventing a measurement.
     """
     network = {str(k): str(v) for k, v in
                (_NETWORK_POSTURE if network is None else network).items()}
@@ -326,6 +336,15 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     selected = [t for t in selected if t not in set(refused)]
     excluded_scope = list(excluded_scope) + refused
     selected = list(dict.fromkeys(str(tool) for tool in selected))
+    observed_cleanup = (_CONTAINER_CLEANUP_FAILURES
+                        if cleanup_failures is None else cleanup_failures)
+    cleanup = {
+        str(tool): {"kind": row["kind"], "detail": row["detail"]}
+        for tool, row in (observed_cleanup or {}).items()
+        if (str(tool) in selected and isinstance(row, dict)
+            and isinstance(row.get("kind"), str) and row["kind"]
+            and isinstance(row.get("detail"), str) and row["detail"])
+    }
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
     observed_ignore_files = (_IGNORE_FILE_POSTURE if ignore_files is None
                              else ignore_files)
@@ -377,6 +396,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    if cleanup:
+        payload["cleanup_failures"] = cleanup
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
     # inside the reviewed tree. Confine before the makedirs (a symlinked
     # intermediate would be traversed by it) and never open through a link.

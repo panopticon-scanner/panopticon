@@ -74,25 +74,25 @@ runs each live, so a change that catches one fails there and edits this list.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
   writes. A checksum naming the same variable binds; a path spelled differently at fetch and at use
   matches nothing, and no `cd` is followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS
-  compares last parts where a `$` spells the use's directory (`may_run` #2310, `covers` #2345; argv
-  only), and for a glob where one spells the download's or the download is a bare name. A download
-  kept in a variable is followed to a shell whole (`carried`, #2341), not through a cut
-  (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or `> f`, and `( x=1 )` empties it only
-  with the `(` alone on its line, which the reader drops. A value in a shell's options (`sh $X '…'`)
-  is not followed: the words after it read as `-c` strings (`candidates`, #2344), a `$(…)` or
-  `Rewritten` one reported where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as
-  its default, another handed `-c` has its program read so (#2337); `$CMD --flag` reads nothing,
-  `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses `\$` escapes as bash does, not with
-  another `$` in it (#2342). An option letter the shell in hand refuses is read as that refusal
-  after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475).
-  Per shell, because zsh runs twenty of the letters bash refuses and ksh runs `-G`: for those, and
-  for a shell named by a word rather than written, the word is read on.
+  compares last parts where a `$` spells either directory (`may_run` #2310, `covers` #2345, its
+  mirror #2442 with a literal basename; argv only), and for a glob where one spells the download's
+  or the download is a bare name. A download kept in a variable is followed to a shell whole
+  (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
+  `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
+  value in a shell's options (`sh $X '…'`) is not followed: the words after it read as `-c` strings
+  (`candidates`, #2344), a `$(…)` or `Rewritten` one reported where the job downloads. Nor is a `$`
+  command word: `${X:-sh}` reads as its default, another handed `-c` has its program read so
+  (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses
+  `\$` escapes as bash does, not with another `$` in it (#2342). An option letter the shell in hand
+  refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e`
+  sets nothing (#2443, #2475). Per shell, because zsh runs twenty of the letters bash refuses and
+  ksh runs `-G`: for those and for a shell named by a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
-* directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308),
-  `$HOME/.cargo/bin` and `/snap/bin` among them, or one a step puts there
-  (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name finds a download in neither.
+* directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308), `$HOME/.cargo/bin`
+  and `/snap/bin` among them, or one a step puts there (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name
+  finds a download in neither, past the `$`-spelled paths #2442's mirror binds by their basename.
   KEPT: the first differ by image (review N-4); the other is a VALUE, which
   is evaluating the shell again. No workflow here touches PATH at all.
 * a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
