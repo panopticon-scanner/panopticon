@@ -10,6 +10,11 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
+  `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
+  script while the guard read the step clean. It now shares Bash's ASCII escape table across
+  words, heredoc delimiters, and here-strings, and fails closed beyond ASCII. Keeping only the
+  four identity escapes was rejected because it hid executable option words.
 - **A `set` is read the way bash counts it (#2559, #2560, #2561, #2331).** A `set`'s option values
   now count one per `o` LETTER, as bash counts them and as the program readers already did, and a
   `-o` value that is no option NAME refuses the whole `set`, as an unknown option LETTER already
