@@ -827,7 +827,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `CMD=true` or past `X=/dev/null` no shell reads it, filed under #2608;
       `eval` words the reader refuses joined, though each reads alone
       (`eval 'echo $(cat <<A' 'x' 'A)'`), which refuse their step, as bash
-      runs the join -- nothing in it downloads (round 3); and, as before
+      runs the join -- nothing in it downloads (fix round 3); and, as before
       round 1, the body of `builtin eval`, which the guard does not take for
       `eval`;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
@@ -1873,7 +1873,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assert_clean(gaps)
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
-    # Fix round 2 (Ruling T30-R7): nothing else in a body no shell is sure to read is the step's own
+    # Fix round 2: nothing else in a body no shell is sure to read is the step's own
     # either. Each channel method pins one statement of such a body that cleared a step `main`
     # reports: the job is read with those bodies and without them, and a defect of either reading
     # is reported. Its table is the three holders, heredoc form, then `$CMD` with a here-string and
@@ -2129,7 +2129,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2500_eval_s_words_are_read_joined_so_a_join_the_reader_refuses_refuses_the_step(self):
         # `_stdin` asks whether `eval`'s words JOINED, as bash runs them, are one stdin-reading
         # shell, and the reader refuses this join (a heredoc whose substitution closes before its
-        # body), though each word reads alone, as on `main` -- kept (Ruling T30-R10): a text the
+        # body), though each word reads alone, as on `main` -- kept: a text the
         # guard cannot read is refused. Bash 3.2.57, 5.2.21 and dash run the join (rc 0: `echo`
         # runs, nothing is downloaded), so alone the step is an over-report; in a job whose step A
         # makes step B's download executable and runs it (every shell runs it, rc 0), the report
