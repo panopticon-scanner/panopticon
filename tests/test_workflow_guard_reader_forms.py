@@ -354,15 +354,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       #2331;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with `echo
       hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
-      `print(1)`, and `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, each
-      beside GET): a report of a program the guard cannot read, kept beside
-      a fetch it reports (#2499), not a claim that a download runs;
+      `print(1)`, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the
+      `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
+      program the guard cannot read, kept beside a fetch it reports (#2499),
+      not a claim that a download runs;
     * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -` or
       `python3 -` running `os.system`, beside no reported fetch (option b's
       price, #2499); and, each filed under #2331, `eval 'bash -s'` and
       `bash -ec 'sh'` whose check only an `-e` would stop, `eval 'bash -s |
       cat'` (#2500), `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval
-      "$CMD"` or an exported `bash -c '$CMD'` handed a heredoc (#2473).
+      "$CMD"` or an exported `bash -c '$CMD'` handed a heredoc alone --
+      beside a reported fetch #2483 reports the word, never the body (#2473).
 
     `python3 $S` with S unset reads its heredoc as data, where python takes
     it as its program; here that is a SyntaxError, so CLEAN is still true
@@ -677,7 +679,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # reported (bash 3.2.57, 5.2.21 and dash run it), and an innocuous one
         # is `Idle`, kept only beside a fetch the guard reports. T25-I1: the
         # runner is named as `flattened` names it, so a `$(...)` word reads
-        # `$(...)`, never the lifted marker it was, the same in two runs.
+        # `$(...)`, never the lifted marker it was, the same in two runs, and
+        # `${X:-/opt/tools/runner}` reads whole, never its basename `runner}`.
         inside = "hands a script to `%s` inside a command substitution"
         found = defects("x=$(echo '%s' | sh)\n" % PIPE)
         self.assertEqual(1, len(found), found)
@@ -685,7 +688,9 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         for script, word in (("CMD=sh\nx=$(echo '%s' | $CMD)\n" % PIPE, "$CMD"),
                              (GET + "CMD=sh\nx=$(echo hi | $CMD)\n", "$CMD"),
                              ("x=$(echo '%s' | $(echo sh))\n" % PIPE, "$(...)"),
-                             (GET + "x=$(echo hi | $(echo sh))\n", "$(...)")):
+                             (GET + "x=$(echo hi | $(echo sh))\n", "$(...)"),
+                             ("X=sh\nx=$(echo '%s' | ${X:-/opt/tools/runner})\n" % PIPE,
+                              "${X:-/opt/tools/runner}")):
             with self.subTest(script=script):
                 first, second = defects(script), defects(script)
                 self.assertEqual(first, second)
@@ -708,16 +713,27 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2473_a_dollar_word_an_eval_or_dash_c_string_runs_is_unread(self):
         # A documented gap, filed under #2331: #2500's credit stays
         # SHELL_PROGRAM's, so a `-c` or `eval` string whose one statement is a
-        # `$` command word makes no stdin shell of the command around it. Even
-        # beside a reported fetch these read CLEAN, though bash 3.2.57, 5.2.21
-        # and dash run the body; the literal `eval 'bash -s'` is caught (the
-        # control).
+        # `$` command word makes no stdin shell of the command around it, and
+        # its body is never read, though bash 3.2.57, 5.2.21 and dash run it.
+        # Alone the step reads CLEAN; beside a reported fetch #2483 reports
+        # the WORD (`dynamic_program`, `Idle`), never the stream in the body.
+        # The literal `eval 'bash -s'` is caught (the control).
         found = defects("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertTrue(any("straight to `sh`" in w for _step, w in found), found)
-        for script in (GET + "CMD=sh\neval \"$CMD\" <<'EOF'\n%s\nEOF\n" % PIPE,
-                       GET + "export CMD=sh\nbash -c '$CMD' <<'EOF'\n%s\nEOF\n" % PIPE):
+        for runs, said in (("CMD=sh\neval \"$CMD\"", "runs `eval` on `$CMD`"),
+                           ("export CMD=sh\nbash -c '$CMD'", "runs `bash -c` on `$CMD`")):
+            script = "%s <<'EOF'\n%s\nEOF\n" % (runs, PIPE)
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+                found = [w for _step, w in defects(GET + script)]
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0].startswith(said), found)
+        # A `$` command word handed `-c` takes its program from the string
+        # (`stdin_program` answers None), so the heredoc is that program's
+        # input: #2337's `candidates` speaks, and no hand-off is said.
+        found = defects(GET + "CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):

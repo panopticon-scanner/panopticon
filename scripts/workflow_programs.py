@@ -282,10 +282,12 @@ def stdin_program(argv):
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
     <<EOF` pays too. #2500's credit stays SHELL_PROGRAM's: an inner `$CMD`
-    makes no enclosing `eval` or `-c` string a stdin shell, so `CMD=sh; eval
-    "$CMD" <<'EOF'` or `export CMD=sh; bash -c '$CMD' <<'EOF'` running `curl
-    ... | sh` reads CLEAN, its body unread though bash runs it: a gap filed
-    under #2331.
+    makes no enclosing `eval` or `-c` string a stdin shell, so the body of
+    `CMD=sh; eval "$CMD" <<'EOF'` or `export CMD=sh; bash -c '$CMD' <<'EOF'`
+    is never read, though bash runs it: a `curl ... | sh` there reads CLEAN
+    alone, and beside a reported fetch only the word is reported, as a
+    `dynamic_program` (`Idle`, #2483), never the stream -- a gap filed under
+    #2331.
     """
     if not argv:
         return None
