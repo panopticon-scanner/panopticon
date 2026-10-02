@@ -173,7 +173,7 @@ def _posture_barrier(statement, functions):
         argv = command(stage.argv)
         while len(argv) > 1 and argv[0] in ("builtin", "command"):
             argv = command(argv[1:])
-        if argv[:1] and argv[0] in ("set", "shopt", "eval", ".", "source"):
+        if argv[:1] and argv[0] in ("set", "shopt", "unset", "eval", ".", "source"):
             return True
         if argv[:1] and argv[0] in functions:
             return True
@@ -185,9 +185,10 @@ def _gating_function_call(stmts, name, after, errexit, seen=()):
 
     A call in a group is proved by that group's status. A call in another
     function is proved only when that containing function has its own proved
-    call; `seen` makes malformed or recursive definitions fail closed.
+    call; `seen` makes malformed or recursive definitions fail closed. With
+    errexit off, only a call whose explicit rescue exits can prove the gate.
     """
-    if not errexit or name in seen:
+    if name in seen:
         return None
     on, fails = [errexit] * len(stmts), [False] * len(stmts)
     controls = _control_depths(stmts)
@@ -296,7 +297,12 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
         if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
     finished = depth == 0 if grouped or inherited_depth else True
-    stops = (finished and status is not None and status != 0 and (errexit or exited)
+    function = _function_scope(stmts, index)
+    # An inherited subshell's non-zero status is also the function's status;
+    # the call-site proof below still decides whether that status stops use.
+    returns_failure = function is not None and inherited_subshells > 0
+    stops = (finished and status is not None and status != 0
+             and (errexit or exited or returns_failure)
              and (len(stmts[end].stages) == 1 or pipefail))
     if not stops or not inherited_subshells:
         return stops
@@ -304,7 +310,6 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     # skipping unreachable commands; it does not decide what encloses the shell.
     # Decline a function body at its proven call. For ordinary groups, reuse the
     # group-status walk from the closer with the step's recorded pipefail state.
-    function = _function_scope(stmts, index)
     if function is not None:
         name, close = function
         call = _gating_function_call(stmts, name, close, errexit)
@@ -442,11 +447,16 @@ def swallowed(stmts, index, statement, stage, credit=None):
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
-        stops = _stops_the_job(stmts, index, True, isinstance(credit, tuple) and credit[1] is None)
+        # A credit pair's first answer records when this failure is already
+        # known not to stop the step, including the top-level `set +e` state.
+        errexit = not isinstance(credit, tuple) or credit[0] is None
+        stops = _stops_the_job(
+            stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
+        )
         if isinstance(stops, Reach):
             return stops
         if not stops:
-            return _RESCUED
+            return credit[0] if isinstance(credit, tuple) and credit[0] else _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
     # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
     # module's own remedy text recommends -- the checksum is the second stage

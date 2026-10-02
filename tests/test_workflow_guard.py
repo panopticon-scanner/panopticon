@@ -2785,6 +2785,7 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "f() { GATE; }\n( f )\n",
             "f() { GATE; }\n{ f; }\n",
             "f() { GATE; }\nf || exit 1\n",
+            "set +e\nf() { GATE; }\nf || exit 1\n",
             "outer() {\nf() { GATE; }\nf\n}\nouter\n",
         )
         for body in bodies:
@@ -2808,6 +2809,12 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "f() { GATE; }\nset +e\nf\n",
             "f() { GATE; }\nif false; then\nf\nfi\n",
             "f() { GATE; }\ng() { set +e; f; }\ng\n",
+            "set +e\nf() { GATE; }\nf\n",
+            "set +e\nf() { GATE; }\necho hi\nf\n",
+            "set +e\nf() { GATE; }\n( f )\n",
+            "set +e\nf() { GATE; }\ng() { f; }\ng\n",
+            "set +eu\nf() { GATE; }\necho hi\nf\n",
+            "true() { GATE; }\nunset -f true\ntrue\n",
         )
         for body in bodies:
             script = self.FETCH + body.replace("GATE", "( CHECK || exit 1 )").replace(

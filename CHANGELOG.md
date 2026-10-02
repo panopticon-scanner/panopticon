@@ -7,10 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow function gates survive unrelated statements (#2586, #2331).** The guard finds a
-  brace function's first proved call beyond its closing brace, including grouped calls and calls
-  through a proved wrapper. Distant piped calls retain their concurrent-use bound; conditional
-  calls, shell-posture changes, and redefinitions stay fail-closed.
+- **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
+  56 previously declined real call sites (25 to 33 of 106 scopes), including grouped calls and
+  one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
+  piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
+  conditional calls still refuse the proof.
 - **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
   option made the guard discard an entire program word containing `$(...)`, so its visible fetch
   pipeline read clean. It now reads the outer program with the substitution opaque while the
