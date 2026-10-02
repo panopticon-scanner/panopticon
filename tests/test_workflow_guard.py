@@ -734,6 +734,29 @@ class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("running it under `sh`", found[0])
 
+    def test_eval_reparses_separate_words_and_makes_their_globs_live(self):
+        for use in ('eval sh "./cuda_*.run"', 'eval bash "./cuda_*.run"',
+                    'eval chmod +x "./cuda_*.run"', 'eval chmod +x cuda_"[1]".run',
+                    'eval chmod +x -- "./cuda_*.run"', 'eval "chmod" +x "./cuda_*.run"',
+                    'eval chmod +x "cuda_?.run"', 'eval tar -xzf "./cuda_*.run"',
+                    'eval source "./cuda_*.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n") if why.startswith("fetches ")]
+                self.assertEqual(1, len(downloads), downloads)
+                self.assertIn("under `eval`", downloads[0])
+
+    def test_eval_keeps_quotes_that_are_inside_its_single_script_word(self):
+        for use in ("eval 'sh \"./cuda_*.run\"'", "eval 'chmod +x \"./cuda_*.run\"'"):
+            with self.subTest(use=use):
+                self.assertFalse(any(why.startswith("fetches ") for why in self.job(use + "\n")))
+
+    def test_eval_reparsed_glob_keeps_a_lifted_substitution_readable(self):
+        found = self.job('eval sh "./cuda_$(printf 1)*.run"\n')
+        downloads = [why for why in found if why.startswith("fetches ")]
+        self.assertEqual(1, len(downloads), downloads)
+        self.assertIn("under `eval`", downloads[0])
+        self.assertNotIn("@@shell-", downloads[0])
+
 
 class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
     """#2345 (a), (b): after `curl -o cuda_1.run`, `sh "$PWD/cuda_1.run"` read
