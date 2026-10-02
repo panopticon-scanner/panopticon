@@ -164,9 +164,9 @@ class DeltaContext:
 def _dropped_phrase(report) -> str:
     """Which counters emptied a hunk map, with their numbers (#2169 review, F2).
 
-    ONE definition, read by `_disclose_load` and by `zero_hunk_gate_gap`, so the
-    two cannot name different losses for one read -- which they did while only
-    the report side knew about dropped paths."""
+    ONE definition, read by `_disclose_load`, `zero_hunk_gate_gap` and
+    `broken_artifact_gate_gap`, so no two can name different losses for one
+    read -- which they did while only the report side knew about dropped paths."""
     lost = []
     if report.ranges_dropped:
         lost.append("%d hunk range(s) were malformed and dropped"
@@ -536,7 +536,8 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
 def delta_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     """The delta artifact's certification reason, whichever of the two rules
     speaks: the zero-hunk refusal (#2178, narrowed by #2222) or the
-    broken-artifact one (#2405). ONE call site, `grading.grade_report`, and one
+    broken-artifact one (#2405, widened to `paths_dropped` by #2517). ONE call
+    site, `grading.grade_report`, and one
     reason -- `certify` carries it in the single `delta_zero_hunks` channel.
 
     Zero hunks is asked first and WINS: it says the gate's whole source set was

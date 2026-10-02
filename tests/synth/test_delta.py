@@ -1050,6 +1050,16 @@ class TestDeltaGateGap(unittest.TestCase):
         self.assertIn("zero-hunk delta gate", gap)
         self.assertNotIn("broken-artifact delta gate", gap)
 
+    def test_the_zero_hunk_reason_wins_over_a_dropped_path_too(self):
+        # #2517 made a dropped path satisfy BOTH rules when it is the only path:
+        # the composer must still publish the stronger, zero-hunk statement.
+        ctx = self._ctx({"base": "main", "hunks": {"b.py": 7}})
+        self.assertEqual((ctx.report.ranges, ctx.report.paths_dropped), (0, 1))
+        self.assertIsNotNone(delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff"))
+        gap = delta_mod.delta_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("zero-hunk delta gate", gap)
+        self.assertNotIn("broken-artifact delta gate", gap)
+
     def test_the_broken_artifact_reason_is_returned_when_it_is_the_only_one(self):
         gap = delta_mod.delta_gate_gap(
             self._ctx({"base": "main", "hunks": {"a.py": [[10, 12], [3]]}}), 1,

@@ -12,7 +12,8 @@ evidence exposed.
   count of paths whose value in the hunk map was not a list of ranges at all, so the loader drops
   the path entirely — now turns a PASS into `gate: INCONCLUSIVE` on an active delta under the
   default on-diff gate scope when gate-eligible findings exist, exactly as
-  `paths_emptied_by_drops`, `ranges_dropped` and a set `payload_malformed` already did. The
+  `paths_emptied_by_drops`, `ranges_dropped` and a set `payload_malformed` already did (and, as
+  for those three, a FAIL or OFF run over such a map now reads NOT CERTIFIED too). The
   DIRECTION is why: a dropped path LEAVES the map, so a HIGH in that file classified off-diff, left
   the gate's source set, and the run reported a PASS it had not earned — the fail-open mirror of
   the emptied arm, which admits such findings to the gate instead. A legitimate change shape never
