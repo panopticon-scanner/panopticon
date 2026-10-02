@@ -366,6 +366,92 @@ def _stops_the_job(stmts, index, errexit=True):
     return _stops_step(stmts, end, on, fails) is None
 
 
+def _structural_groups(stage):
+    """Leading brace and subshell opens/closes carried by this stage."""
+    braces = []
+    for token in stage.argv:
+        if token not in shell_reader.KEYWORDS:
+            break
+        if token in ("{", "}"):
+            braces.append(token)
+    return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
+
+
+def _pipeline_groups(stage):
+    """Compound opens/closes that keep one pipeline stage alive."""
+    opens, closes = _structural_groups(stage)
+    for token in stage.argv:
+        if token not in shell_reader.KEYWORDS:
+            break
+        opens += token in _OPENS and token != "{"
+        closes += token in _CLOSES and token != "}"
+    return opens, closes
+
+
+def _pipeline_end(stmts, index, position):
+    """The last readable statement of a pipeline stage starting here."""
+    depth, started = 0, False
+    for following in range(index, len(stmts)):
+        first = position if following == index else 0
+        for stage in stmts[following].stages[first:]:
+            opens, closes = _pipeline_groups(stage)
+            if not started and not stage.argv and not opens:
+                continue
+            started = True
+            depth += opens - closes
+        if started and depth <= 0:
+            return following
+    # A closer the reader dropped leaves the boundary unknown. Refuse the
+    # remainder of the step rather than crediting a potentially concurrent use.
+    return len(stmts) - 1
+
+
+def _piped_group_end(stmts, index):
+    """The piped close of a structural group open at `index`, or None.
+
+    A group opened later is a sequential sibling or child, so its pipeline
+    is not concurrent with the check.
+    """
+    depth = 0
+    for statement in stmts[:index + 1]:
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
+    remaining, opened_after = depth, 0
+    if remaining <= 0:
+        return None
+    for following, statement in enumerate(stmts[index + 1:], index + 1):
+        for position, stage in enumerate(statement.stages):
+            opens, closes = _structural_groups(stage)
+            opened_after += opens
+            for _close in range(closes):
+                if opened_after:
+                    opened_after -= 1
+                    continue
+                remaining -= 1
+                if position + 1 < len(statement.stages):
+                    return _pipeline_end(stmts, following, position + 1)
+                if remaining <= 0:
+                    return None
+    return None
+
+
+def _piped_function_end(stmts, index):
+    """The pipeline entered by an immediate direct call of this function."""
+    function = _function_scope(stmts, index)
+    if function is None:
+        return None
+    name, close = function
+    call = close + 1
+    if call >= len(stmts):
+        return None
+    for position, stage in enumerate(stmts[call].stages[:-1]):
+        argv = command(stage.argv)
+        if stage.argv[:1] == [name] and argv[:1] == [name]:
+            return _pipeline_end(stmts, call, position + 1)
+    return None
+
+
 def swallowed(stmts, index, statement, stage, credit=None):
     """Why this check's failure would go nowhere, or None.
 
@@ -377,7 +463,8 @@ def swallowed(stmts, index, statement, stage, credit=None):
     last: `step_credit`'s, the guard's `_SOFT_STEP` pair where the step
     carries `continue-on-error: true` (`job_defects`), or None where it has
     none. A `Reach` answer is a check ahead of `&&`, which still stops what
-    its list runs, or its own command where the list's end is lost (`clears`).
+    its list runs, its own command where the list's end is lost, or a group
+    gate that takes effect only after its concurrent pipeline (`clears`).
     """
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
@@ -399,7 +486,17 @@ def swallowed(stmts, index, statement, stage, credit=None):
         return "is negated, so the failing path is the THEN branch"
     if conditional(head) or conditional(stage.argv):
         return "is an `if`/`while` test, which errexit does not apply to"
-    return credit[stage is not statement.stages[-1]] if credit else None
+    why = credit[stage is not statement.stages[-1]] if credit else None
+    piped_end = _piped_group_end(stmts, index) if why is None or isinstance(why, Reach) else None
+    function_end = _piped_function_end(stmts, index) if piped_end is None else None
+    if function_end is not None:
+        # The definition is not itself piped. `step_credit`'s pipeline slot
+        # nevertheless carries the call site's pipefail posture across these
+        # reader statements, so use it before applying the function's bound.
+        why = credit[1] if credit else None
+        piped_end = function_end
+    return (PipelineGate(piped_end, why)
+            if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
 
 
 # Why a check the step's own shell runs does not stop the step, as
@@ -430,17 +527,38 @@ _LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for exa
 
 
 class Reach(str):
-    """A check's refusal that still clears the `span` statements after it:
-    the rest of the `&&` list its failure skips, or of its own command where
-    the list's end is lost (`_LOST`), in the words `why` gives it
-    (`step_credit`, `clears`)."""
+    """A check's bounded reach, or a pipeline gate derived from one.
 
-    span: int
+    `span` statements are the rest of an `&&` list its failure skips, or its
+    own command where the list's end is lost (`_LOST`). `PipelineGate` keeps
+    that bound, if any, and excludes the pipeline that runs concurrently.
+    """
+
+    span: int | None
 
     def __new__(cls, span, why=_AHEAD):
         reach = str.__new__(cls, why)
         reach.span = span
         return reach
+
+
+_SAME_PIPELINE = ("runs in the same pipeline as that use, so the shell may start both before "
+                  "the checksum's failure is known")
+_BOUNDED_PIPELINE = ("; a use in the same pipeline starts concurrently, and a use after that "
+                     "reach still runs")
+
+
+class PipelineGate(Reach):
+    """A check that gates only uses after its concurrent pipeline finishes."""
+
+    through: int
+
+    def __new__(cls, through, reach=None):
+        gate = str.__new__(cls, _SAME_PIPELINE if reach is None
+                           else str(reach) + _BOUNDED_PIPELINE)
+        gate.span = None if reach is None else reach.span
+        gate.through = through
+        return gate
 
 
 class FunctionGate(Reach):
@@ -457,11 +575,17 @@ class FunctionGate(Reach):
 
 
 def clears(why, check, use):
-    """Whether a check at statement `check`, refused for `why` (None: it
-    stops the step), stops the use at statement `use`."""
+    """Whether the check stops this use within its reach and pipeline."""
+    if check >= use:
+        return False
+    if why is None:
+        return True
     if isinstance(why, FunctionGate):
         return why.through < use
-    return check < use and (why is None or isinstance(why, Reach) and use - check <= why.span)
+    if isinstance(why, PipelineGate):
+        return (use > why.through and
+                (why.span is None or use - check <= why.span))
+    return isinstance(why, Reach) and why.span is not None and use - check <= why.span
 
 
 # The keywords that open a compound command, and the ones that close it.

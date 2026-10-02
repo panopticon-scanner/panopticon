@@ -10,9 +10,17 @@ evidence exposed.
 - **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
   took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
   pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
-  and read clean. It now follows nested case phases
-  and balanced patterns, while subjects needing another parse fail closed by name. Treating
-  every `)` after `case` as an arm close was rejected because it could hide later shell code.
+  and read clean. It now follows nested case phases and balanced patterns, while subjects needing
+  another parse fail closed by name. Treating every `)` after `case` as an arm close was rejected
+  because it could hide later shell code.
+- **Shell quoting now has a dedicated flat module (#2615, #2608).** ANSI-C decoding and
+  quote-aware heredoc and here-string word spelling moved unchanged from `shell_lex.py` to
+  `shell_quote.py`, restoring lexer headroom. Further compression of the lexer's governing
+  contract was rejected because a line budget must not choose which behavior stays documented.
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across
