@@ -476,6 +476,63 @@ class TestTheBrokenArtifactGateRuling(unittest.TestCase):
                           cov["paths_emptied_by_drops"]), (1, 0))
 
 
+class TestADroppedPathTurnsTheGateInconclusive(unittest.TestCase):
+    """#2517 (owner ruling 2026-10-02), end to end through `build_report`: the
+    FOURTH counter joins #2405's measure. `b.py` carries `7` instead of a list,
+    so the loader drops the whole path and the HIGH at `b.py:3` classifies
+    OFF-diff -- the fail-open direction, in which the gate LOSES the finding
+    rather than admitting it, and the run used to report a PASS it had not
+    earned. It now refuses to certify, with the finding still off-diff: the
+    classification is not what changed, the gate's verdict over it is.
+
+    Two controls either side. The same HIGH over a map that CARRIES `b.py` reads
+    FAIL, so the fixture can reach a real failure; and the same HIGH over an
+    undamaged map that simply never names `b.py` keeps the PASS, so the
+    INCONCLUSIVE above is the dropped path and not the off-diff classification,
+    the group profile or anything else in the fixture."""
+
+    # The zero-hunk class's report builder, as the #2405 class uses it: one
+    # fixture for all three rulings, differing only in the artifact handed in.
+    _report = TestTheZeroHunkGateRuling._report
+
+    def _high_in_b(self):
+        # One HIGH, in the file whose path the map loses. Unverified, which the
+        # builder's `gate_unverified=True` admits, so it is the one
+        # gate-eligible finding #2222's population counts.
+        return [{"id": "A-1", "title": "t", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "x",
+                 "location": {"file": "b.py", "line_start": 3}}]
+
+    def test_a_dropped_path_is_inconclusive_with_the_finding_still_off_diff(self):
+        rep = self._report({"a.py": [[1, 5]], "b.py": 7}, self._high_in_b())
+        self.assertEqual(rep["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIs(rep["summary"]["coverage_certified"], False)
+        note = rep["summary"]["coverage_note"]
+        self.assertIn("broken-artifact delta gate", note)
+        self.assertIn("paths_dropped", note)
+        self.assertIn("1 whole path(s)", note)
+        self.assertIn("1 gate-eligible finding(s)", note)
+        # The loss the note describes, in the report: the finding is off-diff.
+        self.assertIs(rep["findings"][0]["delta"]["on_diff"], False)
+        cov = rep["meta"]["coverage"]["delta"]
+        self.assertEqual((cov["hunks_ranges"], cov["paths_dropped"],
+                          cov["paths_emptied_by_drops"]), (1, 1, 0))
+
+    def test_the_same_high_inside_a_carried_path_still_fails(self):
+        rep = self._report({"a.py": [[1, 5]], "b.py": [[1, 5]]},
+                           self._high_in_b())
+        self.assertEqual(rep["summary"]["gate"], "FAIL")
+        self.assertIs(rep["findings"][0]["delta"]["on_diff"], True)
+
+    def test_an_undamaged_map_that_never_named_the_file_keeps_the_pass(self):
+        rep = self._report({"a.py": [[1, 5]]}, self._high_in_b())
+        self.assertEqual(rep["summary"]["gate"], "PASS")
+        self.assertIs(rep["summary"]["coverage_certified"], True)
+        self.assertIsNone(rep["summary"]["coverage_note"])
+        self.assertIs(rep["findings"][0]["delta"]["on_diff"], False)
+        self.assertEqual(rep["meta"]["coverage"]["delta"]["paths_dropped"], 0)
+
+
 class TestARejectedArtifactIsDisclosedInTheReport(unittest.TestCase):
     """#2169, end to end through the report builder: a run rejected the
     diff-hunks artifact, said so on stderr, and published a report in which the
