@@ -150,12 +150,12 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
 
     Since #2405 (owner ruling 2026-10-01) this same channel also carries
     `delta.broken_artifact_gate_gap`'s reason: a map that CARRIES ranges and is
-    provably damaged anyway -- `paths_emptied_by_drops`, `ranges_dropped` or
-    `payload_malformed` -- chose this gate's scope, which is the same doubt about
-    the same artifact and so the same posture. `delta.delta_gate_gap` picks which
-    rule spoke; the parameter keeps its name because nothing about how `certify`
-    treats the reason changes, and a second argument would have two channels
-    doing one job.
+    provably damaged anyway -- `paths_emptied_by_drops`, `ranges_dropped`,
+    `paths_dropped` (#2517) or `payload_malformed` -- chose this gate's scope,
+    which is the same doubt about the same artifact and so the same posture.
+    `delta.delta_gate_gap` picks which rule spoke; the parameter keeps its name
+    because nothing about how `certify` treats the reason changes, and a second
+    argument would have two channels doing one job.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS

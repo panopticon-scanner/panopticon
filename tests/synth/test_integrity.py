@@ -8,10 +8,14 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.synth.helpers import _chdir
 
 import scripts.synthesize as syn
+import scripts.evidence as evidence_mod
+import scripts.safe_write as safe_write
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
@@ -255,6 +259,33 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             self.assertTrue(external_files,
                             f"No findings-*.json in PANOPTICON_TAPESTRY_CORPUS_PATH: {external!r}")
             self.assertEqual(integrity_mod.mislabeled_findings_files(external_files), [])
+
+
+class TestMalformedFindingsFailureStage(unittest.TestCase):
+    """#2571: typed artifact refusals name the stage that rejected them."""
+
+    def reason(self, kind):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "findings-Core-SEC.json")
+            if kind == "unreadable":
+                os.mkdir(path)
+            else:
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write("{" if kind == "unparseable" else " " * 33)
+            with mock.patch.object(integrity_mod.artifacts_mod, "MAX_JSON_BYTES", 32):
+                rows = integrity_mod.malformed_findings_files([path])
+        self.assertEqual(1, len(rows), rows)
+        return rows[0]["defects"][0]["reason"]
+
+    def test_read_failures_keep_their_typed_stage(self):
+        for kind in ("unreadable", "unparseable", "oversized"):
+            with self.subTest(kind=kind):
+                self.assertTrue(self.reason(kind).startswith(kind + ": "))
+
+    def test_artifact_surfaces_share_one_classifier(self):
+        self.assertIs(artifacts_mod.read_failure_reason, safe_write.read_failure_reason)
+        self.assertIs(evidence_mod._verdict_failure_reason, safe_write.read_failure_reason)
+
 
 class TestReadUnenforcedAck(unittest.TestCase):
     """M8: read_unenforced_ack had zero direct test coverage -- exactly where

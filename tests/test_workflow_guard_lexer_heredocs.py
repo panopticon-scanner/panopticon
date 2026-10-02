@@ -189,7 +189,7 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         for shell in ("sh", "bash"):
             for quote in ("'%s'", '"%s"'):
                 script = "x=$(cat <<'EOF'\nhi\nEOF%s -c;%s)\n" % (shell, quote % PIPE)
-                with self.subTest(shell=shell, quote=quote):
+                with self.subTest(program=shell, quote=quote):
                     found = defects(script)
                     self.assertEqual(1, len(found), found)
                     self.assertIn("hands a script to `%s`" % shell, found[0][1])
@@ -225,6 +225,14 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
     def test_code_only_the_written_separator_would_run_stays_clean(self):
         script = "x=$(cat <<'EOF'\nhi\nEOFtrue; %s)\n" % PIPE
         self.assertEqual([], defects(script))
+
+    def test_a_compound_head_separator_is_not_omitted(self):
+        for rest in ("if true; then %s; fi", "for n in 1; do %s; done"):
+            script = "x=$(cat <<'EOF'\nhi\nEOF%s)\n" % (rest % PIPE)
+            with self.subTest(rest=rest):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("required separator", found[0][1])
 
     def test_a_later_command_heredoc_does_not_take_the_compatibility_drop(self):
         separate = ("x=$(cat <<'A'; cat <<'B'\na\nA\nb\n"

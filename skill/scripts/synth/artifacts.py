@@ -45,3 +45,6 @@ def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
         if error is exc:
             raise
         raise error from exc
+
+
+read_failure_reason = safe_write.read_failure_reason
