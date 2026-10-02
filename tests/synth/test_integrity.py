@@ -13,6 +13,9 @@ from unittest import mock
 from tests.synth.helpers import _chdir
 
 import scripts.synthesize as syn
+import scripts.evidence as evidence_mod
+import scripts.safe_write as safe_write
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
@@ -278,6 +281,10 @@ class TestMalformedFindingsFailureStage(unittest.TestCase):
         for kind in ("unreadable", "unparseable", "oversized"):
             with self.subTest(kind=kind):
                 self.assertTrue(self.reason(kind).startswith(kind + ": "))
+
+    def test_artifact_surfaces_share_one_classifier(self):
+        self.assertIs(artifacts_mod.read_failure_reason, safe_write.read_failure_reason)
+        self.assertIs(evidence_mod._verdict_failure_reason, safe_write.read_failure_reason)
 
 
 class TestReadUnenforcedAck(unittest.TestCase):
