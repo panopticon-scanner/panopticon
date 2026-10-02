@@ -222,7 +222,7 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     first = first_stage.argv if first_stage else []
     grouped = bool(first_stage and (first_stage.group_open or
                                     (first and first[0] in _GROUP_OPEN)))
-    status = 1  # The rescue is entered only after the checksum fails.
+    status: int | None = 1  # The rescue is entered only after the checksum fails.
     # A rescue can close a subshell the check opened on the same statement:
     # `( CHECK || exit 1 )`. Start inside that shell so its `)` is not read as
     # an unmatched closer; the non-zero exit becomes the subshell's status.
@@ -260,6 +260,11 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
                             exited_subshell = subshell_depth
                         else:
                             stopped_job, exited = True, name == "exit"
+                elif any(token not in shell_reader.KEYWORDS for token in stage.argv):
+                    # An assignment-only command succeeds unless a substitution
+                    # supplies its status; neither result inherits the failure
+                    # that selected this rescue branch.
+                    status = None if stage.substitutions else 0
             depth -= stage.group_close + stage.argv.count("}")
             subshell_depth -= stage.group_close
             if depth < 0 or subshell_depth < 0:

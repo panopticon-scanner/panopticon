@@ -2881,6 +2881,38 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                 with self.subTest(body=body, shell=shell):
                     self.assertEqual(1, len(wg.job_defects([wg.Step("run", script, shell)])))
 
+    def test_assignment_handlers_cannot_certify_distant_function_gates(self):
+        handlers = ("x=1", "{ x=1; }", "( x=1 )", "x=$(true)",
+                    "x=1 y=2", "x=1; true")
+        calls = (
+            "f() { GATE || HANDLER; }\necho unrelated\nf\n",
+            "f() { GATE || HANDLER; }\n( f )\n",
+            "f() { GATE || HANDLER; }\ng() { f; }\ng\n",
+            "f() { GATE || HANDLER; }\nf || exit 1\n",
+        )
+        for handler in handlers:
+            for call in calls:
+                body = call.replace("GATE", "( CHECK || exit 1 )").replace(
+                    "HANDLER", handler)
+                script = self.FETCH + body.replace("CHECK", self.CHECK) + self.USE
+                for shell in (None, "bash", "sh"):
+                    with self.subTest(handler=handler, call=call, shell=shell):
+                        found = wg.job_defects([wg.Step("run", script, shell)])
+                        self.assertEqual(1, len(found), found)
+
+    def test_false_handler_still_certifies_distant_function_gates(self):
+        for call in (
+            "f() { GATE || false; }\necho unrelated\nf\n",
+            "f() { GATE || false; }\n( f )\n",
+            "f() { GATE || false; }\ng() { f; }\ng\n",
+            "f() { GATE || false; }\nf || exit 1\n",
+        ):
+            body = call.replace("GATE", "( CHECK || exit 1 )")
+            script = self.FETCH + body.replace("CHECK", self.CHECK) + self.USE
+            for shell in (None, "bash", "sh"):
+                with self.subTest(call=call, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("run", script, shell)]))
+
     def test_distant_piped_function_calls_keep_the_use_concurrent(self):
         bodies = (
             "f() { CHECK; }\ng() { f | sh payload; }\ng\n",

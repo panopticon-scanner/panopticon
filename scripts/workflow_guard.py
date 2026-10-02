@@ -174,8 +174,8 @@ runs each live, so a change that catches one fails there and edits this list.
   `sed -i` entry's author-deterministic ruling.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
-* Under outer `f || exit 1`, bodies ending `( CHECK || exit 1 ); return $?`,
-  its quoted return, or `( CHECK || exit 1 ) && echo ok` stay reported (#2586).
+* Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
+  `( CHECK || exit 1 ) && echo ok` stay reported; so does `|| kill $$`, though it stops the shell.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
   between the check's step and the use's step. It is not when it reads `env.*` written through
   `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
