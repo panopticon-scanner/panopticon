@@ -11,8 +11,10 @@ evidence exposed.
   drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
   `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
   omission to that logical line and command, preserving its word break; a rest beginning with `;`
-  is refused because Bash 5.2 rejects it while 3.2 can run later code. An unbounded Boolean and a
-  character-only omission were rejected because they hid later-line and no-space payloads.
+  is refused because Bash 5.2 rejects it while 3.2 can run later code. A candidate before `then`
+  or `do` is refused too: Bash keeps that grammar-required separator, and omitting it hid an
+  executable compound body. An unbounded Boolean and a character-only omission were rejected
+  because they hid later-line and no-space payloads.
 - **Container cleanup failures reach coverage metadata (#2556, #1817).** A failed scanner
   container stop now records the same redacted, bounded detail sent to stderr in the tools
   manifest and both human reports, while preserving the original timeout and gate outcome.
