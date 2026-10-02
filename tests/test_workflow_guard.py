@@ -2386,14 +2386,28 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                      "{ ( CHECK || exit 1 ); } &\n",
                      "{ ( CHECK || exit 1 ); } && echo ok\n",
                      "( ( CHECK || exit 1 ); echo ok ) || true\n",
-                     "f() { ( CHECK || exit 1 ); }\nf || true\n"):
+                     "f() { ( CHECK || exit 1 ); }\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f()\n{\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f () {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf | cat\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf &\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf && echo ok\n",
+                     "f() {\n{ ( CHECK || exit 1 ); }\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nsh payload\nf\n"):
             with self.subTest(body=body):
                 self.assertIsNotNone(self.finding(body))
 
     def test_an_unrescued_enclosing_group_keeps_the_subshell_status(self):
         for body in ("{ ( CHECK || exit 1 ); }\n",
                      "{ ( CHECK || exit 1 ); } || exit 1\n",
-                     "( ( CHECK || exit 1 ) )\n"):
+                     "( ( CHECK || exit 1 ) )\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf\n",
+                     "f() { ( CHECK || exit 1 ); }\nf\n",
+                     "f() {\n( CHECK || exit 1 )\necho ok\n}\nf\n"):
             with self.subTest(body=body):
                 self.assertIsNone(self.finding(body))
 
