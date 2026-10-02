@@ -534,14 +534,14 @@
                     "integer",
                     "null"
                   ],
-                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Since #2405 a non-zero value here is one of the three shapes that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist: the map that chose the gate's scope is provably damaged. Null when this context was not built by reading a file."
+                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Since #2405, widened by #2517 (owner ruling 2026-10-02), a non-zero value here is one of the FOUR shapes -- with `paths_dropped`, `paths_emptied_by_drops` and `payload_malformed` -- that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist: the map that chose the gate's scope is provably damaged. Null when this context was not built by reading a file."
                 },
                 "paths_dropped": {
                   "type": [
                     "integer",
                     "null"
                   ],
-                  "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Null when this context was not built by reading a file."
+                  "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Since #2517 (owner ruling 2026-10-02) a non-zero value here is one of the FOUR shapes -- with `ranges_dropped`, `paths_emptied_by_drops` and `payload_malformed` -- that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`). Its direction is the fail-OPEN one: the dropped file's findings LEFT the gate's source set rather than being admitted to it, so such a run reported a PASS over findings the artifact had hidden. It never fires on a legitimate change shape, because the loader drops a path only for a value that is not a list at all and no `diff_map.parse` output produces one. Null when this context was not built by reading a file."
                 },
                 "paths_without_ranges": {
                   "type": [
@@ -555,7 +555,7 @@
                     "integer",
                     "null"
                   ],
-                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
+                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, the fourth shape), or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
                 },
                 "payload_malformed": {
                   "type": [
@@ -597,11 +597,11 @@
                 },
                 "ranges_dropped": {
                   "type": "integer",
-                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped` -- one of the three shapes that turn an on-diff PASS gate INCONCLUSIVE (#2405); never null here, because this block is written only when a read was attempted."
+                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped` -- one of the four shapes that turn an on-diff PASS gate INCONCLUSIVE (#2405, the fourth added by #2517); never null here, because this block is written only when a read was attempted."
                 },
                 "paths_dropped": {
                   "type": "integer",
-                  "description": "Whole paths the loader discarded, as `delta.paths_dropped`; never null here, for the same reason."
+                  "description": "Whole paths the loader discarded, as `delta.paths_dropped` -- since #2517 (owner ruling 2026-10-02) one of the four shapes that turn an on-diff PASS gate INCONCLUSIVE when gate-eligible findings exist, and the fail-OPEN one: the dropped file leaves the map, so every finding in it classifies off-diff and leaves the gate's source set instead of being admitted to it. Never null here, for the same reason as its siblings."
                 },
                 "paths_without_ranges": {
                   "type": "integer",
@@ -609,7 +609,7 @@
                 },
                 "paths_emptied_by_drops": {
                   "type": "integer",
-                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. That rule needs an ACTIVE delta, i.e. a read that resolved a `base` and so published the `delta` block above; a payload rejected outright leaves no `base`, and there the gate degrades to the wider scope, which fails closed. Never null here, for the same reason as its siblings."
+                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, the fourth shape), or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. That rule needs an ACTIVE delta, i.e. a read that resolved a `base` and so published the `delta` block above; a payload rejected outright leaves no `base`, and there the gate degrades to the wider scope, which fails closed. Never null here, for the same reason as its siblings."
                 }
               }
             },
