@@ -244,12 +244,21 @@ class TestTheCooperativeStop(unittest.TestCase):
         runner, launched, terminated = self._runner(seen)
 
         def stop():
-            raise RuntimeError("the tally blew up")
+            raise RuntimeError("the tally blew up\n::error::injected " + "x" * 300)
 
-        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
         self.assertEqual(8, len(launched), launched)
         self.assertEqual(sorted(seen), sorted(launched))
         self.assertEqual([], terminated, "a raising stop terminated the children")
+        diagnostics = [line for line in err.getvalue().splitlines()
+                       if "batch stop predicate failed" in line]
+        self.assertEqual(1, len(diagnostics), diagnostics)
+        self.assertIn("fake: batch stop predicate failed; continuing: RuntimeError: ",
+                      diagnostics[0])
+        self.assertIn("the tally blew up ::error::injected", diagnostics[0])
+        self.assertLessEqual(len(diagnostics[0]), 280)
 
     def test_no_stop_at_all_launches_the_whole_batch(self):
         seen = []
