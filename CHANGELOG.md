@@ -27,11 +27,32 @@ evidence exposed.
   cost.
 - **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
   drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
-  `true; curl … | sh` rest whose download never runs; a rest beginning with `;` is a syntax error
-  and runs nothing. `_Lines` now marks the owning substitution frame to omit its next top-level
-  separator, or resumes at the closing `)` for the rejected form. The frame flag preserves quote
-  and command parsing; copying rewritten text around it would
-  bypass that state and recreate the original defect.
+  `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
+  omission to that logical line and command, preserving its word break; a rest beginning with `;`
+  is refused because Bash 5.2 rejects it while 3.2 can run later code. An unbounded Boolean and a
+  character-only omission were rejected because they hid later-line and no-space payloads.
+- **A download written to a `$`-spelled path binds to its literal basename at use (#2442).** The
+  mirror of #2345, and a fail-open until now: that issue bound a `$`-spelled OPERAND by its last
+  part (`sh "$PWD/cuda_1.run"` after `curl -o cuda_1.run`), but a `$`-spelled DESTINATION only
+  through a glob, so `curl -o "$PWD/cuda_1.run"` followed by `sh cuda_1.run` — the commoner
+  spelling — read CLEAN while `sh cuda_*.run` was reported. bash 3.2.57, bash 5.2.21, dash, zsh
+  5.9 and ksh 93u+ all run the download through the plain name, the `./` spelling and a
+  `chmod +x` before it. One predicate in `workflow_operands` (`_last_part`) now answers both
+  directions for an operand and for a command word, and it takes the same fail-closed looseness
+  the operand side already took: what `$PWD` expands to is not evaluated, so a same-named file
+  under another directory binds too (`sh scripts/cuda_1.run`), which over-reports rather than
+  reading the shell. The destination's basename must be WRITTEN — `curl -o "$PWD/$F"` still binds
+  nothing by name, and a lifted `$(…)` in that basename is carried through it — and the checksum
+  side stays exact: `echo "<sum>  cuda_1.run" | sha256sum -c -` does NOT credit a fetch to
+  `"$PWD/cuda_1.run"`, because loosening the side that CHECKS would clear bytes nothing read.
+  Half of the `PATH_DIRS` gap entry (#2308) closes with it: the `$HOME/.cargo/bin` spelling of a
+  download run by its bare name is now reported, which every shell runs once the file is
+  executable and that directory is on PATH. The calibration pool's 4,642 real jobs answer
+  identically.
+- **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
+  common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
+  failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,
+  and 16 MiB caps now state which source, verdict, or aggregate metadata class each one bounds.
 - **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
   `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
   the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
