@@ -159,16 +159,30 @@ def _split(text, context):
     # 0.02 s before the probe existed, from a `run:` block this module reads
     # out of the TARGET repository (fix round on #1714, Critical 1).
     header_words, header_live = 0, True
+    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and
+    # `>` in it are the conditional's operators, not list separators, subshells
+    # or redirections (#2441) -- split at them, `CHECK && [[ -f a || -f b ]] ||
+    # exit 1` lost the `|| exit 1` that ends the real list. `cond` is 0 outside
+    # one and, inside, 1 plus the `(` it holds open, so a `)` it did not open
+    # ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern.
+    # `at_head` says every word this stage closed is a keyword or an assignment
+    # -- where bash reads `[[` as the conditional, not as `echo [[ a`'s word.
+    # The test ends with the STATEMENT, not with a stage: bash makes one word
+    # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
+    # nothing had opened -- the unbalanced count #2334 reads as a lost list.
+    cond, at_head = 0, True
 
     def end_stage():
-        nonlocal header_words, header_live, word_start, redirect_target
+        nonlocal header_words, header_live, word_start, redirect_target, at_head
         stages.append("".join(buf))
         del buf[:]
         header_words, header_live, word_start = 0, True, 0
-        redirect_target = False
+        redirect_target, at_head = False, True
 
     def end_statement(separator):
+        nonlocal cond
         end_stage()
+        cond = 0
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
             if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
@@ -209,19 +223,31 @@ def _split(text, context):
         # a source-text test miscounted that as a word and killed the probe
         # one word early, losing the second header of `case ... esac; case
         # ... in ...`. Whitespace inside a quote never reaches this branch.
-        if ch.isspace() and header_live and buf and not buf[-1][-1].isspace():
-            header_words += 1
-            try:
-                words = shlex.split("".join(buf))
-            except ValueError:
-                words = []
-            words = [w for w in words if w not in groups]
-            if len(words) == 3 and words[0] == "case" and words[-1] == "in":
-                end_statement(";")
-                cases.append("pattern")
-            elif header_words >= 3 or (words and words[0] != "case"):
-                header_live = False         # this buffer is not a header
+        if ch.isspace() and buf and not buf[-1][-1].isspace():
+            # The word that closed, quotes and all: `"[["` is the ordinary
+            # word, never the conditional; empty just past a `case` arm token.
+            closed = "".join(buf[word_start:])
+            if closed == "[[" and at_head or closed == "]]" and cond:
+                cond = int(closed == "[[")
+            at_head = at_head and bool(not closed or closed in KEYWORDS
+                                       or _ASSIGNMENT.match(closed))
+            if header_live:
+                header_words += 1
+                try:
+                    words = shlex.split("".join(buf))
+                except ValueError:
+                    words = []
+                words = [w for w in words if w not in groups]
+                if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                    end_statement(";")
+                    cases.append("pattern")
+                elif header_words >= 3 or (words and words[0] != "case"):
+                    header_live = False     # this buffer is not a header
         if ch == "(" and not (cases and cases[-1] == "pattern"):
+            if cond:                        # `[[ ( -f a || -f b ) ]]`: no subshell
+                cond, i = cond + 1, i + 1
+                buf.append(ch)
+                continue
             # Preserve function headers: `f()` and `f ()` are not subshells.
             if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
                 buf.append("()")
@@ -232,16 +258,20 @@ def _split(text, context):
             i += 1
             continue
         if ch == ")":
+            cond = max(cond - 1, 0)         # one it did not open ends it
             if cases and cases[-1] == "pattern":
                 buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
                 cases[-1] = "body"
+            elif cond:
+                buf.append(ch)              # the `(` the test opened, closed
             else:
                 buf.append(" " + groups[1] + " ")
                 word_start, redirect_target = len(buf), False
             i += 1
             continue
         redirect = _REDIRECT.match(text, i)
-        if redirect and not (cases and cases[-1] == "pattern"):
+        # `[[ $a < $b ]]` compares two strings: no descriptor is redirected.
+        if redirect and not cond and not (cases and cases[-1] == "pattern"):
             # Only unquoted, unescaped digits comprising the whole preceding
             # word are an IO number. An attached URL (or quoted "2") is argv.
             word = "".join(buf[word_start:])
@@ -269,6 +299,13 @@ def _split(text, context):
         if ch in ";\n&|":
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
+            # Inside the test they join its expressions, and a `]]` that the
+            # operator itself closes (`[[ -f a ]]&& USE`) ends it first; a `;`,
+            # `&` or newline there is a syntax error bash stops on, read as ever.
+            if cond and pair in ("&&", "||") and "".join(buf[word_start:]) != "]]":
+                buf.append(" %s " % pair)
+                word_start, i = len(buf), i + 2
+                continue
             end_statement(separator)
             # Every terminator that ENDS a case arm, not just `;;`: bash also
             # spells it `;&` (fall through into the next arm's body) and `;;&`
