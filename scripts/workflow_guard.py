@@ -83,10 +83,10 @@ runs each live, so a change that catches one fails there and edits this list.
   `Rewritten` one reported where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as
   its default, another handed `-c` has its program read so (#2337); `$CMD --flag` reads nothing,
   `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses `\$` escapes as bash does, not with
-  another `$` in it (#2342). An option letter the shell in hand refuses is read as that refusal:
-  `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell, because zsh
-  runs twenty of the letters bash refuses and ksh runs `-G`: for those, and for a shell named by a
-  word rather than written, the word is read on.
+  another `$` in it (#2342). An option letter the shell in hand refuses is read as that refusal
+  after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475).
+  Per shell, because zsh runs twenty of the letters bash refuses and ksh runs `-G`: for those, and
+  for a shell named by a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -146,8 +146,8 @@ runs each live, so a change that catches one fails there and edits this list.
   whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500) -- under
   ITS `-e`, not the inner's, blind to the inner's own `<` (`eval 'bash -s < f'`); a pipeline whose
   FIRST stage reads stdin is never reached; all filed under #2331. Nor, for a SHELL, does a value or
-  a word that may vanish end the walk at a FILE (#2485): one naming a file or an option the shell
-  refuses, or quoted and empty (`X=script.sh`, `X=-K`), over-reports; `python3 $S` with S unset, a
+  a word that may vanish end the walk at a FILE (#2485): one naming a file or an option nothing runs
+  under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`), over-reports; `python3 $S`, S unset, a
   FOREIGN word, under-reports (python runs the body), filed under #2331. A QUOTED body reaches the
   interpreter as written, so `workflow_forms.flattened` reads it as it reads an `eval` string -- a
   `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is REPORTED unread
@@ -287,10 +287,10 @@ def _unread_stdin(stage):
     A heredoc body or here-string handed to an interpreter is a program, not data
     (`workflow_programs.stdin_program`). One in a language this module has no grammar for, and one
     handed to a `$` command word no table places (#2473), are `Idle`, which `kept` stands only
-    beside a fetch this guard reports (#2499); one a shell would EXPAND -- a body whose `$(...)`
-    were lifted into the enclosing parse's table before it reached here, or a here-string whose word
-    bash expands first (#2293) -- is reported fetch or no fetch. A QUOTED one handed to a shell or a
-    `$` command word is READ as shell, in `workflow_programs.stdin_scripts`."""
+    beside a fetch this guard reports (#2499); an EXPANDING one handed to a shell by name -- a body
+    whose `$(...)` were lifted into the outer parse's table before it reached here, or a here-string
+    whose word bash expands first (#2293) -- is reported fetch or no fetch. A QUOTED one handed to a
+    shell or a `$` command word is READ as shell, in `workflow_programs.stdin_scripts`."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc
     kind = stdin_program(argv) if here else None

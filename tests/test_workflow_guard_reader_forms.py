@@ -347,20 +347,20 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     `<(...)`), a CLEAN a step that runs none -- except these readings, which
     contradict them, each accepted for its reason:
 
-    * fail-closed over-reports: `X=script.sh; sh $X` (#2485) and `CMD=sh`
-      whose body ends in the check (#2473), where the reader cannot tell
-      the word from one that runs the body (`X=-s`) or skips it
-      (`CMD=true`), and `$CMD "$X"` with `X` empty, whose walk now reads on as
-      a shell's (#2473); a letter bash and dash refuse, read on as the operand
-      walk reads `sh -K` (#2475 stops only a `-c` cluster): behind a value
-      (`X=-K; sh $X`, #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an
-      inner shell (`eval 'bash -K -s'`, `bash -c 'sh -K'`, #2500); `eval --
-      bash -s`, whose `--` dash runs as a command; seventy `eval`s before
-      `echo hi`, read as a stdin shell past the credit's 64-deep bound
-      (#2500); and a non-shell body under a `$` word whose string spells a
-      shell download (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT
-      <<'EOF' > i.sh` body), read as shell and reported loud, filed under
-      #2331;
+    * fail-closed over-reports: `X=script.sh; sh $X` and its `X=-n` and bare
+      `X=-c` twins, which run nothing (#2485), and `CMD=sh` whose body ends in
+      the check (#2473), where the reader cannot tell the word from one that
+      runs the body (`X=-s`) or skips it (`CMD=true`), and `$CMD "$X"` with
+      `X` empty, whose walk now reads on as a shell's (#2473); a letter bash
+      and dash refuse, read on as the operand walk reads `sh -K` (#2475 stops
+      only a `-c` cluster): behind a value (`X=-K; sh $X`, #2485), a `$` word
+      (`CMD=sh; $CMD -K`, #2473) or an inner shell (`eval 'bash -K -s'`, `bash
+      -c 'sh -K'`, #2500); `eval -- bash -s`, whose `--` dash runs as a
+      command; seventy `eval`s before `echo hi`, read as a stdin shell past
+      the credit's 64-deep bound (#2500); and a non-shell body under a `$`
+      word whose string spells a shell download (`print("$(curl ... | sh)")`
+      under `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as shell and
+      reported loud, filed under #2331;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with `echo
       hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `$PYTHON -s file.py` with `print(1)`, whose `-s` reads as a
@@ -530,13 +530,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `sh`", found[0][1])
-        # The same over-report where the value is an option the shell
-        # refuses: with `X=-K` bash 3.2.57, 5.2.21 and dash exit 2 and run
-        # nothing (#2475's table, #2551), but `$X` is a value this walk reads
-        # on -- named beside `X=script.sh` in the guard's gap list.
-        found = defects("X=-K\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("straight to `sh`", found[0][1])
+        # The same over-report where the value is an option nothing runs
+        # under, the class the guard's gap list names beside `X=script.sh`:
+        # with `X=-K` bash 3.2.57, 5.2.21 and dash exit 2 at a letter they
+        # refuse (#2475's table, #2551), with `X=-n` they read the heredoc
+        # and run none of it (rc 0), and a bare `X=-c` hands them no string
+        # (rc 2) -- but `$X` is a value this walk reads on.
+        for value in ("-K", "-n", "-c"):
+            with self.subTest(value=value):
+                found = defects("X=%s\nsh $X <<'EOF'\n%s\nEOF\n" % (value, PIPE))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("straight to `sh`", found[0][1])
         # The must-trip control and the unaffected FOREIGN form.
         self.assertTrue(defects("sh -s <<'EOF'\n%s\nEOF\n" % PIPE))
         self.assertEqual([], defects("python3 $S <<EOF\n%s\nEOF\n" % PIPE))
@@ -588,13 +592,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # this rule's fail-closed price, named in `stdin_program`'s docstring.
         # A `${X:-sh}` default is the shell it spells (`shell_wrappers.
         # Defaulted`), never a VALUE: its body is read and no hand-off said.
-        found = reasons("CMD=sh\n$CMD -K <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(2, len(found), found)
-        self.assertTrue(any(streamed in w for w in found), found)
-        self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
-        found = reasons("${X:-sh} <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn(streamed, found[0])
+        script = "CMD=sh\n$CMD -K <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(2, len(found), found)
+            self.assertTrue(any(streamed in w for w in found), found)
+            self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+        script = "${X:-sh} <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(1, len(found), found)
+            self.assertIn(streamed, found[0])
         # (b) A clean body alone is CLEAN, the issue's pin; beside a download
         # no checksum clears, the hand-off is the one reason.
         self.assertEqual([], reasons("CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n"))
@@ -832,9 +840,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # three shells refuse (rc 2), reads CLEAN. A literal FILE ends it too,
         # `python3 $S` keeps its FILE reading, `$PYTHON -` its hand-off, and
         # the literal `bash -s -- "$V"` is the must-trip control.
-        found = reasons(GET + "CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
+        script = GET + "CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(1, len(found), found)
+            self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
         for script in ("CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE,
                        "CMD=bash\n$CMD -c <<'EOF'\n%s\nEOF\n" % PIPE,
                        "CMD=sh\n$CMD -- x.sh <<'EOF'\n%s\nEOF\n" % PIPE,
@@ -843,9 +853,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                        "PYTHON=python3\n$PYTHON - <<'EOF'\nprint(1)\nEOF\n"):
             with self.subTest(script=script):
                 self.assertEqual([], reasons(script))
-        found = reasons("bash -s -- \"$V\" <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn(streamed, found[0])
+        script = "bash -s -- \"$V\" <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(1, len(found), found)
+            self.assertIn(streamed, found[0])
         # The price, named in `stdin_program`'s docstring: the walk cannot tell
         # a quoted empty value from one the shell drops, nor a foreign
         # interpreter's `-s` from a shell's. `$CMD "$X"` with `X` empty runs
@@ -853,14 +865,18 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # and python runs `file.py`, never the body; yet each reads the
         # heredoc as `$CMD`'s program -- loud where the body spells a
         # download, its hand-off `Idle` beside a reported fetch otherwise.
-        found = reasons("CMD=sh\n$CMD \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(2, len(found), found)
-        self.assertTrue(any(streamed in w for w in found), found)
+        script = "CMD=sh\n$CMD \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(2, len(found), found)
+            self.assertTrue(any(streamed in w for w in found), found)
         python = "PYTHON=python3\n$PYTHON -s file.py <<'EOF'\nprint(1)\nEOF\n"
-        self.assertEqual([], reasons(python))
-        found = reasons(GET + python)
-        self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0].startswith(to("$PYTHON")), found)
+        with self.subTest(script=python):
+            self.assertEqual([], reasons(python))
+        with self.subTest(script=GET + python):
+            found = reasons(GET + python)
+            self.assertEqual(1, len(found), found)
+            self.assertTrue(found[0].startswith(to("$PYTHON")), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):

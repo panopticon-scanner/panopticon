@@ -322,11 +322,13 @@ def stdin_program(argv, depth=0):
     END the walk there either (#2485): `X=-s; sh $X <<'EOF'` runs the
     heredoc in bash 3.2.57, 5.2.21 and dash alike, as `bash <<'EOF' $(true)`
     and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
-    word outright. Read IN PLACE rather than weighed, fail-closed: `X` may
-    just as well spell a FILE (`X=script.sh`) or an option the shell refuses
-    (`X=-K`, where bash and dash exit 2), so this over-reports there -- see
-    the guard's gap list, which names both. A `<(...)`/`>(...)` is NOT
-    such a word, though `_value` matches its marker too: it always
+    word outright. Read IN PLACE rather than weighed, fail-closed: `X`
+    may just as well spell a FILE (`X=script.sh`) or an option nothing
+    runs under -- one the shell refuses (`X=-K`, where bash and dash
+    exit 2), `X=-n` (they read the heredoc and run none of it) or a
+    bare `X=-c` (no string, rc 2) -- so this over-reports there; the
+    guard's gap list names the class. A `<(...)`/`>(...)` is NOT such
+    a word, though `_value` matches its marker too: it always
     substitutes a real path, never empty, so `bash <(curl ...)` keeps
     reading as the FILE it is (`yields_words` tells a process substitution
     from a command substitution, whose OUTPUT may vanish instead) -- true
@@ -334,7 +336,7 @@ def stdin_program(argv, depth=0):
     (`$(true)<(...)`) still reads as may-vanish even though bash always
     substitutes a real path for it too -- an over-report the guard's gap
     list does not separately name, beside the ones it does (`X=script.sh`,
-    `X=-K`).
+    `X=-K`, `X=-n`).
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
@@ -345,8 +347,9 @@ def stdin_program(argv, depth=0):
     reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... |
     sh` read CLEAN. As VALUE its QUOTED body is read as shell all the same,
     additively (`stdin_scripts`; `workflow_forms.flattened` counts no check
-    in it, since `$CMD` may not run it), and the guard's `_unread_stdin`
-    reports the hand-off `Idle` under a sentence of its own. Its walk takes a
+    in it, since `$CMD` may not run it) -- a body no interpreter runs, `$CAT
+    <<'EOF' > f`, over-reports -- and the guard's `_unread_stdin` reports the
+    hand-off `Idle` under a sentence of its own. Its walk takes a
     shell's `-c`, `-s` and vanishing-operand rules beside a foreign
     interpreter's value options, since the word may be a shell (`$CMD -s --
     "$V" <<'EOF'` reads the heredoc; `$PYTHON -s file.py <<'EOF'` over-reports
