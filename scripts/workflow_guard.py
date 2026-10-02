@@ -130,9 +130,8 @@ runs each live, so a change that catches one fails there and edits this list.
 * a download the PIPELINE writes under a name `workflow_forms._WRITERS` does not carry: the `> f`
   redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
   KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
-* bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
-  OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
-  outside, and a workflow editing its own downloaded file is
+* bytes modified after a passing check: `sha256sum -c` then `sed -i` then run. OUT OF SCOPE:
+  the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
 * a heredoc body printed inside a command substitution for `eval` to run
   (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the
@@ -173,23 +172,20 @@ runs each live, so a change that catches one fails there and edits this list.
   A heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not
   this rule's business at all: the script is text in the repo under review, which is the
   `sed -i` entry's author-deterministic ruling.
-* the distant function-call proof treats every `unset` as a barrier, including `unset FOO`,
-  `unset -v FOO`, and a harmless `unset -f f`. This over-reports rather than letting a removed
-  or shadowed function borrow an earlier definition's gate; none of the fleet's 84
-  function-bearing steps contains `unset` (#2586).
-* `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
-  expression is stable between the check's step and the use's step. It is not
-  when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
-  `steps.<id>.*` reference.
+* the distant function-call proof treats every `unset` as a barrier. This includes `unset FOO`,
+  `unset -v FOO`, and harmless `unset -f f`, which over-report rather than let a removed or
+  shadowed function borrow an earlier gate; none of the fleet's 84 such steps uses `unset` (#2586).
+* `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
+  between the check's step and the use's step. It is not when it reads `env.*` written through
+  `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
   KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
   `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
-`if` branches inside the shell are read flat for what they FETCH and what they
-RUN -- folding those in can only report more. Not for what they CHECK:
-`workflow_forms.regions` reads the `then`/`else`/`do` bodies -- and each arm of
-a `case` -- back out of the statement stream, and a checksum written inside a
-branch clears only a use written inside the same branch (#1697 item 3), which
-is `_binds` again in the shell's own grammar."""
+`if` branches inside the shell are read flat for what they FETCH and what they RUN -- folding
+those in can only report more. Not for what they CHECK: `workflow_forms.regions` reads the
+`then`/`else`/`do` bodies -- and each arm of a `case` -- back out of the statement stream, and a
+checksum written inside a branch clears only a use written inside the same branch (#1697 item 3),
+which is `_binds` again in the shell's own grammar."""
 import collections
 import os
 import re
