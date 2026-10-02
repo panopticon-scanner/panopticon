@@ -110,6 +110,50 @@ VALUE_OPTIONS = "oO"
 # `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash` could not
 # be measured (this box has none) -- so for them an option word is read ON.
 _MEASURED_SHELLS = ("sh", "bash", "dash")
+# The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's
+# `set -o` listing -- which is bash 3.2.57's, name for name -- and besides
+# those the three dash prints that bash has no such option for. A name outside
+# the table is one the shell REFUSES: `set: foo: invalid option name`, and on a
+# command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
+# `workflow_gating._rejected` and `_refused_name` read it as (#2560). Measured
+# on bash 3.2.57, bash 5.2.21 and dash, each table is the fail-closed pick for
+# the direction its reader takes, as the letter tables are. For the BUILTIN,
+# where a refused name means nothing was SET, bash's 27 alone: dash dies at
+# such a `set`, so nothing runs there at all, and its own names would only add
+# ones bash refuses. For a COMMAND LINE, where it means nothing RUNS, the UNION
+# -- dash runs `-o stdin`, `-o interactive` and `-o debug`, which bash exits 2
+# on, and dash has no `pipefail`, which bash takes. `-O` takes a SHOPT name
+# instead, a table this guard does not keep (`_refused_name`).
+SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", "functrace",
+                    "hashall", "histexpand", "history", "ignoreeof", "interactive-comments",
+                    "keyword", "monitor", "noclobber", "noexec", "noglob", "nolog", "notify",
+                    "nounset", "onecmd", "physical", "pipefail", "posix", "privileged",
+                    "verbose", "vi", "xtrace")
+SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
+
+
+def _refused_name(argv, at):
+    """Whether the shell `argv[0]` refuses the `-o` VALUE in the option word
+    `argv[at]`, running nothing: a name outside `SHELL_OPTION_NAMES`, handed
+    to a shell measured to refuse one at all (`sh -c -o foo P`, `sh -co foo
+    P`, `+o foo`; `_MEASURED_SHELLS`, as `_refused` reads a letter).
+
+    One value per `o` or `O` letter, as `_past_options` counts them, and only
+    an `o`'s is a `set -o` name: `-O` takes a shopt name, and a table of
+    those is not kept here. A value that is not all letters -- bar the hyphen
+    of `interactive-comments` -- is read ON and fail-closed, as an option
+    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X`
+    holds a name the shell takes, and `${X:-pipefail}` is one spelling of
+    that."""
+    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+        return False
+    value = at
+    for letter in argv[at][1:]:
+        value += letter in VALUE_OPTIONS
+        if letter == "o" and value < len(argv) and argv[value].replace("-", "").isalpha():
+            if argv[value] not in SHELL_OPTION_NAMES:
+                return True
+    return False
 
 
 def _refused(argv, at):
@@ -147,10 +191,11 @@ def _past_options(argv, at):
     the program even if it begins with `-`; a `--long` word after `-c` is
     one both shells refuse, and nothing runs. So is a word of letters one of
     which the shell in hand refuses (`sh -c -K P`, `sh -cK P`, `_refused`):
-    it exits before it reads `P`, so no program is handed over (#2475).
+    it exits before it reads `P`, so no program is handed over (#2475), and an
+    `-o` whose value is no option NAME is one too (`_refused_name`, #2560).
     """
     while True:
-        if _refused(argv, at):
+        if _refused(argv, at) or _refused_name(argv, at):
             return []                           # the shell exits before the program
         at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
         if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
