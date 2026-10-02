@@ -16,6 +16,24 @@ evidence exposed.
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
   `exit 0`, disabled outer errexit, `|| true`, and nested groups whose failure is rescued or left
   ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
+- **A download written to a `$`-spelled path binds to its literal basename at use (#2442).** The
+  mirror of #2345, and a fail-open until now: that issue bound a `$`-spelled OPERAND by its last
+  part (`sh "$PWD/cuda_1.run"` after `curl -o cuda_1.run`), but a `$`-spelled DESTINATION only
+  through a glob, so `curl -o "$PWD/cuda_1.run"` followed by `sh cuda_1.run` — the commoner
+  spelling — read CLEAN while `sh cuda_*.run` was reported. bash 3.2.57, bash 5.2.21, dash, zsh
+  5.9 and ksh 93u+ all run the download through the plain name, the `./` spelling and a
+  `chmod +x` before it. One predicate in `workflow_operands` (`_last_part`) now answers both
+  directions for an operand and for a command word, and it takes the same fail-closed looseness
+  the operand side already took: what `$PWD` expands to is not evaluated, so a same-named file
+  under another directory binds too (`sh scripts/cuda_1.run`), which over-reports rather than
+  reading the shell. The destination's basename must be WRITTEN — `curl -o "$PWD/$F"` still binds
+  nothing by name, and a lifted `$(…)` in that basename is carried through it — and the checksum
+  side stays exact: `echo "<sum>  cuda_1.run" | sha256sum -c -` does NOT credit a fetch to
+  `"$PWD/cuda_1.run"`, because loosening the side that CHECKS would clear bytes nothing read.
+  Half of the `PATH_DIRS` gap entry (#2308) closes with it: the `$HOME/.cargo/bin` spelling of a
+  download run by its bare name is now reported, which every shell runs once the file is
+  executable and that directory is on PATH. The calibration pool's 4,642 real jobs answer
+  identically.
 - **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
   common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
   failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,

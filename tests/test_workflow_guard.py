@@ -772,6 +772,139 @@ class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
                 self.assertEqual([], self.job(script))
 
 
+class TestADownloadWrittenToADollarSpelledPathBindsByItsBasename(unittest.TestCase):
+    """#2442: the mirror of #2345 (b), and a fail-open until it. After
+    `curl -o "$PWD/cuda_1.run"`, both `sh cuda_1.run` and
+    `chmod +x cuda_1.run; ./cuda_1.run` read CLEAN: a `$`-spelled OPERAND bound by its last part,
+    but a `$`-spelled DESTINATION only through a glob, so the plain-name use
+    -- the commoner spelling -- was unbound, while bash 3.2.57, bash 5.2.21,
+    dash, zsh 5.9 and ksh 93u+ all run the download, a bare-name checksum
+    failing in front of it changing nothing. A destination
+    bash expands whose basename is written out is now that basename, taking
+    the same fail-closed looseness the operand side already takes: a
+    same-named file written somewhere else binds too. The checksum side stays
+    exact (`names_file`), which is the documented asymmetry."""
+
+    GET = 'curl -fsSLo "$PWD/cuda_1.run" https://example.test/cuda_1.run\n'
+    BRACED = 'curl -fsSLo "${PWD}/cuda_1.run" https://example.test/cuda_1.run\n'
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _n, why in wg.job_defects([("step", script)])]
+
+    def test_a_literal_basename_is_the_download(self):
+        for use, how in (("sh cuda_1.run\n", "running it under `sh`"),
+                         ("sh ./cuda_1.run\n", "running it under `sh`"),
+                         ("bash ./cuda_1.run --silent\n", "running it under `bash`"),
+                         ("./cuda_1.run\n", "running it"),
+                         ("chmod +x cuda_1.run\n", "making it executable"),
+                         ("chmod +x ./cuda_1.run\n", "making it executable"),
+                         ("chmod 755 cuda_1.run\n", "making it executable"),
+                         ("install -m 755 cuda_1.run /usr/local/bin/c\n", "installing it")):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> $PWD/cuda_1.run and %s with nothing verifying" % how, why[0])
+
+    def test_the_braced_spelling_of_the_destination_too(self):
+        why = self.job(self.BRACED + "chmod +x cuda_1.run\n./cuda_1.run\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("-> ${PWD}/cuda_1.run and making it executable", why[0])
+
+    def test_the_two_halves_of_making_it_executable_and_running_it(self):
+        # The first use in the job is the one the sentence names, as elsewhere.
+        for use in ("chmod +x cuda_1.run\n./cuda_1.run\n",
+                    "chmod +x ./cuda_1.run\n./cuda_1.run\n"):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("and making it executable", why[0])
+
+    def test_a_same_named_file_elsewhere_binds_too(self):
+        # The fail-closed looseness the operand rule already accepts: what
+        # `$PWD` expands to is not evaluated, so a use of the same basename
+        # under ANY directory -- or a bare name no PATH lookup would find --
+        # is read as the download. Wrong on the side that over-reports, as
+        # #2310 and #2345 are, because the alternative is reading the shell.
+        for use, how in (("sh scripts/cuda_1.run\n", "running it under `sh`"),
+                         ("sh /opt/cuda_1.run\n", "running it under `sh`"),
+                         ("chmod +x bin/cuda_1.run\n", "making it executable"),
+                         ("cuda_1.run --silent\n", "running it")):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("-> $PWD/cuda_1.run and %s" % how, why[0])
+
+    def test_another_basename_or_an_option_word_is_not_the_download(self):
+        # `--file=./cuda_1.run` is the option word this arm must refuse: its
+        # last path part IS the download's basename, so only "never an option
+        # word" keeps a flag off a word that names a file to something else.
+        for use in ("sh other.run\n", "sh cuda_1.run.sig\n", "chmod +x other.run\n",
+                    'sh ./x.sh --file=cuda_1.run\n', 'sh ./x.sh --file=./cuda_1.run\n',
+                    "echo cuda_1.run\n"):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(self.GET + use))
+        # Must-trip control: the same job with the download's own basename.
+        self.assertIn("running it under `sh`", "".join(self.job(self.GET + "sh cuda_1.run\n")))
+
+    def test_a_destination_whose_basename_itself_expands_binds_nothing(self):
+        # `curl -o "$PWD/$F"` has no name to bind: only the shell knows what
+        # the last part says, so the plain-name use stays unread, as it was.
+        for get in ('curl -fsSLo "$PWD/$F" https://example.test/cuda_1.run\n',
+                    'curl -fsSLo "$PWD/${NAME}" https://example.test/cuda_1.run\n'):
+            with self.subTest(get=get):
+                self.assertEqual([], self.job(get + "sh cuda_1.run\n"))
+        # Must-trip control: the same job with the basename written out.
+        self.assertIn("running it under `sh`", "".join(self.job(self.GET + "sh cuda_1.run\n")))
+
+    def test_a_lifted_substitution_is_carried_through_the_basename(self):
+        # The layer's own invariant, under the rule: a destination whose
+        # basename holds a `$(...)` the reader lifted OUT of the word is not a
+        # name written out, and the marker text standing for it must never be
+        # read as one -- `derived` keeps the provenance through the basename.
+        # The rule above never reaches this: it reports such a destination
+        # outright, with no use asked for, so the pin belongs here.
+        subst = wg.fetches('curl -fsSLo "$PWD/$(date +%s).run" '
+                           'https://example.test/x.run\n')[0].dest
+        name = os.path.basename(os.path.normpath(subst))
+        self.assertFalse(workflow_forms.covers(name, subst))
+        self.assertFalse(workflow_forms.may_run(name, subst))
+        self.assertIn("to an unknown destination ($(...)/cuda_1.run)", "".join(self.job(
+            'curl -fsSLo "$(pwd)/cuda_1.run" https://example.test/cuda_1.run\n'
+            "sh cuda_1.run\n")))
+        # Control: the same basename written out beside a `$` the reader leaves
+        # in the word is the mirror itself, at both doors.
+        plain = wg.fetches(self.GET)[0].dest
+        self.assertTrue(workflow_forms.covers("cuda_1.run", plain))
+        self.assertTrue(workflow_forms.may_run("./cuda_1.run", plain))
+
+    def test_the_checksum_side_still_binds_by_the_spelling_at_the_fetch(self):
+        # `names_file` is word-exact and this destination is not bare, so a
+        # checksum of the literal `cuda_1.run` does NOT credit a fetch to
+        # `"$PWD/cuda_1.run"` -- main's behaviour, kept: the loosening is on
+        # the side that RUNS only, or one checksum would clear another file.
+        why = self.job(self.GET + self.CHECK % "cuda_1.run" + "sh cuda_1.run\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("no checksum in the job names $PWD/cuda_1.run", why[0])
+        # The spelling at the fetch clears it, as it always did.
+        self.assertEqual([], self.job(self.GET + self.CHECK % "$PWD/cuda_1.run"
+                                      + "sh cuda_1.run\n"))
+
+    def test_a_literal_destination_is_unchanged(self):
+        # Nothing moves where the fetch wrote a path with no `$` in it: the
+        # mirror needs a destination the shell spells, so a use under another
+        # directory still matches nothing (#2339's glob is the only reach) and
+        # a bare name is still PATH's question alone (#2308).
+        get = "curl -fsSLo /tmp/cuda_1.run https://example.test/cuda_1.run\n"
+        for use in ("sh scripts/cuda_1.run\n", "sh /opt/cuda_1.run\n",
+                    "cuda_1.run --silent\n", "chmod +x bin/cuda_1.run\n"):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(get + use))
+        # Must-trip control: the spelling at the fetch is still the download.
+        self.assertIn("running it under `sh`",
+                      "".join(self.job(get + "sh /tmp/cuda_1.run\n")))
+
+
 class TestAUseInsideACommandSubstitution(unittest.TestCase):
     """#2345 (c): `curl -o t.sh …; x=$(bash t.sh)` read clean, because a use
     was looked for in each command's own argv and never in the script a
@@ -3483,9 +3616,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                      ("run", "payload --version\n"))
         # ... and the runner image's own directories past `PATH_DIRS` (review
         # N-4), which bash 3.2 and 5.2 find a bare name in when on PATH.
-        for dest in ('"$HOME/.cargo/bin/payload"', "/snap/bin/payload"):
-            self.accepted(("get", "curl -sfL https://example.test/p -o %s\n" % dest),
-                          ("run", "payload --version\n"))
+        self.accepted(("get", "curl -sfL https://example.test/p -o /snap/bin/payload\n"),
+                      ("run", "payload --version\n"))
+        # Half of that entry is now reached from the other side: #2442 binds a
+        # download written to a `$`-spelled path by its literal basename, so
+        # the `$HOME` spelling -- the one a step actually writes -- is reported,
+        # whatever `PATH_DIRS` holds. What is left of the gap is the paths
+        # spelled with no `$` in them, and whatever a step puts on PATH.
+        self.flagged(("get", 'curl -sfL https://example.test/p -o "$HOME/.cargo/bin/payload"\n'),
+                     ("run", "payload --version\n"))
 
     # 12. a download the PIPELINE writes under a name `_WRITERS` misses
     # (review r0 finding 2's residual).
