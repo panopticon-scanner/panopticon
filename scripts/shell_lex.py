@@ -60,9 +60,10 @@ A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its bod
 `echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash 3.2 reads the lines below it as code; 5.2
 warns, reads them as that body and runs what follows its terminator. Read as code, a quote in them
 hides what 5.2 runs; read as a body, they hide what 3.2 runs. A heredoc queued after a body that
-ends at a line like `EOF)` is refused: 5.2 reads it from the next line, and the `EOF)` line's rest
-after it. Bodies are indexed and ended by `shell_heredoc._Lines`; `shell_heredoc`'s docstring
-argues the choices.
+ends at a line like `EOF)` is read from the next line; the first line's rest is saved until every
+queued body is filed, then parsed as code. Two `EOF)` ends in one queue remain refused because
+5.2 reports a syntax error. Bodies are indexed and ended by `shell_heredoc._Lines`;
+`shell_heredoc`'s docstring argues the choices.
 
 A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
 `]` however many lines on -- only where bash reads an assignment: at the head
@@ -260,6 +261,7 @@ class _Lexer:
         self.cond = 0                   # inside `[[ ... ]]`: 1 + the `(` open in it
         self.cases: tuple[str, ...] = ()    # the `case`s open here (`casing`)
         self.lines: dict[bool, _Lines] = {}
+        self.jumps: dict[int, int] = {}  # source after a saved `EOF)` rest
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
         self.unspelled = (0, 0)         # a heredoc word bash parses: frames, start
@@ -268,6 +270,9 @@ class _Lexer:
         text, out, frames = self.text, self.out, self.frames
         i = 0
         while i < len(text):
+            i = self.past(i)
+            if i >= len(text):
+                break
             frame, ch = frames[-1], text[i]
             if ch == "\\" and frame.kind != "'":
                 if text.startswith("\n", i + 1) and frame.kind != "$'":
@@ -287,6 +292,12 @@ class _Lexer:
         # Queues still waiting here never met their newline: their operators
         # stay in the output as written, which is the unterminated reading.
         return "".join(out)
+
+    def past(self, i: int) -> int:
+        """Past bodies already read before their saved `EOF)`-line rest."""
+        while i in self.jumps:
+            i = self.jumps.pop(i)
+        return i
 
     def open(self, i: int, kind: str) -> int | None:
         """Past the opener at `i` -- its frame pushed -- if `kind` nests one."""
@@ -407,7 +418,7 @@ class _Lexer:
         if ch in _BREAK and frame.kind in _CODE:
             self.word = len(out)
             if ch == "\n" and frame.queue:
-                return self.bodies(frame, i + 1)
+                return self.bodies(frame, self.past(i + 1))
         return i + 1
 
     def rewind(self, undo: tuple, i: int) -> int:
@@ -536,28 +547,41 @@ class _Lexer:
     def bodies(self, frame: _Frame, i: int) -> int:
         """Read the heredocs `frame` queued, one after another from the line
         starting at `i`; the index where its code resumes."""
-        cut = False
+        saved: tuple[int, int, int] | None = None
         compatible = not frame.split
         for number, (slot, delimiter, quoted, strip, fd) in enumerate(frame.queue):
-            if cut:
-                raise Unreadable("a heredoc queued in a substitution after one whose body ends at "
-                                 "a line like `EOF)`: bash 5.2 reads its body from the next line, "
-                                 "and the rest of that `EOF)` line as code after it")
             expands = not quoted        # and folds `\`-newline, as bash reads it
             if expands not in self.lines:
                 self.lines[expands] = _Lines(self.text, folded=expands)
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
-                body, i, cut, drop, rejected = found
+                body, resume, cut, drop, rejected, following = found
                 if rejected and compatible:
                     raise Unreadable("a substitution heredoc's `EOF)`-line rest begins with "
                                      "`;`: bash 5.2 rejects it, while bash 3.2 may run code "
                                      "after the substitution closes")
-                if drop and compatible and number + 1 == len(frame.queue):
-                    frame.drop = drop, frame.depth
+                if cut and saved:
+                    raise Unreadable("two heredocs queued in one substitution end at lines like "
+                                     "`EOF)`: bash 5.2 reports a syntax error after reading them")
                 self.out[slot] = " %s " % self.heredoc(body, expands, fd)
+                if cut and number + 1 < len(frame.queue):
+                    saved = resume, following, drop if compatible else 0
+                    i = following
+                else:
+                    i = resume
+                    if cut and drop and compatible:
+                        frame.drop = drop, frame.depth
+            elif saved:
+                raise Unreadable("a heredoc queued after an `EOF)` end has no terminator: bash "
+                                 "5.2 reads no code after its body")
         frame.queue.clear()
         frame.split = False
+        if saved:
+            rest, following, drop = saved
+            self.jumps[following] = i
+            if drop:
+                frame.drop = drop, frame.depth
+            return rest
         return i
 
 

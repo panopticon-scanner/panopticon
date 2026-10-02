@@ -10,6 +10,12 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
+  guard used a generic refusal because one pass met the first body's same-line rest before the
+  later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies
+  from the next line, then parses the saved rest, so body and rest payloads get specific
+  findings. A second lexing pass was rejected because it would duplicate state and cost; two
+  `EOF)` ends remain fail-closed because Bash reports a syntax error.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
