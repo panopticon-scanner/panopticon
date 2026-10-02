@@ -772,12 +772,15 @@ class TestTheManifestBytesSurviveTheExtraction(unittest.TestCase):
     def test_every_case_lands_exactly_the_golden_bytes(self):
         for case in sorted(_CASES):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as d:
+                tc._CONTAINER_CLEANUP_FAILURES["stale"] = {
+                    "kind": "kill_failed", "detail": "from the previous run"}
                 data, payload = _case_bytes(case, d)
                 self.assertEqual(data.decode("utf-8"), GOLDEN[case])
                 self.assertEqual(data, GOLDEN[case].encode("utf-8"))
                 # the returned dict and the written bytes are one answer: the
                 # phase copies the return value, the gate reads the file.
                 self.assertEqual(payload, json.loads(data))
+                self.assertNotIn("cleanup_failures", payload)
 
     def test_the_golden_pins_every_case_and_no_stale_one(self):
         self.assertEqual(sorted(GOLDEN), sorted(_CASES))
@@ -1074,6 +1077,32 @@ class TestTheManifestPublishesTheSuppressionPosture(unittest.TestCase):
                                                 ["gitleaks"], [capture],
                                                 ignore_files={"gitleaks": value})
                     self.assertEqual(payload["ignore_files"], {})
+
+
+class TestContainerCleanupManifest(unittest.TestCase):
+    def test_a_capture_cleanup_failure_is_structured_in_the_manifest(self):
+        failure = {
+            "semgrep": {
+                "kind": "kill_failed",
+                "detail": "docker kill exited 125 — daemon unavailable",
+            }
+        }
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(tc._CONTAINER_CLEANUP_FAILURES, failure, clear=True):
+            payload = tm.write_manifest(
+                os.path.join(d, "tools-manifest.json"), ["semgrep"], [])
+            with open(os.path.join(d, "tools-manifest.json"),
+                      encoding="utf-8") as stream:
+                written = json.load(stream)
+        self.assertEqual(payload["cleanup_failures"], failure)
+        self.assertEqual(written["cleanup_failures"], failure)
+
+    def test_no_cleanup_failure_adds_no_legacy_manifest_claim(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(tc._CONTAINER_CLEANUP_FAILURES, {}, clear=True):
+            payload = tm.write_manifest(
+                os.path.join(d, "tools-manifest.json"), ["semgrep"], [])
+        self.assertNotIn("cleanup_failures", payload)
 
 
 class TestSemgrepScopeBaselineTransition(unittest.TestCase):
