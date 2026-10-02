@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -98,6 +99,21 @@ def _await_death(pid, seconds=3.0):
             return True
         time.sleep(0.05)
     return not _alive(pid)
+
+
+def _unreaped_exit(proc, seconds=3.0):
+    """Observe exit without releasing the pid, but never wait unbounded."""
+    deadline = time.monotonic() + seconds
+    pause = threading.Event()
+    while time.monotonic() < deadline:
+        status = os.waitid(
+            os.P_PID, proc.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+        if status:
+            return status
+        pause.wait(min(0.05, max(0.0, deadline - time.monotonic())))
+    return None
 
 
 class _Handle:
@@ -245,7 +261,7 @@ class TestKillGroupEndsTheWholeTree(_GroupCase):
         pidfile = os.path.join(self.root, "zombie-leader-grandchild.pid")
         proc = self._spawn(self._term_resistant_tree(pidfile, leader_exits=True))
         pid = self._grandchild_of(proc, pidfile)
-        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        status = _unreaped_exit(proc)
         self.assertIsNotNone(status, "the session leader did not exit")
         real_getpgid = procgroup.os.getpgid
 
@@ -297,6 +313,13 @@ class TestTheHandleFallback(unittest.TestCase):
         self.assertEqual(["TERM"], handle.sent)
         procgroup.end_group(handle, signal.SIGKILL)
         self.assertEqual(["TERM", "KILL"], handle.sent)
+
+    def test_a_retained_none_stays_on_the_handle_fallback(self):
+        handle = _Handle(stubborn=True)
+        with mock.patch.object(procgroup.os, "getpgid") as getpgid:
+            procgroup.end_group_retained(handle, signal.SIGTERM, None)
+        self.assertEqual([], getpgid.call_args_list)
+        self.assertEqual(["TERM"], handle.sent)
 
     def test_reaped_reports_whether_the_child_is_gone(self):
         self.assertTrue(procgroup.reaped(_Handle(), 0))
@@ -354,6 +377,18 @@ class TestAGroupIsSignalledOnlyWhenItIsSafeTo(_GroupCase):
         self.assertEqual([], killpg.call_args_list,
                          "a reaped handle's stale pid was signalled as a group")
         self.assertIsNone(victim.poll(), "the innocent process was ended")
+
+    def test_a_retained_group_is_discarded_after_another_thread_reaps(self):
+        proc = self._spawn("pass")
+        pgid = procgroup.group_id(proc)
+        self.assertIsNotNone(pgid, "the fixture did not create a retained group")
+        proc.wait()
+        with mock.patch.object(procgroup.os, "killpg") as killpg:
+            procgroup.end_group_retained(proc, signal.SIGKILL, pgid)
+        self.assertEqual(
+            [], killpg.call_args_list,
+            "a retained group id was used after the leader pid became reusable",
+        )
 
     def test_a_child_that_shares_our_own_group_is_signalled_by_handle(self):
         """I3. A handle registered by something that did NOT start a new

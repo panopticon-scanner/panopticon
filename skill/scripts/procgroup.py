@@ -18,10 +18,12 @@ thing:
 
 * `kill_group(proc, grace)` -- the whole sequence for ONE child: SIGTERM to
   its group, `grace` to exit, then SIGKILL. What a timeout wants.
-* `end_group(proc, sig)` + `reaped(proc, timeout)` -- the same sequence taken
-  apart, so a caller with SEVERAL children can signal them all before waiting
-  on any of them. What an interrupt wants: `HostRunner.terminate_children`
-  bounds a Ctrl-C by ONE shared grace window, not one window per child.
+* `group_id(proc)` + `end_group_retained(proc, sig, pgid)` +
+  `wait_interrupt_grace(groups, deadline)` + `reaped(proc, timeout)` -- the
+  same sequence taken apart, so a caller with SEVERAL children can retain
+  their groups, signal them all, wait once, then reap. What an interrupt wants:
+  `HostRunner.terminate_children` bounds a Ctrl-C by ONE shared grace window,
+  not one window per child.
 
 Nothing in that kill path raises. Every one of these calls is made on a path
 that is already handling a failure -- a deadline that passed, an operator who
@@ -136,8 +138,18 @@ def _leader_exited_unreaped(proc):
     return bool(result and getattr(result, "si_pid", 0))
 
 
+def _poll_pause(deadline):
+    """Yield briefly inside a bounded group-exit poll."""
+    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+
+def group_id(proc):
+    """Return `proc`'s validated group id for a caller that must retain it."""
+    return _pgid(proc)
+
+
 def end_group(proc, sig):
-    """Send `sig` to `proc`'s current process group, and wait for nothing.
+    """Send `sig` to `proc`'s current group, and wait for nothing.
 
     The child is spawned with `start_new_session=True` by both callers, so its
     pid IS its group id and one `killpg` reaches every process it started --
@@ -153,6 +165,42 @@ def end_group(proc, sig):
     refuses a handle whose `returncode` is set.
     """
     _end_group(proc, sig, _pgid(proc))
+
+
+def end_group_retained(proc, sig, pgid):
+    """Signal a previously validated group without re-deriving its identity.
+
+    A set `returncode` means another thread reaped the leader after the caller
+    retained the id. Drop the id in that case: its pid is reusable, while the
+    handle fallback remains recycle-safe. A retained `None` deliberately
+    stays `None`, so the four no-group cases in `_pgid` cannot be mistaken for
+    a request to look the group up again.
+    """
+    retained = pgid if getattr(proc, "returncode", None) is None else None
+    _end_group(proc, sig, retained)
+
+
+def retained_group_exists(proc, pgid):
+    """Whether an unreaped handle's retained group still has a member."""
+    return (pgid is not None
+            and getattr(proc, "returncode", None) is None
+            and _group_exists(pgid))
+
+
+def wait_interrupt_grace(groups, deadline):
+    """Wait once for retained groups to stop, without reaping their leaders.
+
+    Retaining each leader keeps its pid unavailable for reuse until the caller
+    has sent every required SIGKILL. The retained leader is a zombie that keeps
+    its group alive to `killpg`, so the wait runs the FULL window: nothing in
+    POSIX tells a zombie-only group from a live one without reaping (#2550).
+    Handle-only children keep their recycle-safe legacy wait in the caller.
+    """
+    groups = tuple(groups)
+    while (time.monotonic() < deadline
+           and any(retained_group_exists(proc, pgid)
+                   for proc, pgid in groups)):
+        _poll_pause(deadline)
 
 
 def reaped(proc, timeout):
@@ -202,7 +250,7 @@ def kill_group(proc, grace=KILL_GRACE):
         deadline = time.monotonic() + grace
         while (_group_exists(pgid) and not _leader_exited_unreaped(proc)
                and time.monotonic() < deadline):
-            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            _poll_pause(deadline)
         retained = pgid if getattr(proc, "returncode", None) is None else None
         if _group_exists(pgid):
             _end_group(proc, signal.SIGKILL, retained)

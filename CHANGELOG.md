@@ -25,6 +25,29 @@ evidence exposed.
   download run by its bare name is now reported, which every shell runs once the file is
   executable and that directory is on PATH. The calibration pool's 4,642 real jobs answer
   identically.
+- **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
+  `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
+  the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
+  files, respectively, keep each test beside its code, and put `CI` behind the shared 40-file
+  headroom guard. This costs one extra review cell now; waiting would make the next unrelated CI
+  contributor inherit an automatic split and its unplanned test inventories.
+- **Broken batch stop predicates identify their failure point (#2555, #1817).** The runner logs
+  the completed entry and final predicate frame inside the existing redacted 200-character
+  detail budget, then keeps yielding launched work and still honours a later stop.
+- **Tolerant verdict extraction keeps small wrapped bundles (#2553, #1816).** A fixed 64 KiB
+  minimum scan budget reaches JSON after shallow nested or 256-open-brace prose while the
+  length-scaled caps still bound large inputs.
+- **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
+  validated group, waits once for the shared SIGTERM grace, and escalates before reaping any
+  leader, so a resistant descendant cannot escape SIGKILL. The price: a retained leader is a
+  zombie that keeps its group alive, so every interrupt now waits the full `INTERRUPT_GRACE`
+  (5 s) before SIGKILL where it used to return as soon as the leader died.
+- **Family PR review discloses missing agents (#2546, #1817).** Missing finders and verifier
+  votes become explicit incomplete-review facts and log lines; a partly verified finding cannot
+  enter the confirmed or dropped lists.
+- **Kimi credential cleanup reports partial failures (#2545, #1817).** Cleanup distinguishes
+  removed, absent and failed paths; retained-home and exit messages no longer claim secrets are
+  gone when an unlink failed.
 - **The workflow guard checks shell option letters against the shell's own table (#2443, #2444,
   #2475).** Three readings of a shell's options read the WORDS and not the letters, so each took a
   spelling the shell refuses for one it runs. A `set` carrying a letter bash's builtin lacks —
