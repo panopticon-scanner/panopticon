@@ -36,6 +36,9 @@ one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
 and the substitutions are lifted out of it by `scripts/shell_text.py`.
 The wrappers' table, and the option grammar each one is read with, are
 `scripts/shell_wrappers.py`'s (#2227).
+The words a parse hands back, and the markers in them that say what was
+lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
+module's size and imported back here, so no caller moved.
 
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
@@ -44,14 +47,18 @@ back for a human reading an error message.
 import collections
 import os
 import re
-import secrets
 import shlex
 
 from shell_lex import lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
 from shell_quote import ansi_c
-from shell_text import (Process, _lift_substitutions, join_continuations as join_continuations,
+from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
+from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
+                          _markers as _markers, derived as derived,
+                          has_substitution as has_substitution, is_arm as is_arm,
+                          is_marker as is_marker, readable as readable,
+                          yields_words as yields_words)
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
@@ -121,72 +128,6 @@ _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
 _ESCAPED = "\ue002"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
-
-
-class _Token(str):
-    """String-compatible shell word with capabilities from its own parse.
-
-    String operations deliberately discard provenance. Consumers deriving a
-    path must use `derived` to retain only the markers actually in that path.
-    Re-parsing a word starts a fresh context, never reuses these capabilities.
-    """
-    def __new__(cls, text, markers):
-        token = super().__new__(cls, text)
-        token.markers = markers
-        return token
-
-    markers: dict[str, tuple[str, object]]
-
-
-class _Expanded(_Token, Rewritten):
-    """A word bash expands as a pattern (#2294), lifted text in it or not;
-    `covers` knows one by its `lead`: may it begin with `-` (`leads`)."""
-
-
-def _markers(text):
-    return text.markers if isinstance(text, _Token) else {}
-
-
-def derived(text, *sources):
-    """Carry provenance through an explicit substring/path transformation."""
-    markers = {key: value for source in sources
-               for key, value in _markers(source).items() if key in text}
-    return _Token(text, markers) if markers else text
-
-
-class _Parse:
-    def __init__(self, source):
-        # No source spelling can collide, even if a nonce source is replaced
-        # in a test. No global registry: tokens retain only their own entries.
-        self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
-        while self.prefix in source:
-            self.prefix += "x"
-        self.entries: dict[str, tuple[str, object]] = {}
-        self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
-
-    def new(self, kind, value=None):
-        marker = self.prefix + str(len(self.entries)) + "@@"
-        self.entries[marker] = (kind, value)
-        return marker
-
-    def token(self, text):
-        markers = {m: self.entries[m] for m in self.pattern.findall(text)
-                   if m in self.entries}
-        return _Token(text, markers) if markers else text
-
-    def restore_arithmetic(self, text):
-        """Put opaque arithmetic text back after shell structure is split."""
-        def restore(match):
-            marker = match.group()
-            kind, value = self.entries[marker]
-            return value if kind == "arithmetic" else marker
-
-        return self.pattern.sub(restore, text)
-
-
-def is_arm(token):
-    return any(kind == "arm" and token.startswith(key)
-               for key, (kind, _value) in _markers(token).items())
 
 
 # --- reading the shell -------------------------------------------------------
@@ -656,28 +597,3 @@ def conditional(argv):
             continue
         return False
     return False
-
-
-def readable(text):
-    """Render only this token's genuine lifted substitutions for diagnostics."""
-    for key, (kind, _value) in _markers(text).items():
-        if kind == "subst":
-            text = text.replace(key, "$(...)")
-    return text
-
-
-def is_marker(token):
-    """True only for actual lifted text, never a target-authored lookalike."""
-    return bool(_markers(token))
-
-
-def has_substitution(token):
-    """Whether a word/path depends on a substitution generated by its parse."""
-    return any(kind == "subst" for kind, _value in _markers(token).values())
-
-
-def yields_words(token):
-    """Whether a `$(...)` or backquote in this word hands on its OUTPUT as
-    words; a `<(...)` or `>(...)` (`shell_text.Process`) hands a file."""
-    return any(kind == "subst" and not isinstance(value, Process)
-               for kind, value in _markers(token).values())
