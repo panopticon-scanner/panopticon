@@ -447,16 +447,18 @@ def swallowed(stmts, index, statement, stage, credit=None):
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
-        # A credit pair's first answer records when this failure is already
-        # known not to stop the step, including the top-level `set +e` state.
-        errexit = not isinstance(credit, tuple) or credit[0] is None
+        # Only the two posture answers in a credit pair mean `-e` is off;
+        # job-level policy such as `continue-on-error` does not alter the shell.
+        why = credit[0] if isinstance(credit, tuple) else None
+        errexit = not (why == _SET_E or
+                       isinstance(why, str) and why.startswith("runs under `shell:"))
         stops = _stops_the_job(
             stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
         )
         if isinstance(stops, Reach):
             return stops
         if not stops:
-            return credit[0] if isinstance(credit, tuple) and credit[0] else _RESCUED
+            return why if not errexit and why else _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
     # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
     # module's own remedy text recommends -- the checksum is the second stage
