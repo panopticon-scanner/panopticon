@@ -298,7 +298,11 @@ def stdin_program(argv, depth=0):
     every word after it is a positional parameter instead. See the guard's gap
     list for the spelling that leaves behind. A letter the shell refuses is
     read on, fail-closed: `sh -K <<'EOF'` runs nothing in bash or dash, but
-    only `_past_options` asks `_refused` (#2475), for a `-c` cluster.
+    only `_past_options` asks `_refused` (#2475), for a `-c` cluster. A stdin
+    operand (`-`, `/dev/stdin`) after an option owed a value ends the walk
+    there, except under a literal shell, whose `-o` takes it as an option name
+    and refuses it (`bash -o - x.sh` exits 2): python's `-O` takes no value,
+    so `python3 -O - file.py <<'EOF'` runs its heredoc.
 
     A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the
     `-c` string itself, not stdin, is the program) -- UNLESS that string is
@@ -349,10 +353,11 @@ def stdin_program(argv, depth=0):
     additively (`stdin_scripts`; `workflow_forms.flattened` counts no check
     in it, since `$CMD` may not run it) -- a body no interpreter runs, `$CAT
     <<'EOF' > f`, over-reports -- and the guard's `_unread_stdin` reports the
-    hand-off `Idle` under a sentence of its own. Its walk takes a
-    shell's `-c`, `-s`, vanishing-operand and option-value rules, since the
-    word may be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail
-    <<'EOF'` read the heredoc; `$PYTHON -s file.py <<'EOF'` and `$PYTHON -Ou
+    hand-off `Idle` under a sentence of its own. Its walk takes a shell's
+    `-c`, `-s`, vanishing-operand and option-value rules, since the word may
+    be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read
+    the heredoc, as does `$PYTHON -Ou - file.py <<'EOF'`, a stdin operand
+    being no option's value; `$PYTHON -s file.py <<'EOF'` and `$PYTHON -Ou
     file.py <<'EOF'` over-report a hand-off, like `$PYTHON -O file.py`),
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
@@ -365,10 +370,7 @@ def stdin_program(argv, depth=0):
     CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
     `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
     the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331. Option values counted a shell's way
-    can swallow a foreign interpreter's `-`: python runs the heredoc of
-    `$PYTHON -Ou - file.py <<'EOF'`, which reads CLEAN even beside a reported
-    fetch, as `python3 -O - file.py <<'EOF'` does -- a fail-open residual.
+    stream -- a gap filed under #2331.
     """
     if not argv:
         return None
@@ -424,11 +426,14 @@ def stdin_program(argv, depth=0):
             return answer                   # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`), and so does a `$` word's, which may be a shell;
-        # another interpreter's, one where it ends so.
+        # another interpreter's, one where it ends so. Only a shell takes a
+        # stdin operand for that value (and refuses `-o -`, rc 2): python's
+        # `-O` takes none, so in `python3 -O - file.py` the `-` is stdin.
         owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell or value
                 else int(bool(letters) and letters[-1] in VALUE_OPTIONS))
         for _ in range(owed):
-            next(rest, None)                # an option's value is not a program
+            if next(rest, None) in _STDIN_OPERANDS and not shell:
+                return answer               # the program is stdin after all
     return answer
 
 

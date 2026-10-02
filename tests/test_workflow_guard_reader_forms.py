@@ -342,27 +342,31 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     under a `$` command word a shell's `-s`, a vanishing operand or an
     option's value ended the walk at a FILE (`CMD=bash; $CMD -s -- "$V"`,
     `$CMD $X` with `X` unset, `$CMD -oe pipefail`), until the word took a
-    shell's rules (the final review's F2, and its fix round 2). Every step
-    below was run in bash 3.2.57, 5.2.21 and dash, every checksum failing: a
-    DEFECT is a download they run (bar dash, which refuses `<<<`, `<(...)`,
-    `-o pipefail` and `-O`), a CLEAN a step that runs none -- except these
-    readings, which contradict them, each accepted for its reason:
+    shell's rules (the final review's F2, and its fix round 2); and an option
+    owed a value took a stdin operand for it (`$PYTHON -Ou - file.py`,
+    `python3 -O - file.py`), until the walk answered there for all but a
+    literal shell (fix round 3). Every step below was run in bash 3.2.57,
+    5.2.21 and dash, every checksum failing: a DEFECT is a download they run
+    (bar dash, which refuses `<<<`, `<(...)`, `-o pipefail` and `-O`), a CLEAN
+    a step that runs none -- except these readings, which contradict them,
+    each accepted for its reason:
 
     * fail-closed over-reports: `X=script.sh; sh $X` and its `X=-n` and bare
       `X=-c` twins, which run nothing (#2485), and `CMD=sh` whose body ends in
       the check (#2473), where the reader cannot tell the word from one that
       runs the body (`X=-s`) or skips it (`CMD=true`), and `$CMD "$X"` with
       `X` empty and `$PYTHON -Ou file.py` with a download body, whose walks
-      now read on as a shell's (#2473); a letter bash and dash refuse, read on
-      as the operand walk reads `sh -K` (#2475 stops only a `-c` cluster):
-      behind a value (`X=-K; sh $X`, #2485), a `$` word (`CMD=sh; $CMD -K`,
-      #2473) or an inner shell (`eval 'bash -K -s'`, `bash -c 'sh -K'`,
-      #2500); `eval -- bash -s`, whose `--` dash runs as a command; seventy
-      `eval`s before `echo hi`, read as a stdin shell past the credit's
-      64-deep bound (#2500); and a non-shell body under a `$` word whose
-      string spells a shell download (`print("$(curl ... | sh)")` under
-      `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as shell and reported
-      loud, filed under #2331;
+      now read on as a shell's, and `$CMD -o -` and `$CMD -oe - x.sh`, whose
+      `-` is read as stdin though a shell refuses it as `-o`'s value (#2473);
+      a letter bash and dash refuse, read on as the operand walk reads `sh -K`
+      (#2475 stops only a `-c` cluster): behind a value (`X=-K; sh $X`,
+      #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an inner shell
+      (`eval 'bash -K -s'`, `bash -c 'sh -K'`, #2500); `eval -- bash -s`,
+      whose `--` dash runs as a command; seventy `eval`s before `echo hi`,
+      read as a stdin shell past the credit's 64-deep bound (#2500); and a
+      non-shell body under a `$` word whose string spells a shell download
+      (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh`
+      body), read as shell and reported loud, filed under #2331;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
       `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `$PYTHON -s file.py`, `$PYTHON -Ou file.py` and
@@ -371,12 +375,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
       program the guard cannot read, kept beside a fetch it reports (#2499),
       not a claim that a download runs;
-    * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -` or
-      `python3 -` running `os.system`, beside no reported fetch (option b's
-      price, #2499); `$PYTHON -Ou - file.py` running it even beside one, whose
-      `-` is read as the `O`'s value, as `python3 -O - file.py`'s is (#2473);
-      and, each filed under #2331, `eval 'bash -s'` and `bash -ec 'sh'` whose
-      check only an `-e` would stop, `eval 'bash -s | cat'` (#2500),
+    * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -`,
+      `python3 -`, `$PYTHON -Ou - file.py` or `python3 -O - file.py` running
+      `os.system`, beside no reported fetch (option b's price, #2499); and,
+      each filed under #2331, `eval 'bash -s'` and `bash -ec 'sh'` whose check
+      only an `-e` would stop, `eval 'bash -s | cat'` (#2500),
       `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
       exported `bash -c '$CMD'` handed a heredoc alone -- beside a reported
       fetch #2483 reports the word, never the body (#2473).
@@ -934,15 +937,48 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         script = GET + "python3 -Ou file.py <<'EOF'\n%s\nEOF\n" % PIPE
         with self.subTest(script=script):
             self.assertEqual([], reasons(script))
-        # Its twin, the other way, named there too: `-Ou` takes a following
-        # `-` for its value, so `$PYTHON -Ou - file.py`, whose heredoc python
-        # runs (an `os.system` download ran in all three shells), ends at
-        # `file.py` and reads CLEAN even beside a fetch -- as the literal
-        # `python3 -O - file.py` already reads, its `O` ending the word.
-        script = (GET + "PYTHON=python3\n$PYTHON -Ou - file.py <<'EOF'\nimport os\n"
-                  "os.system('%s')\nEOF\n" % PIPE)
+        # Fix round 3 (the final review's F5): past an option owed a value, a
+        # stdin operand ends the walk, but for a literal shell's. python's `-O`
+        # takes no value, so the `-` in `$PYTHON -Ou - file.py` and in the
+        # literal `python3 -O - file.py` is the program, whose `os.system`
+        # download ran in all three shells: beside a fetch each reads its
+        # hand-off, the foreign one where `main` read CLEAN; alone each is
+        # option b's price, CLEAN. `$PYTHON -OO -` reads as it did.
+        program = "import os\nos.system('%s')" % PIPE
+        foreign = ("hands a heredoc body or here-string to `python3` as the program to run, "
+                   "which this guard does not parse")
+        for step, why in (("PYTHON=python3\n$PYTHON -Ou - file.py", to("$PYTHON")),
+                          ("python3 -O - file.py", foreign),
+                          ("PYTHON=python3\n$PYTHON -OO -", to("$PYTHON"))):
+            script = "%s <<'EOF'\n%s\nEOF\n" % (step, program)
+            with self.subTest(script=GET + script):
+                found = reasons(GET + script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0].startswith(why), found)
+            if "-OO" not in step:
+                with self.subTest(script=script):
+                    self.assertEqual([], reasons(script))
+        # A literal shell's `-o` does take the `-`, as an option name it
+        # refuses (bash and dash exit 2): `bash -o - x.sh` reads CLEAN as on
+        # `main`, and `bash -o pipefail -`, which both bashes run, the stream.
+        # Under a `$` word, which may be python, the walk answers at the `-`,
+        # fail-closed: `$CMD -o -` reads as before and `$CMD -oe - x.sh` is
+        # read too, though a shell there runs nothing.
+        script = "bash -o - x.sh <<'EOF'\n%s\nEOF\n" % PIPE
         with self.subTest(script=script):
             self.assertEqual([], reasons(script))
+        script = "bash -o pipefail - <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(1, len(found), found)
+            self.assertIn(streamed, found[0])
+        for script in ("CMD=bash\n$CMD -o - <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=bash\n$CMD -oe - x.sh <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = reasons(script)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(streamed in w for w in found), found)
+                self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
