@@ -23,6 +23,7 @@ import unittest
 
 import shell_heredoc
 import shell_lex
+import shell_quote
 import shell_reader
 
 
@@ -1123,20 +1124,20 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         self.assertEqual(["echo", "a'b", 'c"d\\e?'], stage("echo $'a\\'b' $'c\\\"d\\\\e\\?'").argv)
         self.assertEqual(["echo", "x y*", "a"], stage("echo $'x y*' a").argv)
         self.assertFalse(shell_reader.unresolved_wrapper(stage("$'[s]h' -c P").argv))
-        self.assertEqual("ab", shell_lex.ansi_c("ab"))
+        self.assertEqual("ab", shell_quote.ansi_c("ab"))
         for escape in ("\\x63", "\\143", "\\u0063", "\\U00000063"):
             with self.subTest(escape=escape):
                 self.assertEqual(["sh", "-c", "P"], stage("sh $'-%s' P" % escape).argv)
         escaped = "\\a\\b\\e\\E\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\cC"
-        self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_lex.ansi_c(escaped))
-        self.assertEqual("-c", shell_lex.ansi_c("\\x2dc"))
-        self.assertEqual("ab", shell_lex.ansi_c("a\\\nb"))
-        self.assertEqual("a", shell_lex.ansi_c("a\\0discarded\\q\\u00e9"))
-        self.assertIsNone(shell_lex.ansi_c("\\q"))
+        self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_quote.ansi_c(escaped))
+        self.assertEqual("-c", shell_quote.ansi_c("\\x2dc"))
+        self.assertEqual("ab", shell_quote.ansi_c("a\\\nb"))
+        self.assertEqual("a", shell_quote.ansi_c("a\\0discarded\\q\\u00e9"))
+        self.assertIsNone(shell_quote.ansi_c("\\q"))
         for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9"):
             with self.subTest(escape=escape), self.assertRaisesRegex(
                     shell_lex.Unreadable, "outside ASCII"):
-                shell_lex.ansi_c(escape)
+                shell_quote.ansi_c(escape)
         # Inside "..." it is no quoting at all.
         self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
 
