@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Kimi credential cleanup reports partial failures (#2545, #1817).** Cleanup distinguishes
+  removed, absent and failed paths; retained-home and exit messages no longer claim secrets are
+  gone when an unlink failed.
 - **The workflow guard checks shell option letters against the shell's own table (#2443, #2444,
   #2475).** Three readings of a shell's options read the WORDS and not the letters, so each took a
   spelling the shell refuses for one it runs. A `set` carrying a letter bash's builtin lacks —
