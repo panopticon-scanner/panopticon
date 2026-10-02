@@ -505,15 +505,17 @@ def _assigned(stage, held):
 
 
 def carried(stmts, executors):
-    """[(statement index, why)] for each download a step keeps in a variable
-    and hands whole to a shell as its script (#2341): the word `$x` or `${x}`
-    as what `eval` or a shell's `-c` runs (`scripts`), or printed by `echo` or
-    `printf` down a pipe to one of `executors` (`stream_consumer`) or from a
-    substitution one of them is handed (`bash <(echo "$x")`) -- in the
-    statement or in a script its substitutions run (`within`), where `x` was
-    assigned it before that statement and not since (`_assigned`). A step is
-    a shell of its own, so the guard asks of each step's statements apart,
-    and of each script a substitution runs for what it assigns itself.
+    """[(statement index, why)] for each download a step keeps in a variable and
+    hands whole to a shell as its script (#2341): the word `$x` or `${x}` as
+    what `eval` or a shell's `-c` runs (`scripts`) or as a word a value in its
+    options or a `$` command word's `-c` may make the program (`candidates`,
+    #2479), but at a command the reader reports unresolved, or printed by `echo`
+    or `printf` down a pipe to one of `executors` (`stream_consumer`) or from a
+    substitution one of them is handed (`bash <(echo "$x")`) -- in the statement
+    or in a script its substitutions run (`within`), where `x` was assigned it
+    before that statement and not since (`_assigned`). A step is a shell of its
+    own, so the guard asks of each step's statements apart, and of each script a
+    substitution runs for what it assigns itself.
 
     A download is held wherever a statement of its own assigns it. A
     reassignment empties the name only where the step's own shell always
@@ -559,7 +561,8 @@ def carried(stmts, executors):
             argv = command(stage.argv)
             to = (stream_consumer(inner.stages[position + 1:], executors)
                   if _prints(stage) and stage.stdout_to_pipe else None)
-            words = scripts(argv) + (_prints(stage) if to else [])
+            words = scripts(argv) + (_prints(stage) if to else []) + (
+                [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])
             if argv and os.path.basename(argv[0]) in executors:
                 words += [w for text in stage.substitutions for inside in statements(text)
                           for w in _prints(inside.stages[-1])]

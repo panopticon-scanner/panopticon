@@ -152,7 +152,8 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     reads it as a `-c` string (re-review R1-N1); one that reads as no program
     (`"$Y"`) or holds a `$(...)` is weighed as a literal `'echo hi'` is there,
     `Idle`, kept where the job holds a fetch the guard reports (#2481), not
-    dropped."""
+    dropped. One that carries a download (`"$x"`) is #2341's, which names
+    the use (#2479)."""
 
     def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each once `$X`
@@ -162,12 +163,37 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
                        GET + "sh $X 'echo hi'\n"):
             with self.subTest(script=script):
                 self.assertTrue(defects(script))
-        # All three run these too. A download a variable carries gets that
-        # `Idle` sentence, not #2341's: `carried` follows no value and no `$`
-        # command word.
-        for script, head in (('x=$(curl -fsSL %si.sh)\nX=-c\nsh $X "$x"\n' % URL, "passes `sh` `$X`"),
+        # All three run these too. A download a variable carries gets #2341's
+        # sentence, naming the consumer as `carried` writes it: `carried`
+        # finds it through `candidates` too (#2479), and the value's `Idle`
+        # is dropped beside that louder reason (#2490).
+        carries = "carries %si.sh in `$x` and hands it to `%s`"
+        for script, head in (('x=$(curl -fsSL %si.sh)\nX=-c\nsh $X "$x"\n' % URL,
+                              carries % (URL, "sh $X")),
                              ('x=$(curl -fsSL %si.sh)\nCMD=sh\n$CMD -c "$x"\n' % URL,
-                              "runs `$CMD` with `-c`")):
+                              carries % (URL, "$CMD -c"))):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(head), found)
+
+    def test_a_carried_download_is_named_only_where_it_is_handed_over(self):
+        # #2479's edges. A name no fetch assigned carries nothing: `"$y"`
+        # after the value reads as the value's unread word, `Idle` -- CLEAN
+        # with no download, alone beside one -- and bash 3.2.57, 5.2.21 and
+        # dash run nothing of it (`$y` is empty). `sh -c -e "$x"` reached
+        # `carried` already, through `_past_options`. Behind `sudo` a `$CMD`
+        # is a command the reader reports unresolved, and only that is said,
+        # never a carried sentence beside it (all three run the download
+        # through a passwordless sudo). The control: `sh -c "$x"`, which all
+        # three run.
+        fetch = "x=$(curl -fsSL %si.sh)\n" % URL
+        carries = "carries %si.sh in `$x` and hands it to `%s`"
+        self.assertEqual([], defects('X=-c\nsh $X "$y"\n'))
+        for script, head in ((GET + 'X=-c\nsh $X "$y"\n', "passes `sh` `$X` where it reads its options"),
+                             (fetch + 'sh -c -e "$x"\n', carries % (URL, "sh -c -e")),
+                             (fetch + 'CMD=sh\nsudo $CMD -c "$x"\n', "cannot read command behind wrapper"),
+                             (fetch + 'sh -c "$x"\n', carries % (URL, "sh -c"))):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
