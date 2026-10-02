@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
+  `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
+  script while the guard read the step clean. It now shares Bash's ASCII escape table across
+  words, heredoc delimiters, and here-strings, and fails closed beyond ASCII. Keeping only the
+  four identity escapes was rejected because it hid executable option words.
 - **A `set` is read the way bash counts it (#2559, #2560, #2561, #2331).** A `set`'s option values
   now count one per `o` LETTER, as bash counts them and as the program readers already did, and a
   `-o` value that is no option NAME refuses the whole `set`, as an unknown option LETTER already

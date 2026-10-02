@@ -472,6 +472,7 @@ class TestHeredocOnStandardInput(unittest.TestCase):
         for script, body in (("sh <<< 'curl x | sh'", ("curl x | sh", False)),
                              ('sh <<<"a \\$b \\` \\\\ \\c"', ("a $b ` \\ \\c", False)),
                              ("sh <<< a\\ b'c'$'d\\''", ("a bcd'", False)),
+                             ("sh <<< $'a\\n'", ("a\n", False)),
                              ("sh <<< 'a\nb'", ("a\nb", False)),
                              ("sh <<< {a,b}*", ("{a,b}*", False)),
                              ('sh <<< "$CMD"', ("$CMD", True)),
@@ -483,7 +484,7 @@ class TestHeredocOnStandardInput(unittest.TestCase):
                 parsed = stage(script)
                 self.assertEqual(body, parsed.stdin_heredoc)
                 self.assertIsNone(parsed.heredoc)
-        for script in ("sh <<< $'a\\n'", "sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
+        for script in ("sh <<< `id`", 'sh <<< "$(id)"', "sh <<< a$"):
             with self.subTest(script=script):
                 self.assertTrue(stage(script).stdin_heredoc[1])
         parsed = stage("sha256sum -c <<< 'x' 3<<EOF\nbody\nEOF")
@@ -814,6 +815,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 ("cat <<EOF\n  EOF\nbody\nEOF\n", "  EOF\nbody", True),
                 ("cat <<-EOF\n\tbody\n\tEOF\n", "body", True),
                 ("cat <<EOF\nE\\\nOF\n", "", True),
+                ("cat <<$'\\t'\nbody\n\t\n", "body", False),
                 ("cat <<'EOF'\nE\\\nOF\nEOF\n", "E\\\nOF", False)):
             with self.subTest(script=script):
                 self.assertEqual((body, expands), stage(script).stdin_heredoc)
@@ -834,15 +836,14 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 self.assertIn([['echo', 'a']], argvs(script))
 
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
-        # Bash spells `<<$(a b)` and `<<$'\t'` by parsing the word, and the
-        # reader parses no words: a body ended at a guessed spelling (`$`,
-        # `t`) swallows what bash runs, and a body read as code hides it
-        # behind a quote left open there (#2224). So the reader raises, and
-        # names the word as bash delimits it -- up to the metacharacter that
-        # ends it, past the brackets and quotes inside it, and past the
-        # `\`-newlines before it, which bash folds away first.
+        # Bash spells `<<$(a b)` by parsing the word, and the reader parses
+        # no expansions: a body ended at a guessed spelling (`$`) swallows
+        # what bash runs, and a body read as code hides it behind a quote
+        # left open there (#2224). So the reader raises, and names the word
+        # as bash delimits it -- up to the metacharacter that ends it, past
+        # the brackets and quotes inside it, and past the `\`-newlines before
+        # it, which bash folds away first. ANSI-C escapes are decoded exactly.
         for script, word in (("cat <<$(a b)\n$(a b)\necho a\n$\n", "$(a b)"),
-                             ("cat <<$'\\t'\n\t\necho a\nt\n", "$'\\t'"),
                              ("cat <<${x y} >out\n${x y}\n", "${x y}"),
                              ("cat <<$[1]; echo a\n$[1]\n", "$[1]"),
                              ("cat <<@(a b)\n@(a b)\n", "@(a b)"),
@@ -1123,10 +1124,19 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         self.assertEqual(["echo", "x y*", "a"], stage("echo $'x y*' a").argv)
         self.assertFalse(shell_reader.unresolved_wrapper(stage("$'[s]h' -c P").argv))
         self.assertEqual("ab", shell_lex.ansi_c("ab"))
-        # An escape that is not the character is not decoded: the word keeps
-        # its `$`, which the guard reads as a value it does not follow.
-        self.assertIsNone(shell_lex.ansi_c("\\x2dc"))
-        self.assertEqual(["sh", "$\\x2dc", "P"], stage("sh $'\\x2dc' P").argv)
+        for escape in ("\\x63", "\\143", "\\u0063", "\\U00000063"):
+            with self.subTest(escape=escape):
+                self.assertEqual(["sh", "-c", "P"], stage("sh $'-%s' P" % escape).argv)
+        escaped = "\\a\\b\\e\\E\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\cC"
+        self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_lex.ansi_c(escaped))
+        self.assertEqual("-c", shell_lex.ansi_c("\\x2dc"))
+        self.assertEqual("ab", shell_lex.ansi_c("a\\\nb"))
+        self.assertEqual("a", shell_lex.ansi_c("a\\0discarded\\q\\u00e9"))
+        self.assertIsNone(shell_lex.ansi_c("\\q"))
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9"):
+            with self.subTest(escape=escape), self.assertRaisesRegex(
+                    shell_lex.Unreadable, "outside ASCII"):
+                shell_lex.ansi_c(escape)
         # Inside "..." it is no quoting at all.
         self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
 
