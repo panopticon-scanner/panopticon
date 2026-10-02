@@ -1826,6 +1826,50 @@ class TestEgressPostureLine(unittest.TestCase):
         self.assertNotIn("proxied:<b>", html_out)
 
 
+class TestToolCleanupFailuresInHtml(unittest.TestCase):
+    def _report(self, failures=_NO_KEY):
+        report = _minimal_report()
+        if failures is not _NO_KEY:
+            report["meta"].setdefault("coverage", {})[
+                "tools_cleanup_failures"] = failures
+        return report
+
+    def test_the_tool_kind_and_detail_are_disclosed(self):
+        out = hr.render(self._report({"semgrep": {
+            "kind": "kill_failed",
+            "detail": "docker kill exited 125 — [REDACTED_KEY]",
+        }}))
+        self.assertIn("Tool container cleanup incomplete", out)
+        self.assertIn("semgrep", out)
+        self.assertIn("kill_failed", out)
+        self.assertIn("[REDACTED_KEY]", out)
+
+    def test_absent_empty_and_malformed_blocks_render_no_line(self):
+        for failures in (_NO_KEY, {}, None, "bad", {"semgrep": "bad"}):
+            with self.subTest(failures=failures):
+                self.assertNotIn(
+                    "Tool container cleanup incomplete",
+                    hr.render(self._report(failures)))
+
+    def test_target_writable_text_is_escaped_capped_and_compared_per_run(self):
+        failures = {
+            "<script>tool-%d</script>" % n: {
+                "kind": "kind\nforged",
+                "detail": "detail\x1b[2J\n</div><script>x</script>",
+            }
+            for n in range(8)
+        }
+        base = self._report({"bandit": {
+            "kind": "cidfile_empty", "detail": "container id file was empty"}})
+        head = self._report(failures)
+        out = hr.render(head, compare_report=base)
+        self.assertEqual(out.count("Tool container cleanup incomplete"), 2)
+        self.assertNotIn("<script>tool-", out)
+        self.assertNotIn("</div><script>x</script>", out)
+        self.assertIn("and 3 more", out)
+        self.assertIn("bandit", out)
+
+
 class TestSuppressedToolFindingsInHtml(unittest.TestCase):
     """#1578: the same disclosure in the HTML, beside the coverage line where
     the other "what this run did not see" facts live."""

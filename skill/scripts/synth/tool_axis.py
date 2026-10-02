@@ -278,6 +278,11 @@ def reconcile(plan, tools, resolved, run=None):
     # the artifact and the HTML.
     network = (repair_mod.repair_tools_network(
         tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
+    cleanup_failures = (
+        repair_mod.repair_tool_cleanup_failures(
+            tools.manifest.get("cleanup_failures"))
+        if isinstance(tools.manifest, dict)
+        and "cleanup_failures" in tools.manifest else {})
     if tools.manifest_invalid:
         # #1644: corruption is not absence, and the scout-derived fallback below
         # is only honest when nothing WAS corrupted. With the manifest
@@ -569,6 +574,11 @@ def reconcile(plan, tools, resolved, run=None):
         # that was never given one. Both keys, one loader record.
         "delta_artifact": resolved.delta_artifact,
     }
+    if cleanup_failures:
+        # A timeout already appears in `missing` and keeps its existing gate
+        # outcome. This is the separate operator fact: best-effort cleanup could
+        # not prove that scanner's resource was stopped.
+        coverage["tools_cleanup_failures"] = cleanup_failures
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
     # `exclude_paths:` could not hide -- the objective SEC surface it excluded,
     # kept for the SEC domain in a review group of its own. Conditional, unlike
