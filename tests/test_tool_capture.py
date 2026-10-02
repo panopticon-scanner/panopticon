@@ -455,7 +455,7 @@ class TestContainerCleanupDiagnostics(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cidfile = os.path.join(d, "cid")
             Path(cidfile).write_text("deadbeefcafe\n")
-            secret = "sk-" + "cleanupdiagnosticsecretvalue"
+            secret = "-".join(("sk", "c" * 32))
             err, launch = self._capture(
                 cidfile, _FakeResult(
                     returncode=125,
