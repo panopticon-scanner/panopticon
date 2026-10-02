@@ -89,6 +89,16 @@ class Rewritten(str):
     the reader marks (#2294)."""
 
 
+class Defaulted(str):
+    """A command word that was a parameter's DEFAULT naming a shell, read as
+    that shell (`shell_reader._DEFAULTS`, #2337): `${X:-sh}`. A plain `str`
+    to every reader that keys on the NAME, which is the point of reading it,
+    and NOT `Rewritten`, whose command word the reader refuses as a pattern.
+    The class records only that the name was not WRITTEN: `X` may hold
+    another shell, so one shell's option letters may not be read into it
+    (`workflow_programs._refused`, the #2443 review)."""
+
+
 def dynamic(word, has_substitution):
     """Whether this word is one no grammar can read as static: it holds a `$`
     or a lifted `$(...)` (`has_substitution`), or it is `Rewritten`."""
