@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- The `set`-posture reading (`seed`, `_errexit`, `_rejected`, `_takes_value`) moves from
+  `scripts/workflow_gating.py` to a new `scripts/workflow_posture.py`, a pure move with re-exports,
+  so the gating module has room again under the 700-line ceiling (#2620).
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across
