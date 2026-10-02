@@ -10,6 +10,10 @@ evidence exposed.
 - The `set`-posture reading (`seed`, `_errexit`, `_rejected`, `_takes_value`) moves from
   `scripts/workflow_gating.py` to a new `scripts/workflow_posture.py`, a pure move with re-exports,
   so the gating module has room again under the 700-line ceiling (#2620).
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across

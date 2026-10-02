@@ -2497,6 +2497,81 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             wg.Step("run", self.USE)]))
 
 
+class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
+    """#2422: a checksum cannot gate another stage of its own pipeline."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+
+    def finding(self, body):
+        script = self.FETCH + "set -o pipefail\n" + body.replace("CHECK", self.CHECK)
+        return wg.fetch_exec_defect(script)
+
+    def test_a_grouped_check_does_not_clear_a_use_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | sh payload\n",
+                     "{ CHECK && echo ok; } | sh payload\n",
+                     "{\n  CHECK\n} | sh payload\n",
+                     "{ { CHECK; }; } | sh payload\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_an_and_list_in_that_group_is_concurrent_under_every_shell(self):
+        for shape in ("{ CHECK && echo ok; } | sh payload\n",
+                      "( CHECK && echo ok ) | sh payload\n",
+                      "( { CHECK && echo ok; } ) | sh payload\n"):
+            body = self.FETCH + shape.replace("CHECK", self.CHECK)
+            for shell in (None, "sh", "bash"):
+                with self.subTest(shape=shape, shell=shell):
+                    found = wg.job_defects([wg.Step("run", body, shell)])
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("same pipeline", found[0][1])
+
+    def test_a_multiline_downstream_stage_stays_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | {\nsh payload\n}\n",
+                     "{ CHECK; } | (\nsh payload\n)\n",
+                     "{ CHECK; } | while read -r line; do\nsh payload\ndone\n",
+                     "{ CHECK; } | if true; then\nsh payload\nfi\n",
+                     "{ CHECK; } |\n  sh payload\n",
+                     "{ CHECK; } | (\ncat >/dev/null\nsh payload\n)\n",
+                     "{\nCHECK\n} | {\nsh payload\n}\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_a_function_check_is_concurrent_when_its_call_is_piped(self):
+        shape = "f() { CHECK; }\nf | sh payload\n"
+        body = self.FETCH + shape.replace("CHECK", self.CHECK)
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("run", body, shell)])
+                self.assertEqual(1, len(found), found)
+        found = wg.job_defects([wg.Step("run", body, "bash")])
+        self.assertIn("same pipeline", found[0][1])
+
+    def test_a_line_only_subshell_opener_stays_fail_closed(self):
+        body = self.FETCH + ("(\nCHECK && echo ok\n) | sh payload\n"
+                             .replace("CHECK", self.CHECK))
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(wg.job_defects([wg.Step("run", body, shell)])))
+
+    def test_a_grouped_check_still_gates_uses_after_its_pipeline(self):
+        for body in ("{ CHECK; } && sh payload\n",
+                     "( CHECK; ) && sh payload\n",
+                     "{ CHECK; } | cat\nsh payload\n",
+                     "( CHECK; ) | cat\nsh payload\n",
+                     "{ CHECK; } | {\ncat\n}\nsh payload\n",
+                     "{ CHECK; } | if true; then\ncat\nfi\nsh payload\n",
+                     "f() { CHECK; }\nf | cat\nsh payload\n",
+                     "{ CHECK; { echo script; } | sh payload; }\n",
+                     "{ { CHECK; }; { echo script; } | sh payload; }\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"
