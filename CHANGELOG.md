@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
+  56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
+  one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
+  piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
+  conditional calls still refuse the proof. An `||`-suppressed call is credited only when the
+  gate remains the function's final status; the conservative `unset` barrier is disclosed. The
+  mutually recursive function/status proof now lives in `workflow_function_calls.py`, leaving
+  both proof modules room under the 700-line ceiling. A success handler after the inner
+  subshell's nonzero exit invalidates each supported call form; assignment-only handlers do not
+  inherit that failure. `continue-on-error` keeps the shell's posture and bounds credit after the
+  proved call and before the end of its own step.
 - **Tab-prefixed substitution heredoc delimiters have a regression pin (#2584, #2331).**
   A `<<-` word starting with a tab bypasses the `EOF)` terminator reading, but #2493 already
   refuses the `)` retained in its body. The pin preserves that protection because Bash 3.2
