@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Container cleanup failures reach coverage metadata (#2556, #1817).** A failed scanner
+  container stop now records the same redacted, bounded detail sent to stderr in the tools
+  manifest and both human reports, while preserving the original timeout and gate outcome.
 - **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
   common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
   failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,

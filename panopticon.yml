@@ -101,6 +101,9 @@
 #     is what `security_gate.py` -- already in this cell -- reads, so the schema
 #     and its gate belong to one reviewer. `Core` reaches 30 of the 48 cap and the
 #     six files the #1762 split owed have all landed.
+#   - 2026-10-01 (#2556): `tool_cleanup.py` keeps the Markdown and HTML renderings of
+#     container-cleanup coverage identical. Claim it on `ToolAdapters:Core` beside the capture
+#     and manifest modules that produce the disclosure.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -234,6 +237,7 @@ groups:
       - skill/scripts/run_tools.py
       - skill/scripts/scanner_config.py
       - skill/scripts/tool_capture.py
+      - skill/scripts/tool_cleanup.py
       - skill/scripts/tools_manifest.py
       - skill/scripts/venv_scope.py
       - skill/scripts/ingest_tools.py

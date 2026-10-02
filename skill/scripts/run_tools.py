@@ -508,10 +508,10 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     selected it is inert and every argv below is byte-identical to before.
     """
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
-    # This run's redaction ledger starts empty, so `write_manifest` reports what
-    # THIS scan's captures went through and never inherits a previous one's
-    # (#1639 P11 F5).
+    # Reset both ledgers so this scan never inherits a previous run's capture
+    # sanitization or container-cleanup disclosure (#1639 P11 F5).
     _REDACTED_CAPTURES.clear()
+    tool_capture._CONTAINER_CLEANUP_FAILURES.clear()
     # #1839 (review round 1 I2): the default PARTITIONS. The raw
     # `find_virtualenvs` list still holds the rows nothing may be told to skip
     # -- a `pyvenv.cfg` with no environment under it, a name no exclusion value
@@ -796,7 +796,7 @@ def main(argv=None):
             tools_manifest.write_manifest(
                 a.manifest, effective, [], excluded_scope=excluded_scope,
                 run_id=a.run_id, excluded_dirs=venv_rows,
-                sanitized=sanitized, exclude_globs=a.exclude)
+                sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={})
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
