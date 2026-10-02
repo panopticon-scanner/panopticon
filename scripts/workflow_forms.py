@@ -21,7 +21,8 @@ Three questions live here, each one a shape a step writes down:
                                shell handed to `eval` or `sh -c` as a STRING
                                (`scripts`), and the program an interpreter reads
                                on standard input (`stdin_program`,
-                               `stdin_scripts`, a printer's among them, #2333)
+                               `stdin_scripts`, a printer's among them, #2333),
+                               each under its READER's `-e` (`Stdin`)
                                -- compatibility imports split out when this
                                module ran short of room a third time;
                                `unread_program` reports the programs it cannot
@@ -180,10 +181,11 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     as they judge a check written there -- where one ahead of `&&` reaches
     only the rest of its list (#2334). A child shell has `-e` only from its
     options or a `set`, and `pipefail` so too (re-review N-D), read off the
-    COMMAND LINE they are, where `-O shopt` takes a value (#2444); the step's
-    own shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
-    moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
-    where the shell suspends it.
+    COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a stdin
+    script's READER's (`workflow_programs.Stdin`), without which no check in
+    it counts; the step's own shell has what its `shell:` starts it with
+    (`seed`, #2338) as a `set` moves it (#2335), and `eval` keeps that, but
+    not `-e` ahead of `||`/`&&`, where the shell suspends it.
     `stops`: this script's failure reaches the step's own shell; `errexit`:
     `-e` at its top (None: this is the step's own shell); `pipefail`: a
     pipeline there fails on any of its commands; `shell`: the script's
@@ -200,23 +202,24 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[position - 1] if position else None
-            # Asked once per stage, not per script it hands on (an `eval` chain was cubic,
-            # #2500); a `$` command word may not run what it is handed (#2473).
-            value = bool(argv) and stdin_program(argv) == VALUE_PROGRAM
-            name = ((shell_reader.readable(argv[0]) if value else os.path.basename(argv[0]))
-                    if argv else "")
+            # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
+            name = _runner(argv) if argv else ""
             for text in scripts(argv) + stdin_scripts(argv, stage, before):
                 ordinal += 1
-                gates = (not value and stops and swallowed(stmts, index, statement, stage) is None
+                who = getattr(text, "reader", argv)     # a stdin text's READER, or None
+                gates = (who is not None and stops
+                         and swallowed(stmts, index, statement, stage) is None
                          and (top or on[index] or index == last)
                          and (fails[index] or stage is statement.stages[-1]))
-                own = name == "eval"            # runs in this shell, with its `-e`
+                who = who or argv
+                own = name == "eval" and who is argv    # runs in this shell, with its `-e`
                 out.extend(flattened(
                     statements(text), gates,
                     on[index] and statement.separator not in ("&&", "||") if own
-                    else _errexit(argv[1:], invocation=True),
-                    fails[index] if own else _errexit(argv[1:], False, "pipefail", True),
-                    name, region, key + ((index, ordinal),)))
+                    else _errexit(who[1:], invocation=True),
+                    fails[index] if own else _errexit(who[1:], False, "pipefail", True),
+                    name if who is argv else os.path.basename(who[0]), region,
+                    key + ((index, ordinal),)))
         if top:
             out.append(statement)
             continue

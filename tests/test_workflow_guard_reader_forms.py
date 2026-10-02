@@ -13,11 +13,27 @@ import workflow_guard as wg
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
 GET = "curl -fsSLo tool %stool\n" % URL
+CHECK = 'echo "%s  tool" | sha256sum -c -' % ("a" * 64)
+USE = "chmod +x tool\n./tool\n"
+# What the guard says of a check inside a script handed on that clears nothing.
+RUNS_ON = "inside the script `%s` runs, where no `-e` holds"
+UNGATED = "inside the script `%s` runs, and the step does not stop when that script fails"
 
 
 def defects(script):
     """The guard's answer for a job of one step running `script`."""
     return wg.job_defects([("step", script)])
+
+
+def stdin_step(runner, body=CHECK, form="heredoc", pre="", end="", fetched=True):
+    """A step that hands `runner` the script `body` on its standard input -- a
+    quoted heredoc, a here-string or an `echo` piped in (`form`) -- after the
+    lines `pre` and before `end`, between GET and the use of `tool` where
+    `fetched`."""
+    stdin = {"heredoc": "%s <<'EOF'\n%s\nEOF\n" % (runner, body),
+             "here-string": "%s <<< '%s'\n" % (runner, body),
+             "piped": "echo '%s' | %s\n" % (body, runner)}[form]
+    return (GET if fetched else "") + pre + stdin + end + (USE if fetched else "")
 
 
 class TestAssignmentPrefixes(unittest.TestCase):
@@ -370,11 +386,19 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     shell's rules (the final review's F2, and its fix round 2); and an option
     owed a value took a stdin operand for it (`$PYTHON -Ou - file.py`,
     `python3 -O - file.py`), until the walk answered there for all but a
-    literal shell (fix round 3). Every step below was run in bash 3.2.57,
-    5.2.21 and dash, every checksum failing: a DEFECT is a download they run
-    (bar dash, which refuses `<<<`, `<(...)`, `-o pipefail` and `-O`), a CLEAN
-    a step that runs none -- except these readings, which contradict them,
-    each accepted for its reason:
+    literal shell (fix round 3); and a check counted in a body read past a
+    value, and behind a string under the enclosing command's `-e`, until it
+    counted only under the `-e` of the shell sure to read the body, behind a
+    bare command line (round 1 of the review). Every step below was run in
+    bash 3.2.57, 5.2.21 and dash, every checksum failing: a DEFECT is a
+    download they run (bar a dash step, which refuses its own syntax only --
+    `<<<`, `<(...)` -- and runs the `--` of `eval -- bash -s` as a command: an
+    option word goes to the shell the step names, so `bash -o pipefail`,
+    `bash -oe pipefail` and `bash -O extglob` run the heredoc under a dash
+    step too, and `sh -o pipefail` wherever `sh` is bash, as on macOS -- a
+    Linux `sh` is dash and refuses it), a CLEAN a step that runs none --
+    except these readings, which contradict them, each accepted for its
+    reason:
 
     * fail-closed over-reports: `X=script.sh; sh $X` and its `X=-n` and bare
       `X=-c` twins, which run nothing (#2485), and `CMD=sh` whose body ends in
@@ -394,7 +418,18 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       read as a stdin shell past the credit's 64-deep bound (#2500); and a
       non-shell body under a `$` word whose string spells a shell download
       (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh`
-      body), read as shell and reported loud, filed under #2331;
+      body), read as shell and reported loud, filed under #2331; a check read
+      past a value or a word that may vanish (`X=-s`, `X=-e`, `X` unset,
+      `$(true)`), where the guard cannot tell the word from `X=/dev/null`
+      (#2485), or behind a string whose command line is not bare -- `exec`,
+      `env`, `time`, `sudo`, `command`, an assignment or `!` in front,
+      `--norc`, `-o errexit`, `+e` or an operand on it -- or seventy `eval`s
+      deep, past that 64-deep bound, or ahead of `|| exit 1`, which is no `-e`
+      (#2500), each counting for nothing since round 1, though no shell runs
+      the download; `eval 'bash -s &'` and `eval 'bash -s < /dev/null'` around
+      a body no shell runs (round 1); and, as before round 1, a check in an
+      `if` branch, which clears no use outside it, and the body of
+      `builtin eval`, which the guard does not take for `eval`;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
       `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `$PYTHON -s file.py`, `$PYTHON -Ou file.py` and
@@ -406,11 +441,15 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -`,
       `python3 -`, `$PYTHON -Ou - file.py` or `python3 -O - file.py` running
       `os.system`, beside no reported fetch (option b's price, #2499); and,
-      each filed under #2331, `eval 'bash -s'` and `bash -ec 'sh'` whose check
-      only an `-e` would stop, `eval 'bash -s | cat'` (#2500),
+      each filed under #2331, `eval 'bash -s | cat'` (#2500),
       `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
       exported `bash -c '$CMD'` handed a heredoc alone -- beside a reported
-      fetch #2483 reports the word, never the body (#2473).
+      fetch #2483 reports the word, never the body (#2473). Round 1 leaves two
+      more, each filed under #2331 too: a literal stdin shell whose options
+      keep it from running its program (`bash -n -s`, `bash -t -s`,
+      `bash -s -c true`, `bash --version`, and `SHELLOPTS=noexec bash -s`
+      under a dash step), which `main` reads the same way, and a function that
+      shadows the shell's name (`sh() { :; }` before `eval 'sh'`).
 
     `python3 $S` with S unset reads its heredoc as data, where python takes
     it as its program; here that is a SyntaxError, so CLEAN is still true
@@ -487,23 +526,20 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # `--`).
         found = defects("eval -- bash -s <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertTrue(any("straight to `sh`" in w for _, w in found), found)
-        # Review I-1: this inherited body is read under the ENCLOSING
-        # command's `-e` (the step's default), not the inner `bash -s`'s own
-        # (it has none) -- a check gated only by `-e` reads hardened, so this
-        # CLEAN is the documented, filed gap, not a claim nothing downloads:
-        # `bash tool` genuinely runs in all three shells regardless of
-        # `sha256sum -c -`'s failure, since the inner shell never had `-e`.
-        # The literal, un-inherited twin (`bash -s`, no `eval`) IS flagged,
-        # because ITS `-e` is the one actually in force over its own body.
+        # Review I-1, closed in round 1: this inherited body is read under the
+        # `-e` of its READER, the inner `bash -s` or `sh` -- which has none --
+        # not the enclosing command's, so a check gated only by `-e` is
+        # reported, naming the inner shell, as in the literal twins:
+        # `bash tool` runs in all three shells past `sha256sum -c -`'s failure.
         check = "echo '%s  tool' | sha256sum -c -\nbash tool\n" % ("a" * 64)
         gated_body = GET + check
-        self.assertEqual([], defects("eval 'bash -s' <<'EOF'\n%sEOF\n" % gated_body))
-        self.assertEqual([], defects("bash -ec 'sh' <<'EOF'\n%sEOF\n" % gated_body))
-        for script in ("bash -s <<'EOF'\n%sEOF\n" % gated_body,
-                       "bash -c 'sh' <<'EOF'\n%sEOF\n" % gated_body):
+        for script, reader in (("eval 'bash -s' <<'EOF'\n%sEOF\n" % gated_body, "bash"),
+                               ("bash -ec 'sh' <<'EOF'\n%sEOF\n" % gated_body, "sh"),
+                               ("bash -s <<'EOF'\n%sEOF\n" % gated_body, "bash"),
+                               ("bash -c 'sh' <<'EOF'\n%sEOF\n" % gated_body, "sh")):
             with self.subTest(script=script):
                 found = defects(script)
-                self.assertTrue(any("no `-e` holds" in w for _, w in found), found)
+                self.assertTrue(any(RUNS_ON % reader in w for _, w in found), found)
         # N-5's documented, filed gap: a pipeline whose FIRST stage reads
         # stdin is never reached here (the recursive check keeps to a single
         # STAGE, `len(parsed[0].stages) == 1`) -- bash runs `bash -s` as that
@@ -1027,6 +1063,268 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertTrue(any(streamed in w for w in found), found)
                 self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
 
+    # Round 1 of the review: WHOSE program a stdin text is decides whether a
+    # check in it counts (`workflow_programs.Stdin`). Each step below hands a
+    # shell a body holding the check of `tool` (`stdin_step`); the shells are
+    # bash 5.2.21 and 3.2.57 under `-e` and `-eo pipefail`, and dash under `-e`.
+    # A method that pins a reading reported also asserts the credit that
+    # stands where its mechanism is absent: the must-trip control.
+    ECHOED = CHECK + "\necho done"
+    USED = CHECK + "\n" + USE.rstrip("\n")
+
+    def assert_reported(self, rows):
+        """Each (step, how many defects it has, what one of them says)."""
+        for script, count, said in rows:
+            with self.subTest(script=script):
+                found = [why for _step, why in defects(script)]
+                self.assertEqual(count, len(found), found)
+                self.assertTrue(any(said in why for why in found), found)
+
+    def assert_clean(self, scripts):
+        for script in scripts:
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_2500_a_check_the_inner_shell_carries_on_past_is_reported(self):
+        # The review's blocker: behind `eval` or `-c` the body is the INNER
+        # shell's program, which has no `-e`. Every shell carries on past the
+        # failed check, exits 0, and the step runs the download (rc 0).
+        runners = (("eval 'bash -s'", "bash"), ("eval bash -s", "bash"), ("eval 'sh'", "sh"),
+                   ("bash -ec 'sh'", "sh"))
+        self.assert_reported((stdin_step(runner, body), count, RUNS_ON % reader)
+                             for runner, reader in runners
+                             for body, count in ((self.ECHOED, 1), (self.USED, 1),
+                                                 (GET + self.USED, 2)))
+        # The same in a here-string and in an `echo` piped in: every shell runs
+        # the download, bar dash at the here-string, which it refuses (rc 2).
+        self.assert_reported([
+            (stdin_step("eval 'bash -s'", self.ECHOED, "here-string"), 1, RUNS_ON % "bash"),
+            (stdin_step("eval 'bash -s'", self.ECHOED, "piped"), 1, RUNS_ON % "bash"),
+            (stdin_step("bash -ec 'sh'", self.ECHOED, "piped"), 1, RUNS_ON % "sh"),
+            (stdin_step("eval 'sh'", self.USED, "piped"), 1, RUNS_ON % "sh")])
+        # The controls: with the check as the whole body, or under the inner
+        # shell's own `-e`, every shell stops at it (rc 1; dash at a
+        # here-string, which it refuses, rc 2).
+        self.assert_clean([stdin_step(runner) for runner, _reader in runners] + [
+            stdin_step("eval 'bash -s'", CHECK, "here-string"),
+            stdin_step("eval 'bash -s'", CHECK, "piped"),
+            stdin_step("bash -ec 'sh'", CHECK, "piped"), stdin_step("eval 'sh'", CHECK, "piped"),
+            stdin_step("eval 'bash -e -s'", self.ECHOED),
+            stdin_step("bash -ec 'sh -e'", self.ECHOED)])
+
+    def test_2500_a_check_that_ends_a_bare_inner_shells_body_is_credited(self):
+        # The check is the inner shell's last command, so its failure is that
+        # shell's status and the `eval`'s or `-c`'s: every shell stops the step
+        # there (rc 1), bar dash at a here-string, which it refuses (rc 2).
+        self.assert_clean(stdin_step(runner, CHECK, form)
+                          for runner in ("eval 'bash -s'", "eval bash -s", "eval 'sh'",
+                                         "bash -c 'sh'", "bash -ec 'sh'")
+                          for form in ("heredoc", "here-string", "piped"))
+
+    def test_2500_what_stands_around_the_inner_command_voids_its_check(self):
+        # `!` turns the check's failure into success; behind `sudo` or an
+        # assignment the body carries on past it; `&` hands the inner shell
+        # `/dev/null`, `<` another file and `<&-` no stdin, so it never reads
+        # the body. Every shell runs the download (rc 0) -- under
+        # `SHELLOPTS=noexec` dash only: the bashes refuse that readonly
+        # variable (rc 1).
+        rows = [(stdin_step(runner, body), 1, UNGATED % name) for runner, body, name in (
+            ("eval '! bash -s'", CHECK, "eval"), ("bash -c '! sh'", CHECK, "bash"),
+            ("eval '! bash -e -s'", CHECK, "eval"), ("eval 'bash -s &'", CHECK, "eval"),
+            ("eval 'bash -s < /dev/null'", CHECK, "eval"), ("eval 'bash -s <&-'", CHECK, "eval"),
+            ("eval 'SHELLOPTS=noexec bash -s'", CHECK, "eval"),
+            ("eval 'sudo bash -s'", self.ECHOED, "eval"),
+            ("eval 'X=1 bash -s'", self.ECHOED, "eval"),
+            ("eval 'bash -s' '</dev/null'", CHECK, "eval"))]
+        self.assert_reported(rows)
+        # The controls: the bare command, a subshell around it and another
+        # descriptor's redirection behind it keep the credit, and so does the
+        # inner shell's own `-e` without the `!`: every shell stops (rc 1).
+        self.assert_clean([stdin_step("eval 'bash -s'"), stdin_step("bash -c 'sh'"),
+                           stdin_step("eval '(bash -s)'"), stdin_step("eval 'bash -s 2>/dev/null'"),
+                           stdin_step("eval 'bash -e -s'", self.ECHOED)])
+
+    def test_2500_an_inner_option_that_keeps_the_program_from_running_voids_its_check(self):
+        # `-n` and `-o noexec` run nothing, `-t` one command, `-s -c true` the
+        # string and `--version` no program: the inner shell exits 0 without the
+        # check, and every shell runs the download (rc 0).
+        rows = [(stdin_step(runner, body), 1, UNGATED % name) for runner, body, name in (
+            ("eval 'bash -n -s'", CHECK, "eval"), ("bash -c 'sh -n'", CHECK, "bash"),
+            ("eval 'bash -s -c true'", CHECK, "eval"), ("eval 'bash --version'", CHECK, "eval"),
+            ("eval 'bash -o noexec -s'", CHECK, "eval"), ("eval bash -n -s", CHECK, "eval"),
+            ("eval 'bash -t -s'", "echo start\n" + CHECK, "eval"))]
+        self.assert_reported(rows)
+        # The controls: options of `-e`, `-u` and `-x` alone keep the credit,
+        # and with no option the check that ends a body after an `echo` is
+        # credited: every shell stops at it (rc 1).
+        self.assert_clean([stdin_step("eval 'bash -s'"), stdin_step("eval 'bash -x -s'"),
+                           stdin_step("eval 'bash -eu -s'", self.ECHOED),
+                           stdin_step("bash -c 'sh -e'", self.ECHOED),
+                           stdin_step("eval 'bash -s'", "echo start\n" + CHECK)])
+
+    def test_2500_a_word_the_join_drops_or_bash_expands_voids_its_check(self):
+        # A `$(...)`, backquote or `$N` that comes to `-n` hands the inner shell
+        # that option -- `eval` joins its words, and a double-quoted string is
+        # expanded first -- so it runs nothing, and every shell runs the
+        # download (rc 0).
+        self.assert_reported([
+            (stdin_step("eval 'bash -s' $(printf %s -n)"), 1, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 1, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s' `printf %s -n`"), 1, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s' $N", pre="N=-n\n"), 2, UNGATED % "eval"),
+            (stdin_step('eval "bash -s $N"', pre="N=-n\n"), 1, UNGATED % "eval"),
+            (stdin_step('bash -c "sh $N"', pre="N=-n\n"), 1, UNGATED % "bash")])
+        # The controls: with no such word, or one a comment in the string
+        # swallows, the credit stands: every shell stops at the check (rc 1).
+        self.assert_clean([stdin_step("eval 'bash -s'"), stdin_step("eval 'bash -s #' -n"),
+                           stdin_step("bash -c 'sh'")])
+
+    def test_2485_no_check_past_a_word_that_may_name_a_file_counts(self):
+        # A word that may vanish may name a FILE instead: `sh /dev/null` runs
+        # that file and no shell reads the body, so every shell runs the
+        # download (rc 0); with `X=-s` behind a string, `sh -s` carries on past
+        # the check, with no `-e`.
+        self.assert_reported([
+            (stdin_step("sh $X", pre="X=/dev/null\n"), 1, UNGATED % "sh"),
+            (stdin_step("sh ${X:-/dev/null}"), 1, UNGATED % "sh"),
+            (stdin_step('sh "$@"', pre="set -- /dev/null\n"), 1, UNGATED % "sh"),
+            (stdin_step("bash $(echo /dev/null)"), 2, UNGATED % "bash"),
+            (stdin_step("sh $X -s", pre="X=/dev/null\n"), 2, UNGATED % "sh"),
+            (stdin_step("bash -c 'sh $X'", pre="export X=/dev/null\n"), 1, UNGATED % "bash"),
+            (stdin_step("eval 'sh $X'", self.ECHOED, pre="X=-s\n"), 1, UNGATED % "eval")])
+        # The price: `X=-s` reads the body and every shell stops at the check
+        # (rc 1; dash refuses the here-string, rc 2), but the guard cannot tell
+        # it from `X=/dev/null`.
+        self.assert_reported((stdin_step("sh $X", CHECK, form, pre="X=-s\n"), 1, UNGATED % "sh")
+                             for form in ("heredoc", "here-string", "piped"))
+        # The controls: a literal shell, and one behind a string with no value
+        # in it, keep the credit: every shell stops at the check (rc 1).
+        self.assert_clean([stdin_step("sh"), stdin_step("bash -s"), stdin_step("bash -c 'sh'"),
+                           stdin_step("eval 'sh'")])
+
+    def test_2500_the_holders_own_command_line_voids_its_check(self):
+        # A `-c` shell given `-n`, `--version` or `-o noexec` runs nothing of
+        # its string, so no inner shell reads the body and every shell runs the
+        # download (rc 0) -- under `SHELLOPTS=noexec` dash only, the bashes
+        # refusing that readonly variable (rc 1); `bash -c -e`'s `-e` is the
+        # holder's, and the inner `sh` carries on past the check.
+        self.assert_reported([(stdin_step(runner), 1, UNGATED % name) for runner, name in (
+            ("bash -nc 'sh'", "bash"), ("bash -n -c 'sh'", "bash"),
+            ("bash --version -c 'sh'", "bash"), ("SHELLOPTS=noexec bash -c 'sh'", "bash"),
+            ("bash -o noexec -c 'sh'", "bash"), ("sh -c 'bash -nc \"sh\"'", "sh"))]
+            + [(stdin_step("bash -c -e 'sh'", self.ECHOED), 1, RUNS_ON % "sh")])
+        # The controls: a holder of `-c`, `-e`, `-u` and `-x` alone keeps the
+        # credit, nested or not, and so does `bash -c -e` with the check as the
+        # whole body: every shell stops at it (rc 1).
+        self.assert_clean([stdin_step("bash -c 'sh'"), stdin_step("bash -euxc 'sh'"),
+                           stdin_step("bash -c -e 'sh'"), stdin_step("sh -c 'bash -c \"sh\"'")])
+
+    def test_2500_a_check_counts_under_a_bare_inner_shells_own_e(self):
+        # Credits kept: the inner shell's own `-e`, its `-u` or `-x`, a
+        # subshell, a string in a string, the holder's `-e`, `-u`, `-x` or a
+        # `$0` after its string, a `{` in front at the step's level, a comment,
+        # a check that ends the body, a `set -e`, another descriptor's
+        # redirection. Every shell stops the step at the check (rc 1).
+        self.assert_clean([
+            stdin_step("eval 'bash -e -s'", self.ECHOED),
+            stdin_step("bash -c 'sh -e'", self.ECHOED),
+            stdin_step("bash -ec 'sh -e'", self.ECHOED), stdin_step("eval 'bash -x -s'"),
+            stdin_step("eval 'bash -eu -s'", self.ECHOED), stdin_step("eval '(bash -s)'"),
+            stdin_step("eval '(bash -e -s)'", self.ECHOED), stdin_step("sh -c 'bash -c \"sh\"'"),
+            stdin_step("eval 'eval \"bash -s\"'"),
+            stdin_step("eval 'eval \"bash -es\"'", self.ECHOED),
+            stdin_step("sh -c 'bash -c \"sh -e\"'", self.ECHOED), stdin_step("bash -euxc 'sh'"),
+            stdin_step("bash -c -e 'sh'"), stdin_step("bash -c 'sh' -n"),
+            stdin_step("{ eval 'bash -s'", end="}\n"), stdin_step("eval 'bash -s #' -n"),
+            stdin_step("eval 'bash -s'", "echo start\n" + CHECK),
+            stdin_step("eval 'bash -s'", "set -e\n" + self.ECHOED),
+            stdin_step("eval 'bash -s 2>/dev/null'")])
+
+    def test_2500_the_prices_of_a_check_counting_only_behind_a_bare_command_line(self):
+        # Reported though no shell runs the download: every shell stops the
+        # step at the check (rc 1 -- under dash `time eval` runs the program
+        # `time`, which finds no `eval`, rc 127), and nothing of a body the
+        # inner shell reads in the background or from `/dev/null` runs at all
+        # (rc 0, no fetch). A wrapper, an assignment or `!` in front, an option
+        # outside `-c -e -u -s -x`, an operand, a word that may vanish, `&`, `<`
+        # and the 64-string bound (seventy `eval`s) each leave the check
+        # counting for nothing, and an `|| exit 1` in the body is no `-e`.
+        rows = [(stdin_step(runner, body), 1, UNGATED % name) for runner, body, name in (
+            ("eval 'exec bash -s'", CHECK, "eval"), ("eval 'env bash -s'", CHECK, "eval"),
+            ("eval 'time bash -s'", CHECK, "eval"), ("eval 'sudo bash -s'", CHECK, "eval"),
+            ("eval 'X=1 bash -s'", CHECK, "eval"), ("eval 'bash --norc -s'", CHECK, "eval"),
+            ("eval 'bash -o errexit -s'", self.ECHOED, "eval"),
+            ("eval 'bash -s arg'", CHECK, "eval"),
+            ("eval 'bash -s -- arg'", CHECK, "eval"), ("eval '! bash -s'", self.ECHOED, "eval"),
+            ("bash +e -c 'sh'", CHECK, "bash"), ("command eval 'bash -s'", CHECK, "eval"),
+            ("time eval 'bash -s'", CHECK, "eval"), ("env bash -c 'sh'", CHECK, "bash"),
+            ("sudo bash -c 'sh'", CHECK, "bash"), ("X=1 eval 'bash -s'", CHECK, "eval"),
+            ("sh $X", CHECK, "sh"))]
+        self.assert_reported(rows + [
+            (stdin_step("sh $X", pre="X=-e\n"), 1, UNGATED % "sh"),
+            (stdin_step("bash $(true)"), 2, UNGATED % "bash"),
+            (stdin_step("eval 'bash -s &'", GET + self.USED, fetched=False), 1, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s < /dev/null'", GET + self.USED, fetched=False), 1,
+             UNGATED % "eval"),
+            (stdin_step("eval 'bash -s'", CHECK + " || exit 1\necho done"), 1, RUNS_ON % "bash"),
+            (stdin_step("eval " * 70 + "bash -s"), 1, UNGATED % "eval")])
+        # The controls: each command line made bare, and the check made the
+        # whole body or put under the reader's own `-e`, keeps the credit:
+        # every shell stops at the check (rc 1).
+        self.assert_clean([stdin_step("eval 'bash -s'"), stdin_step("eval '(bash -s)'"),
+                           stdin_step("eval 'bash -e -s'", self.ECHOED), stdin_step("bash -c 'sh'"),
+                           stdin_step("bash -euxc 'sh'"), stdin_step("sh"), stdin_step("bash -s"),
+                           stdin_step("eval " * 3 + "bash -s")])
+
+    def test_2500_a_literal_stdin_shell_reads_as_on_main(self):
+        # The must-trip controls: at the step's own level the shell reading
+        # stdin is the reader, as on `main`. Every shell stops at a check that
+        # ends the body or runs under its `-e` (rc 1), and runs the download
+        # past one that does neither (rc 0).
+        self.assert_clean([stdin_step("bash -s"), stdin_step("sh"),
+                           stdin_step("bash -e -s", self.ECHOED)])
+        self.assert_reported([
+            (stdin_step("bash -s", self.ECHOED), 1, RUNS_ON % "bash"),
+            (stdin_step("bash -s", GET + self.USED, fetched=False), 1, RUNS_ON % "bash")])
+
+    def test_2473_a_dollar_word_a_branch_and_builtin_eval_read_as_before(self):
+        # A `$` command word credits nothing, whether the shells stop at the
+        # check (`CMD=sh`, rc 1) or run the download (`CMD=true`, rc 0); a check
+        # in a branch clears no use outside it, though they stop there (rc 1);
+        # and `builtin eval` is no `eval` to the guard, its body unread as on
+        # `main` (the bashes stop at the check, rc 1; dash has no `builtin`, 127).
+        for command in ("sh", "true"):
+            script = stdin_step("$CMD", pre="CMD=%s\n" % command)
+            with self.subTest(script=script):
+                found = [why for _step, why in defects(script)]
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(UNGATED % "$CMD" in why for why in found), found)
+                self.assertTrue(any(why.startswith("hands a heredoc body or here-string to `$CMD`")
+                                    for why in found), found)
+        self.assert_reported([
+            (stdin_step("eval 'bash -s'", pre="if true; then\n", end="fi\n"), 1,
+             "written inside an `if`/`while` branch the use is not in"),
+            (stdin_step("builtin eval 'bash -s'"), 1, "with nothing verifying what arrived")])
+
+    def test_2500_mains_own_gaps_read_as_on_main(self):
+        # Gaps of `main`'s own, each filed under #2331: CLEAN though a shell
+        # runs the download -- every shell where an option keeps the literal
+        # shell from running its program or a function stands in for `sh`
+        # (rc 0), dash alone under `SHELLOPTS=noexec` (the bashes, rc 1).
+        # `main` reads each of these literal steps CLEAN too.
+        self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
+                           stdin_step("bash -t -s", "echo start\n" + CHECK),
+                           stdin_step("bash --version"), stdin_step("bash -s -c true"),
+                           stdin_step("SHELLOPTS=noexec bash -s"),
+                           stdin_step("sh", pre="sh() { :; }\n")])
+
+    def test_2500_a_function_that_shadows_the_shell_is_mains_limit(self):
+        # `main`'s limit, filed under #2331, reached through the new reading: a
+        # function named `sh` or `bash` runs instead of the shell, nothing reads
+        # the body, and every shell runs the download (rc 0) -- CLEAN, as
+        # `main` reads the literal twin (`sh() { :; }` before `sh <<'EOF'`).
+        self.assert_clean([stdin_step("eval 'sh'", pre="sh() { :; }\n"),
+                           stdin_step("bash -c 'sh'", pre="bash() { :; }\n")])
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
     """#2342: the program a double-quoted `-c` or `eval` string hands a shell

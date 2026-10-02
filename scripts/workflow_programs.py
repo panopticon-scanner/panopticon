@@ -16,7 +16,8 @@ only, for a program piped into it, the stage in front of it (#2333):
                       table names it (`$CMD` is a value none places)
     `stdin_scripts`   the quoted body that program is, where it is or may be
                       shell, or the text an `echo` or `printf` pipes in
-                      (`printed`)
+                      (`printed`), each a `Stdin` naming the shell sure to
+                      read it, under whose `-e` a check in it runs
     `unprinted`       the printer piping one in whose text `printed` cannot
                       spell out, for `unread_program` to weigh
     `candidates`      the words that may be the program, where a value this
@@ -25,8 +26,9 @@ only, for a program piped into it, the stage in front of it (#2333):
                       expansion (`sh -c "$P"`), which spells no command at all
 
 `workflow_forms` imports all six: its `flattened` reads each script found
-here in place of the command handed it -- under a `$` command word
-(`VALUE_PROGRAM`) with no check in it counted -- its `unread_program` weighs
+here in place of the command handed it -- a stdin one under its reader's
+`-e`, and with no check in it counted where it has none, as under a `$`
+command word (`VALUE_PROGRAM`) -- its `unread_program` weighs
 the candidates, the unprinted and the dynamic program, and the guard takes
 `stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
 The option-letter tables below are read here and in `workflow_gating._errexit`,
@@ -34,6 +36,7 @@ the one layer up that reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
 """
+import itertools
 import os
 import re
 
@@ -354,14 +357,20 @@ def stdin_program(argv, depth=0):
     itself one statement whose own command is a stdin-reading shell (#2500):
     `eval 'bash -s'` and `bash -c 'sh'` then answer SHELL_PROGRAM for the
     ENCLOSING command, so its heredoc, here-string or pipe is `bash -s`'s or
-    `sh`'s program, not `eval`'s or `-c`'s. `eval 'echo hi'` and `bash -c
-    'cat'` are not stdin-reading shells, so they are unaffected. A `-c`
-    cluster the shell refuses hands over no string (`_past_options`), so
-    `bash -c -K 'sh' <<'EOF'`, which runs nothing, is not credited; an
-    INNER shell's refused letter is read on, as above, so `eval 'bash -K
-    -s'` and `bash -c 'sh -K'` are credited though bash and dash refuse them
-    and run nothing -- fail-closed. The credit looks at most 64 strings deep
-    (`depth`) and answers SHELL_PROGRAM past that, fail-closed, so seventy
+    `sh`'s program, not `eval`'s or `-c`'s, and a check in it runs under
+    THEIR `-e`, not the enclosing command's -- none, in these two, so every
+    shell carries on past a failed check that another command follows. It
+    counts only where every command line on the way is bare (`_stdin`):
+    behind `eval '! bash -s'`, `eval 'bash -s &'`, `eval 'bash -n -s'` or
+    `bash -nc 'sh'` none does, though the body is read all the same.
+    `eval 'echo hi'` and `bash -c 'cat'` are not stdin-reading shells, so
+    they are unaffected. A `-c` cluster the shell refuses hands over no
+    string (`_past_options`), so `bash -c -K 'sh' <<'EOF'`, which runs
+    nothing, is not credited; an INNER shell's refused letter is read on, as
+    above, so `eval 'bash -K -s'` and `bash -c 'sh -K'` are credited though
+    bash and dash refuse them and run nothing -- fail-closed, and no check in
+    them counts. The credit looks at most 64 strings deep (`depth`) and
+    answers SHELL_PROGRAM past that, with no reader, fail-closed, so seventy
     `eval`s before `echo hi <<'EOF'` over-report; with
     `workflow_forms.flattened` asking once per stage, an `eval eval … bash -s`
     chain costs time linear in its length and never overflows the stack (final
@@ -376,16 +385,19 @@ def stdin_program(argv, depth=0):
     runs under -- one the shell refuses (`X=-K`, where bash and dash
     exit 2), `X=-n` (they read the heredoc and run none of it) or a
     bare `X=-c` (no string, rc 2) -- so this over-reports there; the
-    guard's gap list names the class. A `<(...)`/`>(...)` is NOT such
-    a word, though `_value` matches its marker too: it always
-    substitutes a real path, never empty, so `bash <(curl ...)` keeps
-    reading as the FILE it is (`yields_words` tells a process substitution
-    from a command substitution, whose OUTPUT may vanish instead) -- true
-    only where EVERY substitution in the word is a process one; a MIXED word
-    (`$(true)<(...)`) still reads as may-vanish even though bash always
-    substitutes a real path for it too -- an over-report the guard's gap
-    list does not separately name, beside the ones it does (`X=script.sh`,
-    `X=-K`, `X=-n`).
+    guard's gap list names the class. No check in the body counts either
+    (`_stdin` names no reader): where `X` names a file no shell reads the
+    body, so `X=/dev/null` runs a download past a body that is only the
+    check, and `X=-s`, which stops at it, over-reports too. A
+    `<(...)`/`>(...)` is NOT such a word, though `_value` matches its marker
+    too: it always substitutes a real path, never empty, so
+    `bash <(curl ...)` keeps reading as the FILE it is (`yields_words` tells
+    a process substitution from a command substitution, whose OUTPUT may
+    vanish instead) -- true only where EVERY substitution in the word is a
+    process one; a MIXED word (`$(true)<(...)`) still reads as may-vanish
+    even though bash always substitutes a real path for it too -- an
+    over-report the guard's gap list does not separately name, beside the
+    ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
@@ -419,8 +431,40 @@ def stdin_program(argv, depth=0):
     the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
     stream -- a gap filed under #2331.
     """
+    return _stdin(argv, depth)[0]
+
+
+class Stdin(str):
+    """A script `stdin_scripts` read off standard input, and its `reader`:
+    the argv of the shell whose program it surely is, under whose `-e` a check
+    in it runs (`_stdin`) -- or None, where no check in it counts."""
+    reader: "list[str] | None" = None
+
+
+# The only option words a command line on the way to a reader behind a string
+# may carry where a check in its body counts -- the reader's own and those of
+# the `-c` shell holding the string: `-c` hands the string on, `-s` reads
+# stdin, and `-e`, `-u` and `-x` neither keep the program from running nor
+# hide its failure, as `-n`, `-t`, `-o noexec` and `--version` do.
+_PLAIN_OPTIONS = re.compile(r"-[ceusx]*")
+
+
+def _stdin(argv, depth):
+    """(`stdin_program`'s answer, the reader `Stdin` carries) in one walk.
+
+    The reader of a shell the step runs itself is that shell, whatever its
+    options say: a step's own `bash -n -s` reads as it always has. Behind a
+    string (#2500) it is the innermost shell, only where every command line
+    on the way is BARE -- no word of `eval`'s dropped from its join, no
+    option word on the holder or the reader outside `_PLAIN_OPTIONS` and no
+    other word on the reader, and the string one statement with nothing in
+    front of its command (a wrapper, an assignment, `!`), not sent to the
+    background (`&` gives it `/dev/null`) and handed no stdin of its own
+    (`<`, `<&-`). Past a word that may vanish (#2485) there is none at any
+    depth, since the word may name a FILE, nor under a `$` command word
+    (#2473), nor past the 64-string bound."""
     if not argv:
-        return None
+        return None, None
     found = scripts(argv)
     if found:
         # bash's `eval` joins ALL of its own words -- `-`-prefixed ones too
@@ -434,16 +478,25 @@ def stdin_program(argv, depth=0):
         # there (`eval -- bash -s` reads stdin), but dash's runs `--` as a
         # command and nothing runs -- fail-closed where a step's `sh` is dash.
         is_eval = os.path.basename(argv[0]) == "eval"
-        words = [t for t in (argv[1:] if is_eval else found) if not shell_reader.is_marker(t)]
+        given = argv[1:] if is_eval else found
+        words = [t for t in given if not shell_reader.is_marker(t)]
+        bare = len(words) == len(given) and (is_eval or all(
+            _PLAIN_OPTIONS.fullmatch(w)
+            for w in itertools.takewhile(lambda w: w[:1] in ("-", "+"), argv[1:])))
         if is_eval and words and getattr(words[0], "spelled", words[0]) == "--":
             words = words[1:]
         text = " ".join(getattr(t, "spelled", t) for t in words)
         parsed = shell_reader.statements(text)
-        if (len(parsed) == 1 and len(parsed[0].stages) == 1
-                and (depth >= 64                # bounded: past 64 strings, fail-closed
-                     or stdin_program(shell_reader.command(parsed[0].stages[0].argv), depth + 1)
-                     == SHELL_PROGRAM)):
-            return SHELL_PROGRAM
+        if len(parsed) == 1 and len(parsed[0].stages) == 1:
+            if depth >= 64:                     # bounded: past 64 strings, fail-closed
+                return SHELL_PROGRAM, None
+            stage = parsed[0].stages[0]
+            inner = shell_reader.command(stage.argv)
+            answer, reader = _stdin(inner, depth + 1)
+            if answer == SHELL_PROGRAM:
+                bare = (bare and parsed[0].separator != "&" and stage.stdin_from_pipe
+                        and list(stage.argv) == list(inner))
+                return SHELL_PROGRAM, reader if bare else None
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
@@ -455,22 +508,25 @@ def stdin_program(argv, depth=0):
     value = not shell and not foreign and _value(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
     if not (shell or foreign or value):
-        return None
+        return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
+    reader = argv if shell and (
+        not depth or all(_PLAIN_OPTIONS.fullmatch(w) for w in argv[1:])) else None
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
-            return answer
+            return answer, reader
         if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
+                reader = None               # ... but it may name a FILE: no check counts
                 continue                    # the walk goes on as if absent
-            return None                     # the program is this file
+            return None, None               # the program is this file
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
-            return None                     # the program is the `-c` string
+            return None, None               # the program is the `-c` string
         if (shell or value) and "s" in letters:
-            return answer                   # the words after `-s` are parameters
+            return answer, reader           # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`), and so does a `$` word's, which may be a shell;
         # another interpreter's, one where it ends so. Only a shell takes a
@@ -480,8 +536,8 @@ def stdin_program(argv, depth=0):
                 else int(bool(letters) and letters[-1] in VALUE_OPTIONS))
         for _ in range(owed):
             if next(rest, None) in _STDIN_OPERANDS and not shell:
-                return answer               # the program is stdin after all
-    return answer
+                return answer, reader       # the program is stdin after all
+    return answer, reader
 
 
 def stdin_scripts(argv, stage, before=None):
@@ -496,6 +552,15 @@ def stdin_scripts(argv, stage, before=None):
     of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
     'sh tool' | sh`; where it does not, `unprinted` has the printer.
 
+    Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under
+    whose `-e` `workflow_forms.flattened` counts a check in it: a literal
+    shell itself, whatever stands in front of it (`sudo bash -s` reads as it
+    always has), and behind a string the inner shell, only where nothing but
+    a keyword stands in front of the command at the step's own level -- a
+    `!` or `if` there is `swallowed`'s, and a wrapper or an assignment may
+    change what runs: under dash, `SHELLOPTS=noexec bash -c 'sh'` runs
+    nothing of the body. None, where no check in it counts.
+
     Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
     printed text are read the same way, as shell, though the word may hold
     none: what they fetch or run is read as at the top level, and
@@ -509,9 +574,14 @@ def stdin_scripts(argv, stage, before=None):
     if here is None and _piped(stage, before):
         text = printed(shell_reader.command(before.argv))
         here = None if text is None else (text, False)
-    if here is None or here[1] or stdin_program(argv) not in (SHELL_PROGRAM, VALUE_PROGRAM):
+    kind, reader = (None, None) if here is None or here[1] else _stdin(argv, 0)
+    if kind not in (SHELL_PROGRAM, VALUE_PROGRAM):
         return []
-    return [here[0]]
+    text = Stdin(here[0])
+    # Only a keyword may stand in front of a command whose reader is a string's.
+    own = list(itertools.dropwhile(lambda w: w in shell_reader.KEYWORDS, stage.argv)) == list(argv)
+    text.reader = reader if reader is argv or own else None
+    return [text]
 
 
 def _piped(stage, before):

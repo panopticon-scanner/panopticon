@@ -9,7 +9,9 @@ evidence exposed.
 
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
-  `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+  `$CMD` run is caught, a check in it counting only under the `-e` of the shell sure to read it,
+  never past `$X` or under `$CMD`; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a
+  reported fetch.
 - **Quoted workflow globs stay literal (#2432, #2331).** The guard now uses lexer pattern
   provenance when matching fetched paths, so `sh "./cuda_*.run"` does not claim to run a
   download while unquoted and partly quoted patterns still do. Bash 3.2.57, Bash 5.2.21 and

@@ -47,22 +47,19 @@ this module to every `run:` step in the fleet and `ci.yml` runs the suite on
 every PR, so a second invocation would be the same assertion wearing a
 different hat -- and one that can rot out of step with the first.
 
-What it does not model. Within the shell it reads, the standing requirement is
-to fail CLOSED -- an unparsed form must be REPORTED, not accepted, which is
-precisely what the two regexes did not do, and `tests/test_workflow_guard.py`
-states every form that was probed and found open before it was parsed. The
-classes below fall outside that and are accepted SILENT gaps, deliberately.
+What it does not model. Within the shell it reads, the standing requirement is to fail CLOSED -- an
+unparsed form must be REPORTED, not accepted, which is precisely what the two regexes did not do,
+and `tests/test_workflow_guard.py` states every form that was probed and found open before it was
+parsed. The classes below fall outside that and are accepted SILENT gaps, deliberately.
 
-#1697 ruled every entry by REACHABILITY -- can the form appear in a `run:`
-step of this fleet, or does it need a construct the runners never use or a
-grammar this module does not have by design? Four entries were reachable and
-left this list CLOSED rather than documented, each of them shell the reader
-already produced and the rule simply did not look at: a `chmod` over a glob
-and over a walked directory, the `{}` and `xargs` operands that describe a
-file instead of naming it, a fetch inside an `eval`/`sh -c` STRING, and
-`continue-on-error: true`. What remains keeps its entry WITH its reason, and
-`TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py
-runs each live, so a change that catches one fails there and edits this list.
+#1697 ruled every entry by REACHABILITY -- can the form appear in a `run:` step of this fleet, or
+does it need a construct the runners never use or a grammar this module does not have by design?
+Four entries were reachable and left this list CLOSED rather than documented, each of them shell the
+reader already produced and the rule simply did not look at: a `chmod` over a glob and over a walked
+directory, the `{}` and `xargs` operands that describe a file instead of naming it, a fetch inside
+an `eval`/`sh -c` STRING, and `continue-on-error: true`. What remains keeps its entry WITH its
+reason, and `TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py runs each
+live, so a change that catches one fails there and edits this list.
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
   `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting every command that
@@ -101,12 +98,11 @@ runs each live, so a change that catches one fails there and edits this list.
   VALUE. Only this spelling is open: with the digest in a sums file the step wrote, what was
   recorded is the text `sha256sum x`, which carries no digest, so the check does not count and the
   fetch is already reported.
-* what runs inside a container, BEYOND the one shape that is read: `docker
-  run … -v /tmp:/w img bash /w/x.sh` binds by basename (`workflow_forms.in_container`),
-  because on the far side of a bind mount the basename is the only name the
-  bytes have. What is still unread is everything that needs the mount table
-  itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument
-  the image's ENTRYPOINT supplies, and whatever the image itself runs.
+* what runs inside a container, BEYOND the one shape that is read: `docker run … -v /tmp:/w img bash
+  /w/x.sh` binds by basename (`workflow_forms.in_container`), because on the far side of a bind
+  mount the basename is the only name the bytes have. What is still unread is everything that needs
+  the mount table itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument the
+  image's ENTRYPOINT supplies, and whatever the image itself runs.
   KEPT: those need another executor's mounts and entrypoint modelled, which is reading a second
   program's configuration rather than this job's shell. The image the container came from is NOT
   pinned either, and that is a decided residual rather than an oversight: this fleet pulls the
@@ -143,10 +139,15 @@ runs each live, so a change that catches one fails there and edits this list.
   stdin at all (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module
   and a script FILE each put it elsewhere, the body then its input DATA), and which body descriptor
   0 finally reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval` string
-  whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500) -- under
-  ITS `-e`, not the inner's, blind to the inner's own `<` (`eval 'bash -s < f'`); a pipeline whose
-  FIRST stage reads stdin is never reached; all filed under #2331. Nor, for a SHELL, does a value or
-  a word that may vanish end the walk at a FILE (#2485): one naming a file or an option nothing runs
+  whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500), a check in
+  the body counting under the inner shell's own `-e`, and only where every command line on the way
+  is bare (`workflow_programs._stdin`): `eval 'exec bash -s'` over-reports a body ending in its
+  check, `eval 'bash -s < f'` a download no shell runs. `eval '(bash -s)'` answers so and
+  `eval '{ bash -s; }'` (a group: two statements to the reader) does not, though both run the
+  heredoc, and a pipeline whose FIRST stage reads stdin is never reached, both filed under #2331.
+  Nor, for a SHELL, does a value or a word that may vanish end the walk at a FILE (#2485), and no
+  check past one counts, fail-closed: `X=-s; sh $X` around a check alone is REPORTED though the step
+  stops, as the guard cannot tell it from `X=/dev/null`; one naming a file or an option nothing runs
   under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`), over-reports; `python3 $S`, S unset, a
   FOREIGN word, under-reports (python runs the body), filed under #2331. A QUOTED body reaches the
   interpreter as written, so `workflow_forms.flattened` reads it as it reads an `eval` string -- a
@@ -177,12 +178,11 @@ runs each live, so a change that catches one fails there and edits this list.
   KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
   `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
-`if` branches inside the shell are read flat for what they FETCH and what they
-RUN -- folding those in can only report more. Not for what they CHECK:
-`workflow_forms.regions` reads the `then`/`else`/`do` bodies -- and each arm of
-a `case` -- back out of the statement stream, and a checksum written inside a
-branch clears only a use written inside the same branch (#1697 item 3), which
-is `_binds` again in the shell's own grammar."""
+`if` branches inside the shell are read flat for what they FETCH and what they RUN -- folding those
+in can only report more. Not for what they CHECK: `workflow_forms.regions` reads the
+`then`/`else`/`do` bodies -- and each arm of a `case` -- back out of the statement stream, and a
+checksum written inside a branch clears only a use written inside the same branch (#1697 item 3),
+which is `_binds` again in the shell's own grammar."""
 import collections
 import os
 import re
