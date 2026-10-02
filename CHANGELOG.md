@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three

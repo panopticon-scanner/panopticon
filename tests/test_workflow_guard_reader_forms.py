@@ -123,11 +123,35 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
-    def test_an_ansi_c_code_point_outside_ascii_fails_closed(self):
-        found = defects("sh $'-\\u00e9' '%s'\n" % PIPE)
+    def test_an_ansi_c_code_point_outside_ascii_keeps_the_fetch_sentence(self):
+        # #2614: these words, like `\q`, are unknown rather than a refusal
+        # of the whole step. Both bashes and dash still run the adjacent pipe.
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9", "\\400", "\\cé", "\\q"):
+            with self.subTest(escape=escape):
+                prose = "echo $'%s build ok'" % escape
+                self.assertEqual([], defects(prose))
+                found = defects(prose + "; " + PIPE)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_assignment_keeps_the_fetch_sentence(self):
+        found = defects("MSG=$'caf\\u00e9'; echo \"$MSG\"; " + PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("cannot read this step", found[0][1])
-        self.assertIn("outside ASCII", found[0][1])
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_backslash_newline_keeps_the_fetch_sentence(self):
+        prose = "echo $'a\\\nb'"
+        self.assertEqual([], defects(prose))
+        found = defects(prose + "; " + PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_option_does_not_invent_dash_c(self):
+        # Both bashes reject this option; dash takes it as a missing file.
+        self.assertEqual([], defects("sh $'-\\u00e9' '%s'\n" % PIPE))
+        found = defects("sh -c '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
     def test_an_ansi_c_here_string_is_read_as_written(self):
         found = defects("sh <<< $'%s\\n'\n" % PIPE)
