@@ -7,30 +7,17 @@ Callers still own absent/corrupt distinctions, shape validation and gate policy.
 """
 import json
 import os
-import stat
 import sys
 from typing import Any
 
 import scripts.evidence as evidence_mod
+import scripts.safe_write as safe_write
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
 def _read_json(path, limit, tolerant):
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("not a regular file")
-        with os.fdopen(fd, "rb") as stream:
-            fd = -1  # the stream owns the descriptor from here
-            raw = stream.read(limit + 1)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    # Bound the actual read, never trust a preliminary stat size.
-    if len(raw) > limit:
-        raise ValueError("over the %d-byte read limit; skipped unparsed" % limit)
-    text = raw.decode("utf-8")
+    text = safe_write.read_regular_bytes(path, limit).decode("utf-8")
     return evidence_mod.load_json_tolerant(text) if tolerant else json.loads(text)
 
 

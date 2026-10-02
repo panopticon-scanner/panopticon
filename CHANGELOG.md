@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Verdict ingestion has bounded resources (#2531, #1816).** Advisor verdicts use a shared
+  8 MiB regular-file reader, and tolerant JSON extraction bounds memory and compatibility work.
 - **Runner batches name a broken outage stop predicate (#2544, #1817).** Work still continues,
   while one redacted and bounded diagnostic tells the operator the short-circuit was unavailable.
 - **Scanner timeout cleanup names container-kill failures (#2543, #1817).** Missing or empty
