@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
+  took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
+  pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
+  and read clean. It now follows nested case phases and balanced patterns, while subjects needing
+  another parse fail closed by name. Treating every `)` after `case` as an arm close was rejected
+  because it could hide later shell code.
 - The `set`-posture reading (`seed`, `_errexit`, `_rejected`, `_takes_value`) moves from
   `scripts/workflow_gating.py` to a new `scripts/workflow_posture.py`, a pure move with re-exports,
   so the gating module has room again under the 700-line ceiling (#2620).
