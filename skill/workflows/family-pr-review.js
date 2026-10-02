@@ -18,8 +18,9 @@
 //
 // Shape: one finder per guardrail dimension over `git diff <base>...HEAD`
 // (pipeline, no barrier), each finding then adversarially verified by three
-// independent refuters; a finding survives with two "real" votes. The result
-// is the confirmed list plus everything dropped, so nothing is silently lost.
+// independent refuters; a finding survives with two "real" votes. Each finder
+// is capped at 25 findings by the schema and again at the verifier boundary.
+// The result carries confirmed and dropped findings plus any cap truncation.
 //
 // The finders and the refuters run UNCONFINED, by decision: both roles have to
 // run `git diff` and `git log` and read any file in the checkout (see COMMON
@@ -35,11 +36,12 @@
 // the prompt it lands in.
 export const meta = {
   name: 'family-pr-review',
-  description: 'Review a family first-class-host branch against docs/FAMILY-PR-GUARDRAILS.md, then adversarially verify every finding',
+  description: 'Review a family first-class-host branch and verify up to 25 findings ' +
+    'from each guardrail dimension',
   whenToUse: 'Before opening or merging a feat/1344-<host>-first-class-host PR; args: { host, base? }',
   phases: [
     { title: 'Review', detail: 'one finder per guardrail dimension over the branch diff' },
-    { title: 'Verify', detail: 'three refuters per finding; two "real" votes to survive' },
+    { title: 'Verify', detail: 'three refuters per selected finding; two "real" votes to survive' },
   ],
 }
 
@@ -47,11 +49,14 @@ const host = (args && args.host) || 'claude'
 const base = (args && args.base) || 'main'
 const GUARDRAILS = 'docs/FAMILY-PR-GUARDRAILS.md'
 const DIFF = 'git diff ' + base + '...HEAD'
+const MAX_FINDINGS_PER_DIMENSION = 25
 
 const COMMON = 'You are reviewing the branch currently checked out, a `' + host + '` family first-class-host PR for Panopticon. ' +
   'Read ' + GUARDRAILS + ' in full first. Then inspect the change with `' + DIFF + '` and `git log ' + base + '..HEAD --format=%s`, ' +
   'reading any file you need in full. Report ONLY concrete, evidenced problems: each finding names a file and line, quotes the ' +
   'evidence, and names the guardrail section or the correctness rule it breaks. No style nits, no speculation. ' +
+  'Return at most ' + MAX_FINDINGS_PER_DIMENSION + ' findings. Prioritize the most severe and ' +
+  'best-evidenced. ' +
   'An empty list is a valid answer.'
 
 const DIMENSIONS = [
@@ -75,6 +80,7 @@ const FINDINGS = {
   properties: {
     findings: {
       type: 'array',
+      maxItems: MAX_FINDINGS_PER_DIMENSION,
       items: {
         type: 'object',
         properties: {
@@ -108,17 +114,45 @@ function verifyPrompt(f) {
     'It is real only if the code as written actually has the defect and it matters; default to real=false when uncertain or when the evidence is a misreading.'
 }
 
+const findingCounts = {}
 const perDimension = await pipeline(
   DIMENSIONS,
   d => agent(d.prompt, { label: 'review:' + d.key, phase: 'Review', schema: FINDINGS }),
-  (found, d) => parallel(((found && found.findings) || []).map(f => () =>
-    parallel([0, 1, 2].map(i => () =>
-      agent(verifyPrompt(f), { label: 'verify:' + d.key + ':' + i, phase: 'Verify', schema: VERDICT })))
-      .then(votes => ({ ...f, dimension: d.key, votes: votes.filter(Boolean) })))),
+  (found, d) => {
+    const received = found && Array.isArray(found.findings) ? found.findings : []
+    const selected = received.slice(0, MAX_FINDINGS_PER_DIMENSION)
+    findingCounts[d.key] = {
+      received: received.length,
+      verified: selected.length,
+      omitted: received.length - selected.length,
+    }
+    return parallel(selected.map(f => () =>
+      parallel([0, 1, 2].map(i => () =>
+        agent(verifyPrompt(f), {
+          label: 'verify:' + d.key + ':' + i,
+          phase: 'Verify',
+          schema: VERDICT,
+        })))
+        .then(votes => ({ ...f, dimension: d.key, votes: votes.filter(Boolean) }))))
+  },
 )
 
 const all = perDimension.filter(Boolean).flat().filter(Boolean)
 const confirmed = all.filter(f => f.votes.filter(v => v.real).length >= 2)
 const dropped = all.filter(f => f.votes.filter(v => v.real).length < 2)
-log('family-pr-review: ' + all.length + ' raw findings, ' + confirmed.length + ' confirmed, ' + dropped.length + ' dropped')
-return { host, base, confirmed, dropped }
+const truncation = DIMENSIONS
+  .map(d => findingCounts[d.key] && { dimension: d.key, ...findingCounts[d.key] })
+  .filter(row => row && row.omitted)
+const findingsOmitted = truncation.reduce((total, row) => total + row.omitted, 0)
+log('family-pr-review: ' + all.length + ' verified findings, ' + confirmed.length + ' confirmed, ' +
+    dropped.length + ' dropped, ' + findingsOmitted + ' omitted by the ' +
+    MAX_FINDINGS_PER_DIMENSION + '-per-dimension cap')
+return {
+  host,
+  base,
+  finding_cap: MAX_FINDINGS_PER_DIMENSION,
+  findings_omitted: findingsOmitted,
+  truncation,
+  confirmed,
+  dropped,
+}

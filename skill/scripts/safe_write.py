@@ -33,12 +33,43 @@ No makedirs in `open_w_nofollow`: a caller that must create the parent calls
 the makedirs would mean the traversal had already happened.
 """
 import os
+import stat
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING or __package__:
     from scripts import claim_scope
 else:  # flat consumers put skill/scripts itself on sys.path
     import claim_scope
+
+
+class ReadLimitExceeded(ValueError):
+    """A regular file exceeded the caller's explicit byte boundary."""
+
+
+def read_regular_bytes(path, limit):
+    """Read at most ``limit`` bytes from a regular, non-symlink leaf.
+
+    The descriptor check closes the size and file-type races around a prior
+    ``stat``. ``O_NONBLOCK`` keeps a special file from hanging before the
+    descriptor type is rejected. Callers retain decoding and error policy.
+    """
+    if type(limit) is not int or limit <= 0:
+        raise ValueError("read limit must be a positive integer")
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            raw = stream.read(limit + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(raw) > limit:
+        raise ReadLimitExceeded("over the %d-byte read limit; skipped unparsed" % limit)
+    return raw
 
 
 def confine_artifact_path(path):

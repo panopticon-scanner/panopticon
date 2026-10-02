@@ -928,6 +928,17 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         return [why for _n, why in wg.job_defects(
             [("step %d" % n, script) for n, script in enumerate(scripts)])]
 
+    def not_carried(self, *scripts):
+        """The one sentence left where the name does not hold the download at
+        the use: #2483's unread program word, which a dynamic program gets
+        wherever a shell takes one and the job holds a fetch the guard
+        reports -- never this class's carried sentence, which would name a
+        download the step does not run."""
+        why = self.job(*scripts)
+        self.assertEqual(1, len(why), why)
+        self.assertIn("a program this guard does not follow", why[0])
+        self.assertNotIn("carries", why[0])
+
     def test_handed_whole_to_a_shell_it_is_the_download(self):
         for get in (self.GET, 'x="$(curl -fsSL https://example.test/i.sh)"\n',
                     "x=$(wget -qO- https://example.test/i.sh)\n",
@@ -978,21 +989,30 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
 
     def test_not_handed_to_a_shell_or_not_the_download_it_is_not(self):
         for script in (self.GET + 'echo "$x" > f\n',                 # the issue's control
-                       self.GET + 'x=1\neval "$x"\n', self.GET + 'unset x\neval "$x"\n',
-                       self.GET + 'eval "$y"\n', self.GET + 'echo "$x"\n',
+                       self.GET + 'echo "$x"\n',
                        self.GET + 'echo "$x" | grep -c .\n',
                        self.GET + "sh -c 'echo hi' \"$x\"\n",         # there it is `$0`
-                       "x=$(curl -fsSLo f https://example.test/i.sh)\neval \"$x\"\n",
-                       self.GET + 'diff <(echo "$x") f\n', self.GET + 'bash <(echo "$y")\n',
-                       self.GET + 'y="$x"\ny=1\neval "$y"\n',
-                       'eval "$x"\n' + self.GET):
+                       self.GET + 'diff <(echo "$x") f\n', self.GET + 'bash <(echo "$y")\n'):
             with self.subTest(script=script):
                 self.assertEqual([], self.job(script))
+        # Where the shell IS handed a word, the download is not what it runs,
+        # and #2483 reports the word itself (as it does the `$CMD -c "$x"`
+        # twin beside the same download): one sentence, and not this one.
+        for script in (self.GET + 'x=1\neval "$x"\n', self.GET + 'unset x\neval "$x"\n',
+                       self.GET + 'eval "$y"\n', self.GET + 'y="$x"\ny=1\neval "$y"\n',
+                       "x=$(curl -fsSLo f https://example.test/i.sh)\neval \"$x\"\n",
+                       'eval "$x"\n' + self.GET):
+            with self.subTest(script=script):
+                self.not_carried(script)
 
     def test_each_step_is_a_shell_of_its_own(self):
-        # A variable dies with the step's shell; in one step it is the download.
-        self.assertEqual([], self.job(self.GET, 'eval "$x"\n'))
-        self.assertEqual(1, len(self.job(self.GET + 'eval "$x"\n')))
+        # A variable dies with the step's shell, so across two steps the word
+        # carries no download and only #2483's sentence stands; in one step it
+        # is the download, and that sentence is this class's.
+        self.not_carried(self.GET, 'eval "$x"\n')
+        why = self.job(self.GET + 'eval "$x"\n')
+        self.assertEqual(1, len(why), why)
+        self.assertIn("carries", why[0])
 
     def test_a_reassignment_bash_may_skip_or_run_elsewhere_keeps_it_held(self):
         # Review I-1: bash skips `x=1` behind `||` or in an untaken branch, and
@@ -1026,7 +1046,7 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                 self.assertIn(self.SAID % ("eval", ""), why[0])
         for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "f() { :; }\nx=1\n"):
             with self.subTest(between=between):
-                self.assertEqual([], self.job(self.GET + between + 'eval "$x"\n'))
+                self.not_carried(self.GET + between + 'eval "$x"\n')
 
 
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
@@ -2816,12 +2836,19 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # or a file, from a substitution holding more than the fetch, or through
         # a printer other than echo/printf, it is a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + "eval \"${x//$'\\r'/}\"\n", get + 'echo "$x" > f\nsh f\n',
-                    get + 'y=$(echo "$x")\neval "$y"\n', get + 'cat <<< "$x" | sh\n',
+        for run in (get + 'echo "$x" > f\nsh f\n', get + 'cat <<< "$x" | sh\n',
                     "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
                     'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
             with self.subTest(run=run):
                 self.accepted(("run", run))
+        # Two of those hand a shell a word that is ALL expansion, and #2483
+        # reports THAT, beside a download no checksum clears: the cut and the
+        # copy are still not followed, so the sentence names the word and
+        # never the download.
+        for run in (get + "eval \"${x//$'\\r'/}\"\n", get + 'y=$(echo "$x")\neval "$y"\n'):
+            with self.subTest(run=run):
+                self.assertIn("a program this guard does not follow",
+                              self.flagged(("run", run)))
         for run in (get + 'eval "$x"\n', get + 'echo "$x" | sh\n'):
             with self.subTest(run=run):
                 self.flagged(("run", run))
@@ -2832,8 +2859,11 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # though bash runs the download; on one line the group is read, and
         # keeps it held.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        self.accepted(("run", get + '(\n  x=1\n)\neval "$x"\n'))
-        self.flagged(("run", get + '( x=1 )\neval "$x"\n'))
+        # Emptied, the name carries nothing #2341 can name -- what stands is
+        # #2483's unread program word; held, the sentence is the carried one.
+        self.assertIn("a program this guard does not follow",
+                      self.flagged(("run", get + '(\n  x=1\n)\neval "$x"\n')))
+        self.assertIn("carries", self.flagged(("run", get + '( x=1 )\neval "$x"\n')))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
@@ -4168,7 +4198,7 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
         self.assertIn(self.SAID, why[0])
 
     def test_a_printer_reason_no_longer_hides_behind_a_foreign_program(self):
-        # `_Unprinted`'s dedup drops the printer sentence where ANOTHER reason
+        # `_Quiet`'s dedup drops the printer sentence where ANOTHER reason
         # reports its statement (#2333). A foreign stdin program is `Idle`
         # since #2499, so it is no longer that other reason and the printer
         # sentence stands on its own: three defects where there were two.

@@ -10,6 +10,77 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **Verdict ingestion has bounded resources (#2531, #1816).** Advisor verdicts use a shared
+  8 MiB regular-file reader, and tolerant JSON extraction bounds memory and compatibility work.
+- **Runner batches name a broken outage stop predicate (#2544, #1817).** Work still continues,
+  while one redacted and bounded diagnostic tells the operator the short-circuit was unavailable.
+- **Scanner timeout cleanup names container-kill failures (#2543, #1817).** Missing or empty
+  container ids, launch errors and nonzero kill exits are reported without replacing the timeout.
+- **Image freshness lookup failures now fail monitor runs (#2542, #1817).** Push runs retain the
+  warning fallback, while scheduled and manual checks return an error with the API diagnostic.
+- **Family PR review bounds verifier fan-out (#2535, #1816).** Each of five finders is limited
+  to 25 findings by its output schema and again before three-way verification. The result and log
+  disclose truncation by dimension, bounding a run at 375 verifier calls.
+- **Report chunk sizing is linear in its findings (#2534, #1816).** Each finding is serialized
+  once for sizing, with exact UTF-8 envelope and separator costs tracked incrementally.
+- **Evidence-scope import scans are bounded and memoized (#2533, #1816).** Each source is a
+  regular file read at most once per entry and only through a 4 MiB byte cap before parsing.
+- **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
+  `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
+  and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`
+  to read, so `curl -fsSLo tool …` beside `sh -c "$P"` read CLEAN while bash 3.2.57 and 5.2.21
+  both run the download once `$P` is `sh tool`; so did `bash -c "${P}"`, `eval "$P"`,
+  `sh -ec "$P"` and `${X:-sh} -c "$P"`. The `$CMD -c "$P"` twin has been REPORTED since #2465's
+  fix round (`candidates` hands a `$` command word's program to `unread_program`): one dynamic
+  program word, two answers, decided by whether the shell happened to be spelled out.
+  `dynamic_program` now reads that word wherever a shell takes one, and `unread_program` reports
+  it `Idle`, kept under #2481's predicate exactly as the twin is — beside a fetch this guard
+  reports, and nowhere else, so a credited download leaves it standing nowhere. `$@`, `${@}` and
+  `$*` are one thing in three spellings and read alike (`set --` gives a step positionals), and a
+  nest of any depth is still all expansion (`${A:-${B:-${C}}}`), since braces are counted rather
+  than matched by pattern. Three spellings are NOT this rule and read as they did: a lifted
+  `$(...)` marker, whose inside the guard's own walk reads (`sh -c "$(cat tool)"`), a string
+  MIXING literal text with an expansion (`sh -c "echo $X"`), and a word holding text of its own
+  (`sh -c "${A}x"`). The rule also speaks LAST: a value where a shell reads its options keeps
+  #2344's reason, which `_weighed` makes LOUD where a word after it fetches
+  (`sh $X -c "$P" 'curl … | sh'`), and this rule's droppable one would have replaced it. Where
+  #2341's `carried` names the same statement louder — `x=$(curl …)` then `sh -c "$x"` — the quiet
+  sentence is dropped and the carried one stands alone, the dedup `_Unprinted` already had for
+  printers (one class for both now, `_Quiet`). Five readings fail CLOSED on purpose: the reader
+  drops quotes, so `sh -c '$x'` is reported though bash runs nothing unless `$x` is exported;
+  `eval set -- "$P"` is the getopt idiom and runs none of the value as a command, unless it holds
+  a `;`, which `eval` does run; a cut (`eval "${x//$'\r'/}"`) is reported as an unread word,
+  though the guard still does not follow the download through it; `curl … | sh -c "$P"` says both
+  of its defects, the stream and the unread program; and `sh -c "$*"` says this rule's sentence
+  beside the pattern one #2294 already gave the script inlined from it. The value gap the gap list
+  keeps is untouched: `sh -c "sh $X"` runs `tool` where `$X` names it and still reads clean,
+  because no word follows the value. Over the 11 probe corpora (439,716 rows) 42 rows gain the
+  sentence, all of them already flagged, with 0 CLEAN→FLAGGED, 0 FLAGGED→CLEAN and no reason lost;
+  over a 1,372-row grid of the shape itself 190 rows go CLEAN→FLAGGED, every one beside an
+  uncredited download or a carried one, and its 70 `sh $X -c` rows read exactly as main does. Over
+  the 3,200-workflow calibration pool (4,642 jobs) three jobs hand a literal shell such a word —
+  mlflow `cross-version-tests.yml :: test1` and `:: test2` (`eval "$MATRIX_INSTALL"` and two
+  more), vector `k8s_e2e.yml :: test-e2e-kubernetes` (`bash -c "$2"`) — and none of them fetches,
+  so no job's answer changes.
+- **A hand-edited non-string manifest run_id is refused at the read, not crashed on in Popen
+  (#2525).** `phases/synthesize` and `phases/tools` both thread `manifest.get("run_id") or ""` into
+  the child's argv unconverted, and `run_manifest.load_manifest` type-validated only `host` while
+  `run_tag` slugs the id through `str()` — so a `"run_id": 7` edited into `run-manifest.json`
+  survived the load, stayed truthy, and reached `subprocess.Popen` as a non-string argv member. The
+  `TypeError` that raises is covered by neither `phases/child`'s `OSError` → `DriverError`
+  conversion nor `driver.run`'s `except (DriverError, ValueError)`: the driver died with a
+  traceback and no `status:` line at all. The loader now requires a PRESENT `run_id` to be a
+  non-empty string, which covers every phase that threads it at once rather than one flag at a
+  time — `phases/engine` hands each phase the dict this loader returned. A bad one is DISCARDED
+  with a stderr line naming the field and the value, exactly as an unknown `host` is, and never
+  raised: this same read is what `runio._run_tag` calls on every artifact path resolution, the
+  `--reset` recovery path included, so an exception here would be one `--reset` could not clear
+  (the failure `run_tag`'s own docstring records). The driver then takes its existing
+  corrupt-manifest path — clear the derived artifacts, rebuild from the real CLI args — and ends
+  with a `status:` line. An absent or null `run_id` is left alone, like an absent host: the setup
+  namespace and every pre-key manifest carry none, and the consumers already read it as an
+  absence. #2107's own residual assertion stays as it is, because it measures the phase handed a
+  manifest dict directly; its cover is the loader's new test class.
 - **Discovery uses the canonical confinement predicate (#2450, #1768).** `discovery.py` carried a
   third private `_within`, with its own cached root realpath, beside the two names that already
   alias `claim_scope.confined_to_root`. Substituting the canonical one naively would have been a

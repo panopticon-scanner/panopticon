@@ -53,6 +53,7 @@ import ast
 import hashlib
 import os
 import re
+import stat
 
 import scripts.run_manifest as run_manifest
 from . import runio
@@ -100,6 +101,7 @@ _PY = ".py"
 # spend the closure's whole IO budget proving that two vendored archives differ.
 # Oversized counts as DISTINCT, never as identical -- see `_digest`.
 _HASH_BYTES = 4 * 1024 * 1024
+_SOURCE_BYTES = 4 * 1024 * 1024
 
 # The controller's own seed for a scope-limited backup's `missing_evidence`.
 # ONE line per name the driver refused to guess at, written into the dispatch
@@ -224,31 +226,40 @@ def _candidates(review_root, paths, name):
     return sorted(out)
 
 
+def _read_regular(review_root, rel, limit):
+    if _usable(review_root, rel) != rel:
+        raise OSError("not a confined regular file")
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(os.path.join(review_root, rel), flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(limit + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > limit:
+        raise ValueError("file exceeds %d-byte limit" % limit)
+    return raw
+
+
 def _digest(review_root, rel, cache):
-    """`(sha256-of-the-first-_HASH_BYTES, None)`, or `(None, why)`.
+    """Memoized ``(sha256, None)`` or ``(None, why)`` for one bounded file.
 
-    `(None, why)` means "this module cannot call the file identical to
-    anything": `_UNREADABLE` for a file it could not open, `_OVERSIZED` for one
-    it could not read whole. Either way the ambiguity stands -- the fail-closed
-    direction, because the cost of guessing wrong is a read fence around the
-    wrong file -- and `why` is what the disclosure says instead of inventing
-    "differing" for a comparison that never happened (R1-2).
-
-    MEMOISED in the entry's `cache` (fix round 1, R1-1): a path's bytes do not
-    change inside one dispatch, and without the memo the read bound was per
-    NAME per CLAIM -- 48 claims naming one ambiguous basename read its twelve
-    candidates 48 times over. One read per candidate path per entry, ever.
+    Unreadable and oversized candidates cannot be called identical, so either
+    keeps the name ambiguous and gives the disclosure its truthful reason.
     """
     memo = cache.setdefault("digests", {})
     if rel not in memo:
         try:
-            with open(os.path.join(review_root, rel), "rb") as fh:
-                blob = fh.read(_HASH_BYTES + 1)
+            blob = _read_regular(review_root, rel, _HASH_BYTES)
         except OSError:
             memo[rel] = (None, _UNREADABLE)
+        except ValueError:
+            memo[rel] = (None, _OVERSIZED)
         else:
-            memo[rel] = ((None, _OVERSIZED) if len(blob) > _HASH_BYTES
-                         else (hashlib.sha256(blob).hexdigest(), None))
+            memo[rel] = (hashlib.sha256(blob).hexdigest(), None)
     return memo[rel]
 
 
@@ -472,19 +483,29 @@ def _resolve(review_root, rel_path, parts, level):
     return None
 
 
-def _imports_of(review_root, rel_path):
-    """The in-repo files `rel_path` imports, in source order.
+def _source(review_root, rel_path, cache):
+    memo = cache.setdefault("source", {})
+    if rel_path not in memo:
+        try:
+            raw = _read_regular(review_root, rel_path, _SOURCE_BYTES)
+            memo[rel_path] = raw.decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            memo[rel_path] = None
+    return memo[rel_path]
 
-    Tolerant by construction: an unreadable or unparseable file imports nothing
-    as far as this is concerned. A backup grant is a best-effort widening, and
-    a SyntaxError in the target tree must never fail a run.
-    """
-    if not rel_path.endswith(_PY):
-        return []
+
+def _imports_of(review_root, rel_path, cache):
+    """Memoized in-repo imports; unsafe or unparseable source imports nothing."""
+    memo = cache.setdefault("imports", {})
+    if rel_path in memo:
+        return memo[rel_path]
+    text = _source(review_root, rel_path, cache) if rel_path.endswith(_PY) else None
     try:
-        with open(os.path.join(review_root, rel_path), encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), rel_path)
-    except (OSError, ValueError, SyntaxError, RecursionError):
+        tree = ast.parse(text, rel_path) if text is not None else None
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
+        tree = None
+    if tree is None:
+        memo[rel_path] = []
         return []
     out = []
     for node in ast.walk(tree):
@@ -492,25 +513,17 @@ def _imports_of(review_root, rel_path):
             found = _resolve(review_root, rel_path, parts, level)
             if found and found not in out:
                 out.append(found)
+    memo[rel_path] = out
     return out
 
 
-def _mentions(review_root, rel_path, needle):
-    """Cheap pre-filter: does this file's text contain `needle` at all?
-
-    A group can hold dozens of files and a chunk dozens of claims; parsing every
-    one for every claim is the difference between a millisecond and a second per
-    entry. A file that never spells the claim module's name cannot import it.
-    """
-    try:
-        with open(os.path.join(review_root, rel_path), encoding="utf-8",
-                  errors="replace") as fh:
-            return needle in fh.read()
-    except OSError:
-        return False
+def _mentions(review_root, rel_path, needle, cache):
+    """Cheap cached pre-filter before parsing a possible importer."""
+    text = _source(review_root, rel_path, cache)
+    return text is not None and needle in text
 
 
-def _importers(review_root, rel_path, group_files):
+def _importers(review_root, rel_path, group_files, cache):
     """(c, second direction): same-group files that import `rel_path`."""
     stem = os.path.basename(rel_path)[:-len(_PY)]
     out = []
@@ -519,9 +532,9 @@ def _importers(review_root, rel_path, group_files):
         if (not other or other == rel_path or not other.endswith(_PY)
                 or other in out):
             continue
-        if not _mentions(review_root, other, stem):
+        if not _mentions(review_root, other, stem, cache):
             continue
-        if rel_path in _imports_of(review_root, other):
+        if rel_path in _imports_of(review_root, other, cache):
             out.append(other)
     return out
 
@@ -529,6 +542,7 @@ def _importers(review_root, rel_path, group_files):
 def _closure_paths(review_root, claim, group_files, unresolved=None,
                    cache=None, cap=CAP):
     """The FULL ordered closure, before the cap -- (a), then (b), then (c)."""
+    cache = {} if cache is None else cache
     claim = claim if isinstance(claim, dict) else {}
     loc = claim.get("location")
     loc = loc if isinstance(loc, dict) else {}
@@ -541,8 +555,8 @@ def _closure_paths(review_root, claim, group_files, unresolved=None,
         if path not in out:
             out.append(path)
     if primary and primary.endswith(_PY):
-        for path in (_imports_of(review_root, primary)
-                     + _importers(review_root, primary, group_files)):
+        for path in (_imports_of(review_root, primary, cache)
+                     + _importers(review_root, primary, group_files, cache)):
             if path not in out:
                 out.append(path)
     return out
