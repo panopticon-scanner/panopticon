@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
+  counter joins #2405's broken-artifact measure (owner ruling 2026-10-02). `paths_dropped` — #2169's
+  count of paths whose value in the hunk map was not a list of ranges at all, so the loader drops
+  the path entirely — now turns a PASS into `gate: INCONCLUSIVE` on an active delta under the
+  default on-diff gate scope when gate-eligible findings exist, exactly as
+  `paths_emptied_by_drops`, `ranges_dropped` and a set `payload_malformed` already did. The
+  DIRECTION is why: a dropped path LEAVES the map, so a HIGH in that file classified off-diff, left
+  the gate's source set, and the run reported a PASS it had not earned — the fail-open mirror of
+  the emptied arm, which admits such findings to the gate instead. A legitimate change shape never
+  produces one (the loader drops a path only for a non-list value, and no `diff_map.parse` output
+  carries one), so the ruling's "never fires on a deletion-only PR" property holds; the `[]`
+  remainder stays disclosed and is never gated on. Disclosure-only was rejected: the stderr line
+  and both report blocks already published the count, and a note beside a green gate is not a
+  refusal to certify. The exclusion pin flips to an inclusion one, the reason names the counter and
+  the direction so the operator finds the same number in `meta.coverage.delta`, and a new
+  end-to-end pin reads INCONCLUSIVE for a map that dropped `b.py` with a HIGH at `b.py:3`.
 - **A download written to a `$`-spelled path binds to its literal basename at use (#2442).** The
   mirror of #2345, and a fail-open until now: that issue bound a `$`-spelled OPERAND by its last
   part (`sh "$PWD/cuda_1.run"` after `curl -o cuda_1.run`), but a `$`-spelled DESTINATION only

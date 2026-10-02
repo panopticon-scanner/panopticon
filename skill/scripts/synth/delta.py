@@ -444,7 +444,7 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     emptied-by-drops only: the gate reads INCONCLUSIVE when
     `paths_emptied_by_drops`, `ranges_dropped` or `payload_malformed` says the
     artifact is damaged, the one shape that is provably broken rather than a
-    change shape.
+    change shape. #2517 added a fourth counter on that standard, below.
 
     What it RECOVERS: a damaged map that still carries a real range, which
     `zero_hunk_gate_gap` cannot see at all -- that rule needs `ranges == 0`
@@ -460,11 +460,18 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     DISCLOSED, never reclassified (ruling 2026-09-30): `_disclose_load` names
     the paths and both report blocks publish the counts.
 
-    `paths_dropped` is not a measure, by the ruling's wording. It is named in
-    the reason through `_dropped_phrase` when it co-occurs with a dropped range,
-    but a path dropped on its own leaves the map, which sends its findings
-    OFF-diff: the gate loses them rather than admitting them, and the operator
-    reads that loss from `meta.coverage.delta` and the stderr line.
+    `paths_dropped` is the FOURTH measure (#2517, owner ruling 2026-10-02): a
+    path whose value was not a list of ranges at all is as empty as a zero-hunk
+    map, so it turns the gate INCONCLUSIVE exactly as the three above do. What
+    it RECOVERS is the opposite direction -- the dropped path LEFT the map, so
+    every finding in it classified off-diff and left this gate's source set, a
+    fail-OPEN loss where the emptied arm is a fail-closed admission. The "never
+    fires on a legitimate change shape" property holds: the loader drops a path
+    only for a non-list value, which no `diff_map.parse` output produces. What
+    it still MISSES is the `[]` remainder above, unchanged. The count stays
+    `_dropped_phrase`'s, shared with the stderr disclosure and the zero-hunk
+    reason; the counter's NAME and the direction are a clause of this note's
+    own, as the emptied arm words its consequence, so one loss reads once.
 
     The four guard conditions are `zero_hunk_gate_gap`'s, each load-bearing for
     its reasons: an INACTIVE delta degrades to the wider gate, which fails
@@ -486,7 +493,7 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
             and gate_scope == "on-diff"):
         return None
     if not (report.paths_emptied_by_drops > 0 or report.ranges_dropped > 0
-            or report.payload_malformed is not None):
+            or report.paths_dropped > 0 or report.payload_malformed is not None):
         return None
     # Every arm that tripped, named with the counter it reads: this verdict is a
     # statement about the artifact, so an operator has to be able to go to
@@ -500,6 +507,14 @@ def broken_artifact_gate_gap(ctx, eligible_count, gate_scope) -> str | None:
     dropped = _dropped_phrase(report)
     if dropped:
         damage.append(dropped)
+    if report.paths_dropped:
+        # #2517: the COUNT is `_dropped_phrase`'s line above; this clause adds
+        # only what the gate reads into it -- the counter's name, and the
+        # direction, which is the emptied arm's inverted: a dropped path left
+        # the map, so the gate lost those findings instead of admitting them.
+        damage.append("the dropped path(s) left the map (paths_dropped), so "
+                      "every finding in one of them classified off-diff and "
+                      "left this gate's source set -- the fail-OPEN loss")
     if report.paths_emptied_by_drops:
         damage.append("%d named path(s) were emptied of every range "
                       "(paths_emptied_by_drops), so a finding in one of them "
