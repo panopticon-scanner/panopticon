@@ -139,10 +139,10 @@ live, so a change that catches one fails there and edits this list.
   its failure are the step's to change (`sh() { :; }`, `< $F`, `( … ) || true`). Nothing else in
   such a body is the step's own either, unless the holder's own options read stdin
   (`bash -s -c 'sh'`): the job is read with the bodies no shell is sure to read and without them
-  (`job_defects`), and a defect of either reading is reported, so reading one can only add a report;
+  (`job_defects`), and a defect of either reading is reported, so reading one clears no job;
   `eval 'bash -s < f'` and `eval 'bash -s &'` still over-report a download no shell runs. Still
   open: a `}` (or `exit`, a call, a write) in a body a LITERAL shell reads is taken for the step's
-  own, as on `main`, filed under #2608; and a statement of one unsure body still gives credit for a
+  own, filed under #2608; and a statement of one unsure body still gives credit for a
   fetch only another unsure body holds, filed under #2608. `eval '(bash -s)'` answers so and
   `eval '{ bash -s; }'` (a group: two statements to the reader) does not, though both run the
   heredoc, and a pipeline whose FIRST stage reads stdin is never reached, both filed under #2331.

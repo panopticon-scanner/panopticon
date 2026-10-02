@@ -468,7 +468,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       function or of one the body defines, a `> sums`, a `cp` -- reported as
       `main` reports it, the job being read without that body too, though the
       inner shell runs the `exit 1`, a shell lacks the function it calls or
-      the check fails (round 2); and, as before round 1, the body of
+      the check fails (round 2); a body no shell is sure to read that the
+      reader refuses (a `)` in a substitution heredoc body), which refuses its
+      step whole though under `CMD=true` or past `X=/dev/null` no shell reads
+      it, filed under #2608; and, as before round 1, the body of
       `builtin eval`, which the guard does not take for `eval`;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
       `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
@@ -1701,6 +1704,29 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         found = wg.job_defects([("A", self.UNSURE), ("B", refused)])
         self.assertEqual(["B"], [name for name, _why in found])
         self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
+
+    def test_2500_a_refused_body_no_shell_is_sure_to_read_refuses_its_step(self):
+        # The same `)` in a body no shell is sure to read: the body is read, so the step is refused
+        # whole, in both readings. Behind `eval 'bash -s'` and `bash -c 'sh'` every shell runs the
+        # stream (rc 0); past `X=/dev/null` and under `CMD=true` none reads the body (rc 0) -- an
+        # over-report, filed under #2608.
+        refused = "echo $(cat <<E2\n$(%s)\nE2)" % PIPE
+        for holder, pre in self.HOLDERS + (("bash -c 'sh'", ""),):
+            script = stdin_step(holder, refused, pre=pre, fetched=False)
+            with self.subTest(script=script):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.fetch_exec_defects(script)
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
+        # In a job, a refused step's own statements leave the fold with it, as those of any step
+        # the reader refuses: step B's download, which step A makes executable, is reported at B
+        # where A's body is read and at A where it is refused -- the job is reported either way.
+        for body, named in (("echo hi", "B"), (refused, "A")):
+            with self.subTest(body=body):
+                step = stdin_step("eval 'bash -s'", body, fetched=False) + USE
+                found = wg.job_defects([("B", GET), ("A", step)])
+                self.assertEqual([named], [name for name, _why in found])
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
