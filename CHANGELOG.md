@@ -11,6 +11,12 @@ evidence exposed.
   guard reports a downloaded payload used by another stage of its checksum group's pipeline,
   including a checksum ahead of `&&` under every supported shell. It still credits a use after
   a failing pipefail pipeline and a use gated by `} &&`.
+- **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
+  guard used a generic refusal because one pass met the first body's same-line rest before the
+  later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies
+  from the next line, then parses the saved rest, so body and rest payloads get specific
+  findings. A second lexing pass was rejected because it would duplicate state and cost; two
+  `EOF)` ends remain fail-closed because Bash reports a syntax error.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
