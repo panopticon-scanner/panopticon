@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tolerant verdict extraction keeps small wrapped bundles (#2553, #1816).** A fixed 64 KiB
+  minimum scan budget reaches JSON after shallow nested or 256-open-brace prose while the
+  length-scaled caps still bound large inputs.
 - **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
   validated group, waits once for the shared SIGTERM grace, and escalates before reaping any
   leader, so a resistant descendant cannot escape SIGKILL. The price: a retained leader is a
