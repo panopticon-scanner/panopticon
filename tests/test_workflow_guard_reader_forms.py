@@ -113,11 +113,36 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertTrue(defects(script))
 
+    def test_numeric_ansi_c_escapes_spell_the_shells_c_option(self):
+        # #2470: Bash 3.2 and 5.2 decode the hex and octal forms; Bash 5.2
+        # also decodes both Unicode forms. Any supported shell can run the
+        # program, so each spelling must expose its fetch-and-execute.
+        for option in (r"$'-\x63'", r"$'-\143'", r"$'-\u0063'", r"$'-\U00000063'"):
+            with self.subTest(option=option):
+                found = defects("sh %s '%s'\n" % (option, PIPE))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_code_point_outside_ascii_fails_closed(self):
+        found = defects("sh $'-\\u00e9' '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("cannot read this step", found[0][1])
+        self.assertIn("outside ASCII", found[0][1])
+
+    def test_an_ansi_c_here_string_is_read_as_written(self):
+        found = defects("sh <<< $'%s\\n'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_a_clean_ansi_c_here_string_is_not_an_expansion(self):
+        self.assertEqual([], defects("sh <<< $'echo hi\\n'\n"))
+
     def test_the_controls_read_as_they_did(self):
         # A value whose words fetch nothing, in a job that downloads nothing,
         # is not reported; with no word after it there is nothing to read.
         for script in ("X=-c\nsh $X 'echo hi'\n", "sh $X\n", "sh -o pipefail x.sh\n",
-                       "bash $X/x.sh '%s'\n" % PIPE, "sh $'-e' '%s'\n" % PIPE):
+                       "bash $X/x.sh '%s'\n" % PIPE, "sh $'-e' '%s'\n" % PIPE,
+                       "sh $'-\\x63' 'echo hi'\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
         self.assertTrue(defects("sh -c '%s'\n" % PIPE))
