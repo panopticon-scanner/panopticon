@@ -1037,7 +1037,7 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT
     becomes its words, the program among them (C1 of #2331's final review).
     That value is the candidate, weighed `Idle`, kept where the job holds a
-    fetch the guard reports.
+    fetch the guard reports and nothing louder reports its statement (#2490).
     A `<(...)` hands the shell a file to read instead, and is not one."""
 
     def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
@@ -1053,6 +1053,40 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         for script in ("sh $(echo tool)\n", 'eval "sh \\$(echo x.sh)"\n', "sh `echo tool`\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_a_louder_reason_at_its_statement_speaks_alone(self):
+        # #2490: where a fetch's own defect -- the stream `sh $(curl …)` hands
+        # the shell -- or #2341's carried download reports the same statement,
+        # the value's `Idle` is dropped and the loud sentence stands alone.
+        # Bash 3.2.57, 5.2.21 and dash hand the downloaded words to `sh` as
+        # its operands and run none of them; the controls, the stream piped
+        # and the download handed whole, run in all three.
+        stream = "hands %si.sh straight to `sh`" % URL
+        carried = "carries %si.sh in `$x` and hands it to `%s`"
+        fetch = "x=$(curl -fsSL %si.sh)\n" % URL
+        for script, said in (("sh $(curl -fsSL %si.sh)\n" % URL, stream), (PIPE + "\n", stream),
+                             (fetch + 'sh $(echo "$x")\n', carried % (URL, "sh")),
+                             (fetch + 'eval "sh \\$(echo \\"\\$x\\")"\n', carried % (URL, "sh")),
+                             (fetch + 'sh -c "$x"\n', carried % (URL, "sh -c"))):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+        # Where nothing louder speaks, the value's `Idle` is the one sentence
+        # beside the download `sh tool` runs in all three: the must-trip
+        # against dropping too much. The drop is per statement, not per job:
+        # beside a stream on a statement of its own, both stand, in order.
+        value = "passes `sh` `$(...)` where it reads its options"
+        for script in (GET + "sh $(echo tool)\n", GET + 'eval "sh \\$(echo tool)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(value), found)
+        found = defects(PIPE + "\nsh $(echo tool)\n")
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith(value), found)
+        self.assertTrue(found[1][1].startswith(stream), found)
+        self.assertEqual([], defects("sh $(echo tool)\n"))
 
     def test_a_process_substitution_hands_a_file_not_words(self):
         # Beside a download nothing is handed on; a `<(...)` that fetches is

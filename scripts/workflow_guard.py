@@ -604,26 +604,24 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
 def _defects(stmts, conditions=None, credit=None, walked=None):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
-    `conditions` maps a statement index to the PAIR that decides whether it
-    runs -- the `if:` of the step it came from, and the shell branch it was
-    written inside (`workflow_forms.regions`); absent = unconditional on both
-    counts. A check clears a use only where both halves match -- see `_binds`.
-    `credit` maps an index to its step's own answer for a check there, which
-    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
-    `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
-    checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
-    which `job_defects` has from each step's own read.
+    `conditions` maps a statement index to the PAIR that decides whether it runs -- the `if:` of the
+    step it came from, and the shell branch it was written inside (`workflow_forms.regions`); absent
+    = unconditional on both counts. A check clears a use only where both halves match -- see
+    `_binds`. `credit` maps an index to its step's own answer for a check there, which
+    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or `_SOFT_STEP` where
+    the step carries `continue-on-error: true`, whose checks clear nothing at all. `walked` is
+    `_walk`'s answer for `stmts`, which `job_defects` has from each step's own read.
 
-    An unread form stands only where some fetch here is one `_defect` reports --
-    asked again with those forms as uses -- or an `unbound` download (#2481)."""
-    checks = _checks(stmts, credit)
-    conditions = conditions or {}
+    `kept` weighs the unread forms beside the fetch defects found here: an `Idle` one stands only
+    where some fetch is one `_defect` reports -- asked again with those forms as uses -- or an
+    `unbound` download (#2481), and nothing louder reports its statement (#2490)."""
+    checks, conditions = _checks(stmts, credit), conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     found = [(index, why) for index, fetch in fetched
              if (why := _defect(fetch, index, stmts, checks, conditions))]
-    return kept(unread, bool(found) or bool(unread) and (unbound(stmts, fetched, unread) or any(
+    return kept(unread, found, bool(found or unread and (unbound(stmts, fetched, unread) or any(
         _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread])
-        for index, fetch in fetched))) + found
+        for index, fetch in fetched))))
 
 
 def fetch_exec_defects(script):

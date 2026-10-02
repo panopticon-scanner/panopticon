@@ -1107,11 +1107,12 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                 self.assertIn("carries https://example.test/i.sh in `$y` and hands it to `eval`",
                               why[0])
         # A script handed to `eval` in a substitution was refused already, in
-        # a job that downloads (`substitution_script`); it now says what runs.
+        # a job that downloads (`substitution_script`); it now says what runs,
+        # and that `Idle` hand-off is dropped beside the louder carried
+        # sentence on its statement (#2490).
         why = self.job(self.GET + 'y=$(eval "$x")\n')
-        self.assertEqual(2, len(why), why)
-        self.assertIn("hands a script to `eval` inside a command substitution", why[0])
-        self.assertIn(self.SAID % ("eval", " inside a command substitution"), why[1])
+        self.assertEqual(1, len(why), why)
+        self.assertIn(self.SAID % ("eval", " inside a command substitution"), why[0])
 
     def test_the_here_string_keeps_its_own_answer(self):
         # Already refused as an expanding here-string (#2293), with or without

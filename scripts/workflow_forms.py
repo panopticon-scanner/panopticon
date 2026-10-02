@@ -648,15 +648,15 @@ def unbound(stmts, fetched, unread):
                    for index, statement in enumerate(stmts)))
 
 
-def kept(unread, unverified):
-    """The `(index, why)` of `unread` that stand where `unverified` says the
-    job holds a fetch this guard REPORTS -- a download no checksum clears, a
-    stream handed to a shell, an unresolved transfer: an `Idle` one only
-    there (#2481, #2499), and a `_Quiet` one not at a statement another
-    reason reports (`carried`'s, #2333, #2483)."""
-    loud = {index for index, why in unread if not isinstance(why, Idle)}
-    return [(index, why) for index, why in unread if not isinstance(why, Idle)
-            or unverified and not (isinstance(why, _Quiet) and index in loud)]
+def kept(unread, found, unverified):
+    """`unread`'s `(index, why)` that stand, then the fetch defects `found`:
+    every loud one, and an `Idle` one only where `unverified` says the job
+    holds a fetch this guard REPORTS -- a download no checksum clears, a stream
+    handed to a shell, an unresolved transfer (#2481, #2499) -- and no loud
+    reason of either reports its statement (`carried`'s, a stream's, #2490)."""
+    loud = {index for index, why in unread + found if not isinstance(why, Idle)}
+    return [(index, why) for index, why in unread
+            if not isinstance(why, Idle) or unverified and index not in loud] + found
 
 
 # The container runners, and the subcommands of theirs that run a command. The
