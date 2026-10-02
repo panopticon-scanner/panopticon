@@ -8,10 +8,11 @@ guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
 - **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
-  56 previously declined real call sites (25 to 33 of 106 scopes), including grouped calls and
+  56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
   piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
-  conditional calls still refuse the proof.
+  conditional calls still refuse the proof. An `||`-suppressed call is credited only when the
+  gate remains the function's final status; the conservative `unset` barrier is disclosed.
 - **`shell_reader.py`'s token layer moved to `scripts/shell_tokens.py` (#2628, pure move).**
   `_Token`, `_Parse`, `derived`, `readable`, `is_marker`, `has_substitution` and `yields_words` now
   live in the new module and are imported back into the reader under their own names, so no caller

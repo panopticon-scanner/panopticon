@@ -33,6 +33,7 @@ from unittest import mock
 
 import shell_reader
 import workflow_forms
+import workflow_gating
 import workflow_guard as wg
 import workflow_programs
 # The download shape itself lives in the layer below the rule (#1697).
@@ -1668,6 +1669,26 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
         self.assertReported('sh -c "sh -c \'%s\'; echo ok"', "the step does not stop",
                             self.CHECK.replace('"', '\\"'))
 
+    def test_a_child_script_in_a_distant_function_stays_fail_closed_without_step_credit(self):
+        # `flattened` must recurse before `step_credit` exists. Its no-credit
+        # `swallowed` call can return a FunctionGate, but the `is None` test
+        # cannot turn that proof object into credit for the child script.
+        seen = []
+        swallowed = workflow_forms.swallowed
+
+        def observed(*args, **kwargs):
+            answer = swallowed(*args, **kwargs)
+            seen.append((answer, len(args), kwargs))
+            return answer
+
+        with mock.patch.object(workflow_forms, "swallowed", side_effect=observed):
+            found = self.job("f() { ( sh -c '%s' || exit 1 ); }\necho hi\nf")
+        self.assertTrue(any(isinstance(answer, workflow_gating.FunctionGate)
+                            and arity == 4 and "credit" not in kwargs
+                            for answer, arity, kwargs in seen), seen)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("inside the script `sh` runs", found[0][1])
+
     def test_a_check_piped_into_another_command_in_the_script_is_reported(self):
         # Re-review N-D: unless the script's own pipefail holds, read from
         # its options or a plain `set` as its `-e` is.
@@ -2786,6 +2807,11 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "f() { GATE; }\n{ f; }\n",
             "f() { GATE; }\nf || exit 1\n",
             "set +e\nf() { GATE; }\nf || exit 1\n",
+            "f() { GATE; echo after; }\nf\n",
+            "f() { GATE; echo after; }\necho hi\nf\n",
+            "f() { echo pre; GATE; }\nf || exit 1\n",
+            "f() { GATE; }\ng() { f; }\ng || exit 1\n",
+            "f() { GATE; }\ng() { f || return 1; }\ng\n",
             "outer() {\nf() { GATE; }\nf\n}\nouter\n",
         )
         for body in bodies:
@@ -2815,6 +2841,28 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "set +e\nf() { GATE; }\ng() { f; }\ng\n",
             "set +eu\nf() { GATE; }\necho hi\nf\n",
             "true() { GATE; }\nunset -f true\ntrue\n",
+            "set +e\nf() { GATE; echo after; }\nf || exit 1\n",
+            "set +e\nf() { GATE || true; }\nf || exit 1\n",
+            "set +e\nf() { GATE; return 0; }\nf || exit 1\n",
+            "set +e\nf() { GATE; true; }\nf || exit 1\n",
+            "f() { GATE; echo after; }\nf || exit 1\n",
+            "f() { GATE || true; }\nf || exit 1\n",
+            "f() { GATE; return 0; }\nf || exit 1\n",
+            "f() { GATE; true; }\nf || exit 1\n",
+            "set +e\nf() { GATE; echo after; }\nf\n",
+            "f() { GATE; echo after; }\n{ f; } || exit 1\n",
+            "f() { GATE; echo after; }\n( f ) || exit 1\n",
+            "f() { GATE; echo after; }\ng() { f; }\ng || exit 1\n",
+            "f() { GATE; }\ng() { f; echo after; }\ng || exit 1\n",
+            "f() { GATE; echo after; }\nf || { echo e; exit 1; }\n",
+            "f() { GATE; echo a; echo b; }\nf || exit 1\n",
+            "f() { ( GATE ); echo after; }\nf || exit 1\n",
+            "f() { GATE; echo after; }\necho hi\nf || exit 1\n",
+            "f() { GATE; echo after; }\ng() { f || return 1; }\ng\n",
+            "f() { GATE; echo after; }\ng() { f || exit 1; }\ng\n",
+            "f() { GATE; echo after; }\nif ! f; then exit 1; fi\n",
+            "f() { GATE; echo after; }\nf && echo ok || exit 1\n",
+            "f() { GATE; echo after; }\nwhile f; do break; done\n",
         )
         for body in bodies:
             script = self.FETCH + body.replace("GATE", "( CHECK || exit 1 )").replace(
@@ -2840,6 +2888,19 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                     self.assertEqual(1, len(found), found)
                     self.assertTrue("same pipeline" in found[0][1]
                                     or "piped into another command" in found[0][1], found)
+
+    def test_a_function_gate_in_a_soft_step_does_not_clear_a_later_step(self):
+        for call in ("f() { GATE; }\nf\n", "f() { GATE; }\necho hi\nf\n"):
+            check = call.replace("GATE", "( CHECK || exit 1 )").replace("CHECK", self.CHECK)
+            for shell in (None, "bash", "sh"):
+                with self.subTest(call=call, shell=shell):
+                    found = wg.job_defects([
+                        wg.Step("get", self.FETCH),
+                        wg.Step("check", check, shell, None, True),
+                        wg.Step("use", self.USE),
+                    ])
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("continue-on-error", found[0][1])
 
     def test_an_enclosing_pipeline_uses_the_steps_pipefail_state(self):
         for body in ("CHECK | cat\n", "{ ( CHECK || exit 1 ); } | cat\n"):

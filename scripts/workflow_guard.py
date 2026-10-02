@@ -173,6 +173,10 @@ runs each live, so a change that catches one fails there and edits this list.
   A heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not
   this rule's business at all: the script is text in the repo under review, which is the
   `sed -i` entry's author-deterministic ruling.
+* the distant function-call proof treats every `unset` as a barrier, including `unset FOO`,
+  `unset -v FOO`, and a harmless `unset -f f`. This over-reports rather than letting a removed
+  or shadowed function borrow an earlier definition's gate; none of the fleet's 84
+  function-bearing steps contains `unset` (#2586).
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward

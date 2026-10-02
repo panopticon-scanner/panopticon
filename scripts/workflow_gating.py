@@ -180,13 +180,13 @@ def _posture_barrier(statement, functions):
     return False
 
 
-def _gating_function_call(stmts, name, after, errexit, seen=()):
+def _gating_function_call(stmts, name, after, errexit, returns_status, seen=()):
     """The first proved call whose failure stops the step, or None.
-
     A call in a group is proved by that group's status. A call in another
     function is proved only when that containing function has its own proved
     call; `seen` makes malformed or recursive definitions fail closed. With
-    errexit off, only a call whose explicit rescue exits can prove the gate.
+    errexit off, only a call whose explicit rescue exits can prove the gate,
+    and only when the gate's failure remains the function's return status.
     """
     if name in seen:
         return None
@@ -212,15 +212,27 @@ def _gating_function_call(stmts, name, after, errexit, seen=()):
                 return None
             continue
         if statement.separator == "||":
-            stops = _stops_the_job(stmts, position, errexit)
+            stops = returns_status and _stops_the_job(stmts, position, errexit)
         else:
             stops = _stops_step(stmts, position, on, fails) is None
+            # A proof that also stops with `-e` off depends on the function's
+            # returned status; conditional call contexts suppress `-e` inside it.
+            if stops and _stops_step(stmts, position, [False] * len(stmts), fails) is None:
+                stops = returns_status
         if not stops:
             continue
         if scope is None:
             return position
         outer, close = scope
-        outer_call = _gating_function_call(stmts, outer, close, errexit, seen + (name,))
+        # A wrapper carries either an explicit exit or its final call's status.
+        exits = (returns_status and statement.separator == "||"
+                 and _stops_the_job(stmts, position, False))
+        outer_status = exits or returns_status and all(
+            _closes(item) for item in stmts[position + 1:close + 1]
+        )
+        outer_call = _gating_function_call(
+            stmts, outer, close, errexit, outer_status, seen + (name,)
+        )
         if outer_call is not None:
             return outer_call
         return None
@@ -298,9 +310,10 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
             return False
     finished = depth == 0 if grouped or inherited_depth else True
     function = _function_scope(stmts, index)
-    # An inherited subshell's non-zero status is also the function's status;
-    # the call-site proof below still decides whether that status stops use.
-    returns_failure = function is not None and inherited_subshells > 0
+    # An inherited subshell's failure is the function's status only when
+    # nothing but closers follows it in that body.
+    returns_failure = (function is not None and inherited_subshells > 0
+                       and all(_closes(item) for item in stmts[end + 1:function[1] + 1]))
     stops = (finished and status is not None and status != 0
              and (errexit or exited or returns_failure)
              and (len(stmts[end].stages) == 1 or pipefail))
@@ -312,7 +325,7 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     # group-status walk from the closer with the step's recorded pipefail state.
     if function is not None:
         name, close = function
-        call = _gating_function_call(stmts, name, close, errexit)
+        call = _gating_function_call(stmts, name, close, errexit, returns_failure)
         return FunctionGate(call) if call is not None else False
     separator = stmts[end].separator
     if separator == "||":
@@ -455,6 +468,8 @@ def swallowed(stmts, index, statement, stage, credit=None):
         stops = _stops_the_job(
             stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
         )
+        if isinstance(stops, FunctionGate) and why and errexit:
+            return why                         # an existing step refusal survives the proof
         if isinstance(stops, Reach):
             return stops
         if not stops:
