@@ -223,7 +223,9 @@ def stdin_program(argv):
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
     <<EOF` pays too. #2500's credit stays SHELL_PROGRAM's: an inner `$CMD`
     makes no enclosing `eval` or `-c` string a stdin shell, so `CMD=sh; eval
-    "$CMD" <<'EOF'` stays unread, though bash runs the body.
+    "$CMD" <<'EOF'` or `export CMD=sh; bash -c '$CMD' <<'EOF'` running `curl
+    ... | sh` reads CLEAN, its body unread though bash runs it: a gap filed
+    under #2331.
     """
     if not argv:
         return None
@@ -299,9 +301,11 @@ def stdin_scripts(argv, stage, before=None):
     Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
     printed text are read the same way, as shell, though the word may hold
     none: what they fetch or run is read as at the top level, and
-    `workflow_forms.flattened` counts no check there. `unprinted` weighs a
-    shell's printer only, so a pipe into it whose text no printer spells out
-    (`echo "$X" | $CMD`) is unread, filed under #2331.
+    `workflow_forms.flattened` counts no check there; inside a `$(...)`,
+    `workflow_forms.substitution_script` weighs the printed text as a
+    shell's. `unprinted` weighs a shell's printer only, so a pipe into it
+    whose text no printer spells out (`echo "$X" | $CMD`) is unread, filed
+    under #2331.
     """
     here = stage.stdin_heredoc
     if here is None and _piped(stage, before):

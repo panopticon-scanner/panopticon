@@ -154,21 +154,23 @@ runs each live, so a change that catches one fails there and edits this list.
   `unparseable` gives a `shell: python` step), and THAT report is weighed: kept, since #2499, only
   where the job holds a fetch this guard reports. So is the hand-off to a `$` command word, a value
   no table places (#2473), whose QUOTED body is read as shell besides: a `curl … | sh` there is
-  caught, a check there clears nothing. An EXPANDING body is unread: one running a download reads
-  CLEAN beside no reported fetch, though bash runs it (#2499's price, as `python3 - <<EOF` pays it);
-  so does any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it whose text no
-  printer spells out (`echo "$X" | $CMD`) is unread, both filed under #2331. What that leaves
-  unread: an interpreter behind an option it reads as a filename / one taking a value other than
-  `-o`/`-O` (`bash --rcfile f <<'EOF'`), or named as a FILE by a builtin outside its table
-  (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host bash -s <<'EOF'`,
-  `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`), whose argv this walk reads as
-  the transport's; and one under a name no table carries (`python3.11 -`, `busybox sh`) -- keyed, as
-  everywhere in this module, on the program's basename. A program `echo` or `printf` PIPES into a
-  shell is read where their words spell it out; one they do not (`echo "$X" | sh`, a `printf` format
-  past `%s`) is reported where its words fetch as written or the job holds a fetch it reports
-  (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step WRITES to a file and then runs
-  (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business: the script is text in the repo
-  under review, the `sed -i` entry's author-deterministic ruling.
+  caught, a check there clears nothing. A non-shell body under a `$` word whose string spells a
+  shell download -- `print("$(curl … | sh)")` -- is reported loud, filed under #2331. An EXPANDING
+  body is unread: one running a download reads CLEAN beside no reported fetch, though bash runs it
+  (#2499's price, as `python3 - <<EOF` pays it); so does any body inside a `$(...)`
+  (`x=$($CMD <<'EOF' …)`), and a pipe into it whose text no printer spells out (`echo "$X" | $CMD`)
+  is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
+  reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
+  named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
+  (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
+  whose argv this walk reads as the transport's; and one under a name no table carries
+  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere in this module, on the program's basename.
+  A program `echo` or `printf` PIPES into a shell is read where their words spell it out; one they
+  do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as
+  written or the job holds a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A
+  heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this
+  rule's business: the script is text in the repo under review, the `sed -i` entry's
+  author-deterministic ruling.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
   between the check's step and the use's step. It is not when it reads `env.*` written through
   `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
@@ -522,16 +524,14 @@ def _remedy(dest):
 def _binds(conditions, check, use):
     """May a check at statement `check` clear a use at statement `use`?
 
-    Only if the check runs whenever the use does. A step carrying an `if:` may
-    be skipped, so its checksum cannot clear an execution that is not skipped
-    with it -- crediting one is fail-open. The condition has two halves: the
-    step's `if:`, and the `if`/`while` branch of the SHELL the statement was
-    written inside (`workflow_forms.regions`) -- a check binds only where both
-    match. Conditions are compared as written
-    (no expression evaluation), so a check and a use in the same conditional
-    step -- the shape the fleet actually has, where the fetch, the checksum and
-    the `unzip` share one `if:` -- binds, and a check under a DIFFERENT
-    condition (or under one at all, where the use has none) does not.
+    Only if the check runs whenever the use does. A step carrying an `if:` may be skipped, so its
+    checksum cannot clear an execution that is not skipped with it -- crediting one is fail-open.
+    The condition has two halves: the step's `if:`, and the `if`/`while` branch of the SHELL the
+    statement was written inside (`workflow_forms.regions`) -- a check binds only where both match.
+    Conditions are compared as written (no expression evaluation), so a check and a use in the same
+    conditional step -- the shape the fleet actually has, where the fetch, the checksum and the
+    `unzip` share one `if:` -- binds, and a check under a DIFFERENT condition (or under one at all,
+    where the use has none) does not.
 
     Comparing as written assumes the expression is stable between the two
     steps; see the module docstring's gap list for the cases where it is not."""
