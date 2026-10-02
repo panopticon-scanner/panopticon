@@ -12,6 +12,28 @@ evidence exposed.
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
   `exit 0`, disabled outer errexit, and enclosing groups whose status is rescued, piped, detached,
   or left ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
+- **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
+  dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
+- **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
+  counter joins #2405's broken-artifact measure (owner ruling 2026-10-02). `paths_dropped` — #2169's
+  count of paths whose value in the hunk map was not a list of ranges at all, so the loader drops
+  the path entirely — now turns a PASS into `gate: INCONCLUSIVE` on an active delta under the
+  default on-diff gate scope when gate-eligible findings exist, exactly as
+  `paths_emptied_by_drops`, `ranges_dropped` and a set `payload_malformed` already did (and, as
+  for those three, a FAIL or OFF run over such a map now reads NOT CERTIFIED too). The
+  DIRECTION is why: a dropped path LEAVES the map, so a HIGH in that file classified off-diff, left
+  the gate's source set, and the run reported a PASS it had not earned — the fail-open mirror of
+  the emptied arm, which admits such findings to the gate instead. A legitimate change shape never
+  produces one (the loader drops a path only for a non-list value, and no `diff_map.parse` output
+  carries one), so the ruling's "never fires on a deletion-only PR" property holds; the `[]`
+  remainder stays disclosed and is never gated on. Disclosure-only was rejected: the stderr line
+  and both report blocks already published the count, and a note beside a green gate is not a
+  refusal to certify. The exclusion pin flips to an inclusion one, the reason names the counter and
+  the direction so the operator finds the same number in `meta.coverage.delta`, and a new
+  end-to-end pin reads INCONCLUSIVE for a map that dropped `b.py` with a HIGH at `b.py:3`.
+- **Container cleanup failures reach coverage metadata (#2556, #1817).** A failed scanner
+  container stop now records the same redacted, bounded detail sent to stderr in the tools
+  manifest and both human reports, while preserving the original timeout and gate outcome.
 - **A download written to a `$`-spelled path binds to its literal basename at use (#2442).** The
   mirror of #2345, and a fail-open until now: that issue bound a `$`-spelled OPERAND by its last
   part (`sh "$PWD/cuda_1.run"` after `curl -o cuda_1.run`), but a `$`-spelled DESTINATION only

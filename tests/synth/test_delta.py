@@ -884,7 +884,8 @@ class TestBrokenArtifactGateGap(unittest.TestCase):
     on-diff run carrying findings the gate would have judged reads INCONCLUSIVE
     -- `zero_hunk_gate_gap`'s posture (#2178, narrowed by #2222) over a different
     measure. The measure is the provably broken shape and only it:
-    `paths_emptied_by_drops`, `ranges_dropped`, or a set `payload_malformed`. A
+    `paths_emptied_by_drops`, `ranges_dropped`, `paths_dropped` (#2517, owner
+    ruling 2026-10-02, the fourth) or a set `payload_malformed`. A
     legitimately rangeless path -- a deletion-only, binary, mode-only or
     same-content rename change -- never trips it, and a truncated map that
     arrived `[]` is knowingly missed, because nothing here tells it from those."""
@@ -961,21 +962,28 @@ class TestBrokenArtifactGateGap(unittest.TestCase):
         self.assertEqual(ctx.report.ranges_dropped, 0)
         self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
 
-    def test_a_dropped_path_beside_a_surviving_range_is_no_gap(self):
-        # The ruling's chosen BOUNDARY, pinned: `paths_dropped` is not one of the
-        # three counters in the measure, so a map that lost a whole path while
-        # keeping a range elsewhere does not turn the gate INCONCLUSIVE -- even
-        # though it is broken by the same standard, and even though the direction
-        # is fail-OPEN (the dropped file leaves the map, so every finding in it
-        # classifies off-diff and leaves this gate's source set). Without this
-        # case, widening the measure to `paths_dropped` is a silent change.
-        # Tracked separately for an owner ruling, not fixed here.
+    def test_a_dropped_path_beside_a_surviving_range_is_a_gap(self):
+        # #2517 (owner ruling 2026-10-02): the FOURTH counter, and the inclusion
+        # pin that replaced this case's exclusion one. A map that lost a whole
+        # path while keeping a range elsewhere is broken by the same standard as
+        # the other three, and the direction is fail-OPEN -- the dropped file
+        # left the map, so every finding in it classified off-diff and left this
+        # gate's source set, which is how a PASS gets reported over findings the
+        # artifact hid. The zero-hunk rule cannot see it (one surviving range
+        # leaves `ranges == 0` false), so this rule is the only one that speaks.
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1, 5]], "b.py": 7}})
         self.assertEqual((ctx.report.ranges, ctx.report.paths_dropped,
                           ctx.report.ranges_dropped,
                           ctx.report.paths_emptied_by_drops), (1, 1, 0, 0))
-        self.assertIsNone(delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff"))
-        self.assertIsNone(delta_mod.delta_gate_gap(ctx, 2, "on-diff"))
+        gap = delta_mod.broken_artifact_gate_gap(ctx, 2, "on-diff")
+        self.assertIsNotNone(gap)
+        self.assertIn("broken-artifact delta gate", gap)
+        self.assertIn("paths_dropped", gap)
+        self.assertIn("1 whole path(s)", gap)
+        # Only the arm that tripped speaks: nothing emptied a named path here.
+        self.assertNotIn("paths_emptied_by_drops", gap)
+        self.assertIsNone(delta_mod.zero_hunk_gate_gap(ctx, 2, "on-diff"))
+        self.assertEqual(delta_mod.delta_gate_gap(ctx, 2, "on-diff"), gap)
 
     def test_a_clean_populated_map_is_no_gap(self):
         self.assertIsNone(delta_mod.broken_artifact_gate_gap(
@@ -1038,6 +1046,16 @@ class TestDeltaGateGap(unittest.TestCase):
     def test_the_zero_hunk_reason_wins_when_both_hold(self):
         ctx = self._ctx({"base": "main", "hunks": {"a.py": [[1]]}})
         self.assertEqual((ctx.report.ranges, ctx.report.ranges_dropped), (0, 1))
+        gap = delta_mod.delta_gate_gap(ctx, 1, "on-diff")
+        self.assertIn("zero-hunk delta gate", gap)
+        self.assertNotIn("broken-artifact delta gate", gap)
+
+    def test_the_zero_hunk_reason_wins_over_a_dropped_path_too(self):
+        # #2517 made a dropped path satisfy BOTH rules when it is the only path:
+        # the composer must still publish the stronger, zero-hunk statement.
+        ctx = self._ctx({"base": "main", "hunks": {"b.py": 7}})
+        self.assertEqual((ctx.report.ranges, ctx.report.paths_dropped), (0, 1))
+        self.assertIsNotNone(delta_mod.broken_artifact_gate_gap(ctx, 1, "on-diff"))
         gap = delta_mod.delta_gate_gap(ctx, 1, "on-diff")
         self.assertIn("zero-hunk delta gate", gap)
         self.assertNotIn("broken-artifact delta gate", gap)

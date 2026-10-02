@@ -31,6 +31,7 @@ any filesystem lets a path be, so a name for nothing -- is dropped whole.
 import json
 import sys
 
+from scripts import redact as redact_mod
 from . import validate_schema as schema
 
 
@@ -40,6 +41,8 @@ from . import validate_schema as schema
 ROWS_MAX = 200
 NAME_MAX = 200
 VALUE_MAX = 200
+CLEANUP_KIND_MAX = 64
+CLEANUP_DETAIL_MAX = 500
 
 # How many repair lines a single read may announce before it summarises the
 # rest. The content bounds above stopped a hostile manifest from reaching the
@@ -123,17 +126,22 @@ def _named_rows(value, path, changes, *, cut_names=False):
         yield name, row
 
 
-def _cut(text, path, changes):
-    """`text` cut to `VALUE_MAX`, announced when it was actually cut.
+def _cut_to(text, path, changes, limit):
+    """`text` cut to `limit`, announced when it was actually cut.
 
-    Announced, not silent: a reader who meets a 200-character value has to be
-    able to tell a complete one from a bounded one.
+    Announced, not silent: a reader who meets a value at its published limit has
+    to be able to tell a complete one from a bounded one.
     """
-    if len(text) <= VALUE_MAX:
+    if len(text) <= limit:
         return text
     changes.append((path, "cut a value to %d of %d characters in"
-                    % (VALUE_MAX, len(text))))
-    return text[:VALUE_MAX]
+                    % (limit, len(text))))
+    return text[:limit]
+
+
+def _cut(text, path, changes):
+    """`text` cut to the shared published-value bound."""
+    return _cut_to(text, path, changes, VALUE_MAX)
 
 
 def _bounded_paths(files, changes):
@@ -332,6 +340,47 @@ def repair_tools_network(value, warn=None):
             changes.append(("network.%s" % name, "dropped: not a string"))
             continue
         out[name] = _cut(posture, "network.%s" % name, changes)
+    warn_repairs("tools-manifest.json", changes, warn)
+    return out
+
+
+def repair_tool_cleanup_failures(value, warn=None):
+    """Repair scanner-container cleanup failures from `tools-manifest.json`.
+
+    The capture path writes one `{kind, detail}` row per affected tool. The
+    manifest sits inside the reviewed tree, so synthesis treats that shape as
+    target-writable: malformed rows and extra fields are dropped, tool names
+    and row counts are bounded deterministically, and the operator detail is
+    redacted and bounded again before it reaches report JSON or either human
+    renderer. A bad disclosure never costs the rest of a paid-for run.
+    """
+    changes: list[tuple[str, str]] = []
+    out = {}
+    for name, row in _named_rows(value, "cleanup_failures", changes):
+        path = "cleanup_failures.%s" % name
+        if not isinstance(row, dict):
+            changes.append((path, "dropped: not an object"))
+            continue
+        kind, detail = row.get("kind"), row.get("detail")
+        if not isinstance(kind, str) or not kind:
+            changes.append((path + ".kind", "dropped row: not a non-empty string"))
+            continue
+        if not isinstance(detail, str) or not detail:
+            changes.append((path + ".detail", "dropped row: not a non-empty string"))
+            continue
+        for extra in sorted(set(row) - {"kind", "detail"}):
+            changes.append((path + "." + str(extra)[:NAME_MAX],
+                            "dropped: the schema describes no such field in"))
+        safe_detail = redact_mod.redact_diagnostic(
+            detail, CLEANUP_DETAIL_MAX)
+        if len(detail) > CLEANUP_DETAIL_MAX:
+            changes.append((path + ".detail",
+                            "cut a value to %d of %d characters in"
+                            % (CLEANUP_DETAIL_MAX, len(detail))))
+        out[name] = {
+            "kind": _cut_to(kind, path + ".kind", changes, CLEANUP_KIND_MAX),
+            "detail": safe_detail,
+        }
     warn_repairs("tools-manifest.json", changes, warn)
     return out
 
