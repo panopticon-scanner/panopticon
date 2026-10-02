@@ -116,7 +116,7 @@ def malformed_findings_files(paths):
         except (OSError, ValueError) as e:
             out.append({"file": str(p), "cell": findings_contract.cell_of(p),
                         "defects": [{"index": None,
-                                     "reason": "parse error: %s" % e}]})
+                                     "reason": artifacts_mod.read_failure_reason(e)}]})
             continue
         defects = findings_contract.payload_defects(data)
         if defects:

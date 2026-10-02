@@ -14,21 +14,22 @@ delimiter and holds a `)` somewhere after it ends one too (bar a `<<-`
 delimiter that starts with a tab, which only its exact line ends), as bash
 5.2 ends it (#2343): the rest of that line past its delimiter is left as
 code, read as written, where 5.2.21 drops that rest's first `;` and rejects
-a rest that starts with one. `<<-` strips each candidate line's leading tabs
-before comparing it with the delimiter, except where the delimiter itself
-starts with a tab, the only case that still matches unstripped. An unquoted
-delimiter's body has `\\`-newline folded away first, so its lines are the
-LOGICAL ones compared with it -- `E\\` + `OF` ends it where `x \\` + `EOF`
-does not; a quoted delimiter's body is compared physical line by physical
-line.
+a rest that starts with one. The omission ends with that LOGICAL line and is
+a token boundary, not mere character deletion. `<<-` strips each candidate
+line's leading tabs before comparing it with the delimiter, except where the
+delimiter itself starts with a tab, the only case that still matches
+unstripped. An unquoted delimiter's body has `\\`-newline folded away first,
+so its lines are the LOGICAL ones compared with it -- `E\\` + `OF` ends it
+where `x \\` + `EOF` does not; a quoted delimiter's body is compared physical
+line by physical line.
 
 A body inside a substitution that finds no end line by line leaves its heredoc's
-operator in the output as written and marks the reading `unended`: every
-later heredoc queued inside a substitution, in that same reading, is then
-found by the plain exact-line index instead of the line-by-line scan. Bash
-5.2 runs nothing past an unterminated heredoc either, so none of those later
-answers can change what it runs -- the index only keeps reading them linear
-rather than quadratic in the heredocs queued.
+operator in the output as written and marks the reading `unended`. A later
+body is scanned only when its exact delimiter exists below it, which bounds
+that scan while still finding an earlier `EOF)` line. Bash 5.2 runs nothing
+past the first unterminated body either, but bash 3.2 can run code after that
+later `EOF)`; the exact-line bound keeps reading those bodies linear rather
+than quadratic in the heredocs queued.
 
 Stdlib only."""
 import bisect
@@ -45,8 +46,9 @@ class _Lines:
     ends it is one lookup, where the pass this replaced scanned to the end of
     the script once per operator, which is quadratic in the operators. In a
     substitution, where bash 5.2 ends a body at a line its delimiter starts
-    with a `)` after it too (#2343), a body is found line by line -- until one
-    finds no end (`unended`), after which 5.2 runs nothing and `index` serves."""
+    with a `)` after it too (#2343), a body is found line by line. After one
+    finds no end (`unended`), a later scan starts only if `index` proves its
+    exact delimiter bounds it."""
 
     def __init__(self, text: str, folded: bool):
         self.size = len(text)
@@ -73,9 +75,10 @@ class _Lines:
                 self.last.append(k)
                 run, length = [], 0
 
-    def body(self, at: int, word: str, strip: bool, sub: bool) -> tuple[str, int, bool] | None:
-        """(body, where code resumes, whether a line like `EOF)` ended it) for a
-        heredoc whose body starts at offset `at`, or None when no line ends it."""
+    def body(
+        self, at: int, word: str, strip: bool, sub: bool
+    ) -> tuple[str, int, bool, int, bool] | None:
+        """Body, resume index, `EOF)` end, drop boundary and rejection."""
         k = bisect.bisect(self.starts, at) - 1
         n, offset = self.of[k], self.offset[k] + at - self.starts[k]
         text = self.texts[n]
@@ -83,7 +86,9 @@ class _Lines:
         # which is the only way a delimiter that starts with a tab can match.
         raw = not strip or word.startswith("\t")
         begin, cut = len(text) - len(word), -1
-        if sub and not self.unended and not (strip and raw):
+        if sub and not (strip and raw):
+            if self.unended and self.index(not raw)[1].get(word, -1) <= n:
+                return None             # no exact line bounds a fallback scan
             for end in range(n, len(self.texts)):
                 lead = self.texts[end][offset if end == n else 0:].lstrip("\t" if strip else "")
                 if lead == word or lead.startswith(word) and ")" in lead[len(word):]:
@@ -103,10 +108,21 @@ class _Lines:
         lines = [text[offset:]] + self.texts[n + 1:end] if end > n else []
         body = "\n".join(line.lstrip("\t") if strip else line for line in lines)
         after = self.last[end] + 1
+        following = self.starts[after] if after < len(self.starts) else self.size
         if cut >= 0:                    # code resumes on the line that ended it
-            after = bisect.bisect(self.offset, cut, self.last[end - 1] + 1 if end else 0, after) - 1
-            return body, self.starts[after] + cut - self.offset[after], True
-        return body, self.starts[after] if after < len(self.starts) else self.size, False
+            ended = self.texts[end]
+            rest = ended[cut:]
+            first = cut + len(rest) - len(rest.lstrip(" \t"))
+            rejected = ended[first:first + 1] == ";"
+            return body, self.source(end, cut), True, following, rejected
+        return body, following, False, 0, False
+
+    def source(self, line: int, offset: int) -> int:
+        """Source offset for `offset` in one logical line."""
+        first = self.last[line - 1] + 1 if line else 0
+        after = self.last[line] + 1
+        physical = bisect.bisect(self.offset, offset, first, after) - 1
+        return self.starts[physical] + offset - self.offset[physical]
 
     def lead(self, at: int, text: str, offset: int) -> int:
         """Where the line starting at `at` begins once `<<-` strips its tabs --

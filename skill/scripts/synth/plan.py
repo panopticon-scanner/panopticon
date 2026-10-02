@@ -231,7 +231,8 @@ def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):
         try:
             plan = artifacts_mod.read_json(path)
         except (OSError, ValueError) as exc:
-            invalid.append({"file": path, "reason": "unreadable: %s" % exc})
+            invalid.append({"file": path,
+                            "reason": artifacts_mod.read_failure_reason(exc)})
             continue
         # #5.0-16: route by filename. dispatch-plan-driver.json carries the
         # matrix domain-cell shape, validated by driver_plan_issues; a malformed

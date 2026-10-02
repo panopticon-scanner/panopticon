@@ -20,6 +20,27 @@ evidence exposed.
   is now pinned against the two shell-name lists it has to agree with (#2561). Rejected: keeping
   the per-WORD value count the #2551 docstring defended, which is what read `set -oo pipefail
   errexit` as arming nothing at all.
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
+- **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
+  After one scan reached the script's end, `_Lines` used the exact-line index for every later
+  body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An
+  exact line now proves and bounds that later scan, which can find the earlier `B)` while staying
+  linear; resuming every unbounded scan was rejected because hostile inputs restore quadratic
+  cost.
+- **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
+  drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
+  `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
+  omission to that logical line and command, preserving its word break; a rest beginning with `;`
+  is refused because Bash 5.2 rejects it while 3.2 can run later code. A candidate before `then`
+  or `do`, including across a folded `\\`-newline, is refused too: Bash keeps that required
+  separator, and omitting it hid an executable compound body. An unbounded Boolean and a
+  character-only omission were rejected because they hid later-line and no-space payloads.
+- **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
+  dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
 - **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
   counter joins #2405's broken-artifact measure (owner ruling 2026-10-02). `paths_dropped` — #2169's
   count of paths whose value in the hunk map was not a list of ranges at all, so the loader drops

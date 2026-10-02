@@ -55,6 +55,22 @@ class NonRegularFileError(OSError):
     """The opened leaf is not a regular file and no bytes were consumed."""
 
 
+def read_failure_reason(error):
+    """Classify the stage that rejected a bounded artifact read.
+
+    Byte decoding and document parsing failures are ``unparseable``; filesystem
+    failures remain ``unreadable``, and the explicit byte cap is ``oversized``.
+    """
+    if isinstance(error, ReadLimitExceeded):
+        kind = "oversized"
+    elif isinstance(error, OSError):
+        kind = "unreadable"
+    else:
+        kind = "unparseable"
+    detail = (str(error).splitlines() or [type(error).__name__])[0]
+    return "%s: %s" % (kind, detail or type(error).__name__)
+
+
 def read_regular_bytes(path, limit):
     """Read at most ``limit`` bytes from a regular, non-symlink leaf.
 
