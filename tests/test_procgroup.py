@@ -240,10 +240,13 @@ class TestKillGroupEndsTheWholeTree(_GroupCase):
         self.assertIsNotNone(proc.returncode, "the child was not reaped")
 
     def test_an_already_exited_leader_retains_its_live_session_group(self):
+        if not hasattr(os, "waitid"):
+            self.skipTest("observing an exit without reaping requires waitid")
         pidfile = os.path.join(self.root, "zombie-leader-grandchild.pid")
         proc = self._spawn(self._term_resistant_tree(pidfile, leader_exits=True))
         pid = self._grandchild_of(proc, pidfile)
-        time.sleep(0.1)                  # let the unpolled leader become a zombie
+        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        self.assertIsNotNone(status, "the session leader did not exit")
         real_getpgid = procgroup.os.getpgid
 
         def darwin_getpgid(candidate):
