@@ -32,6 +32,9 @@ evidence exposed.
   files, respectively, keep each test beside its code, and put `CI` behind the shared 40-file
   headroom guard. This costs one extra review cell now; waiting would make the next unrelated CI
   contributor inherit an automatic split and its unplanned test inventories.
+- **Broken batch stop predicates identify their failure point (#2555, #1817).** The runner logs
+  the completed entry and final predicate frame inside the existing redacted 200-character
+  detail budget, then keeps yielding launched work and still honours a later stop.
 - **Tolerant verdict extraction keeps small wrapped bundles (#2553, #1816).** A fixed 64 KiB
   minimum scan budget reaches JSON after shallow nested or 256-open-brace prose while the
   length-scaled caps still bound large inputs.
