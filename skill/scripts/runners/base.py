@@ -10,6 +10,7 @@ import importlib
 import os
 import sys
 import time
+import traceback
 
 import scripts.dispatch as dispatch
 import scripts.read_guard_hook as read_guard_hook
@@ -421,7 +422,8 @@ class HostRunner(children.ChildProcesses):
             yielded, asked, stop_error_reported = set(), False, False
             for f in concurrent.futures.as_completed(futures):
                 yielded.add(f)
-                yield f.result()
+                completed = f.result()
+                yield completed
                 try:
                     asked = stop is not None and bool(stop())
                 except Exception as exc:      # noqa: BLE001 -- the consumer's own predicate,
@@ -429,10 +431,17 @@ class HostRunner(children.ChildProcesses):
                     # below, which terminates this batch's children -- the one thing
                     # the stop path promises never to do -- and re-raised into the loop.
                     if not stop_error_reported:
-                        detail = " ".join((stderr_head(str(exc)) or "").split())
-                        print("%s: batch stop predicate failed; continuing: %s%s"
-                              % (self.host or "runner", type(exc).__name__,
-                                 (": " + detail) if detail else ""),
+                        frames = traceback.extract_tb(exc.__traceback__, limit=-1)
+                        frame = frames[0] if frames else None
+                        location = ("%s:%s in %s" % (os.path.basename(frame.filename),
+                                                     frame.lineno, frame.name)
+                                    if frame else "unavailable")
+                        raw_detail = "entry=%s; frame=%s; error=%s: %s" % (
+                            completed[0].get("id", "<unknown>"), location,
+                            type(exc).__name__, exc)
+                        detail = " ".join((stderr_head(raw_detail) or "").split())
+                        print("%s: batch stop predicate failed; continuing: %s"
+                              % (self.host or "runner", detail),
                               file=sys.stderr, flush=True)
                         stop_error_reported = True
                     asked = False
