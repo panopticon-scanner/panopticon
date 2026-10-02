@@ -374,7 +374,9 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     under bash 3.2.57 and 5.2.21 -- so a word after it may be the program.
     The guard does not follow the value; `candidates` hands on the words
     after it to the first operand, a dynamic one too, for `unread_program`
-    (review N2 of #2331), and none past it, a positional parameter (#2484)."""
+    (review N2 of #2331), and none past it, a positional parameter (#2484),
+    until a later word that may expand to an option word re-opens the rest:
+    the operand may have been an option's own value (`--rcfile FILE`)."""
 
     @staticmethod
     def argv(script):
@@ -394,12 +396,26 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         self.assertEqual(["P", "$Y", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
         # The first word that can be none of an option, an option's value (a
         # bare word) or anything once expanded is the first operand, the last
-        # candidate; the option words before it stay (#2484).
-        for script, words in (("sh $X 'echo P' \"$Y\" Q", ["echo P"]),
-                              ("sh $X P \"$Y\" 'echo Q' R", ["P", "$Y", "echo Q"]),
+        # candidate; the option words before it stay (#2484), and a later word
+        # of literal text, `--` among them, re-opens nothing.
+        for script, words in (("sh $X P \"$Y\" 'echo Q' R", ["P", "$Y", "echo Q"]),
                               ("sh $X -e -o pipefail 'echo P' Q", ["-e", "-o", "pipefail", "echo P"]),
                               ("bash $X extglob 'echo P' Q", ["extglob", "echo P"]),
-                              ("sh $X x$Y 'echo P' Q", ["x$Y", "echo P"]), ("sh $X -e", ["-e"])):
+                              ("sh $X x$Y 'echo P' Q", ["x$Y", "echo P"]), ("sh $X -e", ["-e"]),
+                              ("sh $X 'echo P' x$Y Q", ["echo P"]),
+                              ("bash $X /dev/null -- P", ["/dev/null"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
+        # Addendum 1: that operand may be an option's own value (`--rcfile
+        # FILE`), so the first later word that may expand to an option word
+        # re-opens every word after it -- never itself, which with `X=-c` is a
+        # parameter and with `--rcfile` an option word or a file name. The
+        # fourth row was `['echo P']` under #2484 alone: the rule's price.
+        for script, words in (("bash $X /dev/null $Y 'echo P' Q", ["/dev/null", "echo P", "Q"]),
+                              ("bash $X /dev/null -$Y P", ["/dev/null", "P"]),
+                              ("sh $X 'echo P' \"$Y\"", ["echo P"]),
+                              ("sh $X 'echo P' \"$Y\" Q", ["echo P", "Q"]),
+                              ("sh $X 'echo P' \"$Y\" Q R", ["echo P", "Q", "R"])):
             with self.subTest(script=script):
                 self.assertEqual(words, forms.candidates(self.argv(script))[1])
 

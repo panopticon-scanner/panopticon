@@ -21,8 +21,9 @@ only, for a program piped into it, the stage in front of it (#2333):
     `unprinted`       the printer piping one in whose text `printed` cannot
                       spell out, for `unread_program` to weigh
     `candidates`      the words that may be the program, up to the first
-                      operand, where a value this module does not follow
-                      stands in a shell's options
+                      operand and past a later word that may spell an option,
+                      where a value this module does not follow stands in a
+                      shell's options
     `dynamic_program` the program word a LITERAL shell is handed that is all
                       expansion (`sh -c "$P"`), which spells no command at all
 
@@ -219,6 +220,16 @@ def _before_operand(word):
             or shell_reader.dynamic(word, shell_reader.has_substitution))
 
 
+def _may_spell_option(word):
+    """Whether `word`, PAST the first operand, may be an option word once it
+    is expanded: a word bash expands (`shell_reader.dynamic`) that begins
+    with `-`, a `$` or a lifted substitution, or a pattern or an `xargs -I`
+    replacement (`Rewritten`). One that begins with literal text of its own
+    (`x$Y`, `echo $Y`) is none."""
+    return shell_reader.dynamic(word, shell_reader.has_substitution) and (
+        shell_reader.readable(word)[:1] in ("-", "$") or isinstance(word, shell_reader.Rewritten))
+
+
 def candidates(argv):
     """(the value, [the words it may make the program]) for a shell handed a
     value where it reads its options (`_VALUE`, #2344): `X=-c; sh $X 'curl
@@ -227,14 +238,25 @@ def candidates(argv):
     be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern), which
     `unread_program` weighs too (review N2 of #2331) -- up to the FIRST
     OPERAND, the first word that can be none of an option word, an option's
-    value (`_BARE`) or anything once expanded (`_before_operand`): whatever
-    the value spells, the words after that are positional parameters
-    (#2484), and the option words before it are weighed, harmlessly, as `-c`
-    strings. A value ending in `o` or `O` makes the next word an option name,
-    which the shell refuses where it is not bare: `X=-cO; bash $X 'echo hi'
-    '…'` runs nothing. (None, []) where the options end first, at a program,
-    a `-c` whose string `scripts` reads, or a `-` or `--`. A value that is
-    the command word, handed a `-c` cluster, may be a shell itself (#2337,
+    value (`_BARE`) or anything once expanded (`_before_operand`), with the
+    option words before it weighed, harmlessly, as `-c` strings. Where the
+    value spells `-c`, the words after that operand are positional
+    parameters (#2484). A value ending in `o` or `O` makes the next word an
+    option name, which the shell refuses where it is not bare: `X=-cO; bash
+    $X 'echo hi' '…'` runs nothing. But the operand may be an option's own
+    value (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on:
+    its program can follow only (i) in a literal `-c` cluster, which
+    `scripts` reads wherever it stands, (ii) behind a word that expands to
+    one, or (iii) as a script file or on stdin, which the operand reader and
+    `stdin_program` read. So the first word past the operand that may spell
+    an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`)
+    re-opens every word after it, though not itself, which is `$0`, an
+    option word or a script's file name, never a `-c` string. The price: a
+    value that was `-c` after all has a later program-like parameter
+    weighed again, as before #2484 (`X=-c; sh $X 'echo hi' "$Y" '…'` runs
+    only `echo hi`). (None, []) where the options end first, at a program, a
+    `-c` whose string `scripts` reads, or a `-` or `--`. A value that is the
+    command word, handed a `-c` cluster, may be a shell itself (#2337,
     `CMD=sh; $CMD -c '…'`): the program after the options is the candidate.
     A `$(…)` or backquote value with no word after it is its own: bash makes
     the shell's words of its output, the program among them (`sh $(echo
@@ -250,8 +272,10 @@ def candidates(argv):
             owed -= 1
         elif _value(word):
             rest = argv[at + 1:]
-            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), None)
-            return word, rest[:end] or ([word] if shell_reader.yields_words(word) else [])
+            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
+            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
+            return word, rest[:end] + rest[more + 1:] or (
+                [word] if shell_reader.yields_words(word) else [])
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":

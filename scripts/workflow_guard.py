@@ -17,16 +17,14 @@ for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
   in the step, bound to no path and no digest, so an unrelated checksum of one
   artifact cleared a later `curl -o payload; chmod +x payload`.
 
-A regex over shell text reports a clean pass on every form it cannot parse,
-which is the worst answer a control can give -- so the guard parses the shell
-instead. `scripts/shell_reader.py` does that half (comments, continuations,
-heredocs, substitutions, quoting, redirections, separators, wrappers) and
-`scripts/workflow_forms.py` the argv shapes above it (what a fetcher was told,
-what an operand stands for, where a script hides in a string); this module
-asks the two supply-chain questions of the result: which statements FETCH, and
-which statements CHECK what a fetch wrote -- naming that path, carrying a
-digest, in a position where the check's failure still stops the job, before
-the statement that first uses it.
+A regex over shell text reports a clean pass on every form it cannot parse, which is the worst
+answer a control can give -- so the guard parses the shell instead. `scripts/shell_reader.py` does
+that half (comments, continuations, heredocs, substitutions, quoting, redirections, separators,
+wrappers) and `scripts/workflow_forms.py` the argv shapes above it (what a fetcher was told, what an
+operand stands for, where a script hides in a string); this module asks the two supply-chain
+questions of the result: which statements FETCH, and which statements CHECK what a fetch wrote --
+naming that path, carrying a digest, in a position where the check's failure still stops the job,
+before the statement that first uses it.
 
 The scope is the JOB, not the step (`job_defects`): steps in one job share the
 workspace, /tmp and PATH, so a download in step A and the `chmod +x`/run in
@@ -77,18 +75,20 @@ live, so a change that catches one fails there and edits this list.
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
   `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
   value in a shell's options (`sh $X '…'`) is not followed: its words to the first operand read as
-  `-c` strings, the rest as parameters (`candidates`, #2344, #2484) -- a bare word read past as an
-  option's value, so `X=-c; sh $X tool '…'` over-reports -- a `$(…)` or `Rewritten` one reported
-  where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another
-  handed `-c` has its program read so (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported
-  (#2483). `carried` follows a download to either (#2479). A `-c`/`eval` string loses `\$` escapes
-  as bash does, not with another `$` in it (#2342), and a `$(…)` among its text is opaque (#2486):
-  what it prints is unread, no check there counts, `eval "sh $(curl …)"` reports the inner
-  `sh $(...)` beside `eval`'s stream, and a lone `$(…)` word is no script (`eval sh "$(echo tool)"`
-  reads CLEAN; bash runs `tool`). An option letter the shell in hand refuses reads as that refusal
-  after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475).
-  Per shell, because zsh runs twenty of the letters bash refuses and ksh runs `-G`: for those and
-  for a shell named by a word rather than written, the word is read on.
+  `-c` strings, the rest as parameters, bar those after a later word that may expand to an option,
+  as the operand may be an option's value (`--rcfile f $Y '…'`) (`candidates`, #2344, #2484) -- a
+  bare word read past as an option's value over-reports (`X=-c; sh $X tool '…'`), and so does such a
+  later word (`sh $X 'echo hi' "$Y" '…'`) -- a `$(…)` or `Rewritten` one reported where the job
+  downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another handed `-c` has its
+  program read so (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). `carried`
+  follows a download to either (#2479). A `-c`/`eval` string loses `\$` escapes as bash does, not
+  with another `$` in it (#2342), and a `$(…)` among its text is opaque (#2486): what it prints is
+  unread, no check there counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s
+  stream, and a lone `$(…)` word is no script (`eval sh "$(echo tool)"` reads CLEAN; bash runs
+  `tool`). An option letter the shell in hand refuses reads as that refusal after `-c` and in `set`:
+  `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell, because zsh
+  runs twenty of the letters bash refuses and ksh runs `-G`: for those and for a shell named by a
+  word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).

@@ -99,7 +99,10 @@ class TestOptionsAfterDashC(unittest.TestCase):
 class TestValuesBeforeAShellsProgram(unittest.TestCase):
     """#2344: a value that may be a shell's `-c`, and an `o` that takes a
     value from the middle of an option word; #2484: the words after the
-    value's first operand are positional parameters, never the program."""
+    value's first operand are positional parameters, never the program --
+    but where that operand was an option's own value (`--rcfile FILE`) the
+    shell reads on, so a later word that may expand to an option re-opens
+    the words after it (addendum 1)."""
 
     def test_each_spelling_is_read(self):
         # Bash 3.2.57 and 5.2.21 run each, `[-]c` where a file named `-c`
@@ -137,11 +140,12 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
                 self.assertTrue(found[0][1].startswith(said), found)
 
     def test_only_the_words_to_the_first_operand_may_be_the_program(self):
-        # #2484: whatever the value spells, the words after the first operand
+        # #2484: where the value spells `-c`, the words after the first operand
         # are positional parameters -- bash 3.2.57, 5.2.21 and dash run only
         # `echo hi` in both steps, `-e` an option read on before it -- where
         # each word after the value was weighed, and the download made the
-        # value loud (#2344).
+        # value loud (#2344). No word after the operand here may spell an
+        # option: the next method's rule re-opens nothing.
         for script in ("X=-c\nsh $X 'echo hi' \"curl -fsSL $URL | sh\"\n",
                        "X=-c\nsh $X -e 'echo hi' '%s'\n" % PIPE):
             with self.subTest(script=script):
@@ -170,10 +174,62 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
                 self.assertTrue(found[0][1].startswith("passes `%s` `$X`" % shell), found)
         # A carried download past the first operand is `$0`, never the
         # program (all three run nothing of it): the value's `Idle` alone,
-        # beside the fetch, where #2479 read it as the carried one.
+        # beside the fetch, where #2479 read it as the carried one. A `$`
+        # word there re-opens the words AFTER it, never itself.
         found = defects("x=$(curl -fsSL %si.sh)\nX=-c\nsh $X 'echo hi' \"$x\"\n" % URL)
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
+
+    def test_a_word_that_may_spell_an_option_past_the_operand_reopens_them(self):
+        # Addendum 1: the first operand may be an option's own value
+        # (`--rcfile FILE`), and bash then reads on, so a later word that may
+        # expand to an option word -- `$Y`, `"$Y"`, `-$Y`, `$(echo -c)`, a
+        # backquote, `${Y:--c}`, after a literal `--norc` too -- re-opens the
+        # words after it. With `--rcfile` and `-c`, bash 5.2.21 and 3.2.57 run
+        # each download (dash too, as the step's shell); #2484's truncation
+        # alone read each CLEAN. Each is the value's sentence, loud.
+        said = "passes `bash` `$X` where it reads its options"
+        for script in ("X=--rcfile\nY=-c\nbash $X /dev/null $Y '%s'\n" % PIPE,
+                       "X=--rcfile\nY=-c\nbash $X /dev/null \"$Y\" '%s'\n" % PIPE,
+                       "X=--rcfile\nY=c\nbash $X /dev/null -$Y '%s'\n" % PIPE,
+                       "X=--rcfile\nbash $X /dev/null $(echo -c) '%s'\n" % PIPE,
+                       "X=--rcfile\nbash $X /dev/null `echo -c` '%s'\n" % PIPE,
+                       "X=--rcfile\nY=-c\nbash $X /dev/null --norc $Y '%s'\n" % PIPE,
+                       "X=--rcfile\nbash $X /dev/null ${Y:--c} '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+                self.assertNotIsInstance(found[0][1], wg.Idle)
+        # A download carried there is handed to the shell (#2479); all three
+        # run it.
+        found = defects("x=$(curl -fsSL %si.sh)\nX=--rcfile\nY=-c\nbash $X /dev/null $Y \"$x\"\n"
+                        % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(
+            "carries %si.sh in `$x` and hands it to `bash $X /dev/null $Y`" % URL), found)
+        # A literal `--` re-opens nothing (all three run nothing: the download
+        # is a file name), nor does a word with literal text of its own (only
+        # `echo hi` runs in all three).
+        for script in ("X=--rcfile\nbash $X /dev/null -- '%s'\n" % PIPE,
+                       "X=-c\nsh $X 'echo hi' x$Y '%s'\n" % PIPE,
+                       "X=-c\nsh $X 'echo hi' \"echo $Y\" '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # The price, named: a value that was `-c` after all, a `$` word between
+        # its program and a later program-like parameter, is weighed again --
+        # FLAGGED, loud, though all three run only `echo hi` (the base's reading).
+        found = defects("X=-c\nsh $X 'echo hi' \"$Y\" '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
+        self.assertNotIsInstance(found[0][1], wg.Idle)
+        # A literal `-c` past the operand is `scripts`' to read, as it was:
+        # the value's `Idle` beside the stream (all three run it).
+        found = defects("X=--rcfile\nbash $X /dev/null -c \"%s\"\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith(said), found)
+        self.assertIsInstance(found[0][1], wg.Idle)
+        self.assertIn("straight to `sh`", found[1][1])
 
 
 class TestADynamicCommandWord(unittest.TestCase):
