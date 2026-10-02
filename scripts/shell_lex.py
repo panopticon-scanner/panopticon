@@ -108,6 +108,7 @@ _ANSI_ESCAPE = re.compile(
 # `<<`, `<<-` or `<<<` as bash reads it: past the `\`-newlines it folds away
 # first, which leave `<` + `\`-newline + `<EOF` the operator `<<` (#2291).
 _HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
+_REQUIRED_SEPARATOR = re.compile(r"(?:[ \t]|\\\n)*(?:then|do)(?=[ \t\n;&|()<>]|$)")
 
 
 def ansi_c(body: str) -> str | None:
@@ -370,7 +371,7 @@ class _Lexer:
         if frame.drop and i >= frame.drop[0]:
             frame.drop = None           # the compatibility parse ends with its logical line
         if ch == ";" and frame.drop and frame.depth == frame.drop[1]:
-            if re.match(r"[ \t]*(?:then|do)(?=[ \t\n;&|()<>]|$)", text[i + 1:]):
+            if _REQUIRED_SEPARATOR.match(text, i + 1):
                 raise Unreadable("Bash 5.2 preserves this compound command's required separator")
             frame.drop = None
             self.token(i, " ")          # omit the token, while keeping its word boundary
