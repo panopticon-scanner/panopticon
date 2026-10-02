@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -98,6 +99,21 @@ def _await_death(pid, seconds=3.0):
             return True
         time.sleep(0.05)
     return not _alive(pid)
+
+
+def _unreaped_exit(proc, seconds=3.0):
+    """Observe exit without releasing the pid, but never wait unbounded."""
+    deadline = time.monotonic() + seconds
+    pause = threading.Event()
+    while time.monotonic() < deadline:
+        status = os.waitid(
+            os.P_PID, proc.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+        if status:
+            return status
+        pause.wait(min(0.05, max(0.0, deadline - time.monotonic())))
+    return None
 
 
 class _Handle:
@@ -245,7 +261,7 @@ class TestKillGroupEndsTheWholeTree(_GroupCase):
         pidfile = os.path.join(self.root, "zombie-leader-grandchild.pid")
         proc = self._spawn(self._term_resistant_tree(pidfile, leader_exits=True))
         pid = self._grandchild_of(proc, pidfile)
-        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        status = _unreaped_exit(proc)
         self.assertIsNotNone(status, "the session leader did not exit")
         real_getpgid = procgroup.os.getpgid
 

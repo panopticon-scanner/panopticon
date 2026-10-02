@@ -64,6 +64,21 @@ def await_death(pid, seconds=3.0):
     return not alive(pid)
 
 
+def unreaped_exit(proc, seconds=3.0):
+    """Observe exit without releasing the pid, but never wait unbounded."""
+    deadline = time.monotonic() + seconds
+    pause = threading.Event()
+    while time.monotonic() < deadline:
+        status = os.waitid(
+            os.P_PID, proc.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+        if status:
+            return status
+        pause.wait(min(0.05, max(0.0, deadline - time.monotonic())))
+    return None
+
+
 class GrandchildCase(unittest.TestCase):
     """A temp directory, a pid file, and the cleanup that stops a failed
     assertion from leaking a 60-second sleeper into the rest of the suite."""
@@ -384,7 +399,7 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         proc = self.spawn_tree(self.exiting_tree_argv())
         runner.register_child(proc)
         pid = self.grandchild()
-        result = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        result = unreaped_exit(proc)
         self.assertIsNotNone(result, "the session leader did not exit")
         self.assertIsNone(proc.returncode, "the fixture reaped its session leader")
         self.assertTrue(alive(pid), "the resistant grandchild was never running")
