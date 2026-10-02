@@ -389,6 +389,26 @@
               },
               "description": "#1740 (ARC-F2A, fix round 2): the exclusion POLICY this run's tool ingest applied, and what it removed. `exclude_paths:` is authored by the repository under review and (since #1740) scopes the scanners, this report and the gate, so a committed `['**']` that empties the tool axis is a fact the ARTIFACT must carry -- it was visible only in `groups.json`, `tools-manifest.json` and an ingest stderr line nobody keeps. Stated on every report, `{\"globs\": [], \"count\": 0}` included: the field's absence must never be readable as `nothing was excluded`. `security_gate.py` prints the same two numbers beside its own verdict line. What this count does NOT measure is the larger half of the same decision: on a driver run these globs ARE the committed `exclude_paths:`, and `discovery` prunes the matching files before any grouping (#1136, the `exclude_paths` prune in `discovery.py` -- they land in neither a group nor a leftover), so no REVIEW CELL of any domain saw them either, SEC included, which a per-group `exclude:` could never do (#1084). Since #1757 (owner ruling 2026-09-25) that is true of every domain BUT SEC: a file the objective SEC floor matches may not be removed from the SEC domain by a target-authored exclusion, so `discovery` keeps those files in a dedicated SEC-only review group and publishes them under `exclude_paths_sec_carve_out` beside this block. The run-14 findings SEC-1915770944 / AGT-1355709320 are what that ruling answered, and this description used to call the whole-domain prune the feature rather than a gap; the summary line says the narrowed version in one clause. A direct `synthesize --tools-exclude` is the exception: those globs scoped this ingest alone."
             },
+            "tools_cleanup_failures": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Stable cleanup-failure class recorded by the scanner capture path, such as cidfile_unreadable, cidfile_empty, kill_launch_failed, or kill_failed."
+                  },
+                  "detail": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "description": "Redacted, single-line operator detail for the cleanup failure. The capture path bounds it before stderr and manifest output; synthesis repairs and bounds the target-writable manifest again."
+                  }
+                },
+                "required": ["kind", "detail"]
+              },
+              "description": "Scanner containers whose best-effort timeout cleanup could not prove them stopped, keyed by scanner. This is an operator-visible resource and coverage condition carried from the same capture event as the stderr diagnostic. It does not replace the scanner's ordinary timeout or missing-output result and does not change that result's existing gate behavior. The block is omitted when no cleanup failure occurred and repaired at the target-writable tools-manifest boundary by synth.repair.repair_tool_cleanup_failures."
+            },
             "exclude_paths_sec_carve_out": {
               "type": "object",
               "properties": {

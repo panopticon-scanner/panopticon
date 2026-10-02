@@ -8,6 +8,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+import scripts.tool_cleanup as tool_cleanup
 import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
@@ -360,6 +361,10 @@ def render_summary(report):
     sup_gated = _suppressed_gated_line(_cov.get("tools_suppressed_gated"))
     if sup_gated:
         lines.insert(3, sup_gated)
+    cleanup = tool_cleanup.markdown_line(
+        _cov.get("tools_cleanup_failures"), _code_span)
+    if cleanup:
+        lines.insert(3, cleanup)
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}
