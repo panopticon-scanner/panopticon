@@ -8,6 +8,7 @@ file and two others. Synthesis prefers the backup, so the finding was published
 as unverifiable. The closure is the fix: the claim's file, the producers its own
 evidence names, and a one-hop in-repo import neighbourhood, capped.
 """
+import errno
 import hashlib
 import os
 import re
@@ -18,6 +19,7 @@ from unittest import mock
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 
 
 def _write(root, rel, text=""):
@@ -578,6 +580,16 @@ class TestNamedPathResolution(_Repo):
                                        "reason": "oversized",
                                        "candidates": 2}])
 
+    def test_shared_reader_outcomes_survive_the_confined_path_wrapper(self):
+        _write(self.root, "exact.py", "1234")
+        self.assertEqual(evidence_scope._read_regular(self.root, "exact.py", 4),
+                         b"1234")
+        with self.assertRaises(safe_write.ReadLimitExceeded):
+            evidence_scope._read_regular(self.root, "exact.py", 3)
+        os.mkdir(os.path.join(self.root, "directory.py"))
+        with self.assertRaises(safe_write.NonRegularFileError):
+            evidence_scope._read_regular(self.root, "directory.py", 4)
+
     def test_an_unreadable_candidate_says_so_rather_than_differing(self):
         # The third path that never compares content. Patch the guarded reader rather
         # than chmod 0: a suite run as root would read the file anyway.
@@ -585,19 +597,27 @@ class TestNamedPathResolution(_Repo):
         _write(self.root, "a/config.py", "KEY = 1\n")
         _write(self.root, "b/config.py", "KEY = 1\n")
         files = ["claim.py", "a/config.py", "b/config.py"]
-        real_read, unresolved = evidence_scope._read_regular, []
-        def refusing(root, rel, limit):
-            if rel == "b/config.py":
-                raise PermissionError(13, "denied")
-            return real_read(root, rel, limit)
-        with mock.patch.object(evidence_scope, "_read_regular", side_effect=refusing):
-            got = evidence_scope.closure(self.root,
-                                         self._claim("see config.py"), files,
-                                         unresolved=unresolved)
-        self.assertEqual(got, ["claim.py"])
-        self.assertEqual(unresolved, [{"name": "config.py",
-                                       "reason": "unreadable",
-                                       "candidates": 2}])
+        real_read = evidence_scope._read_regular
+        for refusal in (PermissionError(errno.EACCES, "denied"),
+                        safe_write.NonRegularFileError(errno.EINVAL,
+                                                       "not a regular file")):
+            with self.subTest(refusal=type(refusal).__name__):
+                unresolved = []
+
+                def refusing(root, rel, limit):
+                    if rel == "b/config.py":
+                        raise refusal
+                    return real_read(root, rel, limit)
+
+                with mock.patch.object(evidence_scope, "_read_regular",
+                                       side_effect=refusing):
+                    got = evidence_scope.closure(
+                        self.root, self._claim("see config.py"), files,
+                        unresolved=unresolved)
+                self.assertEqual(got, ["claim.py"])
+                self.assertEqual(unresolved, [{"name": "config.py",
+                                               "reason": "unreadable",
+                                               "candidates": 2}])
 
     def test_more_candidates_than_the_cap_are_ambiguous_without_reading(self):
         # A name that matches thirteen files is a common basename, not a

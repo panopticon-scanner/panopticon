@@ -25,6 +25,10 @@ evidence exposed.
   download run by its bare name is now reported, which every shell runs once the file is
   executable and that directory is on PATH. The calibration pool's 4,642 real jobs answer
   identically.
+- **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
+  common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
+  failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,
+  and 16 MiB caps now state which source, verdict, or aggregate metadata class each one bounds.
 - **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
   `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
   the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39

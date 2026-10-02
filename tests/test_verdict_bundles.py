@@ -107,6 +107,19 @@ class TestVerdictBundles(unittest.TestCase):
                 _bundles, tolerant_bad = evidence.load_verdict_bundles(str(vdir))
         self.assertEqual([row["file"] for row in strict_bad], [path.name])
         self.assertEqual([row["file"] for row in tolerant_bad], [path.name])
+        self.assertTrue(strict_bad[0]["reason"].startswith("unparseable: "), strict_bad)
+        self.assertTrue(tolerant_bad[0]["reason"].startswith("unparseable: "), tolerant_bad)
+
+    def test_nonregular_verdict_is_unreadable_in_both_loaders(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = Path(d) / "verdicts"
+            vdir.mkdir()
+            path = vdir / "directory.json"
+            path.mkdir()
+            _verdicts, strict_bad = evidence.load_verdicts_detailed(str(vdir))
+            _bundles, tolerant_bad = evidence.load_verdict_bundles(str(vdir))
+        self.assertEqual(strict_bad[0]["reason"], tolerant_bad[0]["reason"])
+        self.assertTrue(strict_bad[0]["reason"].startswith("unreadable: "), strict_bad)
 
     def test_symlinked_verdict_leaf_is_disclosed_and_not_followed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -120,6 +133,7 @@ class TestVerdictBundles(unittest.TestCase):
             bundles, bad = evidence.load_verdict_bundles(str(vdir))
         self.assertEqual(bundles, {})
         self.assertEqual([row["file"] for row in bad], [link.name])
+        self.assertTrue(bad[0]["reason"].startswith("unreadable: "), bad)
 
     def test_bundle_loader_reports_bad_files_and_retains_wrapped_and_plain_bundles(self):
         with tempfile.TemporaryDirectory() as d:
@@ -150,9 +164,9 @@ class TestVerdictBundles(unittest.TestCase):
             reasons = {entry["file"]: entry["reason"] for entry in bad}
             self.assertEqual(set(reasons), {"bad.json", "unreadable.json"})
             self.assertEqual(reasons["bad.json"],
-                             "Expecting property name enclosed in double quotes: "
+                             "unparseable: Expecting property name enclosed in double quotes: "
                              "line 1 column 2 (char 1)")
-            self.assertEqual(reasons["unreadable.json"], "read denied")
+            self.assertEqual(reasons["unreadable.json"], "unreadable: read denied")
             self.assertEqual(set(by_fid), {"SEC-PLAIN", "SEC-WRAPPED"})
             self.assertEqual(by_fid["SEC-PLAIN"][0]["verdict"], "CONFIRMED")
             self.assertEqual(by_fid["SEC-PLAIN"][0]["run_id"], "RUN")
