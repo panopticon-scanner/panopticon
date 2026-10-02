@@ -520,11 +520,12 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], handed(script))
 
-    def test_a_stdin_script_carries_the_shell_whose_program_it_surely_is(self):
-        # Round 1 of #2587's review: a check in a stdin script counts under the
-        # `-e` of its `reader` -- a literal shell at the step's own level, the
-        # inner shell behind a bare `eval` or `-c` string -- and not at all
-        # where it is None. `stdin_program`'s answer is unchanged for each.
+    def test_a_stdin_scripts_reader_is_the_literal_shell_or_none(self):
+        # Round 1 of #2587's review and its fix round: a check in a stdin
+        # script counts under the `-e` of its `reader` -- the stage's own argv,
+        # a literal shell at the step's own level -- and not at all where it is
+        # None: behind a string, past a word that may vanish, under a `$` word.
+        # `stdin_program`'s answer is unchanged for each.
         def read(step):
             stage = shell_reader.statements(step + " <<'EOF'\necho hi\nEOF")[0].stages[-1]
             argv = shell_reader.command(stage.argv)
@@ -535,16 +536,19 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
                 self.assertEqual(forms.SHELL_PROGRAM, program)
-        for step, inner in (("eval 'bash -s'", ["bash", "-s"]), ("bash -ec 'sh -e'", ["sh", "-e"])):
-            with self.subTest(step=step):
-                self.assertEqual((forms.SHELL_PROGRAM, inner), read(step)[1:])
-        for step in ("sh $X", "$CMD", "eval '! bash -s'", "eval 'bash -s &'",
-                     "eval 'bash -s < /dev/null'", "eval 'bash -n -s'", "bash -nc 'sh'",
-                     "eval 'bash -s' $(printf %s -n)", "eval " * 65 + "bash -s",
+        for step in ("eval 'bash -s'", "bash -ec 'sh -e'", "sh $X", "$CMD", "eval '! bash -s'",
+                     "eval 'bash -s &'", "eval 'bash -s < /dev/null'", "eval 'bash -n -s'",
+                     "bash -nc 'sh'", "eval 'bash -s' $(printf %s -n)", "eval " * 65 + "bash -s",
                      "sudo bash -c 'sh'"):
             with self.subTest(step=step):
                 program = workflow_programs.VALUE_PROGRAM if step == "$CMD" else forms.SHELL_PROGRAM
                 self.assertEqual((program, None), read(step)[1:])
+        # A shell read behind a string is no reader at any depth, whatever its
+        # options: `_stdin` names one only at the step's own level.
+        for depth in (1, 64):
+            with self.subTest(depth=depth):
+                self.assertEqual((forms.SHELL_PROGRAM, None),
+                                 workflow_programs._stdin(["bash", "-e", "-s"], depth))
 
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):

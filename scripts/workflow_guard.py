@@ -17,25 +17,22 @@ for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
   in the step, bound to no path and no digest, so an unrelated checksum of one
   artifact cleared a later `curl -o payload; chmod +x payload`.
 
-A regex over shell text reports a clean pass on every form it cannot parse,
-which is the worst answer a control can give -- so the guard parses the shell
-instead. `scripts/shell_reader.py` does that half (comments, continuations,
-heredocs, substitutions, quoting, redirections, separators, wrappers) and
-`scripts/workflow_forms.py` the argv shapes above it (what a fetcher was told,
-what an operand stands for, where a script hides in a string); this module
-asks the two supply-chain questions of the result: which statements FETCH, and
-which statements CHECK what a fetch wrote -- naming that path, carrying a
-digest, in a position where the check's failure still stops the job, before
-the statement that first uses it.
+A regex over shell text reports a clean pass on every form it cannot parse, which is the worst
+answer a control can give -- so the guard parses the shell instead. `scripts/shell_reader.py` does
+that half (comments, continuations, heredocs, substitutions, quoting, redirections, separators,
+wrappers) and `scripts/workflow_forms.py` the argv shapes above it (what a fetcher was told, what an
+operand stands for, where a script hides in a string); this module asks the two supply-chain
+questions of the result: which statements FETCH, and which statements CHECK what a fetch wrote --
+naming that path, carrying a digest, in a position where the check's failure still stops the job,
+before the statement that first uses it.
 
-The scope is the JOB, not the step (`job_defects`): steps in one job share the
-workspace, /tmp and PATH, so a download in step A and the `chmod +x`/run in
-step B is one act split into two innocent halves, and a `sha256sum -c` in a
-later step is a real check of an earlier step's file. A step whose `shell:` is
-not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the
-same act in a grammar this module does not have, and so is a heredoc body
-handed to such an interpreter as its program (`python3 - <<'EOF'`). So is a
-step the reader refuses to guess at (`shell_lex.Unreadable`), by its name.
+The scope is the JOB, not the step (`job_defects`): steps in one job share the workspace, /tmp and
+PATH, so a download in step A and the `chmod +x`/run in step B is one act split into two innocent
+halves, and a `sha256sum -c` in a later step is a real check of an earlier step's file. A step whose
+`shell:` is not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the same act in
+a grammar this module does not have, and so is a heredoc body handed to such an interpreter as its
+program (`python3 - <<'EOF'`). So is a step the reader refuses to guess at (`shell_lex.Unreadable`),
+by its name.
 
 Stdlib only, so the test suite imports it with no dependency. `main()` reads
 YAML and is the same rule for a human at a shell:
@@ -139,10 +136,13 @@ live, so a change that catches one fails there and edits this list.
   stdin at all (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module
   and a script FILE each put it elsewhere, the body then its input DATA), and which body descriptor
   0 finally reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval` string
-  whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500), a check in
-  the body counting under the inner shell's own `-e`, and only where every command line on the way
-  is bare (`workflow_programs._stdin`): `eval 'exec bash -s'` over-reports a body ending in its
-  check, `eval 'bash -s < f'` a download no shell runs. `eval '(bash -s)'` answers so and
+  whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500): a check
+  behind an `eval`/`-c` string counts for nothing; the body is still read
+  (`workflow_programs._stdin`). That is fail-closed -- `eval 'bash -s'` around a check alone is
+  REPORTED though the step stops -- since what the inner shell is, what it reads and what becomes of
+  its failure are the step's to change (`sh() { :; }`, `< $F`, `( … ) || true`), and each such step
+  would otherwise read CLEAN where `main` reports it; `eval 'bash -s < f'` and `eval 'bash -s &'`
+  still over-report a download no shell runs. `eval '(bash -s)'` answers so and
   `eval '{ bash -s; }'` (a group: two statements to the reader) does not, though both run the
   heredoc, and a pipeline whose FIRST stage reads stdin is never reached, both filed under #2331.
   Nor, for a SHELL, does a value or a word that may vanish end the walk at a FILE (#2485), and no

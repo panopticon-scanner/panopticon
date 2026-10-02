@@ -22,7 +22,7 @@ Three questions live here, each one a shape a step writes down:
                                (`scripts`), and the program an interpreter reads
                                on standard input (`stdin_program`,
                                `stdin_scripts`, a printer's among them, #2333),
-                               each under its READER's `-e` (`Stdin`)
+                               each under its READER's `-e`, if any (`Stdin`)
                                -- compatibility imports split out when this
                                module ran short of room a third time;
                                `unread_program` reports the programs it cannot
