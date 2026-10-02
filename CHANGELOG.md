@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
+  under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
+  `$CMD` run is caught.
+  A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
+  count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
+  own level, as before. Nothing else in a body behind a string, past `$X` or under `$CMD` is taken
+  for the step's own either (bar one whose holder's own options read stdin, `bash -s -c 'sh'`): the
+  job is read with such bodies and without them, and a defect of either reading is reported.
+  `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
 - **A checksum rescue inside a piped group is not credited without pipefail (#2630, #2608).**
   `{ CHECK || exit 1; } | cat`, its multi-line and subshell spellings, a `{ f; } | cat` call and
   a `|| return 1` twin leave only the piped stage's subshell, so without `pipefail` the pipeline
