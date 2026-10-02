@@ -130,6 +130,8 @@ def seed(shell):
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
+_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_FUNCTION_TOKEN = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\(\)$")
 
 
 def _known_status(argv, inherited):
@@ -150,6 +152,80 @@ def _known_status(argv, inherited):
     return None
 
 
+def _function_syntax(argv):
+    """A function header's name and the structural braces in this argv."""
+    leading, start = [], 0
+    while start < len(argv) and argv[start] in shell_reader.KEYWORDS and argv[start] != "function":
+        if argv[start] in ("{", "}"):
+            leading.append(argv[start])
+        start += 1
+    name, end = None, start
+    if start < len(argv) and argv[start] == "function":
+        if start + 1 < len(argv) and _FUNCTION_NAME.fullmatch(argv[start + 1]):
+            name, end = argv[start + 1], start + 2
+    elif start < len(argv) and (match := _FUNCTION_TOKEN.fullmatch(argv[start])):
+        name, end = match[1], start + 1
+    elif (start + 1 < len(argv) and _FUNCTION_NAME.fullmatch(argv[start])
+          and argv[start + 1] == "()"):
+        name, end = argv[start], start + 2
+    if name is None:
+        return None, leading
+    for token in argv[end:]:
+        if token not in shell_reader.KEYWORDS:
+            break
+        if token in ("{", "}"):
+            leading.append(token)
+    return name, leading
+
+
+def _function_scope(stmts, index):
+    """The brace-function containing `index`, as (name, closing index)."""
+    depth, active, pending, candidate = 0, [], [], None
+    for position, statement in enumerate(stmts):
+        for stage in statement.stages:
+            name, braces = _function_syntax(stage.argv)
+            if name is not None:
+                pending.append([name, position, None])
+            for token in braces:
+                if token == "{":
+                    depth += 1
+                    if pending:
+                        scope = pending.pop()
+                        scope[2] = depth
+                        active.append(scope)
+                else:
+                    if active and active[-1][2] == depth:
+                        scope = active.pop()
+                        if scope is candidate:
+                            return scope[0], position
+                    depth = max(0, depth - 1)
+        if position == index:
+            candidate = active[-1] if active else (pending[-1] if pending else None)
+            if candidate is None:
+                return None
+    return (candidate[0], len(stmts) - 1) if candidate is not None else None
+
+
+def _gating_function_call(stmts, name, after, errexit):
+    """The immediate direct call whose failure stops the step, or None."""
+    position = after + 1
+    if not errexit or position >= len(stmts) or _function_scope(stmts, position) is not None:
+        return None
+    on, fails = [errexit] * len(stmts), [False] * len(stmts)
+    statement = stmts[position]
+    if len(statement.stages) != 1:
+        return None
+    stage = statement.stages[0]
+    argv = command(stage.argv)
+    if (stage.argv[:1] == [name] and argv[:1] == [name]
+            and statement.separator not in ("&", "&&", "||")
+            and not stage.group_open and not stage.group_close
+            and not negated(stage.argv) and not conditional(stage.argv)
+            and _stops_step(stmts, position, on, fails) is None):
+        return position
+    return None
+
+
 def _stops_the_job(stmts, index, errexit=True):
     """True if the `||` branch after `stmts[index]` fails the step.
 
@@ -167,12 +243,22 @@ def _stops_the_job(stmts, index, errexit=True):
     grouped = bool(first_stage and (first_stage.group_open or
                                     (first and first[0] in _GROUP_OPEN)))
     status = 1  # The rescue is entered only after the checksum fails.
-    depth = subshell_depth = 0
+    # A rescue can close a subshell the check opened on the same statement:
+    # `( CHECK || exit 1 )`. Start inside that shell so its `)` is not read as
+    # an unmatched closer; the non-zero exit becomes the subshell's status.
+    inherited_subshells = max(0, sum(
+        stage.group_open - stage.group_close for stage in stmts[index].stages
+    ))
+    inherited_depth = (max(inherited_subshells, _nesting(stmts[index]))
+                       if inherited_subshells else 0)
+    depth, subshell_depth = inherited_depth, inherited_subshells
     exited_subshell = None
     stopped_job = exited = False
-    for statement in following:
-        if (statement.separator == "&" or len(statement.stages) != 1 or
-                any(negated(stage.argv) for stage in statement.stages)):
+    end = index
+    for end, statement in enumerate(following, index + 1):
+        if (exited_subshell is None and (statement.separator == "&" or
+                len(statement.stages) != 1 or
+                any(negated(stage.argv) for stage in statement.stages))):
             return False
         for stage in statement.stages:
             depth += stage.group_open + stage.argv.count("{")
@@ -200,14 +286,36 @@ def _stops_the_job(stmts, index, errexit=True):
                 return False
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
-        if not grouped or depth == 0:
-            if statement.separator in ("&&", "||") and not stopped_job:
+        if depth == 0 or not grouped and not inherited_depth:
+            if (statement.separator in ("&&", "||") and not stopped_job
+                    and not inherited_depth):
                 return False
             break
-        if statement.separator in ("&&", "||"):
+        if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
-    return ((not grouped or depth == 0) and status is not None and status != 0
-            and (errexit or exited))
+    finished = depth == 0 if grouped or inherited_depth else True
+    stops = finished and status is not None and status != 0 and (errexit or exited)
+    if not stops or not inherited_subshells:
+        return stops
+    # An exit inside `( )` sets that subshell's status; it does not answer
+    # what an enclosing construct does with the status. The walk above follows
+    # the exited shell to its closer (skipping unreachable commands). Decline a
+    # function body at its proven call site. For ordinary groups, reuse the
+    # group-status walk from the closing statement.
+    # With pipefail conservatively off, an uncertain pipeline remains reported.
+    function = _function_scope(stmts, index)
+    if function is not None:
+        name, close = function
+        call = _gating_function_call(stmts, name, close, errexit)
+        return FunctionGate(call) if call is not None else False
+    separator = stmts[end].separator
+    if separator == "||":
+        return _stops_the_job(stmts, end, errexit)
+    if separator in ("&", "&&"):
+        return False
+    on = [errexit] * len(stmts)
+    fails = [False] * len(stmts)
+    return _stops_step(stmts, end, on, fails) is None
 
 
 def swallowed(stmts, index, statement, stage, credit=None):
@@ -227,8 +335,12 @@ def swallowed(stmts, index, statement, stage, credit=None):
         return statement.credit[stage is not statement.stages[-1]]
     if statement.separator == "&":
         return _DETACHED
-    if statement.separator == "||" and not _stops_the_job(stmts, index):
-        return _RESCUED
+    if statement.separator == "||":
+        stops = _stops_the_job(stmts, index)
+        if isinstance(stops, Reach):
+            return stops
+        if not stops:
+            return _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
     # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
     # module's own remedy text recommends -- the checksum is the second stage
@@ -283,9 +395,24 @@ class Reach(str):
         return reach
 
 
+class FunctionGate(Reach):
+    """A check defined in a function, effective only after its proven call."""
+
+    through: int
+
+    def __new__(cls, through):
+        gate = str.__new__(
+            cls, "is inside a function that has not run through a failure gate before that use")
+        gate.span = 0
+        gate.through = through
+        return gate
+
+
 def clears(why, check, use):
     """Whether a check at statement `check`, refused for `why` (None: it
     stops the step), stops the use at statement `use`."""
+    if isinstance(why, FunctionGate):
+        return why.through < use
     return check < use and (why is None or isinstance(why, Reach) and use - check <= why.span)
 
 
@@ -381,11 +508,14 @@ def _stops_step(stmts, position, on, fails):
                  for stage in statement.stages)
     if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
         return _LOST                            # a lost paren: the list's end is unknown
-    if not depth and end < last and stmts[end].separator not in ("&", "||") and _closes(
-            stmts[end + 1]):
-        end, depth = end + 1, -1                # the list ends its group
-        if stmts[end].stages[0].argv != ["}"] and opened < 1:
-            return _LOST                        # a `)` whose `(` the reader dropped
+    closed_subshells = 0
+    while (not depth or depth < 0) and end < last and stmts[end].separator not in (
+            "&", "&&", "||") and _closes(stmts[end + 1]):
+        end, depth = end + 1, depth - 1          # the list ends enclosing groups
+        if stmts[end].stages[0].argv != ["}"]:
+            closed_subshells += 1
+            if opened < closed_subshells:
+                return _LOST                    # a `)` whose `(` the reader dropped
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere
