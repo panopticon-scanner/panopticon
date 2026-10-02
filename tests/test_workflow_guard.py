@@ -2380,9 +2380,22 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
     def test_the_subshell_rescue_controls_still_report(self):
         for body in ("( CHECK || exit 0 )\n", "( CHECK ) || true\n",
                      "set +e\n( CHECK || exit 1 )\n",
-                     "( CHECK || exit 1 ) || true\n"):
+                     "( CHECK || exit 1 ) || true\n",
+                     "{ ( CHECK || exit 1 ); } || true\n",
+                     "{ ( CHECK || exit 1 ); } | cat\n",
+                     "{ ( CHECK || exit 1 ); } &\n",
+                     "{ ( CHECK || exit 1 ); } && echo ok\n",
+                     "( ( CHECK || exit 1 ); echo ok ) || true\n",
+                     "f() { ( CHECK || exit 1 ); }\nf || true\n"):
             with self.subTest(body=body):
                 self.assertIsNotNone(self.finding(body))
+
+    def test_an_unrescued_enclosing_group_keeps_the_subshell_status(self):
+        for body in ("{ ( CHECK || exit 1 ); }\n",
+                     "{ ( CHECK || exit 1 ); } || exit 1\n",
+                     "( ( CHECK || exit 1 ) )\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
 
     def test_a_nested_groups_status_reaches_the_outer_exiting_rescue(self):
         for body in ("{ { CHECK && echo ok; }; } || exit 1\n",

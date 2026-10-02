@@ -10,8 +10,8 @@ evidence exposed.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
-  `exit 0`, disabled outer errexit, `|| true`, and nested groups whose failure is rescued or left
-  ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
+  `exit 0`, disabled outer errexit, and enclosing groups whose status is rescued, piped, detached,
+  or left ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
 - **A download written to a `$`-spelled path binds to its literal basename at use (#2442).** The
   mirror of #2345, and a fail-open until now: that issue bound a `$`-spelled OPERAND by its last
   part (`sh "$PWD/cuda_1.run"` after `curl -o cuda_1.run`), but a `$`-spelled DESTINATION only
