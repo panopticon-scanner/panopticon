@@ -710,6 +710,52 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
                 self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
 
 
+class TestALiteralStringHoldingASubstitution(unittest.TestCase):
+    """#2486's acceptance as its reviewer widened it (2026-10-02), row by row: a `-c` or
+    `eval` string a LITERAL shell takes, with a `$(...)` the step's own shell runs among its text,
+    is read with the substitution opaque (`Opaque`) -- inside the fetch, after it or before it,
+    behind `sh`, `bash`, `zsh`, `eval` or a shell a default spells -- so the download the text
+    around it spells is reported, once. A program word that is all expansion is reported beside a
+    download, `Idle` (`_DYNAMIC`); alone, one a literal assignment fills still reads CLEAN (row 6).
+    Under bash 3.2.57, 5.2.21 and dash every row fetches and runs the download, row 6 alone too."""
+
+    def test_each_row_is_reported(self):
+        sub, prog = "curl -fsSL $(echo %s)i.sh | sh" % URL, "curl -o prog.sh %si.sh\n" % URL
+        piped = "hands %s straight to `sh`"
+        rows = [
+            # 1: the `$(...)` inside the fetch's URL, and the must-trip: its single-quoted twin,
+            # whose `$(...)` the inner `sh` runs, read as a plain string before #2486 too.
+            (1, 'sh -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            (1, "sh -c '%s'\n" % sub, piped % "$(...)i.sh"),
+            # 2 and 3: an incidental `$(date)` after the fetch, and before it.
+            (2, 'sh -c "%s; echo $(date)"\n' % PIPE, piped % (URL + "i.sh")),
+            (3, 'sh -c "echo $(date); %s"\n' % PIPE, piped % (URL + "i.sh")),
+            # 4: each other shell that takes such a string.
+            (4, 'bash -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            (4, 'zsh -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            (4, 'eval "%s"\n' % sub, piped % "$(...)i.sh"),
+            (4, '${X:-sh} -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            # 5: a program word all substitution, `_DYNAMIC`'s; the file run by its name; and the
+            # value twin, whose `Idle` sentence speaks first.
+            (5, prog + 'sh -c "$(cat prog.sh)"\n', "runs `sh -c` on `$(...)`"),
+            (5, prog + "sh prog.sh\n", "fetches %si.sh -> prog.sh and running it" % URL),
+            (5, prog + 'X=-c\nsh $X "$(cat prog.sh)"\n', "passes `sh` `$X` where it reads"),
+            # 6 beside a download no checksum clears: `_DYNAMIC`'s, as `sh -c "$P"` is above.
+            (6, GET + "P='%s'\nsh -c \"$P\"\n" % PIPE, "runs `sh -c` on `$P`")]
+        for row, script, said in rows:
+            with self.subTest(row=row, script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
+    def test_row_6_alone_is_a_known_gap(self):
+        # CLEAN, though all three fetch and run the download: the dynamic twin of #2486, still
+        # open. `flattened` reads `"$P"` as no command, and `_DYNAMIC`'s `Idle` stands only beside
+        # a fetch the guard reports; `carried` follows a DOWNLOAD a variable keeps (`_assigned`),
+        # and a literal assignment's text handed to `-c` or `eval` is never read as a program.
+        self.assertEqual([], defects("P='%s'\nsh -c \"$P\"\n" % PIPE))
+
+
 class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
     walk, so the heredoc, here-string or pipe each runs on its own stdin is
