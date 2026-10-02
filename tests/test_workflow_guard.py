@@ -2284,7 +2284,7 @@ class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
         self.assertEqual([], self.job("%s && chmod +x /tmp/payload\necho done\n", "bash {0}", ""))
 
     def test_where_the_lists_failure_still_stops_the_step(self):
-        for body in ("true && %s\n", "%s && echo ok || exit 1\n", "( %s && echo ok )\n",
+        for body in ("%s && echo ok || exit 1\n", "( %s && echo ok )\n",
                      "(cd /tmp && %s && echo ok)\n", "eval '%s && echo ok'\n",
                      "( %s && echo ok ) || exit 1\n", "{ %s && echo ok; } || exit 1\n",
                      "{\n  %s && echo ok\n} || exit 1\n"):
@@ -2382,6 +2382,134 @@ class TestACaseArmDoesNotCloseASubstitution(unittest.TestCase):
                 found = wg.job_defects([("step", script)])
                 self.assertEqual(1, len(found), found)
                 self.assertIn(reason, found[0][1])
+
+
+class TestAConditionalCheckGatesOnlyItsReachedPath(unittest.TestCase):
+    """#2419: a check behind ``&&`` or ``||`` may never run."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+
+    def defects(self, body, shell=None, use=USE):
+        script = self.FETCH + body % self.CHECK + use
+        found = [why for _step, why in wg.job_defects([wg.Step("step", script, shell)])]
+        if shell is None:
+            self.assertEqual(found, wg.fetch_exec_defects(script))
+        return found
+
+    def test_a_check_the_left_side_may_skip_does_not_clear_a_later_use(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("test -f /nonexistent && %s\n", "true && %s\n",
+                         "true && { %s; }\n", "true || %s\n"):
+                with self.subTest(shell=shell, body=body):
+                    found = self.defects(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(
+                        "is reached only through the `&&`/`||` list before it", found[0]
+                    )
+
+    def test_an_or_conditional_check_does_not_clear_a_use_in_another_step(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([
+                    wg.Step("check", self.FETCH + "true || " + self.CHECK + "\n", shell),
+                    ("use", self.USE),
+                ])
+                self.assertEqual(1, len(found), found)
+                self.assertEqual("check", found[0][0])
+                self.assertIn(
+                    "is reached only through the `&&`/`||` list before it", found[0][1]
+                )
+
+    def test_a_use_on_the_checks_and_suffix_still_shares_its_condition(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.defects(
+                    "test -f /maybe && %s && chmod +x /tmp/payload && /tmp/payload\n",
+                    shell,
+                    use="",
+                ))
+
+    def test_an_and_suffix_after_or_does_not_require_the_check(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = self.defects(
+                    "true || %s && chmod +x /tmp/payload && /tmp/payload\n",
+                    shell,
+                    use="",
+                )
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is reached only through the `&&`/`||` list", found[0])
+
+    def test_an_inlined_use_shares_its_carriers_condition(self):
+        for shell in (None, "sh", "bash"):
+            for prefix in ("false ||", "true &&"):
+                with self.subTest(shell=shell, prefix=prefix, use="inside"):
+                    self.assertEqual([], self.defects(
+                        prefix + " sh -ec '%s; " + self.USE + "'\n", shell, use=""
+                    ))
+            for prefix in ("true ||", "false &&"):
+                with self.subTest(shell=shell, prefix=prefix, use="after"):
+                    found = self.defects(prefix + " sh -ec '%s'\n", shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("is reached only through the `&&`/`||` list", found[0])
+
+    def test_a_grouped_use_shares_its_or_carriers_condition(self):
+        for shell in (None, "sh", "bash"):
+            for opened, closed in (("{", "; }"), ("(", ")")):
+                with self.subTest(shell=shell, opened=opened, use="inside"):
+                    self.assertEqual([], self.defects(
+                        "false || " + opened + " %s; " + self.USE.strip() + closed + "\n",
+                        shell,
+                        use="",
+                    ))
+                with self.subTest(shell=shell, opened=opened, use="after"):
+                    found = self.defects("true || " + opened + " %s" + closed + "\n", shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("is reached only through the `&&`/`||` list", found[0])
+
+    def test_a_multiline_brace_carrier_keeps_only_its_own_uses(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.defects(
+                    "false || {\necho before\n%s\n" + self.USE + "\n}\n", shell, use=""
+                ))
+            with self.subTest(shell=shell, use="after"):
+                found = self.defects("true || {\necho before\n%s\n}\n", shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is reached only through the `&&`/`||` list", found[0])
+
+    def test_an_unconditional_check_still_clears_a_later_use(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.defects("%s\n", shell))
+
+    def test_an_and_conditional_that_ends_the_step_still_gates_the_next_step(self):
+        for shell in (None, "sh", "bash"):
+            for condition in ("test -f /maybe", "true"):
+                with self.subTest(shell=shell, condition=condition):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("check", self.FETCH + condition + " && " + self.CHECK + "\n",
+                                shell),
+                        ("use", self.USE),
+                    ]))
+
+    def test_a_soft_and_conditional_step_does_not_gate_the_next_step(self):
+        found = wg.job_defects([
+            wg.Step("check", self.FETCH + "false && " + self.CHECK + "\n",
+                    None, None, True),
+            ("use", self.USE),
+        ])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("continue-on-error", found[0][1])
+
+    def test_an_and_conditional_with_an_exiting_rescue_still_gates(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.defects(
+                    "test -f /maybe && %s || exit 1\n", shell
+                ))
 
 
 class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
@@ -2601,8 +2729,7 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
         for shell in (None, "sh", "bash"):
             for body in ("{ %s; } || exit 1\n", "{ %s; }\n", "{\n  %s\n}\n",
                          '{ %s; } || { echo "::error::bad"; exit 1; }\n', "{ { %s; }; }\n",
-                         "true && { %s; }\n", "{ %s && echo ok; } || exit 1\n",
-                         "{ %s && echo ok; } && "):
+                         "{ %s && echo ok; } || exit 1\n", "{ %s && echo ok; } && "):
                 with self.subTest(shell=shell, body=body):
                     self.assertEqual([], self.job(body, shell))
 
