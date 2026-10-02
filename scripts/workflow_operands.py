@@ -196,9 +196,11 @@ def covers(token, dest, recursive=False):
     (`chmod +x /tmp/*.sh`, or a word bash expands, read as `_GROUP` says),
     and by the directory a recursive command walks (`chmod -R +x /tmp`). A
     glob is matched against the whole path with a leading `./` on either
-    dropped -- and, one bash expands, by the last parts where a `$` spells
-    either directory or it has one a bare dest does not (`_GROUP`'s comment
-    says why). #2345's arm is `_last_part`, which carries its mirror too
+    dropped -- but only where the lexer marked the word as a pattern, because
+    quoted `*`, `?` and `[` characters are literal. One bash expands is also
+    matched by the last parts where a `$` spells either directory or it has
+    one a bare dest does not (`_GROUP`'s comment says why). #2345's arm is
+    `_last_part`, which carries its mirror too
     (#2442): a word written OUT stands for a download whose own path expands,
     so `sh cuda_1.run` reads the fetch to `"$PWD/cuda_1.run"` that only the
     glob reached. The directory part over-reports: after a fetch of
@@ -217,7 +219,7 @@ def covers(token, dest, recursive=False):
             glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
     elif not token.startswith("-") and _last_part(token, dest):
         return True
-    if _GLOB.search(glob):
+    if pattern and _GLOB.search(glob):
         glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
         if loose or pattern and ("$" in dest or os.path.dirname(glob) and not os.path.dirname(dest)):
             glob, dest = os.path.basename(glob), os.path.basename(dest)

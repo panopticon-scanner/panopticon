@@ -701,6 +701,40 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
                     self.assertEqual([], self.job(dest, use))
 
 
+class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
+    """#2432: only unquoted pattern characters make a shell glob."""
+
+    GET = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+
+    def job(self, use):
+        return [why for _name, why in wg.job_defects([("step", self.GET + use)])]
+
+    def test_a_fully_quoted_pattern_does_not_name_the_download(self):
+        for operand in ('"./cuda_*.run"', "'./cuda_?.run'", '"cuda_[1].run"'):
+            for command in ("sh", "chmod +x"):
+                with self.subTest(command=command, operand=operand):
+                    self.assertEqual([], self.job("%s %s\n" % (command, operand)))
+
+    def test_an_unquoted_pattern_still_names_the_download(self):
+        for operand in ("./cuda_*.run", "./cuda_?.run", "cuda_[1].run"):
+            with self.subTest(operand=operand):
+                found = self.job("sh %s\n" % operand)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+    def test_quoted_literal_parts_do_not_hide_an_unquoted_pattern(self):
+        found = self.job('sh "./cuda_"*.run\n')
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh`", found[0])
+
+    def test_a_quoted_literal_part_of_an_exact_name_still_names_it(self):
+        for operand in ('./cuda_"1".run', '"./cuda_"1.run'):
+            with self.subTest(operand=operand):
+                found = self.job("sh %s\n" % operand)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+
 class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
     """#2345 (a), (b): after `curl -o cuda_1.run`, `sh "$PWD/cuda_1.run"` read
     clean -- #2310 read a word bash expands only where the COMMAND stands --
