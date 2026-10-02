@@ -629,6 +629,7 @@ groups:
       - scripts/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
+      - tests/test_shell_reader_conditionals.py
       - tests/test_shell_wrappers.py
       - tests/test_workflow_guard_lexer_heredocs.py
       panels:
