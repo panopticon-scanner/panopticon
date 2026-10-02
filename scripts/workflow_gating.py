@@ -22,11 +22,12 @@ The layers run one way: this module imports nothing from `workflow_forms`,
 which sits above it and hosts `step_credit`, the step's own answer -- the one
 gating question that needs that layer's readers, the branch bodies
 (`regions`) and the `set`s (`_errexit_states`) -- and `workflow_guard` sits
-on top of both. It reads `workflow_programs` BELOW it, for the option letters
-a shell takes, which that module reads too (#2443). `Inlined` -- a statement
+on top of both. It reads `workflow_posture` BELOW it -- `seed` and `_errexit`,
+the option words `flattened` shares, split out there at this module's size
+(#2620) and re-exported here so no caller moved -- which reads the option
+tables in `workflow_programs` under it (#2443). `Inlined` -- a statement
 of a script `workflow_forms.flattened` reads in place -- lives here because
-both layers read it, and so does `_errexit`, the option words `seed` and
-`flattened` share.
+both layers read it.
 
 Stdlib only, like everything under it.
 """
@@ -36,7 +37,8 @@ import re
 
 import shell_reader
 from shell_reader import command, conditional, negated
-from workflow_programs import SET_OPTION_NAMES, SET_OPTIONS, VALUE_OPTIONS
+from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
+                              _takes_value as _takes_value, seed as seed)
 
 
 # A statement of a script handed to a shell, as `flattened` inlines it, with
@@ -44,123 +46,6 @@ from workflow_programs import SET_OPTION_NAMES, SET_OPTIONS, VALUE_OPTIONS
 # clears nothing: as its pipeline's last command, and as an earlier one (None:
 # it may clear).
 Inlined = collections.namedtuple("Inlined", "stages separator region credit")
-
-
-def _takes_value(words, at):
-    """Whether bash's `set` reads `words[at]` as the option NAME an `o`
-    before it takes: any word that is not itself an option word. `set -o -e`
-    prints the settings and the `-e` still turns errexit ON -- rc 1 on bash
-    3.2.57 and 5.2.21 with a `false` behind it, and no `SURVIVED` -- and so
-    does `set -oo pipefail -e`. A shell's COMMAND LINE takes the next word
-    whatever it spells: `bash -oo pipefail -c P` answers `-c: invalid option
-    name`, rc 2, and runs nothing at all (`invocation` below, and
-    `workflow_programs._past_options`, which counts the same way)."""
-    return at < len(words) and words[at][:1] not in ("-", "+")
-
-
-def _rejected(words):
-    """Whether bash refuses this `set` WHOLE: one of its option words carries
-    a letter the builtin lacks (`set -Z -e`, `set -eO foo`), or is a LONG one
-    -- bash's `set` has none, and answers `set --posix -e` with `set: --:
-    invalid option` (review NIT 4) -- or an `o` in it takes a value that is
-    no option NAME (`set -o foo`, #2560). A bad LETTER leaves no option
-    changed (rc 2, #2443); a bad NAME keeps what the words before it set, as
-    the third paragraph says (rc 1 on bash 3.2.57, 2 on 5.2.21). dash and
-    `sh` die at the `set` instead, so nothing runs there at all. `set --` is
-    the positional spelling that ends the options, not a refusal:
-    `set -- "$@"` reads as it always did.
-
-    Read over the words `_errexit` reads, taking one value per `o` LETTER
-    exactly as it does -- as bash does, and as
-    `workflow_programs._past_options` and `stdin_program` already did -- so
-    the two walks agree about which words are values. `set -oo pipefail
-    errexit` turns errexit ON and leaves no positional behind (`$#` is 0 on
-    bash 3.2.57 and 5.2.21), where the per-word count this replaced read the
-    `errexit` as the end of the options (#2559, review NIT 6 of #2551). The
-    shape that count was keeping out, `set -oo x -Ze`, is caught by the NAME
-    now: `x` is the first `o`'s value and no name, so both bashes answer
-    `set: x: invalid option name` and set nothing; the second `o` has no
-    value, and `-Ze` is read as an option word (`_takes_value`).
-
-    Reading a refused NAME as setting NOTHING is the fail-closed pick rather
-    than bash to the letter: bash applies the names BEFORE the bad one and
-    stops there, so `set -o pipefail -o foo` leaves pipefail on (rc 0, both
-    bashes) -- but where the one it applied was errexit, the failing `set`
-    exits the shell under it and nothing after it runs at all (`set -e -o
-    foo`: rc 1 on 3.2.57, rc 2 on 5.2.21, nothing printed after). An unknown
-    LETTER is not like that: bash validates a WORD's letters before applying
-    that word, so `set -o errexit -Z` leaves errexit OFF (rc 0) -- but a name
-    an earlier word applied stays, and `set -ox pipefail -Z` or
-    `set -oo pipefail x` leaves pipefail ON and survives, read here as OFF:
-    over-reports only. A value the guard cannot read (`$X`, `${X:-pipefail}`,
-    a lifted `$(cmd)`) is a refused NAME too: with `X=foo`, both bashes
-    answer `set -o $X -e` with `invalid option name`, leave errexit off and
-    run what follows, so reading it ON would fail open -- the opposite pick
-    from `_refused_name`, whose ON means the program runs and is reported."""
-    words, at = list(words), 0
-    while at < len(words):
-        word, at = words[at], at + 1
-        if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
-            return False
-        if word[:2] == "--" or any(letter not in SET_OPTIONS for letter in word[1:]):
-            return True
-        for letter in word[1:]:
-            if letter in VALUE_OPTIONS and _takes_value(words, at):
-                if words[at] not in SET_OPTION_NAMES:
-                    return True                 # `set -o foo`: no option of that name
-                at += 1                         # `-o name`'s value, as `_errexit` takes it
-    return False
-
-
-def _errexit(words, state=False, name="errexit", invocation=False):
-    """Whether these shell or `set` options leave `-e` on, from `state` -- or
-    the option `-o name` sets, for `pipefail`, which no letter spells.
-
-    One value per `o` LETTER, as bash counts them and `_rejected` reads them
-    (#2559): the second `o` of `set -oo pipefail errexit` takes `errexit`.
-    `invocation`: these words are a shell's COMMAND LINE -- a `shell:`
-    template's (`seed`) or a child shell's (`flattened`, #2444) -- where
-    `-O shopt` takes a value, which bash's `set` does not: it rejects `-O`.
-    There an `o` takes the next word whatever it spells, where the builtin
-    reads a NAME only from a word that is not an option (`_takes_value`).
-    A `set` bash refuses whole turns NOTHING on (`_rejected`, #2443, #2560);
-    a `+e` in it still reads as off, fail-closed either way.
-    """
-    words = list(words)
-    rejected = not invocation and _rejected(words)
-    at = 0
-    while at < len(words):
-        word, at = words[at], at + 1
-        if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
-            break
-        if word[:2] == "--":                    # bash's long options carry none
-            continue
-        turns_on = not (rejected and word[0] == "-")
-        for letter in word[1:]:
-            if letter == "e" and name == "errexit" and turns_on:
-                state = word[0] == "-"
-            elif letter == "o" and (invocation or _takes_value(words, at)):
-                if at < len(words) and words[at] == name and turns_on:
-                    state = word[0] == "-"
-                at += 1                         # `-o name`'s value
-            elif letter == "O" and invocation:
-                at += 1                         # `bash -O extglob {0}`
-    return state
-
-
-def seed(shell):
-    """(`-e`, `pipefail`) as a step whose `shell:` is `shell` starts (#2338).
-
-    GitHub runs a step with no `shell:` as `bash -e {0}` (`sh -e {0}` where
-    bash is missing) and `shell: sh` as `sh -e {0}`: `-e` and no pipefail.
-    Only `shell: bash` adds it (`bash --noprofile --norc -eo pipefail {0}`),
-    and a template (`bash {0}`, `bash -eo pipefail {0}`) runs with exactly
-    the options it writes.
-    """
-    words = (shell or "").split()
-    if len(words) < 2:
-        return True, words == ["bash"]
-    return _errexit(words[1:], invocation=True), _errexit(words[1:], False, "pipefail", True)
 
 
 # --- whether a command's failure is allowed to matter -------------------------
@@ -274,7 +159,7 @@ def _gating_function_call(stmts, name, after, errexit):
     return None
 
 
-def _stops_the_job(stmts, index, errexit=True):
+def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     """True if the `||` branch after `stmts[index]` fails the step.
 
     `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
@@ -305,7 +190,7 @@ def _stops_the_job(stmts, index, errexit=True):
     end = index
     for end, statement in enumerate(following, index + 1):
         if (exited_subshell is None and (statement.separator == "&" or
-                len(statement.stages) != 1 or
+                len(statement.stages) != 1 and not (depth and _closes(statement)) or
                 any(negated(stage.argv) for stage in statement.stages))):
             return False
         for stage in statement.stages:
@@ -332,6 +217,8 @@ def _stops_the_job(stmts, index, errexit=True):
             subshell_depth -= stage.group_close
             if depth < 0 or subshell_depth < 0:
                 return False
+            if not depth and len(statement.stages) > 1:
+                break                           # the other pipeline stages run concurrently
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
         if depth == 0 or not grouped and not inherited_depth:
@@ -342,15 +229,14 @@ def _stops_the_job(stmts, index, errexit=True):
         if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
     finished = depth == 0 if grouped or inherited_depth else True
-    stops = finished and status is not None and status != 0 and (errexit or exited)
+    stops = (finished and status is not None and status != 0 and (errexit or exited)
+             and (len(stmts[end].stages) == 1 or pipefail))
     if not stops or not inherited_subshells:
         return stops
-    # An exit inside `( )` sets that subshell's status; it does not answer
-    # what an enclosing construct does with the status. The walk above follows
-    # the exited shell to its closer (skipping unreachable commands). Decline a
-    # function body at its proven call site. For ordinary groups, reuse the
-    # group-status walk from the closing statement.
-    # With pipefail conservatively off, an uncertain pipeline remains reported.
+    # An exit inside `( )` sets that subshell's status, then follows its closer,
+    # skipping unreachable commands; it does not decide what encloses the shell.
+    # Decline a function body at its proven call. For ordinary groups, reuse the
+    # group-status walk from the closer with the step's recorded pipefail state.
     function = _function_scope(stmts, index)
     if function is not None:
         name, close = function
@@ -358,11 +244,11 @@ def _stops_the_job(stmts, index, errexit=True):
         return FunctionGate(call) if call is not None else False
     separator = stmts[end].separator
     if separator == "||":
-        return _stops_the_job(stmts, end, errexit)
+        return _stops_the_job(stmts, end, errexit, pipefail)
     if separator in ("&", "&&"):
         return False
     on = [errexit] * len(stmts)
-    fails = [False] * len(stmts)
+    fails = [pipefail] * len(stmts)
     return _stops_step(stmts, end, on, fails) is None
 
 
@@ -471,7 +357,7 @@ def swallowed(stmts, index, statement, stage, credit=None):
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
-        stops = _stops_the_job(stmts, index)
+        stops = _stops_the_job(stmts, index, True, isinstance(credit, tuple) and credit[1] is None)
         if isinstance(stops, Reach):
             return stops
         if not stops:
@@ -665,12 +551,13 @@ def _stops_step(stmts, position, on, fails):
             return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
     if close > position and separator == "||":
-        return None if _stops_the_job(stmts, close, on[position]) else _ENDS % _RESCUED
+        return None if _stops_the_job(
+            stmts, close, on[position], fails[position]) else _ENDS % _RESCUED
     if close > position and separator == "&&":
         return _stops_step(stmts, close, on, fails)     # the group heads a list of its own
     if separator != "&&":
         stops = (on[position] or close == last or
-                 separator == "||" and _stops_the_job(stmts, position, False))
+                 separator == "||" and _stops_the_job(stmts, position, False, fails[position]))
         return None if stops else -1
     end, depth = position, 0
     while end < last and (depth > 0 or not depth and stmts[end].separator == "&&"):
@@ -694,7 +581,8 @@ def _stops_step(stmts, position, on, fails):
     if depth < 0 and here.separator == "&&":
         return _stops_step(stmts, end, on, fails)   # the group heads a list of its own
     if here.separator == "||":
-        return None if _stops_the_job(stmts, end, all(on[position:end + 2])) else end
+        return None if _stops_the_job(stmts, end, all(on[position:end + 2]),
+                                      all(fails[position:end + 2])) else end
     subshell = depth < 0 and on[end] and (len(here.stages) > 1 or any(
         stage.group_close for stage in here.stages))    # a piped group runs in one too
     return None if subshell or end == last and here.separator != "&" else end
