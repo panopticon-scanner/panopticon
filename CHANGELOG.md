@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A heredoc whose substitution closes before its body is read like Bash 5.2 (#2498, #2331).**
+  The lexer refused `$(cat <<EOF)` before reading the lines below it, so one generic finding
+  replaced the fetch sentence in every affected step. It now files that body first and skips its
+  consumed source after parsing the close-line rest; Bash 3.2's code reading remains documented
+  as the standing version disagreement. Keeping the refusal was rejected because it hid the
+  actionable defect without adding safety.
 - **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
   guard used a generic refusal because one pass met the first body's same-line rest before the
   later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies

@@ -57,13 +57,13 @@ channel for a step it cannot read: `workflow_guard.job_defects` catches it
 and reports that step by name, accepting nothing in it.
 
 A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its body would follow --
-`echo "$(cat <<EOF)"` -- raises `Unreadable` too. Bash 3.2 reads the lines below it as code; 5.2
-warns, reads them as that body and runs what follows its terminator. Read as code, a quote in them
-hides what 5.2 runs; read as a body, they hide what 3.2 runs. A heredoc queued after a body that
-ends at a line like `EOF)` is read from the next line; the first line's rest is saved until every
-queued body is filed, then parsed as code. Two `EOF)` ends in one queue remain refused because
-5.2 reports a syntax error. Bodies are indexed and ended by `shell_heredoc._Lines`;
-`shell_heredoc`'s docstring argues the choices.
+`echo "$(cat <<EOF)"` -- uses 5.2's reading: its body is filed from the lines below before the
+close-line rest is parsed. Bash 3.2 instead reads those lines as code; 5.2 is the standing rule
+where they disagree. A heredoc queued after a body that ends at a line like `EOF)` is likewise
+read from the next line; the first line's rest is saved until every queued body is filed, then
+parsed as code. Two `EOF)` ends in one queue remain refused because 5.2 reports a syntax error.
+Bodies are indexed and ended by `shell_heredoc._Lines`; `shell_heredoc`'s docstring argues the
+choices.
 
 A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
 `]` however many lines on -- only where bash reads an assignment: at the head
@@ -261,7 +261,8 @@ class _Lexer:
         self.cond = 0                   # inside `[[ ... ]]`: 1 + the `(` open in it
         self.cases: tuple[str, ...] = ()    # the `case`s open here (`casing`)
         self.lines: dict[bool, _Lines] = {}
-        self.jumps: dict[int, int] = {}  # source after a saved `EOF)` rest
+        self.jumps: dict[int, int] = {}  # body source -> code that follows it
+        self.body_next: dict[int, int] = {}  # next body below an early-close line
         self.plain = -1                 # a `((` decided as two subshells
         self.reread = 0                 # the characters read again for them
         self.unspelled = (0, 0)         # a heredoc word bash parses: frames, start
@@ -294,10 +295,21 @@ class _Lexer:
         return "".join(out)
 
     def past(self, i: int) -> int:
-        """Past bodies already read before their saved `EOF)`-line rest."""
+        """Past bodies already read before code that follows them."""
         while i in self.jumps:
             i = self.jumps.pop(i)
         return i
+
+    def below(self, frame: _Frame, i: int) -> None:
+        """File bodies below a line that closes their substitution early."""
+        newline = self.text.find("\n", i)
+        if newline < 0:
+            raise Unreadable("a heredoc whose substitution closes before its body has no "
+                             "following line: bash 5.2 runs nothing from it")
+        following = newline + 1
+        source = self.body_next.get(following, following)
+        resume, self.body_next[following] = self.bodies(frame, source, required=True)
+        self.jumps[source] = resume
 
     def open(self, i: int, kind: str) -> int | None:
         """Past the opener at `i` -- its frame pushed -- if `kind` nests one."""
@@ -404,11 +416,7 @@ class _Lexer:
                 frame.undo = ()         # `))`: an arithmetic command
             if not frame.depth:
                 if frame.queue:         # a substitution closing over a heredoc
-                    raise Unreadable("a heredoc inside a `$(...)`, `<(...)` or `>(...)` "
-                                     "that closes before the newline its body would follow: "
-                                     "bash 5.2 reads that body from the lines below and runs "
-                                     "what follows its terminator, bash 3.2 reads those "
-                                     "lines as code")
+                    self.below(frame, i)
                 self.frames.pop()
                 if frame.kind == "(":
                     vars(self).update(frame.saved)
@@ -418,7 +426,7 @@ class _Lexer:
         if ch in _BREAK and frame.kind in _CODE:
             self.word = len(out)
             if ch == "\n" and frame.queue:
-                return self.bodies(frame, self.past(i + 1))
+                return self.bodies(frame, self.past(i + 1))[0]
         return i + 1
 
     def rewind(self, undo: tuple, i: int) -> int:
@@ -544,11 +552,12 @@ class _Lexer:
                          "body read as code hides what follows its terminator behind "
                          "a quote left open in it" % shown)
 
-    def bodies(self, frame: _Frame, i: int) -> int:
+    def bodies(self, frame: _Frame, i: int, required: bool = False) -> tuple[int, int]:
         """Read the heredocs `frame` queued, one after another from the line
-        starting at `i`; the index where its code resumes."""
+        starting at `i`; where code resumes and where their source ends."""
         saved: tuple[int, int, int] | None = None
         compatible = not frame.split
+        consumed = i
         for number, (slot, delimiter, quoted, strip, fd) in enumerate(frame.queue):
             expands = not quoted        # and folds `\`-newline, as bash reads it
             if expands not in self.lines:
@@ -556,6 +565,7 @@ class _Lexer:
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
                 body, resume, cut, drop, rejected, following = found
+                consumed = following
                 if rejected and compatible:
                     raise Unreadable("a substitution heredoc's `EOF)`-line rest begins with "
                                      "`;`: bash 5.2 rejects it, while bash 3.2 may run code "
@@ -574,6 +584,9 @@ class _Lexer:
             elif saved:
                 raise Unreadable("a heredoc queued after an `EOF)` end has no terminator: bash "
                                  "5.2 reads no code after its body")
+            elif required:
+                raise Unreadable("a heredoc whose substitution closes before its body has no "
+                                 "terminator: bash 5.2 runs nothing after it")
         frame.queue.clear()
         frame.split = False
         if saved:
@@ -581,8 +594,8 @@ class _Lexer:
             self.jumps[following] = i
             if drop:
                 frame.drop = drop, frame.depth
-            return rest
-        return i
+            return rest, consumed
+        return i, consumed
 
 
 def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
