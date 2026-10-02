@@ -23,12 +23,12 @@ does not; a quoted delimiter's body is compared physical line by physical
 line.
 
 A body inside a substitution that finds no end line by line leaves its heredoc's
-operator in the output as written and marks the reading `unended`: every
-later heredoc queued inside a substitution, in that same reading, is then
-found by the plain exact-line index instead of the line-by-line scan. Bash
-5.2 runs nothing past an unterminated heredoc either, so none of those later
-answers can change what it runs -- the index only keeps reading them linear
-rather than quadratic in the heredocs queued.
+operator in the output as written and marks the reading `unended`. A later
+body is scanned only when its exact delimiter exists below it, which bounds
+that scan while still finding an earlier `EOF)` line. Bash 5.2 runs nothing
+past the first unterminated body either, but bash 3.2 can run code after that
+later `EOF)`; the exact-line bound keeps reading those bodies linear rather
+than quadratic in the heredocs queued.
 
 Stdlib only."""
 import bisect
@@ -45,8 +45,9 @@ class _Lines:
     ends it is one lookup, where the pass this replaced scanned to the end of
     the script once per operator, which is quadratic in the operators. In a
     substitution, where bash 5.2 ends a body at a line its delimiter starts
-    with a `)` after it too (#2343), a body is found line by line -- until one
-    finds no end (`unended`), after which 5.2 runs nothing and `index` serves."""
+    with a `)` after it too (#2343), a body is found line by line. After one
+    finds no end (`unended`), a later scan starts only if `index` proves its
+    exact delimiter bounds it."""
 
     def __init__(self, text: str, folded: bool):
         self.size = len(text)
@@ -85,7 +86,9 @@ class _Lines:
         # which is the only way a delimiter that starts with a tab can match.
         raw = not strip or word.startswith("\t")
         begin, cut = len(text) - len(word), -1
-        if sub and not self.unended and not (strip and raw):
+        if sub and not (strip and raw):
+            if self.unended and self.index(not raw)[1].get(word, -1) <= n:
+                return None             # no exact line bounds a fallback scan
             for end in range(n, len(self.texts)):
                 lead = self.texts[end][offset if end == n else 0:].lstrip("\t" if strip else "")
                 if lead == word or lead.startswith(word) and ")" in lead[len(word):]:

@@ -188,6 +188,30 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
+    """#2494: after one body finds no end, a later body's fallback scan still
+    reaches its `B)` line before the exact `B` line that bounds that scan."""
+
+    VULNERABLE = ("x=$(cat <<A\n)\ny=$(cat <<B\nb\nB)\n"
+                  "%s\nB\n)\n" % PIPE)
+
+    def test_the_pipeline_after_the_later_body_is_reported(self):
+        found = defects(self.VULNERABLE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_one_unended_body_still_leaves_later_code_visible(self):
+        found = defects("x=$(cat <<A\n)\n%s\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_exactly_ended_first_body_control_still_reports(self):
+        script = "x=$(cat <<A\na\nA\n)\ny=$(cat <<B\nb\nB)\n%s\nB\n)\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+
 class TestAForeignProgramOnStandardInput(unittest.TestCase):
     """#2499 (owner ruling 2026-10-01, option b): a heredoc body handed to an
     interpreter this guard has no grammar for -- `python3 - <<'EOF'`,
