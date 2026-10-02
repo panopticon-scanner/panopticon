@@ -1143,6 +1143,16 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     why = self.job(get + use)
                     self.assertEqual(1, len(why), why)
                     self.assertIn(self.SAID % (to, ""), why[0])
+        # A trailing blank: bash 5.2.21, 3.2.57 and dash run the download as above (rc 0), but the
+        # word is no longer `$x` whole, so this sentence does not bind it; #2483's unread program
+        # word reports it instead, `Idle`, beside the download -- CLEAN until blanks around such a
+        # word were no text of its own (`workflow_programs._all_expansion`).
+        for use, how in (('eval "$x "\n', "eval"), ('sh -c "$x "\n', "sh -c")):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertTrue(why[0].startswith("runs `%s` on `$x`" % how), why)
+                self.assertIsInstance(why[0], wg.Idle)
 
     def test_wherever_the_step_hands_it_over(self):
         for script, to, where in (

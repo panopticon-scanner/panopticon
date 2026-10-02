@@ -341,7 +341,7 @@ def _all_expansion(text):
     unbalanced `${A` are not: they hold text of their own. Braces are counted rather than matched by
     pattern, because no regular expression can balance them. A `<(...)` renders as `$(...)` too, so
     whether each hands on words is the caller's to ask of the token."""
-    at = 0
+    at, text = 0, text.strip(" \t\n").removesuffix(";").rstrip(" \t\n")
     while at < len(text):
         if text.startswith("$(...)", at):       # a lifted substitution, rendered
             at += 6

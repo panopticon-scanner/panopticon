@@ -501,6 +501,29 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         found = defects(GET + 'sh $X -c "$P"\n')
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+        # Inside a substitution a `-c` string past the first operand -- `$0` and `$1` once `$X` is
+        # `-c` -- is handed too (`substitution_script`), read opaque where a `$(...)` or backquote
+        # is among its text (#2486), and its answer is `Idle` (`echo` fetches nothing): it does not
+        # speak over the value's loud reason, a literal string's no more than an opaque one's. Bash
+        # 5.2.21, 3.2.57 and dash run the first operand's download in each (rc 0).
+        for script in ("X=-c\ny=$(sh $X %s -c \"echo $(date)\")\n" % fetch,
+                       "X=-c\ny=`sh $X %s -c \"echo $(date)\"`\n" % fetch,
+                       "X=-c\ny=$(sh $X %s -c \"echo `date`\")\n" % fetch,
+                       "X=-c\ny=$(sh $X %s -c 'echo hi')\n" % fetch):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(
+                    "passes `sh` `$X` where it reads its options"), found)
+                self.assertNotIsInstance(found[0][1], wg.Idle)
+        # Where the value's reason is `Idle` too, or there is no value, nothing is said, and all
+        # three run no download: #2484's row (the string after the second `-c` is the program, the
+        # download `$0`), the opaque string alone, and a first operand that fetches nothing.
+        for script in ("X=-c\ny=$(sh $X -c 'echo hi' %s)\n" % fetch,
+                       "y=$(sh -c \"echo $(date)\" x)\n",
+                       "X=-c\ny=$(sh $X 'echo hi' -c \"echo $(date)\")\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
 
     def test_a_value_in_the_options_speaks_before_a_stdin_no_shell_is_sure_to_read(self):
         # Fix round 2's review (#2485): past a value where a shell reads its options no shell is
@@ -633,6 +656,9 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         for word in ('${A}x', 'x${A}', '${A:-${B}}x', '${A', '$', '${A:-${B}} ${C}'):
             with self.subTest(word=word):
                 self.assertEqual([], defects(GET + 'sh -c "%s"\n' % word))
+        # A blank BETWEEN substitutions is text of the word's own too, as between expansions above,
+        # though bash 5.2.21, 3.2.57 and dash run the download through it: a known gap.
+        self.assertEqual([], defects(GET + 'sh -c "$(cat a) $(cat tool)"\n'))
 
     def test_eval_set_is_the_declared_over_report(self):
         # Finding 4: `eval set -- "$OPTS"` is the getopt idiom, and bash runs
@@ -682,6 +708,30 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         found = defects(GET + "sh tool\n")
         self.assertEqual(1, len(found), found)
         self.assertNotIsInstance(found[0][1], wg.Idle)
+
+    def test_blanks_around_the_word_and_a_trailing_semicolon_are_no_text_of_its_own(self):
+        # Every shell runs `"$(cat tool) "` as it runs `"$(cat tool)"`, and a `run: |` block wraps
+        # the word in newlines (`_all_expansion`). Bash 5.2.21, 3.2.57 and dash run the download
+        # in every row, each CLEAN until now. The sentence quotes the word without its blanks.
+        sh_c, on_eval = "runs `sh -c` on `$(...)`", "runs `eval` on `$(...)`"
+        for script, said in ((GET + 'sh -c "$(cat tool) "\n', sh_c),
+                             (GET + 'sh -c " $(cat tool)"\n', sh_c),
+                             (GET + 'sh -c "$(cat tool);"\n', "runs `sh -c` on `$(...);`"),
+                             (GET + 'eval "$(cat tool) "\n', on_eval),
+                             (GET + 'sh -c "\n  $(cat tool)\n"\n', sh_c),
+                             (GET + 'eval "\n$(cat tool)\n"\n', on_eval),
+                             (GET + 'sh -c "\t$(cat tool)"\n', sh_c),
+                             (GET + 'sh -c "`cat tool` "\n', sh_c)):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+                self.assertIsInstance(found[0][1], wg.Idle)
+        # A leading `;`, or a second trailing one, is text: every shell refuses the string (rc 2)
+        # and runs none of the download.
+        for script in (GET + 'sh -c ";$(cat tool)"\n', GET + 'sh -c "$(cat tool);;"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
 
     def test_a_stream_it_runs_keeps_its_own_sentence(self):
         # The stream the substitution prints is reported loud on the same
