@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Broken batch stop predicates identify their failure point (#2555, #1817).** The runner logs
+  the completed entry and final predicate frame inside the existing redacted 200-character
+  detail budget, then keeps yielding launched work and still honours a later stop.
 - **Tolerant verdict extraction keeps small wrapped bundles (#2553, #1816).** A fixed 64 KiB
   minimum scan budget reaches JSON after shallow nested or 256-open-brace prose while the
   length-scaled caps still bound large inputs.
