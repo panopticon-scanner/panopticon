@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Quoted workflow globs stay literal (#2432, #2331).** The guard now uses lexer pattern
+  provenance when matching fetched paths, so `sh "./cuda_*.run"` does not claim to run a
+  download while unquoted and partly quoted patterns still do. Bash 3.2.57, Bash 5.2.21 and
+  dash agree; 439,716 frozen corpus rows and 4,642 real jobs keep identical answers.
 - **Shell quoting now has a dedicated flat module (#2615, #2608).** ANSI-C decoding and
   quote-aware heredoc and here-string word spelling moved unchanged from `shell_lex.py` to
   `shell_quote.py`, restoring lexer headroom. Further compression of the lexer's governing
