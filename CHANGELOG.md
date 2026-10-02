@@ -22,8 +22,9 @@ evidence exposed.
   side stays exact: `echo "<sum>  cuda_1.run" | sha256sum -c -` does NOT credit a fetch to
   `"$PWD/cuda_1.run"`, because loosening the side that CHECKS would clear bytes nothing read.
   Half of the `PATH_DIRS` gap entry (#2308) closes with it: the `$HOME/.cargo/bin` spelling of a
-  download run by its bare name is now reported, which every shell does run when that directory
-  is on PATH. The calibration pool's 4,642 real jobs answer identically.
+  download run by its bare name is now reported, which every shell runs once the file is
+  executable and that directory is on PATH. The calibration pool's 4,642 real jobs answer
+  identically.
 - **The workflow guard checks shell option letters against the shell's own table (#2443, #2444,
   #2475).** Three readings of a shell's options read the WORDS and not the letters, so each took a
   spelling the shell refuses for one it runs. A `set` carrying a letter bash's builtin lacks —

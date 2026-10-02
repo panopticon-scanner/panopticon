@@ -86,6 +86,9 @@ BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
 # Where `may_run` looks a bare command name up (#2308): those, and the runner
 # user's `~/.local/bin` in the four spellings a step writes it (review N-4).
 # The rest of a runner's PATH, and what a step puts on it, are the gap list's.
+# The two `$HOME` spellings are free riders while #2442's mirror binds a bare
+# name to any `$`-spelled dest with a literal basename; they stay so that a
+# narrower mirror cannot take #2308's answer for them away with a green suite.
 PATH_DIRS = BIN_DIRS + ("$HOME/.local/bin", "${HOME}/.local/bin", "~/.local/bin",
                         "/home/runner/.local/bin")
 
@@ -96,14 +99,17 @@ def _last_part(token, dest):
     ONE predicate for #2345's rule and #2442's mirror of it, because the
     asymmetry between the two was the bug: a word bash expands is read by its
     last part against a download's basename, and so -- the mirror -- is a word
-    written out against a download whose own path expands. `curl -o
-    "$PWD/cuda_1.run"; sh cuda_1.run` runs the download in every shell and read
-    clean, while the same fetch under `sh cuda_*.run` was reported: the glob
-    reached it and the commoner spelling did not. The mirror needs that basename
-    WRITTEN -- with the last part expanding too (`-o "$PWD/$F"`) there is no name
-    to bind -- and an option word is never a use of anything. `derived` carries
-    the dest's lifted substitutions into its basename, so the text standing for
-    one (`-o "$PWD/$(date +%s).run"`) is never read as a name written out.
+    written out against a download whose own path expands.
+    `curl -o "$PWD/cuda_1.run"; sh cuda_1.run` runs the download in every shell
+    and read clean, while the same fetch under `sh cuda_*.run` was reported: the
+    glob reached it and the commoner spelling did not. The mirror needs that
+    basename WRITTEN -- with the last part expanding too (`-o "$PWD/$F"`) there
+    is no name to bind -- and an option word is never a use of anything. That
+    guard is the mirror's only: hoisting it over the first disjunct would narrow
+    #2310's arm for a `-`-led word bash expands, and `covers` guards its own
+    #2345 arm. `derived` carries the dest's lifted substitutions into its
+    basename, so the text standing for one (`-o "$PWD/$(date +%s).run"`) is
+    never read as a name written out.
     """
     name = os.path.basename(os.path.normpath(dest))
     if os.path.basename(os.path.normpath(token)) != name:

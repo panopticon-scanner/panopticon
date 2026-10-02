@@ -773,9 +773,9 @@ class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
 
 
 class TestADownloadWrittenToADollarSpelledPathBindsByItsBasename(unittest.TestCase):
-    """#2442: the mirror of #2345 (b), and a fail-open until it. After `curl
-    -o "$PWD/cuda_1.run"`, both `sh cuda_1.run` and `chmod +x cuda_1.run;
-    ./cuda_1.run` read CLEAN: a `$`-spelled OPERAND bound by its last part,
+    """#2442: the mirror of #2345 (b), and a fail-open until it. After
+    `curl -o "$PWD/cuda_1.run"`, both `sh cuda_1.run` and
+    `chmod +x cuda_1.run; ./cuda_1.run` read CLEAN: a `$`-spelled OPERAND bound by its last part,
     but a `$`-spelled DESTINATION only through a glob, so the plain-name use
     -- the commoner spelling -- was unbound, while bash 3.2.57, bash 5.2.21,
     dash, zsh 5.9 and ksh 93u+ all run the download, a bare-name checksum
