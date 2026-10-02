@@ -2690,6 +2690,49 @@ class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
                 self.assertIsNone(self.finding(body))
 
 
+class TestACheckDoesNotGateItsOwnRescue(unittest.TestCase):
+    """#2417: a check cannot certify a use reached only when it fails."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+    USE = "sh payload\n"
+
+    def findings(self, body, shell=None):
+        script = self.FETCH + body.replace("CHECK", self.CHECK)
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def test_a_use_in_the_checks_exiting_rescue_is_reported(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("CHECK || { sh payload; exit 1; }\n",
+                         "CHECK && echo ok || { sh payload; exit 1; }\n",
+                         "CHECK || ( sh payload; exit 1 )\n"):
+                with self.subTest(shell=shell, body=body):
+                    found = self.findings(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("rescue branch", found[0][1])
+
+    def test_an_exiting_rescue_still_gates_a_later_use(self):
+        for shell in (None, "sh", "bash"):
+            for rescue in ("CHECK || { echo failed; exit 1; }\n",
+                           "CHECK && echo ok || { echo failed; exit 1; }\n",
+                           "CHECK || ( echo failed; exit 1 )\n"):
+                with self.subTest(shell=shell, rescue=rescue):
+                    self.assertEqual([], self.findings(rescue + self.USE, shell))
+
+    def test_the_rescue_reason_does_not_replace_the_ordering_diagnosis(self):
+        found = self.findings(self.USE + "CHECK || { exit 1; }\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("only AFTER", found[0][1])
+        self.assertNotIn("rescue branch", found[0][1])
+
+    def test_the_rescue_reason_does_not_hide_an_unrelated_checksum(self):
+        other = 'echo "%s  other" | sha256sum -c - || { exit 1; }\n' % HEX
+        found = wg.fetch_exec_defects(self.FETCH + other + self.USE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("checksum of a different file", found[0])
+        self.assertNotIn("with nothing verifying", found[0])
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"

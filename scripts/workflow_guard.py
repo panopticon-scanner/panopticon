@@ -542,8 +542,7 @@ def _binds(conditions, check, use):
 
 
 def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
-    """Why this one fetch is unverified, or None; the statements of `unread`
-    forms are ADDED to the uses it reads, never a fallback for them (r0)."""
+    """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
         # target this guard cannot name is not a clean step, it is an unread one.
@@ -571,7 +570,6 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
     uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
-    # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
               and any(names_file(text, name) for name in sorted(names))]
@@ -579,6 +577,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
         clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
     if first_use is None:
         return None
+    naming = [(i, why.at_use(i, first_use) if hasattr(why, "at_use") else why) for i, why in naming]
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
@@ -594,7 +593,8 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
         return ("fetches %s and %s; the checksum that names %s %s -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    why, _remedy(fetch.dest)))
-    if [i for i, _text, why in checks if i > index and why is None]:
+    if [i for i, _text, why in checks if i > index
+            and (why.at_use(i, first_use) if hasattr(why, "at_use") else why) is None]:
         return ("fetches %s and %s; no checksum in the job names %s, and a "
                 "checksum of a different file verifies nothing -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
