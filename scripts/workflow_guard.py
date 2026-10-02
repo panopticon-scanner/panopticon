@@ -2,17 +2,15 @@
 r"""#1647 (ARC-F2C): what a workflow `run:` step FETCHES, and whether what it
 then runs was checked against a digest bound to the file it downloaded.
 
-The rule is #1529's: a workflow can step outside the supply chain that
-SHA-pinned `uses:` references govern simply by curling a binary and running
-it, so nothing unverified may become executable. The Dockerfile was hardened
-for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
-`tests/test_dockerfile.py` guards it; the same act spelled in shell inside a
-`run:` block was guarded by two regexes, and run-13 found both failing OPEN:
+The rule is #1529's: a workflow can step outside the supply chain that SHA-pinned `uses:` references
+govern simply by curling a binary and running it, so nothing unverified may become executable. The
+Dockerfile was hardened for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
+`tests/test_dockerfile.py` guards it; the same act spelled in shell inside a `run:` block was
+guarded by two regexes, and run-13 found both failing OPEN:
 
-* the fetch pattern required a whitespace-separated short `-o`/`-O` and
-  excluded pipe characters, so `curl -fsSL https://... | sh`,
-  `wget -qO- ... | bash` and every `--output` form yielded an EMPTY fetch set
-  -- not "unverified", not seen as a download at all; and
+* the fetch pattern required a whitespace-separated short `-o`/`-O` and excluded pipe characters, so
+  `curl -fsSL https://... | sh`, `wget -qO- ... | bash` and every `--output` form yielded an EMPTY
+  fetch set -- not "unverified", not seen as a download at all; and
 * "verified" was the first `sha256sum`/`shasum` carrying `-c` anywhere earlier
   in the step, bound to no path and no digest, so an unrelated checksum of one
   artifact cleared a later `curl -o payload; chmod +x payload`.
@@ -89,12 +87,11 @@ live, so a change that catches one fails there and edits this list.
   finds a download in neither, past the `$`-spelled paths #2442's mirror binds by their basename.
   KEPT: the first differ by image (review N-4); the other is a VALUE, which
   is evaluating the shell again. No workflow here touches PATH at all.
-* a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
-  and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
-  KEPT: it is variable expansion wearing a checksum -- refusing it means following a variable's
-  VALUE. Only this spelling is open: with the digest in a sums file the step wrote, what was
-  recorded is the text `sha256sum x`, which carries no digest, so the check does not count and the
-  fetch is already reported.
+* a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"` and then
+  `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes. KEPT: it is variable expansion
+  wearing a checksum -- refusing it means following a variable's VALUE. Only this spelling is open:
+  with the digest in a sums file the step wrote, what was recorded is the text `sha256sum x`, which
+  carries no digest, so the check does not count and the fetch is already reported.
 * what runs inside a container, BEYOND the one shape that is read: `docker run … -v /tmp:/w img bash
   /w/x.sh` binds by basename (`workflow_forms.in_container`), because on the far side of a bind
   mount the basename is the only name the bytes have. What is still unread is everything that needs
@@ -112,11 +109,10 @@ live, so a change that catches one fails there and edits this list.
   `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
   (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
   neither governs a `docker pull` of a tag.
-* an executor that reads the file by convention rather than by argument (`make`, `npm install`):
-  the download is never an operand, so no use names it.
-  KEPT: needs a construct this fleet does not have -- there is no Makefile and no package.json
-  outside a test fixture, no `run:` step invokes either tool, and the repo builds with Python
-  and Docker.
+* an executor that reads the file by convention rather than by argument (`make`, `npm install`): the
+  download is never an operand, so no use names it. KEPT: needs a construct this fleet does not have
+  -- there is no Makefile and no package.json outside a test fixture, no `run:` step invokes either
+  tool, and the repo builds with Python and Docker.
 * a download the PIPELINE writes under a name `workflow_forms._WRITERS` does not carry: the `> f`
   redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
   KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
@@ -140,9 +136,14 @@ live, so a change that catches one fails there and edits this list.
   behind an `eval`/`-c` string counts for nothing; the body is still read
   (`workflow_programs._stdin`). That is fail-closed -- `eval 'bash -s'` around a check alone is
   REPORTED though the step stops -- since what the inner shell is, what it reads and what becomes of
-  its failure are the step's to change (`sh() { :; }`, `< $F`, `( … ) || true`), and each such step
-  would otherwise read CLEAN where `main` reports it; `eval 'bash -s < f'` and `eval 'bash -s &'`
-  still over-report a download no shell runs. `eval '(bash -s)'` answers so and
+  its failure are the step's to change (`sh() { :; }`, `< $F`, `( … ) || true`). Nothing else in
+  such a body is the step's own either, unless the holder's own options read stdin
+  (`bash -s -c 'sh'`): the job is read with the bodies no shell is sure to read and without them
+  (`job_defects`), and a defect of either reading is reported, so reading one can only add a report;
+  `eval 'bash -s < f'` and `eval 'bash -s &'` still over-report a download no shell runs. Still
+  open: a `}` (or `exit`, a call, a write) in a body a LITERAL shell reads is taken for the step's
+  own, as on `main`, filed under #2608; and a statement of one unsure body still gives credit for a
+  fetch only another unsure body holds, filed under #2608. `eval '(bash -s)'` answers so and
   `eval '{ bash -s; }'` (a group: two statements to the reader) does not, though both run the
   heredoc, and a pipeline whose FIRST stage reads stdin is never reached, both filed under #2331.
   Nor, for a SHELL, does a value or a word that may vanish end the walk at a FILE (#2485), and no
@@ -192,7 +193,7 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
-                            carried, chmod_executable, chmod_targets, clears, covers,
+                            Unsure, carried, chmod_executable, chmod_targets, clears, covers,
                             described, flattened, in_container, kept, may_run, names_file,
                             parse_fetch, regions, same_file, stdin_program, step_credit,
                             streamed_fetch, swallowed, unbound, unread_program, within)
@@ -230,18 +231,16 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 def _walk(stmts, stream_exec=False, inside=False):
     """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
 
-    Every download in the script, and every command this module cannot read,
-    asked of each stage in ONE walk -- the first read of each command
-    substitution as a script of its own, so a caller that walks inside a
-    catch (`job_defects`) has read every text anything here reads.
+    Every download in the script, and every command this module cannot read, asked of each stage in
+    ONE walk -- the first read of each command substitution as a script of its own, so a caller that
+    walks inside a catch (`job_defects`) has read every text anything here reads.
 
-    A fetch in a substitution is credited to the command that CONSUMES it --
-    `eval`, `sh -c`, `bash <(...)` -- because that is what decides whether
-    the downloaded bytes become behaviour, and so is one a variable carries
-    (`carried`, where the walk found a fetch). Three forms are REPORTED unread:
-    a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a
-    stdin program not readable as written (`_unread_stdin`), and a program a
-    shell may run that the walk cannot read (`unread_program`), which `kept` weighs."""
+    A fetch in a substitution is credited to the command that CONSUMES it -- `eval`, `sh -c`,
+    `bash <(...)` -- because that is what decides whether the downloaded bytes become behaviour, and
+    so is one a variable carries (`carried`, where the walk found a fetch). Three forms are REPORTED
+    unread: a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a stdin program
+    not readable as written (`_unread_stdin`), and a program a shell may run that the walk cannot
+    read (`unread_program`), which `kept` weighs."""
     found, unread = [], []
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
@@ -602,36 +601,32 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
 
 
 def _defects(stmts, conditions=None, credit=None, walked=None):
-    """[(statement index, why)] for every unverified fetch in parsed shell.
+    """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
-    `conditions` maps a statement index to the PAIR that decides whether it
-    runs -- the `if:` of the step it came from, and the shell branch it was
-    written inside (`workflow_forms.regions`); absent = unconditional on both
-    counts. A check clears a use only where both halves match -- see `_binds`.
-    `credit` maps an index to its step's own answer for a check there, which
-    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
-    `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
-    checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
-    which `job_defects` has from each step's own read.
+    `conditions` maps a statement index to the PAIR that decides whether it runs -- the `if:` of the
+    step it came from, and the shell branch it was written inside (`workflow_forms.regions`);
+    absent = unconditional on both counts. A check clears a use only where both halves match -- see
+    `_binds`. `credit` maps an index to its step's own answer for a check there, which
+    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or `_SOFT_STEP` where
+    the step carries `continue-on-error: true`, whose checks clear nothing at all. `walked` is
+    `_walk`'s answer for `stmts`, which `job_defects` has from each step's own read.
 
-    An unread form stands only where some fetch here is one `_defect` reports --
-    asked again with those forms as uses -- or an `unbound` download (#2481)."""
+    An unread form (`what`: its sentence) stands only where some fetch here is one `_defect` reports
+    -- asked again with those forms as uses -- or an `unbound` download (#2481)."""
     checks = _checks(stmts, credit)
     conditions = conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
-    found = [(index, why) for index, fetch in fetched
+    found = [(index, why, fetch) for index, fetch in fetched
              if (why := _defect(fetch, index, stmts, checks, conditions))]
-    return kept(unread, bool(found) or bool(unread) and (unbound(stmts, fetched, unread) or any(
-        _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread])
-        for index, fetch in fetched))) + found
+    return [(index, why, why) for index, why in kept(unread, bool(found) or bool(unread) and (
+        unbound(stmts, fetched, unread) or any(
+            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread])
+            for index, fetch in fetched)))] + found
 
 
 def fetch_exec_defects(script):
     """Every unverified fetch-and-execute in one `run:` script."""
-    stmts = read(script)
-    branches = regions(stmts)
-    return [why for _index, why in
-            _defects(stmts, {i: (None, b) for i, b in branches.items()}, step_credit(stmts))]
+    return [why for _name, why in job_defects([("", script)], strict=True)]
 
 
 def fetch_exec_defect(script):
@@ -639,59 +634,64 @@ def fetch_exec_defect(script):
     return "; ".join(fetch_exec_defects(script)) or None
 
 
-def job_defects(steps):
+def job_defects(steps, strict=False):
     """[(step name, why)] for one job's `run:` steps, folded in order.
 
-    A step carrying an `if:` is folded for what it FETCHES and what it RUNS;
-    its CHECK is credited only to a use that shares the same condition (see
-    `_binds`), because a checksum that may be skipped cannot clear an
-    execution that is not. A step carrying `continue-on-error: true` is folded
-    the same way and its CHECK is credited to nothing: the job carries on past
-    its failure, which is `|| true` spelled in YAML.
+    A step carrying an `if:` is folded for what it FETCHES and what it RUNS; its CHECK is credited
+    only to a use that shares the same condition (see `_binds`), because a checksum that may be
+    skipped cannot clear an execution that is not. A step carrying `continue-on-error: true` is
+    folded the same way and its CHECK is credited to nothing: the job carries on past its failure,
+    which is `|| true` spelled in YAML.
 
-    THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
-    /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
-    in step B is one fetch-and-exec written across two innocent-looking steps
-    -- and a rule scoped to a single `run:` block sees neither half. The same
-    sharing is what makes a `sha256sum -c` in a later step a real check of an
-    earlier step's download, so the fold has to run both ways.
+    THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace, /tmp and PATH, so
+    `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x` in step B is one fetch-and-exec written
+    across two innocent-looking steps -- and a rule scoped to a single `run:` block sees neither
+    half. The same sharing is what makes a `sha256sum -c` in a later step a real check of an earlier
+    step's download, so the fold has to run both ways.
 
-    Parsed STATEMENTS are concatenated, never the texts: each step is its own
-    shell invocation, so one step's stray quote or unterminated heredoc must
-    not reach into the next step's parse. Each defect is attributed to the step
-    that performed the fetch."""
-    stmts: list[shell_reader.Statement] = []
-    owner = []
-    conditions = {}
-    credit = {}
-    found, fetched, unread = [], [], []
-    for item in steps:
-        step = item if isinstance(item, Step) else Step(*item)
-        why = unparseable(step.shell)
-        if not why:
-            try:                    # the one read of every text, substitutions too
-                here = read(step.script, step.shell)
-                walked = _walk(here, stream_exec=True)
-            except shell_lex.Unreadable as error:
-                why = "cannot read this step: %s; nothing in it is accepted" % error
-        if why:
-            found.append((step.name, why))
-            continue
-        fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
-        unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
-        # Per step, because each one is its own shell invocation: neither an
-        # `if` left open nor a `set +e` in step A reaches step B.
-        branches, own = regions(here), step_credit(here, step.shell)
-        for local, statement in enumerate(here):
-            when = (step.condition, branches.get(local))
-            if any(when):
-                conditions[len(stmts)] = when
-            credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
-            stmts.append(statement)
-            owner.append(step.name)
-    found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions, credit, (fetched, unread)))
-    return found
+    Parsed STATEMENTS are concatenated, never the texts: each step is its own shell invocation, so
+    one step's stray quote or unterminated heredoc must not reach into the next step's parse. Each
+    defect is attributed to the step that performed the fetch. A script no shell is sure to read
+    (`workflow_forms.Unsure`) is never the step's own: a job holding one is folded again without
+    them, and a defect of that fold is added where the first has none for that fetch or unread form
+    (`_defects`'s `what`) at that statement. `strict`: a step the reader refuses raises."""
+    found, seen = [], set()
+    for sure in (False, True):              # the second fold leaves every `Unsure` statement out
+        stmts: list[shell_reader.Statement] = []
+        owner, conditions, credit, entries, fetched, unread = [], {}, {}, [], [], []
+        for number, item in enumerate(steps):
+            step = item if isinstance(item, Step) else Step(*item)
+            why = unparseable(step.shell)
+            if not why:
+                try:                # the one read of every text, substitutions too
+                    here = read(step.script, step.shell)
+                    back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
+                    here = [here[i] for i in back]
+                    walked = _walk(here, stream_exec=True)
+                except (() if strict else shell_lex.Unreadable) as error:
+                    why = "cannot read this step: %s; nothing in it is accepted" % error
+            if why:
+                entries.append(((None, number), step.name, why))
+                continue
+            fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
+            unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
+            # Per step, because each one is its own shell invocation: neither an
+            # `if` left open nor a `set +e` in step A reaches step B.
+            branches, own = regions(here), step_credit(here, step.shell)
+            for local, statement in enumerate(here):
+                when = (step.condition, branches.get(local))
+                if any(when):
+                    conditions[len(stmts)] = when
+                credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
+                stmts.append(statement)
+                owner.append((step.name, (number, back[local])))
+        entries += [((owner[index][1], what), owner[index][0], why)
+                    for index, why, what in _defects(stmts, conditions, credit, (fetched, unread))]
+        found += [entry for entry in entries if entry[0] not in seen]
+        seen = {key for key, _name, _why in found}
+        if not any(isinstance(statement, Unsure) for statement in stmts):
+            break
+    return [(name, why) for _key, name, why in found]
 
 
 def unparseable(shell):

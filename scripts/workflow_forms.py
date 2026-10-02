@@ -165,33 +165,34 @@ _UNGATED = "is inside the script `%s` runs, and the step does not stop when that
 _PIPED = "is inside the script `%s` runs, piped into a command whose status the pipeline takes"
 
 
+class Unsure(Inlined):
+    """An `Inlined` statement of a script no shell is sure to read (`workflow_programs.Stdin`), or
+    of one inside such a script: read for what it fetches and runs, never the step's own."""
+    __slots__ = ()
+
+
 def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=(), key=()):
     """`eval "<script>"` expanded, in place, into the statements it runs.
 
-    In place and in ORDER, rather than harvested separately, so the fetch, the
-    checksum and the `chmod` written inside one quoted script are read as the
-    sequence they are: a step hardened inside its own string must come out
-    hardened, not unread. The wrapper is kept -- its redirections and the stage
-    it pipes into are still the wrapper's.
+    In place and in ORDER, rather than harvested separately, so the fetch, the checksum and the
+    `chmod` written inside one quoted script are read as the sequence they are: a step hardened
+    inside its own string must come out hardened, not unread. The wrapper is kept -- its
+    redirections and the stage it pipes into are still the wrapper's.
 
-    Hardened means the checksum's failure stops the STEP (review I-2 of #1793):
-    it stops the script (`-e` holds, or it is the last command) and every
-    command running a script around it passes that on, up to the command the
-    step's own shell runs, whose failure `swallowed` and `step_credit` judge
-    as they judge a check written there -- where one ahead of `&&` reaches
-    only the rest of its list (#2334). A child shell has `-e` only from its
-    options or a `set`, and `pipefail` so too (re-review N-D), read off the
-    COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a stdin
-    script's READER's (`workflow_programs.Stdin`), without which no check in
-    it counts; the step's own shell has what its `shell:` starts it with
-    (`seed`, #2338) as a `set` moves it (#2335), and `eval` keeps that, but
-    not `-e` ahead of `||`/`&&`, where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell; `errexit`:
-    `-e` at its top (None: this is the step's own shell); `pipefail`: a
-    pipeline there fails on any of its commands; `shell`: the script's
-    runner, and at the step's own top its `shell:` (None: the default);
-    `outer`: the bodies of the command running it, below the step's own, and
-    `key` a name for the script, unique in the step, for its own bodies.
+    Hardened means the checksum's failure stops the STEP (review I-2 of #1793): it stops the script
+    (`-e` holds, or it is the last command) and every command running a script around it passes that
+    on, up to the command the step's own shell runs, whose failure `swallowed` and `step_credit`
+    judge as they judge a check written there -- where one ahead of `&&` reaches only the rest of
+    its list (#2334). A child shell has `-e` only from its options or a `set`, and `pipefail` so too
+    (re-review N-D), read off the COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a
+    stdin script's READER's (`workflow_programs.Stdin`), without which no check in it counts; the
+    step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
+    (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
+    `stops`: this script's failure reaches the step's own shell, None where no shell is sure to read
+    it (`Unsure`); `errexit`: `-e` at its top (None: this is the step's own shell); `pipefail`: a
+    pipeline there fails on any of its commands; `shell`: the script's runner, and at the step's own
+    top its `shell:` (None: the default); `outer`: the bodies of the command running it, below the
+    step's own, and `key` a name for the script, unique in the step, for its own bodies.
     """
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
@@ -206,11 +207,11 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             name = _runner(argv) if argv else ""
             for text in scripts(argv) + stdin_scripts(argv, stage, before):
                 ordinal += 1
-                who = getattr(text, "reader", argv)     # a stdin text's READER, or None
-                gates = (who is not None and stops
-                         and swallowed(stmts, index, statement, stage) is None
-                         and (top or on[index] or index == last)
-                         and (fails[index] or stage is statement.stages[-1]))
+                who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
+                gates = None if who is None or stops is None else (
+                    bool(who) and stops and swallowed(stmts, index, statement, stage) is None
+                    and (top or on[index] or index == last)
+                    and (fails[index] or stage is statement.stages[-1]))
                 who = who or argv
                 own = name == "eval" and who is argv    # runs in this shell, with its `-e`
                 out.extend(flattened(
@@ -225,8 +226,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             continue
         why = (_UNGATED % shell if not stops
                else None if on[index] or index == last else _RUNS_ON % shell)
-        out.append(Inlined(statement.stages, statement.separator, region,
-                           (why, why or (None if fails[index] else _PIPED % shell))))
+        out.append((Unsure if stops is None else Inlined)(
+            statement.stages, statement.separator, region,
+            (why, why or (None if fails[index] else _PIPED % shell))))
     return out
 
 

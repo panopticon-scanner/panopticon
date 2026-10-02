@@ -12,7 +12,10 @@ evidence exposed.
   `$CMD` run is caught.
   A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
   count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
-  own level, as before. `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+  own level, as before. Nothing else in such a body is taken for the step's own (bar one whose
+  holder's own options read stdin, `bash -s -c 'sh'`): the job is read with it and without it, and
+  a defect of either reading is reported. `X=script.sh` over-reports; `$CMD` itself is `Idle`
+  beside a reported fetch.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three

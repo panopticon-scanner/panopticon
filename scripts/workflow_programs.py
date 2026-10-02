@@ -431,25 +431,28 @@ def stdin_program(argv):
 
 
 class Stdin(str):
-    """A script `stdin_scripts` read off standard input, and its `reader`:
-    the argv of the shell the step itself runs to read it, under whose `-e` a
-    check in it runs -- or None, where no check in it counts (`_stdin`)."""
-    reader: "list[str] | None" = None
+    """A script `stdin_scripts` read off standard input, and its `reader` (`_stdin`): the argv of
+    the shell the step itself runs to read it, under whose `-e` a check in it runs; `()` where
+    that shell's own options read stdin but its `-c` string names the shell that reads it
+    (`bash -s -c 'sh'`), whose statements are the step's own and no check in them counts; or None,
+    where no shell is sure to read it and nothing in it is the step's own."""
+    reader: "list[str] | tuple[()] | None" = None
 
 
 def _stdin(argv, depth):
     """(`stdin_program`'s answer, the reader `Stdin` carries) in one walk.
 
-    The reader of a shell the step runs itself is that shell, whatever its
-    options say: a step's own `bash -n -s` reads as it always has. Behind a
-    string (#2500) there is none: what the inner shell is, what it reads and
-    what becomes of its failure are the step's to change -- `sh() { :; }`,
-    `< $F`, `( … ) || true` -- so its body is read and no check in it
-    counts. Nor past a word that may vanish (#2485), which may name a FILE,
-    nor under a `$` command word (#2473). `depth` counts the strings walked
-    so far, at most 64."""
+    The reader of a shell the step runs itself is that shell, whatever its options say: a step's
+    own `bash -n -s` reads as it always has. Behind a string (#2500) there is none: what the inner
+    shell is, what it reads and what becomes of its failure are the step's to change --
+    `sh() { :; }`, `< $F`, `( … ) || true` -- so its body is read, no check in it counts and
+    nothing else in it is the step's own; but where the holder's own options read stdin
+    (`bash -s -c 'sh'`, by `_options`), the step reads the body as the holder's program, and the
+    reader is `()`. Nor is there one past a word that may vanish (#2485), which may name a FILE,
+    nor under a `$` command word (#2473). `depth` counts the strings walked so far, at most 64."""
     if not argv:
         return None, None
+    kind, reader = _options(argv, depth)
     found = scripts(argv)
     if found:
         # bash's `eval` joins ALL of its own words -- `-`-prefixed ones too
@@ -472,7 +475,14 @@ def _stdin(argv, depth):
                 and (depth >= 64                # bounded: past 64 strings, fail-closed
                      or _stdin(shell_reader.command(parsed[0].stages[0].argv), depth + 1)[0]
                      == SHELL_PROGRAM)):
-            return SHELL_PROGRAM, None          # read, and no check in it counts
+            # Read, and no check in it counts: the step's own only where its holder reads stdin.
+            return SHELL_PROGRAM, () if kind == SHELL_PROGRAM and reader else None
+    return kind, reader
+
+
+def _options(argv, depth):
+    """`_stdin`'s answer from the command's own words alone, its strings aside: what its options
+    and operands say the program on its standard input is, and its reader."""
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
@@ -527,11 +537,12 @@ def stdin_scripts(argv, stage, before=None):
     of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
     'sh tool' | sh`; where it does not, `unprinted` has the printer.
 
-    Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under
-    whose `-e` `workflow_forms.flattened` counts a check in it: a literal
-    shell the step runs, whatever stands in front of it (`sudo bash -s`
-    reads as it always has) -- and None behind a string, past a word that
-    may vanish or under a `$` command word, where no check in it counts.
+    Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
+    `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
+    in front of it (`sudo bash -s` reads as it always has); `()` for the body of a holder whose own
+    options read stdin (`bash -s -c 'sh'`), the step's own statements, with no check counting; and
+    None behind any other string, past a word that may vanish or under a `$` command word, where no
+    shell is sure to read it and nothing in it is the step's own (`workflow_forms.Unsure`).
 
     Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
     printed text are read the same way, as shell, though the word may hold
