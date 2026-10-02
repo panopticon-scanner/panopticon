@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Render a CodeReviewReport as a self-contained HTML document."""
-from typing import TYPE_CHECKING
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import hashlib
 import html
 import json
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
     import scripts.hosts as hosts
     import scripts.integrity_messages as integrity_messages
     import scripts.ocrdb as ocrdb
-    import scripts.safe_write as safe_write
+    from scripts import safe_write, tool_cleanup
 else:
     try:
         import scripts.evidence as evidence
@@ -24,7 +23,7 @@ else:
         import scripts.hosts as hosts
         import scripts.integrity_messages as integrity_messages
         import scripts.ocrdb as ocrdb
-        import scripts.safe_write as safe_write
+        from scripts import safe_write, tool_cleanup
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
         import evidence_sections
@@ -33,6 +32,7 @@ else:
         import integrity_messages
         import ocrdb
         import safe_write
+        import tool_cleanup
 
 _CSS = """
 :root {
@@ -593,7 +593,8 @@ def _render_header(report):
         "<div class='coverage'>Coverage: %s &mdash; gate: %s</div>"
         % (" &middot; ".join(coverage_parts), policy)
     )
-    parts.append(_render_scanner_context(meta))
+    cleanup = tool_cleanup.html_block(meta, _escape)
+    parts.extend(([cleanup] if cleanup else []) + [_render_scanner_context(meta)])
     parts.append(_render_test_inventory(meta))
     # #2013: what the TARGET's own git config would have run, and did not.
     parts.append(_render_suppressed_git_drivers(meta))
@@ -964,10 +965,9 @@ def _render_compare_summary(label, report):
         f"<span class='stat-mini {_severity_class(sev)}'>{sev} {_stat_value(stats, sev)}</span>"
         for sev in _SEV_ORDER
     )
-    meta = report.get("meta")
-    host_caps = _render_host_capabilities(meta if isinstance(meta, dict) else {})
-    excluded_tools = _render_excluded_tools(meta if isinstance(meta, dict) else {})
-    carve_out = _render_sec_carve_out(meta if isinstance(meta, dict) else {})
+    meta = report.get("meta") if isinstance(report.get("meta"), dict) else {}
+    host_caps, excluded_tools = _render_host_capabilities(meta), _render_excluded_tools(meta)
+    carve_out = tool_cleanup.html_block(meta, _escape) + _render_sec_carve_out(meta)
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>

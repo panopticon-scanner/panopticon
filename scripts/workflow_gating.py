@@ -173,12 +173,16 @@ def _stops_the_job(stmts, index, errexit=True):
     inherited_subshells = max(0, sum(
         stage.group_open - stage.group_close for stage in stmts[index].stages
     ))
-    depth = subshell_depth = inherited_subshells
+    inherited_depth = (max(inherited_subshells, _nesting(stmts[index]))
+                       if inherited_subshells else 0)
+    depth, subshell_depth = inherited_depth, inherited_subshells
     exited_subshell = None
     stopped_job = exited = False
-    for statement in following:
-        if (statement.separator == "&" or len(statement.stages) != 1 or
-                any(negated(stage.argv) for stage in statement.stages)):
+    end = index
+    for end, statement in enumerate(following, index + 1):
+        if (exited_subshell is None and (statement.separator == "&" or
+                len(statement.stages) != 1 or
+                any(negated(stage.argv) for stage in statement.stages))):
             return False
         for stage in statement.stages:
             depth += stage.group_open + stage.argv.count("{")
@@ -206,14 +210,37 @@ def _stops_the_job(stmts, index, errexit=True):
                 return False
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
-        if not grouped or depth == 0:
-            if statement.separator in ("&&", "||") and not stopped_job:
+        if depth == 0 or not grouped and not inherited_depth:
+            if (statement.separator in ("&&", "||") and not stopped_job
+                    and not inherited_depth):
                 return False
             break
-        if statement.separator in ("&&", "||"):
+        if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
-    return ((not grouped or depth == 0) and status is not None and status != 0
-            and (errexit or exited))
+    finished = depth == 0 if grouped or inherited_depth else True
+    stops = finished and status is not None and status != 0 and (errexit or exited)
+    if not stops or not inherited_subshells:
+        return stops
+    # An exit inside `( )` sets that subshell's status; it does not answer
+    # what an enclosing construct does with the status. The walk above follows
+    # the exited shell to its closer (skipping unreachable commands). Decline a
+    # function body whose later invocation supplies the missing context. For
+    # ordinary groups, reuse the group-status walk from the closing statement.
+    # With pipefail conservatively off, an uncertain pipeline remains reported.
+    function_body = any(
+        token == "function" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\(\)", token)
+        for stage in stmts[index].stages for token in stage.argv
+    )
+    if function_body:
+        return False
+    separator = stmts[end].separator
+    if separator == "||":
+        return _stops_the_job(stmts, end, errexit)
+    if separator in ("&", "&&"):
+        return False
+    on = [errexit] * len(stmts)
+    fails = [False] * len(stmts)
+    return _stops_step(stmts, end, on, fails) is None
 
 
 def _piped_group_end(stmts, index):
