@@ -220,6 +220,20 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("required separator", found[0][1])
 
+    def test_a_folded_compound_head_separator_is_not_omitted(self):
+        for rest in (
+            "if true; \\\nthen %s; fi",
+            "for n in 1; \\\ndo %s; done",
+            "if true;  \\\n  then %s; fi",
+            "for n in 1; \\\n  do %s; done",
+            "if true;\\\nthen %s; fi",
+        ):
+            script = "x=$(cat <<EOF\nhi\nEOF%s)\n" % (rest % PIPE)
+            with self.subTest(rest=rest):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("required separator", found[0][1])
+
     def test_a_later_command_heredoc_does_not_take_the_compatibility_drop(self):
         separate = ("x=$(cat <<'A'; cat <<'B'\na\nA\nb\n"
                     "Bsh -c; '%s')\n" % PIPE)
