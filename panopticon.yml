@@ -639,6 +639,7 @@ groups:
       - scripts/workflow_guard.py
       - scripts/workflow_forms.py
       - scripts/workflow_gating.py
+      - scripts/workflow_posture.py
       - scripts/workflow_operands.py
       - scripts/workflow_programs.py
       - scripts/workflow_fetch.py

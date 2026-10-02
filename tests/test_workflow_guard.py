@@ -2733,6 +2733,10 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
     def finding(self, body):
         return wg.fetch_exec_defect(self.FETCH + body.replace("CHECK", self.CHECK) + self.USE)
 
+    def job(self, body, shell):
+        script = self.FETCH + body.replace("CHECK", self.CHECK) + self.USE
+        return wg.job_defects([wg.Step("step", script, shell)])
+
     def test_a_nonzero_exit_in_a_subshell_rescue_gates_under_outer_errexit(self):
         for body in ("( CHECK || exit 1 )\n", "( CHECK || exit 2 )\n"):
             with self.subTest(body=body):
@@ -2771,6 +2775,14 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                      "f() {\n( CHECK || exit 1 )\necho ok\n}\nf\n"):
             with self.subTest(body=body):
                 self.assertIsNone(self.finding(body))
+
+    def test_an_enclosing_pipeline_uses_the_steps_pipefail_state(self):
+        for body in ("CHECK | cat\n", "{ ( CHECK || exit 1 ); } | cat\n"):
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertTrue(self.job(body, shell))
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], self.job(body, "bash"))
 
     def test_a_nested_groups_status_reaches_the_outer_exiting_rescue(self):
         for body in ("{ { CHECK && echo ok; }; } || exit 1\n",

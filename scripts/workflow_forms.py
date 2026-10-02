@@ -288,7 +288,8 @@ def step_credit(flat, shell=None):
     """{index: (why, why piped)} for the statements of one step's `read` in
     which a failing check does not stop the step, in `Inlined.credit`'s shape
     (the second answer is a check's with a command piped after it); a step
-    whose `shell:` is `shell`. `swallowed` reads it last.
+    whose `shell:` is `shell`. An explicit `(None, None)` retains pipefail-on
+    state for enclosing status walks. `swallowed` reads the pair last.
 
     `flattened` credits a script handed on only as far as the command that
     runs it, and the step's own shell decides the rest: its `-e`, for that
@@ -326,7 +327,7 @@ def step_credit(flat, shell=None):
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
-            if why or piped:
+            if why or piped or fails[position]:
                 credit[inner] = (why, piped)
         start = index + 1
     return credit
