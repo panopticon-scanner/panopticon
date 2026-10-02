@@ -358,9 +358,10 @@ class TestTheProgramAfterDashC(unittest.TestCase):
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be
     `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
-    under bash 3.2.57 and 5.2.21 -- so each word after it may be the
-    program. The guard does not follow the value; `candidates` hands on every
-    word after it, a dynamic one too, for `unread_program` (review N2 of #2331)."""
+    under bash 3.2.57 and 5.2.21 -- so a word after it may be the program.
+    The guard does not follow the value; `candidates` hands on the words
+    after it to the first operand, a dynamic one too, for `unread_program`
+    (review N2 of #2331), and none past it, a positional parameter (#2484)."""
 
     @staticmethod
     def argv(script):
@@ -368,14 +369,26 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         assert len(stmts) == 1, stmts
         return shell_reader.command(stmts[0].stages[-1].argv)
 
-    def test_each_word_after_the_value_is_a_candidate(self):
+    def test_the_words_to_the_first_operand_after_the_value_are_candidates(self):
         for script, value in (("sh $X P", "$X"), ('sh "${X:--c}" P', "${X:--c}"),
                               ("sh $(echo -c) P", "$(...)"), ("bash -e $X -o pipefail P", "$X"),
                               ("echo -c | xargs -I{} sh {} P", "{}"), ("sh ${X}c P", "${X}c")):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words[-1:]))
+        # Bare words and `$` words may be an option's value, or vanish, so the
+        # walk reads past them: with no operand, every word after the value.
         self.assertEqual(["P", "$Y", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
+        # The first word that can be none of an option, an option's value (a
+        # bare word) or anything once expanded is the first operand, the last
+        # candidate; the option words before it stay (#2484).
+        for script, words in (("sh $X 'echo P' \"$Y\" Q", ["echo P"]),
+                              ("sh $X P \"$Y\" 'echo Q' R", ["P", "$Y", "echo Q"]),
+                              ("sh $X -e -o pipefail 'echo P' Q", ["-e", "-o", "pipefail", "echo P"]),
+                              ("bash $X extglob 'echo P' Q", ["extglob", "echo P"]),
+                              ("sh $X x$Y 'echo P' Q", ["x$Y", "echo P"]), ("sh $X -e", ["-e"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
 
     def test_none_where_the_options_end_first(self):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word

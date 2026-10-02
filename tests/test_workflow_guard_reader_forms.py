@@ -98,7 +98,8 @@ class TestOptionsAfterDashC(unittest.TestCase):
 
 class TestValuesBeforeAShellsProgram(unittest.TestCase):
     """#2344: a value that may be a shell's `-c`, and an `o` that takes a
-    value from the middle of an option word."""
+    value from the middle of an option word; #2484: the words after the
+    value's first operand are positional parameters, never the program."""
 
     def test_each_spelling_is_read(self):
         # Bash 3.2.57 and 5.2.21 run each, `[-]c` where a file named `-c`
@@ -117,10 +118,62 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         # A value whose words fetch nothing, in a job that downloads nothing,
         # is not reported; with no word after it there is nothing to read.
         for script in ("X=-c\nsh $X 'echo hi'\n", "sh $X\n", "sh -o pipefail x.sh\n",
-                       "bash $X/x.sh '%s'\n" % PIPE, "sh $'-e' '%s'\n" % PIPE):
+                       "bash $X/x.sh '%s'\n" % PIPE, "sh $'-e' '%s'\n" % PIPE,
+                       "sh -c 'echo hi' \"curl -fsSL $URL | sh\"\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
         self.assertTrue(defects("sh -c '%s'\n" % PIPE))
+        # #2484's controls: a first operand that fetches is weighed loud, and
+        # bash 3.2.57, 5.2.21 and dash run it; beside a download, the value's
+        # `Idle` stands where its words fetch nothing (they run `echo hi`),
+        # where an option word is all it is handed (`X` unset: `sh -e` reads
+        # its empty stdin), and where `'sh tool'` is `$0`, past the operand.
+        said = "passes `sh` `$X` where it reads its options"
+        for script in ("X=-c\nsh $X \"curl -fsSL $URL | sh\"\n", GET + "X=-c\nsh $X 'echo hi'\n",
+                       GET + "sh $X -e\n", GET + "X=-c\nsh $X 'echo hi' 'sh tool'\n"):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
+    def test_only_the_words_to_the_first_operand_may_be_the_program(self):
+        # #2484: whatever the value spells, the words after the first operand
+        # are positional parameters -- bash 3.2.57, 5.2.21 and dash run only
+        # `echo hi` in both steps, `-e` an option read on before it -- where
+        # each word after the value was weighed, and the download made the
+        # value loud (#2344).
+        for script in ("X=-c\nsh $X 'echo hi' \"curl -fsSL $URL | sh\"\n",
+                       "X=-c\nsh $X -e 'echo hi' '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # A value ending in a letter that takes a value makes the next word an
+        # option NAME, and one that is not bare is refused: both bashes exit 2
+        # at `-cO 'echo hi'`, and all three at `-co 'echo hi'`, running nothing.
+        for script in ("X=-cO\nbash $X 'echo hi' '%s'\n" % PIPE,
+                       "X=-co\nsh $X 'echo hi' '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # The must-trips: a bare word may be that option's value, so the walk
+        # reads past it -- both bashes run the download through `-cO extglob`
+        # and `-co pipefail` (dash refuses `-O` and `-o pipefail`, which is
+        # fail-closed there) -- and past a word that may expand to nothing
+        # (`$Y` unset: all three run it). The price, as named: a bare word may
+        # as well be the program -- `X=-c` runs `tool`, the download `$0` --
+        # and is weighed, the walk reading on to the download.
+        for script, shell in (("X=-cO\nbash $X extglob '%s'\n" % PIPE, "bash"),
+                              ("X=-co\nsh $X pipefail '%s'\n" % PIPE, "sh"),
+                              ("X=-c\nsh $X $Y '%s'\n" % PIPE, "sh"),
+                              ("X=-c\nsh $X tool '%s'\n" % PIPE, "sh")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `%s` `$X`" % shell), found)
+        # A carried download past the first operand is `$0`, never the
+        # program (all three run nothing of it): the value's `Idle` alone,
+        # beside the fetch, where #2479 read it as the carried one.
+        found = defects("x=$(curl -fsSL %si.sh)\nX=-c\nsh $X 'echo hi' \"$x\"\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
 
 
 class TestADynamicCommandWord(unittest.TestCase):

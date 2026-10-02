@@ -19,8 +19,9 @@ only, for a program piped into it, the stage in front of it (#2333):
                       (`printed`)
     `unprinted`       the printer piping one in whose text `printed` cannot
                       spell out, for `unread_program` to weigh
-    `candidates`      the words that may be the program, where a value this
-                      module does not follow stands in a shell's options
+    `candidates`      the words that may be the program, up to the first
+                      operand, where a value this module does not follow
+                      stands in a shell's options
     `dynamic_program` the program word a LITERAL shell is handed that is all
                       expansion (`sh -c "$P"`), which spells no command at all
 
@@ -177,20 +178,40 @@ def _value(word):
     return bool(_VALUE.fullmatch(shell_reader.readable(word)))
 
 
+# The letters an option's value is spelled with, as every `-o` or `-O` name of
+# bash, dash, zsh and ksh is: letters, digits, `_` and `-` (#2484).
+_BARE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _before_operand(word):
+    """Whether `word`, after a value in a shell's options, may still stand
+    before its program: an option word (`-…`, `+…`, `-`, `--`), an option's
+    value (`_BARE`), or a word bash expands -- a `$`, a lifted substitution,
+    a pattern (`shell_reader.dynamic`) -- which may vanish or be either."""
+    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word))
+            or shell_reader.dynamic(word, shell_reader.has_substitution))
+
+
 def candidates(argv):
     """(the value, [the words it may make the program]) for a shell handed a
     value where it reads its options (`_VALUE`, #2344): `X=-c; sh $X 'curl
     … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
-    -I{} sh {} '…'` do. This module follows no value, so every word after it
-    may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern),
-    which `unread_program` weighs too (review N2 of #2331); (None, []) where
-    the options end first, at a program, a `-c` whose string `scripts` reads,
-    or a `-` or `--`. A value that is the command word, handed a `-c` cluster,
-    may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after
-    the options is the candidate. A `$(…)` or backquote value with no word
-    after it is its own: bash makes the shell's words of its output, the
-    program among them (`sh $(echo tool)`), where a `<(…)` hands it a file
-    (`shell_reader.yields_words`).
+    -I{} sh {} '…'` do. This module follows no value, so a word after it may
+    be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern), which
+    `unread_program` weighs too (review N2 of #2331) -- up to the FIRST
+    OPERAND, the first word that can be none of an option word, an option's
+    value (`_BARE`) or anything once expanded (`_before_operand`): whatever
+    the value spells, the words after that are positional parameters
+    (#2484), and the option words before it are weighed, harmlessly, as `-c`
+    strings. A value ending in `o` or `O` makes the next word an option name,
+    which the shell refuses where it is not bare: `X=-cO; bash $X 'echo hi'
+    '…'` runs nothing. (None, []) where the options end first, at a program,
+    a `-c` whose string `scripts` reads, or a `-` or `--`. A value that is
+    the command word, handed a `-c` cluster, may be a shell itself (#2337,
+    `CMD=sh; $CMD -c '…'`): the program after the options is the candidate.
+    A `$(…)` or backquote value with no word after it is its own: bash makes
+    the shell's words of its output, the program among them (`sh $(echo
+    tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`).
     """
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
@@ -201,7 +222,9 @@ def candidates(argv):
         if owed:
             owed -= 1
         elif _value(word):
-            return word, argv[at + 1:] or ([word] if shell_reader.yields_words(word) else [])
+            rest = argv[at + 1:]
+            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), None)
+            return word, rest[:end] or ([word] if shell_reader.yields_words(word) else [])
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":
