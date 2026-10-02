@@ -10,6 +10,12 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
+  After one scan reached the script's end, `_Lines` used the exact-line index for every later
+  body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An
+  exact line now proves and bounds that later scan, which can find the earlier `B)` while staying
+  linear; resuming every unbounded scan was rejected because hostile inputs restore quadratic
+  cost.
 - **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
   drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
   `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
