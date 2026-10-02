@@ -130,6 +130,8 @@ def seed(shell):
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
+_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_FUNCTION_TOKEN = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\(\)$")
 
 
 def _known_status(argv, inherited):
@@ -147,6 +149,80 @@ def _known_status(argv, inherited):
         return 1
     if name == "true" and len(argv) == 1:
         return 0
+    return None
+
+
+def _function_syntax(argv):
+    """A function header's name and the structural braces in this argv."""
+    leading, start = [], 0
+    while start < len(argv) and argv[start] in shell_reader.KEYWORDS and argv[start] != "function":
+        if argv[start] in ("{", "}"):
+            leading.append(argv[start])
+        start += 1
+    name, end = None, start
+    if start < len(argv) and argv[start] == "function":
+        if start + 1 < len(argv) and _FUNCTION_NAME.fullmatch(argv[start + 1]):
+            name, end = argv[start + 1], start + 2
+    elif start < len(argv) and (match := _FUNCTION_TOKEN.fullmatch(argv[start])):
+        name, end = match[1], start + 1
+    elif (start + 1 < len(argv) and _FUNCTION_NAME.fullmatch(argv[start])
+          and argv[start + 1] == "()"):
+        name, end = argv[start], start + 2
+    if name is None:
+        return None, leading
+    for token in argv[end:]:
+        if token not in shell_reader.KEYWORDS:
+            break
+        if token in ("{", "}"):
+            leading.append(token)
+    return name, leading
+
+
+def _function_scope(stmts, index):
+    """The brace-function containing `index`, as (name, closing index)."""
+    depth, active, pending, candidate = 0, [], [], None
+    for position, statement in enumerate(stmts):
+        for stage in statement.stages:
+            name, braces = _function_syntax(stage.argv)
+            if name is not None:
+                pending.append([name, position, None])
+            for token in braces:
+                if token == "{":
+                    depth += 1
+                    if pending:
+                        scope = pending.pop()
+                        scope[2] = depth
+                        active.append(scope)
+                else:
+                    if active and active[-1][2] == depth:
+                        scope = active.pop()
+                        if scope is candidate:
+                            return scope[0], position
+                    depth = max(0, depth - 1)
+        if position == index:
+            candidate = active[-1] if active else (pending[-1] if pending else None)
+            if candidate is None:
+                return None
+    return (candidate[0], len(stmts) - 1) if candidate is not None else None
+
+
+def _gating_function_call(stmts, name, after, errexit):
+    """The immediate direct call whose failure stops the step, or None."""
+    position = after + 1
+    if not errexit or position >= len(stmts) or _function_scope(stmts, position) is not None:
+        return None
+    on, fails = [errexit] * len(stmts), [False] * len(stmts)
+    statement = stmts[position]
+    if len(statement.stages) != 1:
+        return None
+    stage = statement.stages[0]
+    argv = command(stage.argv)
+    if (stage.argv[:1] == [name] and argv[:1] == [name]
+            and statement.separator not in ("&", "&&", "||")
+            and not stage.group_open and not stage.group_close
+            and not negated(stage.argv) and not conditional(stage.argv)
+            and _stops_step(stmts, position, on, fails) is None):
+        return position
     return None
 
 
@@ -224,15 +300,14 @@ def _stops_the_job(stmts, index, errexit=True):
     # An exit inside `( )` sets that subshell's status; it does not answer
     # what an enclosing construct does with the status. The walk above follows
     # the exited shell to its closer (skipping unreachable commands). Decline a
-    # function body whose later invocation supplies the missing context. For
-    # ordinary groups, reuse the group-status walk from the closing statement.
+    # function body at its proven call site. For ordinary groups, reuse the
+    # group-status walk from the closing statement.
     # With pipefail conservatively off, an uncertain pipeline remains reported.
-    function_body = any(
-        token == "function" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\(\)", token)
-        for stage in stmts[index].stages for token in stage.argv
-    )
-    if function_body:
-        return False
+    function = _function_scope(stmts, index)
+    if function is not None:
+        name, close = function
+        call = _gating_function_call(stmts, name, close, errexit)
+        return FunctionGate(call) if call is not None else False
     separator = stmts[end].separator
     if separator == "||":
         return _stops_the_job(stmts, end, errexit)
@@ -296,8 +371,12 @@ def swallowed(stmts, index, statement, stage, credit=None):
         return statement.credit[stage is not statement.stages[-1]]
     if statement.separator == "&":
         return _DETACHED
-    if statement.separator == "||" and not _stops_the_job(stmts, index):
-        return _RESCUED
+    if statement.separator == "||":
+        stops = _stops_the_job(stmts, index)
+        if isinstance(stops, Reach):
+            return stops
+        if not stops:
+            return _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
     # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
     # module's own remedy text recommends -- the checksum is the second stage
@@ -376,12 +455,27 @@ class PipelineGate(Reach):
         return gate
 
 
+class FunctionGate(Reach):
+    """A check defined in a function, effective only after its proven call."""
+
+    through: int
+
+    def __new__(cls, through):
+        gate = str.__new__(
+            cls, "is inside a function that has not run through a failure gate before that use")
+        gate.span = 0
+        gate.through = through
+        return gate
+
+
 def clears(why, check, use):
     """Whether the check stops this use within its reach and pipeline."""
     if check >= use:
         return False
     if why is None:
         return True
+    if isinstance(why, FunctionGate):
+        return why.through < use
     if isinstance(why, PipelineGate):
         return (use > why.through and
                 (why.span is None or use - check <= why.span))

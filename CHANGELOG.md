@@ -14,8 +14,8 @@ evidence exposed.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
-  `exit 0`, disabled outer errexit, and enclosing groups whose status is rescued, piped, detached,
-  or left ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
 - **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
   dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
 - **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
