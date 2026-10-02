@@ -15,6 +15,8 @@ around it decides that, not the command:
     `_stops_step`              the imported function-call/status proof: how
                                far a failure reaches in the step's own shell
                                (`workflow_function_calls`)
+    `conditional_reach`        how far a use shares the path that reaches a
+                               check written behind `&&` or `||`
 
 The layers run one way: this module imports nothing from `workflow_forms`,
 which sits above it and hosts `step_credit`, the step's own answer -- the one
@@ -225,6 +227,8 @@ _OWN_RESCUE = ("is followed by that use in its own `||` rescue branch, which run
                "the checksum fails")
 _BOUNDED_RESCUE = ("; a use in its own `||` rescue branch runs only after the checksum fails, "
                    "and a use after that reach still runs")
+_CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may be skipped "
+                "while that use still runs")
 
 
 class RescueGate(Reach):
@@ -250,6 +254,67 @@ def clears(why, check, use):
             return False
         why = contextual
     return _clears(why, check, use)
+
+
+def conditional_contexts(stmts):
+    """{statement: ((list head, carrier end), ...)} for conditional groups."""
+    stack, active = [], []
+    for index, statement in enumerate(stmts):
+        opens = closes = 0
+        for stage in statement.stages:
+            opened, closed = _structural_groups(stage)
+            opens, closes = opens + opened, closes + closed
+        for _opening in range(opens):
+            group = [index, None]
+            stack.append(group)
+        active.append(tuple(stack))
+        for _closing in range(closes):
+            if stack:
+                stack.pop()[1] = index
+    contexts = {}
+    for position, groups in enumerate(active):
+        ends: dict[int, list[int | None]] = {}
+        for start, end in groups:
+            if start and stmts[start - 1].separator in ("&&", "||"):
+                ends.setdefault(start, []).append(end)
+        found = [(start - 1, None if None in bounds
+                  else max(end for end in bounds if end is not None))
+                 for start, bounds in ends.items()]
+        if (position and position not in ends
+                and stmts[position - 1].separator in ("&&", "||")):
+            found.append((position - 1, position))
+        if found:
+            contexts[position] = tuple(found)
+    return contexts
+
+
+def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
+    """Bound a conditional check to uses that require its carrier to run.
+
+    A failure before `&&` skips the check and the same suffix its failure
+    skips; `_stops_step` gives that suffix, including a stopping rescue or
+    step end. Success before `||` may skip the check but reach anything after
+    its carrier, so only statements inside its structural or inlined carrier
+    share that path.
+    """
+    if not contexts:
+        return why
+    spans = []
+    for source, carrier in contexts:
+        if stmts[source].separator == "&&":
+            end = _stops_step(stmts, source, on, fails)
+            if end is None:
+                continue
+        else:
+            end = carrier
+        through = indexes[end] if isinstance(end, int) and end > source else index
+        spans.append(through - inner)
+    if not spans:
+        return why
+    span = min(spans)
+    if why is None or isinstance(why, Reach) and why.span is not None and span < why.span:
+        return Reach(span, _CONDITIONAL)
+    return why
 
 
 def _rescue_bounds(stmts, branch):

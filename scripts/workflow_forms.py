@@ -62,9 +62,9 @@ from shell_reader import command, statements
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
-from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL,
-                             _SET_E, _errexit, _stops_step, clears as clears, seed as seed,
-                             swallowed as swallowed)
+from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
+                             _errexit, _stops_step, clears as clears, conditional_contexts as paths,
+                             conditional_reach as reach, seed as seed, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -309,11 +309,10 @@ def step_credit(flat, shell=None):
     `_errexit_states` reads a child script. Without pipefail a piped check's
     status is lost to the command after it. Where `-e` is off, a failure
     stops the step only in its last command or through an `||` branch that
-    exits. Ahead of `&&` the shell suspends `-e`, so a failure there stops
-    only the rest of its list, a `Reach` of that many statements -- or,
-    where the reader lost the list's end, only the rest of its own command,
-    a `Reach` in `_LOST`'s words; a check that ends a group answers as the
-    group does (`_stops_step`).
+    exits. Ahead of `&&`, failure reaches only its list; `Reach` bounds that
+    list, `_LOST` bounds an unread list to its command, and
+    `conditional_reach` bounds a skipped conditional check to paths that
+    require it. A check ending a group answers as `_stops_step` says.
 
     The guard has no model of an exit status or a trap, so four readings
     here are fail-closed, and bash stops the step on each (review N-1): with
@@ -328,6 +327,7 @@ def step_credit(flat, shell=None):
     (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
     on, fails = _errexit_states(stmts, errexit, where, shell=shell), _errexit_states(
         stmts, pipefail, where, "pipefail", shell)
+    path_map = paths(stmts)
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
         stops = _stops_step(stmts, position, on, fails)
@@ -336,6 +336,7 @@ def step_credit(flat, shell=None):
                    else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
+            why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:
                 credit[inner] = (why, piped)

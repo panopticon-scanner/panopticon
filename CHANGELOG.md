@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Conditional checks no longer certify uses that can outlive their list (#2419, #2331).**
+  A checksum behind `A &&` or `A ||` clears only paths that require the check to run. A final
+  `A && CHECK` can still gate a later job step, while `A || CHECK` cannot. Literal commands get
+  no special exit-status proof, keeping the rule fail-closed.
 - **Checksum rescues no longer certify their own failure-only body (#2417, #2331).** A use
   inside the check's `||` branch is reported even when that branch later exits. The same
   stopping rescue still certifies uses after it, and unrelated checks retain their existing
