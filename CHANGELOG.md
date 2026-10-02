@@ -10,6 +10,10 @@ evidence exposed.
 - **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
   guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
   group's failure and stops the step, while default and `sh` modes still report it.
+- **Shell quoting now has a dedicated flat module (#2615, #2608).** ANSI-C decoding and
+  quote-aware heredoc and here-string word spelling moved unchanged from `shell_lex.py` to
+  `shell_quote.py`, restoring lexer headroom. Further compression of the lexer's governing
+  contract was rejected because a line budget must not choose which behavior stays documented.
 - **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
   guard reports a downloaded payload used by another stage of its checksum group's pipeline,
   including a checksum ahead of `&&` under every supported shell. It still credits a use after
