@@ -26,7 +26,7 @@ only, for a program piped into it, the stage in front of it (#2333):
 here in place of the command handed it, its `unread_program` weighs the
 candidates, the unprinted and the dynamic program, and the guard takes
 `stdin_program` and `SHELL_PROGRAM` through it. The option-letter tables
-below are read here and in `workflow_gating._errexit`, the one layer up that
+below are read here and in `workflow_posture._errexit`, the one layer up that
 reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
@@ -87,7 +87,7 @@ def _after_dash_c(argv):
 # the `-I`/`-V` dash takes where bash does not). A letter outside the table is
 # one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option
 # changed; `sh -c -K P` exits before it reads `P` -- which is what
-# `workflow_gating._errexit` and `_past_options` read it as (#2443, #2475).
+# `workflow_posture._errexit` and `_past_options` read it as (#2443, #2475).
 # Measured, letter by letter, on bash 3.2.57, bash 5.2.21, dash, zsh 5.9 and
 # ksh 93u+, each table is the fail-closed pick for the direction its reader
 # takes. For the builtin, where an unknown letter means nothing was SET,
@@ -112,7 +112,7 @@ _MEASURED_SHELLS = ("sh", "bash", "dash")
 # those the three dash prints that bash has no such option for. A name outside
 # the table is one the shell REFUSES: `set: foo: invalid option name`, and on a
 # command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
-# `workflow_gating._rejected` and `_refused_name` read it as (#2560). Measured
+# `workflow_posture._rejected` and `_refused_name` read it as (#2560). Measured
 # on bash 3.2.57, bash 5.2.21 and dash, each table is the fail-closed pick for
 # the direction its reader takes, as the letter tables are. For the BUILTIN,
 # where a refused name means nothing was SET, bash's 27 alone: dash dies at
