@@ -40,10 +40,9 @@ YAML and is the same rule for a human at a shell:
 
     python3 scripts/workflow_guard.py .github/workflows/*.yml
 
-CI gets NO separate lint step for it: `tests/test_workflow_pins.py` applies
-this module to every `run:` step in the fleet and `ci.yml` runs the suite on
-every PR, so a second invocation would be the same assertion wearing a
-different hat -- and one that can rot out of step with the first.
+CI gets NO separate lint step for it: `tests/test_workflow_pins.py` applies this module to every
+`run:` step in the fleet and `ci.yml` runs the suite on every PR, so a second invocation would be
+the same assertion wearing a different hat -- and one that can rot out of step with the first.
 
 What it does not model. Within the shell it reads, the standing requirement is to fail CLOSED -- an
 unparsed form must be REPORTED, not accepted, which is precisely what the two regexes did not do,
@@ -80,15 +79,16 @@ live, so a change that catches one fails there and edits this list.
   bare word read past as an option's value over-reports (`X=-c; sh $X tool '…'`), and so does such a
   later word (`sh $X 'echo hi' "$Y" '…'`) -- a `$(…)` or `Rewritten` one reported where the job
   downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another handed `-c` has its
-  program read so (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). `carried`
-  follows a download to either (#2479). A `-c`/`eval` string loses `\$` escapes as bash does, not
-  with another `$` in it (#2342), and a `$(…)` among its text is opaque (#2486): what it prints is
-  unread, no check there counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s
-  stream, and a lone `$(…)` word is no script (`eval sh "$(echo tool)"` reads CLEAN; bash runs
-  `tool`), nor one the reader refuses so read (`cat <<$(…)`). An option letter the shell in hand
-  refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e`
-  sets nothing (#2443, #2475). Per shell, because zsh runs twenty of the letters bash refuses and
-  ksh runs `-G`: for those and for a shell named by a word rather than written, the word is read on.
+  program read so (#2337); `$CMD --flag` reads nothing; `sh -c "$P"` and a word all substitution
+  (`sh -c "$(cat f)"`) are reported beside a download (#2483, #2486), though they may run none of it
+  (`eval "$(ssh-agent -s)"`). `carried` follows a download to either (#2479). A `-c`/`eval` string
+  loses `\$` escapes as bash does, not with another `$` in it (#2342), and a `$(…)` among its text
+  is opaque (#2486): what it prints is unread (#2487), no check there counts, `eval "sh $(curl …)"`
+  reports the inner `sh $(...)` beside `eval`'s stream, and one the reader refuses so read is unread
+  (`cat <<$(…)`). An option letter the shell in hand refuses reads as that refusal after `-c` and in
+  `set`: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell, because
+  zsh runs twenty of the letters bash refuses and ksh runs `-G`: for those and for a shell named by
+  a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).

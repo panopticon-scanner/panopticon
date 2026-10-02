@@ -348,7 +348,7 @@ class Idle(str):
 class _Quiet(Idle):
     """An `Idle` `kept` keeps only where no other reason reports its statement:
     `unread_program`'s for a printer whose words it cannot spell out (#2333)
-    and for a dynamic program word (#2483), both of which `carried` says
+    and for a dynamic program word (#2483, #2486), both of which `carried` says
     louder where a variable carries the download -- `echo "$x" | sh` and
     `sh -c "$x"` are its own."""
 
@@ -404,12 +404,12 @@ def unread_program(argv, stage, walk, inside, before=None):
     is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
     guard reports unresolved (`sudo $CMD -c …`) is not read again here.
     LAST, where none of those speaks, the same word with the SHELL spelled
-    out (`dynamic_program`, #2483): one rule for a dynamic program wherever a
-    shell takes one, said where `carried` does not say it louder of the same
-    statement. Last because a value in the options answers for the whole
-    statement and `_weighed` makes that answer LOUD where a word after it
-    fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this
-    rule's droppable `_Quiet` would have replaced."""
+    out (`dynamic_program`, #2483, #2486): one rule for a dynamic program
+    wherever a shell takes one, said where nothing louder (`carried`'s, a
+    stream's) reports its statement. Last because a value in the options
+    answers for the whole statement and `_weighed` makes that answer LOUD
+    where a word after it fetches (`sh $X -c "$P" 'curl … | sh'`, review r0
+    finding 1), which this rule's droppable `_Quiet` would have replaced."""
     handed = inside and substitution_script(argv, stage, walk, before)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before)
     how, bare = (None, None) if handed else dynamic_program(argv)

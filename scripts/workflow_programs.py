@@ -25,7 +25,8 @@ only, for a program piped into it, the stage in front of it (#2333):
                       where a value this module does not follow stands in a
                       shell's options
     `dynamic_program` the program word a LITERAL shell is handed that is all
-                      expansion (`sh -c "$P"`), which spells no command at all
+                      expansion (`sh -c "$P"`, `sh -c "$(cat f)"`), which
+                      spells no command at all
 
 `workflow_forms` imports all six and `Opaque`: its `flattened` reads each
 script found here in place of the command handed it -- with no check in it
@@ -67,27 +68,30 @@ def scripts(argv):
     the text bash hands the shell: a double-quoted `\\$` or `` \\` `` without
     its backslash (`shell_reader._stage`'s `spelled`, #2342).
 
-    A word that is one lifted `$(...)` or backquote is never one, nor is a
-    word holding a heredoc, a `<(...)` or any other marker: each stands for
-    text held in the parse it came from, and the guard's `_walk` already
-    credits what is inside it. A `$(...)` or backquote among text of the
-    word's own does not make it none (#2486): `eval "sh $(echo tool)"` hands
-    on `sh $(...)`, `Opaque`, whose `sh` is weighed as `sh $(echo tool)`'s
-    is -- the substitution's own text still read where `_walk` reads it,
-    what it prints read nowhere, and no marker of this parse left to reach
+    A word that is all expansion -- one lifted `$(...)` or backquote, or
+    several beside `$` words (`$P$(...)`) -- is never one: it spells no
+    command, and `dynamic_program` reports it (#2483, #2486). Nor is a word
+    holding a heredoc, a `<(...)` or any other marker: each stands for text
+    held in the parse it came from, and the guard's `_walk` already credits
+    what is inside it. A `$(...)` or backquote among text of the word's own
+    does not make it none (#2486): `eval "sh $(echo tool)"` hands on
+    `sh $(...)`, `Opaque`, whose `sh` is weighed as `sh $(echo tool)`'s is --
+    the substitution's own text still read where `_walk` reads it, what it
+    prints read nowhere (#2487), and no marker of this parse left to reach
     another. A text so rendered that the reader refuses is none, as before
     #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b`
     prints, and `cat <<$(...)` is no spelling to end the body at, so the
     string is unread and the rest of the step read.
     """
-    if not argv:
-        return []
-    name, found = os.path.basename(argv[0]), []
+    return [script for script in map(_script, _program_words(argv)) if script is not None]
+
+
+def _program_words(argv):
+    """The words where a program stands: `eval`'s, or a shell's `-c` operand."""
+    name = os.path.basename(argv[0]) if argv else ""
     if name == "eval":
-        found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING:
-        found = _after_dash_c(argv)
-    return [script for script in map(_script, found) if script is not None]
+        return [t for t in argv[1:] if not t.startswith("-")]
+    return _after_dash_c(argv) if name in _SHELL_STRING else []
 
 
 def _script(word):
@@ -96,7 +100,7 @@ def _script(word):
     if not keys:
         return getattr(word, "spelled", word)
     text = shell_reader.readable(word)
-    if text == "$(...)" or not all(
+    if _all_expansion(text) or not all(
             shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
         return None
     try:
@@ -301,15 +305,20 @@ _NAME = re.compile(r"\w+|[@*]")
 
 
 def _all_expansion(text):
-    """Whether `text` is nothing but parameter expansion -- `$P`, `${P}`,
-    `"$P"` as the reader hands it on with its quotes dropped, `$P$Q`, `$@`,
-    and a nest of any depth (`${A:-${B:-${C}}}`, r0 finding 3) -- and so
-    spells no command at all for `flattened` to read (#2483). `${A}x`,
+    """Whether `text` is nothing but expansion -- `$P`, `${P}`, `"$P"` as the
+    reader hands it on with its quotes dropped, `$P$Q`, `$@`, a nest of any
+    depth (`${A:-${B:-${C}}}`, r0 finding 3), and a lifted `$(...)` or
+    backquote as `shell_reader.readable` renders it (`$P$(...)`, #2486) --
+    and so spells no command at all for `flattened` to read (#2483). `${A}x`,
     `echo $X` and an unbalanced `${A` are not: they hold text of their own.
     Braces are counted rather than matched by pattern, because no regular
-    expression can balance them."""
+    expression can balance them. A `<(...)` renders as `$(...)` too, so
+    whether each hands on words is the caller's to ask of the token."""
     at = 0
     while at < len(text):
+        if text.startswith("$(...)", at):       # a lifted substitution, rendered
+            at += 6
+            continue
         if text[at] != "$" or at + 1 >= len(text):
             return False
         if text[at + 1] == "{":
@@ -329,7 +338,7 @@ def _all_expansion(text):
 
 def dynamic_program(argv):
     """(how this command hands a shell a program, the word it hands it) where
-    that word is ENTIRELY parameter expansion, else (None, None).
+    that word is ENTIRELY expansion, else (None, None).
 
     `sh -c "$P"`, `bash -c "${P}"`, `sh -ec "$P"`, `eval "$P"`, `sh -c "$@"`
     and `${X:-sh} -c "$P"`, whose command word the reader rewrites to its
@@ -337,17 +346,27 @@ def dynamic_program(argv):
     (`_all_expansion`). `flattened` reads such a word as no command at all,
     which left the program UNREAD wherever a literal shell took one while the
     `$CMD -c "$P"` twin `candidates` finds was reported: `unread_program` now
-    says it of both. A lifted `$(...)` marker is not one -- `scripts` drops it
-    and the guard's `_walk` reads what is inside it -- and neither is a string
+    says it of both. So is a word of lifted `$(...)` or backquote
+    substitutions that hand on words, `$` words beside them or not
+    (`sh -c "$(cat f)"`, `eval sh "$(echo tool)"`, `sh -c "$P$(cat f)"`,
+    #2486), asked here before `scripts` drops it: bash runs what they print,
+    and nothing here reads that (#2487). The price is #2483's: beside an
+    unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"` are
+    reported though they run none of it. A `<(...)` or `>(...)` hands a file,
+    not words (`shell_reader.yields_words`), and is not one; nor is a string
     that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
-    read as written. `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs
-    nothing of the value as a command: an accepted over-report, because a `;`
-    in that value does run (r0 finding 4).
+    read as written (`Opaque` where a `$(...)` is among its text).
+    `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs nothing of the value
+    as a command: an accepted over-report, because a `;` in that value does
+    run (r0 finding 4).
     """
     name = os.path.basename(argv[0]) if argv else ""
-    for word in scripts(argv):
-        if _all_expansion(shell_reader.readable(word)):
-            return (name if name == "eval" else name + " -c"), word
+    for word in _program_words(argv):
+        keys = getattr(word, "markers", {})
+        text = shell_reader.readable(word) if keys else getattr(word, "spelled", word)
+        if _all_expansion(text) and all(
+                shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
+            return (name if name == "eval" else name + " -c"), (word if keys else text)
     return None, None
 
 

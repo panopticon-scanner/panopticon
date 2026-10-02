@@ -358,7 +358,7 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # #2486: the string is a script, the substitution written as the
         # reader renders it and the script marked `Opaque`, so no marker of
         # this parse reaches the next -- two parses give one text. A word
-        # that is one lone `$(...)` is still none.
+        # that is one lone `$(...)` is still none: `dynamic_program` names it.
         for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
             with self.subTest(script=script):
                 found = self.program(script)
@@ -373,6 +373,22 @@ class TestTheProgramAfterDashC(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], self.program(script))
                 self.assertEqual([], guard.fetch_exec_defects(script))
+
+    def test_a_word_that_is_all_substitution_is_the_dynamic_programs(self):
+        # #2486: it spells no command, so `scripts` hands on no text for it
+        # and `dynamic_program` names it; one with text of its own is not.
+        for script, how, word in (('sh -c "$(cat x)"', "sh -c", "$(...)"),
+                                  ('eval "$(cat x)"', "eval", "$(...)"),
+                                  ('sh -c "$P$(cat x)"', "sh -c", "$P$(...)")):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                found = workflow_programs.dynamic_program(argv)
+                self.assertEqual((how, word), (found[0], shell_reader.readable(found[1])))
+                self.assertEqual([], self.program(script))
+        for script in ('sh -c "echo $(date)"', 'sh -c "$(curl %s) x"' % URL):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
 
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):

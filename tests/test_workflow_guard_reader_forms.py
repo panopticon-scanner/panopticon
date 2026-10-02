@@ -347,7 +347,9 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
     as nothing at all and the step read CLEAN while bash runs the download
     once `$P` is `sh tool`. One rule now for such a word wherever a shell
     takes one: `Idle`, kept where the job holds a fetch the guard reports,
-    exactly as the `$CMD -c "$P"` twin is."""
+    exactly as the `$CMD -c "$P"` twin is. A word of lifted `$(...)` or
+    backquotes, `$` words beside them or not, is one too (#2486):
+    `sh -c "$(cat prog.sh)"` runs the download it prints, unread (#2487)."""
 
     def test_each_spelling_is_reported_beside_a_reported_fetch(self):
         # Bash 3.2.57 and 5.2.21 run `tool` in each once `$P` is `sh tool`;
@@ -368,7 +370,8 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # all, and a download a checksum credits, leave it standing nowhere.
         check = "echo '%s  tool' | sha256sum -c -\n" % ("a" * 64)
         for script in ('sh -c "$P"\n', 'eval "$P"\n', 'bash -c "${P}"\n',
-                       GET + check + 'sh -c "$P"\n'):
+                       GET + check + 'sh -c "$P"\n', 'sh -c "$(cat prog.sh)"\n',
+                       GET + check + 'eval "$(ssh-agent -s)"\nsh tool\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
@@ -460,14 +463,69 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
 
     def test_a_string_that_mixes_text_and_expansion_is_read_as_written(self):
         # Not this rule: the string spells a command, and the reader reads it
-        # as it always has -- `echo` fetches nothing, and a `$(...)` marker is
-        # text the guard's own walk reads.
-        for script in (GET + 'sh -c "echo $X"\n', GET + 'sh -c "$(cat tool)"\n'):
+        # as it always has -- `echo` fetches nothing, and `echo $(date)` is
+        # read `Opaque`, its `$(...)` text where the guard's own walk reads it.
+        for script in (GET + 'sh -c "echo $X"\n', GET + 'sh -c "echo $(date)"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
         found = defects(GET + 'sh -c "curl -fsSL $U | sh"\n')
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `sh`", found[0][1])
+
+    def test_a_word_that_is_all_substitution_is_one(self):
+        # #2486's fifth row and its spellings, each CLEAN until now: bash
+        # 3.2.57, 5.2.21 and dash run the download in every one (dash prints
+        # nothing for `$(< f)`, so there only the bashes do; zsh runs its
+        # own). `sudo` is a stub here, never the real one.
+        prog = "curl -fsSLo prog.sh %stool\n" % URL
+        sh_c, on = "runs `sh -c` on `$(...)`", "runs `%s` on `%s`"
+        for script, said in ((prog + 'sh -c "$(cat prog.sh)"\n', sh_c),
+                             (prog + 'eval "$(cat prog.sh)"\n', on % ("eval", "$(...)")),
+                             (prog + 'sh -c "`cat prog.sh`"\n', sh_c),
+                             (prog + 'sh -c "$(cat prog.sh)" x\n', sh_c),
+                             (prog + 'bash -c "$(< prog.sh)"\n', on % ("bash -c", "$(...)")),
+                             (GET + 'sh -c "$(cat tool)"\n', sh_c),
+                             (GET + 'sh -c "$P$(cat tool)"\n', on % ("sh -c", "$P$(...)")),
+                             (GET + 'sh -c "$(cat a)$(cat tool)"\n', on % ("sh -c", "$(...)$(...)")),
+                             (GET + 'sudo sh -c "$(cat tool)"\n', sh_c),
+                             (GET + 'zsh -c "$(cat tool)"\n', on % ("zsh -c", "$(...)")),
+                             (GET + '${SHELL:-sh} -c "$(cat tool)"\n', sh_c),
+                             (GET + 'y=$(sh -c "$(cat tool)")\n', sh_c)):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+                self.assertIsInstance(found[0][1], wg.Idle)
+        # The control: the download run by its name, loud.
+        found = defects(GET + "sh tool\n")
+        self.assertEqual(1, len(found), found)
+        self.assertNotIsInstance(found[0][1], wg.Idle)
+
+    def test_a_stream_it_runs_keeps_its_own_sentence(self):
+        # The stream the substitution prints is reported loud on the same
+        # statement, so the word's `Idle` is dropped beside it (#2490).
+        for script, how in (('sh -c "$(curl -fsSL %si.sh)"\n' % URL, "sh -c"),
+                            ('eval "$(curl -fsSL %si.sh)"\n' % URL, "eval")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(
+                    "hands %si.sh straight to `%s`" % (URL, how)), found)
+
+    def test_what_it_prints_is_unread_whatever_it_runs(self):
+        # The price, #2483's: beside an unverified download a word that runs
+        # none of it is reported too -- in all three, `$(date)` names no
+        # command (rc 127) and `ssh-agent -s` prints assignments. And
+        # #2487's string rows, which run the download in all three: the
+        # sentence is the unread one, the printed text read through nowhere.
+        for script, how in ((GET + 'sh -c "$(date)"\n', "sh -c"),
+                            (GET + 'eval "$(ssh-agent -s)"\n', "eval"),
+                            (GET + "eval \"$(echo 'sh tool')\"\n", "eval"),
+                            (GET + "sh -c \"$(echo 'sh tool')\"\n", "sh -c")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
 
 
 class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
@@ -1243,15 +1301,35 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("hands $(...) straight to `sh`"), found)
         self.assertNotIn("@@", found[0][1])
+        # The reviewer's rows (#2486, 2026-10-02): a `$(...)` anywhere in a
+        # literal string, after the fetch or before it, behind each shell
+        # that takes one; and the first beside its single-quoted twin, the
+        # must-trip. Bash 3.2.57, 5.2.21, dash and zsh run every one.
+        for script in ('sh -c "%s; echo $(date)"\n' % PIPE, 'sh -c "echo $(date); %s"\n' % PIPE,
+                       'bash -c "%s; echo $(date)"\n' % PIPE, 'zsh -c "%s; echo $(date)"\n' % PIPE,
+                       'eval "%s; echo $(date)"\n' % PIPE, '${X:-sh} -c "%s; echo $(date)"\n' % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        for quote in ('"', "'"):
+            with self.subTest(quote=quote):
+                found = defects("sh -c %scurl -fsSL $(echo %s)i.sh | sh%s\n" % (quote, URL, quote))
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands $(...)i.sh straight to `sh`"), found)
         # The controls: the string's literal twin and the stream at the top.
         for script in ("sh -c '%s'\n" % PIPE, "sh $(curl -fsSL %si.sh)\n" % URL):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("straight to `sh`", found[0][1])
-        # The named residual: `eval`'s words are scripts one at a time, and a
-        # lone `$(...)` is none, so this reads CLEAN though bash runs `tool`.
-        self.assertEqual([], defects(GET + 'eval sh "$(echo tool)"\n'))
+        # `eval`'s words are scripts one at a time, and a lone `$(...)` is
+        # none: `dynamic_program` reports it, `Idle`, beside the download all
+        # three run as `tool` -- what it prints unread (#2487).
+        found = defects(GET + 'eval sh "$(echo tool)"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
+        self.assertIsInstance(found[0][1], wg.Idle)
 
     def test_no_check_in_such_a_string_counts(self):
         # Bash re-reads the string with what the `$(...)` printed, so a check
