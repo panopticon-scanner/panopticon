@@ -152,6 +152,19 @@ class _GroupCase(unittest.TestCase):
             "sys.stdout.flush()\n"
             "time.sleep(60)\n" % pidfile)
 
+    def _term_resistant_tree(self, pidfile, leader_exits=False):
+        """A default-SIGTERM leader whose grandchild ignores that signal."""
+        worker = (
+            "import os, signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "open(%r, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n" % pidfile)
+        ending = "" if leader_exits else "time.sleep(60)\n"
+        return (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', %r])\n"
+            "%s" % (worker, ending))
+
     def _spawn(self, program):
         proc = subprocess.Popen([sys.executable, "-c", program],
                                 start_new_session=True)
@@ -214,6 +227,37 @@ class TestKillGroupEndsTheWholeTree(_GroupCase):
         procgroup.kill_group(proc, grace=0.5)
         self.assertTrue(_await_death(pid),
                         "kill_group ended the child and left its worker running")
+        self.assertIsNotNone(proc.returncode, "the child was not reaped")
+
+    def test_sigkill_reaches_a_resistant_grandchild_after_its_leader_exits(self):
+        pidfile = os.path.join(self.root, "resistant-grandchild.pid")
+        proc = self._spawn(self._term_resistant_tree(pidfile))
+        pid = self._grandchild_of(proc, pidfile)
+        self.assertTrue(_alive(pid), "the resistant grandchild was never running")
+        procgroup.kill_group(proc, grace=0.2)
+        self.assertTrue(_await_death(pid),
+                        "the direct child exited before its resistant worker was killed")
+        self.assertIsNotNone(proc.returncode, "the child was not reaped")
+
+    def test_an_already_exited_leader_retains_its_live_session_group(self):
+        if not hasattr(os, "waitid"):
+            self.skipTest("observing an exit without reaping requires waitid")
+        pidfile = os.path.join(self.root, "zombie-leader-grandchild.pid")
+        proc = self._spawn(self._term_resistant_tree(pidfile, leader_exits=True))
+        pid = self._grandchild_of(proc, pidfile)
+        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        self.assertIsNotNone(status, "the session leader did not exit")
+        real_getpgid = procgroup.os.getpgid
+
+        def darwin_getpgid(candidate):
+            if candidate == proc.pid:
+                raise ProcessLookupError("unreaped leader")
+            return real_getpgid(candidate)
+
+        with mock.patch.object(procgroup.os, "getpgid", side_effect=darwin_getpgid):
+            procgroup.kill_group(proc, grace=0.2)
+        self.assertTrue(_await_death(pid),
+                        "the already-exited leader hid its live process group")
         self.assertIsNotNone(proc.returncode, "the child was not reaped")
 
     def test_a_group_that_is_already_gone_is_success_not_an_error(self):

@@ -77,6 +77,44 @@ class TestClosure(_Repo):
         self.assertEqual(evidence_scope.closure(self.root, claim, files),
                          ["synth/render.py", "synth/grading.py"])
 
+    def test_oversize_claim_source_is_not_read_or_parsed(self):
+        _write(self.root, "target.py", "VALUE = 1\n")
+        _write(self.root, "claim.py", "import target\n" + "x" * 64)
+        claim = {"location": {"file": "claim.py"}, "description": "x"}
+        with mock.patch.object(evidence_scope, "_SOURCE_BYTES", 32):
+            got = evidence_scope.closure(self.root, claim,
+                                         ["claim.py", "target.py"])
+        self.assertEqual(got, ["claim.py"])
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO requires POSIX")
+    def test_special_file_importer_is_rejected_before_open(self):
+        _write(self.root, "claim.py", "VALUE = 1\n")
+        fifo = os.path.join(self.root, "importer.py")
+        os.mkfifo(fifo)
+        real_open = open
+
+        def guarded_open(path, *args, **kwargs):
+            if os.fspath(path) == fifo:
+                raise AssertionError("special source reached builtins.open")
+            return real_open(path, *args, **kwargs)
+
+        claim = {"location": {"file": "claim.py"}, "description": "x"}
+        with mock.patch("builtins.open", side_effect=guarded_open):
+            got = evidence_scope.closure(self.root, claim,
+                                         ["claim.py", "importer.py"])
+        self.assertEqual(got, ["claim.py"])
+
+    def test_repeated_claims_parse_each_source_once_per_entry(self):
+        _write(self.root, "claim.py", "VALUE = 1\n")
+        _write(self.root, "importer.py", "import claim\n")
+        claim = {"location": {"file": "claim.py"}, "description": "x"}
+        parse = evidence_scope.ast.parse
+        with mock.patch.object(evidence_scope.ast, "parse", wraps=parse) as spy:
+            got = evidence_scope.grant(
+                self.root, ["claim.py", "importer.py"], [claim, dict(claim)])
+        self.assertEqual(got["granted"], ["claim.py", "importer.py"])
+        self.assertEqual(spy.call_count, 2)
+
     def test_closure_reads_every_evidence_field_the_ruling_names(self):
         for rel in ("a.py", "b.py", "c.py", "d.py", "e.py", "claim.py"):
             _write(self.root, rel, "import os\n")
@@ -541,18 +579,18 @@ class TestNamedPathResolution(_Repo):
                                        "candidates": 2}])
 
     def test_an_unreadable_candidate_says_so_rather_than_differing(self):
-        # The third path that never compares content. Patched `open` rather
+        # The third path that never compares content. Patch the guarded reader rather
         # than chmod 0: a suite run as root would read the file anyway.
         _write(self.root, "claim.py", "import os\n")
         _write(self.root, "a/config.py", "KEY = 1\n")
         _write(self.root, "b/config.py", "KEY = 1\n")
         files = ["claim.py", "a/config.py", "b/config.py"]
-        real_open, unresolved = open, []
-        def refusing(path, *a, **k):
-            if str(path).endswith("b/config.py"):
+        real_read, unresolved = evidence_scope._read_regular, []
+        def refusing(root, rel, limit):
+            if rel == "b/config.py":
                 raise PermissionError(13, "denied")
-            return real_open(path, *a, **k)
-        with mock.patch("builtins.open", refusing):
+            return real_read(root, rel, limit)
+        with mock.patch.object(evidence_scope, "_read_regular", side_effect=refusing):
             got = evidence_scope.closure(self.root,
                                          self._claim("see config.py"), files,
                                          unresolved=unresolved)

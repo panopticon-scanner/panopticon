@@ -58,9 +58,14 @@ jobs:
           trap 'rm -f "${api_stderr}"' EXIT
           if ! resp=$(gh api "${api}" 2>"${api_stderr}"); then
             printf 'gh api diagnostic: %q\n' "$(cat "${api_stderr}")" >&2
-            echo "::warning::Failed to look up ${IMAGE_NAME}:latest publish time; skipping freshness check."
-            .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}" "${IMAGE_NAME}"
-            exit 0
+            if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+              echo "::warning::Failed to look up ${IMAGE_NAME}:latest publish time; skipping freshness check."
+              .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}" "${IMAGE_NAME}"
+              exit 0
+            fi
+            echo "::error::Failed to look up ${IMAGE_NAME}:latest publish time;" \
+              "the ${GITHUB_EVENT_NAME:-unknown} freshness monitor could not run."
+            exit 1
           fi
           updated=$(printf '%s' "${resp}" | jq -r \
             '[.[] | select(.metadata.container.tags[]? == "latest")]

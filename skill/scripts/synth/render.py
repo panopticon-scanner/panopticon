@@ -567,14 +567,22 @@ def write_report(report, out_path, max_bytes=800000):
     chunk_limit = max(1000, max_bytes - base_bytes - 500)
 
     chunks = []
-    current_chunk = []
+    current_chunk: list[dict] = []
+    # With indent=2, nesting one standalone finding adds four spaces to each
+    # line. The non-empty wrapper is fixed; later items add a comma and newline.
+    wrapper_bytes = len(b'{\n  "findings": [\n\n  ]\n}')
+    current_bytes = wrapper_bytes
     for f in findings:
-        current_chunk.append(f)
-        payload = {"findings": current_chunk}
-        if len(json.dumps(payload, indent=2).encode("utf-8")) > chunk_limit and len(current_chunk) > 1:
-            last = current_chunk.pop()
+        item = json.dumps(f, indent=2)
+        item_bytes = len(item.encode("utf-8")) + 4 * (item.count("\n") + 1)
+        added_bytes = item_bytes + (2 if current_chunk else 0)
+        if current_chunk and current_bytes + added_bytes > chunk_limit:
             chunks.append(current_chunk)
-            current_chunk = [last]
+            current_chunk = [f]
+            current_bytes = wrapper_bytes + item_bytes
+        else:
+            current_chunk.append(f)
+            current_bytes += added_bytes
     if current_chunk:
         chunks.append(current_chunk)
 

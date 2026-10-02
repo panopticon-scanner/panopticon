@@ -35,6 +35,7 @@ the interrupt a Ctrl-C raises, so a supervisor's stop reaches the same kills.
 import os
 import signal
 import sys
+import time
 
 # How long a group is given to exit on SIGTERM before SIGKILL. Short on
 # purpose: the deadline that brought us here has already passed. Moved
@@ -70,9 +71,19 @@ def _pgid(proc):
     if getattr(proc, "returncode", None) is not None:
         return None                        # reaped: the pid may be somebody else's
     try:
-        pgid = os.getpgid(proc.pid)
-    except (AttributeError, OSError):
+        pid = proc.pid
+        pgid = os.getpgid(pid)
+    except AttributeError:
         return None
+    except OSError:
+        # Darwin reports ESRCH for an unreaped session leader after it exits,
+        # even while descendants keep the group alive. The caller created the
+        # session, so its retained pid is the group id until it is reaped.
+        try:
+            pgid = pid
+            os.killpg(pgid, 0)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
     try:
         if pgid == os.getpgid(0):
             return None                    # our own group: signal the handle
@@ -81,8 +92,52 @@ def _pgid(proc):
     return pgid
 
 
+def _end_group(proc, sig, pgid):
+    """Send one signal, retaining an already validated group id when supplied."""
+    if pgid is not None:
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except (AttributeError, OSError):
+            pass
+    handler = proc.kill if sig == signal.SIGKILL else proc.terminate
+    try:
+        handler()
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _group_exists(pgid):
+    """Whether a retained process group still has a signalable member."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except (AttributeError, OSError):
+        return True
+    return True
+
+
+def _leader_exited_unreaped(proc):
+    """Observe an exited child without releasing its pid or process-group id."""
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:
+        return False
+    try:
+        result = waitid(
+            getattr(os, "P_PID"), proc.pid,
+            getattr(os, "WEXITED") | getattr(os, "WNOHANG")
+            | getattr(os, "WNOWAIT"))
+    except (AttributeError, ChildProcessError, OSError, TypeError, ValueError):
+        return False
+    return bool(result and getattr(result, "si_pid", 0))
+
+
 def end_group(proc, sig):
-    """Send `sig` to `proc`'s whole process group, and wait for nothing.
+    """Send `sig` to `proc`'s current process group, and wait for nothing.
 
     The child is spawned with `start_new_session=True` by both callers, so its
     pid IS its group id and one `killpg` reaches every process it started --
@@ -97,28 +152,7 @@ def end_group(proc, sig):
     want of a pid -- and it is recycle-safe, because `Popen.send_signal`
     refuses a handle whose `returncode` is set.
     """
-    pgid = _pgid(proc)
-    if pgid is not None:
-        try:
-            os.killpg(pgid, sig)
-            return
-        except ProcessLookupError:
-            # The group went away between `getpgid` and `killpg`. Nothing to
-            # signal and nothing left to do: the handle path below would only
-            # re-discover the same emptiness.
-            return
-        except (AttributeError, OSError):
-            # Anything ELSE -- EPERM on a group we may no longer own, a
-            # platform with no `killpg` -- is a signal that was NOT delivered,
-            # so it falls through to the handle rather than being counted as
-            # "acted on". Swallowing EPERM here is how a child survives a
-            # kill that reported success.
-            pass
-    handler = proc.kill if sig == signal.SIGKILL else proc.terminate
-    try:
-        handler()
-    except (OSError, ValueError):            # already gone, or a closed handle
-        pass
+    _end_group(proc, sig, _pgid(proc))
 
 
 def reaped(proc, timeout):
@@ -146,9 +180,11 @@ def kill_group(proc, grace=KILL_GRACE):
     driver had already reported the phase timed out. That is not "no timeout";
     it is a nominal deadline that bounds one process out of a tree.
 
-    SIGTERM first, so a scanner can flush and unlink its temp files, then
-    SIGKILL once the grace window passes. A group that is already gone is
-    success, not an error.
+    SIGTERM first, so a scanner can flush and unlink its temp files. SIGKILL
+    follows when the GROUP's grace passes, or immediately when its leader has
+    already exited. The leader stays unreaped until that decision: its pid
+    cannot be recycled, and the retained group id still reaches a descendant
+    that ignored SIGTERM.
 
     Returns whether the child was reaped. The final wait is BOUNDED rather
     than unconditional: a descendant that escaped the group (one that called
@@ -156,10 +192,24 @@ def kill_group(proc, grace=KILL_GRACE):
     not be made to wait for it for ever. An unreaped child is left to
     `Popen.__del__`, which is a warning; an unbounded wait was the hang.
     """
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        end_group(proc, sig)
-        if reaped(proc, grace):
-            return True
+    try:
+        grace = max(0.0, float(grace))
+    except (TypeError, ValueError):
+        grace = 0.0
+    pgid = _pgid(proc)
+    group_signalled = _end_group(proc, signal.SIGTERM, pgid)
+    if pgid is not None and group_signalled:
+        deadline = time.monotonic() + grace
+        while (_group_exists(pgid) and not _leader_exited_unreaped(proc)
+               and time.monotonic() < deadline):
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        retained = pgid if getattr(proc, "returncode", None) is None else None
+        if _group_exists(pgid):
+            _end_group(proc, signal.SIGKILL, retained)
+        return reaped(proc, grace)
+    if reaped(proc, grace):
+        return True
+    end_group(proc, signal.SIGKILL)
     return reaped(proc, grace)
 
 

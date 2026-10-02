@@ -48,6 +48,23 @@ evidence exposed.
   the per-shell scoping. Over the 3,200-workflow calibration pool (4,642 jobs) no job's answer
   changes, and a text census finds no job carrying a `set` letter outside the table, a refused
   option word after `-c`, or an `-O` at all.
+- **Timeout cleanup retains the session group identity (#2532, #1816).** An unpolled leader that
+  Darwin reports gone cannot hide its live descendants, which still receive the SIGKILL phase.
+- **Verdict ingestion has bounded resources (#2531, #1816).** Advisor verdicts use a shared
+  8 MiB regular-file reader, and tolerant JSON extraction bounds memory and compatibility work.
+- **Runner batches name a broken outage stop predicate (#2544, #1817).** Work still continues,
+  while one redacted and bounded diagnostic tells the operator the short-circuit was unavailable.
+- **Scanner timeout cleanup names container-kill failures (#2543, #1817).** Missing or empty
+  container ids, launch errors and nonzero kill exits are reported without replacing the timeout.
+- **Image freshness lookup failures now fail monitor runs (#2542, #1817).** Push runs retain the
+  warning fallback, while scheduled and manual checks return an error with the API diagnostic.
+- **Family PR review bounds verifier fan-out (#2535, #1816).** Each of five finders is limited
+  to 25 findings by its output schema and again before three-way verification. The result and log
+  disclose truncation by dimension, bounding a run at 375 verifier calls.
+- **Report chunk sizing is linear in its findings (#2534, #1816).** Each finding is serialized
+  once for sizing, with exact UTF-8 envelope and separator costs tracked incrementally.
+- **Evidence-scope import scans are bounded and memoized (#2533, #1816).** Each source is a
+  regular file read at most once per entry and only through a 4 MiB byte cap before parsing.
 - **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
   `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
   and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`
