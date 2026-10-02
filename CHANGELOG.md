@@ -12,6 +12,10 @@ evidence exposed.
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
   piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
   conditional calls still refuse the proof.
+- **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
+  close the substitution there and execute later body text as code, so the lexer now names the
+  ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
+  the owner ruled one conservative answer for every workflow.
 - **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
   option made the guard discard an entire program word containing `$(...)`, so its visible fetch
   pipeline read clean. It now reads the outer program with the substitution opaque while the

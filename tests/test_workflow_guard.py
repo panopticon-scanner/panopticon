@@ -4576,10 +4576,13 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # that comment, or in that body, hid a payload bash 5.2 runs (and
         # 3.2 runs the first).
         for script in ("echo $(( $(: # ) ) '\n) ))\n%s\n'\n",
-                       "echo $(( $(cat <<EOF\nit's\nEOF\n) ))\n%s\n",
-                       "echo $(( $(: <<E\n)it's\nE\n) ))\n%s\n"):
+                       "echo $(( $(cat <<EOF\nit's\nEOF\n) ))\n%s\n"):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
+        # #2493's owner ruling supersedes the payload-specific result when
+        # the substitution's heredoc body itself contains a `)`.
+        ambiguous = "echo $(( $(: <<E\n)it's\nE\n) ))\n%s\n" % self.PAYLOAD
+        self.refused(ambiguous, "a `)` in a substitution heredoc body")
         for opening in ("echo $(( $(cat <<EOF) ))", "echo $(( $(( $(cat <<EOF) )) ))"):
             with self.subTest(opening=opening):
                 self.flagged("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))
