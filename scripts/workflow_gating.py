@@ -63,10 +63,12 @@ def _rejected(words):
     a letter the builtin lacks (`set -Z -e`, `set -eO foo`), or is a LONG one
     -- bash's `set` has none, and answers `set --posix -e` with `set: --:
     invalid option` (review NIT 4) -- or an `o` in it takes a value that is
-    no option NAME (`set -o foo`, #2560), any of which leaves rc 2 and no
-    option changed (#2443; dash and `sh` die at the `set` instead, so nothing
-    runs there at all). `set --` is the positional spelling that ends the
-    options, not a refusal: `set -- "$@"` reads as it always did.
+    no option NAME (`set -o foo`, #2560). A bad LETTER leaves no option
+    changed (rc 2, #2443); a bad NAME keeps what the words before it set, as
+    the third paragraph says (rc 1 on bash 3.2.57, 2 on 5.2.21). dash and
+    `sh` die at the `set` instead, so nothing runs there at all. `set --` is
+    the positional spelling that ends the options, not a refusal:
+    `set -- "$@"` reads as it always did.
 
     Read over the words `_errexit` reads, taking one value per `o` LETTER
     exactly as it does -- as bash does, and as
@@ -76,8 +78,9 @@ def _rejected(words):
     bash 3.2.57 and 5.2.21), where the per-word count this replaced read the
     `errexit` as the end of the options (#2559, review NIT 6 of #2551). The
     shape that count was keeping out, `set -oo x -Ze`, is caught by the NAME
-    now: the `-Ze` is the second `o`'s value, and both bashes answer `set: x:
-    invalid option name` and set nothing.
+    now: `x` is the first `o`'s value and no name, so both bashes answer
+    `set: x: invalid option name` and set nothing; the second `o` has no
+    value, and `-Ze` is read as an option word (`_takes_value`).
 
     Reading a refused NAME as setting NOTHING is the fail-closed pick rather
     than bash to the letter: bash applies the names BEFORE the bad one and
@@ -85,8 +88,15 @@ def _rejected(words):
     bashes) -- but where the one it applied was errexit, the failing `set`
     exits the shell under it and nothing after it runs at all (`set -e -o
     foo`: rc 1 on 3.2.57, rc 2 on 5.2.21, nothing printed after). An unknown
-    LETTER is not like that: bash validates every word's letters before it
-    applies any of them, and `set -o errexit -Z` leaves errexit OFF (rc 0)."""
+    LETTER is not like that: bash validates a WORD's letters before applying
+    that word, so `set -o errexit -Z` leaves errexit OFF (rc 0) -- but a name
+    an earlier word applied stays, and `set -ox pipefail -Z` or
+    `set -oo pipefail x` leaves pipefail ON and survives, read here as OFF:
+    over-reports only. A value the guard cannot read (`$X`, `${X:-pipefail}`,
+    a lifted `$(cmd)`) is a refused NAME too: with `X=foo`, both bashes
+    answer `set -o $X -e` with `invalid option name`, leave errexit off and
+    run what follows, so reading it ON would fail open -- the opposite pick
+    from `_refused_name`, whose ON means the program runs and is reported."""
     words, at = list(words), 0
     while at < len(words):
         word, at = words[at], at + 1

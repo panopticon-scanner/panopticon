@@ -1879,8 +1879,9 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
     applied was errexit the failing `set` then exits the shell under it and
     nothing after it runs at all (`set +e; set -e -o foo`, rc 1 on 3.2.57 and
     rc 2 on 5.2.21, nothing printed after). An unknown LETTER is not like
-    that: bash validates every word's letters before it applies any of them
-    (`set +e; set -o errexit -Z` leaves errexit OFF, rc 0, SURVIVED)."""
+    that: bash validates a WORD's letters before applying that word, so
+    `set +e; set -o errexit -Z` leaves errexit OFF (rc 0, SURVIVED), though a
+    name an earlier word applied stays (`set -ox pipefail -Z`: pipefail ON)."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -1968,6 +1969,25 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
         self.assertEqual([], self.job("set -o pipefail\n" + self.PIPED, "bash -e {0}"))
         self.assertIn("reads `pipefail` as off",
                       self.job("set -o foo\n" + self.PIPED, "bash -e {0}")[0][1])
+
+    def test_a_value_the_guard_cannot_read_is_a_refused_name(self):
+        # Review NIT 1 of this branch, kept fail-closed on purpose: with
+        # `X=foo`, `set +e; set -o $X -e; false; echo RAN` prints `set: foo:
+        # invalid option name` and then RAN on bash 3.2.57 and 5.2.21 --
+        # errexit is still off, so the download runs with the checksum
+        # failing -- where `X=pipefail` arms it and RAN never prints. The
+        # guard cannot know which, so a `$X`, a `"$X"`, a `${X:-pipefail}`
+        # or a lifted `$(cmd)` in the name slot reads as a refused name and
+        # the step is reported. `_refused_name` reads the same value ON on a
+        # COMMAND LINE, where ON means the program runs and is reported too.
+        for body in ("set +e\nset -o $X -e\n%s\n",
+                     'set +e\nset -o "$X" -e\n%s\n',
+                     "set +e\nset -o ${X:-pipefail} -e\n%s\n",
+                     "set +e\nset -o $(echo pipefail) -e\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
 
     def test_every_name_the_builtin_takes_is_read_as_one(self):
         # The table-coverage loop. `set -o` prints the same 27 names on bash
