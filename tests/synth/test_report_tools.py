@@ -287,6 +287,38 @@ class TestToolCoverageCertification(unittest.TestCase):
         self.assertFalse(r["summary"]["coverage_certified"])
 
 
+class TestToolCleanupCoverage(unittest.TestCase):
+    def _report(self, cleanup=None):
+        manifest = {"selected": ["semgrep"], "produced": [],
+                    "missing": ["semgrep"], "excluded_scope": []}
+        if cleanup is not None:
+            manifest["cleanup_failures"] = cleanup
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(manifest=manifest),
+        ))
+
+    def test_cleanup_failure_reaches_coverage_without_changing_timeout_gate(self):
+        row = {"semgrep": {
+            "kind": "kill_failed",
+            "detail": "docker kill exited 125 — daemon unavailable",
+        }}
+        report = self._report(row)
+        self.assertEqual(
+            report["meta"]["coverage"]["tools_cleanup_failures"], row)
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(
+            report["meta"]["coverage"]["divergence"]["tools"],
+            {"semgrep": "requested_absent"},
+        )
+
+    def test_legacy_manifest_adds_no_cleanup_claim(self):
+        report = self._report()
+        self.assertNotIn("tools_cleanup_failures", report["meta"]["coverage"])
+
+
 class TestPanelsWithScannerContext(unittest.TestCase):
     """#1637 P08 ruling 5: run-13 dispatched 85 panels after the tool scan had
     silently skipped, and the report never said so. `meta.tools

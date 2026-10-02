@@ -7,8 +7,8 @@ stop the CONTAINER rather than just the CLI client; the concurrent stderr
 drain; the stdout spool under `MAX_TOOL_OUTPUT_BYTES` with its truncation
 marker; the exit-code classification (timeout, non-`(0, 1)`, empty-output
 fail-closed); the per-tool annotation read off a stderr that exists only while
-the child runs; the ONE redaction choke point every capture goes through; and
-the atomic write.
+the child runs; the bounded, redacted cleanup-failure ledger the manifest reads;
+the ONE redaction choke point every capture goes through; and the atomic write.
 
 `_stream_and_write` is 152 lines and stays ONE function (#1762,
 ARC-3243338950). The watchdog and `_kill_container` are bound together by the
@@ -53,6 +53,14 @@ from scripts.tools.base import drain_stderr_async
 TOOL_TIMEOUT = 900
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+
+# A cleanup diagnostic reaches stderr and the tools manifest. Bound and redact
+# it once before either sink so the human line and structured fact cannot
+# disagree about what was safe to publish. One scanner launches once per run;
+# setdefault below keeps the first cleanup failure if a Popen-shaped test or a
+# racy shutdown makes the best-effort path run twice.
+CONTAINER_CLEANUP_DETAIL_MAX = 500
+_CONTAINER_CLEANUP_FAILURES: dict[str, dict[str, str]] = {}
 
 
 def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
@@ -197,8 +205,13 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
     timed_out = {"hit": False}
 
-    def _cleanup_diagnostic(reason):
-        print("%s %s container cleanup incomplete: %s" % (label, tool, reason),
+    def _cleanup_diagnostic(kind, reason):
+        detail = redact.redact_diagnostic(
+            reason, CONTAINER_CLEANUP_DETAIL_MAX)
+        detail = " ".join(detail.split())
+        _CONTAINER_CLEANUP_FAILURES.setdefault(
+            tool, {"kind": kind, "detail": detail})
+        print("%s %s container cleanup incomplete: %s" % (label, tool, detail),
               file=sys.stderr)
 
     def _kill_container():
@@ -213,26 +226,33 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
             with open(cidfile, encoding="utf-8") as fh:
                 cid = fh.read().strip()
         except OSError as e:
-            _cleanup_diagnostic("container id file could not be read (%s)"
-                                % type(e).__name__)
+            _cleanup_diagnostic(
+                "cidfile_unreadable",
+                "container id file could not be read (%s)" % type(e).__name__)
             return
         if not cid:
-            _cleanup_diagnostic("container id file was empty")
+            _cleanup_diagnostic("cidfile_empty", "container id file was empty")
             return
         try:
             result = subprocess.run(
                 [docker_bin, "kill", cid], capture_output=True, timeout=10,
                 env=docker_env)
         except (subprocess.SubprocessError, OSError) as e:
-            _cleanup_diagnostic("docker kill could not run (%s)" % type(e).__name__)
+            _cleanup_diagnostic(
+                "kill_launch_failed",
+                "docker kill could not run (%s)" % type(e).__name__)
             return
         if result.returncode:
             raw = result.stderr or b""
-            excerpt = (raw[-500:].decode("utf-8", errors="replace")
-                       if isinstance(raw, bytes) else str(raw)[-500:])
+            text = (raw.decode("utf-8", errors="replace")
+                    if isinstance(raw, bytes) else str(raw))
+            # Let the diagnostic redactor see the bounded SOURCE before it
+            # selects a suffix. Cutting bytes first could discard a credential's
+            # prefix and publish an unrecognisable tail fragment.
+            excerpt = redact.redact_diagnostic(text, 400, tail=True)
             excerpt = " ".join(excerpt.split())
             _cleanup_diagnostic(
-                "docker kill exited %s%s" % (
+                "kill_failed", "docker kill exited %s%s" % (
                     result.returncode, (" — " + excerpt) if excerpt else ""))
 
     def _watchdog():
