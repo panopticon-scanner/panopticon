@@ -242,9 +242,11 @@ class TestTheCooperativeStop(unittest.TestCase):
         # into the loop. It means "carry on".
         seen = []
         runner, launched, terminated = self._runner(seen)
+        secret = "ghp_" + "S" * 36
 
         def stop():
-            raise RuntimeError("the tally blew up\n::error::injected " + "x" * 300)
+            raise RuntimeError("the tally blew up %s\n::error::injected %s" %
+                               (secret, "x" * 300))
 
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -255,10 +257,34 @@ class TestTheCooperativeStop(unittest.TestCase):
         diagnostics = [line for line in err.getvalue().splitlines()
                        if "batch stop predicate failed" in line]
         self.assertEqual(1, len(diagnostics), diagnostics)
-        self.assertIn("fake: batch stop predicate failed; continuing: RuntimeError: ",
-                      diagnostics[0])
-        self.assertIn("the tally blew up ::error::injected", diagnostics[0])
-        self.assertLessEqual(len(diagnostics[0]), 280)
+        prefix = "fake: batch stop predicate failed; continuing: "
+        self.assertTrue(diagnostics[0].startswith(prefix), diagnostics[0])
+        self.assertIn("entry=%s" % seen[0], diagnostics[0])
+        self.assertIn("frame=test_base_batch.py:", diagnostics[0])
+        self.assertIn(" in stop", diagnostics[0])
+        self.assertIn("error=RuntimeError: the tally blew up [REDACTED_TOKEN] ", diagnostics[0])
+        self.assertIn("::error::injected", diagnostics[0])
+        self.assertNotIn(secret, diagnostics[0])
+        self.assertLessEqual(len(diagnostics[0]), len(prefix) + base.STDERR_HEAD)
+
+    def test_a_later_stop_still_cancels_after_the_first_call_raises(self):
+        seen, calls = [], []
+        runner, launched, terminated = self._runner(seen)
+
+        def stop():
+            calls.append(len(seen))
+            if len(calls) == 1:
+                raise RuntimeError("first tally failed")
+            return True
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
+        self.assertEqual([1, 2], calls)
+        self.assertLess(len(launched), 8, launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+        self.assertEqual([], terminated)
+        self.assertEqual(1, err.getvalue().count("batch stop predicate failed"))
 
     def test_no_stop_at_all_launches_the_whole_batch(self):
         seen = []
