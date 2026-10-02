@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
+  dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
 - **Container cleanup failures reach coverage metadata (#2556, #1817).** A failed scanner
   container stop now records the same redacted, bounded detail sent to stderr in the tools
   manifest and both human reports, while preserving the original timeout and gate outcome.

@@ -45,3 +45,15 @@ def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
         if error is exc:
             raise
         raise error from exc
+
+
+def read_failure_reason(error):
+    """Classify a bounded artifact read failure at the stage that rejected it."""
+    if isinstance(error, safe_write.ReadLimitExceeded):
+        kind = "oversized"
+    elif isinstance(error, OSError):
+        kind = "unreadable"
+    else:
+        kind = "unparseable"
+    detail = (str(error).splitlines() or [type(error).__name__])[0]
+    return "%s: %s" % (kind, detail or type(error).__name__)
