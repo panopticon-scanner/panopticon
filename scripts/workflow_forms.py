@@ -72,7 +72,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                names_file as names_file, same_file as same_file)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, candidates,
                                dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_scripts, unprinted as unprinted)
+                               stdin_reader, stdin_scripts, unprinted as unprinted)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -367,15 +367,13 @@ def substitution_script(argv, stage, walk, before=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
-    `walk` is the guard's own walk (`workflow_guard._walk`), over the script
-    flattened as a step's is -- which reads each script handed on inside it
-    in place, once. A script it finds a fetch or an unread form in is
-    reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
-    `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but
-    the guard follows no download into a substitution, where a script may
-    still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`.
-    `before` is the stage in front of this one, whose `echo` or `printf` may
-    pipe the shell its program (`stdin_scripts`, #2333).
+    `walk` is the guard's own walk (`workflow_guard._walk`), over the script flattened as a step's
+    is -- which reads each script handed on inside it in place, once. A script it finds a fetch or
+    an unread form in is reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
+    `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but the guard follows no
+    download into a substitution, where a script may still run one the job fetched:
+    `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is the stage in front of this one, whose
+    `echo` or `printf` may pipe the shell its program (`stdin_scripts`, #2333).
     """
     handed = scripts(argv) + stdin_scripts(argv, stage, before)
     if not handed:
@@ -387,46 +385,41 @@ def substitution_script(argv, stage, walk, before=None):
 
 
 def _weighed(why, texts, walk, idle=Idle):
-    """`why` where a script among `texts`, flattened and walked, fetches or
-    holds an unread form, and `idle(why)` where none does. A foreign stdin
-    program there is `Idle`, so it is not an unread form and the reason that
-    hands the script is `Idle` too: #2499's predicate governs both (r0)."""
+    """`why` where a script among `texts`, flattened and walked, fetches or holds an unread form,
+    and `idle(why)` where none does. A foreign stdin program there is `Idle`, so it is not an unread
+    form and the reason that hands the script is `Idle` too: #2499's predicate governs both (r0)."""
     live = [walk(flattened(statements(text))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else idle(why)
 
 
 def unread_program(argv, stage, walk, inside, before=None):
-    """Why a program this stage hands a shell goes unread, or None: a script
-    handed to one `inside` a command substitution (`substitution_script`),
-    the words a value where it reads its options may make its program
-    (`candidates`, #2344, #2337), or those of a printer that pipes it one
-    they do not spell out (`unprinted`, `before` being the stage in front of
-    it, #2333), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" |
-    sh` are `Idle`, and `sh $X`, with no word after the value, hands none.
-    A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
-    is `Idle` too, but not one `Rewritten`. A lifted `$(…)` stays opaque while
-    the text around it is read, and `_walk` reads its inner script separately
-    (#2482). A command the guard reports unresolved (`sudo $CMD -c …`) is not
-    read again here.
-    LAST, where none of those speaks, the same word with the SHELL spelled
-    out (`dynamic_program`, #2483): one rule for a dynamic program wherever a
-    shell takes one, said where `carried` does not say it louder of the same
-    statement. Last because a value in the options answers for the whole
-    statement and `_weighed` makes that answer LOUD where a word after it
-    fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this
-    rule's droppable `_Quiet` would have replaced."""
+    """Why a program this stage hands a shell goes unread, or None: a script handed to one `inside`
+    a command substitution (`substitution_script`), the words a value where it reads its options may
+    make its program (`candidates`, #2344, #2337), or those of a printer that pipes it one they do
+    not spell out (`unprinted`, `before` being the stage in front of it, #2333), weighed alike -- so
+    `X=-c; sh $X 'echo hi'` and `echo "$X" | sh` are `Idle`, and `sh $X`, with no word after the
+    value, hands none. A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
+    is `Idle` too, but not one `Rewritten`. A lifted `$(…)` stays opaque while the text around it is
+    read, and `_walk` reads its inner script separately (#2482). A command the guard reports
+    unresolved (`sudo $CMD -c …`) is not read again here.
+    The handed script or the printer speaks before the value's reason where a shell reads that stdin
+    (its `Stdin.reader` is the argv or `()`), where a `-c` or `eval` string is among what is handed,
+    or where that reason is absent or `Idle`; an answer resting only on a stdin no shell is sure to
+    read (`Stdin.reader` None, as past a value, #2485) never speaks before that reason where it is
+    LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'` runs the word whatever the stdin holds.
+    LAST, where none of those speaks, the same word with the SHELL spelled out (`dynamic_program`,
+    #2483): one rule for a dynamic program wherever a shell takes one, said where `carried` does not
+    say it louder of the same statement. Last because a value in the options answers for the whole
+    statement and `_weighed` makes that answer LOUD where a word after it fetches
+    (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this rule's droppable `_Quiet` would
+    have replaced."""
     handed = inside and substitution_script(argv, stage, walk, before)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before)
     how, bare = (None, None) if handed else dynamic_program(argv)
-    if handed or shell_reader.unresolved_wrapper(stage.argv) or not (words or printer or bare):
+    if shell_reader.unresolved_wrapper(stage.argv) or not (handed or words or printer or bare):
         return handed or None           # an unresolved command is reported whole
-    if printer:
-        return _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(printer[0])),
-                        [" ".join(printer[1:])], walk, _Quiet)
-    if not words:                       # the LAST resort (r0 finding 1)
-        return _Quiet(_DYNAMIC % (how, shell_reader.readable(bare)))
-    return _weighed((
+    said = words and _weighed((
         "runs `%s` with `-c`, a command word this guard does not follow -- if it is a shell, "
         "the word after its options is a program that may fetch or run a download unchecked; "
         "name the command, or exempt the step with a reason" % shell_reader.readable(value)
@@ -438,6 +431,12 @@ def unread_program(argv, stage, walk, inside, before=None):
         [str(getattr(w, "spelled", w)) for w in words
          if not isinstance(w, shell_reader.Rewritten)
          and (not shell_reader.is_marker(w) or shell_reader.has_substitution(w))], walk)
+    if (handed or printer) and (not said or isinstance(said, Idle) or stdin_reader(argv) is not None
+                                or handed and scripts(argv)):
+        return handed or _weighed(_PRINTED % tuple(map(os.path.basename, (argv[0], printer[0]))),
+                                  [" ".join(printer[1:])], walk, _Quiet)
+    return said or _Quiet(              # the LAST resort (r0 finding 1)
+        _DYNAMIC % (how, shell_reader.readable(bare)))
 
 
 _DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word spells no "

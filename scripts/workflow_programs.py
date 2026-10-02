@@ -430,6 +430,11 @@ def stdin_program(argv):
     return _stdin(argv, 0)[0]
 
 
+def stdin_reader(argv):
+    """The `reader` (`Stdin`) of this command's stdin: None where no shell is sure to read it."""
+    return _stdin(argv, 0)[1]
+
+
 class Stdin(str):
     """A script `stdin_scripts` read off standard input, and its `reader` (`_stdin`): the argv of
     the shell the step itself runs to read it, under whose `-e` a check in it runs; `()` where
@@ -539,10 +544,12 @@ def stdin_scripts(argv, stage, before=None):
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
-    in front of it (`sudo bash -s` reads as it always has); `()` for the body of a holder whose own
-    options read stdin (`bash -s -c 'sh'`), the step's own statements, with no check counting; and
-    None behind any other string, past a word that may vanish or under a `$` command word, where no
-    shell is sure to read it and nothing in it is the step's own (`workflow_forms.Unsure`).
+    in front of it (`sudo bash -s` reads as it always has, and so does `bash -s -c 'echo hi'`, whose
+    string names no shell that reads stdin); `()` for the body of a holder whose own options read
+    stdin (`bash -s -c 'sh'`), the step's own statements, with no check counting; and None behind a
+    string that names the shell reading it (`eval 'bash -s'`, `bash -c 'sh'`), past a word that may
+    vanish or under a `$` command word, where no shell is sure to read it and nothing in it is the
+    step's own (`workflow_forms.Unsure`).
 
     Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
     printed text are read the same way, as shell, though the word may hold
