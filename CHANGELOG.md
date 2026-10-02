@@ -7,9 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Case-arm closes no longer truncate command substitutions (#2474, #2331).** The matcher took
-  an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched pipeline
-  in the arm escaped the substitution parse and read clean. It now follows nested case phases
+- **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
+  took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
+  pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
+  and read clean. It now follows nested case phases
   and balanced patterns, while subjects needing another parse fail closed by name. Treating
   every `)` after `case` as an arm close was rejected because it could hide later shell code.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
