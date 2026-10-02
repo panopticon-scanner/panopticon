@@ -347,11 +347,14 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     * fail-closed over-reports: `X=script.sh; sh $X` (#2485) and `CMD=sh`
       whose body ends in the check (#2473), where the reader cannot tell
       the word from one that runs the body (`X=-s`) or skips it
-      (`CMD=true`); `eval -- bash -s`, whose `--` dash runs as a command;
-      and a non-shell body under a `$` word whose string spells a shell
-      download (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT
-      <<'EOF' > i.sh` body), read as shell and reported loud, filed under
-      #2331;
+      (`CMD=true`); a letter bash and dash refuse, read on as the operand
+      walk reads `sh -K` (#2475 stops only a `-c` cluster): behind a value
+      (`X=-K; sh $X`, #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an
+      inner shell (`eval 'bash -K -s'`, `bash -c 'sh -K'`, #2500); `eval --
+      bash -s`, whose `--` dash runs as a command; and a non-shell body
+      under a `$` word whose string spells a shell download (`print("$(curl
+      ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as
+      shell and reported loud, filed under #2331;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with `echo
       hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the
@@ -464,6 +467,22 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # first stage with `eval`'s own heredoc as ITS stdin regardless, so
         # this CLEAN is a known false negative, not a claim nothing downloads.
         self.assertEqual([], defects("eval 'bash -s | cat' <<'EOF'\n%s\nEOF\n" % PIPE))
+        # Where #2475's letter table meets this credit (#2551, the third
+        # fold): a `-c` cluster the OUTER shell refuses hands over no string
+        # (`_past_options`), so `bash -c -K 'sh'` reads CLEAN -- bash 3.2.57,
+        # 5.2.21 and dash exit 2 and run nothing; before the fold it was read.
+        # An INNER shell's refused letter is read on, as the operand walk
+        # reads a literal `sh -K <<'EOF'`, so `eval 'bash -K -s'` and `bash -c
+        # 'sh -K'` stay credited and report the stream though all three
+        # shells exit 2 at `-K` and run nothing: a fail-closed price, named in
+        # `stdin_program`'s docstring. The controls are the first loop's.
+        self.assertEqual([], defects("bash -c -K 'sh' <<'EOF'\n%s\nEOF\n" % PIPE))
+        for script in ("eval 'bash -K -s' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "bash -c 'sh -K' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("straight to `sh`", found[0][1])
 
     def test_2485_a_value_or_a_vanishing_word_does_not_end_a_shells_walk(self):
         # A value form (`$X`, quoted the same once the reader sees it) or a
@@ -484,6 +503,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # `X=script.sh` from `X=-s` -- both are just `$X` by the time this
         # walk sees them.
         found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+        # The same over-report where the value is an option the shell
+        # refuses: with `X=-K` bash 3.2.57, 5.2.21 and dash exit 2 and run
+        # nothing (#2475's table, #2551), but `$X` is a value this walk reads
+        # on -- named beside `X=script.sh` in the guard's gap list.
+        found = defects("X=-K\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `sh`", found[0][1])
         # The must-trip control and the unaffected FOREIGN form.
@@ -530,6 +556,20 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertEqual(2, len(found), found)
                 self.assertTrue(any(streamed in w for w in found), found)
                 self.assertTrue(any(w.startswith(to(word)) for w in found), found)
+        # #2475's per-shell scoping (#2551) reads no option word behind a `$`
+        # word as a refusal -- `CMD` may hold zsh, which runs `-K` -- so
+        # `CMD=sh; $CMD -K <<'EOF'` reads as (a) does, both reasons kept,
+        # though bash 3.2.57, 5.2.21 and dash exit 2 at `-K` and run nothing:
+        # this rule's fail-closed price, named in `stdin_program`'s docstring.
+        # A `${X:-sh}` default is the shell it spells (`shell_wrappers.
+        # Defaulted`), never a VALUE: its body is read and no hand-off said.
+        found = reasons("CMD=sh\n$CMD -K <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(any(streamed in w for w in found), found)
+        self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+        found = reasons("${X:-sh} <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn(streamed, found[0])
         # (b) A clean body alone is CLEAN, the issue's pin; beside a download
         # no checksum clears, the hand-off is the one reason.
         self.assertEqual([], reasons("CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n"))

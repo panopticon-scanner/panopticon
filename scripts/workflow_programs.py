@@ -296,7 +296,9 @@ def stdin_program(argv):
     Read as OPERANDS rather than as a full option grammar: an interpreter's
     first word that is not an option is its program, and a shell's `-s` says
     every word after it is a positional parameter instead. See the guard's gap
-    list for the spelling that leaves behind.
+    list for the spelling that leaves behind. A letter the shell refuses is
+    read on, fail-closed: `sh -K <<'EOF'` runs nothing in bash or dash, but
+    only `_past_options` asks `_refused` (#2475), for a `-c` cluster.
 
     A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the
     `-c` string itself, not stdin, is the program) -- UNLESS that string is
@@ -304,15 +306,21 @@ def stdin_program(argv):
     `eval 'bash -s'` and `bash -c 'sh'` then answer SHELL_PROGRAM for the
     ENCLOSING command, so its heredoc, here-string or pipe is `bash -s`'s or
     `sh`'s program, not `eval`'s or `-c`'s. `eval 'echo hi'` and `bash -c
-    'cat'` are not stdin-reading shells, so they are unaffected.
+    'cat'` are not stdin-reading shells, so they are unaffected. A `-c`
+    cluster the shell refuses hands over no string (`_past_options`), so
+    `bash -c -K 'sh' <<'EOF'`, which runs nothing, is not credited; an
+    INNER shell's refused letter is read on, as above, so `eval 'bash -K
+    -s'` and `bash -c 'sh -K'` are credited though bash and dash refuse them
+    and run nothing -- fail-closed.
 
     For a SHELL, a value form or a word that may vanish (`_value`) does not
     END the walk there either (#2485): `X=-s; sh $X <<'EOF'` runs the
     heredoc in bash 3.2.57, 5.2.21 and dash alike, as `bash <<'EOF' $(true)`
     and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
     word outright. Read IN PLACE rather than weighed, fail-closed: `X` may
-    just as well spell a FILE (`X=script.sh`), so this over-reports there --
-    see the guard's gap list, which names it. A `<(...)`/`>(...)` is NOT
+    just as well spell a FILE (`X=script.sh`) or an option the shell refuses
+    (`X=-K`, where bash and dash exit 2), so this over-reports there -- see
+    the guard's gap list, which names both. A `<(...)`/`>(...)` is NOT
     such a word, though `_value` matches its marker too: it always
     substitutes a real path, never empty, so `bash <(curl ...)` keeps
     reading as the FILE it is (`yields_words` tells a process substitution
@@ -320,7 +328,8 @@ def stdin_program(argv):
     only where EVERY substitution in the word is a process one; a MIXED word
     (`$(true)<(...)`) still reads as may-vanish even though bash always
     substitutes a real path for it too -- an over-report the guard's gap
-    list does not separately name, beside the one it does (`X=script.sh`).
+    list does not separately name, beside the ones it does (`X=script.sh`,
+    `X=-K`).
 
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
@@ -336,13 +345,16 @@ def stdin_program(argv):
     foreign interpreter's -- its first word that is no option is its FILE --
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
-    <<EOF` pays too. #2500's credit stays SHELL_PROGRAM's: an inner `$CMD`
-    makes no enclosing `eval` or `-c` string a stdin shell, so the body of
-    `CMD=sh; eval "$CMD" <<'EOF'` or `export CMD=sh; bash -c '$CMD' <<'EOF'`
-    is never read, though bash runs it: a `curl ... | sh` there reads CLEAN
-    alone, and beside a reported fetch only the word is reported, as a
-    `dynamic_program` (`Idle`, #2483), never the stream -- a gap filed under
-    #2331.
+    <<EOF` pays too. No option word behind a `$` word is a refusal (#2475's
+    per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD
+    -K <<'EOF'` is read and its hand-off said, though every shell measured
+    refuses `-K` and runs nothing -- fail-closed. #2500's credit stays
+    SHELL_PROGRAM's: an inner `$CMD` makes no enclosing `eval` or `-c` string
+    a stdin shell, so the body of `CMD=sh; eval "$CMD" <<'EOF'` or `export
+    CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
+    `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
+    the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
+    stream -- a gap filed under #2331.
     """
     if not argv:
         return None

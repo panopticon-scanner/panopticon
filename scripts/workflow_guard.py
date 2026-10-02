@@ -134,20 +134,20 @@ runs each live, so a change that catches one fails there and edits this list.
   (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the substitution's text
   carries it back to its redirection (#2336): a shell reading a quoted one as its program is
   reported as `x=$(sh -c '…')` is (review I-4), but `cat` reads data, and what `eval` runs is
-  unread. KEPT: reading it means teaching the reader that a heredoc `cat` reads inside a
-  substitution is a SCRIPT -- a second expansion model. The fleet writes one heredoc-ish construct
-  (a `<<<` here-string in docker-publish.yml) and no `cat <<EOF`. It no longer CRASHES, which is
-  what it did until #1697's review. CLOSED outside a substitution for the OTHER heredoc spelling,
-  the body handed to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
-  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts already parsed decide
-  it: whether a command's program is its standard input at all (`workflow_programs.stdin_program`,
-  an operand walk -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, the body
-  then its input DATA), and which body descriptor 0 finally reads, EXPANDED or not (`shell_reader`'s
-  `Stage.stdin_heredoc`). A `-c`/`eval` string whose one statement is a stdin-reading shell answers
-  for the ENCLOSING command (#2500) -- under ITS `-e`, not the inner's, blind to the inner's own `<`
-  (`eval 'bash -s < f'`); a pipeline whose FIRST stage reads stdin is never reached; all filed under
-  #2331. Nor, for a SHELL, does a value or a word that may vanish end the walk at a FILE (#2485):
-  one naming a file, or quoted and empty (`X=script.sh`), over-reports; `python3 $S` with S unset, a
+  unread. KEPT: reading it means teaching the reader that a heredoc `cat` reads in a substitution is
+  a SCRIPT -- a second expansion model. The fleet writes one heredoc-ish form (a `<<<` here-string
+  in docker-publish.yml) and no `cat <<EOF`. It no longer CRASHES, as it did until #1697's review.
+  CLOSED outside a substitution for the OTHER heredoc spelling, the body handed to an interpreter as
+  the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`, `python3 - <<'EOF'` -- #1839, #2293 and
+  run-14 SEC-3915165799). Two facts already parsed decide it: whether a command's program is its
+  stdin at all (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module
+  and a script FILE each put it elsewhere, the body then its input DATA), and which body descriptor
+  0 finally reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval` string
+  whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500) -- under
+  ITS `-e`, not the inner's, blind to the inner's own `<` (`eval 'bash -s < f'`); a pipeline whose
+  FIRST stage reads stdin is never reached; all filed under #2331. Nor, for a SHELL, does a value or
+  a word that may vanish end the walk at a FILE (#2485): one naming a file or an option the shell
+  refuses, or quoted and empty (`X=script.sh`, `X=-K`), over-reports; `python3 $S` with S unset, a
   FOREIGN word, under-reports (python runs the body), filed under #2331. A QUOTED body reaches the
   interpreter as written, so `workflow_forms.flattened` reads it as it reads an `eval` string -- a
   `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is REPORTED unread
