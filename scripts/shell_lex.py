@@ -170,6 +170,7 @@ _ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
 # `<<`, `<<-` or `<<<` as bash reads it: past the `\`-newlines it folds away
 # first, which leave `<` + `\`-newline + `<EOF` the operator `<<` (#2291).
 _HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
+_REQUIRED_SEPARATOR = re.compile(r"(?:[ \t]|\\\n)*(?:then|do)(?=[ \t\n;&|()<>]|$)")
 
 
 def ansi_c(body: str) -> str | None:
@@ -242,6 +243,8 @@ class _Frame:
         self.kind, self.depth, self.undo = kind, depth, undo
         self.queue: list[tuple[int, str, bool, bool, str]] = []
         self.saved: dict = {}           # a `$(...)`: the state around it
+        self.drop: tuple[int, int] | None = None  # boundary and depth for one omitted `;`
+        self.split = False              # queued heredocs span more than one command
 
 
 class _Lexer:
@@ -317,6 +320,16 @@ class _Lexer:
         """Read the character at `i`, which opens nothing; the index after it."""
         text, out = self.text, self.out
         ch, start = text[i], len(out) == self.word
+        if frame.drop and i >= frame.drop[0]:
+            frame.drop = None           # the compatibility parse ends with its logical line
+        if ch == ";" and frame.drop and frame.depth == frame.drop[1]:
+            if _REQUIRED_SEPARATOR.match(text, i + 1):
+                raise Unreadable("Bash 5.2 preserves this compound command's required separator")
+            frame.drop = None
+            self.token(i, " ")          # omit the token, while keeping its word boundary
+            out.append(" ")
+            self.word = len(out)
+            return i + 1
         if frame.kind in _CODE:
             if ch == "#" and start:     # a comment: gone, up to its newline
                 end = text.find("\n", i)
@@ -329,6 +342,10 @@ class _Lexer:
             if ch in _BREAK:
                 if self.unspelled[0] == len(self.frames):
                     self.refuse(i)
+                before = text[i - 1:i]
+                if frame.queue and (ch == ";" or ch == "|" and before != ">" or ch == "&" and not (
+                        before in ("<", ">", "|") or text.startswith("&>", i))):
+                    frame.split = True
                 if ch == "(" and self.extglob(i):   # one word with the text around it
                     if not (self.cond or self.compound) and out[-1] in "@+!":
                         out[-1] = MARK + out[-1]    # one bash expands, as `*(` is
@@ -408,13 +425,14 @@ class _Lexer:
         self.plain = at
         return at
 
-    def token(self, i: int) -> None:
+    def token(self, i: int, ch: str | None = None) -> None:
         """Move `self.at` past the word the metacharacter at `i` ends -- none,
         if it is an IO number -- and past that metacharacter; the `case`s open
         here too (`casing`)."""
-        text, ch, before = self.text, self.text[i], self.text[i - 1:i]
+        text, actual, before = self.text, self.text[i], self.text[i - 1:i]
+        ch = actual if ch is None else ch
         word = "".join(self.out[self.word:])
-        self.casing(word, ch, text.startswith((";;", ";&"), i))
+        self.casing(word, ch, ch == actual and text.startswith((";;", ";&"), i))
         if word == "[[" and self.at in _HEADS or word == "]]" and self.cond:
             self.cond = int(word == "[[")       # a conditional expands no pattern
         if self.cond and ch in "()":            # and ends at a `)` it did not open
@@ -519,7 +537,8 @@ class _Lexer:
         """Read the heredocs `frame` queued, one after another from the line
         starting at `i`; the index where its code resumes."""
         cut = False
-        for slot, delimiter, quoted, strip, fd in frame.queue:
+        compatible = not frame.split
+        for number, (slot, delimiter, quoted, strip, fd) in enumerate(frame.queue):
             if cut:
                 raise Unreadable("a heredoc queued in a substitution after one whose body ends at "
                                  "a line like `EOF)`: bash 5.2 reads its body from the next line, "
@@ -529,9 +548,16 @@ class _Lexer:
                 self.lines[expands] = _Lines(self.text, folded=expands)
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
-                body, i, cut = found
+                body, i, cut, drop, rejected = found
+                if rejected and compatible:
+                    raise Unreadable("a substitution heredoc's `EOF)`-line rest begins with "
+                                     "`;`: bash 5.2 rejects it, while bash 3.2 may run code "
+                                     "after the substitution closes")
+                if drop and compatible and number + 1 == len(frame.queue):
+                    frame.drop = drop, frame.depth
                 self.out[slot] = " %s " % self.heredoc(body, expands, fd)
         frame.queue.clear()
+        frame.split = False
         return i
 
 
