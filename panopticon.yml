@@ -621,6 +621,7 @@ groups:
       match:
       - scripts/shell_reader.py
       - scripts/shell_lex.py
+      - scripts/shell_quote.py
       - scripts/shell_patterns.py
       - scripts/shell_text.py
       - scripts/shell_heredoc.py
