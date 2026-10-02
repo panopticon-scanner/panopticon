@@ -3747,7 +3747,7 @@ class TestCli(unittest.TestCase):
                     "curl -fsSL https://example.test/i.sh | sh", "make test"))
             self.assertEqual(0, wg.main([path], out=lambda _line: None))
 
-    def test_a_step_the_reader_refuses_is_named_and_the_rest_still_read(self):
+    def test_unreadable_steps_are_named_and_a_clean_early_close_is_omitted(self):
         # A `shell_lex.Unreadable` escaped `main` as a traceback: it named no
         # workflow, job or step, and printed no other step's defect (#2252).
         steps = (("nested", "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF"),
@@ -3766,15 +3766,16 @@ class TestCli(unittest.TestCase):
                 fh.write(workflow)
             lines: list[str] = []
             self.assertEqual(1, wg.main([path], out=lines.append))
-        self.assertEqual(len(steps) + 1, len(lines), lines)
-        for (name, _script), line in zip(steps, lines):
+        reported = steps[:1] + steps[2:]
+        self.assertEqual(len(reported) + 1, len(lines), lines)
+        for (name, _script), line in zip(reported, lines):
             self.assertTrue(line.startswith("bad.yml / b / %s -- " % name), line)
-        for line in lines[:4]:
+        for line in lines[:3]:
             self.assertIn(" -- cannot read this step: ", line)
-        self.assertIn("straight to `sh`", lines[4])
+        self.assertIn("straight to `sh`", lines[3])
         # The count names what it counts, a refused step as well as a fetch.
-        self.assertEqual("5 defect(s): unverified fetch-and-exec, or code the guard cannot "
-                         "read; see scripts/workflow_guard.py", lines[5])
+        self.assertEqual("4 defect(s): unverified fetch-and-exec, or code the guard cannot "
+                         "read; see scripts/workflow_guard.py", lines[4])
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -4186,22 +4187,19 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         script = "(" * 3000 + ": <<EOF" + ") " * 3000 + "\nit's\nEOF\n%s\n"
         self.refused(script % self.PAYLOAD, "`((`")
 
-    def test_a_heredoc_its_substitution_closes_over_fails_closed(self):
+    def test_a_heredoc_its_substitution_closes_over_is_read_like_bash_52(self):
         # A `<<` in a `$(...)`, `<(...)` or `>(...)` that closes before the
-        # newline its body would follow. Bash 3.2 stops at the open quote below
-        # with a syntax error. 5.2 warns "command substitution: 1 unterminated
-        # here-document", reads the body from the lines below, and reads the
-        # payload after its terminator as code: it runs, unless the command
-        # holding the substitution fails first under `set -e`. The reader left
-        # the operator as text, so the quote hid that payload -- which main's
-        # line-by-line heredoc pass had lifted into view. It raises instead of
-        # modelling 5.2's recovery, and the guard reports the step by name.
+        # newline its body would follow. Bash 3.2 reads the lines below as code;
+        # 5.2 warns, files them as the body, and runs code after the terminator.
+        # The reader follows 5.2's standing rule and reaches that payload.
         for opening in ('echo "$(cat <<EOF)"', "echo $(cat <<EOF)", "x=$(cat <<EOF)",
                         "cat <(cat <<EOF)", "echo >(cat <<EOF)", "echo ${x:-$(cat <<EOF)}",
                         "echo $[ $(cat <<EOF) ]", "(( $(cat <<EOF) ))", "a[$(cat <<EOF)]=1",
                         "echo $( (cat <<EOF) )", 'x=$(cat <<EOF; echo "a\nb")'):
             with self.subTest(opening=opening):
-                self.refused("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD), "closes before")
+                self.flagged("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))
+        self.assertEqual([], wg.job_defects(
+            [("step", 'echo "$(cat <<EOF)"\nit\'s\nEOF\n')]))
         # Backquotes are no such frame. Bash reads their text later, as a
         # script of its own in which the heredoc has no body, and 5.2 runs
         # nothing here: the open quote below is a syntax error. Read as before.
@@ -4211,7 +4209,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
     def test_a_substitution_inside_arithmetic_is_code(self):
         # In `$((...))`, as in `((...))` and `$[...]`, bash reads a `$(...)`
         # as a command substitution: `#` starts a comment there, `<<` a
-        # heredoc, whose body is read inside it or fails closed as above. The
+        # heredoc, whose body is read inside it or below an early close. The
         # reader read `$((...))` as one pair of parentheses, so a quote in
         # that comment, or in that body, hid a payload bash 5.2 runs (and
         # 3.2 runs the first).
@@ -4222,7 +4220,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.flagged(script % self.PAYLOAD)
         for opening in ("echo $(( $(cat <<EOF) ))", "echo $(( $(( $(cat <<EOF) )) ))"):
             with self.subTest(opening=opening):
-                self.refused("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD), "closes before")
+                self.flagged("%s\nit's\nEOF\n%s\n" % (opening, self.PAYLOAD))
         # Outside such a substitution `<<` is still a shift, and the line
         # below that spells its right side ends nothing.
         for opening, word in (("echo $(( 1<<2 ))", "2"), ("echo $(( a << b ))", "b"),
