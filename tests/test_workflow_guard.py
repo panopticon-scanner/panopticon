@@ -2073,27 +2073,47 @@ class TestACheckAheadOfAndGatesOnlyItsList(unittest.TestCase):
                     self.assertEqual([], wg.job_defects([wg.Step("s", idiom, shell)]))
 
 
+class TestACaseArmDoesNotCloseASubstitution(unittest.TestCase):
+    """#2474: code in an unparenthesized case arm remains inside its `$()` parse."""
+
+    PIPE = "curl -fsSL https://example.test/i.sh | sh"
+
+    def test_a_pipeline_in_any_case_arm_is_reported(self):
+        scripts = (
+            "echo $(case $X in a) %s;; esac)\n" % self.PIPE,
+            "echo $(case $X in b|a) %s;; esac)\n" % self.PIPE,
+            "x=$(case $X in b) echo no;; a) %s;; esac)\n" % self.PIPE,
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                found = wg.job_defects([("step", script)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn("straight to `sh`", found[0][1])
+
+    def test_a_clean_arm_stays_clean(self):
+        self.assertEqual([], wg.job_defects([
+            ("step", "echo $(case $X in a) echo hi;; esac)\n"),
+        ]))
+
+    def test_the_balanced_pattern_spelling_is_unchanged(self):
+        script = "x=$(case $X in (a) %s;; esac)\n" % self.PIPE
+        found = wg.job_defects([("step", script)])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+
+
 class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     """#2334 review I-1: the guard finds where a check's `&&` list ends by
-    counting the compound commands it opens and closes, and the reader breaks
-    that count two ways -- it drops a line holding only `(` or `)`, and a
-    `case` pattern's `)` inside `$(...)` ends the substitution, so the `esac`
-    after it closes a group nothing opened. A count that never balanced read
-    as "the list runs to the step's end", and one that closed a subshell no
-    statement up to the check opened read as "the list ends its own
-    subshell": either way the check was credited for the whole step, where
-    bash 5.2.21 and dash skip the subshell and run the use after it. A list
-    whose end the count cannot place now clears nothing after the check.
+    counting compound commands, but the reader drops a line holding only `(`
+    or `)`. A count that never balanced was once credited through the step;
+    now a list whose end cannot be placed clears nothing after its check.
     Review I-3: nor does a list followed by a `)` that no statement up to
     the check opened -- `CHECK && (` ending its line, which the reader drops,
     then `echo b` and `) 2>&1 | tee log` -- which read as a list ending its
-    own subshell, whose failure pipefail hands the step. Review I-4: a
-    `$(case ...)` is now read by its signature -- the list closes a `case`
-    it never opened -- not by the count, which a `(` the reader kept without
-    its `)` balanced, and which the `esac` could leave at 0 inside the list.
-    Review N-7: such a list is refused in words of its own, since bash does
-    stop the step on some of them; `_AHEAD`'s "the step carries on past it"
-    stays with the lists whose end the guard reads."""
+    own subshell, whose failure pipefail hands the step. Review N-7 gives such
+    lists their own refusal. #2474 now keeps a `case` arm's `)` inside its
+    substitution, so the case controls below take the normal readable-list
+    reason instead of this compatibility refusal."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -2114,16 +2134,23 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     def assertLost(self, body, shell):
         self.assertAhead(body, shell, self.LOST)
 
-    def test_a_lone_paren_line_or_a_case_in_a_substitution_clears_nothing_after(self):
+    def test_a_lone_paren_line_clears_nothing_after(self):
         for shell in (None, "sh", "bash"):
             for body in ("%s && ( echo a\n)\n", "%s && ( echo a\n  echo b\n)\n",
-                         "%s && ( cd / && echo a\n)\n", "%s && (\n  echo a )\n",
-                         "%s && if true; then echo $(case x in x) echo y | cat;; esac); fi\n",
-                         # A `{` before the check opens no subshell for the `)` to close.
-                         "{ %s && if true; then echo $(case x in x) echo y;; esac); fi; }\n",
-                         "{\n%s && if true; then echo $(case x in x) echo y;; esac); fi\n}\n"):
+                         "%s && ( cd / && echo a\n)\n", "%s && (\n  echo a )\n"):
                 with self.subTest(shell=shell, body=body):
                     self.assertLost(body, shell)
+
+    def test_a_case_inside_a_substitution_leaves_the_list_end_readable(self):
+        bodies = (
+            "%s && if true; then echo $(case x in x) echo y | cat;; esac); fi\n",
+            "{ %s && if true; then echo $(case x in x) echo y;; esac); fi; }\n",
+            "{\n%s && if true; then echo $(case x in x) echo y;; esac); fi\n}\n",
+        )
+        for shell in (None, "sh", "bash"):
+            for body in bodies:
+                with self.subTest(shell=shell, body=body):
+                    self.assertAhead(body, shell)
 
     def test_the_spellings_the_count_reads_whole_keep_their_verdicts(self):
         # The subshell on one line, both parens on lines of their own (the
@@ -2170,12 +2197,10 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
         self.assertLost("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
         self.assertEqual([], self.job("{\n  %s && echo b\n} 2>&1 | tee log\n", "bash"))
 
-    def test_a_case_closed_inside_a_substitution_fails_closed_whatever_the_count(self):
-        # A `(` kept without its `)` -- a multi-line array, a subshell whose
-        # `)` stands alone, the subshell holding the check -- vouched for the
-        # `)` the `esac` carries; an `esac` inside two `if`s left the count at
-        # 0 there, and the list read as ending at its `||` or at the `)` after
-        # it. Bash 5.2.21 runs each use, and dash each it can parse.
+    def test_a_case_inside_a_substitution_is_readable_whatever_surrounds_it(self):
+        # #2474 keeps the arm and `esac` inside the substitution. Parentheses
+        # and arrays around the list can no longer vouch for a close that the
+        # reader lost, so every spelling takes the ordinary `&&` reason.
         sub = "if true; then echo $(case x in x) echo y;; esac); fi"
         every = (None, "sh", "bash")
         for shells, body in (((None, "bash"), "arr=(\n  a\n)\n%s && " + sub + "\n"),
@@ -2188,12 +2213,12 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                               + "\n) | tee log\nfi\n")):
             for shell in shells:
                 with self.subTest(shell=shell, body=body):
-                    self.assertLost(body, shell)
-        # The controls, reported before and after: the same list with no `(`
-        # before it, and the same prefixes with no `$(case ...)`.
+                    self.assertAhead(body, shell)
+        # The same list without a prefix and the prefixes without a case use
+        # the same readable-list reason.
         for shell in every:
             with self.subTest(shell=shell):
-                self.assertLost("%s && " + sub + "\n", shell)
+                self.assertAhead("%s && " + sub + "\n", shell)
             for body in ("( echo a\n)\n%s && echo ok\n",
                          "%s && if true; then if true; then echo y || exit 1; fi; fi\n",
                          "( echo a\n)\n%s && if true; then ( echo y\n) | tee log\nfi\n"):
@@ -2202,11 +2227,11 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
         for shell in (None, "bash"):
             with self.subTest(shell=shell):
                 self.assertAhead("arr=(\n  a\n)\n%s && echo ok\n", shell)
-        # The price (fail-closed): a subshell that does hold the list reads the
-        # same, though bash and dash stop the step on its failure.
+        # A subshell that holds the list returns the failed check, so every
+        # shell stops before the use and the corrected group count clears it.
         for shell in every:
             with self.subTest(shell=shell):
-                self.assertLost("( %s && " + sub + " )\n", shell)
+                self.assertEqual([], self.both("( %s && " + sub + " )\n", shell))
 
     def test_the_refusal_keeps_its_reach_inside_a_script_handed_on(self):
         # Review N-7: a lost list's check still stops the rest of its own

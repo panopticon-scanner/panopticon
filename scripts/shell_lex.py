@@ -1,109 +1,43 @@
 #!/usr/bin/env python3
-"""What bash settles about a script's TEXT before it reads a command out of it.
+"""What bash settles about script text before it reads commands from it.
 
-Split out of `scripts/shell_reader.py` (#1793, COD-3418139920), which settled
-it in three line-oriented passes that ran before any quote tracking: whole-line
-comments dropped, `\\`-newlines joined, then `<<WORD` found by a regex and the
-lines down to `WORD` swallowed. Each pass read text that bash reads as
-something else -- a `#` line inside a multi-line string, a `<<true` inside
-quotes, in a comment or at the tail of a `<<<`, a backslash ending a comment or
-a quoted heredoc line -- and each swallowed a statement bash then RUNS, so the
-guard reading the result reported the step clean. Bash decides all three in
-one forward pass, from the state it is in, and so does `lex`:
+This was split from `shell_reader.py` (#1793). Its old whole-line comment,
+continuation, and heredoc passes each confused code with quoted or redirected
+text and swallowed commands bash runs. `lex` instead makes one stateful pass:
 
-    quoting        '...', "..." and $'...' (whose `\\'` does not end it), a
-                   backslash outside them, and `$(...)`, `${...}`, `$((...))`,
-                   `$[...]` and backquotes nested the way bash nests them
-    comments       a `#` that starts a word, up to the newline; a backslash
-                   inside one continues nothing
-    continuations  `\\`-newline folded away in code, inside "..." and in an
-                   unquoted heredoc body; never in '...' or $'...', a comment
-                   or a quoted heredoc body
-    heredocs       `<<`/`<<-` in code -- not the tail of `<<<`, not a shift in
-                   arithmetic, not inside backquotes (bash reads their text
-                   later, as a script of its own); the delimiters queue, and
-                   their bodies are read one after another from the next
-                   newline
-    here-strings   the word after a `<<<` outside `$(...)`, spelled as bash
-                   hands it over, where nothing in it expands (`_string`)
+    quoting        shell quotes, escapes, substitutions, arithmetic, and backquotes
+    comments       `#` at a word start through its newline
+    continuations  `\\`-newline in code, double quotes, and expanding heredocs
+    heredocs       queued `<<`/`<<-` bodies, excluding strings and arithmetic shifts
+    here-strings   a static `<<<` word outside `$(...)`, spelled by `_string`
 
-Two readings are not bash's. A `<<` with no terminator line below it is left as
-text rather than swallowing the rest of the script: bash runs nothing below
-it, so reading it as code can only report more. A heredoc inside `$(...)` is
-read in the text around it, as bash 5.2 reads it, and its marker goes with
-the substitution's text to the parse that reads it again (`shell_text.Lifted`,
-#2336). A delimiter bash has to PARSE to spell -- a `$(...)`, `${...}`,
-`$[...]` or backquote in the word, an escape `$'...'` decodes, an extglob
-pattern -- has no reading short of bash's: a body ended at a guessed spelling
-swallows what bash runs, and a body read as code hides it behind a quote left
-open there (#2224). So `lex` reads it as a word and, at the metacharacter
-ending it, raises `Unreadable` naming it; a script that ends inside the word
-leaves no line below it for a body to hide. The other: an `EOF)` line's rest.
+Two conservative deviations prevent swallowed code. An unterminated heredoc
+stays text because bash runs nothing below it. A delimiter bash must parse to
+spell is refused: guessing could end its body at a decoy or hide later code
+behind a body quote (#2224). Substitution bodies and their heredocs travel as
+`shell_text.Lifted` markers to their own parse (#2336).
 
-A command's `((` is decided the way bash decides it. Its first group is read
-to its close -- through quotes, backquotes, escapes and `$(...)`, not
-comments, and through `${` and `$[` as characters, as arithmetic reads them --
-and the character after it settles the rest: `)` makes an arithmetic command,
-where bash globs nothing, so `lex` escapes each character `patterned` would
-mark in it (`(( a[1]++ ))`, review N-1 of #1793's follow-ups); anything else,
-two subshells, read again from the first `(` as code, so the heredocs and
-patterns in them are real. (`$((...))` needs no such choice: it is always
-arithmetic, read the same way. A `$(...)` in it, as in `((...))` and
-`$[...]`, is a command substitution, comments and heredocs and all.) Reading
-a group again is what nesting costs -- `((((` N deep is read N times -- so
-`lex` stops at `_REREAD` times the script's length of it and raises
-`Unreadable`. An exception rather than a reading, because the reader has no
-channel for a step it cannot read: `workflow_guard.job_defects` catches it
-and reports that step by name, accepting nothing in it.
+A command's `((` is arithmetic only when its first group is followed by `)`;
+otherwise it is two subshells and is reread as code. Arithmetic escapes every
+pattern character, while a nested `$(` is still code. Deep ambiguous groups
+stop at `_REREAD` times the source length and become a named `Unreadable`.
 
-A heredoc whose `$(...)`, `<(...)` or `>(...)` closes before the newline its body would follow --
-`echo "$(cat <<EOF)"` -- uses 5.2's reading: its body is filed from the lines below before the
-close-line rest is parsed. Bash 3.2 instead reads those lines as code; 5.2 is the standing rule
-where they disagree. A heredoc queued after a body that ends at a line like `EOF)` is likewise
-read from the next line; the first line's rest is saved until every queued body is filed, then
-parsed as code. Two `EOF)` ends in one queue remain refused because 5.2 reports a syntax error.
-Bodies are indexed and ended by `shell_heredoc._Lines`; `shell_heredoc`'s docstring argues the
-choices.
+Bash 5.2 governs heredocs whose substitution closes before their body and
+queued bodies after an `EOF)` line; Bash 3.2 reads those lines differently.
+The lexer files each body before parsing saved close-line code. Two `EOF)`
+ends in one queue remain refused. `shell_heredoc` documents the evidence.
 
-A name and `[` open an array subscript -- arithmetic, `a[1<<2]=x`, up to its
-`]` however many lines on -- only where bash reads an assignment: at the head
-of a command, after assignments or (bash 5.2) nothing but redirections before
-its name, and at a word's start inside `name=(...)`. Among a command's
-arguments, `echo a[1<<X]` is the word `a[1` and a heredoc. So `lex` tracks
-where each word stands, as bash's parser does (`_HEADS`), which also settles
-where a reserved word starts a command. Where bash 3.2 and 5.2 part -- a
-redirection before an assignment, `time -p --`, `coproc`, `{fd}>`, `|&`,
-`function f ((` -- it reads what 5.2, the CI runners' bash, reads.
+Word position (`_HEADS`) decides assignments, redirections, reserved words,
+array subscripts, and Bash 3.2/5.2 disagreements. Arithmetic commands,
+conditionals, and array literals run no patterned words, so their glob syntax
+is escaped. Extglobs instead stay one marked pattern word outside those forms.
 
-Three more places hold words no command runs, which the reader -- making each
-`(` a group, each `|` a pipe and each line a statement -- would read where a
-command starts (re-review I-5 of #1793's follow-ups): a conditional's
-`[[ ... ]]`, where bash expands no pattern; an array literal's words
-(`arr=(*.txt)`, `a+=(`, on one line or several, after `declare` too), which
-bash globs into the array; and an extglob group (`@(`, `+(`, `*(`, `?(` or
-`!(` inside a word). In the first two `lex` escapes each character
-`shell_patterns.patterned` would mark, as in an arithmetic command -- of a
-subscript only its `[`, as bash 3.2 reads on as code where no `]` closes it --
-and a `)` the conditional did not open ends it: a case arm's `[[)` is a
-pattern. An extglob group is part of its word, as bash reads it with `extglob`
-on -- off, it is a syntax error and nothing from its line on runs -- so `lex`
-escapes the group's own metacharacters and, outside those two places, marks
-the word a pattern (`shell_patterns.MARK`): at a command's head, or where a
-shell looks for `-c`, it is one bash expands. So is a `!(` where a command
-starts, which bash with `extglob` off reads as a negated subshell. A `$(...)`
-in any of these is code, read as ever.
+A `case` pattern list is one word through its arm-closing `)`. Bash and dash
+discard spaces around `|` and inside optional `( ... )`; `casing` does too
+(#2345). `closing` shares that grammar when locating a substitution's `)`.
 
-A `case` arm's pattern list is one word to the reader, from its first word to
-its `)`, and bash and dash read the spaces and tabs around its `|` and inside
-its `( ... )` as separating nothing: `a | x)` is the arm `a|x)`. Kept, they
-split the arm, and the reader took the pattern `a` and then a `|` for the
-command, so the body behind them went unread (#2345). So `lex` follows each
-`case` as bash's parser does (`casing`) and drops those spaces and tabs from a
-pattern list outside quotes; a newline there is a syntax error to all three.
-
-Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
-the `$(...)` matcher `shell_reader` lifts substitutions with. The pattern
-marks, `patterned` and `is_pattern`, are `scripts/shell_patterns.py`'s."""
+Stdlib only. `lex(script, heredoc)` is the entry point. Pattern marks come
+from `shell_patterns`; `shell_heredoc._Lines` indexes heredoc bodies."""
 import re
 from typing import Callable
 
@@ -210,8 +144,8 @@ def ansi_c(body: str) -> str | None:
 class Unreadable(Exception):
     """A script `lex` does not read: it nests `((` so deep that deciding each
     one, as bash does, would read it more than `_REREAD` times over, a
-    substitution closes over a heredoc or queues one after an `EOF)`, or a
-    heredoc's delimiter is a word bash parses to spell.
+    substitution closes over a heredoc or queues one after an `EOF)`, a case
+    arm cannot be attributed, or a heredoc delimiter needs a shell parse.
     `workflow_guard.job_defects` reports its step."""
 
 
@@ -237,24 +171,88 @@ def closing(text: str, opening: int) -> int | None:
     Quotes are read as `shell_reader._split` reads them: a backslash takes the
     next character everywhere but inside '...', so `\\"` does not end a "..."
     (COD-3636110933 -- a nested `"a\\")b"` used to close its `$(...)` a paren
-    early), and `$'...'` ends only at a `'` no backslash takes."""
-    depth, i, quote = 0, opening, ""
+    early), and `$'...'` ends only at a `'` no backslash takes. A case arm's
+    pattern-closing `)` is not the close of the surrounding substitution."""
+    depth, i, quote, word, head, target = 0, opening, "", -1, True, False
+    cases: list[tuple[int, str, bool, bool]] = []
+    heads: list[bool] = []
+    unread = "a `case` inside `$(...)` has an arm this guard cannot attribute"
     while i < len(text):
         ch = text[i]
+        if (not quote and cases and cases[-1][1] == _PATTERN
+                and not cases[-1][3] and ch not in " \t\n;&|"):
+            base, state, _wrapped, _started = cases[-1]
+            cases[-1] = base, state, ch == "(", True
         if ch == "\\" and quote != "'":
+            word = i if word < 0 else word
             i += 2
             continue
         if quote:
             quote = "" if ch == quote[-1] else quote
+            i += 1
+            continue
         elif text.startswith("$'", i):
-            quote, i = "$'", i + 1
+            word, quote, i = (i if word < 0 else word), "$'", i + 2
+            continue
         elif ch in "'\"":
-            quote = ch
-        elif ch in "()":
-            depth += 1 if ch == "(" else -1
-            if not depth:
-                return i + 1
+            word, quote, i = (i if word < 0 else word), ch, i + 1
+            continue
+        if ch in _BREAK and word >= 0:
+            token, word = text[word:i], -1
+            state = cases[-1][1] if cases else ""
+            if cases and token == "esac" and head and state in (_PATTERN, _BODY):
+                cases.pop()
+                head = False
+            elif state == _SUBJECT:
+                if ch == "(":
+                    raise Unreadable(unread)
+                base, _state, wrapped, started = cases[-1]
+                cases[-1] = base, _IN, wrapped, started
+            elif state == _IN:
+                if token != "in":
+                    raise Unreadable(unread)
+                base, _state, _wrapped, _started = cases[-1]
+                cases[-1], head = (base, _PATTERN, False, False), True
+            elif state != _PATTERN and token == "case" and head:
+                cases.append((depth, _SUBJECT, False, False))
+                head = False
+            elif state != _PATTERN:
+                if target:
+                    target = False
+                elif not (head and ch in "<>" and token.isdigit()):
+                    head = token in _STARTERS or bool(_ASSIGNS.match(token))
+        pattern = bool(cases and cases[-1][1] == _PATTERN)
+        if ch in "<>":
+            target = True
+        if ch in "()":
+            if ch == ")" and pattern:
+                base, _state, wrapped, started = cases[-1]
+                if started and depth == base + int(wrapped):
+                    cases[-1], head = (base, _BODY, False, False), True
+                    if not wrapped:
+                        i += 1
+                        continue
+            if ch == "(":
+                heads.append(head)
+                depth, head = depth + 1, True
+            else:
+                if cases and depth == 1:
+                    raise Unreadable(unread)
+                depth -= 1
+                if not depth:
+                    return i + 1
+                head = heads.pop()
+        elif not pattern and ch in "\n;&|":
+            if (cases and cases[-1][1] == _BODY and depth == cases[-1][0]
+                    and text.startswith((";;&", ";;", ";&"), i)):
+                base = cases[-1][0]
+                cases[-1] = base, _PATTERN, False, False
+            head = True
+        elif ch not in _BREAK and word < 0:
+            word = i
         i += 1
+    if cases:
+        raise Unreadable(unread)
     return None
 
 

