@@ -8,8 +8,8 @@ guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
 - **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
-  validated group before the shared SIGTERM grace, so reaping its leader cannot hide a
-  resistant descendant from SIGKILL.
+  validated group, waits once for the shared SIGTERM grace, and escalates before reaping any
+  leader, so a resistant descendant cannot escape SIGKILL.
 - **Family PR review discloses missing agents (#2546, #1817).** Missing finders and verifier
   votes become explicit incomplete-review facts and log lines; a partly verified finding cannot
   enter the confirmed or dropped lists.

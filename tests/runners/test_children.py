@@ -389,7 +389,26 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         self.assertIsNone(proc.returncode, "the fixture reaped its session leader")
         self.assertTrue(alive(pid), "the resistant grandchild was never running")
 
-        self.assertEqual([proc], runner.terminate_children(grace=0.2))
+        signals = []
+        real_killpg = procgroup.os.killpg
+
+        def observed_killpg(pgid, sig):
+            if sig in (signal.SIGTERM, signal.SIGKILL):
+                signals.append((sig, time.monotonic(), proc.returncode))
+            return real_killpg(pgid, sig)
+
+        with mock.patch.object(procgroup.os, "killpg", side_effect=observed_killpg):
+            self.assertEqual([proc], runner.terminate_children(grace=0.2))
+
+        term = next(row for row in signals if row[0] == signal.SIGTERM)
+        kill = next(row for row in signals if row[0] == signal.SIGKILL)
+        self.assertGreaterEqual(
+            kill[1] - term[1], 0.15,
+            "the shared grace collapsed when the direct child had exited",
+        )
+        self.assertIsNone(
+            kill[2], "SIGKILL used a retained group id after the leader was reaped",
+        )
 
         self.assertTrue(
             await_death(pid),

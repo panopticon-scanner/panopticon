@@ -247,10 +247,17 @@ class ChildProcesses:
         self.__dict__["_children"] = []
         groups = [(proc, procgroup.group_id(proc)) for proc in children]
         for proc, pgid in groups:
-            procgroup.end_group(proc, signal.SIGTERM, pgid)
+            procgroup.end_group_retained(proc, signal.SIGTERM, pgid)
         deadline = time.monotonic() + max(0.0, float(grace))
-        for proc, pgid in groups:
-            leader_reaped = procgroup.reaped(proc, deadline - time.monotonic())
-            if pgid is not None or not leader_reaped:
-                procgroup.end_group(proc, signal.SIGKILL, pgid)
+        retained = [(proc, pgid) for proc, pgid in groups if pgid is not None]
+        handles = [proc for proc, pgid in groups if pgid is None]
+        procgroup.wait_interrupt_grace(retained, deadline)
+        for proc, pgid in retained:
+            if procgroup.retained_group_exists(proc, pgid):
+                procgroup.end_group_retained(proc, signal.SIGKILL, pgid)
+        for proc in handles:
+            if not procgroup.reaped(proc, deadline - time.monotonic()):
+                procgroup.end_group_retained(proc, signal.SIGKILL, None)
+        for proc, _pgid in retained:
+            procgroup.reaped(proc, 0.0)
         return children
