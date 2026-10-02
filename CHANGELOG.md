@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across
