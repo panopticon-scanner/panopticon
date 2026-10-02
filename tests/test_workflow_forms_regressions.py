@@ -390,6 +390,26 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 argv = shell_reader.statements(script)[0].stages[0].argv
                 self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
 
+    def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
+        # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
+        # string holding one beside a `$(...)` is no script at all, where its
+        # twin with the `$(...)` alone is read opaque (#2486) ...
+        for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+        found = self.program('sh -c "sh $(echo tool)" x')
+        self.assertEqual(["sh $(...)"], found)
+        self.assertIsInstance(found[0], workflow_programs.Opaque)
+        # ... and a program word that is all `<(...)` is not `dynamic_program`'s,
+        # where its `$(...)` twin is.
+        for script in ('sh -c "<(cat tool)"', 'eval "<(cat tool)"'):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
+        argv = shell_reader.statements('sh -c "$(cat tool)"')[0].stages[0].argv
+        found = workflow_programs.dynamic_program(argv)
+        self.assertEqual(("sh -c", "$(...)"), (found[0], shell_reader.readable(found[1])))
+
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be

@@ -1408,6 +1408,37 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `bash`", found[0][1])
 
+    def test_a_string_or_program_word_holding_a_process_substitution_is_unread(self):
+        # #2486 keeps a `<(...)` out (`shell_reader.yields_words`): a string
+        # holding one is no script, though it holds a `$(...)` too, and a
+        # program word that is all of one is not `dynamic_program`'s. So the
+        # first two read CLEAN, as at the base, though they run `tool`: a
+        # string holding a `<(...)` is read nowhere, a gap filed under #2331.
+        for script in (
+                # runs `tool` where `sh` is bash 5.2.21; a 3.2.57 or dash `sh` exits 2 on the `(`
+                GET + 'sh -c "sh $(echo tool) <(echo x)"\n',
+                # bash 5.2.21 and 3.2.57 run it (`sh tool /dev/fd/63`), under a dash step too
+                GET + 'bash -c "sh $(echo tool) <(echo x)"\n',
+                # nothing of `tool` runs: a bash cannot execute `/dev/fd/63`, the others exit 2
+                GET + 'sh -c "<(cat tool)"\n',
+                # nothing of `tool` runs: the same in the step's own shell (dash's `eval` exits 2)
+                GET + 'eval "<(cat tool)"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # The `$(...)` twins are reported.
+        value = "passes `sh` `$(...)` where it reads its options"
+        for script, said in (
+                # all four run `tool`: the string read opaque, its `sh $(...)` the value's `Idle`
+                (GET + 'sh -c "sh $(echo tool)"\n', value),
+                # all four run `tool`: the program word all substitution, #2483's sentence
+                (GET + 'sh -c "$(cat tool)"\n', "runs `sh -c` on `$(...)`"),
+                # all four run `tool`: the same under `eval`
+                (GET + 'eval "$(cat tool)"\n', "runs `eval` on `$(...)`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
 
 class TestAProgramPipedFromAPrinter(unittest.TestCase):
     """#2333: the program an `echo` or `printf` pipes into a shell."""
