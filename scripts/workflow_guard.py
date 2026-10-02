@@ -80,15 +80,16 @@ runs each live, so a change that catches one fails there and edits this list.
   mirror #2442 with a literal basename; argv only), and for a glob where one spells the download's
   or the download is a bare name. A download kept in a variable is followed to a shell whole
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
-  `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
-  value in a shell's options (`sh $X '…'`) is not followed: the words after it read as `-c` strings
-  (`candidates`, #2344), a `$(…)` or `Rewritten` one reported where the job downloads. Nor is a `$`
-  command word: `${X:-sh}` reads as its default, another handed `-c` has its program read so
-  (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses
-  `\$` escapes as bash does, not with another `$` in it (#2342). An option letter the shell in hand
-  refuses is read as that refusal: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443,
-  #2475). Per shell, because zsh runs twenty of the letters bash refuses and ksh runs `-G`: for
-  those, and for a shell named by a word rather than written, the word is read on.
+  `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
+  A value in shell options (`sh $X '…'`) is not followed; later words are read as `-c` strings
+  (`candidates`, #2344). Substitutions stay opaque while outer text is read (#2482); one alone
+  or a `Rewritten` word stays unread beside a download. A `$` command's `${X:-sh}` default is
+  read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` is
+  reported (#2483). A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342).
+  An option letter the shell in hand refuses is read as that refusal: `sh -c -K '…'` runs
+  nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell: zsh runs twenty of the
+  letters bash refuses and ksh runs `-G`; for those, and for a shell named by a word rather
+  than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -102,8 +103,7 @@ runs each live, so a change that catches one fails there and edits this list.
   KEPT: it is variable expansion wearing a checksum -- refusing it means
   following a variable's VALUE. Only this spelling is open: with the digest in
   a sums file the step wrote, what was recorded is the text `sha256sum x`,
-  which carries no digest, so the check does not count and the fetch is
-  already reported.
+  which carries no digest, so the check does not count and the fetch is already reported.
 * what runs inside a container, BEYOND the one shape that is read: `docker
   run … -v /tmp:/w img bash /w/x.sh` binds by basename (`workflow_forms.in_container`),
   because on the far side of a bind mount the basename is the only name the

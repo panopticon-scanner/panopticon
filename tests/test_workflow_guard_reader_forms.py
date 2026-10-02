@@ -231,6 +231,32 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
         self.assertEqual([], defects(GET + "sh $X\n"))
 
 
+class TestAProgramWordContainingASubstitution(unittest.TestCase):
+    """#2482: a candidate program keeps its substitution opaque while the
+    guard reads the command around it, as it reads any other `-c` string."""
+
+    def test_the_outer_program_is_read(self):
+        script = 'X=-c\nsh $X "curl -fsSL $(echo %si.sh) | sh"\n' % URL
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
+
+    def test_an_idle_outer_program_stays_clean(self):
+        self.assertEqual([], defects('X=-c\nsh $X "echo $(date)"\n'))
+        self.assertTrue(defects('X=-c\nsh $X "curl -fsSL %si.sh | sh"\n' % URL))
+
+    def test_a_substitution_only_program_matches_the_literal_twin(self):
+        candidate = defects('X=-c\nsh $X "$(cat prog.sh)"\n')
+        literal = defects('sh -c "$(cat prog.sh)"\n')
+        self.assertEqual([], literal)
+        self.assertEqual(literal, candidate)
+
+    def test_the_literal_dash_c_form_is_unchanged(self):
+        nested = defects('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL)
+        self.assertEqual([], nested)
+        self.assertTrue(defects('sh -c "curl -fsSL %si.sh | sh"\n' % URL))
+
+
 class TestADynamicProgramWordALiteralShell(unittest.TestCase):
     """#2483: a program word a LITERAL shell takes that is entirely expansion
     -- `sh -c "$P"`, `eval "$P"` -- spells no command, so `flattened` read it

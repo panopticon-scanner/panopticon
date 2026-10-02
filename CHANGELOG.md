@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
+  option made the guard discard an entire program word containing `$(...)`, so its visible fetch
+  pipeline read clean. It now reads the outer program with the substitution opaque while the
+  normal walk reads the inner script. Evaluating substitution output was rejected because that
+  would invent commands from runtime values.
 - **Case-arm closes no longer truncate command substitutions (#2474, #2331).** The matcher took
   an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched pipeline
   in the arm escaped the substitution parse and read clean. It now follows nested case phases
