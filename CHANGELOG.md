@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
+  After one scan reached the script's end, `_Lines` used the exact-line index for every later
+  body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An
+  exact line now proves and bounds that later scan, which can find the earlier `B)` while staying
+  linear; resuming every unbounded scan was rejected because hostile inputs restore quadratic
+  cost.
 - **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
   drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
   `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token

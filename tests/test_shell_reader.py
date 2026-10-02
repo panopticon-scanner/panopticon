@@ -1307,16 +1307,19 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
     def test_outside_a_substitution_or_unended_a_body_reads_as_it_did(self):
         # At the top level -- in a subshell there too -- an `EOF)` line is a
         # body line, as in bash; a quoted body folds no `EOF\` + `)`; and with
-        # no line to end it, a body is left as code, which 5.2 runs none of,
-        # and a later one ends at its own line only, as it did.
+        # no line to end it, a body is left as code, which 5.2 runs none of.
         for script, bodies in (("cat <<EOF\nEOF)\nEOF\necho a\n", ["EOF)"]),
                                ("(cat <<EOF\nhi\nEOF)\nEOF\n)\necho a\n", ["hi\nEOF)"]),
                                ("x=$(cat <<'EOF'\nhi\nEOF\\\n)\necho a\n", []),
-                               ("x=$(cat <<EOF\nhi\n)\necho a\n", []),
-                               ("x=$(c <<A\n)\ny=$(c <<B\nb\nB)\nB\n)\necho a\n", ["b\nB)"])):
+                               ("x=$(cat <<EOF\nhi\n)\necho a\n", [])):
             with self.subTest(script=script):
                 self.assertEqual(bodies, self.lexed(script)[1])
                 self.assertIn([['echo', 'a']], argvs(script))
+
+    def test_an_unended_body_only_bounds_a_later_body_scan(self):
+        script = "x=$(c <<A\n)\ny=$(c <<B\nb\nB)\necho a\nB\n)\n"
+        self.assertEqual(["b"], self.lexed(script)[1])
+        self.assertIn([['echo', 'a']], argvs(script))
 
     def test_heredocs_inside_substitutions_read_in_linear_time(self):
         # Each body is read line by line up to its end, which is no line of
@@ -1326,6 +1329,18 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
                 self.assert_linear_growth(
                     1500, lambda size: "".join(line.replace("%d", str(k)) for k in range(size)),
                     lambda size, parsed: self.assertEqual(size, len(parsed)))
+
+        # Once one body is unended, each later `D)` is followed by its exact
+        # `D` only after every such body. Looking ahead to that line per body
+        # would be quadratic; the index merely proves each short scan bounded.
+        def bounded(size):
+            bodies = "".join("y=$(c <<D%d\nbody\nD%d)\n" % (k, k) for k in range(size))
+            bounds = "".join("D%d\n)\n" % k for k in range(size))
+            return "x=$(c <<A\n)\n" + bodies + bounds
+
+        self.assert_linear_growth(
+            750, bounded,
+            lambda size, parsed: self.assertEqual(1 + 2 * size, len(parsed)))
 
 
 class TestTheHeredocIndexIsOneImplementation(unittest.TestCase):
