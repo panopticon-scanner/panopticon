@@ -7,26 +7,51 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Substitution heredocs with `)` body lines now fail closed (#2493, #2331).** Bash 3.2 may
-  close the substitution there and execute later body text as code, while Bash 5.2 reads it as
-  data. The lexer now names that version-dependent reading instead of accepting the 5.2 result.
-  Selecting a parser by runner was rejected because the owner ruled one conservative answer for
-  every workflow.
+- **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
+  close the substitution there and execute later body text as code, so the lexer now names the
+  ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
+  the owner ruled one conservative answer for every workflow.
 - **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
   option made the guard discard an entire program word containing `$(...)`, so its visible fetch
   pipeline read clean. It now reads the outer program with the substitution opaque while the
   normal walk reads the inner script. Evaluating substitution output was rejected because that
   would invent commands from runtime values.
-- **Case-arm closes no longer truncate command substitutions (#2474, #2331).** The matcher took
-  an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched pipeline
-  in the arm escaped the substitution parse and read clean. It now follows nested case phases
-  and balanced patterns, while subjects needing another parse fail closed by name. Treating
-  every `)` after `case` as an arm close was rejected because it could hide later shell code.
+- **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
+  took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
+  pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
+  and read clean. It now follows nested case phases and balanced patterns, while subjects needing
+  another parse fail closed by name. Treating every `)` after `case` as an arm close was rejected
+  because it could hide later shell code.
+- **Quoted workflow globs stay literal (#2432, #2331).** The guard now uses lexer pattern
+  provenance when matching fetched paths, so `sh "./cuda_*.run"` does not claim to run a
+  download while unquoted and partly quoted patterns still do. Bash 3.2.57, Bash 5.2.21 and
+  dash agree; 439,716 frozen corpus rows and 4,642 real jobs keep identical answers.
+- **Shell quoting now has a dedicated flat module (#2615, #2608).** ANSI-C decoding and
+  quote-aware heredoc and here-string word spelling moved unchanged from `shell_lex.py` to
+  `shell_quote.py`, restoring lexer headroom. Further compression of the lexer's governing
+  contract was rejected because a line budget must not choose which behavior stays documented.
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
   `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
   script while the guard read the step clean. It now shares Bash's ASCII escape table across
   words, heredoc delimiters, and here-strings, and fails closed beyond ASCII. Keeping only the
   four identity escapes was rejected because it hid executable option words.
+- **A `set` is read the way bash counts it (#2559, #2560, #2561, #2331).** A `set`'s option values
+  now count one per `o` LETTER, as bash counts them and as the program readers already did, and a
+  `-o` value that is no option NAME refuses the whole `set`, as an unknown option LETTER already
+  did (#2443). So `set -oo pipefail errexit` arms errexit -- the second `o` takes `errexit`, and
+  `$#` stays 0 -- and `set -o foo -e` arms nothing, where bash answers `set: foo: invalid option
+  name` and changes nothing. That second one was a fail-open: the guard credited a check bash
+  never armed, and passed a step that runs its download with the checksum failing. A shell's
+  command line is read the same way, so `bash -c -o foo P` hands over no program; the names were
+  measured as the letters were -- bash 3.2.57 and 5.2.21 for the builtin, their union with dash
+  for a command line, which takes `-o stdin` where bash exits 2 -- and the measured-shells list
+  is now pinned against the two shell-name lists it has to agree with (#2561). Rejected: keeping
+  the per-WORD value count the #2551 docstring defended, which is what read `set -oo pipefail
+  errexit` as arming nothing at all.
 - **A heredoc whose substitution closes before its body is read like Bash 5.2 (#2498, #2331).**
   The lexer refused `$(cat <<EOF)` before reading the lines below it, so one generic finding
   replaced the fetch sentence in every affected step. It now files that body first and skips its
@@ -39,6 +64,11 @@ evidence exposed.
   from the next line, then parses the saved rest, so body and rest payloads get specific
   findings. A second lexing pass was rejected because it would duplicate state and cost; two
   `EOF)` ends remain fail-closed because Bash reports a syntax error.
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
 - **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
   After one scan reached the script's end, `_Lines` used the exact-line index for every later
   body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An

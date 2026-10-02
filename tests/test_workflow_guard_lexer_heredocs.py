@@ -15,7 +15,7 @@ import workflow_guard as wg
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
 GET = "curl -fsSLo t.sh %si.sh\n" % URL
-PAREN = "a `)` line inside a substitution heredoc body"
+PAREN = "a `)` in a substitution heredoc body"
 
 
 def defects(script):
@@ -126,7 +126,7 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
 
     def test_the_discovery_row_fails_closed_by_name(self):
         # #2493's later ruling supersedes the specific findings where this
-        # row's substitution body itself holds a `)` line.
+        # row's substitution body itself contains a `)`.
         found = defects(self.ROW)
         self.assertEqual(1, len(found), found)
         self.assertIn(PAREN, found[0][1])
@@ -170,12 +170,12 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
         self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
 
 
-class TestAParenLineInsideASubstitutionHeredoc(unittest.TestCase):
-    """#2493: Bash 3.2 may close the substitution at a `)` in its heredoc
-    body, while Bash 5.2 reads that line as data. The owner ruled that the
-    version-dependent text must fail closed under a named finding."""
+class TestAParenInsideASubstitutionHeredoc(unittest.TestCase):
+    """#2493: Bash 3.2 may close a substitution at a `)` in its heredoc
+    body and run the rest as code. The owner ruled that every such body must
+    fail closed under a named finding rather than choose a reading."""
 
-    def test_each_version_dependent_body_is_named(self):
+    def test_each_body_with_a_paren_is_named(self):
         for close in ("EOF\n)\n", "EOF)\n"):
             script = "x=$(cat <<'EOF'\na)\n%s\n%s" % (PIPE, close)
             with self.subTest(close=close):
@@ -183,7 +183,7 @@ class TestAParenLineInsideASubstitutionHeredoc(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn(PAREN, found[0][1])
 
-    def test_a_body_without_a_paren_line_stays_clean(self):
+    def test_a_body_without_a_paren_stays_clean(self):
         self.assertEqual([], defects("x=$(cat <<'EOF'\na\nEOF\n)\n"))
         self.assertTrue(defects(PIPE + "\n"))
 
@@ -288,6 +288,35 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestACaseOnAnEOFParenLineReadsEveryArm(unittest.TestCase):
+    """#2580: a case pattern closes its arm, not the substitution heredoc."""
+
+    def assert_pipeline_is_reported(self, rest):
+        script = "x=$(cat <<'EOF'\nhi\nEOF%s)\n" % rest
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_second_arm_on_the_close_line_is_read(self):
+        self.assert_pipeline_is_reported("case 2 in 1) true;; 2) %s;; esac" % PIPE)
+
+    def test_the_third_arm_on_the_close_line_is_read(self):
+        rest = "case 3 in 1) true;; 2) true;; 3) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_parenthesized_later_pattern_is_read(self):
+        rest = "case 2 in 1) true;; (2) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_nested_substitution_in_a_later_arm_stays_read(self):
+        rest = "case 2 in 1) true;; 2) echo $(%s);; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_the_first_arm_control_stays_read(self):
+        rest = "case 1 in 1) %s;; 2) true;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+
 class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
     """#2494: after one body finds no end, a later body's fallback scan still
     reaches its `B)` line before the exact `B` line that bounds that scan."""
@@ -364,7 +393,7 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
     #2491 (#2336) handed such a body back to the substitution that reads it,
     so the rule reaches `MODULES=$(python3 - <<'EOF' ... )` too, and the
     predicate governs it there in the same words unless #2493's later ruling
-    fails closed because the body itself holds a `)` line."""
+    fails closed because the body itself contains a `)`."""
 
     CHECKED = "echo '%s  t.sh' | sha256sum -c -\n" % ("a" * 64)
     SAID = "to `python3` as the program to run"
