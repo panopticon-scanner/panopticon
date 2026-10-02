@@ -8,6 +8,7 @@ from unittest import mock
 
 import scripts.evidence as evidence
 import scripts.synthesize as synthesize
+import scripts.tolerant_json as tolerant_json
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.codes as codes_mod
@@ -37,9 +38,10 @@ class TestVerdictBundles(unittest.TestCase):
                 self.probes += 1
                 return super().__getitem__(key)
 
-        body = CountingText("{" * 512)
+        body = CountingText("{" * 40_000)
         self.assertIsNone(evidence._first_balanced_json(body))
-        self.assertLessEqual(body.probes, 5 * len(body))
+        self.assertLessEqual(
+            body.probes, 5 * len(body) + 4 * tolerant_json._SCAN_CANDIDATES)
 
     def test_tolerant_parser_reaches_json_after_advisor_prose_shapes(self):
         bundle = {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}]}
@@ -47,10 +49,22 @@ class TestVerdictBundles(unittest.TestCase):
         prefixes = (
             'I checked "if (x) { y" in app.py.\n',
             "".join("{n%d}" % index for index in range(300)),
-            '"{a{b{c{d{e}}}}}"' * 30,
+            "{a{b{c{d{e}}}}}" * 30,
         )
         for prefix in prefixes:
             with self.subTest(prefix=prefix[:30]):
+                self.assertEqual(evidence.load_json_tolerant(prefix + encoded), bundle)
+
+    def test_small_nested_wrappers_cannot_spend_the_entire_scan_budget(self):
+        bundle = {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}]}
+        encoded = json.dumps(bundle)
+        prefixes = (
+            "{{{{" + "x" * 30 + "}}}}",
+            "{" * tolerant_json._SCAN_CANDIDATES
+            + "x" + "}" * tolerant_json._SCAN_CANDIDATES,
+        )
+        for prefix in prefixes:
+            with self.subTest(open_braces=prefix.count("{")):
                 self.assertEqual(evidence.load_json_tolerant(prefix + encoded), bundle)
 
     def test_many_balanced_spans_use_bounded_auxiliary_memory(self):
