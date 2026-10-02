@@ -183,7 +183,9 @@ def swallowed(stmts, index, statement, stage, credit=None):
             stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
         )
         if isinstance(stops, FunctionGate) and why and errexit:
-            return why                         # an existing step refusal survives the proof
+            # Keep the proved call as a lower bound and a Reach as its upper
+            # bound; an ordinary refusal still applies to the whole check.
+            return FunctionGate(stops.through, why) if isinstance(why, Reach) else why
         if isinstance(stops, Reach):
             return stops
         if not stops:

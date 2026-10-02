@@ -272,6 +272,9 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
             if (statement.separator in ("&&", "||") and not stopped_job
                     and not inherited_depth):
                 return False
+            if inherited_depth and statement.separator == "||":
+                inherited_depth, grouped = 0, True
+                continue
             break
         if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
@@ -367,14 +370,15 @@ class PipelineGate(Reach):
 
 
 class FunctionGate(Reach):
-    """A check defined in a function, effective only after its proven call."""
+    """A function check, bounded after its call and by any enclosing reach."""
 
     through: int
 
-    def __new__(cls, through):
-        gate = str.__new__(
-            cls, "is inside a function that has not run through a failure gate before that use")
-        gate.span = 0
+    def __new__(cls, through, reach=None):
+        reason = ("is inside a function that has not run through a failure gate before that use"
+                  if reach is None else str(reach))
+        gate = str.__new__(cls, reason)
+        gate.span = None if reach is None else reach.span
         gate.through = through
         return gate
 
@@ -386,7 +390,8 @@ def clears(why, check, use):
     if why is None:
         return True
     if isinstance(why, FunctionGate):
-        return why.through < use
+        return (why.through < use and
+                (why.span is None or use - check <= why.span))
     if isinstance(why, PipelineGate):
         return (use > why.through and
                 (why.span is None or use - check <= why.span))

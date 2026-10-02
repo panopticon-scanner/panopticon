@@ -2812,6 +2812,9 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "f() { echo pre; GATE; }\nf || exit 1\n",
             "f() { GATE; }\ng() { f; }\ng || exit 1\n",
             "f() { GATE; }\ng() { f || return 1; }\ng\n",
+            "f() { GATE || exit 1; }\necho hi\nf\n",
+            "f() { GATE || return 1; }\necho hi\nf\n",
+            "f() { GATE || false; }\necho hi\nf\n",
             "outer() {\nf() { GATE; }\nf\n}\nouter\n",
         )
         for body in bodies:
@@ -2863,6 +2866,13 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             "f() { GATE; echo after; }\nif ! f; then exit 1; fi\n",
             "f() { GATE; echo after; }\nf && echo ok || exit 1\n",
             "f() { GATE; echo after; }\nwhile f; do break; done\n",
+            "f() { GATE || true; }\necho hi\nf\n",
+            "f() { GATE || true; }\n( f )\n",
+            "f() { GATE || true; }\ng() { f; }\ng\n",
+            "f() { GATE || true; }\nf\n",
+            "f() { GATE || echo bad; }\necho hi\nf\n",
+            "f() { GATE || return 0; }\necho hi\nf\n",
+            "f() { GATE || :; }\necho hi\nf\n",
         )
         for body in bodies:
             script = self.FETCH + body.replace("GATE", "( CHECK || exit 1 )").replace(
@@ -2901,6 +2911,37 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                     ])
                     self.assertEqual(1, len(found), found)
                     self.assertIn("continue-on-error", found[0][1])
+
+    def test_a_function_gate_in_a_soft_step_still_clears_a_same_step_use(self):
+        for call in ("f() { GATE; }\nf\n", "f() { GATE; }\necho hi\nf\n"):
+            check = call.replace("GATE", "( CHECK || exit 1 )").replace("CHECK", self.CHECK)
+            for shell in (None, "bash", "sh"):
+                with self.subTest(call=call, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("get", self.FETCH),
+                        wg.Step("check-use", check + self.USE, shell, None, True),
+                    ]))
+
+    def test_a_soft_step_function_gate_does_not_clear_a_use_before_its_call(self):
+        check = "f() { ( CHECK || exit 1 ); }\n".replace("CHECK", self.CHECK)
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([
+                    wg.Step("get", self.FETCH),
+                    wg.Step("use-check", check + self.USE + "f\n", shell, None, True),
+                ])
+                self.assertEqual(1, len(found), found)
+
+    def test_a_rescued_function_gate_does_not_clear_a_later_step(self):
+        check = "f() { ( CHECK || exit 1 ) || true; }\nf\n".replace("CHECK", self.CHECK)
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([
+                    wg.Step("get", self.FETCH),
+                    wg.Step("check", check, shell),
+                    wg.Step("use", self.USE),
+                ])
+                self.assertEqual(1, len(found), found)
 
     def test_an_enclosing_pipeline_uses_the_steps_pipefail_state(self):
         for body in ("CHECK | cat\n", "{ ( CHECK || exit 1 ); } | cat\n"):

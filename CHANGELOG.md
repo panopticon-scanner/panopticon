@@ -14,7 +14,9 @@ evidence exposed.
   conditional calls still refuse the proof. An `||`-suppressed call is credited only when the
   gate remains the function's final status; the conservative `unset` barrier is disclosed. The
   mutually recursive function/status proof now lives in `workflow_function_calls.py`, leaving
-  both proof modules room under the 700-line ceiling.
+  both proof modules room under the 700-line ceiling. A success handler after the inner
+  subshell's nonzero exit now invalidates every call form, and `continue-on-error` credit is
+  bounded after the proved call and before the end of its own step.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three

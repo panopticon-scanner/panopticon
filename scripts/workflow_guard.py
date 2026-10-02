@@ -172,9 +172,10 @@ runs each live, so a change that catches one fails there and edits this list.
   A heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not
   this rule's business at all: the script is text in the repo under review, which is the
   `sed -i` entry's author-deterministic ruling.
-* the distant function-call proof treats every `unset` as a barrier. This includes `unset FOO`,
-  `unset -v FOO`, and harmless `unset -f f`, which over-report rather than let a removed or
-  shadowed function borrow an earlier gate; none of the fleet's 84 such steps uses `unset` (#2586).
+* distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
+  and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
+* Under outer `f || exit 1`, bodies ending `( CHECK || exit 1 ); return $?`,
+  its quoted return, or `( CHECK || exit 1 ) && echo ok` stay reported (#2586).
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
   between the check's step and the use's step. It is not when it reads `env.*` written through
   `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
@@ -608,11 +609,10 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     runs -- the `if:` of the step it came from, and the shell branch it was
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
-    `credit` maps an index to its step's own answer for a check there, which
-    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or
-    `_SOFT_STEP` where the step carries `continue-on-error: true`, whose
-    checks clear nothing at all. `walked` is `_walk`'s answer for `stmts`,
-    which `job_defects` has from each step's own read.
+    `credit` maps an index to its step answer, which `workflow_gating.swallowed` reads last:
+    `workflow_forms.step_credit` or a bounded `_SOFT_STEP`; the latter clears later uses in that
+    shell, never a later step. `walked` is `_walk`'s answer for `stmts`, which `job_defects` has
+    from each step's own read.
 
     An unread form stands only where some fetch here is one `_defect` reports --
     asked again with those forms as uses -- or an `unbound` download (#2481)."""
@@ -642,12 +642,11 @@ def fetch_exec_defect(script):
 def job_defects(steps):
     """[(step name, why)] for one job's `run:` steps, folded in order.
 
-    A step carrying an `if:` is folded for what it FETCHES and what it RUNS;
-    its CHECK is credited only to a use that shares the same condition (see
-    `_binds`), because a checksum that may be skipped cannot clear an
-    execution that is not. A step carrying `continue-on-error: true` is folded
-    the same way and its CHECK is credited to nothing: the job carries on past
-    its failure, which is `|| true` spelled in YAML.
+    A step carrying an `if:` is folded for what it FETCHES and RUNS; its CHECK is
+    credited only to a use sharing the same condition (`_binds`). A skipped checksum cannot
+    clear an unconditional execution. A soft CHECK clears only later uses in its own step:
+    its shell stops, while `continue-on-error: true` lets the job proceed to later steps.
+    This bounds the check at both the proved call and the step boundary.
 
     THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
     /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
@@ -686,7 +685,8 @@ def job_defects(steps):
             when = (step.condition, branches.get(local))
             if any(when):
                 conditions[len(stmts)] = when
-            credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
+            soft = Reach(len(here) - local - 1, _SOFT_STEP)
+            credit[len(stmts)] = (soft, soft) if step.soft else own.get(local)
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
