@@ -15,6 +15,8 @@ evidence exposed.
   or `do` is refused too: Bash keeps that grammar-required separator, and omitting it hid an
   executable compound body. An unbounded Boolean and a character-only omission were rejected
   because they hid later-line and no-space payloads.
+- **Artifact diagnostics preserve the failing stage (#2571, #1816).** Findings-file and
+  dispatch-plan integrity rows now distinguish oversized, unreadable and unparseable inputs.
 - **A delta map that dropped a whole path turns the on-diff gate INCONCLUSIVE (#2517).** The fourth
   counter joins #2405's broken-artifact measure (owner ruling 2026-10-02). `paths_dropped` — #2169's
   count of paths whose value in the hunk map was not a list of ranges at all, so the loader drops
