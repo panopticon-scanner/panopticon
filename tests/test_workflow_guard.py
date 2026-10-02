@@ -2339,6 +2339,29 @@ class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
                     self.assertEqual(1, len(found), found)
                     self.assertIn("same pipeline", found[0][1])
 
+    def test_a_multiline_downstream_stage_stays_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | {\nsh payload\n}\n",
+                     "{ CHECK; } | (\nsh payload\n)\n",
+                     "{ CHECK; } | while read -r line; do\nsh payload\ndone\n",
+                     "{ CHECK; } | if true; then\nsh payload\nfi\n",
+                     "{ CHECK; } |\n  sh payload\n",
+                     "{ CHECK; } | (\ncat >/dev/null\nsh payload\n)\n",
+                     "{\nCHECK\n} | {\nsh payload\n}\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_a_function_check_is_concurrent_when_its_call_is_piped(self):
+        shape = "f() { CHECK; }\nf | sh payload\n"
+        body = self.FETCH + shape.replace("CHECK", self.CHECK)
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("run", body, shell)])
+                self.assertEqual(1, len(found), found)
+        found = wg.job_defects([wg.Step("run", body, "bash")])
+        self.assertIn("same pipeline", found[0][1])
+
     def test_a_line_only_subshell_opener_stays_fail_closed(self):
         body = self.FETCH + ("(\nCHECK && echo ok\n) | sh payload\n"
                              .replace("CHECK", self.CHECK))
@@ -2351,6 +2374,9 @@ class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
                      "( CHECK; ) && sh payload\n",
                      "{ CHECK; } | cat\nsh payload\n",
                      "( CHECK; ) | cat\nsh payload\n",
+                     "{ CHECK; } | {\ncat\n}\nsh payload\n",
+                     "{ CHECK; } | if true; then\ncat\nfi\nsh payload\n",
+                     "f() { CHECK; }\nf | cat\nsh payload\n",
                      "{ CHECK; { echo script; } | sh payload; }\n",
                      "{ { CHECK; }; { echo script; } | sh payload; }\n"):
             with self.subTest(body=body):

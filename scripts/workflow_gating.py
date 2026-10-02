@@ -330,6 +330,35 @@ def _structural_groups(stage):
             stage.group_close + braces.count("}"))
 
 
+def _pipeline_groups(stage):
+    """Compound opens/closes that keep one pipeline stage alive."""
+    opens, closes = _structural_groups(stage)
+    for token in stage.argv:
+        if token not in shell_reader.KEYWORDS:
+            break
+        opens += token in _OPENS and token != "{"
+        closes += token in _CLOSES and token != "}"
+    return opens, closes
+
+
+def _pipeline_end(stmts, index, position):
+    """The last readable statement of a pipeline stage starting here."""
+    depth, started = 0, False
+    for following in range(index, len(stmts)):
+        first = position if following == index else 0
+        for stage in stmts[following].stages[first:]:
+            opens, closes = _pipeline_groups(stage)
+            if not started and not stage.argv and not opens:
+                continue
+            started = True
+            depth += opens - closes
+        if started and depth <= 0:
+            return following
+    # A closer the reader dropped leaves the boundary unknown. Refuse the
+    # remainder of the step rather than crediting a potentially concurrent use.
+    return len(stmts) - 1
+
+
 def _piped_group_end(stmts, index):
     """The piped close of a structural group open at `index`, or None.
 
@@ -354,9 +383,25 @@ def _piped_group_end(stmts, index):
                     continue
                 remaining -= 1
                 if position + 1 < len(statement.stages):
-                    return following
+                    return _pipeline_end(stmts, following, position + 1)
                 if remaining <= 0:
                     return None
+    return None
+
+
+def _piped_function_end(stmts, index):
+    """The pipeline entered by an immediate direct call of this function."""
+    function = _function_scope(stmts, index)
+    if function is None:
+        return None
+    name, close = function
+    call = close + 1
+    if call >= len(stmts):
+        return None
+    for position, stage in enumerate(stmts[call].stages[:-1]):
+        argv = command(stage.argv)
+        if stage.argv[:1] == [name] and argv[:1] == [name]:
+            return _pipeline_end(stmts, call, position + 1)
     return None
 
 
@@ -397,7 +442,15 @@ def swallowed(stmts, index, statement, stage, credit=None):
     why = credit[stage is not statement.stages[-1]] if credit else None
     piped_end = (_piped_group_end(stmts, index)
                  if why is None or isinstance(why, Reach) else None)
-    return PipelineGate(piped_end, why) if piped_end is not None else why
+    function_end = _piped_function_end(stmts, index) if piped_end is None else None
+    if function_end is not None:
+        # The definition is not itself piped. `step_credit`'s pipeline slot
+        # nevertheless carries the call site's pipefail posture across these
+        # reader statements, so use it before applying the function's bound.
+        why = credit[1] if credit else None
+        piped_end = function_end
+    return (PipelineGate(piped_end, why)
+            if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
 
 
 # Why a check the step's own shell runs does not stop the step, as
