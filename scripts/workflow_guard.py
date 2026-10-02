@@ -116,9 +116,9 @@ live, so a change that catches one fails there and edits this list.
 * a download the PIPELINE writes under a name `workflow_forms._WRITERS` does not carry: the `> f`
   redirect, `dd`, `sponge` and `tee` are weighed (`unbound`, r0/r1), `| busybox dd of=f` is not.
   KEPT: binding a dest-less fetch to its pipeline's file is a `parse_fetch` change, owed a round.
-* bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
-  OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from outside, and a workflow
-  editing its own downloaded file is author-deterministic -- that `sed` is in the repo under review.
+* bytes modified after a passing check: `sha256sum -c` then `sed -i` then run. OUT OF SCOPE:
+  the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
+  author-deterministic -- that `sed` is in the repo under review.
 * a heredoc body printed inside a command substitution for `eval` to run
   (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the substitution's text
   carries it back to its redirection (#2336): a shell reading a quoted one as its program is
@@ -173,14 +173,18 @@ live, so a change that catches one fails there and edits this list.
   beside a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
   WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
   the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
+* distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
+  and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
+* Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
+  `( CHECK || exit 1 ) && echo ok` stay reported; so does `|| kill $$`, though it stops the shell.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
   between the check's step and the use's step. It is not when it reads `env.*` written through
   `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.
   KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
   `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
-`if` branches inside the shell are read flat for what they FETCH and what they RUN -- folding those
-in can only report more. Not for what they CHECK: `workflow_forms.regions` reads the
+`if` branches inside the shell are read flat for what they FETCH and what they RUN -- folding
+those in can only report more. Not for what they CHECK: `workflow_forms.regions` reads the
 `then`/`else`/`do` bodies -- and each arm of a `case` -- back out of the statement stream, and a
 checksum written inside a branch clears only a use written inside the same branch (#1697 item 3),
 which is `_binds` again in the shell's own grammar."""
@@ -217,11 +221,10 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 # with a mode; `tar`/`unzip` write whatever the archive says.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
-# An expected digest: a hex literal, or the variable a workflow pins one in
-# (`${HADOLINT_SHA256}`, `$SHA`). Naming a file is not checking it -- something
-# in the checked line has to BE the expectation -- and ANY expansion is not
-# good enough either: `echo "$FILE  /tmp/payload" | sha256sum -c -` carries a
-# path where the digest belongs, so the name has to say digest.
+# An expected digest: a hex literal, or the variable a workflow pins one in (`${HADOLINT_SHA256}`,
+# `$SHA`). Naming a file is not checking it -- something in the checked line has to BE the
+# expectation -- and ANY expansion is not good enough either: `echo "$FILE  /tmp/payload" |
+# sha256sum -c -` carries a path where the digest belongs, so the name has to say digest.
 _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
                      r"|\$\{?\w*(?:SHA|SUM|DIGEST|HASH|CHECKSUM)\w*\}?", re.I)
 
@@ -604,12 +607,11 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the PAIR that decides whether it runs -- the `if:` of the
-    step it came from, and the shell branch it was written inside (`workflow_forms.regions`);
-    absent = unconditional on both counts. A check clears a use only where both halves match -- see
-    `_binds`. `credit` maps an index to its step's own answer for a check there, which
-    `workflow_gating.swallowed` reads last: `workflow_forms.step_credit`'s, or `_SOFT_STEP` where
-    the step carries `continue-on-error: true`, whose checks clear nothing at all. `walked` is
-    `_walk`'s answer for `stmts`, which `job_defects` has from each step's own read.
+    step it came from, and the shell branch it was written inside (`workflow_forms.regions`); absent
+    = unconditional on both counts. A check clears a use only where both halves match -- see
+    `_binds`. `credit` maps an index to the answer `workflow_gating.swallowed` reads last: the
+    shell-posture pair from `workflow_forms.step_credit`, with each absent soft-step answer bounded
+    by a `_SOFT_STEP` reach. `walked` is `_walk`'s answer for `stmts`, supplied by `job_defects`.
 
     An unread form (`what`: its sentence) stands only where some fetch here is one `_defect` reports
     -- asked again with those forms as uses -- or an `unbound` download (#2481)."""
@@ -637,11 +639,10 @@ def fetch_exec_defect(script):
 def job_defects(steps, strict=False):
     """[(step name, why)] for one job's `run:` steps, folded in order.
 
-    A step carrying an `if:` is folded for what it FETCHES and what it RUNS; its CHECK is credited
-    only to a use that shares the same condition (see `_binds`), because a checksum that may be
-    skipped cannot clear an execution that is not. A step carrying `continue-on-error: true` is
-    folded the same way and its CHECK is credited to nothing: the job carries on past its failure,
-    which is `|| true` spelled in YAML.
+    A step carrying an `if:` is folded for what it FETCHES and RUNS; its CHECK is credited only
+    to a use sharing the same condition (`_binds`); a skipped check cannot clear that use.
+    A soft CHECK keeps the shell refusal and clears later uses only when that shell stops, and
+    only in its own step. `continue-on-error: true` still lets the job proceed to later steps.
 
     THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace, /tmp and PATH, so
     `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x` in step B is one fetch-and-exec written
@@ -682,7 +683,10 @@ def job_defects(steps, strict=False):
                 when = (step.condition, branches.get(local))
                 if any(when):
                     conditions[len(stmts)] = when
-                credit[len(stmts)] = (_SOFT_STEP,) * 2 if step.soft else own.get(local)
+                answer = own.get(local)
+                soft = Reach(len(here) - local - 1, _SOFT_STEP)
+                credit[len(stmts)] = (tuple(why or soft for why in answer or (None, None))
+                                      if step.soft else answer)
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
         entries += [((owner[index][1], what), owner[index][0], why)
@@ -729,15 +733,12 @@ def run_jobs(doc):
         for step in job.get("steps") or []:
             if not isinstance(step, dict) or not step.get("run"):
                 continue
-            shell = (step.get("shell") or _default_shell(job)
-                     or _default_shell(doc))
+            shell = step.get("shell") or _default_shell(job) or _default_shell(doc)
             # A job-level `if:` makes every one of its steps conditional, and
             # a job-level `continue-on-error` makes every one of them soft.
             condition = step.get("if") or job.get("if")
-            soft = bool(step.get("continue-on-error")
-                        or job.get("continue-on-error"))
-            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell,
-                              condition, soft))
+            soft = bool(step.get("continue-on-error") or job.get("continue-on-error"))
+            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell, condition, soft))
         if steps:
             jobs.append((name, steps))
     return jobs
@@ -762,8 +763,7 @@ def main(argv=None, out=print):
             doc = yaml.safe_load(handle.read()) or {}
         for job, steps in run_jobs(doc):
             for name, why in job_defects(steps):
-                defects.append("%s / %s / %s -- %s"
-                               % (os.path.basename(path), job, name, why))
+                defects.append("%s / %s / %s -- %s" % (os.path.basename(path), job, name, why))
     for line in defects:
         out(line)
     if defects:
