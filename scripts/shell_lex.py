@@ -22,10 +22,8 @@ otherwise it is two subshells and is reread as code. Arithmetic escapes every
 pattern character, while a nested `$(` is still code. Deep ambiguous groups
 stop at `_REREAD` times the source length and become a named `Unreadable`.
 
-Bash 5.2 governs heredocs whose substitution closes before their body and
-queued bodies after an `EOF)` line; Bash 3.2 reads those lines differently.
-The lexer files each body before parsing saved close-line code. Two `EOF)`
-ends in one queue remain refused. `shell_heredoc` documents the evidence.
+Bash 5.2 governs early bodies and `EOF)` queues; Bash 3.2 differs, so `)` body lines fail closed.
+Bodies precede saved close-line code; two `EOF)` ends stay refused. See `shell_heredoc`.
 
 Word position (`_HEADS`) decides assignments, redirections, reserved words,
 array subscripts, and Bash 3.2/5.2 disagreements. Arithmetic commands,
@@ -590,6 +588,9 @@ class _Lexer:
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
                 body, resume, cut, drop, rejected, following = found
+                if frame.kind == "(" and ")" in body:
+                    raise Unreadable("a `)` line inside a substitution heredoc body has different "
+                                     "bash readings: 3.2 counts it as syntax, while 5.2 reads data")
                 consumed = following
                 if rejected and compatible:
                     raise Unreadable("a substitution heredoc's `EOF)`-line rest begins with "

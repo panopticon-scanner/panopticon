@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Substitution heredocs with `)` body lines now fail closed (#2493, #2331).** Bash 3.2 may
+  close the substitution there and execute later body text as code, while Bash 5.2 reads it as
+  data. The lexer now names that version-dependent reading instead of accepting the 5.2 result.
+  Selecting a parser by runner was rejected because the owner ruled one conservative answer for
+  every workflow.
 - **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
   option made the guard discard an entire program word containing `$(...)`, so its visible fetch
   pipeline read clean. It now reads the outer program with the substitution opaque while the
