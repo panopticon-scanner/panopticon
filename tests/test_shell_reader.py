@@ -983,13 +983,21 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 10.0)
 
-    def test_a_heredoc_its_substitution_closes_over_raises(self):
+    def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
         # closes from the lines below -- a recovery it warns about, and one
-        # 3.2 does not make. The reader raises there, as it does past the cap.
-        # A body on the lines inside a substitution still open is read there.
-        with self.assertRaises(shell_lex.Unreadable):
-            shell_reader.statements('echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n')
+        # 3.2 does not make. The 5.2 reading is the standing rule; a body on
+        # the lines inside a substitution still open is read there too.
+        script = 'echo "$(cat <<EOF)"\nit\'s\nEOF\necho a\n'
+        parsed = shell_reader.statements(script)
+        inner = stage(parsed[0].stages[0].substitutions[0])
+        self.assertEqual(("it's", True), inner.stdin_heredoc)
+        self.assertEqual([['echo', 'a']], [part.argv for part in parsed[1].stages])
+        for missing, reason in (('echo "$(cat <<EOF)"', "no following line"),
+                                ('echo "$(cat <<EOF)"\nbody\n', "no terminator")):
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                    shell_lex.Unreadable, reason):
+                shell_reader.statements(missing)
         self.assertIn([['echo', 'a']], argvs("X=\"$(cat <<'EOF'\nit's\nEOF\n)\"\necho a\n"))
 
     def test_a_substitution_inside_arithmetic_holds_commands(self):
@@ -1001,8 +1009,8 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                        "echo $(( $(nproc) << 2 ))\necho a\n2\n"):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
-        with self.assertRaises(shell_lex.Unreadable):
-            shell_reader.statements("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n")
+        self.assertIn([['echo', 'a']],
+                      argvs("echo $(( $(cat <<EOF) ))\nit's\nEOF\necho a\n"))
 
 
 class TestTheScannersAgreeOnQuotes(unittest.TestCase):
@@ -1241,18 +1249,21 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
 
     def test_an_earlier_one_line_heredoc_takes_no_statement_after_it(self):
         later = '%s | echo "$(cat <<EOF)"\nbody\nEOF\n' % self.PIPE
-        bodies: list[str] = []
-        with self.assertRaises(shell_lex.Unreadable) as both:
-            shell_lex.lex(self.EARLIER + later, lambda body, *_rest: bodies.append(body) or "H")
-        self.assertEqual(["hi"], bodies)
-        # The later heredoc is the one refused, in the sentence it is refused
-        # in alone; and with no later one, the pipe below is read as before.
-        with self.assertRaises(shell_lex.Unreadable) as alone:
-            shell_lex.lex(later, lambda *_heredoc: "H")
-        self.assertEqual(str(alone.exception), str(both.exception))
-        self.assertIn("closes before the newline", str(both.exception))
+        self.assertEqual(["hi", "body"], self.lexed(self.EARLIER + later)[1])
+        self.assertEqual(["body"], self.lexed(later)[1])
+        piped = [['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']]
+        self.assertTrue(any(parts[:2] == piped for parts in argvs(self.EARLIER + later)))
+        self.assertTrue(any(parts[:2] == piped for parts in argvs(later)))
         self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
                       argvs(self.EARLIER + self.PIPE + "\n"))
+
+    def test_two_early_closes_on_one_line_take_successive_bodies(self):
+        script = ('x="$(cat <<A)" y="$(cat <<B)"\n'
+                  'one\nA\ntwo\nB\nprintf x\n')
+        text, bodies = self.lexed(script)
+        self.assertEqual(["one", "two"], bodies)
+        self.assertEqual(1, argvs(script).count([['printf', 'x']]))
+        self.assertNotIn("one\nA", text)
 
     def test_each_of_three_heredocs_ends_where_bash_ends_it(self):
         # One-line, then multi-line, then one-line, a payload after each and

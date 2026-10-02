@@ -112,21 +112,35 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
            "%s\nEOF; python3 - <<'EOF'\nprint(1)\nEOF\n" % ("a" * 64, PIPE, PIPE[:-5], PIPE))
 
     def test_the_statement_after_an_earlier_heredoc_is_read(self):
-        # Without the earlier heredoc the later one is refused by name; with
-        # it the step read clean, and is now refused in the same words.
+        # Without the earlier heredoc and with it, the early-close body is
+        # read and the pipeline beside it keeps its own finding.
         alone = defects(self.LATER)
         self.assertEqual(1, len(alone), alone)
-        self.assertIn("cannot read this step: a heredoc inside a `$(...)`", alone[0][1])
+        self.assertIn("hands %si.sh straight to `sh`" % URL, alone[0][1])
         self.assertEqual(alone, defects(self.EARLIER + self.LATER))
         # With no later one, the fetch is flagged as it was.
         found = defects(self.EARLIER + PIPE + "\n")
         self.assertEqual(1, len(found), found)
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
-    def test_the_row_it_was_found_in_is_refused(self):
-        # Both bashes run its payload. Its `EOF)` ends the body `bash -s`
-        # reads, and the `"$(cat <<EOF)"` after it is refused as above.
-        self.assertEqual(defects(self.LATER), defects(self.ROW))
+    def test_the_row_it_was_found_in_reports_its_fetch(self):
+        # Both bashes run its payload. The early-close body no longer
+        # replaces that payload's own finding with a generic refusal.
+        found = defects(self.ROW)
+        expected = "hands %si.sh straight to `sh`" % URL
+        self.assertEqual(3, len(found), found)
+        self.assertEqual(1, sum(expected in text for _step, text in found), found)
+
+    def test_an_early_close_with_only_data_is_clean(self):
+        self.assertEqual([], defects('echo "$(cat <<EOF)"\nbody\nEOF\n'))
+        found = defects('echo "$(cat <<EOF)"\nbody\nEOF\n%s\n' % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_close_line_rest_is_code_after_the_body(self):
+        found = defects("x=$(cat <<EOF) && %s\nbody\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
     def test_each_of_three_heredocs_keeps_the_fetch_after_it(self):
         # One-line, multi-line, one-line: a fetch after each is read, wherever
