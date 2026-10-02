@@ -2362,6 +2362,70 @@ class TestChecksumRescueStatus(unittest.TestCase):
                 self.assertIsNotNone(self.checked(rescue))
 
 
+class TestSubshellAndNestedGroupStatus(unittest.TestCase):
+    """#2431/#2438: a group passes its final status to its enclosing shell."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+    USE = "sh payload\n"
+
+    def finding(self, body):
+        return wg.fetch_exec_defect(self.FETCH + body.replace("CHECK", self.CHECK) + self.USE)
+
+    def test_a_nonzero_exit_in_a_subshell_rescue_gates_under_outer_errexit(self):
+        for body in ("( CHECK || exit 1 )\n", "( CHECK || exit 2 )\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_the_subshell_rescue_controls_still_report(self):
+        for body in ("( CHECK || exit 0 )\n", "( CHECK ) || true\n",
+                     "set +e\n( CHECK || exit 1 )\n",
+                     "( CHECK || exit 1 ) || true\n",
+                     "{ ( CHECK || exit 1 ); } || true\n",
+                     "{ ( CHECK || exit 1 ); } | cat\n",
+                     "{ ( CHECK || exit 1 ); } &\n",
+                     "{ ( CHECK || exit 1 ); } && echo ok\n",
+                     "( ( CHECK || exit 1 ); echo ok ) || true\n",
+                     "f() { ( CHECK || exit 1 ); }\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f()\n{\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f () {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf | cat\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf &\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf && echo ok\n",
+                     "f() {\n{ ( CHECK || exit 1 ); }\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nsh payload\nf\n"):
+            with self.subTest(body=body):
+                self.assertIsNotNone(self.finding(body))
+
+    def test_an_unrescued_enclosing_group_keeps_the_subshell_status(self):
+        for body in ("{ ( CHECK || exit 1 ); }\n",
+                     "{ ( CHECK || exit 1 ); } || exit 1\n",
+                     "( ( CHECK || exit 1 ) )\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf\n",
+                     "f() { ( CHECK || exit 1 ); }\nf\n",
+                     "f() {\n( CHECK || exit 1 )\necho ok\n}\nf\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_a_nested_groups_status_reaches_the_outer_exiting_rescue(self):
+        for body in ("{ { CHECK && echo ok; }; } || exit 1\n",
+                     "{ { { CHECK && echo ok; }; }; } || exit 1\n",
+                     "{\n  {\n    CHECK && echo ok\n  }\n} || exit 1\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_the_nested_group_controls_still_report(self):
+        for body in ("{ { CHECK && echo ok; }; };\n",
+                     "{ { CHECK && echo ok; }; } && echo recovered\n",
+                     "{ { CHECK && echo ok; }; } || true\n"):
+            with self.subTest(body=body):
+                self.assertIsNotNone(self.finding(body))
+
+
 class TestPipelineStreamProvenance(unittest.TestCase):
     URL = "https://example.test/install"
 

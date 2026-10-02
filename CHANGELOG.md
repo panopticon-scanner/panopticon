@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
 - **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
   After one scan reached the script's end, `_Lines` used the exact-line index for every later
   body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An
