@@ -1101,13 +1101,12 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertTrue(any(streamed in w for w in found), found)
                 self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
 
-    # Round 1 of the review and its fix round: behind a string no check in a
-    # stdin program counts (`workflow_programs.Stdin`). Each step hands a shell
-    # a body holding the check of `tool` (`stdin_step`), run by bash 5.2.21 and
-    # 3.2.57 under `-e` and `-eo pipefail` and by dash under `-e`. A method that
-    # pins a step reported behind a string also asserts its LITERAL twin CLEAN
-    # -- `bash -s`, `sh` or `bash -e -s` at the step's own level, which every
-    # shell stops at the check, as `main` credits it: the must-trip control.
+    # Round 1 of the review and its fix round: behind a string no check in a stdin program counts
+    # (`workflow_programs.Stdin`). Each step hands a shell a body holding the check of `tool`
+    # (`stdin_step`), run by bash 5.2.21 and 3.2.57 under `-e` and `-eo pipefail` and by dash under
+    # `-e`. A method that pins a step reported behind a string also asserts its LITERAL twin CLEAN
+    # -- `bash -s`, `sh` or `bash -e -s` at the step's own level, which every shell stops at the
+    # check, as `main` credits it: the must-trip control.
     ECHOED = CHECK + "\necho done"
     USED = CHECK + "\n" + USE.rstrip("\n")
 
@@ -1158,8 +1157,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
 
     def test_2500_a_check_alone_behind_a_string_is_reported_deliberately(self):
         # Reported DELIBERATELY: every shell stops each step at the check (rc 1; dash refuses a
-        # here-string, rc 2) and `main` reports each, but a credit is unsafe by class 3, `main`'s
-        # gap for a literal stdin shell, or class 4, a name on the way made to run something else.
+        # here-string, rc 2) and `main` reports each, but class 3 or class 4 makes a credit unsafe.
         self.assert_reported([
             # class 3 (inside `( ... ) || true`) and class 4 (after `bash() { :; }`)
             (stdin_step("eval 'bash -s'"), 1, UNGATED % "eval"),
@@ -1192,10 +1190,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             # class 4 (after `bash() { :; }`)
             (stdin_step("bash -ec 'sh'", CHECK, "piped"), 1, UNGATED % "bash")])
         # The map's proof: each twin runs the download in every shell (rc 0; dash refuses a
-        # here-string, rc 2). Pinned once elsewhere: `eval 'bash -s'` inside `( ... ) || true`
-        # in test_2500_mains_literal_shell_gaps_are_reported_behind_a_string, and the functions
-        # before `eval 'sh'` and `bash -c 'sh'` in
-        # test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string.
+        # here-string, rc 2). The other three twins are pinned in the Class 3 and Class 4 methods.
         self.assert_reported([
             (stdin_step("eval 'bash -s'", CHECK, "here-string", pre="bash() { :; }\n"), 1,
              UNGATED % "eval"),
@@ -1355,9 +1350,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("eval 'bash -s < /dev/null'", GET + self.USED, fetched=False), 1,
              UNGATED % "eval"),
             (stdin_step("eval 'bash -s'", pre="if true; then\n", end="fi\n"), 1, UNGATED % "eval"),
+            # A function header: each shell stops at the check (rc 1), and `main` reports it too.
+            (stdin_step("f() { eval 'bash -s'", end="}\nf\n"), 1, UNGATED % "eval"),
             (stdin_step("eval " * 70 + "bash -s"), 1, UNGATED % "eval")])
         self.assert_clean([stdin_step("sh"), stdin_step("bash -s"),
                            stdin_step("bash -e -s", self.ECHOED)])
+        # Its literal twin: every shell stops at the check (rc 1); `main` reads it CLEAN, as here.
+        self.assert_clean([stdin_step("f() { bash -s", end="}\nf\n")])
 
     def test_2500_a_literal_stdin_shell_reads_as_on_main(self):
         # Every shell stops at a check that ends the body or runs under its `-e`

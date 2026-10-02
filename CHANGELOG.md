@@ -9,10 +9,10 @@ evidence exposed.
 
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
-  `$CMD` run is caught. A check behind an `eval`/`-c` string counts for nothing; the body is still
-  read. Nor does a check count past `$X` or under `$CMD`: one clears a download only in the body of
-  a shell written at its own level, as before. `X=script.sh` over-reports; `$CMD` itself is `Idle`
-  beside a reported fetch.
+  `$CMD` run is caught.
+  A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
+  count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
+  own level, as before. `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
 - **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
   close the substitution there and execute later body text as code, so the lexer now names the
   ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
