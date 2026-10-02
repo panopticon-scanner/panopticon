@@ -528,8 +528,9 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             argv = shell_reader.command(stage.argv)
             return argv, forms.stdin_program(argv), forms.stdin_scripts(argv, stage)[0].reader
 
-        # The argv of a literal shell at the step's own level, whatever its options.
-        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s"):
+        # The argv of a literal shell at the step's own level, whatever its options, a `-c` string
+        # among them that names no shell reading stdin too.
+        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s", "bash -s -c 'echo hi'"):
             with self.subTest(step=step):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
@@ -538,8 +539,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for step in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
             with self.subTest(step=step):
                 self.assertEqual((forms.SHELL_PROGRAM, ()), read(step)[1:])
-        # None where no shell is sure to read it: behind `eval` or any other `-c` string, past a
-        # word that may vanish, under a `$` command word.
+        # None where no shell is sure to read it: behind an `eval` or `-c` string that names the
+        # shell reading it, past a word that may vanish, under a `$` command word.
         for step in ("eval 'bash -s'", "bash -c 'sh'", "bash -ec 'sh -e'", "bash $X -s -c 'sh'",
                      "$CMD -s -c 'sh'", "sh $X", "$CMD", "eval '! bash -s'", "eval 'bash -s &'",
                      "eval 'bash -s < /dev/null'", "eval 'bash -n -s'", "bash -nc 'sh'",

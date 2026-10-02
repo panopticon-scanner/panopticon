@@ -351,6 +351,99 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("passes `sh`"), found)
 
+    def test_a_value_in_the_options_speaks_before_a_stdin_no_shell_is_sure_to_read(self):
+        # Fix round 2's review (#2485): past a value where a shell reads its options no shell is
+        # sure to read its stdin, so neither the script it is handed inside a `$(...)` nor a
+        # printer piping it one -- each `Idle`, as `echo hi` fetches nothing -- speaks before the
+        # value's reason, loud as the word after the value fetches: `main`'s sentence, `main`
+        # reading no such stdin. With `X=-c` bash 3.2.57 and 5.2.21 (each `-e` and `-eo pipefail`)
+        # and dash run that word's download in every row, bar dash at a here-string, which it
+        # refuses (rc 2).
+        sh = "sh $X -s '%s'" % PIPE
+        echo, printf = 'echo "$Y" | %s', "printf '%%s %%s' \"$Y\" | %s"
+        # Inside a substitution: a quoted heredoc, a here-string, a spelled printer and an unspelled
+        # one; and the heredoc inside backquotes and inside `"$(...)"`.
+        rows = [("x=$(%s <<'EOF'\necho hi\nEOF\n)" % sh, "sh"),
+                ("x=$(%s <<< 'echo hi'\n)" % sh, "sh"),
+                ("x=$(echo 'echo hi' | %s\n)" % sh, "sh"), ("x=$(%s\n)" % (echo % sh), "sh"),
+                ("x=`%s <<'EOF'\necho hi\nEOF\n`" % sh, "sh"),
+                ('echo "$(%s <<\'EOF\'\necho hi\nEOF\n)"' % sh, "sh")]
+        # An unspelled printer at the step's own level, after `true &&`, in a function body, in
+        # `( … )`, in a literal shell's quoted heredoc body, in a `-c` string, in an `eval` string.
+        for printer in (echo, printf):
+            piped, bare = printer % sh, printer.replace('"$Y"', "$Y") % sh
+            rows += [(text, "sh") for text in (
+                piped, "true && " + piped, "f() {\n%s\n}\nf" % piped, "(\n%s\n)" % piped,
+                "bash -s <<'OUTER'\n%s\nOUTER" % piped, 'bash -c "%s"' % bare, 'eval "%s"' % bare)]
+        # The word after the value as `- '…'`; the value as `"$X"`, `${X:--c}`, `${X}` and
+        # `$(echo $X)`; `bash` and `dash`.
+        for command, shell in (("sh $X - '%s'", "sh"), ('sh "$X" -s \'%s\'', "sh"),
+                               ("sh ${X:--c} -s '%s'", "sh"), ("sh ${X} -s '%s'", "sh"),
+                               ("sh $(echo $X) -s '%s'", "sh"), ("bash $X -s '%s'", "bash"),
+                               ("dash $X -s '%s'", "dash")):
+            rows += [(echo % (command % PIPE), shell),
+                     ("x=$(%s <<'EOF'\necho hi\nEOF\n)" % (command % PIPE), shell)]
+        for text, shell in rows:
+            with self.subTest(script=text):
+                found = defects("export X=-c\n%s\n" % text)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `%s`" % shell), found)
+        # A bare word after the value reads as the program FILE, so the stdin was never a program
+        # and the value's reason always spoke; it still does (every shell runs the word, rc 0).
+        for text in (echo % ("sh $X '%s'" % PIPE),
+                     "x=$(sh $X '%s' <<'EOF'\necho hi\nEOF\n)" % PIPE):
+            with self.subTest(script=text):
+                found = defects("export X=-c\n%s\n" % text)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh`"), found)
+
+    def test_a_stdin_some_shell_reads_still_speaks_first(self):
+        # The order the rule above leaves alone, each answer as it was. Where the word after the
+        # value fetches nothing, the value's reason is `Idle` and the printer's speaks: CLEAN
+        # alone, and kept beside a reported fetch (every shell runs `tool`, rc 0).
+        quiet = 'X=-c\necho "$Y" | sh $X -s \'echo hi\'\n'
+        with self.subTest(script=quiet):
+            self.assertEqual([], defects(quiet))
+        with self.subTest(script=GET + quiet + USE):
+            found = defects(GET + quiet + USE)
+            self.assertEqual(2, len(found), found)
+            self.assertTrue(found[0][1].startswith("pipes `sh` its program from `echo`"), found)
+        # A body no shell is sure to read that fetches, where the words after the value do not:
+        # #2485's catch past an unset `X` (every shell runs the download, rc 0), and round 1's
+        # behind `eval` (rc 0 likewise).
+        for script, runner in (("x=$(sh $X -s 'echo hi' <<'EOF'\n%s\nEOF\n)\n" % PIPE, "sh"),
+                               ("x=$(eval 'bash -s' <<'EOF'\n%s\nEOF\n)\n" % PIPE, "eval")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands a script to `%s` inside" % runner),
+                                found)
+        # Where a shell reads the stdin -- `-s` before the value -- or the handed script holds a
+        # `-c` string, that script or the printer speaks first, as it always has: each answers as
+        # on `main`, which reads them. CLEAN: `-s` before the value, inside `$(...)` and through a
+        # printer, though with `X=-c` every shell runs the word (rc 0) -- `main`'s reading, a gap
+        # filed under #2608; and a `-c` string whose word after it no shell runs (rc 0, nothing
+        # downloaded).
+        for script in ("X=-c\nx=$(sh -s $X '%s' <<'EOF'\necho hi\nEOF\n)\n" % PIPE,
+                       "X=-c\necho \"$Y\" | sh -s $X '%s'\n" % PIPE,
+                       "X=-c\nx=$(sh $X -c 'echo hi' '%s')\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # The `-c` string's own reason where it fetches, `main`'s sentence (bash 5.2.21 runs it,
+        # rc 0; bash 3.2.57 refuses `${X,}`, rc 1; dash too, rc 2); and a `$` command word's `-c`,
+        # at the step's own level and inside `$(...)`, whose stdin no shell reads (every shell runs
+        # the word, rc 0).
+        for script, said in (("X=-c\nx=$(bash ${X,} -c '%s')\n" % PIPE,
+                              "hands a script to `bash` inside a command substitution"),
+                             ("CMD=sh\n$CMD -c '%s' <<'EOF'\necho hi\nEOF\n" % PIPE,
+                              "runs `$CMD` with `-c`"),
+                             ("CMD=sh\nx=$($CMD -c '%s' <<'EOF'\necho hi\nEOF\n)\n" % PIPE,
+                              "runs `$CMD` with `-c`")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(said), found)
+
     def test_the_positional_parameters_read_alike(self):
         # Finding 2: `$@`, `${@}` and `$*` are one thing spelled three ways,
         # and `set --` gives a `run:` step positionals -- both bashes run
@@ -465,14 +558,21 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `eval 'bash -s &'` and `eval 'bash -s < /dev/null'` around a body no
       shell runs (round 1); a step that a statement of a body no shell is sure
       to read would clear -- the `exit 1` of a rescue, a call of the step's
-      function or of one the body defines, a `> sums`, a `cp` -- reported as
-      `main` reports it, the job being read without that body too, though the
-      inner shell runs the `exit 1`, a shell lacks the function it calls or
-      the check fails (round 2); a body no shell is sure to read that the
-      reader refuses (a `)` in a substitution heredoc body), which refuses its
-      step whole though under `CMD=true` or past `X=/dev/null` no shell reads
-      it, filed under #2608; and, as before round 1, the body of
-      `builtin eval`, which the guard does not take for `eval`;
+      function or of one the body defines, a `> sums`, a `cp` -- reported, the
+      job being read without that body too, though the inner shell runs the
+      `exit 1`, a shell lacks the function it calls or the check fails (round
+      2): each with `main`'s sentence, bar the call of a function the body
+      defines, which keeps the first reading's (its check "is inside the
+      script `<holder>` runs, and the step does not stop when that script
+      fails", where `main` says nothing verifies what arrived); a body no
+      shell is sure to read that the reader refuses (such as a `)` in a
+      substitution heredoc body), which refuses its step whole though under
+      `CMD=true` or past `X=/dev/null` no shell reads it, filed under #2608;
+      `eval` words the reader refuses joined, though each reads alone
+      (`eval 'echo $(cat <<A' 'x' 'A)'`), which refuse their step, as bash
+      runs the join -- nothing in it downloads (round 3); and, as before
+      round 1, the body of `builtin eval`, which the guard does not take for
+      `eval`;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
       `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `$PYTHON -s file.py`, `$PYTHON -Ou file.py` and
@@ -1727,6 +1827,40 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 step = stdin_step("eval 'bash -s'", body, fetched=False) + USE
                 found = wg.job_defects([("B", GET), ("A", step)])
                 self.assertEqual([named], [name for name, _why in found])
+
+    def test_2500_a_job_handed_as_an_iterator_is_read_twice_as_its_list_is(self):
+        # The fold read its argument once per reading, so an iterator or a generator lost the
+        # second reading and the reports only it makes: here the rescue under `CMD=true` and the
+        # two-step job whose step A's body writes `sums`, both pinned above.
+        sums = 'echo "%s  tool" > sums' % ("a" * 64)
+        rescue = [("step", stdin_step(CHECK + " || $CMD", "exit 1", pre="CMD=true\n"))]
+        job = [("A", "eval 'bash -s' <<'EOF'\n%s\nEOF\n" % sums),
+               ("B", GET + "sha256sum -c sums\n" + USE)]
+        for steps, report in ((rescue, ("step", self.said(self.RESCUED))),
+                              (job, ("B", self.said(self.UNCHECKED)))):
+            with self.subTest(steps=steps):
+                found = wg.job_defects(steps)
+                self.assertIn(report, found)
+                self.assertEqual(found, wg.job_defects(iter(steps)))
+                self.assertEqual(found, wg.job_defects(step for step in steps))
+
+    def test_2500_eval_s_words_are_read_joined_so_a_join_the_reader_refuses_refuses_the_step(self):
+        # `_stdin` asks whether `eval`'s words JOINED, as bash runs them, are one stdin-reading
+        # shell, and the reader refuses this join (a heredoc whose substitution closes before its
+        # body), though each word reads alone, as on `main` -- kept (Ruling T30-R10): a text the
+        # guard cannot read is refused. Bash 3.2.57, 5.2.21 and dash run the join (rc 0: `echo`
+        # runs, nothing is downloaded), so alone the step is an over-report; in a job whose step A
+        # makes step B's download executable and runs it (every shell runs it, rc 0), the report
+        # names A, where `main` names B.
+        join = "eval 'echo $(cat <<A' 'x' 'A)'\n"
+        found = defects(join)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
+        with self.assertRaises(shell_lex.Unreadable):
+            wg.fetch_exec_defects(join)
+        found = wg.job_defects([("B", GET), ("A", join + USE)])
+        self.assertEqual(["A"], [name for name, _why in found])
+        self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
