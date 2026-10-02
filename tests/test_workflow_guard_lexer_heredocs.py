@@ -270,6 +270,35 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestACaseOnAnEOFParenLineReadsEveryArm(unittest.TestCase):
+    """#2580: a case pattern closes its arm, not the substitution heredoc."""
+
+    def assert_pipeline_is_reported(self, rest):
+        script = "x=$(cat <<'EOF'\nhi\nEOF%s)\n" % rest
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_second_arm_on_the_close_line_is_read(self):
+        self.assert_pipeline_is_reported("case 2 in 1) true;; 2) %s;; esac" % PIPE)
+
+    def test_the_third_arm_on_the_close_line_is_read(self):
+        rest = "case 3 in 1) true;; 2) true;; 3) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_parenthesized_later_pattern_is_read(self):
+        rest = "case 2 in 1) true;; (2) %s;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_a_nested_substitution_in_a_later_arm_stays_read(self):
+        rest = "case 2 in 1) true;; 2) echo $(%s);; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+    def test_the_first_arm_control_stays_read(self):
+        rest = "case 1 in 1) %s;; 2) true;; esac" % PIPE
+        self.assert_pipeline_is_reported(rest)
+
+
 class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
     """#2494: after one body finds no end, a later body's fallback scan still
     reaches its `B)` line before the exact `B` line that bounds that scan."""

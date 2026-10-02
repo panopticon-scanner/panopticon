@@ -100,6 +100,8 @@ split the arm, and the reader took the pattern `a` and then a `|` for the
 command, so the body behind them went unread (#2345). So `lex` follows each
 `case` as bash's parser does (`casing`) and drops those spaces and tabs from a
 pattern list outside quotes; a newline there is a syntax error to all three.
+`closing` follows the same phases, so an arm's `)` does not close its
+surrounding substitution (#2474).
 
 Stdlib only. `lex(script, heredoc)` is the entry point; `closing(text, i)` is
 the `$(...)` matcher `shell_reader` lifts substitutions with. The pattern
@@ -158,10 +160,18 @@ _STATE = ("word", "named", "at", "target", "last", "compound", "assigned", "cond
 # Where each `case` open in a frame stands (`casing`), innermost last: its
 # word or its `in` due, a pattern list due or begun, or an arm's body.
 _SUBJECT, _IN, _PATTERN, _ARM, _BODY = "subject", "in", "pattern", "arm", "body"
+_CASE_UNREADABLE = {
+    _SUBJECT: "a `case` inside `$(...)` ends before its subject",
+    _IN: "a `case` inside `$(...)` ends before the `in` after its subject",
+    _PATTERN: "a `case` inside `$(...)` ends before another arm or `esac`",
+    _BODY: "a `case` inside `$(...)` has a last arm without `;;`, `;&`, or `;;&`",
+}
 # `<<`, `<<-` or `<<<` as bash reads it: past the `\`-newlines it folds away
 # first, which leave `<` + `\`-newline + `<EOF` the operator `<<` (#2291).
 _HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
 _REQUIRED_SEPARATOR = re.compile(r"(?:[ \t]|\\\n)*(?:then|do)(?=[ \t\n;&|()<>]|$)")
+
+
 def lex(script: str, heredoc: Callable[[str, bool, str], str]) -> str:
     """`script` with its comments removed, its continuations folded, and each
     heredoc -- operator, word and body -- replaced by the marker
@@ -184,24 +194,88 @@ def closing(text: str, opening: int) -> int | None:
     Quotes are read as `shell_reader._split` reads them: a backslash takes the
     next character everywhere but inside '...', so `\\"` does not end a "..."
     (COD-3636110933 -- a nested `"a\\")b"` used to close its `$(...)` a paren
-    early), and `$'...'` ends only at a `'` no backslash takes."""
-    depth, i, quote = 0, opening, ""
+    early), and `$'...'` ends only at a `'` no backslash takes. A case arm's
+    pattern-closing `)` is not the close of the surrounding substitution."""
+    depth, i, quote, word, head, target = 0, opening, "", -1, True, False
+    cases: list[tuple[int, str, bool, bool]] = []
+    heads: list[bool] = []
     while i < len(text):
         ch = text[i]
+        if (not quote and cases and cases[-1][1] == _PATTERN
+                and not cases[-1][3] and ch not in " \t\n;&|)"):
+            base, state, _wrapped, _started = cases[-1]
+            cases[-1] = base, state, ch == "(", True
         if ch == "\\" and quote != "'":
+            word = i if word < 0 else word
             i += 2
             continue
         if quote:
             quote = "" if ch == quote[-1] else quote
+            i += 1
+            continue
         elif text.startswith("$'", i):
-            quote, i = "$'", i + 1
+            word, quote, i = (i if word < 0 else word), "$'", i + 2
+            continue
         elif ch in "'\"":
-            quote = ch
-        elif ch in "()":
-            depth += 1 if ch == "(" else -1
-            if not depth:
-                return i + 1
+            word, quote, i = (i if word < 0 else word), ch, i + 1
+            continue
+        if ch in _BREAK and word >= 0:
+            spelled, word = text[word:i], -1
+            state = cases[-1][1] if cases else ""
+            if cases and spelled == "esac" and head and state in (_PATTERN, _BODY):
+                cases.pop()
+                head = False
+            elif state == _SUBJECT:
+                if ch == "(":
+                    raise Unreadable("a `case` subject inside `$(...)` needs another shell parse")
+                base, _state, wrapped, started = cases[-1]
+                cases[-1] = base, _IN, wrapped, started
+            elif state == _IN:
+                if spelled != "in":
+                    raise Unreadable(
+                        "a `case` inside `$(...)` has no literal `in` after its subject")
+                base, _state, _wrapped, _started = cases[-1]
+                cases[-1], head = (base, _PATTERN, False, False), True
+            elif state != _PATTERN and spelled == "case" and head:
+                cases.append((depth, _SUBJECT, False, False))
+                head = False
+            elif state != _PATTERN:
+                if target:
+                    target = False
+                elif not (head and ch in "<>" and spelled.isdigit()):
+                    head = spelled in _STARTERS or bool(_ASSIGNS.match(spelled))
+        pattern = bool(cases and cases[-1][1] == _PATTERN)
+        if ch in "<>":
+            target = True
+        if ch in "()":
+            if ch == ")" and pattern:
+                base, _state, wrapped, started = cases[-1]
+                if started and depth == base + int(wrapped):
+                    cases[-1], head = (base, _BODY, False, False), True
+                    if not wrapped:
+                        i += 1
+                        continue
+            if ch == "(":
+                heads.append(head)
+                depth, head = depth + 1, True
+            else:
+                if cases and depth == 1:
+                    raise Unreadable(_CASE_UNREADABLE[cases[-1][1]])
+                depth -= 1
+                if not depth:
+                    return i + 1
+                head = heads.pop()
+        elif not pattern and ch in "\n;&|":
+            if (cases and cases[-1][1] == _BODY and depth == cases[-1][0]
+                    and text.startswith((";;&", ";;", ";&"), i)):
+                base = cases[-1][0]
+                cases[-1] = base, _PATTERN, False, False
+            head = True
+        elif ch not in _BREAK and word < 0:
+            word = i
         i += 1
+    if cases:
+        raise Unreadable(_CASE_UNREADABLE[cases[-1][1]])
     return None
 
 
