@@ -440,15 +440,23 @@ def _structural_groups(stage):
     return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
 
 
-def _nested_group_tail(stmts, position):
-    """Whether a later command replaces this check before nested groups head a list."""
+def _conditional_group_tail(stmts, position, errexit):
+    """Why a later command replaces this check before its carrier is tested."""
+    if function := _function_scope(stmts, position):
+        name, close = function
+        later = any(not _closes(statement) for statement in stmts[position + 1:close + 1])
+        if not later:
+            return None
+        call = _gating_function_call(stmts, name, close, errexit, False)
+        return (_GROUP_TAIL if call is None
+                else FunctionGate(call, Reach(None, _GROUP_TAIL)))
     depth = 0
     for statement in stmts[:position + 1]:
         for stage in statement.stages:
             opens, closes = _structural_groups(stage)
             depth += opens - closes
-    if depth < 2:
-        return False
+    if depth < 1:
+        return None
     later = False
     for statement in stmts[position + 1:]:
         later = later or not _closes(statement)
@@ -456,8 +464,8 @@ def _nested_group_tail(stmts, position):
             opens, closes = _structural_groups(stage)
             depth += opens - closes
         if depth <= 0:
-            return later and statement.separator in ("&&", "||")
-    return False
+            return _GROUP_TAIL if later and statement.separator in ("&&", "||") else None
+    return None
 
 
 def _lost_case(stmts):
@@ -482,14 +490,15 @@ def _stops_step(stmts, position, on, fails):
     statement only, the refusal where a group it ends lets it go, else the
     index of the last statement it still stops.
 
-    A check followed by another command in nested groups does not supply the
-    groups' eventual status. When the outer group heads `&&` or `||`, that
-    later command may replace the check's failure. A check that ends a `{ }`
-    group, or a `( )` whose `(` line the reader
-    dropped, is that group's status, and what follows the statements closing
-    its groups decides: `&`, a pipe where pipefail is off, an `||` branch
-    that does not fail the step, or an `&&` list the group heads (review
-    I-2). Ahead of `&&` the answer is the end of the list -- the first `||`
+    A check followed by another command in a group or function does not supply
+    the carrier's eventual status when that carrier heads `&&` or `||`; a
+    later command may replace the check's failure. A plain function call can
+    still gate uses after that call. A check that ends a `{ }` group, or a
+    `( )` whose `(` line the reader dropped, is that group's status, and what
+    follows the statements closing its groups decides: `&`, a pipe where
+    pipefail is off, an `||` branch that does not fail the step, or an `&&`
+    list the group heads (review I-2). Ahead of `&&` the answer is the end of
+    the list -- the first `||`
     or the list's own end, a compound command in it taken whole -- or of the
     `( )` or `{ }` group the list ends, whose status is the list's. That
     status still stops the step as the step's last command, through an `||`
@@ -515,8 +524,10 @@ def _stops_step(stmts, position, on, fails):
         if len(stmts[close].stages) > 1 and not fails[close]:
             return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
-    if separator not in ("&&", "||") and _nested_group_tail(stmts, position):
-        return _GROUP_TAIL
+    if separator not in ("&&", "||"):
+        tail = _conditional_group_tail(stmts, position, on[position])
+        if tail is not None:
+            return tail
     if close > position and separator == "||":
         return None if _stops_the_job(
             stmts, close, on[position], fails[position]) else _ENDS % _RESCUED
