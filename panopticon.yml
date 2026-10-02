@@ -620,6 +620,7 @@ groups:
       # #2521: keep the parser, lexer and their focused tests in one review.
       match:
       - scripts/shell_reader.py
+      - scripts/shell_tokens.py
       - scripts/shell_lex.py
       - scripts/shell_quote.py
       - scripts/shell_patterns.py

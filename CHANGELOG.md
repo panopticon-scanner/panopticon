@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`shell_reader.py`'s token layer moved to `scripts/shell_tokens.py` (#2628, pure move).**
+  `_Token`, `_Parse`, `derived`, `readable`, `is_marker`, `has_substitution` and `yields_words` now
+  live in the new module and are imported back into the reader under their own names, so no caller
+  changed; the reader goes from 683 to 599 lines, making room for #2441 and the reader half of
+  #2617.
 - **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
   close the substitution there and execute later body text as code, so the lexer now names the
   ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
