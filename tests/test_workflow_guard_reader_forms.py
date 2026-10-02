@@ -339,42 +339,47 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
     walk, so the heredoc, here-string or pipe each runs on its own stdin is
     taken for data instead of the program it is (#2500, #2485, #2473); and
-    under a `$` command word a shell's `-s` or a vanishing operand ended the
-    walk at a FILE (`CMD=bash; $CMD -s -- "$V"`, `$CMD $X` with `X` unset),
-    until the word took a shell's rules (the final review's F2). Every step
+    under a `$` command word a shell's `-s`, a vanishing operand or an
+    option's value ended the walk at a FILE (`CMD=bash; $CMD -s -- "$V"`,
+    `$CMD $X` with `X` unset, `$CMD -oe pipefail`), until the word took a
+    shell's rules (the final review's F2, and its fix round 2). Every step
     below was run in bash 3.2.57, 5.2.21 and dash, every checksum failing: a
-    DEFECT is a download they run (bar dash, which refuses `<<<` and
-    `<(...)`), a CLEAN a step that runs none -- except these readings, which
-    contradict them, each accepted for its reason:
+    DEFECT is a download they run (bar dash, which refuses `<<<`, `<(...)`,
+    `-o pipefail` and `-O`), a CLEAN a step that runs none -- except these
+    readings, which contradict them, each accepted for its reason:
 
     * fail-closed over-reports: `X=script.sh; sh $X` and its `X=-n` and bare
       `X=-c` twins, which run nothing (#2485), and `CMD=sh` whose body ends in
       the check (#2473), where the reader cannot tell the word from one that
       runs the body (`X=-s`) or skips it (`CMD=true`), and `$CMD "$X"` with
-      `X` empty, whose walk now reads on as a shell's (#2473); a letter bash
-      and dash refuse, read on as the operand walk reads `sh -K` (#2475 stops
-      only a `-c` cluster): behind a value (`X=-K; sh $X`, #2485), a `$` word
-      (`CMD=sh; $CMD -K`, #2473) or an inner shell (`eval 'bash -K -s'`, `bash
-      -c 'sh -K'`, #2500); `eval -- bash -s`, whose `--` dash runs as a
-      command; seventy `eval`s before `echo hi`, read as a stdin shell past
-      the credit's 64-deep bound (#2500); and a non-shell body under a `$`
-      word whose string spells a shell download (`print("$(curl ... | sh)")`
-      under `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as shell and
-      reported loud, filed under #2331;
-    * `Idle` hand-offs beside a download that never runs (`$CMD` with `echo
-      hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
-      `print(1)`, `$PYTHON -s file.py` with `print(1)`, whose `-s` reads as a
-      shell's, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the `$CMD
-      -c "$P"` candidate (#2337), each beside GET): a report of a program the
-      guard cannot read, kept beside a fetch it reports (#2499), not a claim
-      that a download runs;
+      `X` empty and `$PYTHON -Ou file.py` with a download body, whose walks
+      now read on as a shell's (#2473); a letter bash and dash refuse, read on
+      as the operand walk reads `sh -K` (#2475 stops only a `-c` cluster):
+      behind a value (`X=-K; sh $X`, #2485), a `$` word (`CMD=sh; $CMD -K`,
+      #2473) or an inner shell (`eval 'bash -K -s'`, `bash -c 'sh -K'`,
+      #2500); `eval -- bash -s`, whose `--` dash runs as a command; seventy
+      `eval`s before `echo hi`, read as a stdin shell past the credit's
+      64-deep bound (#2500); and a non-shell body under a `$` word whose
+      string spells a shell download (`print("$(curl ... | sh)")` under
+      `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as shell and reported
+      loud, filed under #2331;
+    * `Idle` hand-offs beside a download that never runs (`$CMD` with
+      `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
+      `print(1)`, `$PYTHON -s file.py`, `$PYTHON -Ou file.py` and
+      `$PYTHON -O file.py` with `print(1)`, whose `-s` and `O` read as a
+      shell's, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the
+      `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
+      program the guard cannot read, kept beside a fetch it reports (#2499),
+      not a claim that a download runs;
     * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -` or
       `python3 -` running `os.system`, beside no reported fetch (option b's
-      price, #2499); and, each filed under #2331, `eval 'bash -s'` and
-      `bash -ec 'sh'` whose check only an `-e` would stop, `eval 'bash -s |
-      cat'` (#2500), `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval
-      "$CMD"` or an exported `bash -c '$CMD'` handed a heredoc alone --
-      beside a reported fetch #2483 reports the word, never the body (#2473).
+      price, #2499); `$PYTHON -Ou - file.py` running it even beside one, whose
+      `-` is read as the `O`'s value, as `python3 -O - file.py`'s is (#2473);
+      and, each filed under #2331, `eval 'bash -s'` and `bash -ec 'sh'` whose
+      check only an `-e` would stop, `eval 'bash -s | cat'` (#2500),
+      `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
+      exported `bash -c '$CMD'` handed a heredoc alone -- beside a reported
+      fetch #2483 reports the word, never the body (#2473).
 
     `python3 $S` with S unset reads its heredoc as data, where python takes
     it as its program; here that is a SyntaxError, so CLEAN is still true
@@ -877,6 +882,67 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             found = reasons(GET + python)
             self.assertEqual(1, len(found), found)
             self.assertTrue(found[0].startswith(to("$PYTHON")), found)
+
+    def test_2473_a_dollar_word_counts_option_values_as_a_shell_does(self):
+        # Fix round 2: under a `$` command word the walk still counted option
+        # values a foreign interpreter's way, one where the option word ENDS
+        # in `o` or `O`, so `-oe` took none and `pipefail` ended the walk as a
+        # FILE: `CMD=bash; $CMD -oe pipefail <<'EOF'` read CLEAN alone and
+        # beside a fetch, though bash 3.2.57 and 5.2.21 run its heredoc (dash
+        # refuses `-o pipefail`, rc 2). The word may be a shell, so it owes a
+        # value for each `o` or `O`, as a shell's does (#2344): the stream and
+        # the hand-off. `-o pipefail` and `-O extglob`, which end in their
+        # letter, read as they did.
+        def to(word):
+            return ("hands a heredoc body or here-string to `%s`, a command word this guard "
+                    "does not follow -- a quoted body is read as shell" % word)
+
+        def reasons(script):
+            return [why for _step, why in defects(script)]
+
+        streamed = "straight to `sh`"
+        for script in ("CMD=bash\n$CMD -oe pipefail <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=sh\n$CMD -o pipefail <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=bash\n$CMD -O extglob <<'EOF'\n%s\nEOF\n" % PIPE):
+            for fetched in ("", GET):
+                with self.subTest(script=fetched + script):
+                    found = reasons(fetched + script)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(any(streamed in w for w in found), found)
+                    self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+        # The price, named in `stdin_program`'s docstring: a foreign
+        # interpreter's option word owes a value for an `o` or `O` before its
+        # end too, so `$PYTHON -Ou file.py` reads its heredoc as `$PYTHON -O
+        # file.py` does, though python runs `file.py` and the body is its data
+        # (rc 2 here, in all three shells: there is no `file.py`) -- loud where
+        # the body spells a download, its hand-off `Idle` beside a reported
+        # fetch otherwise. A literal `python3 -Ou file.py` keeps its FILE
+        # reading, fetch and download body or not.
+        for flags in ("-Ou", "-O"):
+            python = "PYTHON=python3\n$PYTHON %s file.py <<'EOF'\nprint(1)\nEOF\n" % flags
+            with self.subTest(script=python):
+                self.assertEqual([], reasons(python))
+            with self.subTest(script=GET + python):
+                found = reasons(GET + python)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0].startswith(to("$PYTHON")), found)
+        script = "PYTHON=python3\n$PYTHON -Ou file.py <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            found = reasons(script)
+            self.assertEqual(2, len(found), found)
+            self.assertTrue(any(streamed in w for w in found), found)
+        script = GET + "python3 -Ou file.py <<'EOF'\n%s\nEOF\n" % PIPE
+        with self.subTest(script=script):
+            self.assertEqual([], reasons(script))
+        # Its twin, the other way, named there too: `-Ou` takes a following
+        # `-` for its value, so `$PYTHON -Ou - file.py`, whose heredoc python
+        # runs (an `os.system` download ran in all three shells), ends at
+        # `file.py` and reads CLEAN even beside a fetch -- as the literal
+        # `python3 -O - file.py` already reads, its `O` ending the word.
+        script = (GET + "PYTHON=python3\n$PYTHON -Ou - file.py <<'EOF'\nimport os\n"
+                  "os.system('%s')\nEOF\n" % PIPE)
+        with self.subTest(script=script):
+            self.assertEqual([], reasons(script))
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):

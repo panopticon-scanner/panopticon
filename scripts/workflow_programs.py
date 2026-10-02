@@ -350,10 +350,10 @@ def stdin_program(argv, depth=0):
     in it, since `$CMD` may not run it) -- a body no interpreter runs, `$CAT
     <<'EOF' > f`, over-reports -- and the guard's `_unread_stdin` reports the
     hand-off `Idle` under a sentence of its own. Its walk takes a
-    shell's `-c`, `-s` and vanishing-operand rules beside a foreign
-    interpreter's value options, since the word may be a shell (`$CMD -s --
-    "$V" <<'EOF'` reads the heredoc; `$PYTHON -s file.py <<'EOF'` over-reports
-    a hand-off),
+    shell's `-c`, `-s`, vanishing-operand and option-value rules, since the
+    word may be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail
+    <<'EOF'` read the heredoc; `$PYTHON -s file.py <<'EOF'` and `$PYTHON -Ou
+    file.py <<'EOF'` over-report a hand-off, like `$PYTHON -O file.py`),
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
     <<EOF` pays too. No option word behind a `$` word is a refusal (#2475's
@@ -365,10 +365,10 @@ def stdin_program(argv, depth=0):
     CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
     `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
     the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331. The walk's value options are a foreign
-    interpreter's -- one value where an option word ENDS in `o` or `O` -- so
-    `CMD=bash; $CMD -oe pipefail <<'EOF'` ends at `pipefail`, a FILE, and
-    reads CLEAN though both bashes run the heredoc: a fail-open residual.
+    stream -- a gap filed under #2331. Option values counted a shell's way
+    can swallow a foreign interpreter's `-`: python runs the heredoc of
+    `$PYTHON -Ou - file.py <<'EOF'`, which reads CLEAN even beside a reported
+    fetch, as `python3 -O - file.py <<'EOF'` does -- a fail-open residual.
     """
     if not argv:
         return None
@@ -423,8 +423,9 @@ def stdin_program(argv, depth=0):
         if (shell or value) and "s" in letters:
             return answer                   # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
-        # `bash -oe pipefail`); another interpreter's, one where it ends so.
-        owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell
+        # `bash -oe pipefail`), and so does a `$` word's, which may be a shell;
+        # another interpreter's, one where it ends so.
+        owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell or value
                 else int(bool(letters) and letters[-1] in VALUE_OPTIONS))
         for _ in range(owed):
             next(rest, None)                # an option's value is not a program
