@@ -139,7 +139,7 @@ live, so a change that catches one fails there and edits this list.
   its failure are the step's to change (`sh() { :; }`, `< $F`, `( … ) || true`). Nothing else in
   such a body is the step's own either, unless the holder's own options read stdin
   (`bash -s -c 'sh'`): the job is read with the bodies no shell is sure to read and without them
-  (`job_defects`), and a defect of either reading is reported, so reading one clears no job;
+  (`job_defects`), and a defect of either reading is reported, so no statement of one clears a job;
   `eval 'bash -s < f'` and `eval 'bash -s &'` still over-report a download no shell runs. Still
   open: a `}` (or `exit`, a call, a write) in a body a LITERAL shell reads is taken for the step's
   own, filed under #2608; and a statement of one unsure body still gives credit for a
@@ -655,7 +655,7 @@ def job_defects(steps, strict=False):
     (`workflow_forms.Unsure`) is never the step's own: a job holding one is folded again without
     them, and a defect of that fold is added where the first has none for that fetch or unread form
     (`_defects`'s `what`) at that statement. `strict`: a step the reader refuses raises."""
-    found, seen = [], set()
+    found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
     for sure in (False, True):              # the second fold leaves every `Unsure` statement out
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, entries, fetched, unread = [], {}, {}, [], [], []
