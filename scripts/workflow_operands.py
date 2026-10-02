@@ -33,6 +33,7 @@ import re
 
 import shell_reader
 from shell_reader import command
+from shell_patterns import is_pattern, patterned
 from shell_wrappers import dynamic
 
 
@@ -190,13 +191,71 @@ class _Reparsed(str):
 # only the shell knows the directory, so the last parts bind, as in `may_run`
 # (#2345); so do they for a bare download and a glob with a directory part,
 # which reaches it from another directory: the guard follows no `cd`.
-_GROUP = re.compile(r"\{[^{}]*\}|[@+!*?]\([^()]*\)")
+_BRACE = re.compile(r"\{([^{}]*)\}")
+_EXTGROUP = re.compile(r"[@+!*?]\([^()]*\)")
 _EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\(\.\.\.\)|\$(?:\w+|[^\w{])")
 _HERE = re.compile(r"^(?:\./+)+")
+_BRACE_LIMIT = 64
 # `find`'s ways of running a command over what it walked. The operand is `{}`,
 # which names nothing at all.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 _RECURSIVE = ("-R", "-r", "--recursive")
+
+
+def _brace_members(body):
+    """A bounded list or numeric range Bash brace-expands; None if unresolved."""
+    if "," in body:
+        if body.count(",") >= _BRACE_LIMIT:
+            return None
+        members = body.split(",")
+        if any(not re.fullmatch(r"[-A-Za-z0-9_./+]*", member) for member in members):
+            return None
+        return members
+    match = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?", body)
+    if not match:
+        return None
+    try:
+        first, last = int(match[1]), int(match[2])
+        step = abs(int(match[3] or 1))
+    except ValueError:                       # Python's bounded integer conversion
+        return None
+    if not step:
+        return None
+    step *= 1 if last >= first else -1
+    if abs(last - first) // abs(step) + 1 > _BRACE_LIMIT:
+        return None
+    numbers = list(range(first, last + (1 if step > 0 else -1), step))
+    first_digits, last_digits = match[1].lstrip("-"), match[2].lstrip("-")
+    padded = (len(first_digits) > 1 and first_digits.startswith("0")
+              or len(last_digits) > 1 and last_digits.startswith("0"))
+    width = max(len(match[1]), len(match[2]))
+    members = [str(number).zfill(width) if padded else str(number) for number in numbers]
+    if padded and match[3] is None:          # Bash 3.2 expands without Bash 5.2's padding
+        members.extend(str(number) for number in numbers)
+        members = list(dict.fromkeys(members))
+    return members if len(members) <= _BRACE_LIMIT else None
+
+
+def _brace_patterns(text):
+    """At most 64 words Bash makes from supported brace expansions."""
+    patterns = [text]
+    while True:
+        expanded = []
+        changed = False
+        for pattern in patterns:
+            match = _BRACE.search(pattern)
+            if not match:
+                expanded.append(pattern)
+                continue
+            members = _brace_members(match[1])
+            if members is None or len(expanded) + len(members) > _BRACE_LIMIT:
+                return None
+            changed = True
+            expanded.extend(pattern[:match.start()] + member + pattern[match.end():]
+                            for member in members)
+        patterns = expanded
+        if not changed:
+            return patterns
 
 
 def covers(token, dest, recursive=False):
@@ -206,7 +265,7 @@ def covers(token, dest, recursive=False):
     exactly (`chmod +x /tmp/payload`), by a word bash expands that ends in
     the download's basename (`sh "$PWD/payload"`, #2345: its last part must
     be that name as written, and an option word is never one), by a glob
-    (`chmod +x /tmp/*.sh`, or a word bash expands, read as `_GROUP` says),
+    (`chmod +x /tmp/*.sh`, or a word bash expands, read as the groups above),
     and by the directory a recursive command walks (`chmod -R +x /tmp`). A
     glob is matched against the whole path with a leading `./` on either
     dropped -- but only where the lexer marked the word as a pattern, because
@@ -214,7 +273,7 @@ def covers(token, dest, recursive=False):
     exception: its first parse has removed those quotes, and its second parse
     expands the remaining pattern, so `_Reparsed` treats unknown provenance
     as live. One bash expands is also matched by the last parts where a `$`
-    spells either directory or it has one a bare dest does not (`_GROUP`'s
+    spells either directory or it has one a bare dest does not (the groups'
     comment says why). #2345's arm is `_last_part`, which carries its mirror too
     (#2442): a word written OUT stands for a download whose own path expands,
     so `sh cuda_1.run` reads the fetch to `"$PWD/cuda_1.run"` that only the
@@ -233,15 +292,26 @@ def covers(token, dest, recursive=False):
         glob = (token.readable if isinstance(token, _Reparsed)
                 else shell_reader.readable(token))
         loose = bool(_EXPANSION.search(glob))
-        while _GROUP.search(glob) or _EXPANSION.search(glob):
-            glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
+        expanded = _brace_patterns(glob) if isinstance(token, _Reparsed) else None
+        # The reader deliberately keeps only coarse provenance for an ordinary
+        # pattern. Exact alternatives are safe after eval's known reparse;
+        # otherwise the old wildcard preserves escaped-brace matches.
+        globs = expanded if expanded is not None else [glob]
+        for number, item in enumerate(globs):
+            while _BRACE.search(item) or _EXTGROUP.search(item) or _EXPANSION.search(item):
+                item = _BRACE.sub("*", _EXTGROUP.sub("*", _EXPANSION.sub("*", item)))
+            globs[number] = item
     elif not token.startswith("-") and _last_part(token, dest):
         return True
-    if pattern and _GLOB.search(glob):
-        glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
-        if loose or pattern and ("$" in dest or os.path.dirname(glob) and not os.path.dirname(dest)):
-            glob, dest = os.path.basename(glob), os.path.basename(dest)
-        return fnmatch.fnmatch(dest, glob)
+    if pattern:
+        for glob in globs:
+            candidate, target = _HERE.sub("", glob), _HERE.sub("", dest)
+            if loose or "$" in target or os.path.dirname(candidate) and not os.path.dirname(
+                    target):
+                candidate, target = os.path.basename(candidate), os.path.basename(target)
+            if fnmatch.fnmatch(target, candidate):
+                return True
+        return False
     if recursive and not token.startswith("-"):
         prefix = os.path.normpath(token)
         if prefix == ".":
@@ -303,9 +373,17 @@ def described(statement, position, stage, argv):
     for what was walked, and a walk binds like a recursive flag.
     """
     if os.path.basename(argv[0]) == "eval":
-        argv = [argv[0]] + [(_Reparsed(token) if _GLOB.search(token)
-                             and getattr(token, "lead", None) is None else token)
-                            for token in argv[1:]]
+        reparsed = []
+        for token in argv[1:]:
+            marked = is_pattern(patterned(shell_reader.readable(token)))
+            known_brace = (getattr(token, "lead", None) is not None
+                           and bool(_BRACE.search(token)) and not _GLOB.search(token)
+                           and not _EXTGROUP.search(token))
+            unknown = getattr(token, "lead", None) is None
+            reparse = (marked and (unknown or known_brace)
+                       or unknown and bool(_GLOB.search(token)))
+            reparsed.append(_Reparsed(token) if reparse else token)
+        argv = [argv[0]] + reparsed
     for predicate in _FIND_EXEC:
         if os.path.basename(argv[0]) == "find" and predicate in argv:
             inner = [t for t in argv[argv.index(predicate) + 1:]

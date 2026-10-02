@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`eval` brace alternatives bind only downloads they can name (#2624, #2608).** The
+  second parse now expands bounded brace lists and numeric ranges before matching a fetched
+  path, because treating every brace group as `*` misses real uses and binds excluded names;
+  unbounded expansion was rejected because workflow text controls its cost.
 - **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
   56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
