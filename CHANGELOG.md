@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
+  option made the guard discard an entire program word containing `$(...)`, so its visible fetch
+  pipeline read clean. It now reads the outer program with the substitution opaque while the
+  normal walk reads the inner script. Evaluating substitution output was rejected because that
+  would invent commands from runtime values.
 - **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
   guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
   group's failure and stops the step, while default and `sh` modes still report it.
