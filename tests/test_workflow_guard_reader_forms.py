@@ -1504,14 +1504,18 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     # check, as `main` credits it: the must-trip control.
     ECHOED = CHECK + "\necho done"
     USED = CHECK + "\n" + USE.rstrip("\n")
+    # `_DYNAMIC`'s sentence for an `eval` word all substitution (#2483, #2486).
+    EVAL_ON = "runs `eval` on `$(...)`"
 
     def assert_reported(self, rows):
-        """Each (step, how many defects it has, what one of them says)."""
-        for script, count, said in rows:
+        """Each (step, how many defects it has, what one of them says[, how another begins])."""
+        for script, count, said, *begins in rows:
             with self.subTest(script=script):
                 found = [why for _step, why in defects(script)]
                 self.assertEqual(count, len(found), found)
                 self.assertTrue(any(said in why for why in found), found)
+                for head in begins:
+                    self.assertTrue(any(why.startswith(head) for why in found), found)
 
     def assert_clean(self, scripts):
         for script in scripts:
@@ -1645,9 +1649,9 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # Each such word is a program `eval` runs that is all expansion, whose
         # `Idle` sentence stands beside the download too (#2483, #2486).
         self.assert_reported([
-            (stdin_step("eval 'bash -s' $(printf %s -n)"), 2, UNGATED % "eval"),
-            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 2, UNGATED % "eval"),
-            (stdin_step("eval 'bash -s' `printf %s -n`"), 2, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s' $(printf %s -n)"), 2, UNGATED % "eval", self.EVAL_ON),
+            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 2, UNGATED % "eval", self.EVAL_ON),
+            (stdin_step("eval 'bash -s' `printf %s -n`"), 2, UNGATED % "eval", self.EVAL_ON),
             (stdin_step("eval 'bash -s' $N", pre="N=-n\n"), 2, UNGATED % "eval"),
             (stdin_step('eval "bash -s $N"', pre="N=-n\n"), 1, UNGATED % "eval"),
             (stdin_step('bash -c "sh $N"', pre="N=-n\n"), 1, UNGATED % "bash"),
@@ -1802,7 +1806,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("bash -c 'sh'", pre="bash() { :; }\n"), 1, UNGATED % "bash"),
             # A word all substitution is a program `eval` runs, unread: its `Idle` sentence
             # stands beside the download too (#2486).
-            (looked_up("eval \"$(printf 'sh() { :; }')\"\n", "eval 'sh'"), 2, UNGATED % "eval")] + [
+            (looked_up("eval \"$(printf 'sh() { :; }')\"\n", "eval 'sh'"), 2, UNGATED % "eval",
+             self.EVAL_ON)] + [
             (looked_up(pre, runner), 1, UNGATED % runner.split()[0]) for pre, runner in (
                 ("sh() { :; }\n", "eval 'sh'"), ("bash() { :; }\n", "bash -c 'sh'"),
                 ("eval() { :; }\n", "eval 'bash -s'"), ("alias sh=:\n", "eval 'sh'"),
@@ -2226,22 +2231,15 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("hands $(...) straight to `sh`"), found)
         self.assertNotIn("@@", found[0][1])
-        # The reviewer's rows (#2486, 2026-10-02): a `$(...)` anywhere in a
-        # literal string, after the fetch or before it, behind each shell
-        # that takes one; and the first beside its single-quoted twin, the
-        # must-trip. Bash 3.2.57, 5.2.21, dash and zsh run every one.
-        for script in ('sh -c "%s; echo $(date)"\n' % PIPE, 'sh -c "echo $(date); %s"\n' % PIPE,
-                       'bash -c "%s; echo $(date)"\n' % PIPE, 'zsh -c "%s; echo $(date)"\n' % PIPE,
+        # #2486's rows 1-3 (2026-10-02) are pinned in `TestALiteralStringHoldingASubstitution`.
+        # Row 2's `$(date)` after the fetch, behind each other shell that takes such a string:
+        # bash 3.2.57, 5.2.21, dash and zsh run every one.
+        for script in ('bash -c "%s; echo $(date)"\n' % PIPE, 'zsh -c "%s; echo $(date)"\n' % PIPE,
                        'eval "%s; echo $(date)"\n' % PIPE, '${X:-sh} -c "%s; echo $(date)"\n' % PIPE):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
-        for quote in ('"', "'"):
-            with self.subTest(quote=quote):
-                found = defects("sh -c %scurl -fsSL $(echo %s)i.sh | sh%s\n" % (quote, URL, quote))
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith("hands $(...)i.sh straight to `sh`"), found)
         # The controls: the string's literal twin and the stream at the top.
         for script in ("sh -c '%s'\n" % PIPE, "sh $(curl -fsSL %si.sh)\n" % URL):
             with self.subTest(script=script):

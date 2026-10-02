@@ -78,10 +78,10 @@ live, so a change that catches one fails there and edits this list.
   it prints is unread (#2487), no check there counts, `eval "sh $(curl …)"` reports the inner
   `sh $(...)` beside `eval`'s stream, and one the reader refuses so read is unread (`cat <<$(…)`).
   One alone or a `Rewritten` word stays unread beside a download. A `$` command's `${X:-sh}` default
-  is read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and
-  `sh -c "$(cat f)"` are reported beside a download (#2483, #2486), though they may run none of it
-  (`eval "$(ssh-agent -s)"`); `carried` follows a download to either's candidates (#2479). A
-  `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
+  is read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a
+  word all substitution are reported beside a download (#2483, #2486), though they may run none of
+  it (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
+  A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
   runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding

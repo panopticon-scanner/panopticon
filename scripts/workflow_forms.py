@@ -190,11 +190,12 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
     (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
     `stops`: this script's failure reaches the step's own shell, None where no shell is sure to read
-    it (`Unsure`), never for an `Opaque` one, whose statements, nested ones too, say why (`_OPAQUE`,
-    #2486); `errexit`: `-e` at its top (None: this is the step's own shell); `pipefail`: a pipeline
-    there fails on any of its commands; `shell`: the script's runner, and at the step's own top its
-    `shell:` (None: the default); `outer`: the bodies of the command running it, below the step's
-    own, and `key` a name for the script, unique in the step, for its own bodies.
+    it (`Unsure`), never true for an `Opaque` one (None inside an `Unsure` one), whose statements,
+    nested ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this is the
+    step's own shell); `pipefail`: a pipeline there fails on any of its commands; `shell`: the
+    script's runner, and at the step's own top its `shell:` (None: the default); `outer`: the bodies
+    of the command running it, below the step's own, and `key` a name for the script, unique in the
+    step, for its own bodies.
     """
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
