@@ -282,7 +282,7 @@ _FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
 _STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
 
 
-def stdin_program(argv):
+def stdin_program(argv, depth=0):
     """Whether this command's PROGRAM is its standard input, and in what.
 
     `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare
@@ -311,7 +311,12 @@ def stdin_program(argv):
     `bash -c -K 'sh' <<'EOF'`, which runs nothing, is not credited; an
     INNER shell's refused letter is read on, as above, so `eval 'bash -K
     -s'` and `bash -c 'sh -K'` are credited though bash and dash refuse them
-    and run nothing -- fail-closed.
+    and run nothing -- fail-closed. The credit looks at most 64 strings deep
+    (`depth`) and answers SHELL_PROGRAM past that, fail-closed, so seventy
+    `eval`s before `echo hi <<'EOF'` over-report; with
+    `workflow_forms.flattened` asking once per stage, an `eval eval … bash -s`
+    chain costs time linear in its length and never overflows the stack (final
+    review F1: it was cubic, 37 s at 200, and raised RecursionError at 1,600).
 
     For a SHELL, a value form or a word that may vanish (`_value`) does not
     END the walk there either (#2485): `X=-s; sh $X <<'EOF'` runs the
@@ -341,8 +346,11 @@ def stdin_program(argv):
     sh` read CLEAN. As VALUE its QUOTED body is read as shell all the same,
     additively (`stdin_scripts`; `workflow_forms.flattened` counts no check
     in it, since `$CMD` may not run it), and the guard's `_unread_stdin`
-    reports the hand-off `Idle` under a sentence of its own. Its walk is a
-    foreign interpreter's -- its first word that is no option is its FILE --
+    reports the hand-off `Idle` under a sentence of its own. Its walk takes a
+    shell's `-c`, `-s` and vanishing-operand rules beside a foreign
+    interpreter's value options, since the word may be a shell (`$CMD -s --
+    "$V" <<'EOF'` reads the heredoc; `$PYTHON -s file.py <<'EOF'` over-reports
+    a hand-off),
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
     <<EOF` pays too. No option word behind a `$` word is a refusal (#2475's
@@ -354,7 +362,10 @@ def stdin_program(argv):
     CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
     `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
     the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331.
+    stream -- a gap filed under #2331. The walk's value options are a foreign
+    interpreter's -- one value where an option word ENDS in `o` or `O` -- so
+    `CMD=bash; $CMD -oe pipefail <<'EOF'` ends at `pipefail`, a FILE, and
+    reads CLEAN though both bashes run the heredoc: a fail-open residual.
     """
     if not argv:
         return None
@@ -377,7 +388,9 @@ def stdin_program(argv):
         text = " ".join(getattr(t, "spelled", t) for t in words)
         parsed = shell_reader.statements(text)
         if (len(parsed) == 1 and len(parsed[0].stages) == 1
-                and stdin_program(shell_reader.command(parsed[0].stages[0].argv)) == SHELL_PROGRAM):
+                and (depth >= 64                # bounded: past 64 strings, fail-closed
+                     or stdin_program(shell_reader.command(parsed[0].stages[0].argv), depth + 1)
+                     == SHELL_PROGRAM)):
             return SHELL_PROGRAM
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
@@ -397,14 +410,14 @@ def stdin_program(argv):
         if token in _STDIN_OPERANDS:
             return answer
         if not token.startswith(("-", "+")):
-            if shell and _value(token) and (
+            if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 continue                    # the walk goes on as if absent
             return None                     # the program is this file
         letters = "" if token[:2] in ("--", "++") else token[1:]
-        if shell and "c" in letters:
+        if (shell or value) and "c" in letters:
             return None                     # the program is the `-c` string
-        if shell and "s" in letters:
+        if (shell or value) and "s" in letters:
             return answer                   # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`); another interpreter's, one where it ends so.

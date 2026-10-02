@@ -338,29 +338,36 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
 class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     """#2331 batch V-b: three true spellings escape `stdin_program`'s operand
     walk, so the heredoc, here-string or pipe each runs on its own stdin is
-    taken for data instead of the program it is (#2500, #2485, #2473). Every
-    step below was run in bash 3.2.57, 5.2.21 and dash, every checksum
-    failing: a DEFECT is a download they run (bar dash, which refuses `<<<`
-    and `<(...)`), a CLEAN a step that runs none -- except these readings,
-    which contradict them, each accepted for its reason:
+    taken for data instead of the program it is (#2500, #2485, #2473); and
+    under a `$` command word a shell's `-s` or a vanishing operand ended the
+    walk at a FILE (`CMD=bash; $CMD -s -- "$V"`, `$CMD $X` with `X` unset),
+    until the word took a shell's rules (the final review's F2). Every step
+    below was run in bash 3.2.57, 5.2.21 and dash, every checksum failing: a
+    DEFECT is a download they run (bar dash, which refuses `<<<` and
+    `<(...)`), a CLEAN a step that runs none -- except these readings, which
+    contradict them, each accepted for its reason:
 
     * fail-closed over-reports: `X=script.sh; sh $X` (#2485) and `CMD=sh`
       whose body ends in the check (#2473), where the reader cannot tell
       the word from one that runs the body (`X=-s`) or skips it
-      (`CMD=true`); a letter bash and dash refuse, read on as the operand
+      (`CMD=true`), and `$CMD "$X"` with `X` empty, whose walk now reads on as
+      a shell's (#2473); a letter bash and dash refuse, read on as the operand
       walk reads `sh -K` (#2475 stops only a `-c` cluster): behind a value
       (`X=-K; sh $X`, #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an
       inner shell (`eval 'bash -K -s'`, `bash -c 'sh -K'`, #2500); `eval --
-      bash -s`, whose `--` dash runs as a command; and a non-shell body
-      under a `$` word whose string spells a shell download (`print("$(curl
-      ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh` body), read as
-      shell and reported loud, filed under #2331;
+      bash -s`, whose `--` dash runs as a command; seventy `eval`s before
+      `echo hi`, read as a stdin shell past the credit's 64-deep bound
+      (#2500); and a non-shell body under a `$` word whose string spells a
+      shell download (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT
+      <<'EOF' > i.sh` body), read as shell and reported loud, filed under
+      #2331;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with `echo
       hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
-      `print(1)`, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the
-      `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
-      program the guard cannot read, kept beside a fetch it reports (#2499),
-      not a claim that a download runs;
+      `print(1)`, `$PYTHON -s file.py` with `print(1)`, whose `-s` reads as a
+      shell's, `x=$(echo hi | $CMD)` and its `$(echo sh)` twin, and the `$CMD
+      -c "$P"` candidate (#2337), each beside GET): a report of a program the
+      guard cannot read, kept beside a fetch it reports (#2499), not a claim
+      that a download runs;
     * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -` or
       `python3 -` running `os.system`, beside no reported fetch (option b's
       price, #2499); and, each filed under #2331, `eval 'bash -s'` and
@@ -483,6 +490,24 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("straight to `sh`", found[0][1])
+
+    def test_2500_a_deep_eval_chain_is_read_bounded_and_fail_closed(self):
+        # The final review's F1: `flattened` asked `stdin_program` once per
+        # script an `eval` chain hands on, and each ask re-parsed the chain at
+        # every level -- two hundred `eval`s took 37 s, and 1,600 raised an
+        # uncaught RecursionError. The credit now looks at most 64 strings
+        # deep and is asked once per stage, so the call returns. Three or two
+        # hundred `eval`s before `bash -s` hand it the heredoc, and bash
+        # 3.2.57, 5.2.21 and dash run it through both chains. Past the bound
+        # the answer is SHELL_PROGRAM unlooked, fail-closed: seventy `eval`s
+        # before `echo hi` read as a stdin shell though nothing runs (rc 0 in
+        # all three), where three read CLEAN.
+        for count, inner in ((3, "bash -s"), (200, "bash -s"), (70, "echo hi")):
+            with self.subTest(count=count, inner=inner):
+                found = defects("eval " * count + "%s <<'EOF'\n%s\nEOF\n" % (inner, PIPE))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("straight to `sh`", found[0][1])
+        self.assertEqual([], defects("eval eval eval echo hi <<'EOF'\n%s\nEOF\n" % PIPE))
 
     def test_2485_a_value_or_a_vanishing_word_does_not_end_a_shells_walk(self):
         # A value form (`$X`, quoted the same once the reader sees it) or a
@@ -774,6 +799,68 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         found = defects(GET + "CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
+
+    def test_2473_a_dollar_word_takes_a_shells_dash_s_dash_c_and_vanishing_operand(self):
+        # The final review's F2: under a `$` command word the walk took a
+        # foreign interpreter's rules, so a shell's `-s` or a vanishing
+        # operand ended it at a FILE, and each step below read CLEAN alone and
+        # beside a fetch, though bash 3.2.57, 5.2.21 and dash run its heredoc.
+        # The word may be a shell, so its walk takes a shell's `-c`, `-s` and
+        # vanishing-operand rules: the stream and the hand-off, as `$CMD
+        # <<'EOF'` reads.
+        def to(word):
+            return ("hands a heredoc body or here-string to `%s`, a command word this guard "
+                    "does not follow -- a quoted body is read as shell" % word)
+
+        def reasons(script):
+            return [why for _step, why in defects(script)]
+
+        streamed = "straight to `sh`"
+        for script in ("CMD=bash\n$CMD -s -- \"$V\" <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=bash\n$CMD -s arg <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=bash\n$CMD -x -s x <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=sh\n$CMD $X <<'EOF'\n%s\nEOF\n" % PIPE):     # X unset
+            for fetched in ("", GET):
+                with self.subTest(script=fetched + script):
+                    found = reasons(fetched + script)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(any(streamed in w for w in found), found)
+                    self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+        # The controls read as they did. `-c` ends the walk, its string being
+        # the program: `$CMD -c "$P"` keeps #2337's candidate sentence beside a
+        # fetch and says no hand-off, and a `-c` with no string, which all
+        # three shells refuse (rc 2), reads CLEAN. A literal FILE ends it too,
+        # `python3 $S` keeps its FILE reading, `$PYTHON -` its hand-off, and
+        # the literal `bash -s -- "$V"` is the must-trip control.
+        found = reasons(GET + "CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
+        for script in ("CMD=sh\n$CMD -c \"$P\" <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=bash\n$CMD -c <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=sh\n$CMD -- x.sh <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "CMD=sh\n$CMD file <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "python3 $S <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "PYTHON=python3\n$PYTHON - <<'EOF'\nprint(1)\nEOF\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], reasons(script))
+        found = reasons("bash -s -- \"$V\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn(streamed, found[0])
+        # The price, named in `stdin_program`'s docstring: the walk cannot tell
+        # a quoted empty value from one the shell drops, nor a foreign
+        # interpreter's `-s` from a shell's. `$CMD "$X"` with `X` empty runs
+        # nothing (rc 127, 127 and 2: the shell is handed an empty file name),
+        # and python runs `file.py`, never the body; yet each reads the
+        # heredoc as `$CMD`'s program -- loud where the body spells a
+        # download, its hand-off `Idle` beside a reported fetch otherwise.
+        found = reasons("CMD=sh\n$CMD \"$X\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(any(streamed in w for w in found), found)
+        python = "PYTHON=python3\n$PYTHON -s file.py <<'EOF'\nprint(1)\nEOF\n"
+        self.assertEqual([], reasons(python))
+        found = reasons(GET + python)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith(to("$PYTHON")), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):

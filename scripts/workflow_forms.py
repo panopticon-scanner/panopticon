@@ -200,9 +200,12 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            # Asked once per stage, not per script it hands on (an `eval` chain was cubic,
+            # #2500); a `$` command word may not run what it is handed (#2473).
+            value = bool(argv) and stdin_program(argv) == VALUE_PROGRAM
+            name = ((shell_reader.readable(argv[0]) if value else os.path.basename(argv[0]))
+                    if argv else "")
             for text in scripts(argv) + stdin_scripts(argv, stage, before):
-                value = stdin_program(argv) == VALUE_PROGRAM    # `$CMD` may not run it (#2473)
-                name = shell_reader.readable(argv[0]) if value else os.path.basename(argv[0])
                 ordinal += 1
                 gates = (not value and stops and swallowed(stmts, index, statement, stage) is None
                          and (top or on[index] or index == last)
