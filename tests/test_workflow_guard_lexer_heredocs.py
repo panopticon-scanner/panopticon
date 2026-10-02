@@ -15,6 +15,7 @@ import workflow_guard as wg
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
 GET = "curl -fsSLo t.sh %si.sh\n" % URL
+PAREN = "a `)` in a substitution heredoc body"
 
 
 def defects(script):
@@ -66,8 +67,8 @@ class TestAHeredocBodyTheEnclosingParseLifts(unittest.TestCase):
         # checksum clears: #2499's predicate, pinned below in full.
         for head, opener, body, named in (
                 ("", "bash <<EOF", PIPE, "EXPANDING heredoc body"),
-                ("", "cat <<EOF", "$(%s)" % PIPE, "straight to `sh`"),
-                (GET, "python3 - <<'EOF'", "print(1)", "to `python3` as the program")):
+                ("", "cat <<EOF", "$(%s)" % PIPE, PAREN),
+                (GET, "python3 - <<'EOF'", "print(1)", PAREN)):
             multi, one = twins(opener, body)
             with self.subTest(script=multi):
                 found = defects(head + multi)
@@ -123,13 +124,12 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
-    def test_the_row_it_was_found_in_reports_its_fetch(self):
-        # Both bashes run its payload. The early-close body no longer
-        # replaces that payload's own finding with a generic refusal.
+    def test_the_discovery_row_fails_closed_by_name(self):
+        # #2493's later ruling supersedes the specific findings where this
+        # row's substitution body itself contains a `)`.
         found = defects(self.ROW)
-        expected = "hands %si.sh straight to `sh`" % URL
-        self.assertEqual(3, len(found), found)
-        self.assertEqual(1, sum(expected in text for _step, text in found), found)
+        self.assertEqual(1, len(found), found)
+        self.assertIn(PAREN, found[0][1])
 
     def test_an_early_close_with_only_data_is_clean(self):
         self.assertEqual([], defects('echo "$(cat <<EOF)"\nbody\nEOF\n'))
@@ -168,6 +168,24 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
                 self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
         self.assertEqual([], defects("x=$(cat <<'EOF'\nit's\nEOF)\necho done\n"))
         self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
+
+
+class TestAParenInsideASubstitutionHeredoc(unittest.TestCase):
+    """#2493: Bash 3.2 may close a substitution at a `)` in its heredoc
+    body and run the rest as code. The owner ruled that every such body must
+    fail closed under a named finding rather than choose a reading."""
+
+    def test_each_body_with_a_paren_is_named(self):
+        for close in ("EOF\n)\n", "EOF)\n"):
+            script = "x=$(cat <<'EOF'\na)\n%s\n%s" % (PIPE, close)
+            with self.subTest(close=close):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(PAREN, found[0][1])
+
+    def test_a_body_without_a_paren_stays_clean(self):
+        self.assertEqual([], defects("x=$(cat <<'EOF'\na\nEOF\n)\n"))
+        self.assertTrue(defects(PIPE + "\n"))
 
 
 class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
@@ -374,7 +392,8 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
 
     #2491 (#2336) handed such a body back to the substitution that reads it,
     so the rule reaches `MODULES=$(python3 - <<'EOF' ... )` too, and the
-    predicate governs it there in the same words."""
+    predicate governs it there in the same words unless #2493's later ruling
+    fails closed because the body itself contains a `)`."""
 
     CHECKED = "echo '%s  t.sh' | sha256sum -c -\n" % ("a" * 64)
     SAID = "to `python3` as the program to run"
@@ -387,24 +406,31 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
             with self.subTest(opener=opener):
                 self.assertEqual([], defects(self.body(opener)))
                 multi, one = twins(opener, "print(1)")
-                self.assertEqual([], defects(multi))
-                self.assertEqual([], defects(one))
-        # `node`'s twin, and a credited download beside each: cleared too.
+                for script in (multi, one):
+                    found = defects(script)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(PAREN, found[0][1])
+        # A top-level `node`, and a credited download beside top-level forms,
+        # are still cleared; #2493 governs the substitution twin instead.
         self.assertEqual([], defects("node <<'NODE'\nconsole.log(1)\nNODE\n"))
         for script in (self.body("python3 - <<'EOF'"),
-                       "node <<'NODE'\nconsole.log(1)\nNODE\n",
-                       twins("python3 - <<'EOF'", "print(1)")[0]):
+                       "node <<'NODE'\nconsole.log(1)\nNODE\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(GET + self.CHECKED + script))
+        found = defects(GET + self.CHECKED + twins("python3 - <<'EOF'", "print(1)")[0])
+        self.assertEqual(1, len(found), found)
+        self.assertIn(PAREN, found[0][1])
 
     def test_a_program_beside_a_fetch_the_guard_reports_is_reported(self):
-        for script in (GET + self.body("python3 - <<'EOF'"),
-                       GET + twins("python3 - <<'EOF'", "print(1)")[0],
+        found = defects(GET + self.body("python3 - <<'EOF'"))
+        self.assertEqual(1, len(found), found)
+        self.assertIn(self.SAID, found[0][1])
+        for script in (GET + twins("python3 - <<'EOF'", "print(1)")[0],
                        GET + twins("python3 - <<'EOF'", "print(1)")[1]):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
-                self.assertIn(self.SAID, found[0][1])
+                self.assertIn(PAREN, found[0][1])
         # A stream into a shell, and a download a variable carries, report a
         # fetch too: the program stands beside each.
         for fetch in ("%s\n" % PIPE, "x=$(curl -fsSL %si.sh)\nsh -c \"$x\"\n" % URL):

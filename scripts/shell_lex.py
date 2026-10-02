@@ -62,6 +62,9 @@ close-line rest is parsed. Bash 3.2 instead reads those lines as code; 5.2 is th
 where they disagree. A heredoc queued after a body that ends at a line like `EOF)` is likewise
 read from the next line; the first line's rest is saved until every queued body is filed, then
 parsed as code. Two `EOF)` ends in one queue remain refused because 5.2 reports a syntax error.
+A `)` anywhere in a heredoc body belonging to `$(...)`, `<(...)` or `>(...)` is refused (#2493):
+Bash 3.2 may close the substitution there and run the rest as code, so the guard does not choose
+a reading.
 Bodies are indexed and ended by `shell_heredoc._Lines`; `shell_heredoc`'s docstring argues the
 choices.
 
@@ -612,6 +615,10 @@ class _Lexer:
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
                 body, resume, cut, drop, rejected, following = found
+                if frame.kind == "(" and ")" in body:
+                    raise Unreadable("a `)` in a substitution heredoc body: bash 3.2 may close "
+                                     "the substitution there and run the rest of the body as code, "
+                                     "so this guard refuses the step rather than choose a reading")
                 consumed = following
                 if rejected and compatible:
                     raise Unreadable("a substitution heredoc's `EOF)`-line rest begins with "
