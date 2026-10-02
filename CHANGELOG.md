@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tab-prefixed substitution heredoc delimiters have a regression pin (#2584, #2331).**
+  A `<<-` word starting with a tab bypasses the `EOF)` terminator reading, but #2493 already
+  refuses the `)` retained in its body. The pin preserves that protection because Bash 3.2
+  runs the following payload where Bash 5.2 treats it as data; no new lexer rule is needed.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three
