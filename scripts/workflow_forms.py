@@ -389,8 +389,10 @@ def unread_program(argv, stage, walk, inside, before=None):
     it, #2333), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" |
     sh` are `Idle`, and `sh $X`, with no word after the value, hands none.
     A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
-    is `Idle` too, but not one `Rewritten` or holding a `$(…)`. A command the
-    guard reports unresolved (`sudo $CMD -c …`) is not read again here.
+    is `Idle` too, but not one `Rewritten`. A lifted `$(…)` stays opaque while
+    the text around it is read, and `_walk` reads its inner script separately
+    (#2482). A command the guard reports unresolved (`sudo $CMD -c …`) is not
+    read again here.
     LAST, where none of those speaks, the same word with the SHELL spelled
     out (`dynamic_program`, #2483): one rule for a dynamic program wherever a
     shell takes one, said where `carried` does not say it louder of the same
@@ -417,8 +419,9 @@ def unread_program(argv, stage, walk, inside, before=None):
         "any word after it may be the program the shell runs, and one here may fetch or run a "
         "download unchecked; write the options out, or exempt the step with a reason"
         % (os.path.basename(argv[0]), shell_reader.readable(value))),
-        [getattr(w, "spelled", w) for w in words
-         if not (shell_reader.is_marker(w) or isinstance(w, shell_reader.Rewritten))], walk)
+        [str(getattr(w, "spelled", w)) for w in words
+         if not isinstance(w, shell_reader.Rewritten)
+         and (not shell_reader.is_marker(w) or shell_reader.has_substitution(w))], walk)
 
 
 _DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word spells no "
