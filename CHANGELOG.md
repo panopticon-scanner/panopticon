@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested conditional groups no longer inherit an earlier checksum status (#2578, #2331).**
+  When a later command replaces a checksum's status before an enclosing group reaches `&&` or
+  `||`, the guard reports the later use. Checks that remain the group's final status still gate.
 - **Conditional checks no longer certify uses that can outlive their list (#2419, #2331).**
   A checksum behind `A &&` or `A ||` clears only paths that require the check to run. A final
   `A && CHECK` can still gate a later job step, while `A || CHECK` cannot. Literal commands get
