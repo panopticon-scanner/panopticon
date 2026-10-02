@@ -2922,6 +2922,18 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                         wg.Step("check-use", check + self.USE, shell, None, True),
                     ]))
 
+    def test_a_soft_step_keeps_the_shells_own_function_gate_refusal(self):
+        call = "f() { ( CHECK || exit 1 ); }\nf\n".replace("CHECK", self.CHECK)
+        for shell, prefix, reason in (("sh {0}", "", "starting without errexit"),
+                                      (None, "set +e\n", "turning errexit off")):
+            with self.subTest(shell=shell, prefix=prefix):
+                found = wg.job_defects([
+                    wg.Step("get", self.FETCH),
+                    wg.Step("check-use", prefix + call + self.USE, shell, None, True),
+                ])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(reason, found[0][1])
+
     def test_a_soft_step_function_gate_does_not_clear_a_use_before_its_call(self):
         check = "f() { ( CHECK || exit 1 ); }\n".replace("CHECK", self.CHECK)
         for shell in (None, "bash", "sh"):

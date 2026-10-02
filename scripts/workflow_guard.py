@@ -609,10 +609,9 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     runs -- the `if:` of the step it came from, and the shell branch it was
     written inside (`workflow_forms.regions`); absent = unconditional on both
     counts. A check clears a use only where both halves match -- see `_binds`.
-    `credit` maps an index to its step answer, which `workflow_gating.swallowed` reads last:
-    `workflow_forms.step_credit` or a bounded `_SOFT_STEP`; the latter clears later uses in that
-    shell, never a later step. `walked` is `_walk`'s answer for `stmts`, which `job_defects` has
-    from each step's own read.
+    `credit` maps an index to the answer `workflow_gating.swallowed` reads last: the shell-posture
+    pair from `workflow_forms.step_credit`, with each absent soft-step answer bounded by a
+    `_SOFT_STEP` reach. `walked` is `_walk`'s answer for `stmts`, supplied by `job_defects`.
 
     An unread form stands only where some fetch here is one `_defect` reports --
     asked again with those forms as uses -- or an `unbound` download (#2481)."""
@@ -642,11 +641,10 @@ def fetch_exec_defect(script):
 def job_defects(steps):
     """[(step name, why)] for one job's `run:` steps, folded in order.
 
-    A step carrying an `if:` is folded for what it FETCHES and RUNS; its CHECK is
-    credited only to a use sharing the same condition (`_binds`). A skipped checksum cannot
-    clear an unconditional execution. A soft CHECK clears only later uses in its own step:
-    its shell stops, while `continue-on-error: true` lets the job proceed to later steps.
-    This bounds the check at both the proved call and the step boundary.
+    A step carrying an `if:` is folded for what it FETCHES and RUNS; its CHECK is credited only
+    to a use sharing the same condition (`_binds`); a skipped check cannot clear that use.
+    A soft CHECK keeps the shell refusal and clears later uses only when that shell stops, and
+    only in its own step. `continue-on-error: true` still lets the job proceed to later steps.
 
     THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
     /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
@@ -685,8 +683,10 @@ def job_defects(steps):
             when = (step.condition, branches.get(local))
             if any(when):
                 conditions[len(stmts)] = when
+            answer = own.get(local)
             soft = Reach(len(here) - local - 1, _SOFT_STEP)
-            credit[len(stmts)] = (soft, soft) if step.soft else own.get(local)
+            credit[len(stmts)] = (tuple(why or soft for why in answer or (None, None))
+                                  if step.soft else answer)
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
