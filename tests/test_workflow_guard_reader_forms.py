@@ -445,7 +445,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an inner shell
       (`eval 'bash -K -s'`, `bash -c 'sh -K'`, #2500); `eval -- bash -s`,
       whose `--` dash runs as a command; seventy `eval`s before `echo hi`,
-      read as a stdin shell past the credit's 64-deep bound (#2500); and a
+      read as a stdin shell past the credit's 64-deep bound (#2500);
+      `bash -c "sh $(echo tool)"`, read as `sh $(...)` (#2486), whose
+      `$(...)` may vanish, though it runs `sh tool` and the heredoc is that
+      program's data (#2485); and a
       non-shell body under a `$` word whose string spells a shell download
       (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh`
       body), read as shell and reported loud, filed under #2331;
@@ -646,6 +649,27 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         bare = defects("bash <(curl -fsSL %si.sh)\n" % URL)
         self.assertEqual(bare, piped)
         self.assertEqual(1, len(piped), piped)
+
+    def test_2486_an_opaque_dash_c_string_may_be_a_stdin_reading_shell(self):
+        # #2486 reads a `-c` string holding a `$(...)` among its text with the
+        # substitution opaque, and #2500's join reads that string here too:
+        # `bash -c "sh $(echo -s)"` runs `sh -s`, which bash 3.2.57, 5.2.21
+        # and dash hand the heredoc as its program, and `sh $(...)` is a shell
+        # whose `$(...)` may vanish (#2485), so the body is read as one. The
+        # inner `sh $(...)` is weighed beside the stream as at the top level.
+        # Its twin runs `sh tool` in all three, the body that program's data:
+        # the over-report the gap list names for a word naming a file.
+        value = "passes `sh` `$(...)` where it reads its options"
+        for word in ("-s", "tool"):
+            with self.subTest(word=word):
+                found = defects("bash -c \"sh $(echo %s)\" <<'EOF'\n%s\nEOF\n" % (word, PIPE))
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(found[0][1].startswith(value), found)
+                self.assertIn("straight to `sh`", found[1][1])
+        # The control: V-b's literal string, credited as it was.
+        found = defects("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
 
     def test_2473_a_dollar_command_words_body_is_read_as_shell_and_its_hand_off_weighed(self):
         # A value-form command word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
@@ -1117,21 +1141,74 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     becomes its words, the program among them (C1 of #2331's final review).
     That value is the candidate, weighed `Idle`, kept where the job holds a
     fetch the guard reports and nothing louder reports its statement (#2490).
-    A `<(...)` hands the shell a file to read instead, and is not one."""
+    A `<(...)` hands the shell a file to read instead, and is not one.
+    Unescaped, `eval "sh $(echo tool)"` hands on the text the substitution
+    prints: its string is read with that text opaque, as `sh $(...)`, and no
+    check in it counts (#2486)."""
 
     def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
-        # Bash 3.2.57, 5.2.21 and dash run the download in each.
+        # Bash 3.2.57, 5.2.21 and dash run the download in each, the strings
+        # holding an unescaped `$(echo tool)` too (#2486).
         for script in (GET + 'eval "sh \\$(echo tool)"\n', GET + 'bash -c "sh \\$(echo tool)"\n',
-                       GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n"):
+                       GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n",
+                       GET + 'eval "sh $(echo tool)"\n', GET + 'bash -c "sh $(echo tool)"\n'):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("passes `sh` `$(...)`"), found)
 
     def test_it_is_not_reported_where_the_job_fetches_nothing(self):
-        for script in ("sh $(echo tool)\n", 'eval "sh \\$(echo x.sh)"\n', "sh `echo tool`\n"):
+        for script in ("sh $(echo tool)\n", 'eval "sh \\$(echo x.sh)"\n', "sh `echo tool`\n",
+                       'eval "sh $(echo tool)"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_a_string_holding_one_among_its_text_is_read_with_it_opaque(self):
+        # #2486: the substitution's own text stays where the guard's walk
+        # reads it, and what it prints is not read; `eval "echo $(date)"`
+        # hands no shell a program. Bash 3.2.57, 5.2.21 and dash run the
+        # download in each of the rest, every one CLEAN until now: `eval`
+        # runs what the inner `sh $(...)` is handed, the string pipes it into
+        # `sh`, and the substitution runs `tool`, where no download is
+        # followed.
+        value = "passes `sh` `$(...)` where it reads its options"
+        self.assertEqual([], defects(GET + 'eval "echo $(date)"\n'))
+        # Two sentences, each true and on a statement of its own: the inner
+        # hand-off and the stream `eval` is handed (ruled (a), the gap list).
+        found = defects('eval "sh $(curl -fsSL %si.sh)"\n' % URL)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith(value), found)
+        self.assertTrue(found[1][1].startswith("hands %si.sh straight to `eval`" % URL), found)
+        found = defects(GET + 'x=$(bash -c "sh $(echo tool)")\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(
+            "hands a script to `bash` inside a command substitution"), found)
+        found = defects('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands $(...) straight to `sh`"), found)
+        self.assertNotIn("@@", found[0][1])
+        # The controls: the string's literal twin and the stream at the top.
+        for script in ("sh -c '%s'\n" % PIPE, "sh $(curl -fsSL %si.sh)\n" % URL):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("straight to `sh`", found[0][1])
+        # The named residual: `eval`'s words are scripts one at a time, and a
+        # lone `$(...)` is none, so this reads CLEAN though bash runs `tool`.
+        self.assertEqual([], defects(GET + 'eval sh "$(echo tool)"\n'))
+
+    def test_no_check_in_such_a_string_counts(self):
+        # Bash re-reads the string with what the `$(...)` printed, so a check
+        # in it may never run: here it does not, and bash 3.2.57 and 5.2.21
+        # run `./tool` under `-e`. Its twin with no substitution stops at the
+        # failing check in both, and reads CLEAN as it did (#2486).
+        check = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
+        run = "\nchmod +x tool\n./tool\n"
+        found = defects(GET + "bash -ec \"$(echo 'true ||') %s\"" % check + run)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names tool is inside the script `bash` runs with what "
+                      "a `$(...)` prints, which may skip the check", found[0][1])
+        self.assertEqual([], defects(GET + 'bash -ec "%s"' % check + run))
 
     def test_a_louder_reason_at_its_statement_speaks_alone(self):
         # #2490: where a fetch's own defect -- the stream `sh $(curl …)` hands

@@ -354,6 +354,19 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         self.assertEqual([], self.program("sh -c -x"))
         self.assertEqual([], self.program("bash -c --norc P"))
 
+    def test_a_substitution_among_the_strings_text_is_read_opaque(self):
+        # #2486: the string is a script, the substitution written as the
+        # reader renders it and the script marked `Opaque`, so no marker of
+        # this parse reaches the next -- two parses give one text. A word
+        # that is one lone `$(...)` is still none.
+        for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
+            with self.subTest(script=script):
+                found = self.program(script)
+                self.assertEqual(["sh $(...)"], found)
+                self.assertIsInstance(found[0], workflow_programs.Opaque)
+                self.assertEqual(found, self.program(script))
+        self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be

@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: a value in a shell's options is weighed to its first operand, in one sentence
+  (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle` one, `sh $X "$x"` names
+  its carried download, and `eval "sh $(…)"` is read with the substitution opaque.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.

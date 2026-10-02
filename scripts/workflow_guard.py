@@ -47,22 +47,19 @@ this module to every `run:` step in the fleet and `ci.yml` runs the suite on
 every PR, so a second invocation would be the same assertion wearing a
 different hat -- and one that can rot out of step with the first.
 
-What it does not model. Within the shell it reads, the standing requirement is
-to fail CLOSED -- an unparsed form must be REPORTED, not accepted, which is
-precisely what the two regexes did not do, and `tests/test_workflow_guard.py`
-states every form that was probed and found open before it was parsed. The
-classes below fall outside that and are accepted SILENT gaps, deliberately.
+What it does not model. Within the shell it reads, the standing requirement is to fail CLOSED -- an
+unparsed form must be REPORTED, not accepted, which is precisely what the two regexes did not do,
+and `tests/test_workflow_guard.py` states every form that was probed and found open before it was
+parsed. The classes below fall outside that and are accepted SILENT gaps, deliberately.
 
-#1697 ruled every entry by REACHABILITY -- can the form appear in a `run:`
-step of this fleet, or does it need a construct the runners never use or a
-grammar this module does not have by design? Four entries were reachable and
-left this list CLOSED rather than documented, each of them shell the reader
-already produced and the rule simply did not look at: a `chmod` over a glob
-and over a walked directory, the `{}` and `xargs` operands that describe a
-file instead of naming it, a fetch inside an `eval`/`sh -c` STRING, and
-`continue-on-error: true`. What remains keeps its entry WITH its reason, and
-`TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py
-runs each live, so a change that catches one fails there and edits this list.
+#1697 ruled every entry by REACHABILITY -- can the form appear in a `run:` step of this fleet, or
+does it need a construct the runners never use or a grammar this module does not have by design?
+Four entries were reachable and left this list CLOSED rather than documented, each of them shell the
+reader already produced and the rule simply did not look at: a `chmod` over a glob and over a walked
+directory, the `{}` and `xargs` operands that describe a file instead of naming it, a fetch inside
+an `eval`/`sh -c` STRING, and `continue-on-error: true`. What remains keeps its entry WITH its
+reason, and `TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py runs each
+live, so a change that catches one fails there and edits this list.
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
   `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting every command that
@@ -79,14 +76,19 @@ runs each live, so a change that catches one fails there and edits this list.
   or the download is a bare name. A download kept in a variable is followed to a shell whole
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
   `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
-  value in a shell's options (`sh $X '…'`) is not followed: the words after it read as `-c` strings
-  (`candidates`, #2344), a `$(…)` or `Rewritten` one reported where the job downloads. Nor is a `$`
-  command word: `${X:-sh}` reads as its default, another handed `-c` has its program read so
-  (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses
-  `\$` escapes as bash does, not with another `$` in it (#2342). An option letter the shell in hand
-  refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e`
-  sets nothing (#2443, #2475). Per shell, because zsh runs twenty of the letters bash refuses and
-  ksh runs `-G`: for those and for a shell named by a word rather than written, the word is read on.
+  value in a shell's options (`sh $X '…'`) is not followed: its words to the first operand read as
+  `-c` strings, the rest as parameters (`candidates`, #2344, #2484) -- a bare word read past as an
+  option's value, so `X=-c; sh $X tool '…'` over-reports -- a `$(…)` or `Rewritten` one reported
+  where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as its default, another
+  handed `-c` has its program read so (#2337); `$CMD --flag` reads nothing, `sh -c "$P"` is reported
+  (#2483). `carried` follows a download to either (#2479). A `-c`/`eval` string loses `\$` escapes
+  as bash does, not with another `$` in it (#2342), and a `$(…)` among its text is opaque (#2486):
+  what it prints is unread, no check there counts, `eval "sh $(curl …)"` reports the inner
+  `sh $(...)` beside `eval`'s stream, and a lone `$(…)` word is no script (`eval sh "$(echo tool)"`
+  reads CLEAN; bash runs `tool`). An option letter the shell in hand refuses reads as that refusal
+  after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475).
+  Per shell, because zsh runs twenty of the letters bash refuses and ksh runs `-G`: for those and
+  for a shell named by a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -101,12 +103,11 @@ runs each live, so a change that catches one fails there and edits this list.
   VALUE. Only this spelling is open: with the digest in a sums file the step wrote, what was
   recorded is the text `sha256sum x`, which carries no digest, so the check does not count and the
   fetch is already reported.
-* what runs inside a container, BEYOND the one shape that is read: `docker
-  run … -v /tmp:/w img bash /w/x.sh` binds by basename (`workflow_forms.in_container`),
-  because on the far side of a bind mount the basename is the only name the
-  bytes have. What is still unread is everything that needs the mount table
-  itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument
-  the image's ENTRYPOINT supplies, and whatever the image itself runs.
+* what runs inside a container, BEYOND the one shape that is read: `docker run … -v /tmp:/w img bash
+  /w/x.sh` binds by basename (`workflow_forms.in_container`), because on the far side of a bind
+  mount the basename is the only name the bytes have. What is still unread is everything that needs
+  the mount table itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument the
+  image's ENTRYPOINT supplies, and whatever the image itself runs.
   KEPT: those need another executor's mounts and entrypoint modelled, which is reading a second
   program's configuration rather than this job's shell. The image the container came from is NOT
   pinned either, and that is a decided residual rather than an oversight: this fleet pulls the
@@ -177,12 +178,11 @@ runs each live, so a change that catches one fails there and edits this list.
   KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
   `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
-`if` branches inside the shell are read flat for what they FETCH and what they
-RUN -- folding those in can only report more. Not for what they CHECK:
-`workflow_forms.regions` reads the `then`/`else`/`do` bodies -- and each arm of
-a `case` -- back out of the statement stream, and a checksum written inside a
-branch clears only a use written inside the same branch (#1697 item 3), which
-is `_binds` again in the shell's own grammar."""
+`if` branches inside the shell are read flat for what they FETCH and what they RUN -- folding those
+in can only report more. Not for what they CHECK: `workflow_forms.regions` reads the
+`then`/`else`/`do` bodies -- and each arm of a `case` -- back out of the statement stream, and a
+checksum written inside a branch clears only a use written inside the same branch (#1697 item 3),
+which is `_binds` again in the shell's own grammar."""
 import collections
 import os
 import re

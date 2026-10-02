@@ -69,7 +69,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, candidates,
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
                                dynamic_program, scripts, stdin_program as stdin_program,
                                stdin_scripts, unprinted as unprinted)
 
@@ -162,6 +162,7 @@ _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
             "the last command, so the script carries on past its failure")
 _UNGATED = "is inside the script `%s` runs, and the step does not stop when that script fails"
 _PIPED = "is inside the script `%s` runs, piped into a command whose status the pipeline takes"
+_OPAQUE = "is inside the script `%s` runs with what a `$(...)` prints, which may skip the check"
 
 
 def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=(), key=()):
@@ -184,12 +185,13 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     own shell has what its `shell:` starts it with (`seed`, #2338) as a `set`
     moves it (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`,
     where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell; `errexit`:
-    `-e` at its top (None: this is the step's own shell); `pipefail`: a
-    pipeline there fails on any of its commands; `shell`: the script's
-    runner, and at the step's own top its `shell:` (None: the default);
-    `outer`: the bodies of the command running it, below the step's own, and
-    `key` a name for the script, unique in the step, for its own bodies.
+    `stops`: this script's failure reaches the step's own shell (None: it is
+    `Opaque`, and no check in it counts, #2486); `errexit`: `-e` at its top
+    (None: this is the step's own shell); `pipefail`: a pipeline there fails
+    on any of its commands; `shell`: the script's runner, and at the step's
+    own top its `shell:` (None: the default); `outer`: the bodies of the
+    command running it, below the step's own, and `key` a name for the
+    script, unique in the step, for its own bodies.
     """
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
@@ -207,9 +209,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     if argv else "")
             for text in scripts(argv) + stdin_scripts(argv, stage, before):
                 ordinal += 1
-                gates = (not value and stops and swallowed(stmts, index, statement, stage) is None
-                         and (top or on[index] or index == last)
-                         and (fails[index] or stage is statement.stages[-1]))
+                gates = (not value and (None if isinstance(text, Opaque) else stops) and swallowed(
+                    stmts, index, statement, stage) is None and (top or on[index] or index == last)
+                    and (fails[index] or stage is statement.stages[-1]))
                 own = name == "eval"            # runs in this shell, with its `-e`
                 out.extend(flattened(
                     statements(text), gates,
@@ -220,7 +222,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         if top:
             out.append(statement)
             continue
-        why = (_UNGATED % shell if not stops
+        why = (_OPAQUE % shell if stops is None else _UNGATED % shell if not stops
                else None if on[index] or index == last else _RUNS_ON % shell)
         out.append(Inlined(statement.stages, statement.separator, region,
                            (why, why or (None if fails[index] else _PIPED % shell))))

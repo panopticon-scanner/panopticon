@@ -9,7 +9,8 @@ command -- which program it hands a shell -- and reads no statement around it,
 only, for a program piped into it, the stage in front of it (#2333):
 
     `scripts`         the script handed to `eval` or `sh -c` as a STRING,
-                      which is the same act one quote away from a substitution
+                      which is the same act one quote away from a substitution,
+                      `Opaque` where a `$(...)` among its text prints part of it
     `stdin_program`   whether an interpreter's program arrives on its standard
                       input instead, which is the same act one REDIRECTION
                       away (`bash -s <<'EOF'`), and in what language, where a
@@ -25,11 +26,12 @@ only, for a program piped into it, the stage in front of it (#2333):
     `dynamic_program` the program word a LITERAL shell is handed that is all
                       expansion (`sh -c "$P"`), which spells no command at all
 
-`workflow_forms` imports all six: its `flattened` reads each script found
-here in place of the command handed it -- under a `$` command word
-(`VALUE_PROGRAM`) with no check in it counted -- its `unread_program` weighs
-the candidates, the unprinted and the dynamic program, and the guard takes
-`stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
+`workflow_forms` imports all six and `Opaque`: its `flattened` reads each
+script found here in place of the command handed it -- with no check in it
+counted under a `$` command word (`VALUE_PROGRAM`) or where it is `Opaque`
+-- its `unread_program` weighs the candidates, the unprinted and the dynamic
+program, and the guard takes `stdin_program` and `SHELL_PROGRAM` through it
+and `VALUE_PROGRAM` directly.
 The option-letter tables below are read here and in `workflow_gating._errexit`,
 the one layer up that reads a shell's options too (#2443, #2475).
 
@@ -49,14 +51,29 @@ import shell_reader
 _SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 
 
+class Opaque(str):
+    """A script `scripts` hands on from a string holding a lifted `$(...)` or
+    backquote among text of its own, written as `shell_reader.readable`
+    renders it (`sh $(...)`, #2486). Bash reads what the substitution PRINTS
+    as part of the script, and nothing here reads that, so
+    `workflow_forms.flattened` reads the rest in place and counts no check in
+    it: `bash -ec "$(echo 'true ||') <check>"` never runs the check."""
+
+
 def scripts(argv):
     """The shell scripts this command is handed as a string, in order, each
     the text bash hands the shell: a double-quoted `\\$` or `` \\` `` without
     its backslash (`shell_reader._stage`'s `spelled`, #2342).
 
-    A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and the guard's `_walk` already credits what
-    is inside it.
+    A word that is one lifted `$(...)` or backquote is never one, nor is a
+    word holding a heredoc, a `<(...)` or any other marker: each stands for
+    text held in the parse it came from, and the guard's `_walk` already
+    credits what is inside it. A `$(...)` or backquote among text of the
+    word's own does not make it none (#2486): `eval "sh $(echo tool)"` hands
+    on `sh $(...)`, `Opaque`, whose `sh` is weighed as `sh $(echo tool)`'s
+    is -- the substitution's own text still read where `_walk` reads it,
+    what it prints read nowhere, and no marker of this parse left to reach
+    another.
     """
     if not argv:
         return []
@@ -65,7 +82,17 @@ def scripts(argv):
         found = [t for t in argv[1:] if not t.startswith("-")]
     elif name in _SHELL_STRING:
         found = _after_dash_c(argv)
-    return [getattr(t, "spelled", t) for t in found if not shell_reader.is_marker(t)]
+    return [script for script in map(_script, found) if script is not None]
+
+
+def _script(word):
+    """`word` as `scripts` hands it on, or None where it is no script."""
+    keys = getattr(word, "markers", {})
+    if not keys:
+        return getattr(word, "spelled", word)
+    text = shell_reader.readable(word)
+    return Opaque(text) if text != "$(...)" and all(
+        shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys) else None
 
 
 def _after_dash_c(argv):
