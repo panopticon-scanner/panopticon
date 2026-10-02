@@ -8,6 +8,7 @@ and `tests/test_workflow_forms_regressions.py`.
 """
 import unittest
 
+import shell_lex
 import workflow_guard as wg
 
 URL = "https://example.test/"
@@ -422,7 +423,9 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     `python3 -O - file.py`), until the walk answered there for all but a
     literal shell (fix round 3); and a check counted in a body read past a
     value, and behind a string under the enclosing command's `-e`, until it
-    counted nowhere (review round 1 and its fix). Every step below was run in
+    counted nowhere (review round 1 and its fix); and another statement of
+    such a body could clear a step `main` reports, until the job was read
+    without those bodies too (fix round 2). Every step below was run in
     bash 3.2.57, 5.2.21 and dash, every checksum failing: a DEFECT is a
     download they run (bar a dash step, which refuses its own syntax only --
     `<<<`, `<(...)` -- and runs the `--` of `eval -- bash -s` as a command: an
@@ -455,13 +458,18 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       past a value or a word that may vanish (`X=-s`, `X=-e`, `X` unset,
       `$(true)`), where the guard cannot tell the word from `X=/dev/null`
       (#2485); behind a string no check counts (#2500), so a body ending in
-      its check (`eval 'bash -s'`, `bash -c 'sh'`) and a self-contained `-e`
-      body (`eval 'bash -e -s'`) are reported though every shell stops at the
-      check, what the inner shell is, what it reads and what becomes of its
-      failure being the step's to change; `eval 'bash -s &'` and
-      `eval 'bash -s < /dev/null'` around a body no shell runs (round 1); and,
-      as before round 1, the body of `builtin eval`, which the guard does not
-      take for `eval`;
+      its check (`eval 'bash -s'`, `bash -c 'sh'`, `bash -s -c 'sh'`) and a
+      self-contained `-e` body (`eval 'bash -e -s'`) are reported though every
+      shell stops at the check, what the inner shell is, what it reads and
+      what becomes of its failure being the step's to change;
+      `eval 'bash -s &'` and `eval 'bash -s < /dev/null'` around a body no
+      shell runs (round 1); a step that a statement of a body no shell is sure
+      to read would clear -- the `exit 1` of a rescue, a call of the step's
+      function or of one the body defines, a `> sums`, a `cp` -- reported as
+      `main` reports it, the job being read without that body too, though the
+      inner shell runs the `exit 1`, a shell lacks the function it calls or
+      the check fails (round 2); and, as before round 1, the body of
+      `builtin eval`, which the guard does not take for `eval`;
     * `Idle` hand-offs beside a download that never runs (`$CMD` with
       `echo hi`, `$PYTHON -`, `python3 -` and `${X:-/usr/bin/python3} -` with
       `print(1)`, `$PYTHON -s file.py`, `$PYTHON -Ou file.py` and
@@ -487,7 +495,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       away (`cat >/dev/null`); `<>` on descriptor 0, and `&>` under a dash
       step; `((bash -s))` with `bash` set; `bash - /dev/null`; and a name made
       to run something else (`sh() { :; }`, `alias sh=:`, a fake `sh` first on
-      `PATH`), which the step's own `sha256sum` meets too.
+      `PATH`), which the step's own `sha256sum` meets too. Round 2 leaves two,
+      each filed under #2608: a `}` in a body a literal shell reads --
+      `bash -s`, or the holder's own `-s` (`bash -s -c 'sh'`) -- closing the
+      step's own group, as on `main` (an `exit`, a call or a write there is
+      taken for the step's own too, and the twins pinned here run them); and
+      a statement of one body no shell is sure to read giving credit for a
+      download only another such body holds.
 
     `python3 $S` with S unset reads its heredoc as data, where python takes
     it as its program; here that is a SyntaxError, so CLEAN is still true
@@ -1473,6 +1487,220 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assert_reported(reported)
         self.assert_clean(gaps)
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
+
+    # Fix round 2 (Ruling T30-R7): nothing else in a body no shell is sure to read is the step's own
+    # either. Each channel method pins one statement of such a body that cleared a step `main`
+    # reports: the job is read with those bodies and without them, and a defect of either reading
+    # is reported. Its table is the three holders, heredoc form, then `$CMD` with a here-string and
+    # a printed pipe, each with `main`'s sentence; its must-trip control is the statement at the
+    # step's own level, alone and beside such a body; its literal twin is the body under `bash -s`.
+    HOLDERS = (("eval 'bash -s'", ""), ("sh $X", "X=/dev/null\n"), ("$CMD", "CMD=true\n"))
+    UNSURE = "eval 'bash -s' <<'EOF'\necho hi\nEOF\n"
+    HANDED = ("hands a heredoc body or here-string to `$CMD`, a command word this guard does not"
+              " follow -- a quoted body is read as shell, which it may not be; name the interpreter"
+              " (`bash -s`, `python3 -`), or exempt the step with a reason")
+    RESCUED = ("making it executable; the checksum that names tool hands its failure to a `||`"
+               " branch that does not fail the step")
+    UNCHECKED = "making it executable with nothing verifying what arrived"
+    IN_PIPELINE = ("running it under `sh`; the checksum that names tool runs in the same pipeline"
+                   " as that use, so the shell may start both before the checksum's failure is"
+                   " known")
+    OTHER_FILE = ("making it executable; no checksum in the job names %s, and a checksum of a"
+                  " different file verifies nothing")
+    STREAM = ("hands %si.sh straight to `sh`, so there is no file to check -- download it to a"
+              " file, `sha256sum -c` that file, then run it" % URL)
+
+    @staticmethod
+    def said(how, name="tool"):
+        """`main`'s sentence for the download of `name`, used `how`."""
+        return ("fetches %s%s -> %s and %s -- verify it first: `echo \"<sha256>  %s\" | sha256sum"
+                " -c -` between the download and that use" % (URL, name, name, how, name))
+
+    def assert_said(self, rows):
+        """Each (step, a sentence): reported, that sentence among its defects."""
+        for script, said in rows:
+            with self.subTest(script=script):
+                self.assertIn(said, [why for _step, why in defects(script)])
+
+    def channel(self, step, how):
+        """`step(holder, pre, form)` behind each holder as a heredoc, and under `$CMD` as a
+        here-string and a printed pipe: each reported with `main`'s sentence."""
+        rows = [step(holder, pre, "heredoc") for holder, pre in self.HOLDERS]
+        rows += [step("$CMD", "CMD=true\n", form) for form in ("here-string", "piped")]
+        self.assert_said((script, self.said(how)) for script in rows)
+
+    def test_2500_a_brace_in_a_body_no_shell_is_sure_to_read_closes_no_group_of_the_steps(self):
+        # The body's `}` closed the group the check stands in, which lost its "same pipeline"
+        # reason: every shell runs the download (rc 0, 1 under `-eo pipefail`; dash refuses `<<<`).
+        def step(holder, pre, form):
+            return GET + stdin_step(holder, "}", form, pre=pre + "{ %s\n" % CHECK,
+                                    end="} | sh tool\n", fetched=False)
+        self.channel(step, self.IN_PIPELINE)
+        # Must-trip: the step's own `}`, alone and beside such a body (rc 1 in every shell).
+        own = GET + "{ %s\n}\nsh tool\n" % CHECK
+        self.assert_clean([own, self.UNSURE + own])
+        # The literal twin, CLEAN though every shell runs the download (rc 0, 1 under
+        # `-eo pipefail`): `main`'s own gap, filed under #2608.
+        self.assert_clean([step("bash -s", "", "heredoc")])
+
+    def test_2500_an_exit_in_a_body_no_shell_is_sure_to_read_rescues_no_check_of_the_steps(self):
+        # `CHECK || <holder>` with `exit 1` in the body read as a rescue that stops the job: past
+        # `X=/dev/null` and under `CMD=true` every shell runs the download (rc 0; dash refuses
+        # `<<<`); `eval 'bash -s'` runs the `exit 1` (rc 1). `main` reports all five.
+        def step(holder, pre, form):
+            if form == "piped":
+                return GET + pre + "%s || echo 'exit 1' | %s\n" % (CHECK, holder) + USE
+            return stdin_step("%s || %s" % (CHECK, holder), "exit 1", form, pre=pre)
+        self.channel(step, self.RESCUED)
+        # A literal `bash -s` inside the `$CMD` body is no surer: every shell runs the download
+        # (rc 0).
+        self.assert_said([(step("$CMD", "CMD=true\n", "heredoc").replace(
+            "exit 1", "bash -s <<'IN'\nexit 1\nIN"), self.said(self.RESCUED))])
+        # Must-trip: the step's own `|| exit 1`, alone and beside such a body (rc 1 in every shell).
+        own = GET + CHECK + " || exit 1\n" + USE
+        self.assert_clean([own, self.UNSURE + own])
+        # The literal twin, CLEAN as on `main` and right: `bash -s` runs the `exit 1` (rc 1).
+        self.assert_clean([step("bash -s", "", "heredoc")])
+
+    def test_2500_a_call_in_a_body_no_shell_is_sure_to_read_is_no_call_of_the_steps(self):
+        # The step's `verify` called in the body read as the step's call: past `X=/dev/null` and
+        # under `CMD=true` every shell runs the download (rc 0; dash refuses `<<<`); the shell
+        # `eval 'bash -s'` starts has no `verify` (rc 127). `main` reports all five.
+        verify = "verify() {\n  ( %s || exit 1 )\n}\n" % CHECK
+        self.channel(lambda holder, pre, form: stdin_step(holder, "verify", form, pre=pre + verify),
+                     self.RESCUED)
+        # Must-trip: the step's own call, alone and beside such a body (rc 1 in every shell).
+        own = GET + verify + "verify\n" + USE
+        self.assert_clean([own, self.UNSURE + own])
+        # The literal twin, CLEAN as on `main` and right: the new shell has no `verify` (rc 127).
+        self.assert_clean([stdin_step("bash -s", "verify", pre=verify)])
+        # A function DEFINED in the body and called by the step (rc 127 in every shell): reported,
+        # its check counting for nothing, as before this round; `main`, reading no body, says
+        # nothing verifies what arrived, and one sentence is kept for the download.
+        defined = "verify() { %s; }" % CHECK
+        self.assert_reported((stdin_step(holder, defined, pre=pre, end="verify\n"), count,
+                              UNGATED % holder.split()[0]) for (holder, pre), count in zip(
+                                  self.HOLDERS, (1, 1, 2)))
+
+    def test_2500_a_write_in_a_body_no_shell_is_sure_to_read_binds_no_check_of_the_steps(self):
+        # `> sums` in the body bound the step's `sha256sum -c sums` to a digest: every shell stops
+        # at the check (rc 1; dash refuses `<<<`), and `main`, reading no body, reports all five.
+        sums = 'echo "%s  tool" > sums' % ("a" * 64)
+        self.channel(lambda holder, pre, form: stdin_step(holder, sums, form, pre=pre,
+                                                          end="sha256sum -c sums\n"),
+                     self.UNCHECKED)
+        # Must-trip: the step's own `> sums`, alone and beside such a body (rc 1 in every shell).
+        own = GET + sums + "\nsha256sum -c sums\n" + USE
+        self.assert_clean([own, self.UNSURE + own])
+        # The literal twin, CLEAN as on `main` and right: `bash -s` writes the file (rc 1).
+        self.assert_clean([stdin_step("bash -s", sums, end="sha256sum -c sums\n")])
+
+    def test_2500_a_copy_in_a_body_no_shell_is_sure_to_read_names_no_file_for_the_step(self):
+        # `cp tool other` in the body made the step's check of `other` name `tool`: every shell
+        # stops at the check (rc 1; dash refuses `<<<`), and `main`, reading no body, reports all
+        # five.
+        other = 'echo "%s  other" | sha256sum -c -\n' % ("a" * 64)
+        self.channel(lambda holder, pre, form: stdin_step(holder, "cp tool other", form, pre=pre,
+                                                          end=other),
+                     self.OTHER_FILE % "tool")
+        # Must-trip: the step's own `cp`, alone and beside such a body (rc 1 in every shell).
+        own = GET + "cp tool other\n" + other + USE
+        self.assert_clean([own, self.UNSURE + own])
+        # The literal twin, CLEAN as on `main` and right: `bash -s` copies the file (rc 1).
+        self.assert_clean([stdin_step("bash -s", "cp tool other", end=other)])
+
+    def test_2500_a_body_the_holders_own_options_read_is_the_steps_with_no_check_counting(self):
+        # The holder's own options read stdin, so `main` reads the body as the holder's program,
+        # statement for statement, and so do both readings here (the reader `()`); only the credit
+        # of a check in it goes.
+        sums = 'echo "%s  tool" > sums' % ("a" * 64)
+        rescue = "CMD=true\n%s || $CMD <<'EOF'\nexit 1\nEOF\n" % CHECK
+        for holder in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
+            body = "%s <<'B1'\n%%sB1\n" % holder
+            self.assert_said([
+                # The download in it, the group or the rescue in a `$CMD` body, or the use in it:
+                # every shell runs the download (rc 0, 1 under `-eo pipefail` past the group).
+                (body % GET + "CMD=true\n{ %s\n$CMD <<'EOF'\n}\nEOF\n} | sh tool\n" % CHECK,
+                 self.said(self.IN_PIPELINE)),
+                (body % GET + rescue + USE, self.said(self.RESCUED)),
+                (GET + rescue + body % USE, self.said(self.RESCUED)),
+                # The download in it, the write in a `$CMD` body: every shell stops at the check
+                # (rc 1), and `main` reports it.
+                (body % GET + "CMD=true\n$CMD <<'EOF'\n%s\nEOF\nsha256sum -c sums\n" % sums + USE,
+                 self.said(self.UNCHECKED)),
+                # A stream in it: every shell runs it (rc 0).
+                (body % (PIPE + "\n"), self.STREAM)])
+            # Reported DELIBERATELY: a check alone in it, which every shell stops at (rc 1) and
+            # `main` credits, counts for nothing behind a string.
+            self.assert_reported([(GET + body % (CHECK + "\n") + USE, 1,
+                                   UNGATED % holder.split()[0])])
+            # A `}` in it closes the step's group, as on `main`: CLEAN though every shell runs the
+            # download (rc 0, 1 under `-eo pipefail`) -- the literal twin's gap, filed under #2608.
+            self.assert_clean([GET + "{ %s\n%s <<'EOF'\n}\nEOF\n} | sh tool\n" % (CHECK, holder)])
+
+    def test_2500_a_download_in_one_body_and_a_channel_in_another(self):
+        # The download or its use in a body a literal `bash -s` reads, the rescue or the group in a
+        # `$CMD2` body: every shell runs the download (rc 0, 1 under `-eo pipefail` past the group),
+        # and `main` reports each.
+        def fetched(runner):
+            return "%s <<'EOF'\n%sEOF\nCMD2=true\n" % (runner, GET)
+        rescue = "%s || $CMD2 <<'EOF'\nexit 1\nEOF\n" % CHECK
+        group = "{ %s\n$CMD2 <<'EOF'\n}\nEOF\n} | sh tool\n" % CHECK
+        self.assert_said([
+            (fetched("bash -s") + rescue + USE, self.said(self.RESCUED)),
+            (fetched("bash -s") + group, self.said(self.IN_PIPELINE)),
+            (GET + "CMD2=true\n" + rescue + "bash -s <<'EOF'\n%sEOF\n" % USE,
+             self.said(self.RESCUED))])
+        # Every shell runs the download (rc 0, 1 under `-eo pipefail` past the group) --
+        # fail-open on `main` and here: a statement of one unsure body still gives credit for a
+        # fetch only another holds; filed under #2608.
+        self.assert_clean([fetched("eval 'bash -s'") + rescue + USE,
+                           fetched("eval 'bash -s'") + group])
+
+    def test_2500_each_download_is_reported_once_whichever_reading_finds_it(self):
+        # The first download runs unchecked (reported in both readings); the check of the second is
+        # rescued through a `$CMD` body's `exit 1` (cleared in the first reading only). Every shell
+        # runs both (rc 0). A defect is kept per download and statement: the second reading adds the
+        # second download's, and never another sentence for the first -- a different download, the
+        # same one twice, or two in one statement (a pipeline of two `curl`s).
+        second = stdin_step(CHECK + " || $CMD", "exit 1", pre="CMD=true\n")
+        one = "curl -fsSLo one %sone" % URL
+        first = self.said(self.OTHER_FILE % "one", "one")
+        again = ("verifies tool only AFTER making it executable -- fetches %stool -> tool, so"
+                 " verify it first: `echo \"<sha256>  tool\" | sha256sum -c -` between the download"
+                 " and that use" % URL)
+        piped = one + " | " + GET + "chmod +x one\n./one\n" + second[len(GET):]
+        for script, said in ((one + "\nchmod +x one\n./one\n" + second, first),
+                             (GET + USE + second, again), (piped, first)):
+            with self.subTest(script=script):
+                self.assertEqual([self.HANDED, said, self.said(self.RESCUED)],
+                                 [why for _step, why in defects(script)])
+
+    def test_2500_a_write_in_one_steps_body_binds_no_check_of_the_next(self):
+        # Step A's body writes `sums`; step B downloads, checks `sums` and uses the download. The
+        # check fails in every shell (step A rc 0, step B rc 1), and `main`, reading no body,
+        # reports step B.
+        sums = 'echo "%s  tool" > sums' % ("a" * 64)
+        self.assertEqual([("B", self.said(self.UNCHECKED))],
+                         wg.job_defects([("A", "eval 'bash -s' <<'EOF'\n%s\nEOF\n" % sums),
+                                         ("B", GET + "sha256sum -c sums\n" + USE)]))
+
+    def test_2500_a_step_the_reader_refuses_raises_alone_and_is_named_once_in_a_job(self):
+        # A `)` in a substitution heredoc body: bash runs the stream (rc 0), dash refuses the step
+        # (rc 2). `fetch_exec_defects` raises, beside a `$CMD` body or not, and `job_defects`
+        # names the step once -- also second in a job read twice for its first step's body.
+        refused = "echo $(cat <<EOF\n$(%s)\nEOF)\n" % PIPE
+        body = "CMD=true\n$CMD <<'EOF'\necho hi\nEOF\n"
+        for script in (refused, body + refused, refused + body):
+            with self.subTest(script=script):
+                with self.assertRaises(shell_lex.Unreadable):
+                    wg.fetch_exec_defects(script)
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
+        found = wg.job_defects([("A", self.UNSURE), ("B", refused)])
+        self.assertEqual(["B"], [name for name, _why in found])
+        self.assertTrue(found[0][1].startswith("cannot read this step: "), found)
 
 
 class TestDoubleQuoteEscapes(unittest.TestCase):
