@@ -12,12 +12,15 @@ designate a file without ever writing its name:
     `same_file`, `names_file`  exactly, and for a checksum's text, word for
                                word
     `covers`                   by a glob, by a word bash expands that ends
-                               in a download's basename (#2345), or by the
-                               directory a recursive command walks
+                               in a download's basename, by one written out
+                               where the download's path expands (#2345 and
+                               its mirror #2442), or by the directory a
+                               recursive command walks
     `may_run`                  a command word bash expands that ends in a
-                               download's basename (#2310), or a bare name a
-                               download written into a directory on PATH
-                               answers to (#2308)
+                               download's basename (#2310) or written out
+                               where the download's path expands (#2442), or
+                               a bare name a download written into a
+                               directory on PATH answers to (#2308)
     `described`                the operands handed over by `find -exec` or
                                `xargs`
     `chmod_targets`            the files a `chmod` changes, its mode apart
@@ -87,6 +90,29 @@ PATH_DIRS = BIN_DIRS + ("$HOME/.local/bin", "${HOME}/.local/bin", "~/.local/bin"
                         "/home/runner/.local/bin")
 
 
+def _last_part(token, dest):
+    """Does one of these two spellings bind to the other's LAST part?
+
+    ONE predicate for #2345's rule and #2442's mirror of it, because the
+    asymmetry between the two was the bug: a word bash expands is read by its
+    last part against a download's basename, and so -- the mirror -- is a word
+    written out against a download whose own path expands. `curl -o
+    "$PWD/cuda_1.run"; sh cuda_1.run` runs the download in every shell and read
+    clean, while the same fetch under `sh cuda_*.run` was reported: the glob
+    reached it and the commoner spelling did not. The mirror needs that basename
+    WRITTEN -- with the last part expanding too (`-o "$PWD/$F"`) there is no name
+    to bind -- and an option word is never a use of anything. `derived` carries
+    the dest's lifted substitutions into its basename, so the text standing for
+    one (`-o "$PWD/$(date +%s).run"`) is never read as a name written out.
+    """
+    name = os.path.basename(os.path.normpath(dest))
+    if os.path.basename(os.path.normpath(token)) != name:
+        return False
+    return dynamic(token, shell_reader.has_substitution) or (
+        not token.startswith("-") and dynamic(dest, shell_reader.has_substitution)
+        and not dynamic(shell_reader.derived(name, dest), shell_reader.has_substitution))
+
+
 def may_run(word, dest):
     """Does running this COMMAND word run `dest`? By its spelling; by its
     basename where bash expands the word first (#2310); by PATH, for a bare
@@ -108,11 +134,13 @@ def may_run(word, dest):
     /usr/local/bin/tool`), whether or not a builtin or an earlier directory
     answers to it first. The run side only, again: a checksum of the bare
     `tool` reads `./tool`, so it does not clear `/usr/local/bin/tool`.
+
+    `_last_part` carries the mirror of the first of those (#2442): a word
+    written out runs a download whose own path expands (`curl -o "$PWD/tool"`,
+    then `./tool`), wherever a PATH lookup would have found it or not.
     """
     name = os.path.basename(os.path.normpath(dest))
-    return same_file(word, dest) or (
-        dynamic(word, shell_reader.has_substitution)
-        and os.path.basename(os.path.normpath(word)) == name) or (
+    return same_file(word, dest) or _last_part(word, dest) or (
         word == name and os.path.dirname(os.path.normpath(dest)) in PATH_DIRS)
 
 
@@ -164,7 +192,10 @@ def covers(token, dest, recursive=False):
     glob is matched against the whole path with a leading `./` on either
     dropped -- and, one bash expands, by the last parts where a `$` spells
     either directory or it has one a bare dest does not (`_GROUP`'s comment
-    says why). The directory part over-reports: after a fetch of
+    says why). #2345's arm is `_last_part`, which carries its mirror too
+    (#2442): a word written OUT stands for a download whose own path expands,
+    so `sh cuda_1.run` reads the fetch to `"$PWD/cuda_1.run"` that only the
+    glob reached. The directory part over-reports: after a fetch of
     `install.sh`, `chmod +x scripts/*.sh` or `sh scripts/*.sh` is refused,
     though bash never touches `install.sh` -- kept, as restricting it to
     `..` would reopen `cd ..; sh repo/cuda_*.run`, which bash runs. The run
@@ -178,8 +209,7 @@ def covers(token, dest, recursive=False):
         loose = bool(_EXPANSION.search(glob))
         while _GROUP.search(glob) or _EXPANSION.search(glob):
             glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
-    elif dynamic(token, shell_reader.has_substitution) and not token.startswith("-") and (
-            os.path.basename(os.path.normpath(token)) == os.path.basename(os.path.normpath(dest))):
+    elif not token.startswith("-") and _last_part(token, dest):
         return True
     if _GLOB.search(glob):
         glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
