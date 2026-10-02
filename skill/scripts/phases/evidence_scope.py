@@ -53,9 +53,9 @@ import ast
 import hashlib
 import os
 import re
-import stat
 
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 from . import runio
 
 # How many files one claim's closure may grant. Twelve is the smallest number
@@ -96,10 +96,13 @@ _PATH_RE = re.compile(
 _PY = ".py"
 
 # How much of a same-named candidate step 4 reads before it gives up on telling
-# two files apart. Four MiB covers every source file in a reviewable tree by a
-# wide margin, and a file larger than it is not source: reading further would
-# spend the closure's whole IO budget proving that two vendored archives differ.
-# Oversized counts as DISTINCT, never as identical -- see `_digest`.
+# two files apart. Four MiB is the smallest read class: these are individual
+# reviewable source files, not aggregated run metadata or an advisor response,
+# and a larger file is treated as outside the source-review boundary. Reading
+# further would spend the closure's whole I/O budget proving that two vendored
+# archives differ. Oversized counts as DISTINCT, never as identical -- see
+# `_digest`. Import parsing uses the same cap because it reads the same source
+# class and needs no bytes the content comparison refused.
 _HASH_BYTES = 4 * 1024 * 1024
 _SOURCE_BYTES = 4 * 1024 * 1024
 
@@ -227,21 +230,10 @@ def _candidates(review_root, paths, name):
 
 
 def _read_regular(review_root, rel, limit):
-    if _usable(review_root, rel) != rel:
-        raise OSError("not a confined regular file")
-    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-             | getattr(os, "O_NOFOLLOW", 0))
-    fd = os.open(os.path.join(review_root, rel), flags)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError("not a regular file")
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            raw = stream.read(limit + 1)
-    finally:
-        os.close(fd)
-    if len(raw) > limit:
-        raise ValueError("file exceeds %d-byte limit" % limit)
-    return raw
+    """Confine one repo path, then delegate bytes and outcomes to safe_write."""
+    if not runio._confined_to_root(review_root, rel):
+        raise OSError("not a confined path")
+    return safe_write.read_regular_bytes(os.path.join(review_root, rel), limit)
 
 
 def _digest(review_root, rel, cache):
@@ -254,10 +246,10 @@ def _digest(review_root, rel, cache):
     if rel not in memo:
         try:
             blob = _read_regular(review_root, rel, _HASH_BYTES)
+        except safe_write.ReadLimitExceeded:
+            memo[rel] = (None, _OVERSIZED)
         except OSError:
             memo[rel] = (None, _UNREADABLE)
-        except ValueError:
-            memo[rel] = (None, _OVERSIZED)
         else:
             memo[rel] = (hashlib.sha256(blob).hexdigest(), None)
     return memo[rel]
@@ -489,7 +481,7 @@ def _source(review_root, rel_path, cache):
         try:
             raw = _read_regular(review_root, rel_path, _SOURCE_BYTES)
             memo[rel_path] = raw.decode("utf-8", errors="replace")
-        except (OSError, ValueError):
+        except (OSError, safe_write.ReadLimitExceeded):
             memo[rel_path] = None
     return memo[rel_path]
 
