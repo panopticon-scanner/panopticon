@@ -1066,12 +1066,17 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   artifact rather than a change shape, which the merged count could not tell apart — and the
   stderr line now names the rangeless paths themselves (the first ten, escaped). Since #2405 that
   split is a GATE input: on an active delta under `--gate-scope on-diff`, a non-zero
-  `paths_emptied_by_drops`, a non-zero `ranges_dropped` or a set `payload_malformed` turns a run
+  `paths_emptied_by_drops`, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, owner
+  ruling 2026-10-02, the fourth counter) or a set `payload_malformed` turns a run
   carrying gate-eligible findings from PASS to `gate: INCONCLUSIVE`, because the map that chose
   the gate's scope is provably damaged — the `zero_hunk_gate_gap` posture over a map that still
-  carries ranges, which in practice means the two drop arms: the older rule wins when both hold,
+  carries ranges, which in practice means the three drop arms: the older rule wins when both hold,
   and the one `payload_malformed` value an active delta can carry empties the map, so #2178
-  answers there. The blind spot is deliberate: a truncated map whose paths arrived `[]` cannot be
+  answers there. The two drop directions are opposite and both count: an emptied path still admits
+  every finding in its file to the gate, while a dropped path leaves the map, so every finding in
+  it classifies off-diff and leaves the gate's source set — the fail-open loss, which is why a
+  `paths_dropped` run could report a PASS over findings its own artifact had hidden. The blind
+  spot is deliberate: a truncated map whose paths arrived `[]` cannot be
   told from a deletion-only, binary, mode-only or same-content rename change, so the rest of
   `paths_without_ranges` stays disclosed and is never gated on. An ACTIVE delta
   whose map is empty (`hunks_files: 0`) matches no
