@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
+  common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
+  failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,
+  and 16 MiB caps now state which source, verdict, or aggregate metadata class each one bounds.
 - **Broken batch stop predicates identify their failure point (#2555, #1817).** The runner logs
   the completed entry and final predicate frame inside the existing redacted 200-character
   detail budget, then keeps yielding launched work and still honours a later stop.
