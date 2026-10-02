@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Family PR review discloses missing agents (#2546, #1817).** Missing finders and verifier
+  votes become explicit incomplete-review facts and log lines; a partly verified finding cannot
+  enter the confirmed or dropped lists.
 - **Kimi credential cleanup reports partial failures (#2545, #1817).** Cleanup distinguishes
   removed, absent and failed paths; retained-home and exit messages no longer claim secrets are
   gone when an unlink failed.

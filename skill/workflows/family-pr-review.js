@@ -20,7 +20,8 @@
 // (pipeline, no barrier), each finding then adversarially verified by three
 // independent refuters; a finding survives with two "real" votes. Each finder
 // is capped at 25 findings by the schema and again at the verifier boundary.
-// The result carries confirmed and dropped findings plus any cap truncation.
+// The result carries confirmed and dropped findings, cap truncation, and any
+// finder or verifier result that went missing as an incomplete-review fact.
 //
 // The finders and the refuters run UNCONFINED, by decision: both roles have to
 // run `git diff` and `git log` and read any file in the checkout (see COMMON
@@ -50,6 +51,7 @@ const base = (args && args.base) || 'main'
 const GUARDRAILS = 'docs/FAMILY-PR-GUARDRAILS.md'
 const DIFF = 'git diff ' + base + '...HEAD'
 const MAX_FINDINGS_PER_DIMENSION = 25
+const VERIFIERS_PER_FINDING = 3
 
 const COMMON = 'You are reviewing the branch currently checked out, a `' + host + '` family first-class-host PR for Panopticon. ' +
   'Read ' + GUARDRAILS + ' in full first. Then inspect the change with `' + DIFF + '` and `git log ' + base + '..HEAD --format=%s`, ' +
@@ -119,33 +121,68 @@ const perDimension = await pipeline(
   DIMENSIONS,
   d => agent(d.prompt, { label: 'review:' + d.key, phase: 'Review', schema: FINDINGS }),
   (found, d) => {
-    const received = found && Array.isArray(found.findings) ? found.findings : []
+    const finderComplete = Boolean(found && Array.isArray(found.findings))
+    const received = finderComplete ? found.findings : []
     const selected = received.slice(0, MAX_FINDINGS_PER_DIMENSION)
     findingCounts[d.key] = {
       received: received.length,
       verified: selected.length,
       omitted: received.length - selected.length,
     }
-    return parallel(selected.map(f => () =>
-      parallel([0, 1, 2].map(i => () =>
+    return parallel(selected.map((f, findingIndex) => () =>
+      parallel(Array.from({ length: VERIFIERS_PER_FINDING }, (_unused, i) => () =>
         agent(verifyPrompt(f), {
           label: 'verify:' + d.key + ':' + i,
           phase: 'Verify',
           schema: VERDICT,
         })))
-        .then(votes => ({ ...f, dimension: d.key, votes: votes.filter(Boolean) }))))
+        .then(votes => {
+          const present = Array.isArray(votes) ? votes.filter(Boolean) : []
+          const finding = { ...f, dimension: d.key, votes: present }
+          const missingVotes = VERIFIERS_PER_FINDING - present.length
+          return {
+            finding,
+            incomplete: missingVotes ? {
+              stage: 'verifier',
+              dimension: d.key,
+              finding_index: findingIndex,
+              missing_votes: missingVotes,
+              finding,
+            } : null,
+          }
+        })))
+      .then(reviewed => ({
+        reviewed: reviewed.filter(Boolean),
+        incomplete: finderComplete ? [] : [{ stage: 'finder', dimension: d.key }],
+      }))
   },
 )
 
-const all = perDimension.filter(Boolean).flat().filter(Boolean)
-const confirmed = all.filter(f => f.votes.filter(v => v.real).length >= 2)
-const dropped = all.filter(f => f.votes.filter(v => v.real).length < 2)
+const dimensions = perDimension.filter(Boolean)
+const reviewed = dimensions.flatMap(row => row.reviewed || [])
+const complete = reviewed.filter(row => !row.incomplete).map(row => row.finding)
+const confirmed = complete.filter(f => f.votes.filter(v => v.real).length >= 2)
+const dropped = complete.filter(f => f.votes.filter(v => v.real).length < 2)
+const incompleteReview = [
+  ...dimensions.flatMap(row => row.incomplete || []),
+  ...reviewed.map(row => row.incomplete).filter(Boolean),
+]
 const truncation = DIMENSIONS
   .map(d => findingCounts[d.key] && { dimension: d.key, ...findingCounts[d.key] })
   .filter(row => row && row.omitted)
 const findingsOmitted = truncation.reduce((total, row) => total + row.omitted, 0)
-log('family-pr-review: ' + all.length + ' verified findings, ' + confirmed.length + ' confirmed, ' +
-    dropped.length + ' dropped, ' + findingsOmitted + ' omitted by the ' +
+incompleteReview.forEach(fact => {
+  if (fact.stage === 'finder') {
+    log('family-pr-review: incomplete finder result for ' + fact.dimension)
+  } else {
+    log('family-pr-review: incomplete verifier result for ' + fact.dimension + ' finding ' +
+        (fact.finding_index + 1) + ': ' + fact.missing_votes + ' of ' +
+        VERIFIERS_PER_FINDING + ' votes missing')
+  }
+})
+log('family-pr-review: ' + complete.length + ' fully verified findings, ' +
+    confirmed.length + ' confirmed, ' + dropped.length + ' dropped, ' +
+    incompleteReview.length + ' incomplete review facts, ' + findingsOmitted + ' omitted by the ' +
     MAX_FINDINGS_PER_DIMENSION + '-per-dimension cap')
 return {
   host,
@@ -153,6 +190,7 @@ return {
   finding_cap: MAX_FINDINGS_PER_DIMENSION,
   findings_omitted: findingsOmitted,
   truncation,
+  incomplete_review: incompleteReview,
   confirmed,
   dropped,
 }
