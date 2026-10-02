@@ -82,6 +82,15 @@ class GrandchildCase(unittest.TestCase):
     def tree_argv(self):
         return [sys.executable, "-c", _TREE % self.pidfile]
 
+    def spawn_tree(self, argv):
+        proc = subprocess.Popen(  # noqa: S603
+            argv, start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
     def exiting_tree_argv(self):
         """A leader that exits after its SIGTERM-resistant worker is ready."""
         worker = (
@@ -359,10 +368,7 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
 
     def test_a_registered_group_s_grandchild_dies(self):
         runner = base.HostRunner()
-        proc = subprocess.Popen(self.tree_argv(), start_new_session=True,  # noqa: S603
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(proc.wait)
-        self.addCleanup(proc.kill)
+        proc = self.spawn_tree(self.tree_argv())
         runner.register_child(proc)
         pid = self.grandchild()
         self.assertTrue(alive(pid), "the grandchild was never running")
@@ -375,23 +381,10 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         if not hasattr(os, "waitid"):
             self.skipTest("observing an exit without reaping requires waitid")
         runner = base.HostRunner()
-        proc = subprocess.Popen(  # noqa: S603
-            self.exiting_tree_argv(), start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        self.addCleanup(proc.wait)
-        self.addCleanup(proc.kill)
+        proc = self.spawn_tree(self.exiting_tree_argv())
         runner.register_child(proc)
         pid = self.grandchild()
-        deadline = time.monotonic() + 3.0
-        result = None
-        while result is None and time.monotonic() < deadline:
-            result = os.waitid(
-                os.P_PID, proc.pid,
-                os.WEXITED | os.WNOHANG | os.WNOWAIT,
-            )
-            if result is None:
-                time.sleep(0.01)
+        result = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
         self.assertIsNotNone(result, "the session leader did not exit")
         self.assertIsNone(proc.returncode, "the fixture reaped its session leader")
         self.assertTrue(alive(pid), "the resistant grandchild was never running")
