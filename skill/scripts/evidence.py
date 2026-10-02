@@ -517,16 +517,7 @@ def _read_verdict_text(path):
     return safe_write.read_regular_bytes(path, MAX_VERDICT_BYTES).decode("utf-8")
 
 
-def _verdict_failure_reason(error):
-    """One classification for both strict and tolerant verdict loaders."""
-    if isinstance(error, safe_write.ReadLimitExceeded):
-        kind = "oversized"
-    elif isinstance(error, OSError):
-        kind = "unreadable"
-    else:
-        kind = "unparseable"
-    detail = (str(error).splitlines() or [type(error).__name__])[0]
-    return "%s: %s" % (kind, detail or type(error).__name__)
+_verdict_failure_reason = safe_write.read_failure_reason
 
 
 load_json_tolerant = tolerant_json.loads
