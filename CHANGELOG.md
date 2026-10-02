@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A checksum rescue inside a piped group is not credited without pipefail (#2630, #2608).**
+  `{ CHECK || exit 1; } | cat`, its multi-line and subshell spellings, a `{ f; } | cat` call and
+  a `|| return 1` twin leave only the piped stage's subshell, so without `pipefail` the pipeline
+  takes the last stage's status and bash 3.2.57/5.2.21 and dash run the payload; the default and
+  `shell: sh` postures now report them, while `shell: bash` (`-eo pipefail`) still clears them.
+  The nested-paren spelling #2627 fixed, the `set -o pipefail` form and the no-pipe rescue keep
+  their verdicts. 0 occurrences in the 11 corpora and the calibration pool.
 - **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
   56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant

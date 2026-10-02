@@ -2995,6 +2995,57 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             with self.subTest(body=body, shell="bash"):
                 self.assertEqual([], self.job(body, "bash"))
 
+    def test_a_rescue_inside_a_piped_group_is_not_credited_without_pipefail(self):
+        # #2630: a checksum rescue written in a brace group or subshell that is
+        # a pipeline stage sets only that stage's status; bash 3.2.57/5.2.21 and
+        # dash run the use after the pipeline in the default and `sh` postures
+        # (no pipefail), and `shell: bash` (`-eo pipefail`) alone stops the step.
+        # Shape 5 is #2633's deferred piped function call, the same mechanism.
+        pipefail_gated = (
+            "{ CHECK || exit 1; } | cat\n",                          # 1
+            "{\n  CHECK || exit 1\n} | cat\n",                       # 2
+            "(\n  CHECK || exit 1\n) | cat\n",                       # 3
+            "f() { { ( CHECK || exit 1 ); } | cat; }\nf\n",         # 4
+            "f() { CHECK; }\n{ f; } | cat\n",                        # 5
+            "f() { { CHECK || return 1; } | cat; }\nf\n",           # 7
+        )
+        for body in pipefail_gated:
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    found = self.job(body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("piped", found[0][1])
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], self.job(body, "bash"))
+        # Shape 6's single-line piped subshell is read fail-closed in every
+        # posture (its pipeline stage reports before pipefail is consulted).
+        for shell in (None, "sh", "bash"):
+            with self.subTest(body="( CHECK || exit 1 ) | cat\n", shell=shell):
+                self.assertEqual(1, len(self.job("( CHECK || exit 1 ) | cat\n", shell)))
+
+    def test_the_piped_rescue_controls_keep_their_verdicts(self):
+        # #2630 controls. Credited (pipefail carries the failed stage's status,
+        # or there is no pipe and the exit stops the step):
+        for body, shell in (("set -o pipefail\n{ CHECK || exit 1; } | cat\n", None),
+                            ("set -o pipefail\n{ CHECK || exit 1; } | cat\n", "sh"),
+                            ("{ CHECK || exit 1; }\n", None),
+                            ("{ CHECK || exit 1; }\n", "sh"),
+                            ("{ CHECK || exit 1; }\n", "bash")):
+            with self.subTest(body=body, shell=shell):
+                self.assertEqual([], self.job(body, shell))
+        # Must-trip everywhere: `|| true` swallows the failure under every shell.
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.job("CHECK || true\n", shell)))
+        # A piped check with no rescue, and the nested-paren spelling #2627
+        # fixed, report without pipefail and clear under `shell: bash`.
+        for body in ("CHECK | cat\n", "{ ( CHECK || exit 1 ); } | cat\n"):
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(self.job(body, shell)))
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], self.job(body, "bash"))
+
     def test_a_nested_groups_status_reaches_the_outer_exiting_rescue(self):
         for body in ("{ { CHECK && echo ok; }; } || exit 1\n",
                      "{ { { CHECK && echo ok; }; }; } || exit 1\n",
