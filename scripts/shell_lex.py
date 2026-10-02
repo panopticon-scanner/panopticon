@@ -242,6 +242,7 @@ class _Frame:
         self.kind, self.depth, self.undo = kind, depth, undo
         self.queue: list[tuple[int, str, bool, bool, str]] = []
         self.saved: dict = {}           # a `$(...)`: the state around it
+        self.drop = False               # its `EOF)` rest loses one separator
 
 
 class _Lexer:
@@ -317,6 +318,9 @@ class _Lexer:
         """Read the character at `i`, which opens nothing; the index after it."""
         text, out = self.text, self.out
         ch, start = text[i], len(out) == self.word
+        if ch == ";" and frame.drop:
+            frame.drop = False          # bash 5.2's `EOF)` compatibility parse
+            return i + 1
         if frame.kind in _CODE:
             if ch == "#" and start:     # a comment: gone, up to its newline
                 end = text.find("\n", i)
@@ -529,7 +533,8 @@ class _Lexer:
                 self.lines[expands] = _Lines(self.text, folded=expands)
             found = self.lines[expands].body(i, delimiter, strip, frame.kind == "(")
             if found:
-                body, i, cut = found
+                body, i, cut, drop = found
+                frame.drop = frame.drop or drop
                 self.out[slot] = " %s " % self.heredoc(body, expands, fd)
         frame.queue.clear()
         return i

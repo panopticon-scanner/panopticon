@@ -73,9 +73,11 @@ class _Lines:
                 self.last.append(k)
                 run, length = [], 0
 
-    def body(self, at: int, word: str, strip: bool, sub: bool) -> tuple[str, int, bool] | None:
-        """(body, where code resumes, whether a line like `EOF)` ended it) for a
-        heredoc whose body starts at offset `at`, or None when no line ends it."""
+    def body(
+        self, at: int, word: str, strip: bool, sub: bool
+    ) -> tuple[str, int, bool, bool] | None:
+        """(body, where code resumes, whether an `EOF)` line ended it, whether
+        5.2 drops its first separator) for a body, or None when none ends it."""
         k = bisect.bisect(self.starts, at) - 1
         n, offset = self.of[k], self.offset[k] + at - self.starts[k]
         text = self.texts[n]
@@ -104,9 +106,18 @@ class _Lines:
         body = "\n".join(line.lstrip("\t") if strip else line for line in lines)
         after = self.last[end] + 1
         if cut >= 0:                    # code resumes on the line that ended it
-            after = bisect.bisect(self.offset, cut, self.last[end - 1] + 1 if end else 0, after) - 1
-            return body, self.starts[after] + cut - self.offset[after], True
-        return body, self.starts[after] if after < len(self.starts) else self.size, False
+            line = self.texts[end]
+            if line.startswith(";", cut):
+                return body, self.source(end, line.rfind(")")), True, False
+            return body, self.source(end, cut), True, True
+        return body, self.starts[after] if after < len(self.starts) else self.size, False, False
+
+    def source(self, line: int, offset: int) -> int:
+        """Source offset for `offset` in one logical line."""
+        first = self.last[line - 1] + 1 if line else 0
+        after = self.last[line] + 1
+        physical = bisect.bisect(self.offset, offset, first, after) - 1
+        return self.starts[physical] + offset - self.offset[physical]
 
     def lead(self, at: int, text: str, offset: int) -> int:
         """Where the line starting at `at` begins once `<<-` strips its tabs --

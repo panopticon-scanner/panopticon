@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
+  drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
+  `true; curl … | sh` rest whose download never runs; a rest beginning with `;` is a syntax error
+  and runs nothing. `_Lines` now marks the owning substitution frame to omit its next top-level
+  separator, or resumes at the closing `)` for the rejected form. The frame flag preserves quote
+  and command parsing; copying rewritten text around it would
+  bypass that state and recreate the original defect.
 - **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
   `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
   the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39

@@ -156,6 +156,38 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
         self.assertEqual([], defects("(cat <<EOF\nhi\nEOF)\n%s\nEOF\n)\n" % PIPE))
 
 
+class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
+    """#2492: bash 5.2 drops the first `;` after a substitution heredoc's
+    delimiter and rejects a rest that starts with one."""
+
+    VULNERABLE = ("x=$(cat <<'EOF'\nhi\n"
+                  "EOFsh -c; '%s')\n" % PIPE)
+    NO_SEMICOLON = ("x=$(cat <<'EOF'\nhi\n"
+                    "EOF sh -c '%s')\n" % PIPE)
+
+    def test_the_dropped_separator_exposes_the_shell_program(self):
+        found = defects(self.VULNERABLE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `sh` inside a command substitution", found[0][1])
+        self.assertEqual(defects(self.NO_SEMICOLON), found)
+
+    def test_code_only_the_written_separator_would_run_stays_clean(self):
+        for rest in ("true; %s)" % PIPE, "; %s)" % PIPE):
+            with self.subTest(rest=rest):
+                self.assertEqual([], defects("x=$(cat <<'EOF'\nhi\nEOF%s\n" % rest))
+
+    def test_a_separator_after_the_substitution_is_not_dropped(self):
+        found = defects("x=$(cat <<'EOF'\nhi\nEOF); %s\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_a_real_pipeline_beside_the_clean_forms_still_trips(self):
+        script = "x=$(cat <<'EOF'\nhi\nEOF\n)\n%s\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+
 class TestAForeignProgramOnStandardInput(unittest.TestCase):
     """#2499 (owner ruling 2026-10-01, option b): a heredoc body handed to an
     interpreter this guard has no grammar for -- `python3 - <<'EOF'`,
