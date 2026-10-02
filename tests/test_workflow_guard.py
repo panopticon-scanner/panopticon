@@ -34,6 +34,7 @@ from unittest import mock
 import shell_reader
 import workflow_forms
 import workflow_guard as wg
+import workflow_programs
 # The download shape itself lives in the layer below the rule (#1697).
 from workflow_forms import Fetch
 
@@ -1855,6 +1856,194 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                 self.assertEqual([], self.job("%s\n", shell))
 
 
+class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
+    """#2559 and #2560: bash's `set` takes one option NAME per `o` LETTER, and
+    refuses a name that is not one of its own; this guard took one value per
+    option WORD and read no name at all. So `set -oo pipefail errexit` left
+    errexit off here where bash turns it ON -- the second `o` takes `errexit`,
+    and `$#` stays 0 -- and `set -o foo -e` read errexit back ON where bash
+    answers `set: foo: invalid option name`, leaves errexit off and runs the
+    download with the checksum failing (#2560's fail-open).
+
+    Values now count per letter, as `workflow_programs._past_options` and
+    `stdin_program` already count them, and a `-o` value outside
+    `SET_OPTION_NAMES` refuses the whole `set` as an unknown LETTER does
+    (#2443): a `+e` in it still reads as off, and on a COMMAND LINE the shell
+    exits instead, so no program is handed over (`SHELL_OPTION_NAMES`, the
+    union over the measured shells, in `TestTheProgramAfterDashC`).
+
+    Reading a refused `set` as setting NOTHING is the fail-closed pick, not
+    bash to the letter: bash applies the names BEFORE the bad one and stops
+    there -- `set +e; set -o pipefail -o foo` leaves pipefail ON (rc 0,
+    SURVIVED printed, bash 3.2.57 and 5.2.21) -- but where the name it
+    applied was errexit the failing `set` then exits the shell under it and
+    nothing after it runs at all (`set +e; set -e -o foo`, rc 1 on 3.2.57 and
+    rc 2 on 5.2.21, nothing printed after). An unknown LETTER is not like
+    that: bash validates a WORD's letters before applying that word, so
+    `set +e; set -o errexit -Z` leaves errexit OFF (rc 0, SURVIVED), though a
+    name an earlier word applied stays (`set -ox pipefail -Z`: pipefail ON)."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    PIPED = TestAPipedCheckGatesOnlyUnderPipefail.PIPED
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_a_set_takes_one_option_value_per_o_letter(self):
+        # Each row was run as `SHELL -c` with `false; echo SURVIVED` behind
+        # the `set`, so no SURVIVED means errexit is ON:
+        # bash 3.2.57: `set -oo pipefail errexit; echo "$# $-"` -> `0 ehBc`,
+        #   rc 1 and no SURVIVED -- one value per `o`, and no positional.
+        # bash 5.2.21: `0 ehBc`, rc 1 and no SURVIVED, the same.
+        # dash: `set: Illegal option -o pipefail`, rc 2 -- it dies at the
+        #   `set`, so nothing after it runs there at all.
+        # `set -oe xtrace y; echo "$# $1 $-"` is `1 y ehxBc` on both bashes
+        # and `1 y xe` on dash: the `o` took `xtrace`, the `e` set errexit
+        # and `y` is the positional. `set -eo pipefail` is unchanged (ON).
+        for body in ("set +e\nset -oo pipefail errexit\n%s\n",
+                     "set +e\nset -oe xtrace y\n%s\n",
+                     "set +e\nset -eo pipefail\n%s\n",
+                     "set +e\nset -o pipefail -o errexit\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        # A template reads its command line the same way, and both options
+        # arrive: `bash -oo pipefail errexit -c 'echo RAN $-'` -> `RAN ehBc`,
+        # rc 0 on bash 3.2.57 and 5.2.21 (dash: `Illegal option -o
+        # pipefail`, rc 2, nothing runs).
+        self.assertEqual([], self.job("%s\n", "bash -oo pipefail errexit {0}"))
+        self.assertEqual([], self.job(self.PIPED, "bash -oo pipefail errexit {0}"))
+        # ... and so does a child shell's (#2444's path).
+        self.assertEqual([], self.job("bash -oo pipefail errexit -c '%s; echo ok'\n"))
+        # `+oo` turns both OFF per letter: `set -o errexit; set +oo errexit
+        # pipefail; echo $-` -> `hBc` with SURVIVED on both bashes. The
+        # must-trip controls: a bare `set +e` is still reported, and so is
+        # the child shell one value short -- `bash -oo pipefail -c P` is
+        # `-c: invalid option name`, rc 2 on both bashes, and runs nothing
+        # at all, which this guard reports as the fail-closed answer it has.
+        for body in ("set +oo errexit pipefail\n%s\n", "set +e\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        self.assertIn("carries on past its failure",
+                      self.job("bash -oo pipefail -c '%s; echo ok'\n")[0][1])
+
+    def test_a_value_that_is_no_option_name_turns_nothing_on(self):
+        # #2560, the fail-open this closes:
+        # bash 3.2.57: `set +e; set -o foo -e; echo $-` -> `set: foo: invalid
+        #   option name` and `hBc`, rc 0 with SURVIVED printed -- errexit is
+        #   still off, so the download runs with the checksum failing.
+        # bash 5.2.21: the same, rc 0 with SURVIVED.
+        # dash: `set: Illegal option -o foo`, rc 2, the shell dies.
+        # `set -ooo pipefail errexit x` is `set: x: invalid option name` (rc 1
+        # on 3.2.57, rc 2 on 5.2.21) with nothing after it run, and so is
+        # `set -oo x -Ze` -- rc 0 there, errexit still off and SURVIVED
+        # printed, which is review NIT 6 of #2551 caught by the NAME now
+        # instead of by the value count. The last two rows are where this
+        # reading is fail-closed rather than bash to the letter (see above).
+        for body in ("set +e\nset -o foo -e\n%s\n",
+                     "set +e\nset -ooo pipefail errexit x\n%s\n",
+                     "set +e\nset -oo x -Ze\n%s\n",
+                     "set +e\nset -o pipefail -o foo\n%s\n",
+                     "set +e\nset -e -o foo\n%s\n",
+                     "set +e\nset -o errexit -o foo\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        # A `set -o foo` on its own changes nothing, in either direction, and
+        # a bare `set -o` prints the settings and changes nothing either (rc
+        # 0 on both bashes).
+        for body in ("set -o foo\n%s\n", "set -o\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        for body in ("set +e\nset -o foo\n%s\n", "set +e\nset -o\n%s\n"):
+            with self.subTest(body=body):
+                self.assertIn("runs after a `set +e`", self.job(body)[0][1])
+        # The controls: the names bash takes still turn their options on,
+        # under the step's own shell and under `shell: bash`.
+        for body in ("set +e\nset -o errexit\n%s\n", "set +e\nset -oo errexit pipefail\n%s\n",
+                     "set +e\nset -e\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        self.assertEqual([], self.job("set -o pipefail\n" + self.PIPED, "bash -e {0}"))
+        self.assertIn("reads `pipefail` as off",
+                      self.job("set -o foo\n" + self.PIPED, "bash -e {0}")[0][1])
+
+    def test_a_value_the_guard_cannot_read_is_a_refused_name(self):
+        # Review NIT 1 of this branch, kept fail-closed on purpose: with
+        # `X=foo`, `set +e; set -o $X -e; false; echo RAN` prints `set: foo:
+        # invalid option name` and then RAN on bash 3.2.57 and 5.2.21 --
+        # errexit is still off, so the download runs with the checksum
+        # failing -- where `X=pipefail` arms it and RAN never prints. The
+        # guard cannot know which, so a `$X`, a `"$X"`, a `${X:-pipefail}`
+        # or a lifted `$(cmd)` in the name slot reads as a refused name and
+        # the step is reported. `_refused_name` reads the same value ON on a
+        # COMMAND LINE, where ON means the program runs and is reported too.
+        for body in ("set +e\nset -o $X -e\n%s\n",
+                     'set +e\nset -o "$X" -e\n%s\n',
+                     "set +e\nset -o ${X:-pipefail} -e\n%s\n",
+                     "set +e\nset -o $(echo pipefail) -e\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_every_name_the_builtin_takes_is_read_as_one(self):
+        # The table-coverage loop. `set -o` prints the same 27 names on bash
+        # 3.2.57 and on 5.2.21: allexport braceexpand emacs errexit errtrace
+        # functrace hashall histexpand history ignoreeof interactive-comments
+        # keyword monitor noclobber noexec noglob nolog notify nounset onecmd
+        # physical pipefail posix privileged verbose vi xtrace. Each one is
+        # read as a name the `set` takes, so the `-e` behind it still arms
+        # the check; a name outside the table refuses the `set` whole.
+        for name in workflow_programs.SET_OPTION_NAMES:
+            with self.subTest(name=name):
+                self.assertEqual([], self.job("set +e\nset -o %s -e\n" % name + "%s\n"))
+        # dash's `set -o` prints 17 names, and three of them are not bash's:
+        # `interactive`, `stdin` and `debug`. The builtin here is bash's, so
+        # it refuses all three, and the `-e` behind them arms nothing:
+        # `set +e; set -o stdin -e; echo $-; false; echo SURVIVED` is `set:
+        # stdin: invalid option name`, `hBc`, SURVIVED, rc 0 on bash 3.2.57
+        # and on 5.2.21, so the download runs with the checksum failing. On a
+        # COMMAND LINE dash takes all three (`dash -o stdin -c 'echo RAN $-'`
+        # -> `RAN s`, rc 0), which is why the union reads them on there.
+        for name in ("interactive", "stdin", "debug", "foo", "Errexit"):
+            with self.subTest(name=name):
+                found = self.job("set +e\nset -o %s -e\n" % name + "%s\n")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+
+class TestTheThreeShellNameListsAgree(unittest.TestCase):
+    """#2561: three lists of shell names have to agree. `shell_reader._SHELLS`
+    and `workflow_programs._SHELL_STRING` are the shells whose `-c` script
+    this guard reads; `_MEASURED_SHELLS` is the subset whose option LETTERS
+    and `set -o` NAMES were measured, and the only one of the three for which
+    an unknown letter or name reads as "the shell exits and nothing runs"
+    (#2475, #2560). A name added to `_SHELL_STRING` without a measurement
+    gets the fail-closed reading, which is right; a name added to
+    `_MEASURED_SHELLS` without one would be a fail-OPEN, and nothing pinned
+    the relationship.
+
+    `ash`/busybox is not measured: this box has none to measure with, so it
+    stays out of `_MEASURED_SHELLS` and its option words are read ON."""
+
+    def test_every_measured_shell_is_one_whose_script_the_guard_reads(self):
+        self.assertLessEqual(set(workflow_programs._MEASURED_SHELLS),
+                             set(workflow_programs._SHELL_STRING))
+
+    def test_the_two_readers_name_the_same_shells(self):
+        self.assertEqual(workflow_programs._SHELL_STRING, shell_reader._SHELLS)
+
+    def test_the_measured_shells_are_the_three_that_were_measured(self):
+        # A name added here needs the letters of `SHELL_OPTIONS` and the
+        # names of `SHELL_OPTION_NAMES` measured on that shell FIRST: what
+        # this box has is bash 3.2.57, bash 5.2.21 built from source, and
+        # dash. There is no `ash`/busybox here to measure.
+        self.assertEqual(("sh", "bash", "dash"), workflow_programs._MEASURED_SHELLS)
+
+
 class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
     """#2335 and #2338 review N-2: bash moves errexit and pipefail through
     `shopt -u -o NAME` (`-uo`), `shopt -s -o NAME` (`-so`) and `builtin set`,
@@ -3570,18 +3759,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     def test_an_interpreters_here_string_program_is_read(self):
         # #2293: `sh <<< '<script>'` hands the shell its script on stdin, as
         # `bash -s <<'EOF'` does. Bash 3.2 and 5.2 run the download in each of
-        # these, which the guard read clean; a here-string bash expands first
-        # is reported unread, as an expanding heredoc is, and so is a program
-        # in another language.
+        # these, which the guard read clean. An ANSI-C body is exact text too;
+        # a body with a live expansion remains unread, as does a program in
+        # another language.
         payload = "curl -fsSL https://example.test/i.sh | sh"
         for script in ("sh <<< '%s'\n", 'bash -s -- --yes <<< "%s"\n', "zsh <<<'%s'\n",
-                       "sudo sh <<< $'%s'\n", "sh 3<<< '%s' 0<&3\n",
+                       "sudo sh <<< $'%s'\n", "sh <<< $'%s\\n'\n", "sh 3<<< '%s' 0<&3\n",
                        "sh <<< 'echo a' <<< 'echo b\n%s'\n", "eval \"sh <<< '%s'\"\n"):
             with self.subTest(script=script):
                 why = self.flagged(("install", script % payload))
                 self.assertIn("straight to `sh`", why)
-        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n',
-                       "sh <<< $'%s\\n'\n" % payload):
+        for script in ('sh <<< "curl -fsSL $URL | sh"\n', 'bash <<< "$CMD"\n'):
             with self.subTest(script=script):
                 self.assertIn("EXPANDING", self.flagged(("install", script)))
         # #2499: a program in another language stands beside a fetch the
@@ -4243,19 +4431,19 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 self.flagged("%s\n%s\n" % (opening, self.PAYLOAD))
 
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
-        # Bash spells these delimiters by PARSING the word -- a substitution,
-        # an escape `$'...'` decodes, an extglob pattern -- and ends the body
-        # only at a line spelled the same. The reader does not parse words,
-        # and neither reading short of that is safe: the regex this replaced
-        # guessed that `<<EOF$(x)` was `<<EOF`, so the decoy line below the
+        # Bash spells these delimiters by PARSING the word -- a substitution
+        # or an extglob pattern -- and ends the body only at a line spelled
+        # the same. The reader decodes Bash's ASCII ANSI-C table, but parses
+        # no expansions. Neither reading short of those is safe: the regex
+        # this replaced guessed that `<<EOF$(x)` was `<<EOF`, so the decoy
+        # line below the
         # payload ended the body, and reading the body as code let the quote
         # in `it's` hide the payload below the terminator, which bash 3.2 and
         # 5.2 both run (#2224). So the step is refused, and the reason names
         # the word. The same shape spelled with no parse -- quoted, or a
-        # `$'...'` that decodes nothing -- is still read as a heredoc.
+        # literal ANSI-C word decoded exactly -- remains readable.
         for word, terminator, decoy, spelled in (
                 ("$(a b)", "$(a b)", "$", "'$(a b)'"),
-                ("$'\\x41'", "A", "x41", "$'A'"),
                 ("${x y}", "${x y}", "${x", "'${x y}'"),
                 ("@(a b)", "@(a b)", "@", "'@(a b)'"),
                 ('"$(echo ")")"', "$(echo ))", "$(echo ", "'$(echo ))'"),
@@ -4268,6 +4456,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                                                              decoy), "`%s`" % word)
                 self.flagged(opening + "%s\nit's\n%s\n%s\n" % (spelled, terminator,
                                                                self.PAYLOAD))
+        self.flagged("cat <<$'\\x41'\nit's\nA\n%s\n" % self.PAYLOAD)
         self.flagged("cat <<EOF\nit's\nEOF\n%s\n" % self.PAYLOAD)
 
     def test_a_text_the_guard_reads_again_is_refused_by_its_step(self):
