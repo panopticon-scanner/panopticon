@@ -167,7 +167,13 @@ def _stops_the_job(stmts, index, errexit=True):
     grouped = bool(first_stage and (first_stage.group_open or
                                     (first and first[0] in _GROUP_OPEN)))
     status = 1  # The rescue is entered only after the checksum fails.
-    depth = subshell_depth = 0
+    # A rescue can close a subshell the check opened on the same statement:
+    # `( CHECK || exit 1 )`. Start inside that shell so its `)` is not read as
+    # an unmatched closer; the non-zero exit becomes the subshell's status.
+    inherited_subshells = max(0, sum(
+        stage.group_open - stage.group_close for stage in stmts[index].stages
+    ))
+    depth = subshell_depth = inherited_subshells
     exited_subshell = None
     stopped_job = exited = False
     for statement in following:
@@ -381,11 +387,14 @@ def _stops_step(stmts, position, on, fails):
                  for stage in statement.stages)
     if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
         return _LOST                            # a lost paren: the list's end is unknown
-    if not depth and end < last and stmts[end].separator not in ("&", "||") and _closes(
-            stmts[end + 1]):
-        end, depth = end + 1, -1                # the list ends its group
-        if stmts[end].stages[0].argv != ["}"] and opened < 1:
-            return _LOST                        # a `)` whose `(` the reader dropped
+    closed_subshells = 0
+    while (not depth or depth < 0) and end < last and stmts[end].separator not in (
+            "&", "&&", "||") and _closes(stmts[end + 1]):
+        end, depth = end + 1, depth - 1          # the list ends enclosing groups
+        if stmts[end].stages[0].argv != ["}"]:
+            closed_subshells += 1
+            if opened < closed_subshells:
+                return _LOST                    # a `)` whose `(` the reader dropped
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere

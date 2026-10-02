@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, `|| true`, and nested groups whose failure is rescued or left
+  ahead of `&&`. Bash 3.2.57, Bash 5.2.21 and dash agree on the target and controls.
 - **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
   `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
   the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
