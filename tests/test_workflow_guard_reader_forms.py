@@ -358,6 +358,9 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `X` empty and `$PYTHON -Ou file.py` with a download body, whose walks
       now read on as a shell's, and `$CMD -o -` and `$CMD -oe - x.sh`, whose
       `-` is read as stdin though a shell refuses it as `-o`'s value (#2473);
+      `$NODE -e "$CODE"` and `$PYTHON -m "$MOD"` with a download body, alone
+      and beside GET, whose own option value spelled `$` the walk reads past
+      as a vanishing operand, though neither reads the heredoc (#2473);
       a letter bash and dash refuse, read on as the operand walk reads `sh -K`
       (#2475 stops only a `-c` cluster): behind a value (`X=-K; sh $X`,
       #2485), a `$` word (`CMD=sh; $CMD -K`, #2473) or an inner shell
@@ -535,16 +538,14 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # the FILE `$X` names, not the heredoc, but the reader cannot tell
         # `X=script.sh` from `X=-s` -- both are just `$X` by the time this
         # walk sees them.
-        found = defects("X=script.sh\nsh $X <<'EOF'\n%s\nEOF\n" % PIPE)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("straight to `sh`", found[0][1])
         # The same over-report where the value is an option nothing runs
         # under, the class the guard's gap list names beside `X=script.sh`:
         # with `X=-K` bash 3.2.57, 5.2.21 and dash exit 2 at a letter they
         # refuse (#2475's table, #2551), with `X=-n` they read the heredoc
         # and run none of it (rc 0), and a bare `X=-c` hands them no string
-        # (rc 2) -- but `$X` is a value this walk reads on.
-        for value in ("-K", "-n", "-c"):
+        # (rc 2) -- but `$X` is a value this walk reads on. One subtest each,
+        # so a copy without the rule still runs all four.
+        for value in ("script.sh", "-K", "-n", "-c"):
             with self.subTest(value=value):
                 found = defects("X=%s\nsh $X <<'EOF'\n%s\nEOF\n" % (value, PIPE))
                 self.assertEqual(1, len(found), found)
@@ -885,6 +886,27 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             found = reasons(GET + python)
             self.assertEqual(1, len(found), found)
             self.assertTrue(found[0].startswith(to("$PYTHON")), found)
+        # The same price where an interpreter's own option takes a value
+        # spelled `$` (the Task 27 review's L2): node runs its `-e` string and
+        # python looks for the module (rc 0 and rc 1 in all three shells),
+        # neither reading the heredoc, yet the walk reads past `"$CODE"` and
+        # `"$MOD"` as past a vanishing operand -- the stream and the hand-off,
+        # alone and beside a fetch. Their literal twins end the walk at that
+        # word, the program being elsewhere: CLEAN.
+        for word, step in (("$NODE", "NODE=/usr/local/bin/node\n$NODE -e \"$CODE\""),
+                           ("$PYTHON", "PYTHON=python3\n$PYTHON -m \"$MOD\"")):
+            for fetched in ("", GET):
+                script = "%s%s <<'EOF'\n%s\nEOF\n" % (fetched, step, PIPE)
+                with self.subTest(script=script):
+                    found = reasons(script)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(any(streamed in w for w in found), found)
+                    self.assertTrue(any(w.startswith(to(word)) for w in found), found)
+        for step in ("node -e \"$CODE\"", "python3 -m mod"):
+            for fetched in ("", GET):
+                script = "%s%s <<'EOF'\n%s\nEOF\n" % (fetched, step, PIPE)
+                with self.subTest(script=script):
+                    self.assertEqual([], reasons(script))
 
     def test_2473_a_dollar_word_counts_option_values_as_a_shell_does(self):
         # Fix round 2: under a `$` command word the walk still counted option

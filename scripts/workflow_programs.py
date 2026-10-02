@@ -357,8 +357,10 @@ def stdin_program(argv, depth=0):
     `-c`, `-s`, vanishing-operand and option-value rules, since the word may
     be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read
     the heredoc, as does `$PYTHON -Ou - file.py <<'EOF'`, a stdin operand
-    being no option's value; `$PYTHON -s file.py <<'EOF'` and `$PYTHON -Ou
-    file.py <<'EOF'` over-report a hand-off, like `$PYTHON -O file.py`),
+    being no option's value; `$PYTHON -s file.py <<'EOF'`, `$PYTHON -Ou
+    file.py <<'EOF'` and an interpreter's own option value spelled `$`
+    (`$NODE -e "$CODE" <<'EOF'`, `$PYTHON -m "$MOD" <<'EOF'`, read past as
+    a vanishing operand) over-report a hand-off, like `$PYTHON -O file.py`),
     and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
     reads CLEAN beside no reported fetch: option b's price, which `python3 -
     <<EOF` pays too. No option word behind a `$` word is a refusal (#2475's
