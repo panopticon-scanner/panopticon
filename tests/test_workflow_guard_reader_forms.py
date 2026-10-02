@@ -1266,6 +1266,26 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
                       "a `$(...)` prints, which may skip the check", found[0][1])
         self.assertEqual([], defects(GET + 'bash -ec "%s"' % check + run))
 
+    def test_a_string_the_reader_refuses_so_read_is_unread_as_before(self):
+        # `cat <<$(...)` names no line to end the body at -- bash takes the
+        # delimiter from what the `$(...)` prints -- so that string is no
+        # script, as before #2486, and the step is read, not refused whole.
+        # Bash 3.2.57, 5.2.21 and dash run the stream, then fail the `eval`
+        # (`a b` prints nothing); alone, the `eval` runs nothing.
+        refused = 'eval "cat <<$(a b)\nit\'s\n$(a b)\n"\n'
+        found = defects(PIPE + "\n" + refused)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        self.assertEqual([], defects(refused))
+        # The control: written out, the text is refused, fail-closed, as it was.
+        found = defects(PIPE + "\ncat <<$(a b)\nit's\n$(a b)\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("cannot read this step"), found)
+        # The residual (the gap list): all three run the stream after the
+        # body, which its literal twin reports.
+        self.assertEqual([], defects('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE))
+        self.assertTrue(defects("sh -c 'cat <<E >/dev/null\nE\n%s'\n" % PIPE))
+
     def test_a_louder_reason_at_its_statement_speaks_alone(self):
         # #2490: where a fetch's own defect -- the stream `sh $(curl …)` hands
         # the shell -- or #2341's carried download reports the same statement,

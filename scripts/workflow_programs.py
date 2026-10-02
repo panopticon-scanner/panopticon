@@ -41,6 +41,7 @@ Stdlib only, like everything under it.
 import os
 import re
 
+import shell_lex
 import shell_reader
 
 
@@ -74,7 +75,10 @@ def scripts(argv):
     on `sh $(...)`, `Opaque`, whose `sh` is weighed as `sh $(echo tool)`'s
     is -- the substitution's own text still read where `_walk` reads it,
     what it prints read nowhere, and no marker of this parse left to reach
-    another.
+    another. A text so rendered that the reader refuses is none, as before
+    #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b`
+    prints, and `cat <<$(...)` is no spelling to end the body at, so the
+    string is unread and the rest of the step read.
     """
     if not argv:
         return []
@@ -92,8 +96,14 @@ def _script(word):
     if not keys:
         return getattr(word, "spelled", word)
     text = shell_reader.readable(word)
-    return Opaque(text) if text != "$(...)" and all(
-        shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys) else None
+    if text == "$(...)" or not all(
+            shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
+        return None
+    try:
+        shell_reader.statements(text)
+    except shell_lex.Unreadable:
+        return None
+    return Opaque(text)
 
 
 def _after_dash_c(argv):

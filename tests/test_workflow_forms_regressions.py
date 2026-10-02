@@ -366,6 +366,13 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 self.assertIsInstance(found[0], workflow_programs.Opaque)
                 self.assertEqual(found, self.program(script))
         self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+        # A text so rendered that the reader refuses is none, as before:
+        # `cat <<$(...)` names no line to end the body at. Nothing reaches a
+        # re-parse that would refuse the whole step.
+        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(echo E)\nE\nsh x"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+                self.assertEqual([], guard.fetch_exec_defects(script))
 
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):

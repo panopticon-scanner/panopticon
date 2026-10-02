@@ -85,10 +85,10 @@ live, so a change that catches one fails there and edits this list.
   with another `$` in it (#2342), and a `$(…)` among its text is opaque (#2486): what it prints is
   unread, no check there counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s
   stream, and a lone `$(…)` word is no script (`eval sh "$(echo tool)"` reads CLEAN; bash runs
-  `tool`). An option letter the shell in hand refuses reads as that refusal after `-c` and in `set`:
-  `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell, because zsh
-  runs twenty of the letters bash refuses and ksh runs `-G`: for those and for a shell named by a
-  word rather than written, the word is read on.
+  `tool`), nor one the reader refuses so read (`cat <<$(…)`). An option letter the shell in hand
+  refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and `set -Z -e`
+  sets nothing (#2443, #2475). Per shell, because zsh runs twenty of the letters bash refuses and
+  ksh runs `-G`: for those and for a shell named by a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
