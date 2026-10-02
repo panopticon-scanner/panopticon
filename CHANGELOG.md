@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **ANSI-C numeric escapes now expose shell program options (#2470, #2331).** The lexer left
+  `\\xHH`, `\\nnn`, `\\uHHHH`, and `\\UHHHHHHHH` encoded, so a decoded `-c` could run a fetched
+  script while the guard read the step clean. It now shares Bash's ASCII escape table across
+  words, heredoc delimiters, and here-strings, and fails closed beyond ASCII. Keeping only the
+  four identity escapes was rejected because it hid executable option words.
 - **A heredoc whose substitution closes before its body is read like Bash 5.2 (#2498, #2331).**
   The lexer refused `$(cat <<EOF)` before reading the lines below it, so one generic finding
   replaced the fetch sentence in every affected step. It now files that body first and skips its

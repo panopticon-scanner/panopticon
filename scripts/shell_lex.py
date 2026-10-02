@@ -167,17 +167,44 @@ _DQ_ESCAPE = re.compile(r'\\([$`"\\])|\\\n')
 # What bash has to PARSE, not just unquote, to spell a delimiter: a `$(`,
 # `${`, `$[` or backquote in the word, or an escape `$'...'` decodes (`\x41`).
 _PARSED = re.compile(r"`|\$[({\[]")
-_ANSI_ESCAPE = re.compile(r"\\(.)", re.S)
+_ANSI_SIMPLE = dict(zip("abefnrtv\\'\"?E", "\a\b\x1b\f\n\r\t\v\\'\"?\x1b"))
+_ANSI_ESCAPE = re.compile(
+    r"\\(?:([abefnrtv\\'\"?E])|([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|"
+    r"u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c(.)|\n|(.)|(\Z))", re.S)
 # `<<`, `<<-` or `<<<` as bash reads it: past the `\`-newlines it folds away
 # first, which leave `<` + `\`-newline + `<EOF` the operator `<<` (#2291).
 _HERE = re.compile(r"<(?:\\\n)*<(?:(?:\\\n)*([-<]))?")
 
 
 def ansi_c(body: str) -> str | None:
-    """The text bash makes of `$'body'` when its escapes are the four that are
-    the character (`\\\\`, `\\'`, `\\"`, `\\?`); None for any other (`\\x2d`,
-    `\\n`), which this module does not decode (#2344)."""
-    return None if set(_ANSI_ESCAPE.findall(body)) - set("\\'\"?") else _ANSI_ESCAPE.sub(r"\1", body)
+    """Bash's ASCII text for `$'body'`; None for an unknown escape (#2470)."""
+    stopped = unknown = False
+
+    def decoded(match: re.Match[str]) -> str:
+        nonlocal stopped, unknown
+        if stopped:
+            return ""
+        simple, octal, hexa, short, long, control, other, ended = match.groups()
+        if simple is not None:
+            return _ANSI_SIMPLE[simple]
+        if other is not None or ended is not None:
+            unknown = True
+            return ""
+        if control is not None:
+            if not control.isascii():
+                raise Unreadable("an ANSI-C escape decodes outside ASCII")
+            value = 127 if control == "?" else ord(control.upper()) & 31
+        else:
+            digits = octal or hexa or short or long
+            if digits is None:               # A backslash-newline is gone.
+                return ""
+            value = int(digits, 8 if octal is not None else 16)
+        if value > 127:
+            raise Unreadable("an ANSI-C escape decodes outside ASCII")
+        stopped = not value                # Bash truncates this quoted part at NUL.
+        return chr(value)
+    text = _ANSI_ESCAPE.sub(decoded, body).partition("\0")[0]
+    return None if unknown else text
 
 
 class Unreadable(Exception):
@@ -614,7 +641,7 @@ def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
             single, ansi, double = match.groups()
             if single is not None:
                 parts.append(single)
-            elif ansi is not None:      # the four escapes that are the character
+            elif ansi is not None:      # Bash's ASCII ANSI-C escapes
                 if (decoded := ansi_c(ansi)) is None:
                     return start
                 parts.append(decoded)
@@ -640,8 +667,8 @@ def _string(text: str, i: int) -> tuple[str, int] | None:
     """(text, end) for the word after a `<<<` ending at `i` when bash hands
     it to the command as written (#2293): its quotes and escapes removed, and
     nothing left that bash expands -- no `$` or backquote outside '...' and
-    $'...' that no backslash escapes, no unquoted `~`, no `$'...'` escape but
-    the four that are the character, no `$"..."`. Glob and brace characters
+    $'...' that no backslash escapes, no unquoted `~`, no `$'...'` escape
+    outside Bash's ASCII table, no `$"..."`. Glob and brace characters
     are text to it. None for an unquoted `[`, which may open a subscript, a
     word no quote closes, no word and a comment: those are read as code."""
     while text.startswith((" ", "\t", "\\\n"), i):
