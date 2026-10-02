@@ -14,13 +14,14 @@ delimiter and holds a `)` somewhere after it ends one too (bar a `<<-`
 delimiter that starts with a tab, which only its exact line ends), as bash
 5.2 ends it (#2343): the rest of that line past its delimiter is left as
 code, read as written, where 5.2.21 drops that rest's first `;` and rejects
-a rest that starts with one. `<<-` strips each candidate line's leading tabs
-before comparing it with the delimiter, except where the delimiter itself
-starts with a tab, the only case that still matches unstripped. An unquoted
-delimiter's body has `\\`-newline folded away first, so its lines are the
-LOGICAL ones compared with it -- `E\\` + `OF` ends it where `x \\` + `EOF`
-does not; a quoted delimiter's body is compared physical line by physical
-line.
+a rest that starts with one. The omission ends with that LOGICAL line and is
+a token boundary, not mere character deletion. `<<-` strips each candidate
+line's leading tabs before comparing it with the delimiter, except where the
+delimiter itself starts with a tab, the only case that still matches
+unstripped. An unquoted delimiter's body has `\\`-newline folded away first,
+so its lines are the LOGICAL ones compared with it -- `E\\` + `OF` ends it
+where `x \\` + `EOF` does not; a quoted delimiter's body is compared physical
+line by physical line.
 
 A body inside a substitution that finds no end line by line leaves its heredoc's
 operator in the output as written and marks the reading `unended`. A later
@@ -76,10 +77,8 @@ class _Lines:
 
     def body(
         self, at: int, word: str, strip: bool, sub: bool
-    ) -> tuple[str, int, bool, bool, int] | None:
-        """(body, where code resumes, whether an `EOF)` line ended it, whether
-        5.2 drops its first separator, next line) for a body, or None when none
-        ends it."""
+    ) -> tuple[str, int, bool, int, bool, int] | None:
+        """Body, resume, `EOF)` end, drop boundary, rejection and next line."""
         k = bisect.bisect(self.starts, at) - 1
         n, offset = self.of[k], self.offset[k] + at - self.starts[k]
         text = self.texts[n]
@@ -111,11 +110,12 @@ class _Lines:
         after = self.last[end] + 1
         following = self.starts[after] if after < len(self.starts) else self.size
         if cut >= 0:                    # code resumes on the line that ended it
-            line = self.texts[end]
-            if line.startswith(";", cut):
-                return body, self.source(end, line.rfind(")")), True, False, following
-            return body, self.source(end, cut), True, True, following
-        return body, following, False, False, following
+            ended = self.texts[end]
+            rest = ended[cut:]
+            first = cut + len(rest) - len(rest.lstrip(" \t"))
+            rejected = ended[first:first + 1] == ";"
+            return body, self.source(end, cut), True, following, rejected, following
+        return body, following, False, 0, False, following
 
     def source(self, line: int, offset: int) -> int:
         """Source offset for `offset` in one logical line."""

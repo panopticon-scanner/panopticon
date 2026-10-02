@@ -157,8 +157,8 @@ class TestABodyEndsWhereBash52EndsItInASubstitution(unittest.TestCase):
 
 
 class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
-    """#2492: bash 5.2 drops the first `;` after a substitution heredoc's
-    delimiter and rejects a rest that starts with one."""
+    """#2492: bash 5.2 drops the first `;` token on a substitution
+    heredoc's delimiter line and rejects a rest that starts with one."""
 
     VULNERABLE = ("x=$(cat <<'EOF'\nhi\n"
                   "EOFsh -c; '%s')\n" % PIPE)
@@ -171,10 +171,56 @@ class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
         self.assertIn("hands a script to `sh` inside a command substitution", found[0][1])
         self.assertEqual(defects(self.NO_SEMICOLON), found)
 
-    def test_code_only_the_written_separator_would_run_stays_clean(self):
-        for rest in ("true; %s)" % PIPE, "; %s)" % PIPE):
+    def test_the_separator_is_a_token_even_without_blanks(self):
+        for shell in ("sh", "bash"):
+            for quote in ("'%s'", '"%s"'):
+                script = "x=$(cat <<'EOF'\nhi\nEOF%s -c;%s)\n" % (shell, quote % PIPE)
+                with self.subTest(shell=shell, quote=quote):
+                    found = defects(script)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("hands a script to `%s`" % shell, found[0][1])
+
+    def test_the_pending_separator_ends_with_its_logical_line(self):
+        for rest in ("echo $(true)", 'test -n "$(echo a)"'):
+            script = "x=$(cat <<'EOF'\nhi\nEOF %s\ntrue; %s\n)\n" % (rest, PIPE)
             with self.subTest(rest=rest):
-                self.assertEqual([], defects("x=$(cat <<'EOF'\nhi\nEOF%s\n" % rest))
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_a_rest_that_starts_with_a_separator_is_refused(self):
+        for blanks in ("", " ", "\t"):
+            script = "x=$(cat <<'EOF'\nhi\nEOF%s; %s)\n" % (blanks, PIPE)
+            with self.subTest(blanks=blanks):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("cannot read this step", found[0][1])
+
+    def test_a_rejected_rest_does_not_skip_later_parentheses(self):
+        scripts = (
+            "x=$(if true; then cat <<'EOF'\nhi\nEOF; fi) || x=$(%s)\n" % PIPE,
+            "x=$(if true; then cat <<'EOF'\nhi\nEOF; fi) | %s\n" % PIPE,
+            "x=$(for n in 1; do cat <<'EOF'\nhi\nEOF; done) | %s\n" % PIPE,
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("cannot read this step", found[0][1])
+
+    def test_code_only_the_written_separator_would_run_stays_clean(self):
+        script = "x=$(cat <<'EOF'\nhi\nEOFtrue; %s)\n" % PIPE
+        self.assertEqual([], defects(script))
+
+    def test_a_later_command_heredoc_does_not_take_the_compatibility_drop(self):
+        separate = ("x=$(cat <<'A'; cat <<'B'\na\nA\nb\n"
+                    "Bsh -c; '%s')\n" % PIPE)
+        together = ("x=$(cat <<'A' <<'B'\na\nA\nb\n"
+                    "Bsh -c; '%s')\n" % PIPE)
+        self.assertEqual([], defects(separate))
+        found = defects(together)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `sh`", found[0][1])
 
     def test_a_separator_after_the_substitution_is_not_dropped(self):
         found = defects("x=$(cat <<'EOF'\nhi\nEOF); %s\n" % PIPE)
@@ -230,6 +276,13 @@ class TestQueuedBodiesAfterAnEOFParenEnd(unittest.TestCase):
         found = defects(self.REST_PAYLOAD)
         self.assertEqual(1, len(found), found)
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_the_saved_rest_keeps_a_dropped_separator_word_boundary(self):
+        script = ("x=$(cat <<'A' <<'B'\nignored\n"
+                  "Ash -c;'%s')\nbody\nB\n" % PIPE)
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `sh` inside a command substitution", found[0][1])
 
     def test_two_eof_paren_ends_remain_fail_closed(self):
         script = "x=$(bash -s <<'A' <<'B'\nignored\nA)\n%s\nB)\n" % PIPE

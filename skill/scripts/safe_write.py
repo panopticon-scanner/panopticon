@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-follow `.panopticon` artifact writes and staged publication.
+"""Bounded no-follow reads plus `.panopticon` artifact writes and publication.
 
 `.panopticon/` lives INSIDE the reviewed tree, so under redteam every artifact
 path is a name an untrusted target can pre-commit as a symlink to any file the
@@ -31,7 +31,12 @@ No makedirs in `open_w_nofollow`: a caller that must create the parent calls
 `confine_artifact_path` FIRST and then makedirs, which is the order
 `runio._write_json` and `open_a_nofollow` below already use -- confining after
 the makedirs would mean the traversal had already happened.
+
+`read_regular_bytes` is the one descriptor-checked reader for verdicts, run
+metadata, and evidence-scope source files. It owns the no-follow, nonblocking,
+regular-file, and byte-limit checks; callers own confinement and presentation.
 """
+import errno
 import os
 import stat
 from typing import TYPE_CHECKING
@@ -46,12 +51,19 @@ class ReadLimitExceeded(ValueError):
     """A regular file exceeded the caller's explicit byte boundary."""
 
 
+class NonRegularFileError(OSError):
+    """The opened leaf is not a regular file and no bytes were consumed."""
+
+
 def read_regular_bytes(path, limit):
     """Read at most ``limit`` bytes from a regular, non-symlink leaf.
 
     The descriptor check closes the size and file-type races around a prior
     ``stat``. ``O_NONBLOCK`` keeps a special file from hanging before the
-    descriptor type is rejected. Callers retain decoding and error policy.
+    descriptor type is rejected. ``NonRegularFileError`` and
+    ``ReadLimitExceeded`` distinguish policy refusals; other ``OSError``
+    instances retain the operating system's I/O outcome. Callers retain
+    decoding and presentation policy.
     """
     if type(limit) is not int or limit <= 0:
         raise ValueError("read limit must be a positive integer")
@@ -60,7 +72,7 @@ def read_regular_bytes(path, limit):
     fd = os.open(path, flags)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("not a regular file")
+            raise NonRegularFileError(errno.EINVAL, "not a regular file")
         with os.fdopen(fd, "rb") as stream:
             fd = -1
             raw = stream.read(limit + 1)

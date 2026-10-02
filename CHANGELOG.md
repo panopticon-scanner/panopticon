@@ -21,11 +21,14 @@ evidence exposed.
   cost.
 - **A substitution heredoc's `EOF)` rest is read as Bash 5.2 parses it (#2492, #2331).** Bash
   drops that rest's first `;`, so the guard missed `EOFsh -c; 'curl … | sh')` while reporting a
-  `true; curl … | sh` rest whose download never runs; a rest beginning with `;` is a syntax error
-  and runs nothing. `_Lines` now marks the owning substitution frame to omit its next top-level
-  separator, or resumes at the closing `)` for the rejected form. The frame flag preserves quote
-  and command parsing; copying rewritten text around it would
-  bypass that state and recreate the original defect.
+  `true; curl … | sh` rest whose download never runs. `_Lines` now bounds one separator-token
+  omission to that logical line and command, preserving its word break; a rest beginning with `;`
+  is refused because Bash 5.2 rejects it while 3.2 can run later code. An unbounded Boolean and a
+  character-only omission were rejected because they hid later-line and no-space payloads.
+- **Bounded artifact reads share typed outcomes (#2554, #1816).** Evidence scope now uses the
+  common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
+  failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,
+  and 16 MiB caps now state which source, verdict, or aggregate metadata class each one bounds.
 - **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
   `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
   the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
