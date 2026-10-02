@@ -13,6 +13,18 @@ evidence exposed.
   A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
   count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
   own level, as before. `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
+  `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
+  redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three
+  statements with the `|| exit 1` rescue that ends the real list lost -- the step was refused
+  where bash stops dead. `[[ $a < $b ]]` records no redirection either, and a `=~` alternation
+  leaves the compound-command count balanced. Bash 3.2.57 and 5.2.21 agree on 23 probes; dash
+  has no `[[`. A newline after an inner `&&` still ends the statement, as it did.
+- **`shell_reader.py`'s token layer moved to `scripts/shell_tokens.py` (#2628, pure move).**
+  `_Token`, `_Parse`, `derived`, `readable`, `is_marker`, `has_substitution` and `yields_words` now
+  live in the new module and are imported back into the reader under their own names, so no caller
+  changed; the reader goes from 683 to 599 lines, making room for #2441 and the reader half of
+  #2617.
 - **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
   close the substitution there and execute later body text as code, so the lexer now names the
   ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
