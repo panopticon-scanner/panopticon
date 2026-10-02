@@ -12,6 +12,27 @@ evidence exposed.
   `$CMD` run is caught, a check in it counting only under the `-e` of the shell sure to read it,
   never past `$X` or under `$CMD`; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a
   reported fetch.
+- **Substitution heredocs whose bodies contain `)` now fail closed (#2493, #2331).** Bash 3.2 may
+  close the substitution there and execute later body text as code, so the lexer now names the
+  ambiguity instead of accepting one reading. Selecting a parser by runner was rejected because
+  the owner ruled one conservative answer for every workflow.
+- **Candidate programs now expose code around substitutions (#2482, #2331).** A dynamic `-c`
+  option made the guard discard an entire program word containing `$(...)`, so its visible fetch
+  pipeline read clean. It now reads the outer program with the substitution opaque while the
+  normal walk reads the inner script. Evaluating substitution output was rejected because that
+  would invent commands from runtime values.
+- **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
+  guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
+  group's failure and stops the step, while default and `sh` modes still report it.
+- **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
+  took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
+  pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
+  and read clean. It now follows nested case phases and balanced patterns, while subjects needing
+  another parse fail closed by name. Treating every `)` after `case` as an arm close was rejected
+  because it could hide later shell code.
+- The `set`-posture reading (`seed`, `_errexit`, `_rejected`, `_takes_value`) moves from
+  `scripts/workflow_gating.py` to a new `scripts/workflow_posture.py`, a pure move with re-exports,
+  so the gating module has room again under the 700-line ceiling (#2620).
 - **Quoted workflow globs stay literal (#2432, #2331).** The guard now uses lexer pattern
   provenance when matching fetched paths, so `sh "./cuda_*.run"` does not claim to run a
   download while unquoted and partly quoted patterns still do. Bash 3.2.57, Bash 5.2.21 and
