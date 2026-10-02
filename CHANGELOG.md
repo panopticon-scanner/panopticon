@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
+  guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
+  group's failure and stops the step, while default and `sh` modes still report it.
 - **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
   guard reports a downloaded payload used by another stage of its checksum group's pipeline,
   including a checksum ahead of `&&` under every supported shell. It still credits a use after
