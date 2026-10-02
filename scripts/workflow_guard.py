@@ -134,22 +134,23 @@ runs each live, so a change that catches one fails there and edits this list.
   the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
 * a heredoc body printed inside a command substitution for `eval` to run
-  (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the
-  substitution's text carries it back to its redirection (#2336): a shell
-  reading a quoted one as its program is reported as `x=$(sh -c '…')` is
-  (review I-4), but `cat` reads data, and what `eval` runs is unread. KEPT:
-  reading it means teaching the reader that a heredoc `cat` reads inside a
-  substitution is a SCRIPT -- a second expansion model. The fleet writes one
-  heredoc-ish construct (a `<<<` here-string in docker-publish.yml) and no
-  `cat <<EOF`. It no longer CRASHES, which is what it did until #1697's review.
+  (`eval "$(cat <<'EOF' … EOF)"`). The OUTER parse lifts the body, and the substitution's text
+  carries it back to its redirection (#2336): a shell reading a quoted one as its program is
+  reported as `x=$(sh -c '…')` is (review I-4), but `cat` reads data, and what `eval` runs is
+  unread. KEPT: reading it means teaching the reader that a heredoc `cat` reads inside a
+  substitution is a SCRIPT -- a second expansion model. The fleet writes one heredoc-ish construct
+  (a `<<<` here-string in docker-publish.yml) and no `cat <<EOF`. It no longer CRASHES, which is
+  what it did until #1697's review.
+  A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
+  `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload there, so #2626 kept #2493's
+  refusal limited to `)` instead of reporting code only Bash 5.2 parses.
   CLOSED outside a substitution for the OTHER heredoc spelling, the body handed
   to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
   `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799).
-  Two facts decide it and both are already parsed: whether a command's program
-  is its standard input at all (`workflow_programs.stdin_program`, an operand walk
-  -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, and
-  then the body is that program's input DATA), and which body descriptor 0
-  finally reads, with the flag saying whether it EXPANDED
+  Two facts decide it and both are already parsed: whether a command's program is its standard
+  input at all (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module
+  and a script FILE each put it elsewhere, and then the body is that program's input DATA), and
+  which body descriptor 0 finally reads, with the flag saying whether it EXPANDED
   (`shell_reader`'s `Stage.stdin_heredoc`). A QUOTED body reaches the interpreter as the text
   it was written as, so `workflow_forms.flattened` reads it exactly as it reads an `eval`
   string -- a `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is
@@ -163,9 +164,8 @@ runs each live, so a change that catches one fails there and edits this list.
   builtin outside its table (`. /dev/stdin <<'EOF'`); an interpreter behind a
   TRANSPORT (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`,
   `docker exec -i c sh <<'EOF'`), whose argv this walk reads as the transport's;
-  and, as everywhere in this module, an interpreter under a name its tables do
-  not carry (`python3.11 -`, `busybox sh`) -- the answer is keyed on the
-  program's basename.
+  and, as everywhere in this module, an interpreter under a name its tables do not carry
+  (`python3.11 -`, `busybox sh`) -- the answer is keyed on the program's basename.
   A program `echo` or `printf` PIPES into a shell is read where their words spell it out; one
   they do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch
   as written or the job holds a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read.

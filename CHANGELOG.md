@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Four Bash 3.2-only substitution-heredoc parse gaps are now explicit (#2626, #2608).** A body
+  line with an apostrophe, unbalanced double quote, backquote, or bare `$(` can make Bash 3.2
+  reject text Bash 5.2 accepts, but none of the measured shapes runs a payload under 3.2. The
+  #2493 refusal stays limited to `)` because widening it would report parse-only differences.
 - **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
   56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
