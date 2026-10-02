@@ -322,6 +322,81 @@ class TestHomeLocation(unittest.TestCase):
             for name in kimi_home._CREDENTIAL_ITEMS:
                 self.assertNotIn(name, line.replace(home, ""))
 
+    def test_strip_secrets_distinguishes_removed_absent_and_failed_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(r._disarm_crash_strippers)
+            real_unlink = os.unlink
+
+            def refuse_config(path, *args, **kwargs):
+                if path == os.path.join(home, "config.toml"):
+                    raise PermissionError("cleanup refused")
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(kimi_home.os, "unlink", side_effect=refuse_config):
+                result = kimi_home.strip_secrets(home)
+
+            self.assertEqual(1, result.removed)
+            self.assertEqual(1, result.absent)
+            self.assertEqual(("PermissionError",), result.failures)
+            self.assertTrue(os.path.isfile(os.path.join(home, "config.toml")))
+            self.assertFalse(os.path.lexists(os.path.join(home, "credentials")))
+
+    def test_partial_cleanup_does_not_claim_that_no_credential_remains(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            self.addCleanup(r._disarm_crash_strippers)
+            config = os.path.join(home, "config.toml")
+            real_unlink = os.unlink
+
+            def refuse_config(path, *args, **kwargs):
+                if path == config:
+                    raise PermissionError("cleanup refused")
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(kimi_home.os, "unlink", side_effect=refuse_config), \
+                 contextlib.redirect_stderr(io.StringIO()) as err:
+                r.teardown("error")
+
+            line = err.getvalue()
+            self.assertTrue(os.path.isfile(config))
+            self.assertIn("credential cleanup was incomplete", line)
+            self.assertIn("1 of 3 paths failed (PermissionError)", line)
+            self.assertIn("may still carry a credential", line)
+            self.assertNotIn("nothing left there carries a credential", line)
+
+    def test_exit_cleanup_names_failure_type_without_its_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            self.addCleanup(r._disarm_crash_strippers)
+            config = os.path.join(home, "config.toml")
+            real_unlink = os.unlink
+
+            def refuse_config(path, *args, **kwargs):
+                if path == config:
+                    raise PermissionError("planted-secret-content")
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(kimi_home.os, "unlink", side_effect=refuse_config), \
+                 contextlib.redirect_stderr(io.StringIO()) as err:
+                r._strip_on_exit()
+
+            line = err.getvalue()
+            self.assertIn("kimi: credential cleanup was incomplete", line)
+            self.assertIn("PermissionError", line)
+            self.assertNotIn("planted-secret-content", line)
+
     def test_an_errored_teardown_after_a_strip_says_it_held_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):

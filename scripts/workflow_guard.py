@@ -83,7 +83,10 @@ runs each live, so a change that catches one fails there and edits this list.
   `Rewritten` one reported where the job downloads. Nor is a `$` command word: `${X:-sh}` reads as
   its default, another handed `-c` has its program read so (#2337); `$CMD --flag` reads nothing,
   `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses `\$` escapes as bash does, not with
-  another `$` in it (#2342).
+  another `$` in it (#2342). An option letter the shell in hand refuses is read as that refusal:
+  `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell, because zsh
+  runs twenty of the letters bash refuses and ksh runs `-G`: for those, and for a shell named by a
+  word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -106,13 +109,13 @@ runs each live, so a change that catches one fails there and edits this list.
   the image's ENTRYPOINT supplies, and whatever the image itself runs.
   KEPT: those need another executor's mounts and entrypoint modelled, which is reading a second
   program's configuration rather than this job's shell. The image the container came from is NOT
-  pinned either, and that is a decided residual rather than an oversight: this fleet pulls the tools
-  image by its mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in each
-  consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
+  pinned either, and that is a decided residual rather than an oversight: this fleet pulls the
+  tools image by its mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
+  each consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
   `security-fork.yml`, and both "Pull the nightly tools image" steps of `adapter-integration.yml`.
-  DEVELOPMENT.md states the consequence in its own voice twice, in the "One residual to know about"
-  paragraph under "Key design decisions" and in the "Weekly strict security backstop" paragraph
-  ("the tools image remains unpinned"). The `uses:` rule pins ACTIONS by SHA and
+  DEVELOPMENT.md states the consequence in its own voice twice, in the "One residual to know
+  about" paragraph under "Key design decisions" and in the "Weekly strict security backstop"
+  paragraph ("the tools image remains unpinned"). The `uses:` rule pins ACTIONS by SHA and
   `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
   (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
   neither governs a `docker pull` of a tag.
@@ -136,13 +139,12 @@ runs each live, so a change that catches one fails there and edits this list.
   (a `<<<` here-string in docker-publish.yml) and no `cat <<EOF`. It no longer CRASHES, which is
   what it did until #1697's review. CLOSED outside a substitution for the OTHER heredoc spelling,
   the body handed to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
-  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts decide it, both already
-  parsed: whether a command's program is its standard input at all
-  (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module and a script
-  FILE each put it elsewhere, the body then that program's input DATA), and which body descriptor 0
-  finally reads, and whether it EXPANDED (`shell_reader`'s `Stage.stdin_heredoc`). A `-c` or `eval`
-  string whose one statement reads ITS OWN program from stdin answers for the ENCLOSING command
-  (#2500) -- read under ITS `-e`, not the inner's, and blind to the inner's own `<`
+  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts already parsed decide
+  it: whether a command's program is its standard input at all (`workflow_programs.stdin_program`,
+  an operand walk -- a `-c` string, a `-m` module and a script FILE each put it elsewhere, the body
+  then its input DATA), and which body descriptor 0 finally reads, EXPANDED or not (`shell_reader`'s
+  `Stage.stdin_heredoc`). A `-c`/`eval` string whose one statement is a stdin-reading shell answers
+  for the ENCLOSING command (#2500) -- under ITS `-e`, not the inner's, blind to the inner's own `<`
   (`eval 'bash -s < f'`); a pipeline whose FIRST stage reads stdin is never reached; all filed under
   #2331. Nor, for a SHELL, does a value or a word that may vanish end the walk at a FILE (#2485):
   one naming a file, or quoted and empty (`X=script.sh`), over-reports; `python3 $S` with S unset, a
@@ -150,27 +152,25 @@ runs each live, so a change that catches one fails there and edits this list.
   interpreter as written, so `workflow_forms.flattened` reads it as it reads an `eval` string -- a
   `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is REPORTED unread
   (`_unread_stdin`): it runs what bash expands it to, values and `$(...)` output this guard never
-  sees. A program in a language this module has no grammar for is reported too (the answer
-  `unparseable` gives a `shell: python` step), and THAT report is weighed: kept, since #2499, only
-  where the job holds a fetch this guard reports. So is the hand-off to a `$` command word, a value
-  no table places (#2473), whose QUOTED body is read as shell besides: a `curl … | sh` there is
-  caught, a check there clears nothing. A non-shell body under a `$` word whose string spells a
-  shell download -- `print("$(curl … | sh)")` -- is reported loud, filed under #2331. An EXPANDING
-  body is unread: one running a download reads CLEAN beside no reported fetch, though bash runs it
-  (#2499's price, as `python3 - <<EOF` pays it); so does any body inside a `$(...)`
-  (`x=$($CMD <<'EOF' …)`), and a pipe into it whose text no printer spells out (`echo "$X" | $CMD`)
+  sees. A program in a language with no grammar here is reported too (the answer `unparseable` gives
+  a `shell: python` step), and THAT report is weighed: kept, since #2499, only beside a fetch this
+  guard reports. So is the hand-off to a `$` command word no table places (#2473), whose QUOTED body
+  is read as shell besides: a `curl … | sh` there is caught, a check there clears nothing, and a
+  non-shell body whose string spells a shell download (`print("$(curl … | sh)")`) is reported loud,
+  filed under #2331. Its EXPANDING body is unread: a download there reads CLEAN beside no reported
+  fetch, though bash runs it (#2499's price, as `python3 - <<EOF` pays it); so does any body inside
+  a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no printer spells out (`echo "$X" | $CMD`)
   is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
   reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
   named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
   (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
   whose argv this walk reads as the transport's; and one under a name no table carries
-  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere in this module, on the program's basename.
-  A program `echo` or `printf` PIPES into a shell is read where their words spell it out; one they
-  do not (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as
-  written or the job holds a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A
-  heredoc the step WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this
-  rule's business: the script is text in the repo under review, the `sed -i` entry's
-  author-deterministic ruling.
+  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on the basename. A program `echo` or
+  `printf` PIPES into a shell is read where their words spell it out; one they do not
+  (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as written or
+  beside a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
+  WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
+  the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the expression is stable
   between the check's step and the use's step. It is not when it reads `env.*` written through
   `$GITHUB_ENV` in between, or a forward `steps.<id>.*` reference.

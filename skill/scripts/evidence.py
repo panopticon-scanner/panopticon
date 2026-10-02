@@ -518,7 +518,11 @@ load_json_tolerant = tolerant_json.loads
 
 
 def _iter_verdict_files(verdicts_dir):
-    """Yield sorted ``(name, path)`` JSON files; nothing for a missing directory."""
+    """Yield sorted ``(name, path)`` JSON files.
+
+    Yield nothing when the directory is missing or falsey. Callers rely on this
+    to preserve their empty-accumulator early-return behavior.
+    """
     if not verdicts_dir or not os.path.isdir(verdicts_dir):
         return
     for name in sorted(os.listdir(verdicts_dir)):
@@ -535,10 +539,12 @@ def load_verdicts_detailed(verdicts_dir):
     ``*.json`` that failed to parse, was malformed, or lacked a valid verdict key
     or finding_id echo.
 
-    Single-verdict files use strict JSON (#1193), and require a ``finding_id``
-    echo at load time; markdown fences or surrounding prose are unloadable.
-    Callers surface ``unloadable`` in the report so a corrupt verdict is visible,
-    not silently dropped (#938).
+    Single-verdict files use strict JSON (#1193): a markdown fence or surrounding
+    prose makes the file unloadable, so an LLM that broke the output contract
+    cannot bypass the echo check by accident. The echo check in ``match_verdict``
+    requires a ``finding_id``; enforcing it here also prevents a verdict without
+    an id from being treated as done. Callers surface ``unloadable`` in the report
+    so a corrupt verdict is visible instead of silently dropped (#938).
 
     A verdict BUNDLE ({"verdicts": [...], "_panopticon": {...}}, the P5 per-cell
     flow) is a different file shape, not a legacy single-verdict file, and is
