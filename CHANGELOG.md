@@ -10,6 +10,11 @@ evidence exposed.
 - **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
   under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
   `$CMD` run is caught; `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
+  workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
+  failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
+  `exit 0`, disabled outer errexit, and unsafe enclosing-group contexts. Bash 3.2.57,
+  Bash 5.2.21 and dash agree on the target and controls.
 - **An unended substitution heredoc no longer hides a later `EOF)` close (#2494, #2331).**
   After one scan reached the script's end, `_Lines` used the exact-line index for every later
   body, so it swallowed a pipeline Bash 3.2 runs between a later `B)` and exact `B` line. An
