@@ -505,7 +505,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                                  forms.stdin_program(self.argv(script)))
         # A literal name keeps its table's answer, and a literal path is not a
         # value form: unaffected, as they always were.
-        self.assertEqual(workflow_programs.FOREIGN_PROGRAM, forms.stdin_program(self.argv("python3 -")))
+        self.assertEqual(workflow_programs.FOREIGN_PROGRAM,
+                         forms.stdin_program(self.argv("python3 -")))
         self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
         # Its QUOTED heredoc body is read as shell, as a shell's is; an
