@@ -81,32 +81,57 @@ def _after_dash_c(argv):
     return []
 
 
-# The short option letters a shell takes, where it reads them: bash's `set`
-# builtin (`set -eo pipefail`, `set +x`), and besides those its own COMMAND
-# LINE (`sh -c`, `bash -ilr`, `bash -D`, `bash -O extglob`, and the `-I`/`-V`
-# dash takes where bash does not). A letter outside the table is one the
-# shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option changed;
-# `sh -c -K P` exits before it reads `P` -- which is what `_past_options` and
-# `workflow_gating._errexit` read it as (#2443, #2475). Each table is the
-# fail-closed pick over the three shells measured (bash 3.2.57, bash 5.2.21,
-# dash): their UNION on a command line, where an unknown letter reads as
-# nothing RUN, and bash's for the builtin, where one reads as nothing SET --
-# dash refuses more `set` letters than bash, and reading a `set` it refuses
-# as setting nothing is the same direction. Which take a VALUE: `-o name`,
-# and bash's `-O shopt` on a command line.
-SET_OPTIONS = "abefhkmnptuvxBCEHPTo"
-SHELL_OPTIONS = SET_OPTIONS + "cilrsDOIV"
+# The short option letters a shell takes, where it reads them: bash 5.2.21's
+# `set` builtin (`set -eo pipefail`, `set +x`, `set -r`), and besides those a
+# command line's own (`sh -c`, `bash -ilr`, `bash -D`, `bash -O extglob`, and
+# the `-I`/`-V` dash takes where bash does not). A letter outside the table is
+# one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option
+# changed; `sh -c -K P` exits before it reads `P` -- which is what
+# `workflow_gating._errexit` and `_past_options` read it as (#2443, #2475).
+# Measured, letter by letter, on bash 3.2.57, bash 5.2.21, dash, zsh 5.9 and
+# ksh 93u+, each table is the fail-closed pick for the direction its reader
+# takes. For the builtin, where an unknown letter means nothing was SET,
+# bash 5.2.21's letters: that is bash 3.2.57's less the `i` and `I` which 5.2
+# refuses and SURVIVES, which would be the fail-open direction, and dash
+# refuses more of them still but dies at the `set`, which runs nothing. For a
+# command line, where it means nothing RUNS, the UNION over the shells that
+# refuse at all -- and only those shells may be read that way, because zsh
+# runs twenty of these letters and ksh runs `-G` (`_MEASURED_SHELLS`). Which
+# take a VALUE: `-o name`, and bash's `-O shopt` on a command line.
+SET_OPTIONS = "abefhkmnoprtuvxBCEHPT"
+SHELL_OPTIONS = SET_OPTIONS + "cilsDOIV"
 VALUE_OPTIONS = "oO"
+# The shells whose command-line letters the comment above measured as REFUSED:
+# `sh` (bash in sh mode on this box, dash on a runner), `bash` and `dash`. The
+# other names of `_SHELL_STRING` are not here -- zsh runs `-K`, `-F`, `-S`,
+# `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash` could not
+# be measured (this box has none) -- so for them an option word is read ON.
+_MEASURED_SHELLS = ("sh", "bash", "dash")
 
 
-def _refused(word):
-    """Whether a shell refuses this option word outright, running nothing: a
-    cluster of LETTERS with one outside `SHELL_OPTIONS` (`-K`, `-eZ`, `+Z`).
-    A word that is not all letters is read ON, as before and fail-closed: a
-    digit or a brace (`-1`, `-I{}`) is one every shell measured refuses too,
-    but an EXPANSION is a word this module cannot read -- bash runs the
-    program after `sh -c -u$X P` wherever `X` is empty."""
-    return word[1:].isalpha() and any(letter not in SHELL_OPTIONS for letter in word[1:])
+def _refused(argv, at):
+    """Whether the shell `argv[0]` refuses the option word `argv[at]`
+    outright, running nothing: a cluster of LETTERS with one outside
+    `SHELL_OPTIONS`, handed to a shell that refuses such a letter at all
+    (`sh -c -K P`, `sh -cK P`, `+Z`; `_MEASURED_SHELLS`).
+
+    False for every other command word, which the walk then reads ON as it
+    did before #2475: zsh and ksh, which RUN letters bash refuses, the
+    unmeasured `ash`, and any word not WRITTEN as that name -- a `$X`, a
+    lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell
+    it spells (`shell_wrappers.Defaulted`, #2337), every one of which is a
+    `str` SUBCLASS here. The program such a command word is handed is
+    #2337/#2344's own report, and a letter table cannot overrule it, because
+    `X` may hold `zsh`.
+
+    A word that is not all letters is read on too, and fail-closed: bash,
+    dash and ksh refuse a digit or a brace (`-1`, `-I{}`, `-nw5`) but zsh
+    RUNS `-1`, and all five run the program after `sh -c -u$X P` wherever
+    `X` is empty, so a word holding an expansion is never a refusal."""
+    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+        return False                            # a `str` subclass is a name not written
+    letters = argv[at][1:]
+    return letters.isalpha() and any(letter not in SHELL_OPTIONS for letter in letters)
 
 
 def _past_options(argv, at):
@@ -118,11 +143,11 @@ def _past_options(argv, at):
     pipefail P`); a `-` or `--` ends the options, and the word after it is
     the program even if it begins with `-`; a `--long` word after `-c` is
     one both shells refuse, and nothing runs. So is a word of letters one of
-    which no shell takes (`sh -c -K P`, `sh -cK P`, `_refused`): it exits
-    before it reads `P`, so no program is handed over (#2475).
+    which the shell in hand refuses (`sh -c -K P`, `sh -cK P`, `_refused`):
+    it exits before it reads `P`, so no program is handed over (#2475).
     """
     while True:
-        if _refused(argv[at]):
+        if _refused(argv, at):
             return []                           # the shell exits before the program
         at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
         if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":

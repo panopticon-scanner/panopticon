@@ -21,24 +21,33 @@ evidence exposed.
   `sh -c -K 'curl … | sh'` was FLAGGED although bash 3.2.57, bash 5.2.21, dash and bash-as-`sh`
   all exit 2 before they read the program (#2475). One table of letters answers all three, in
   `workflow_programs` (`SET_OPTIONS`, `SHELL_OPTIONS`), read there by `_past_options` and above it
-  by `workflow_gating._errexit`: bash's `set` letters for the builtin, and for a command line
-  their union with its own `-c`, `-i`, `-l`, `-r`, `-s`, `-D`, `-O` and the `-I`/`-V` dash takes,
-  every letter measured on the three shells. Both directions fail CLOSED: a `set` with an unknown
-  letter turns NOTHING on (a `+e` in it still reads as off, and bash leaves errexit where it was),
-  and an invocation with one hands over no program, so nothing runs and the rule is silent — which
-  the gap list now says in the guard's own voice. `set` keeps its own reading, where `-O` is no
-  option at all (the `set -O foo -e` pin is unchanged). Two spellings stay fail-closed on purpose:
-  a letter in a SEPARATE word ahead of `-c` (`sh -K -c '…'`) is read on, and so is an option word
-  that is not all letters — every shell measured refuses `-1`, `-I{}` and `-nw5` too, but
-  `sh -c -u$X P` runs `P` wherever `X` is empty, and a value is a word this reader does not
-  follow. Over the 11 probe corpora (439,716 rows) 10 rows go FLAGGED→CLEAN, every one an option
-  word of letters after `-c` that bash 3.2.57, bash 5.2.21, dash and bash-as-`sh` all refuse —
-  `-F`, `-g`, `-K`, `-fR`, `-S`, `-w`, each rc 2 with nothing fetched and nothing run — and 4
-  two-step rows lose exactly the sentence of the step that went clean; 0 rows go CLEAN→FLAGGED and
-  no other answer moves, because the `set` shape appears in no corpus row. Over the
-  3,200-workflow calibration pool (4,642 jobs) no job's answer changes, and a text census finds no
-  job carrying a `set` letter outside the table, a refused option word after `-c`, or an `-O` at
-  all.
+  by `workflow_gating._errexit`: bash 5.2.21's `set` letters for the builtin (`-r` among them,
+  and not the `i`/`I` that 5.2 refuses while surviving), and for a command line their union with
+  its own `-c`, `-i`, `-l`, `-r`, `-s`, `-D`, `-O` and the `-I`/`-V` dash takes — every letter
+  measured on bash 3.2.57, bash 5.2.21, dash, zsh 5.9 and ksh 93u+. On a command line the refusal
+  is PER SHELL, because that measurement found zsh running twenty of the letters bash refuses and
+  ksh running `-G`: `zsh -c -K 'curl … | sh'` fetches and RUNS the download under either bash as
+  the step's shell, so only `sh`, `bash` and `dash` are read as refusing, while zsh, ksh, the
+  unmeasured `ash` and a shell NAMED by a word rather than written (`$X -cK`, `${X:-sh} -cK`,
+  whose program #2337 and #2344 report in their own words) are read ON, exactly as before. Both
+  directions fail CLOSED: a `set` with an unknown letter turns NOTHING on (a `+e` in it still
+  reads as off, and bash leaves errexit where it was), and an invocation with one hands over no
+  program, so nothing runs and the rule is silent, which the gap list now says in the guard's own
+  voice. `set` keeps its own reading, where `-O` is no option at all (the `set -O foo -e` pin is
+  unchanged) and a LONG word is a refusal too, since bash's `set` has none: `set --posix -e`
+  leaves errexit off and the download runs on both bashes, while `set -- "$@"` is the positional
+  spelling and reads as it always did. Two spellings stay fail-closed on purpose: a letter in a
+  SEPARATE word ahead of `-c` (`sh -K -c '…'`) is read on, and so is an option word that is not
+  all letters: bash, dash and ksh refuse `-1`, `-I{}` and `-nw5`, but zsh RUNS `-1`, and all five
+  shells run the program after `sh -c -u$X P` wherever `X` is empty.
+  Over the 11 probe corpora (439,716 rows) 10 rows go FLAGGED→CLEAN, every one an option word of
+  letters after `-c` handed to a shell of the measured family that refuses it — `-F`, `-g`, `-K`,
+  `-fR`, `-S`, `-w`, each rc 2 on bash 3.2.57, bash 5.2.21, dash and bash-as-`sh` with nothing
+  fetched and nothing run — and 4 two-step rows lose exactly the sentence of the step that went
+  clean; 0 rows go CLEAN→FLAGGED and no other answer moves, in the same 14 rows before and after
+  the per-shell scoping. Over the 3,200-workflow calibration pool (4,642 jobs) no job's answer
+  changes, and a text census finds no job carrying a `set` letter outside the table, a refused
+  option word after `-c`, or an `-O` at all.
 - **A literal shell's dynamic program is read as unread, like a dynamic shell's (#2483).**
   `workflow_programs.scripts` hands on a shell's `-c` operand — and `eval`'s — as the script text,
   and a word that is ENTIRELY parameter expansion spells no command for `workflow_forms.flattened`

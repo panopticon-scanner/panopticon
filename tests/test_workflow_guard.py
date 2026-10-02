@@ -1670,18 +1670,31 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
         # after it stops nothing -- bash 3.2.57 and 5.2.21 run the download
         # with the checksum failing. A `+e` in such a word still reads as
         # off, which is fail-closed either way.
+        # Review NIT 4: bash's `set` has no LONG option, so `set --posix -e`
+        # is the same refusal (rc 0 on both bashes with errexit left off, and
+        # `sh`/dash die at it). Review NIT 6: `-oo x` takes ONE value word
+        # here, as `_errexit` takes it, so the `-Ze` behind it is still read
+        # -- both bashes answer `set: x: invalid option name` and set nothing.
         for body in ("set +e\nset -Z -e\n%s\n", "set +e\nset -eO foo\n%s\n",
-                     "set +e\nset -e -Z\n%s\n", "set +e\nset +Ze\n%s\n"):
+                     "set +e\nset -e -Z\n%s\n", "set +e\nset +Ze\n%s\n",
+                     "set +e\nset --posix -e\n%s\n", "set +e\nset -oo x -Ze\n%s\n"):
             with self.subTest(body=body):
                 found = self.job(body)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("runs after a `set +e`", found[0][1])
         # The controls: a `set` of letters the builtin has turns it on as it
-        # did, and so does the `-o` name no letter spells.
+        # did, and so does the `-o` name no letter spells. `set -r` is one of
+        # them -- both bashes, zsh and ksh leave errexit ON after
+        # `set -r -e`, and dash dies at the `set` (review NIT 3).
         for body in ("set +e\nset -e\n%s\n", "set +e\nset -eux\n%s\n",
-                     "set +e\nset -o errexit\n%s\n"):
+                     "set +e\nset -o errexit\n%s\n", "set +e\nset -r -e\n%s\n"):
             with self.subTest(body=body):
                 self.assertEqual([], self.job(body))
+        # `set --` is the positional spelling, not a long option: it is no
+        # refusal, and it reads no option either way, so these two answer as
+        # they did on main.
+        self.assertEqual([], self.job('set -e\nset -- "$@"\n%s\n'))
+        self.assertIn("runs after a `set +e`", self.job('set +e\nset -- "$@"\n%s\n')[0][1])
 
     def test_the_script_twins_take_the_steps_pipefail(self):
         # The child's own pipefail covers its inner pipe, not the outer one

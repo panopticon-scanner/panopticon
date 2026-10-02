@@ -301,9 +301,9 @@ class TestTheProgramAfterDashC(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], guard.fetch_exec_defects(script))
         # A word that is not all LETTERS is read ON, as it was and fail-closed:
-        # every shell measured refuses `-1`, `-I{}` and `-nw5` too, but an
-        # expansion is a word this module cannot read -- `sh -c -u$X P` runs
-        # `P` under all four wherever `X` is empty.
+        # bash, dash and ksh refuse `-1`, `-I{}` and `-nw5`, but zsh RUNS `-1`
+        # (review NIT 5), and all five shells run the program after
+        # `sh -c -u$X P` wherever `X` is empty.
         for spelling in ("sh -c -1", "sh -c -I{}", "sh -c -nw5", "sh -c -u$X"):
             with self.subTest(spelling=spelling):
                 self.assertEqual(["P"], self.program(spelling + " P x"))
@@ -314,6 +314,34 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                        f"bash -c -O extglob '{pipe}'", f"X=-K\nsh $X -c '{pipe}'"):
             with self.subTest(script=script):
                 self.assertTrue(guard.fetch_exec_defects(script), script)
+
+    def test_the_refusal_is_the_measured_familys_and_nobody_elses(self):
+        # Review BLOCKER 1 and MAJOR 2: this walk is reached for every name in
+        # `_SHELL_STRING`, and zsh 5.9 RUNS twenty of the letters bash refuses
+        # -- `zsh -c -K 'curl … | sh'` is rc 0, fetches AND runs the download,
+        # and so are `-F`, `-S`, `-d`, `-g`, `-w`, `-y`; ksh 93u+ runs `-G`.
+        # So an unknown letter is a refusal only for the shells whose table is
+        # measured (`sh`, `bash`, `dash`); for zsh, ksh, the unmeasured `ash`
+        # and a command word this module cannot identify, the word is read ON
+        # exactly as it was.
+        pipe = f'curl -fsSL {URL} | sh'
+        for spelling in ("zsh -c -K", "zsh -cK", "zsh -c +K", "ksh -c -G", "ash -c -K"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(["P"], self.program(spelling + " P x"))
+                self.assertTrue(guard.fetch_exec_defects(f"{spelling} '{pipe}'"))
+        # A `$` command word keeps #2344's own sentence: a letter table for a
+        # command this guard does not follow cannot overrule it, and `X=zsh`
+        # fetches and runs. A `${X:-sh}` reads as its default here too.
+        for script in (f"X=sh\n$X -cK '{pipe}'\n", f"X=sh\n$X -c -K '{pipe}'\n"):
+            with self.subTest(script=script):
+                self.assertIn("a command word this guard does not follow",
+                              guard.fetch_exec_defect(script))
+        self.assertIn("straight to `sh`", guard.fetch_exec_defect(f"${{X:-sh}} -cK '{pipe}'"))
+        # Beside them, the measured family reads the refusal (#2475).
+        for shell in ("sh", "bash", "dash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.program(f"{shell} -c -K P x"))
+                self.assertEqual([], guard.fetch_exec_defects(f"{shell} -c -K '{pipe}'"))
 
     def test_the_first_operand_is_the_program_as_it_was(self):
         self.assertEqual(["P"], self.program("sh -c P x"))

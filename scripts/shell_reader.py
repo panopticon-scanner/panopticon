@@ -51,7 +51,7 @@ from shell_lex import ansi_c, lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
 from shell_text import (Process, _lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
-from shell_wrappers import WRAPPERS, Rewritten, dynamic, unwrap
+from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -571,7 +571,7 @@ def _command_result(argv):
             continue
         default = None if heads else _DEFAULTS.fullmatch(argv[0])
         if default and os.path.basename(default[1]) in _SHELLS:
-            argv[0] = default[1]
+            argv[0] = Defaulted(default[1])     # the NAME, marked as unwritten
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads

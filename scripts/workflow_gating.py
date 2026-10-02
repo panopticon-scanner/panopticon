@@ -48,20 +48,28 @@ Inlined = collections.namedtuple("Inlined", "stages separator region credit")
 
 def _rejected(words):
     """Whether bash refuses this `set` WHOLE: one of its option words carries
-    a letter the builtin lacks (`set -Z -e`, `set -eO foo`), which it answers
-    with `set: -Z: invalid option`, rc 2, and no option changed (#2443, and
-    dash likewise). Read over the words `_errexit` reads, each `-o name`
-    value skipped: the letter may be in any of them."""
+    a letter the builtin lacks (`set -Z -e`, `set -eO foo`), or is a LONG one
+    -- bash's `set` has none, and answers `set --posix -e` with `set: --:
+    invalid option` (review NIT 4) -- either of which leaves rc 2 and no
+    option changed (#2443; dash and `sh` die at the `set` instead, so nothing
+    runs there at all). `set --` is the positional spelling that ends the
+    options, not a refusal: `set -- "$@"` reads as it always did.
+
+    Read over the words `_errexit` reads, skipping one value per option WORD
+    carrying an `o` exactly as `_errexit` consumes it, so the two walks agree
+    about which words are values. Counting one per LETTER -- as
+    `workflow_programs._past_options` and bash itself do -- would let
+    `set -oo x -Ze` hide its `-Z` behind the second value and read the `-Ze`
+    as turning errexit ON, where both bashes answer `set: x: invalid option
+    name` and set nothing (review NIT 6)."""
     words = iter(words)
     for word in words:
         if word == "--" or word[:1] not in ("-", "+") or word[:2] == "++":
             return False
-        if word[:2] == "--":
-            continue                            # bash's long options carry no letter
-        if any(letter not in SET_OPTIONS for letter in word[1:]):
+        if word[:2] == "--" or any(letter not in SET_OPTIONS for letter in word[1:]):
             return True
-        for _ in range(sum(letter in VALUE_OPTIONS for letter in word[1:])):
-            next(words, None)                   # an option's value is no option word
+        if any(letter in VALUE_OPTIONS for letter in word[1:]):
+            next(words, None)                   # `-o name`'s value, as `_errexit` takes it
     return False
 
 

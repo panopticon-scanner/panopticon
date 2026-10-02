@@ -85,8 +85,10 @@ runs each live, so a change that catches one fails there and edits this list.
   #2344), a `$(…)` or `Rewritten` one reported where the job downloads. Nor is a `$` command
   word: `${X:-sh}` reads as its default, another handed `-c` has its program read so (#2337);
   `$CMD --flag` reads nothing, `sh -c "$P"` is reported (#2483). A `-c`/`eval` string loses `\$`
-  escapes as bash does, not with another `$` in it (#2342). An option LETTER no shell takes is
-  the shell's own refusal: `sh -c -K '…'` runs nothing, `set -Z -e` sets nothing (#2443, #2475).
+  escapes as bash does, not with another `$` in it (#2342). An option letter the shell in hand
+  refuses is read as that refusal: `sh -c -K '…'` runs nothing and `set -Z -e` sets nothing
+  (#2443, #2475). Per shell, because zsh runs twenty of the letters bash refuses and ksh runs
+  `-G`: for those, and for a shell named by a word rather than written, the word is read on.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
@@ -108,17 +110,16 @@ runs each live, so a change that catches one fails there and edits this list.
   bytes have. What is still unread is everything that needs the mount table
   itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument
   the image's ENTRYPOINT supplies, and whatever the image itself runs.
-  KEPT: those need another executor's mounts and entrypoint modelled, which is
-  reading a second program's configuration rather than this job's shell. The
-  image the container came from is NOT pinned either, and that is a decided
-  residual rather than an oversight: this fleet pulls the tools image by its
-  mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
+  KEPT: those need another executor's mounts and entrypoint modelled, which is reading a second
+  program's configuration rather than this job's shell. The image the container came from is NOT
+  pinned either, and that is a decided residual rather than an oversight: this fleet pulls the
+  tools image by its mutable `:latest` tag -- the `IMAGE` env binding and the `docker pull` in
   each consumer: the "Pull or build panopticon-tools image" step of `security.yml` and of
-  `security-fork.yml`, and both "Pull the nightly tools image" steps of
-  `adapter-integration.yml`. DEVELOPMENT.md states the consequence in its own voice twice, in the
-  "One residual to know about" paragraph under "Key design decisions" and in the "Weekly strict
-  security backstop" paragraph ("the tools image remains unpinned"). The `uses:` rule pins
-  ACTIONS by SHA and `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
+  `security-fork.yml`, and both "Pull the nightly tools image" steps of `adapter-integration.yml`.
+  DEVELOPMENT.md states the consequence in its own voice twice, in the "One residual to know
+  about" paragraph under "Key design decisions" and in the "Weekly strict security backstop"
+  paragraph ("the tools image remains unpinned"). The `uses:` rule pins ACTIONS by SHA and
+  `tests/test_dockerfile.py` pins what the Dockerfile FETCHES
   (`test_all_fetched_binaries_are_checksum_verified`, `test_nvd_data_ref_default_is_digest`);
   neither governs a `docker pull` of a tag.
 * an executor that reads the file by convention rather than by argument (`make`, `npm install`):
@@ -176,9 +177,8 @@ runs each live, so a change that catches one fails there and edits this list.
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
   `steps.<id>.*` reference.
-  KEPT: deciding it means EVALUATING a GitHub expression against a context
-  this module never sees. `continue-on-error: true` was the other half of this
-  entry and is now read -- see `job_defects`.
+  KEPT: deciding it means EVALUATING a GitHub expression against a context this module never sees.
+  `continue-on-error: true` was the other half of this entry and is now read -- see `job_defects`.
 
 `if` branches inside the shell are read flat for what they FETCH and what they
 RUN -- folding those in can only report more. Not for what they CHECK:
