@@ -57,8 +57,8 @@ def ansi_c(body: str) -> str | None:
 class Unreadable(Exception):
     """A script `lex` does not read: it nests `((` so deep that deciding each
     one, as bash does, would read it more than `_REREAD` times over, a
-    substitution closes over a heredoc or queues one after an `EOF)`, or a
-    heredoc's delimiter is a word bash parses to spell.
+    substitution closes over a heredoc or queues one after an `EOF)`, a case
+    arm cannot be attributed, or a heredoc delimiter needs a shell parse.
     `workflow_guard.job_defects` reports its step."""
 
 
