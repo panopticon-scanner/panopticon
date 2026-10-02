@@ -20,6 +20,41 @@ def defects(script):
     return wg.job_defects([("step", script)])
 
 
+class TestAUsePipedAfterACaseCompound(unittest.TestCase):
+    """#2610: the stage after `esac |` reaches the operand walk."""
+
+    SHELLS = (None, "bash", "sh", "bash {0}", "bash -e {0}",
+              "bash -eo pipefail {0}", "sh {0}", "sh -e {0}")
+    CHECK = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
+
+    def found(self, script, shell=None):
+        return wg.job_defects([wg.Step("step", script, shell=shell)])
+
+    def test_checked_and_unchecked_uses_are_reported_in_every_posture(self):
+        scripts = (GET + "case x in x) %s;; esac | sh tool" % self.CHECK,
+                   GET + "case x in x) true;; esac | sh tool")
+        for script in scripts:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    found = self.found(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("running it under `sh`", found[0][1])
+
+    def test_the_sequential_control_keeps_its_existing_branch_answer(self):
+        # Main already sees this use and reports that the case-bound check may
+        # be skipped. This control pins that answer rather than calling it a
+        # clean credit, as #2610's initial acceptance text did.
+        found = self.found(GET + "case x in x) %s;; esac\nsh tool" % self.CHECK)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("branch the use is not in", found[0][1])
+
+    def test_clean_case_and_direct_must_trip_controls_keep_their_answers(self):
+        self.assertEqual([], self.found("case x in x) echo harmless;; esac | cat"))
+        found = self.found(GET + "sh tool")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh`", found[0][1])
+
+
 class TestAssignmentPrefixes(unittest.TestCase):
     """#2348: `A+=x`, `a[1]=x` and `arr=(a)` in front of a command are
     assignments, and bash runs the command behind them."""

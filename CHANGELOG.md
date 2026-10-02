@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three
