@@ -170,6 +170,19 @@ def names_file(content, dest):
 # An operand that carries a glob metacharacter DESCRIBES files rather than
 # naming one, which is the whole of what `chmod +x *.sh` had over the rule.
 _GLOB = re.compile(r"[*?\[]")
+
+
+class _Reparsed(str):
+    """An `eval` word whose first parse no longer proves quoting."""
+
+    readable: str
+
+    def __new__(cls, token):
+        reparsed = super().__new__(cls, token)
+        reparsed.readable = shell_reader.readable(token)
+        return reparsed
+
+
 # In a word bash expands as a pattern, a brace or extglob group, a `$...` and
 # a `$(...)` stand for any text where a glob is matched, and a leading `./`
 # names what the name after it names: so `sh ./cuda_*.run` runs a download
@@ -196,9 +209,13 @@ def covers(token, dest, recursive=False):
     (`chmod +x /tmp/*.sh`, or a word bash expands, read as `_GROUP` says),
     and by the directory a recursive command walks (`chmod -R +x /tmp`). A
     glob is matched against the whole path with a leading `./` on either
-    dropped -- and, one bash expands, by the last parts where a `$` spells
-    either directory or it has one a bare dest does not (`_GROUP`'s comment
-    says why). #2345's arm is `_last_part`, which carries its mirror too
+    dropped -- but only where the lexer marked the word as a pattern, because
+    quoted `*`, `?` and `[` characters are literal. An `eval` word is the
+    exception: its first parse has removed those quotes, and its second parse
+    expands the remaining pattern, so `_Reparsed` treats unknown provenance
+    as live. One bash expands is also matched by the last parts where a `$`
+    spells either directory or it has one a bare dest does not (`_GROUP`'s
+    comment says why). #2345's arm is `_last_part`, which carries its mirror too
     (#2442): a word written OUT stands for a download whose own path expands,
     so `sh cuda_1.run` reads the fetch to `"$PWD/cuda_1.run"` that only the
     glob reached. The directory part over-reports: after a fetch of
@@ -209,15 +226,18 @@ def covers(token, dest, recursive=False):
     """
     if same_file(token, dest):
         return True
-    glob, loose, pattern = token, False, getattr(token, "lead", None) is not None
-    if pattern:                                     # a word bash expands (the reader's)
-        glob = shell_reader.readable(token)
+    glob, loose = token, False
+    pattern = (isinstance(token, _Reparsed)
+               or getattr(token, "lead", None) is not None)
+    if pattern:                              # the reader's, or re-read by eval
+        glob = (token.readable if isinstance(token, _Reparsed)
+                else shell_reader.readable(token))
         loose = bool(_EXPANSION.search(glob))
         while _GROUP.search(glob) or _EXPANSION.search(glob):
             glob = _GROUP.sub("*", _EXPANSION.sub("*", glob))
     elif not token.startswith("-") and _last_part(token, dest):
         return True
-    if _GLOB.search(glob):
+    if pattern and _GLOB.search(glob):
         glob, dest = _HERE.sub("", glob), _HERE.sub("", dest)
         if loose or pattern and ("$" in dest or os.path.dirname(glob) and not os.path.dirname(dest)):
             glob, dest = os.path.basename(glob), os.path.basename(dest)
@@ -272,13 +292,20 @@ def _recursive(argv):
 def described(statement, position, stage, argv):
     r"""(the command that really runs, the operands it is handed, does it walk).
 
-    Two shapes give a command its operands without writing them down, and both
+    Three shapes change what a command's operands mean. `eval` parses its
+    separate words again after their first quotes are gone, so their pattern
+    provenance is unknown and kept fail-closed. Two other shapes give a
+    command its operands without writing them down, and both
     made a download runnable with no use this rule could read: `find <roots>
     ... -exec chmod +x {} \;` substitutes each hit for `{}`, and `... | xargs
     chmod +x` reads them off the pipe -- where `command()` strips `xargs` as a
     wrapper, leaving a `chmod +x` with no operands at all. The roots stand in
     for what was walked, and a walk binds like a recursive flag.
     """
+    if os.path.basename(argv[0]) == "eval":
+        argv = [argv[0]] + [(_Reparsed(token) if _GLOB.search(token)
+                             and getattr(token, "lead", None) is None else token)
+                            for token in argv[1:]]
     for predicate in _FIND_EXEC:
         if os.path.basename(argv[0]) == "find" and predicate in argv:
             inner = [t for t in argv[argv.index(predicate) + 1:]

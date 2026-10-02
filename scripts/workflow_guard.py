@@ -82,14 +82,14 @@ runs each live, so a change that catches one fails there and edits this list.
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
   `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops.
   A value in shell options (`sh $X '…'`) is not followed; later words are read as `-c` strings
-  (`candidates`, #2344). Substitutions stay opaque while outer text is read (#2482); one alone
-  or a `Rewritten` word stays unread beside a download. A `$` command's `${X:-sh}` default is
-  read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` is
-  reported (#2483). A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342).
-  An option letter the shell in hand refuses is read as that refusal: `sh -c -K '…'` runs
-  nothing and `set -Z -e` sets nothing (#2443, #2475). Per shell: zsh runs twenty of the
-  letters bash refuses and ksh runs `-G`; for those, and for a shell named by a word rather
-  than written, the word is read on.
+  (`candidates`, #2344). In a candidate program word, substitutions stay opaque while outer text
+  is read (#2482); a literal `-c` word holding one stays unread (#2486). One alone or a `Rewritten`
+  word stays unread beside a download. A `$` command's `${X:-sh}` default is read, as is a program
+  after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` is reported (#2483).
+  A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342).
+  An option letter the shell in hand refuses is read as that refusal: `sh -c -K '…'` runs nothing
+  and `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters
+  and ksh runs `-G`, those read on; so does a word after a shell whose name is itself a word.
   KEPT: binding two spellings of one path means EVALUATING the shell, which
   the reader does not do by design; the fleet puts its variables in the URL
   and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).

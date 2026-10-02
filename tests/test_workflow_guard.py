@@ -34,6 +34,7 @@ from unittest import mock
 import shell_reader
 import workflow_forms
 import workflow_guard as wg
+import workflow_programs
 # The download shape itself lives in the layer below the rule (#1697).
 from workflow_forms import Fetch
 
@@ -699,6 +700,63 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
             for use in ("chmod +x ./other_*.run\n", "sh ./other_*.run\n"):
                 with self.subTest(dest=dest, use=use):
                     self.assertEqual([], self.job(dest, use))
+
+
+class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
+    """#2432: only unquoted pattern characters make a shell glob."""
+
+    GET = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+
+    def job(self, use):
+        return [why for _name, why in wg.job_defects([("step", self.GET + use)])]
+
+    def test_a_fully_quoted_pattern_does_not_name_the_download(self):
+        for operand in ('"./cuda_*.run"', "'./cuda_?.run'", '"cuda_[1].run"'):
+            for command in ("sh", "chmod +x"):
+                with self.subTest(command=command, operand=operand):
+                    self.assertEqual([], self.job("%s %s\n" % (command, operand)))
+
+    def test_an_unquoted_pattern_still_names_the_download(self):
+        for operand in ("./cuda_*.run", "./cuda_?.run", "cuda_[1].run"):
+            with self.subTest(operand=operand):
+                found = self.job("sh %s\n" % operand)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+    def test_quoted_literal_parts_do_not_hide_an_unquoted_pattern(self):
+        found = self.job('sh "./cuda_"*.run\n')
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh`", found[0])
+
+    def test_a_quoted_literal_part_of_an_exact_name_still_names_it(self):
+        for operand in ('./cuda_"1".run', '"./cuda_"1.run'):
+            with self.subTest(operand=operand):
+                found = self.job("sh %s\n" % operand)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+    def test_eval_reparses_separate_words_and_makes_their_globs_live(self):
+        for use in ('eval sh "./cuda_*.run"', 'eval bash "./cuda_*.run"',
+                    'eval chmod +x "./cuda_*.run"', 'eval chmod +x cuda_"[1]".run',
+                    'eval chmod +x -- "./cuda_*.run"', 'eval "chmod" +x "./cuda_*.run"',
+                    'eval chmod +x "cuda_?.run"', 'eval tar -xzf "./cuda_*.run"',
+                    'eval source "./cuda_*.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n") if why.startswith("fetches ")]
+                self.assertEqual(1, len(downloads), downloads)
+                self.assertIn("under `eval`", downloads[0])
+
+    def test_eval_keeps_quotes_that_are_inside_its_single_script_word(self):
+        for use in ("eval 'sh \"./cuda_*.run\"'", "eval 'chmod +x \"./cuda_*.run\"'"):
+            with self.subTest(use=use):
+                self.assertFalse(any(why.startswith("fetches ") for why in self.job(use + "\n")))
+
+    def test_eval_reparsed_glob_keeps_a_lifted_substitution_readable(self):
+        found = self.job('eval sh "./cuda_$(printf 1)*.run"\n')
+        downloads = [why for why in found if why.startswith("fetches ")]
+        self.assertEqual(1, len(downloads), downloads)
+        self.assertIn("under `eval`", downloads[0])
+        self.assertNotIn("@@shell-", downloads[0])
 
 
 class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
@@ -1855,6 +1913,194 @@ class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
                 self.assertEqual([], self.job("%s\n", shell))
 
 
+class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
+    """#2559 and #2560: bash's `set` takes one option NAME per `o` LETTER, and
+    refuses a name that is not one of its own; this guard took one value per
+    option WORD and read no name at all. So `set -oo pipefail errexit` left
+    errexit off here where bash turns it ON -- the second `o` takes `errexit`,
+    and `$#` stays 0 -- and `set -o foo -e` read errexit back ON where bash
+    answers `set: foo: invalid option name`, leaves errexit off and runs the
+    download with the checksum failing (#2560's fail-open).
+
+    Values now count per letter, as `workflow_programs._past_options` and
+    `stdin_program` already count them, and a `-o` value outside
+    `SET_OPTION_NAMES` refuses the whole `set` as an unknown LETTER does
+    (#2443): a `+e` in it still reads as off, and on a COMMAND LINE the shell
+    exits instead, so no program is handed over (`SHELL_OPTION_NAMES`, the
+    union over the measured shells, in `TestTheProgramAfterDashC`).
+
+    Reading a refused `set` as setting NOTHING is the fail-closed pick, not
+    bash to the letter: bash applies the names BEFORE the bad one and stops
+    there -- `set +e; set -o pipefail -o foo` leaves pipefail ON (rc 0,
+    SURVIVED printed, bash 3.2.57 and 5.2.21) -- but where the name it
+    applied was errexit the failing `set` then exits the shell under it and
+    nothing after it runs at all (`set +e; set -e -o foo`, rc 1 on 3.2.57 and
+    rc 2 on 5.2.21, nothing printed after). An unknown LETTER is not like
+    that: bash validates a WORD's letters before applying that word, so
+    `set +e; set -o errexit -Z` leaves errexit OFF (rc 0, SURVIVED), though a
+    name an earlier word applied stays (`set -ox pipefail -Z`: pipefail ON)."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    PIPED = TestAPipedCheckGatesOnlyUnderPipefail.PIPED
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_a_set_takes_one_option_value_per_o_letter(self):
+        # Each row was run as `SHELL -c` with `false; echo SURVIVED` behind
+        # the `set`, so no SURVIVED means errexit is ON:
+        # bash 3.2.57: `set -oo pipefail errexit; echo "$# $-"` -> `0 ehBc`,
+        #   rc 1 and no SURVIVED -- one value per `o`, and no positional.
+        # bash 5.2.21: `0 ehBc`, rc 1 and no SURVIVED, the same.
+        # dash: `set: Illegal option -o pipefail`, rc 2 -- it dies at the
+        #   `set`, so nothing after it runs there at all.
+        # `set -oe xtrace y; echo "$# $1 $-"` is `1 y ehxBc` on both bashes
+        # and `1 y xe` on dash: the `o` took `xtrace`, the `e` set errexit
+        # and `y` is the positional. `set -eo pipefail` is unchanged (ON).
+        for body in ("set +e\nset -oo pipefail errexit\n%s\n",
+                     "set +e\nset -oe xtrace y\n%s\n",
+                     "set +e\nset -eo pipefail\n%s\n",
+                     "set +e\nset -o pipefail -o errexit\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        # A template reads its command line the same way, and both options
+        # arrive: `bash -oo pipefail errexit -c 'echo RAN $-'` -> `RAN ehBc`,
+        # rc 0 on bash 3.2.57 and 5.2.21 (dash: `Illegal option -o
+        # pipefail`, rc 2, nothing runs).
+        self.assertEqual([], self.job("%s\n", "bash -oo pipefail errexit {0}"))
+        self.assertEqual([], self.job(self.PIPED, "bash -oo pipefail errexit {0}"))
+        # ... and so does a child shell's (#2444's path).
+        self.assertEqual([], self.job("bash -oo pipefail errexit -c '%s; echo ok'\n"))
+        # `+oo` turns both OFF per letter: `set -o errexit; set +oo errexit
+        # pipefail; echo $-` -> `hBc` with SURVIVED on both bashes. The
+        # must-trip controls: a bare `set +e` is still reported, and so is
+        # the child shell one value short -- `bash -oo pipefail -c P` is
+        # `-c: invalid option name`, rc 2 on both bashes, and runs nothing
+        # at all, which this guard reports as the fail-closed answer it has.
+        for body in ("set +oo errexit pipefail\n%s\n", "set +e\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        self.assertIn("carries on past its failure",
+                      self.job("bash -oo pipefail -c '%s; echo ok'\n")[0][1])
+
+    def test_a_value_that_is_no_option_name_turns_nothing_on(self):
+        # #2560, the fail-open this closes:
+        # bash 3.2.57: `set +e; set -o foo -e; echo $-` -> `set: foo: invalid
+        #   option name` and `hBc`, rc 0 with SURVIVED printed -- errexit is
+        #   still off, so the download runs with the checksum failing.
+        # bash 5.2.21: the same, rc 0 with SURVIVED.
+        # dash: `set: Illegal option -o foo`, rc 2, the shell dies.
+        # `set -ooo pipefail errexit x` is `set: x: invalid option name` (rc 1
+        # on 3.2.57, rc 2 on 5.2.21) with nothing after it run, and so is
+        # `set -oo x -Ze` -- rc 0 there, errexit still off and SURVIVED
+        # printed, which is review NIT 6 of #2551 caught by the NAME now
+        # instead of by the value count. The last two rows are where this
+        # reading is fail-closed rather than bash to the letter (see above).
+        for body in ("set +e\nset -o foo -e\n%s\n",
+                     "set +e\nset -ooo pipefail errexit x\n%s\n",
+                     "set +e\nset -oo x -Ze\n%s\n",
+                     "set +e\nset -o pipefail -o foo\n%s\n",
+                     "set +e\nset -e -o foo\n%s\n",
+                     "set +e\nset -o errexit -o foo\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        # A `set -o foo` on its own changes nothing, in either direction, and
+        # a bare `set -o` prints the settings and changes nothing either (rc
+        # 0 on both bashes).
+        for body in ("set -o foo\n%s\n", "set -o\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        for body in ("set +e\nset -o foo\n%s\n", "set +e\nset -o\n%s\n"):
+            with self.subTest(body=body):
+                self.assertIn("runs after a `set +e`", self.job(body)[0][1])
+        # The controls: the names bash takes still turn their options on,
+        # under the step's own shell and under `shell: bash`.
+        for body in ("set +e\nset -o errexit\n%s\n", "set +e\nset -oo errexit pipefail\n%s\n",
+                     "set +e\nset -e\n%s\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body))
+        self.assertEqual([], self.job("set -o pipefail\n" + self.PIPED, "bash -e {0}"))
+        self.assertIn("reads `pipefail` as off",
+                      self.job("set -o foo\n" + self.PIPED, "bash -e {0}")[0][1])
+
+    def test_a_value_the_guard_cannot_read_is_a_refused_name(self):
+        # Review NIT 1 of this branch, kept fail-closed on purpose: with
+        # `X=foo`, `set +e; set -o $X -e; false; echo RAN` prints `set: foo:
+        # invalid option name` and then RAN on bash 3.2.57 and 5.2.21 --
+        # errexit is still off, so the download runs with the checksum
+        # failing -- where `X=pipefail` arms it and RAN never prints. The
+        # guard cannot know which, so a `$X`, a `"$X"`, a `${X:-pipefail}`
+        # or a lifted `$(cmd)` in the name slot reads as a refused name and
+        # the step is reported. `_refused_name` reads the same value ON on a
+        # COMMAND LINE, where ON means the program runs and is reported too.
+        for body in ("set +e\nset -o $X -e\n%s\n",
+                     'set +e\nset -o "$X" -e\n%s\n',
+                     "set +e\nset -o ${X:-pipefail} -e\n%s\n",
+                     "set +e\nset -o $(echo pipefail) -e\n%s\n"):
+            with self.subTest(body=body):
+                found = self.job(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_every_name_the_builtin_takes_is_read_as_one(self):
+        # The table-coverage loop. `set -o` prints the same 27 names on bash
+        # 3.2.57 and on 5.2.21: allexport braceexpand emacs errexit errtrace
+        # functrace hashall histexpand history ignoreeof interactive-comments
+        # keyword monitor noclobber noexec noglob nolog notify nounset onecmd
+        # physical pipefail posix privileged verbose vi xtrace. Each one is
+        # read as a name the `set` takes, so the `-e` behind it still arms
+        # the check; a name outside the table refuses the `set` whole.
+        for name in workflow_programs.SET_OPTION_NAMES:
+            with self.subTest(name=name):
+                self.assertEqual([], self.job("set +e\nset -o %s -e\n" % name + "%s\n"))
+        # dash's `set -o` prints 17 names, and three of them are not bash's:
+        # `interactive`, `stdin` and `debug`. The builtin here is bash's, so
+        # it refuses all three, and the `-e` behind them arms nothing:
+        # `set +e; set -o stdin -e; echo $-; false; echo SURVIVED` is `set:
+        # stdin: invalid option name`, `hBc`, SURVIVED, rc 0 on bash 3.2.57
+        # and on 5.2.21, so the download runs with the checksum failing. On a
+        # COMMAND LINE dash takes all three (`dash -o stdin -c 'echo RAN $-'`
+        # -> `RAN s`, rc 0), which is why the union reads them on there.
+        for name in ("interactive", "stdin", "debug", "foo", "Errexit"):
+            with self.subTest(name=name):
+                found = self.job("set +e\nset -o %s -e\n" % name + "%s\n")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+
+class TestTheThreeShellNameListsAgree(unittest.TestCase):
+    """#2561: three lists of shell names have to agree. `shell_reader._SHELLS`
+    and `workflow_programs._SHELL_STRING` are the shells whose `-c` script
+    this guard reads; `_MEASURED_SHELLS` is the subset whose option LETTERS
+    and `set -o` NAMES were measured, and the only one of the three for which
+    an unknown letter or name reads as "the shell exits and nothing runs"
+    (#2475, #2560). A name added to `_SHELL_STRING` without a measurement
+    gets the fail-closed reading, which is right; a name added to
+    `_MEASURED_SHELLS` without one would be a fail-OPEN, and nothing pinned
+    the relationship.
+
+    `ash`/busybox is not measured: this box has none to measure with, so it
+    stays out of `_MEASURED_SHELLS` and its option words are read ON."""
+
+    def test_every_measured_shell_is_one_whose_script_the_guard_reads(self):
+        self.assertLessEqual(set(workflow_programs._MEASURED_SHELLS),
+                             set(workflow_programs._SHELL_STRING))
+
+    def test_the_two_readers_name_the_same_shells(self):
+        self.assertEqual(workflow_programs._SHELL_STRING, shell_reader._SHELLS)
+
+    def test_the_measured_shells_are_the_three_that_were_measured(self):
+        # A name added here needs the letters of `SHELL_OPTIONS` and the
+        # names of `SHELL_OPTION_NAMES` measured on that shell FIRST: what
+        # this box has is bash 3.2.57, bash 5.2.21 built from source, and
+        # dash. There is no `ash`/busybox here to measure.
+        self.assertEqual(("sh", "bash", "dash"), workflow_programs._MEASURED_SHELLS)
+
+
 class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
     """#2335 and #2338 review N-2: bash moves errexit and pipefail through
     `shopt -u -o NAME` (`-uo`), `shopt -s -o NAME` (`-so`) and `builtin set`,
@@ -2101,6 +2347,21 @@ class TestACaseArmDoesNotCloseASubstitution(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("straight to `sh`", found[0][1])
 
+    def test_each_refusal_names_the_parse_cause(self):
+        cases = (
+            ("echo $(case)\n", "ends before its subject"),
+            ("echo $(echo a | case)\n", "ends before its subject"),
+            ("echo $(case a nope a) :;; esac)\n", "no literal `in`"),
+            ("echo $(case a in a) echo hi)\n", "last arm without"),
+            ("echo $(case a in a) echo hi;;)\n", "before another arm or `esac`"),
+            ("echo $(case $(echo a) in a) :;; esac)\n", "subject inside `$(...)` needs"),
+        )
+        for script, reason in cases:
+            with self.subTest(script=script):
+                found = wg.job_defects([("step", script)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(reason, found[0][1])
+
 
 class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     """#2334 review I-1: the guard finds where a check's `&&` list ends by
@@ -2333,6 +2594,81 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             wg.Step("run", self.USE)]))
 
 
+class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
+    """#2422: a checksum cannot gate another stage of its own pipeline."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+
+    def finding(self, body):
+        script = self.FETCH + "set -o pipefail\n" + body.replace("CHECK", self.CHECK)
+        return wg.fetch_exec_defect(script)
+
+    def test_a_grouped_check_does_not_clear_a_use_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | sh payload\n",
+                     "{ CHECK && echo ok; } | sh payload\n",
+                     "{\n  CHECK\n} | sh payload\n",
+                     "{ { CHECK; }; } | sh payload\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_an_and_list_in_that_group_is_concurrent_under_every_shell(self):
+        for shape in ("{ CHECK && echo ok; } | sh payload\n",
+                      "( CHECK && echo ok ) | sh payload\n",
+                      "( { CHECK && echo ok; } ) | sh payload\n"):
+            body = self.FETCH + shape.replace("CHECK", self.CHECK)
+            for shell in (None, "sh", "bash"):
+                with self.subTest(shape=shape, shell=shell):
+                    found = wg.job_defects([wg.Step("run", body, shell)])
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("same pipeline", found[0][1])
+
+    def test_a_multiline_downstream_stage_stays_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | {\nsh payload\n}\n",
+                     "{ CHECK; } | (\nsh payload\n)\n",
+                     "{ CHECK; } | while read -r line; do\nsh payload\ndone\n",
+                     "{ CHECK; } | if true; then\nsh payload\nfi\n",
+                     "{ CHECK; } |\n  sh payload\n",
+                     "{ CHECK; } | (\ncat >/dev/null\nsh payload\n)\n",
+                     "{\nCHECK\n} | {\nsh payload\n}\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_a_function_check_is_concurrent_when_its_call_is_piped(self):
+        shape = "f() { CHECK; }\nf | sh payload\n"
+        body = self.FETCH + shape.replace("CHECK", self.CHECK)
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("run", body, shell)])
+                self.assertEqual(1, len(found), found)
+        found = wg.job_defects([wg.Step("run", body, "bash")])
+        self.assertIn("same pipeline", found[0][1])
+
+    def test_a_line_only_subshell_opener_stays_fail_closed(self):
+        body = self.FETCH + ("(\nCHECK && echo ok\n) | sh payload\n"
+                             .replace("CHECK", self.CHECK))
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(wg.job_defects([wg.Step("run", body, shell)])))
+
+    def test_a_grouped_check_still_gates_uses_after_its_pipeline(self):
+        for body in ("{ CHECK; } && sh payload\n",
+                     "( CHECK; ) && sh payload\n",
+                     "{ CHECK; } | cat\nsh payload\n",
+                     "( CHECK; ) | cat\nsh payload\n",
+                     "{ CHECK; } | {\ncat\n}\nsh payload\n",
+                     "{ CHECK; } | if true; then\ncat\nfi\nsh payload\n",
+                     "f() { CHECK; }\nf | cat\nsh payload\n",
+                     "{ CHECK; { echo script; } | sh payload; }\n",
+                     "{ { CHECK; }; { echo script; } | sh payload; }\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"
@@ -2385,6 +2721,70 @@ class TestChecksumRescueStatus(unittest.TestCase):
                        "exit 1 &", "{ exit 1; } &"):
             with self.subTest(rescue=rescue):
                 self.assertIsNotNone(self.checked(rescue))
+
+
+class TestSubshellAndNestedGroupStatus(unittest.TestCase):
+    """#2431/#2438: a group passes its final status to its enclosing shell."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+    USE = "sh payload\n"
+
+    def finding(self, body):
+        return wg.fetch_exec_defect(self.FETCH + body.replace("CHECK", self.CHECK) + self.USE)
+
+    def test_a_nonzero_exit_in_a_subshell_rescue_gates_under_outer_errexit(self):
+        for body in ("( CHECK || exit 1 )\n", "( CHECK || exit 2 )\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_the_subshell_rescue_controls_still_report(self):
+        for body in ("( CHECK || exit 0 )\n", "( CHECK ) || true\n",
+                     "set +e\n( CHECK || exit 1 )\n",
+                     "( CHECK || exit 1 ) || true\n",
+                     "{ ( CHECK || exit 1 ); } || true\n",
+                     "{ ( CHECK || exit 1 ); } | cat\n",
+                     "{ ( CHECK || exit 1 ); } &\n",
+                     "{ ( CHECK || exit 1 ); } && echo ok\n",
+                     "( ( CHECK || exit 1 ); echo ok ) || true\n",
+                     "f() { ( CHECK || exit 1 ); }\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f()\n{\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f () {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "function f() {\n( CHECK || exit 1 )\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf | cat\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf &\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf && echo ok\n",
+                     "f() {\n{ ( CHECK || exit 1 ); }\n}\nf || true\n",
+                     "f() {\n( CHECK || exit 1 )\n}\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nsh payload\nf\n"):
+            with self.subTest(body=body):
+                self.assertIsNotNone(self.finding(body))
+
+    def test_an_unrescued_enclosing_group_keeps_the_subshell_status(self):
+        for body in ("{ ( CHECK || exit 1 ); }\n",
+                     "{ ( CHECK || exit 1 ); } || exit 1\n",
+                     "( ( CHECK || exit 1 ) )\n",
+                     "f() {\n( CHECK || exit 1 )\n}\nf\n",
+                     "f() { ( CHECK || exit 1 ); }\nf\n",
+                     "f() {\n( CHECK || exit 1 )\necho ok\n}\nf\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_a_nested_groups_status_reaches_the_outer_exiting_rescue(self):
+        for body in ("{ { CHECK && echo ok; }; } || exit 1\n",
+                     "{ { { CHECK && echo ok; }; }; } || exit 1\n",
+                     "{\n  {\n    CHECK && echo ok\n  }\n} || exit 1\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+    def test_the_nested_group_controls_still_report(self):
+        for body in ("{ { CHECK && echo ok; }; };\n",
+                     "{ { CHECK && echo ok; }; } && echo recovered\n",
+                     "{ { CHECK && echo ok; }; } || true\n"):
+            with self.subTest(body=body):
+                self.assertIsNotNone(self.finding(body))
 
 
 class TestPipelineStreamProvenance(unittest.TestCase):
