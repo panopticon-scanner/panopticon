@@ -1,9 +1,11 @@
 """Bound untrusted run-metadata reads before JSON decoding or field repair.
 
-The default is 16 MiB per artifact; callers may retain a smaller existing cap.
-Only regular files are read. The final path component cannot be a symlink;
-parent aliases such as macOS /var are allowed. This is not directory confinement.
-Callers still own absent/corrupt distinctions, shape validation and gate policy.
+The 16 MiB default is the broadest read class: run metadata can aggregate many
+rows, while one advisor verdict is capped at 8 MiB and one source or digest read
+at 4 MiB. Callers may retain a smaller cap. Only regular files are read. The
+final path component cannot be a symlink; parent aliases such as macOS /var are
+allowed. This is not directory confinement. Callers still own absent/corrupt
+distinctions, shape validation and gate policy.
 """
 import json
 import os
@@ -31,8 +33,6 @@ def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
     """
     if limit is None:
         limit = MAX_JSON_BYTES
-    if type(limit) is not int or limit <= 0:
-        raise ValueError("artifact read limit must be a positive integer")
     try:
         return _read_json(path, limit, tolerant)
     except (OSError, ValueError, RecursionError, MemoryError) as exc:

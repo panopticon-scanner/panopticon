@@ -11,6 +11,7 @@ sites and the suite's one `mock.patch` target say `runio._open_w_nofollow`,
 and a SECOND implementation behind that name is exactly the drift layout rule
 4 exists to prevent -- so the identity is pinned here.
 """
+import errno
 import os
 import subprocess
 import sys
@@ -20,6 +21,40 @@ from unittest import mock
 
 import scripts.safe_write as safe_write
 from scripts.phases import runio
+
+
+class TestBoundedRegularRead(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+
+    def test_exact_limit_is_inclusive_and_overflow_has_a_typed_outcome(self):
+        path = os.path.join(self.root, "artifact.json")
+        with open(path, "wb") as stream:
+            stream.write(b"1234")
+        self.assertEqual(safe_write.read_regular_bytes(path, 4), b"1234")
+        with self.assertRaises(safe_write.ReadLimitExceeded):
+            safe_write.read_regular_bytes(path, 3)
+
+    def test_nonregular_leaf_has_an_errno_bearing_typed_outcome(self):
+        for kind in ("directory", "fifo"):
+            path = os.path.join(self.root, kind)
+            if kind == "directory":
+                os.mkdir(path)
+            else:
+                os.mkfifo(path)
+            with self.subTest(kind=kind), \
+                    self.assertRaises(safe_write.NonRegularFileError) as raised:
+                safe_write.read_regular_bytes(path, 4)
+            self.assertEqual(raised.exception.errno, errno.EINVAL)
+
+    def test_io_errors_keep_their_native_type(self):
+        denied = PermissionError(13, "denied")
+        with mock.patch.object(safe_write.os, "open", side_effect=denied), \
+                self.assertRaises(PermissionError) as raised:
+            safe_write.read_regular_bytes(os.path.join(self.root, "input"), 4)
+        self.assertIs(raised.exception, denied)
 
 
 class TestOneImplementation(unittest.TestCase):

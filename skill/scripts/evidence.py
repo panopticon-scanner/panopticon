@@ -70,6 +70,9 @@ EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
 GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed",
                                    BACKUP_SCOPE_LIMITED})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
+# One model-written verdict may quote source evidence and add structured
+# reasoning, so it gets twice evidence_scope's 4 MiB per-source boundary. It is
+# still one response, not the aggregate run metadata that receives 16 MiB.
 MAX_VERDICT_BYTES = 8 * 1024 * 1024
 
 # Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
@@ -514,6 +517,18 @@ def _read_verdict_text(path):
     return safe_write.read_regular_bytes(path, MAX_VERDICT_BYTES).decode("utf-8")
 
 
+def _verdict_failure_reason(error):
+    """One classification for both strict and tolerant verdict loaders."""
+    if isinstance(error, safe_write.ReadLimitExceeded):
+        kind = "oversized"
+    elif isinstance(error, OSError):
+        kind = "unreadable"
+    else:
+        kind = "unparseable"
+    detail = (str(error).splitlines() or [type(error).__name__])[0]
+    return "%s: %s" % (kind, detail or type(error).__name__)
+
+
 load_json_tolerant = tolerant_json.loads
 
 
@@ -560,13 +575,7 @@ def load_verdicts_detailed(verdicts_dir):
         except (OSError, ValueError, RecursionError, MemoryError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)
-            if isinstance(e, safe_write.ReadLimitExceeded):
-                kind = "oversized"
-            else:
-                kind = "unreadable" if isinstance(e, OSError) else "unparseable"
-            unloadable.append({"file": name,
-                               "reason": "%s: %s"
-                               % (kind, (str(e).splitlines() or [""])[0])})
+            unloadable.append({"file": name, "reason": _verdict_failure_reason(e)})
             continue
         if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
             continue   # a verdict BUNDLE (handled by load_verdict_bundles); not a legacy single-verdict file
@@ -669,10 +678,7 @@ def load_verdict_bundles(verdicts_dir):
         try:
             data = load_json_tolerant(_read_verdict_text(path))
         except (OSError, ValueError, RecursionError, MemoryError) as e:
-            reason = (str(e).splitlines() or [type(e).__name__])[0]
-            if isinstance(e, safe_write.ReadLimitExceeded):
-                reason = "oversized: " + reason
-            unloadable.append({"file": name, "reason": reason})
+            unloadable.append({"file": name, "reason": _verdict_failure_reason(e)})
             continue
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             continue   # not a bundle
