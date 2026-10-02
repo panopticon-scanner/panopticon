@@ -159,7 +159,7 @@ def _gating_function_call(stmts, name, after, errexit):
     return None
 
 
-def _stops_the_job(stmts, index, errexit=True):
+def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     """True if the `||` branch after `stmts[index]` fails the step.
 
     `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
@@ -190,7 +190,7 @@ def _stops_the_job(stmts, index, errexit=True):
     end = index
     for end, statement in enumerate(following, index + 1):
         if (exited_subshell is None and (statement.separator == "&" or
-                len(statement.stages) != 1 or
+                len(statement.stages) != 1 and not (depth and _closes(statement)) or
                 any(negated(stage.argv) for stage in statement.stages))):
             return False
         for stage in statement.stages:
@@ -217,6 +217,8 @@ def _stops_the_job(stmts, index, errexit=True):
             subshell_depth -= stage.group_close
             if depth < 0 or subshell_depth < 0:
                 return False
+            if not depth and len(statement.stages) > 1:
+                break                           # the other pipeline stages run concurrently
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
         if depth == 0 or not grouped and not inherited_depth:
@@ -227,15 +229,14 @@ def _stops_the_job(stmts, index, errexit=True):
         if statement.separator in ("&&", "||") and exited_subshell is None:
             return False
     finished = depth == 0 if grouped or inherited_depth else True
-    stops = finished and status is not None and status != 0 and (errexit or exited)
+    stops = (finished and status is not None and status != 0 and (errexit or exited)
+             and (len(stmts[end].stages) == 1 or pipefail))
     if not stops or not inherited_subshells:
         return stops
-    # An exit inside `( )` sets that subshell's status; it does not answer
-    # what an enclosing construct does with the status. The walk above follows
-    # the exited shell to its closer (skipping unreachable commands). Decline a
-    # function body at its proven call site. For ordinary groups, reuse the
-    # group-status walk from the closing statement.
-    # With pipefail conservatively off, an uncertain pipeline remains reported.
+    # An exit inside `( )` sets that subshell's status, then follows its closer,
+    # skipping unreachable commands; it does not decide what encloses the shell.
+    # Decline a function body at its proven call. For ordinary groups, reuse the
+    # group-status walk from the closer with the step's recorded pipefail state.
     function = _function_scope(stmts, index)
     if function is not None:
         name, close = function
@@ -243,11 +244,11 @@ def _stops_the_job(stmts, index, errexit=True):
         return FunctionGate(call) if call is not None else False
     separator = stmts[end].separator
     if separator == "||":
-        return _stops_the_job(stmts, end, errexit)
+        return _stops_the_job(stmts, end, errexit, pipefail)
     if separator in ("&", "&&"):
         return False
     on = [errexit] * len(stmts)
-    fails = [False] * len(stmts)
+    fails = [pipefail] * len(stmts)
     return _stops_step(stmts, end, on, fails) is None
 
 
@@ -356,7 +357,7 @@ def swallowed(stmts, index, statement, stage, credit=None):
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
-        stops = _stops_the_job(stmts, index)
+        stops = _stops_the_job(stmts, index, True, isinstance(credit, tuple) and credit[1] is None)
         if isinstance(stops, Reach):
             return stops
         if not stops:
@@ -550,12 +551,13 @@ def _stops_step(stmts, position, on, fails):
             return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
     if close > position and separator == "||":
-        return None if _stops_the_job(stmts, close, on[position]) else _ENDS % _RESCUED
+        return None if _stops_the_job(
+            stmts, close, on[position], fails[position]) else _ENDS % _RESCUED
     if close > position and separator == "&&":
         return _stops_step(stmts, close, on, fails)     # the group heads a list of its own
     if separator != "&&":
         stops = (on[position] or close == last or
-                 separator == "||" and _stops_the_job(stmts, position, False))
+                 separator == "||" and _stops_the_job(stmts, position, False, fails[position]))
         return None if stops else -1
     end, depth = position, 0
     while end < last and (depth > 0 or not depth and stmts[end].separator == "&&"):
@@ -579,7 +581,8 @@ def _stops_step(stmts, position, on, fails):
     if depth < 0 and here.separator == "&&":
         return _stops_step(stmts, end, on, fails)   # the group heads a list of its own
     if here.separator == "||":
-        return None if _stops_the_job(stmts, end, all(on[position:end + 2])) else end
+        return None if _stops_the_job(stmts, end, all(on[position:end + 2]),
+                                      all(fails[position:end + 2])) else end
     subshell = depth < 0 and on[end] and (len(here.stages) > 1 or any(
         stage.group_close for stage in here.stages))    # a piped group runs in one too
     return None if subshell or end == last and here.separator != "&" else end

@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
+  guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
+  group's failure and stops the step, while default and `sh` modes still report it.
 - **Case-arm closes no longer truncate command substitutions (#2474, #2580, #2331).** The matcher
   took an unparenthesized `case` pattern's `)` for its surrounding `$()` close, so a fetched
   pipeline in the arm—including a later arm on an `EOF)` rest—escaped the substitution parse
