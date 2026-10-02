@@ -121,8 +121,62 @@ def _piped_group_end(stmts, index):
     return None
 
 
+def _group_counts(stage):
+    """A stage's structural brace/subshell opens and closes -- the braces of a
+    `f() { ... }` header included, which `_structural_groups` leaves out, and
+    never a `{`/`}` that is an operand (`echo "{"`). `_function_syntax` reports
+    exactly the structural braces a stage carries."""
+    _name, braces = _function_syntax(stage.argv)
+    return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
+
+
+def _piped_group_stage(stmts, index):
+    """The end of the pipeline a `{ }`/`( )` enclosing `stmts[index]` feeds, or
+    None when no group it sits inside is a pipeline stage.
+
+    A group that is a pipeline stage runs in a subshell, so an `exit`/`return`
+    written in it -- or a function called in it -- sets only that stage's
+    status, which `pipefail` alone carries to the step (`{ CHECK || exit 1; } |
+    cat`, `{ f; } | cat`). Groups opened AFTER `index` are its children or
+    siblings and are stepped over (`nested`); only a closer of a group `index`
+    sits inside is read, and a closer with no visible open -- a `(` the reader
+    dropped at a line end -- counts too, its depth going negative, so a dropped
+    paren fails closed rather than reading as unpiped."""
+    inside = 0
+    for statement in stmts[:index + 1]:
+        for stage in statement.stages:
+            opens, closes = _group_counts(stage)
+            inside += opens - closes
+    nested = 0
+    for following in range(index + 1, len(stmts)):
+        statement = stmts[following]
+        for position, stage in enumerate(statement.stages):
+            opens, closes = _group_counts(stage)
+            nested += opens
+            for _close in range(closes):
+                if nested:
+                    nested -= 1
+                    continue
+                if position + 1 < len(statement.stages):
+                    return _pipeline_end(stmts, following, position + 1)
+                inside -= 1
+                if inside <= 0:
+                    return None
+    return None
+
+
+# A rescue (`|| exit 1`, `|| return 1`) written inside a group that is a
+# pipeline stage stops only that stage's subshell, so where this guard reads
+# `pipefail` as off the pipeline takes the last stage's status and the step
+# carries on past the checksum failure the rescue was meant to be fatal to.
+_PIPED_RESCUE = ("hands its failure to a rescue inside a group piped into another command, so the "
+                 "rescue stops only that stage and, where this guard reads `pipefail` as off, the "
+                 "pipeline takes the last stage's status and the step carries on past its failure")
+
+
 def _piped_function_end(stmts, index):
-    """The first pipeline entered by a call of this function.
+    """The first pipeline entered by a call of this function, directly
+    (`f | cat`) or inside a group that is a pipeline stage (`{ f; } | cat`).
 
     A top-level call has the pipeline's readable end. Where a prior statement
     makes posture uncertain, or the call is conditional, nested, or in a list,
@@ -150,6 +204,18 @@ def _piped_function_end(stmts, index):
                 if scope is not None or statement.separator in ("&", "&&", "||"):
                     return len(stmts) - 1
                 return _pipeline_end(stmts, call, position + 1)
+        # A call written as the last stage of its statement is not piped on its
+        # own, but one inside a group that is a pipeline stage (`{ f; } | cat`)
+        # loses the function's status to that pipeline, the call twin of a piped
+        # group ending a check.
+        tail = statement.stages[-1] if statement.stages else None
+        if tail is not None and command(tail.argv)[:1] == [name]:
+            group_end = _piped_group_stage(stmts, call)
+            if group_end is not None:
+                if (uncertain or controls[call] or negated(tail.argv)
+                        or conditional(tail.argv) or _function_scope(stmts, call) is not None):
+                    return len(stmts) - 1
+                return group_end
         if _posture_barrier(statement, functions):
             uncertain = True
     return None
@@ -179,9 +245,13 @@ def swallowed(stmts, index, statement, stage, credit=None):
         why = credit[0] if isinstance(credit, tuple) else None
         errexit = not (why == _SET_E or
                        isinstance(why, str) and why.startswith("runs under `shell:"))
-        stops = _stops_the_job(
-            stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
-        )
+        pipefail = isinstance(credit, tuple) and credit[1] is None
+        stops = _stops_the_job(stmts, index, errexit, pipefail)
+        # The walk reads an `exit`/`return` rescue as stopping the step, but one
+        # written inside a group that is a pipeline stage stops only that stage;
+        # where pipefail is off its failure goes to the pipeline, not the step.
+        if stops and not pipefail and _piped_group_stage(stmts, index) is not None:
+            return _PIPED_RESCUE
         if isinstance(stops, FunctionGate) and why and errexit:
             # Keep the proved call as a lower bound and a Reach as its upper
             # bound; an ordinary refusal still applies to the whole check.
