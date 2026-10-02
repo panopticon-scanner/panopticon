@@ -2175,6 +2175,44 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             wg.Step("run", self.USE)]))
 
 
+class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
+    """#2422: a checksum cannot gate another stage of its own pipeline."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+
+    def finding(self, body):
+        script = self.FETCH + "set -o pipefail\n" + body.replace("CHECK", self.CHECK)
+        return wg.fetch_exec_defect(script)
+
+    def test_a_grouped_check_does_not_clear_a_use_in_the_same_pipeline(self):
+        for body in ("{ CHECK; } | sh payload\n",
+                     "{ CHECK && echo ok; } | sh payload\n",
+                     "{\n  CHECK\n} | sh payload\n",
+                     "{ { CHECK; }; } | sh payload\n"):
+            with self.subTest(body=body):
+                found = self.finding(body)
+                self.assertIsNotNone(found)
+                self.assertIn("same pipeline", found)
+
+    def test_an_and_list_in_that_group_is_concurrent_under_every_shell(self):
+        body = self.FETCH + ("{ CHECK && echo ok; } | sh payload\n"
+                             .replace("CHECK", self.CHECK))
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("run", body, shell)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn("same pipeline", found[0][1])
+
+    def test_a_grouped_check_still_gates_uses_after_its_pipeline(self):
+        for body in ("{ CHECK; } && sh payload\n",
+                     "{ CHECK; } | cat\nsh payload\n",
+                     "{ CHECK; { echo script; } | sh payload; }\n",
+                     "{ { CHECK; }; { echo script; } | sh payload; }\n"):
+            with self.subTest(body=body):
+                self.assertIsNone(self.finding(body))
+
+
 class TestChecksumRescueStatus(unittest.TestCase):
     FETCH = "curl -fsSL https://example.test/payload -o payload\n"
     USE = "sh payload\n"

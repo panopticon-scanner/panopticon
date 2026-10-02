@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Checks do not gate concurrent stages in their own pipeline (#2422, #2331).** The workflow
+  guard reports a downloaded payload used by another stage of its checksum group's pipeline,
+  including a checksum ahead of `&&` under every supported shell. It still credits a use after
+  a failing pipefail pipeline and a use gated by `} &&`.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
