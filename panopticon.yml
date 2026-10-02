@@ -143,6 +143,11 @@
 #     over both layered groups now, so a `RepoProfiling` leaf above 40 reds the
 #     same as a `ToolAdapters` one -- the fence this group reached the wall
 #     without.
+#   - 2026-10-02 (#2521): `CI` reached all 48 slots when `shell_heredoc.py`
+#     joined the lexer surface. Split it into `Shell` (the shell reader and
+#     lexer, with their tests) and `Workflows` (the workflow guard and
+#     `.github/**`). Measured with discovery's own assignment: `Shell` 9,
+#     `Workflows` 39. The shared headroom guard now fences `CI` at 40 too.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -611,37 +616,45 @@ groups:
       - tests/test_code_scanning_reports.py
       - tests/test_code_scanning_audit.py
   CI:
-    match:
-    - .github/**
-    - scripts/workflow_guard.py
-    - scripts/shell_reader.py
-    - scripts/shell_lex.py
-    - scripts/shell_patterns.py
-    - scripts/shell_text.py
-    - scripts/shell_heredoc.py
-    - scripts/shell_wrappers.py
-    - scripts/workflow_forms.py
-    - scripts/workflow_gating.py
-    - scripts/workflow_operands.py
-    - scripts/workflow_programs.py
-    - scripts/workflow_fetch.py
-    tests:
-    - tests/test_apply_labels.py
-    - tests/test_security_workflow.py
-    - tests/test_security_backstop.py
-    - tests/test_security_fork_workflow.py
-    - tests/test_image_freshness.py
-    - tests/test_nvd_cache_decision.py
-    - tests/test_workflow_pins.py
-    - tests/test_workflow_guard.py
-    - tests/test_workflow_guard_reader_forms.py
-    - tests/test_workflow_guard_lexer_heredocs.py
-    - tests/test_shell_reader.py
-    - tests/test_shell_wrappers.py
-    - tests/test_workflow_forms_regressions.py
-    - tests/test_pyproject.py
-    - tests/test_pyproject_metadata.py
-    panels:
-    - SEC
+    Shell:
+      # #2521: keep the parser, lexer and their focused tests in one review.
+      match:
+      - scripts/shell_reader.py
+      - scripts/shell_lex.py
+      - scripts/shell_patterns.py
+      - scripts/shell_text.py
+      - scripts/shell_heredoc.py
+      - scripts/shell_wrappers.py
+      tests:
+      - tests/test_shell_reader.py
+      - tests/test_shell_wrappers.py
+      - tests/test_workflow_guard_lexer_heredocs.py
+      panels:
+      - SEC
+    Workflows:
+      # #2521: `.github/**` stays with the guard that reads its workflows.
+      match:
+      - .github/**
+      - scripts/workflow_guard.py
+      - scripts/workflow_forms.py
+      - scripts/workflow_gating.py
+      - scripts/workflow_operands.py
+      - scripts/workflow_programs.py
+      - scripts/workflow_fetch.py
+      tests:
+      - tests/test_apply_labels.py
+      - tests/test_security_workflow.py
+      - tests/test_security_backstop.py
+      - tests/test_security_fork_workflow.py
+      - tests/test_image_freshness.py
+      - tests/test_nvd_cache_decision.py
+      - tests/test_workflow_pins.py
+      - tests/test_workflow_guard.py
+      - tests/test_workflow_guard_reader_forms.py
+      - tests/test_workflow_forms_regressions.py
+      - tests/test_pyproject.py
+      - tests/test_pyproject_metadata.py
+      panels:
+      - SEC
 exclude_paths:
 - tests/fixtures/**
