@@ -76,9 +76,10 @@ class _Lines:
 
     def body(
         self, at: int, word: str, strip: bool, sub: bool
-    ) -> tuple[str, int, bool, bool] | None:
+    ) -> tuple[str, int, bool, bool, int] | None:
         """(body, where code resumes, whether an `EOF)` line ended it, whether
-        5.2 drops its first separator) for a body, or None when none ends it."""
+        5.2 drops its first separator, next line) for a body, or None when none
+        ends it."""
         k = bisect.bisect(self.starts, at) - 1
         n, offset = self.of[k], self.offset[k] + at - self.starts[k]
         text = self.texts[n]
@@ -108,12 +109,13 @@ class _Lines:
         lines = [text[offset:]] + self.texts[n + 1:end] if end > n else []
         body = "\n".join(line.lstrip("\t") if strip else line for line in lines)
         after = self.last[end] + 1
+        following = self.starts[after] if after < len(self.starts) else self.size
         if cut >= 0:                    # code resumes on the line that ended it
             line = self.texts[end]
             if line.startswith(";", cut):
-                return body, self.source(end, line.rfind(")")), True, False
-            return body, self.source(end, cut), True, True
-        return body, self.starts[after] if after < len(self.starts) else self.size, False, False
+                return body, self.source(end, line.rfind(")")), True, False, following
+            return body, self.source(end, cut), True, True, following
+        return body, following, False, False, following
 
     def source(self, line: int, offset: int) -> int:
         """Source offset for `offset` in one logical line."""

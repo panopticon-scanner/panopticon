@@ -1284,15 +1284,27 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
         self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
                       argvs("x=$(cat <<'EOF'\nit's\nEOF)\n%s\n" % self.PIPE))
 
-    def test_a_heredoc_queued_after_an_eof_paren_end_is_refused(self):
-        # 5.2 reads the next body from the line below `A)`, and the rest of
-        # that line as code after it: an order this one pass does not read
-        # in, so the step is refused by name. Queued at the top, as before.
-        with self.assertRaises(shell_lex.Unreadable) as refused:
-            self.lexed("x=$(cat <<A <<'B'\na\nA)\nit's\nB\n)\n%s\n" % self.PIPE)
-        self.assertIn("a heredoc queued in a substitution after one whose body ends at a line "
-                      "like `EOF)`: bash 5.2 reads its body from the next line",
-                      str(refused.exception))
+    def test_a_heredoc_queued_after_an_eof_paren_end_is_read(self):
+        # 5.2 reads the next body from the line below `A)`, then parses that
+        # line's rest. The last body is the program `bash -s` receives.
+        script = "x=$(bash -s <<'A' <<'B'\na\nA)\n%s\nB\n" % self.PIPE
+        self.assertEqual(["a", self.PIPE], self.lexed(script)[1])
+        outer = stage(script)
+        inner = stage(outer.substitutions[0])
+        self.assertEqual((["bash", "-s"], (self.PIPE, False)),
+                         (inner.argv, inner.stdin_heredoc))
+
+        # Code saved from the `A)` line follows both bodies.
+        rest = "x=$(cat <<'A' <<'B'\na\nA %s)\nb\nB\n" % self.PIPE
+        self.assertEqual(["a", "b"], self.lexed(rest)[1])
+        self.assertIn([['curl', '-fsSL', 'https://example.test/i.sh'], ['sh']],
+                      argvs(stage(rest).substitutions[0]))
+
+        # Two `EOF)` ends in one queue are a syntax error and stay fail-closed.
+        with self.assertRaises(shell_lex.Unreadable):
+            self.lexed("x=$(cat <<'A' <<'B'\na\nA)\nb\nB)\n")
+
+        # Queued at the top, an `A)` line stays body text, as before.
         self.assertEqual(["A)", "b"], self.lexed("cat <<A <<B\nA)\nA\nb\nB\n")[1])
 
     def test_an_empty_delimiter_queued_second_at_the_end_reads_an_empty_body(self):

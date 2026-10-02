@@ -212,6 +212,38 @@ class TestAnUnendedBodyDoesNotHideALaterEOFParenEnd(unittest.TestCase):
         self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
 
+class TestQueuedBodiesAfterAnEOFParenEnd(unittest.TestCase):
+    """#2497: Bash 5.2 reads later queued bodies before parsing the first
+    body's `A)`-line rest, so neither source of a pipeline stays a refusal."""
+
+    BODY_PAYLOAD = ("x=$(bash -s <<'A' <<'B'\nignored\nA)\n"
+                    "%s\nB\n" % PIPE)
+    REST_PAYLOAD = ("x=$(cat <<'A' <<'B'\nignored\n"
+                    "A %s)\nbody\nB\n" % PIPE)
+
+    def test_the_later_body_is_the_shell_program(self):
+        found = defects(self.BODY_PAYLOAD)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a script to `bash` inside a command substitution", found[0][1])
+
+    def test_the_saved_rest_is_read_after_both_bodies(self):
+        found = defects(self.REST_PAYLOAD)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_two_eof_paren_ends_remain_fail_closed(self):
+        script = "x=$(bash -s <<'A' <<'B'\nignored\nA)\n%s\nB)\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("cannot read this step", found[0][1])
+
+    def test_a_top_level_queue_is_unchanged(self):
+        script = "bash -s <<'A' <<'B'\nignored\nA)\nA\n%s\nB\n" % PIPE
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+
 class TestAForeignProgramOnStandardInput(unittest.TestCase):
     """#2499 (owner ruling 2026-10-01, option b): a heredoc body handed to an
     interpreter this guard has no grammar for -- `python3 - <<'EOF'`,
