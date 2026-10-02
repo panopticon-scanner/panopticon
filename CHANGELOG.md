@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Queued heredocs after an `EOF)` close are read in Bash 5.2 order (#2497, #2331).** The
+  guard used a generic refusal because one pass met the first body's same-line rest before the
+  later bodies Bash reads first. The lexer now retains two source offsets, reads those bodies
+  from the next line, then parses the saved rest, so body and rest payloads get specific
+  findings. A second lexing pass was rejected because it would duplicate state and cost; two
+  `EOF)` ends remain fail-closed because Bash reports a syntax error.
 - **Nested shell-group status reaches its enclosing failure gate (#2431, #2438, #2331).** The
   workflow guard credits `( CHECK || exit 1 )` under outer errexit and follows a checksum's
   failing `&&` list through consecutive closing groups to an outer `|| exit 1`. It still reports
