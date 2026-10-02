@@ -65,6 +65,8 @@ Inlined = collections.namedtuple("Inlined", "stages separator region credit")
 _GROUP_OPEN = ("{", "(")
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION_TOKEN = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\(\)$")
+_CONTROL_OPEN = ("if", "while", "until", "for", "case")
+_CONTROL_CLOSE = ("fi", "done", "esac")
 
 
 def _known_status(argv, inherited):
@@ -139,23 +141,88 @@ def _function_scope(stmts, index):
     return (candidate[0], len(stmts) - 1) if candidate is not None else None
 
 
-def _gating_function_call(stmts, name, after, errexit):
-    """The immediate direct call whose failure stops the step, or None."""
-    position = after + 1
-    if not errexit or position >= len(stmts) or _function_scope(stmts, position) is not None:
+def _control_depths(stmts):
+    """Conditional or loop depth as each statement runs.
+
+    A call in a body may never run, so it cannot prove a gate for a later use.
+    Braces and subshells are deliberately absent: their calls do run when the
+    enclosing top-level statement runs, and `_stops_step` judges their status.
+    """
+    depth, states = 0, []
+    for statement in stmts:
+        for stage in statement.stages:
+            for token in stage.argv:
+                if token not in shell_reader.KEYWORDS:
+                    break
+                if token in _CONTROL_CLOSE:
+                    depth = max(0, depth - 1)
+                elif token in _CONTROL_OPEN:
+                    depth += 1
+        states.append(depth)
+    return states
+
+
+def _posture_barrier(statement, functions):
+    """Whether this statement may change shell posture before a later call.
+
+    Exact `set` states live in `workflow_forms`, above this module. Stop this
+    lower-layer proof at a mutator, sourced/evaluated text, or a known function
+    call rather than carrying the definition-time `-e` state past it.
+    """
+    for stage in statement.stages:
+        argv = command(stage.argv)
+        while len(argv) > 1 and argv[0] in ("builtin", "command"):
+            argv = command(argv[1:])
+        if argv[:1] and argv[0] in ("set", "shopt", "eval", ".", "source"):
+            return True
+        if argv[:1] and argv[0] in functions:
+            return True
+    return False
+
+
+def _gating_function_call(stmts, name, after, errexit, seen=()):
+    """The first proved call whose failure stops the step, or None.
+
+    A call in a group is proved by that group's status. A call in another
+    function is proved only when that containing function has its own proved
+    call; `seen` makes malformed or recursive definitions fail closed.
+    """
+    if not errexit or name in seen:
         return None
     on, fails = [errexit] * len(stmts), [False] * len(stmts)
-    statement = stmts[position]
-    if len(statement.stages) != 1:
+    controls = _control_depths(stmts)
+    functions = {function for statement in stmts for stage in statement.stages
+                 if (function := _function_syntax(stage.argv)[0]) is not None}
+    for position in range(after + 1, len(stmts)):
+        statement = stmts[position]
+        if any(_function_syntax(stage.argv)[0] == name for stage in statement.stages):
+            return None                         # a later definition overwrites this body
+        if len(statement.stages) != 1:
+            continue
+        stage = statement.stages[0]
+        argv = command(stage.argv)
+        scope = _function_scope(stmts, position)
+        direct = (stage.argv[:1] == [name] or
+                  stage.argv[:1] == ["{"] and argv[:1] == [name] or
+                  scope is not None and argv[:1] == [name])
+        if (not direct or controls[position] or negated(stage.argv) or conditional(stage.argv)
+                or statement.separator in ("&", "&&")):
+            if _posture_barrier(statement, functions):
+                return None
+            continue
+        if statement.separator == "||":
+            stops = _stops_the_job(stmts, position, errexit)
+        else:
+            stops = _stops_step(stmts, position, on, fails) is None
+        if not stops:
+            continue
+        if scope is None:
+            return position
+        outer, close = scope
+        outer_call = _gating_function_call(stmts, outer, close, errexit, seen + (name,))
+        if outer_call is not None:
+            return outer_call
         return None
-    stage = statement.stages[0]
-    argv = command(stage.argv)
-    if (stage.argv[:1] == [name] and argv[:1] == [name]
-            and statement.separator not in ("&", "&&", "||")
-            and not stage.group_open and not stage.group_close
-            and not negated(stage.argv) and not conditional(stage.argv)
-            and _stops_step(stmts, position, on, fails) is None):
-        return position
     return None
 
 
@@ -323,18 +390,36 @@ def _piped_group_end(stmts, index):
 
 
 def _piped_function_end(stmts, index):
-    """The pipeline entered by an immediate direct call of this function."""
+    """The first pipeline entered by a call of this function.
+
+    A top-level call has the pipeline's readable end. Where a prior statement
+    makes posture uncertain, or the call is conditional, nested, or in a list,
+    use the step's end: no later use is cleared by an unproved boundary.
+    """
     function = _function_scope(stmts, index)
     if function is None:
         return None
     name, close = function
-    call = close + 1
-    if call >= len(stmts):
-        return None
-    for position, stage in enumerate(stmts[call].stages[:-1]):
-        argv = command(stage.argv)
-        if stage.argv[:1] == [name] and argv[:1] == [name]:
-            return _pipeline_end(stmts, call, position + 1)
+    controls = _control_depths(stmts)
+    functions = {function for statement in stmts for stage in statement.stages
+                 if (function := _function_syntax(stage.argv)[0]) is not None}
+    uncertain = False
+    for call in range(close + 1, len(stmts)):
+        statement = stmts[call]
+        if any(_function_syntax(stage.argv)[0] == name for stage in statement.stages):
+            uncertain = True
+            continue
+        for position, stage in enumerate(statement.stages[:-1]):
+            if command(stage.argv)[:1] == [name]:
+                if (uncertain or controls[call] or negated(stage.argv)
+                        or conditional(stage.argv)):
+                    return len(stmts) - 1
+                scope = _function_scope(stmts, call)
+                if scope is not None or statement.separator in ("&", "&&", "||"):
+                    return len(stmts) - 1
+                return _pipeline_end(stmts, call, position + 1)
+        if _posture_barrier(statement, functions):
+            uncertain = True
     return None
 
 

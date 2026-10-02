@@ -2776,6 +2776,64 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIsNone(self.finding(body))
 
+    def test_a_function_gate_can_be_called_after_unrelated_statements(self):
+        bodies = (
+            "f() { GATE; }\necho hi\nf\n",
+            "f() { GATE; }\necho hi\necho ho\nf\n",
+            "f() { GATE; }\nexport PATH=/x:$PATH\nf\n",
+            "f() { GATE; }\ng() { f; }\ng\n",
+            "f() { GATE; }\n( f )\n",
+            "f() { GATE; }\n{ f; }\n",
+            "f() { GATE; }\nf || exit 1\n",
+            "outer() {\nf() { GATE; }\nf\n}\nouter\n",
+        )
+        for body in bodies:
+            script = self.FETCH + body.replace("GATE", "( CHECK || exit 1 )").replace(
+                "CHECK", self.CHECK) + self.USE
+            for shell in (None, "bash", "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("run", script, shell)]))
+
+    def test_distant_function_gate_controls_still_report(self):
+        bodies = (
+            "f() { GATE; }\nf || true\n",
+            "f() { GATE; }\nf | cat\n",
+            "f() { GATE; }\nf &\n",
+            "f() { GATE; }\nf && echo ok\n",
+            "f() { GATE; }\n! f\n",
+            "f() { GATE; }\nif f; then echo ok; fi\n",
+            "f() { GATE; }\ng() { f; }\n",
+            "f() { GATE; }\nsh payload\nf\n",
+            "f() { GATE; }\nf() { true; }\nf\n",
+            "f() { GATE; }\nset +e\nf\n",
+            "f() { GATE; }\nif false; then\nf\nfi\n",
+            "f() { GATE; }\ng() { set +e; f; }\ng\n",
+        )
+        for body in bodies:
+            script = self.FETCH + body.replace("GATE", "( CHECK || exit 1 )").replace(
+                "CHECK", self.CHECK) + self.USE
+            for shell in (None, "bash", "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(wg.job_defects([wg.Step("run", script, shell)])))
+
+    def test_distant_piped_function_calls_keep_the_use_concurrent(self):
+        bodies = (
+            "f() { CHECK; }\ng() { f | sh payload; }\ng\n",
+            "f() { CHECK; }\ng() {\nf | sh payload\n}\ng\n",
+            "f() { CHECK; }\nif true; then\nf | sh payload\nfi\n",
+            "f() { CHECK; }\necho hi\nf | sh payload\n",
+            "f() { CHECK; }\nset +o pipefail\nf | cat\n",
+            "f() { CHECK; }\nf() { true; }\nf | sh payload\n",
+        )
+        for body in bodies:
+            script = self.FETCH + body.replace("CHECK", self.CHECK) + self.USE
+            for shell in (None, "bash", "sh"):
+                with self.subTest(body=body, shell=shell):
+                    found = wg.job_defects([wg.Step("run", script, shell)])
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue("same pipeline" in found[0][1]
+                                    or "piped into another command" in found[0][1], found)
+
     def test_an_enclosing_pipeline_uses_the_steps_pipefail_state(self):
         for body in ("CHECK | cat\n", "{ ( CHECK || exit 1 ); } | cat\n"):
             for shell in (None, "sh"):

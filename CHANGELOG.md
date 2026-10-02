@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow function gates survive unrelated statements (#2586, #2331).** The guard finds a
+  brace function's first proved call beyond its closing brace, including grouped calls and calls
+  through a proved wrapper. Distant piped calls retain their concurrent-use bound; conditional
+  calls, shell-posture changes, and redefinitions stay fail-closed.
 - **Enclosing checksum groups retain the step's pipefail state (#2582, #2331).** The workflow
   guard credits `{ ( CHECK || exit 1 ); } | cat` under `shell: bash`, where pipefail carries the
   group's failure and stops the step, while default and `sh` modes still report it.
