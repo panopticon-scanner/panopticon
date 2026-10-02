@@ -254,6 +254,57 @@ class TestRepairToolsNetwork(unittest.TestCase):
         self.assertEqual(validate_schema_mod.schema_errors(report), [])
 
 
+class TestRepairToolCleanupFailures(unittest.TestCase):
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = repair_mod.repair_tool_cleanup_failures(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_failure_passes_through(self):
+        block = {"semgrep": {
+            "kind": "kill_failed",
+            "detail": "docker kill exited 125 — daemon unavailable",
+        }}
+        got, err = self._repair(block)
+        self.assertEqual(got, block)
+        self.assertEqual(err, "")
+
+    def test_malformed_rows_are_dropped_without_invalidating_the_report(self):
+        got, err = self._repair({
+            "semgrep": {"kind": 7, "detail": "x"},
+            "trivy": {"kind": "kill_failed", "detail": ["x"]},
+            "bandit": "failed",
+        })
+        self.assertEqual(got, {})
+        self.assertIn("semgrep", err)
+        self.assertIn("trivy", err)
+        self.assertIn("bandit", err)
+        report = _minimal_report()
+        report["meta"]["coverage"]["tools_cleanup_failures"] = got
+        self.assertEqual(validate_schema_mod.schema_errors(report), [])
+
+    def test_rows_names_and_values_are_deterministically_bounded(self):
+        block = {
+            "tool-%03d" % n: {
+                "kind": "k" * 1000,
+                "detail": "d" * 5000,
+            }
+            for n in range(repair_mod.ROWS_MAX + 10)
+        }
+        got, err = self._repair(block)
+        self.assertEqual(len(got), repair_mod.ROWS_MAX)
+        self.assertTrue(all(
+            len(row["kind"]) <= repair_mod.CLEANUP_KIND_MAX
+            and len(row["detail"]) <= repair_mod.CLEANUP_DETAIL_MAX
+            for row in got.values()
+        ))
+        self.assertIn(str(repair_mod.ROWS_MAX + 10), err)
+        self.assertIn("cut", err)
+        reversed_got, _ = self._repair(dict(reversed(list(block.items()))))
+        self.assertEqual(got, reversed_got)
+
+
 class TestWarningStreamIsBounded(unittest.TestCase):
     """#1645 fix round 3, N-1. The CONTENT is bounded; the stream of
     announcements about it was not.
