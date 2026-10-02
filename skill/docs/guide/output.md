@@ -10,11 +10,15 @@ default `--gate-scope on-diff`, an ACTIVE delta review whose hunk map has no ran
 gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on` when one
 is set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change
 with no such finding passes, and the gate never falls back to the wider scope. A further cause
-(#2405): under that same scope, an ACTIVE delta whose map is PROVABLY damaged — a non-zero
-`paths_emptied_by_drops` or `ranges_dropped` — reads `INCONCLUSIVE` too, even when the map still
-carries ranges, and `coverage_note` names the counter that tripped and the same remedy. A rangeless
-path that arrived `[]` deliberately does not fire it: a deletion-only, binary, mode-only or
-same-content rename change looks exactly like a truncated map from there.
+(#2405, widened by #2517): under that same scope, an ACTIVE delta whose map is PROVABLY damaged — a
+non-zero `paths_emptied_by_drops`, `ranges_dropped` or `paths_dropped` — reads `INCONCLUSIVE` too,
+even when the map still carries ranges, and `coverage_note` names the counter that tripped and the
+same remedy. The two drop directions are opposite and both count: an emptied path still admits every
+finding in its file to the gate, while a DROPPED path (its value was not a list of ranges at all)
+leaves the map, so every finding in it classifies off-diff and leaves the gate's source set — the
+fail-open loss a PASS used to hide. A rangeless path that arrived `[]` deliberately does not fire
+it: a deletion-only, binary, mode-only or same-content rename change looks exactly like a truncated
+map from there.
 `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on
 FAIL, `2` on INCONCLUSIVE, `4` when an artifact it wrote fails its own published schema (next
 paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
