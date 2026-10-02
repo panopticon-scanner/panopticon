@@ -424,6 +424,30 @@ class TestDriverPlanReconcile(unittest.TestCase):
             ".panopticon/findings-g2-code-panel_review.json", integ["unexpected_findings_files"]
         )
 
+
+class TestDispatchPlanFailureStage(unittest.TestCase):
+    """#2571: the plan loader uses the shared typed read-failure names."""
+
+    def reason(self, kind):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, plan_mod.DRIVER_DISPATCH_PLAN)
+            if kind == "unreadable":
+                os.mkdir(path)
+            else:
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write("{" if kind == "unparseable" else " " * 33)
+            with mock.patch.object(plan_mod.artifacts_mod, "MAX_JSON_BYTES", 32):
+                plans, seen, invalid = plan_mod.load_dispatch_plans_detailed(root)
+        self.assertEqual((plans, seen), ([], 1))
+        self.assertEqual(1, len(invalid), invalid)
+        return invalid[0]["reason"]
+
+    def test_read_failures_keep_their_typed_stage(self):
+        for kind in ("unreadable", "unparseable", "oversized"):
+            with self.subTest(kind=kind):
+                self.assertTrue(self.reason(kind).startswith(kind + ": "))
+
+
 class TestOutOfScope(unittest.TestCase):
     """#441: report-side disclosure when a reviewer's finding cites a file
     outside its group's assigned list."""
