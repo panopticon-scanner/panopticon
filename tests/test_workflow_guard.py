@@ -2363,17 +2363,28 @@ class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
                 self.assertIn("same pipeline", found)
 
     def test_an_and_list_in_that_group_is_concurrent_under_every_shell(self):
-        body = self.FETCH + ("{ CHECK && echo ok; } | sh payload\n"
+        for shape in ("{ CHECK && echo ok; } | sh payload\n",
+                      "( CHECK && echo ok ) | sh payload\n",
+                      "( { CHECK && echo ok; } ) | sh payload\n"):
+            body = self.FETCH + shape.replace("CHECK", self.CHECK)
+            for shell in (None, "sh", "bash"):
+                with self.subTest(shape=shape, shell=shell):
+                    found = wg.job_defects([wg.Step("run", body, shell)])
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("same pipeline", found[0][1])
+
+    def test_a_line_only_subshell_opener_stays_fail_closed(self):
+        body = self.FETCH + ("(\nCHECK && echo ok\n) | sh payload\n"
                              .replace("CHECK", self.CHECK))
         for shell in (None, "sh", "bash"):
             with self.subTest(shell=shell):
-                found = wg.job_defects([wg.Step("run", body, shell)])
-                self.assertEqual(1, len(found), found)
-                self.assertIn("same pipeline", found[0][1])
+                self.assertEqual(1, len(wg.job_defects([wg.Step("run", body, shell)])))
 
     def test_a_grouped_check_still_gates_uses_after_its_pipeline(self):
         for body in ("{ CHECK; } && sh payload\n",
+                     "( CHECK; ) && sh payload\n",
                      "{ CHECK; } | cat\nsh payload\n",
+                     "( CHECK; ) | cat\nsh payload\n",
                      "{ CHECK; { echo script; } | sh payload; }\n",
                      "{ { CHECK; }; { echo script; } | sh payload; }\n"):
             with self.subTest(body=body):

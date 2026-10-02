@@ -318,8 +318,20 @@ def _stops_the_job(stmts, index, errexit=True):
     return _stops_step(stmts, end, on, fails) is None
 
 
+def _structural_groups(stage):
+    """Leading brace and subshell opens/closes carried by this stage."""
+    braces = []
+    for token in stage.argv:
+        if token not in shell_reader.KEYWORDS:
+            break
+        if token in ("{", "}"):
+            braces.append(token)
+    return (stage.group_open + braces.count("{"),
+            stage.group_close + braces.count("}"))
+
+
 def _piped_group_end(stmts, index):
-    """The piped close of a brace group already open at `index`, or None.
+    """The piped close of a structural group open at `index`, or None.
 
     A group opened later is a sequential sibling or child, so its pipeline
     is not concurrent with the check.
@@ -327,29 +339,24 @@ def _piped_group_end(stmts, index):
     depth = 0
     for statement in stmts[:index + 1]:
         for stage in statement.stages:
-            for token in stage.argv:
-                if token not in shell_reader.KEYWORDS:
-                    break
-                depth += (token == "{") - (token == "}")
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
     remaining, opened_after = depth, 0
     if remaining <= 0:
         return None
     for following, statement in enumerate(stmts[index + 1:], index + 1):
         for position, stage in enumerate(statement.stages):
-            for token in stage.argv:
-                if token not in shell_reader.KEYWORDS:
-                    break
-                if token == "{":
-                    opened_after += 1
-                elif token == "}":
-                    if opened_after:
-                        opened_after -= 1
-                        continue
-                    remaining -= 1
-                    if position + 1 < len(statement.stages):
-                        return following
-                    if remaining <= 0:
-                        return None
+            opens, closes = _structural_groups(stage)
+            opened_after += opens
+            for _close in range(closes):
+                if opened_after:
+                    opened_after -= 1
+                    continue
+                remaining -= 1
+                if position + 1 < len(statement.stages):
+                    return following
+                if remaining <= 0:
+                    return None
     return None
 
 
