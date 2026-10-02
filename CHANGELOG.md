@@ -11,6 +11,12 @@ evidence exposed.
   common no-follow reader; verdict loaders consistently label size, I/O, special-file, and parse
   failures, and run-artifact readers delegate limit validation to the same primitive. The 4, 8,
   and 16 MiB caps now state which source, verdict, or aggregate metadata class each one bounds.
+- **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
+  `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
+  the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
+  files, respectively, keep each test beside its code, and put `CI` behind the shared 40-file
+  headroom guard. This costs one extra review cell now; waiting would make the next unrelated CI
+  contributor inherit an automatic split and its unplanned test inventories.
 - **Broken batch stop predicates identify their failure point (#2555, #1817).** The runner logs
   the completed entry and final predicate frame inside the existing redacted 200-character
   detail budget, then keeps yielding launched work and still honours a later stop.

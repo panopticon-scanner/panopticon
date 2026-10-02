@@ -71,12 +71,12 @@ TEST_SURFACE = (
 )
 
 # Layered groups whose leaves are held under a 40-file fence in front of the
-# 48-file cap (#2315, #2273). Both earned it the same way: a leaf reached the
+# 48-file cap (#2315, #2273, #2521). All three earned it the same way: a leaf reached the
 # cap, and the file that would have tipped it over belonged to whoever happened
 # to add it next rather than to anyone who had decided where the split goes.
 # `test_every_guarded_group_is_in_the_matrix` keeps a stale name from making
 # the guard vacuous.
-GUARDED_BY_HEADROOM = ("ToolAdapters", "RepoProfiling")
+GUARDED_BY_HEADROOM = ("ToolAdapters", "RepoProfiling", "CI")
 
 # Files that genuinely have no home in ONE group. Small and explicit on
 # purpose (never a glob): each entry is a decision, and a decision that stops
@@ -238,6 +238,10 @@ class TestMatrixCoverage(unittest.TestCase):
         # chosen to decide the question. Guarding the group a split just
         # relieved is the point: the fence is what makes the NEXT split this
         # subsystem's own decision instead of the next contributor's surprise.
+        #
+        # #2521 adds `CI` for the same reason: `.github/**` grows without a
+        # contributor choosing a matrix home, and the group reached all 48
+        # files when `scripts/shell_heredoc.py` joined its lexer surface.
         headroom = 40
         assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
         for group in GUARDED_BY_HEADROOM:
@@ -251,7 +255,7 @@ class TestMatrixCoverage(unittest.TestCase):
                     "%d):\n  %s\nsplit the leaf into another layer in "
                     "panopticon.yml now, while the split is still this PR's "
                     "decision rather than the next contributor's surprise "
-                    "(#2315, #2273). If the leaf is one whose siblings are "
+                    "(#2315, #2273, #2521). If the leaf is one whose siblings are "
                     "literal paths, a layer may have been reordered behind "
                     "its globs: `ToolAdapters:Contract` must stay listed "
                     "before `Integration`."
