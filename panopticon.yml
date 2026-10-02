@@ -148,6 +148,11 @@
 #     lexer, with their tests) and `Workflows` (the workflow guard and
 #     `.github/**`). Measured with discovery's own assignment: `Shell` 9,
 #     `Workflows` 39. The shared headroom guard now fences `CI` at 40 too.
+#   - 2026-10-02 (#2586): `Workflows` crossed that fence when the function-call
+#     proof became its own module. Split the guard modules and their focused
+#     tests into `WorkflowGuard`; `Workflows` keeps `.github/**` and the tests
+#     for those committed workflows. Measured with discovery's assignment:
+#     `WorkflowGuard` 11, `Workflows` 30.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -634,10 +639,9 @@ groups:
       - tests/test_workflow_guard_lexer_heredocs.py
       panels:
       - SEC
-    Workflows:
-      # #2521: `.github/**` stays with the guard that reads its workflows.
+    WorkflowGuard:
+      # #2586: keep the guard's proof layers and focused tests in one review.
       match:
-      - .github/**
       - scripts/workflow_guard.py
       - scripts/workflow_forms.py
       - scripts/workflow_gating.py
@@ -647,6 +651,16 @@ groups:
       - scripts/workflow_programs.py
       - scripts/workflow_fetch.py
       tests:
+      - tests/test_workflow_guard.py
+      - tests/test_workflow_guard_reader_forms.py
+      - tests/test_workflow_forms_regressions.py
+      panels:
+      - SEC
+    Workflows:
+      # #2521: `.github/**` stays with the tests that read those workflows.
+      match:
+      - .github/**
+      tests:
       - tests/test_apply_labels.py
       - tests/test_security_workflow.py
       - tests/test_security_backstop.py
@@ -654,9 +668,6 @@ groups:
       - tests/test_image_freshness.py
       - tests/test_nvd_cache_decision.py
       - tests/test_workflow_pins.py
-      - tests/test_workflow_guard.py
-      - tests/test_workflow_guard_reader_forms.py
-      - tests/test_workflow_forms_regressions.py
       - tests/test_pyproject.py
       - tests/test_pyproject_metadata.py
       panels:
