@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Scanner timeout cleanup names container-kill failures (#2543, #1817).** Missing or empty
+  container ids, launch errors and nonzero kill exits are reported without replacing the timeout.
 - **Image freshness lookup failures now fail monitor runs (#2542, #1817).** Push runs retain the
   warning fallback, while scheduled and manual checks return an error with the API diagnostic.
 - **Family PR review bounds verifier fan-out (#2535, #1816).** Each of five finders is limited

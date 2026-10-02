@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess as sp
 import sys
@@ -394,6 +395,72 @@ class TestTheCapturePathIsUnchangedByTheMove(unittest.TestCase):
         self.assertEqual(GOLDEN[_WATCHDOG]["killed"],
                          [["docker", "kill", "deadbeefcafe"]],
                          "the cidfile kill path is not in the golden")
+
+
+class TestContainerCleanupDiagnostics(unittest.TestCase):
+    class _LingeringProc:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            # The cleanup branch consults poll only; keep it lingering after EOF.
+            return None
+
+        def kill(self):
+            pass
+
+    def _capture(self, cidfile, result=None, error=None):
+        err = io.StringIO()
+        launch = mock.Mock(side_effect=error, return_value=result)
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(err), \
+                mock.patch.object(tc.subprocess, "run", launch):
+            self.assertIsNone(tc._stream_and_write(
+                "tool", "semgrep", self._LingeringProc(),
+                os.path.join(d, "out.sarif"), timeout=30,
+                docker_bin="/trusted/docker", cidfile=cidfile,
+                docker_env={"PATH": "/trusted"}))
+        return err.getvalue(), launch
+
+    def test_missing_and_empty_container_ids_are_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = os.path.join(d, "missing-cid")
+            empty = os.path.join(d, "empty-cid")
+            Path(empty).touch()
+            for cidfile, reason in (
+                    (missing, "container id file could not be read"),
+                    (empty, "container id file was empty")):
+                with self.subTest(reason=reason):
+                    err, launch = self._capture(cidfile)
+                    self.assertIn("container cleanup incomplete", err)
+                    self.assertIn(reason, err)
+                    launch.assert_not_called()
+
+    def test_nonzero_docker_kill_is_named_with_a_bounded_diagnostic(self):
+        with tempfile.TemporaryDirectory() as d:
+            cidfile = os.path.join(d, "cid")
+            Path(cidfile).write_text("deadbeefcafe\n")
+            err, launch = self._capture(
+                cidfile, _FakeResult(returncode=125, stderr=b"daemon\nunavailable\n"))
+        self.assertIn("container cleanup incomplete", err)
+        self.assertIn("docker kill exited 125", err)
+        self.assertIn("daemon unavailable", err)
+        launch.assert_called_once_with(
+            ["/trusted/docker", "kill", "deadbeefcafe"],
+            capture_output=True, timeout=10, env={"PATH": "/trusted"})
+
+    def test_docker_kill_launch_failure_is_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            cidfile = os.path.join(d, "cid")
+            Path(cidfile).write_text("deadbeefcafe\n")
+            err, launch = self._capture(cidfile, error=OSError("launch refused"))
+        self.assertIn("container cleanup incomplete", err)
+        self.assertIn("docker kill could not run (OSError)", err)
+        self.assertEqual(1, launch.call_count)
 
 
 class TestSemgrepScanCount(unittest.TestCase):
