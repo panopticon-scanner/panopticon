@@ -47,8 +47,9 @@ import re
 import secrets
 import shlex
 
-from shell_lex import ansi_c, lex
+from shell_lex import lex
 from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
+from shell_quote import ansi_c
 from shell_text import (Process, _lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
@@ -195,7 +196,7 @@ def _split(text, context):
 
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
-    A `$'...'` whose escapes `shell_lex.ansi_c` decodes becomes the '...' of
+    A `$'...'` whose escapes `shell_quote.ansi_c` decodes becomes the '...' of
     the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
     double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
     shlex, reading what is left, no longer knows the quote it was in.
