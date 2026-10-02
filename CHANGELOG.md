@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The self-scan matrix gives `CI` explicit `Shell` and `Workflows` layers (#2521).** Adding
+  `shell_heredoc.py` filled the 48-file leaf, so the next `.github/**` file would have replaced
+  the authored `CI` cell with engine-balanced `CI_1` / `CI_2` chunks. The layers hold 9 and 39
+  files, respectively, keep each test beside its code, and put `CI` behind the shared 40-file
+  headroom guard. This costs one extra review cell now; waiting would make the next unrelated CI
+  contributor inherit an automatic split and its unplanned test inventories.
 - **Interrupt cleanup retains child process groups (#2550, #1816).** Ctrl-C snapshots each
   validated group, waits once for the shared SIGTERM grace, and escalates before reaping any
   leader, so a resistant descendant cannot escape SIGKILL. The price: a retained leader is a
