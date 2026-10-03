@@ -126,23 +126,20 @@ def _after_dash_c(argv):
     return []
 
 
-# The short option letters a shell takes, where it reads them: bash 5.2.21's
-# `set` builtin (`set -eo pipefail`, `set +x`, `set -r`), and besides those a
-# command line's own (`sh -c`, `bash -ilr`, `bash -D`, `bash -O extglob`, and
-# the `-I`/`-V` dash takes where bash does not). A letter outside the table is
-# one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option
-# changed; `sh -c -K P` exits before it reads `P` -- which is what
-# `workflow_posture._errexit` and `_past_options` read it as (#2443, #2475).
-# Measured, letter by letter, on bash 3.2.57, bash 5.2.21, dash, zsh 5.9 and
-# ksh 93u+, each table is the fail-closed pick for the direction its reader
-# takes. For the builtin, where an unknown letter means nothing was SET,
-# bash 5.2.21's letters: that is bash 3.2.57's less the `i` and `I` which 5.2
-# refuses and SURVIVES, which would be the fail-open direction, and dash
-# refuses more of them still but dies at the `set`, which runs nothing. For a
-# command line, where it means nothing RUNS, the UNION over the shells that
-# refuse at all -- and only those shells may be read that way, because zsh
-# runs twenty of these letters and ksh runs `-G` (`_MEASURED_SHELLS`). Which
-# take a VALUE: `-o name`, and bash's `-O shopt` on a command line.
+# The short option letters a shell takes, where it reads them: bash 5.2.21's `set` builtin (`set -eo
+# pipefail`, `set +x`, `set -r`), and besides those a command line's own (`sh -c`, `bash -ilr`,
+# `bash -D`, `bash -O extglob`, and the `-I`/`-V` dash takes where bash does not). A letter outside
+# the table is one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option changed; `sh
+# -c -K P` exits before it reads `P` -- which is what `workflow_posture._errexit` and
+# `_past_options` read it as (#2443, #2475). Measured, letter by letter, on bash 3.2.57, bash
+# 5.2.21, dash, zsh 5.9 and ksh 93u+, each table is the fail-closed pick for the direction its
+# reader takes. For the builtin, where an unknown letter means nothing was SET, bash 5.2.21's
+# letters: that is bash 3.2.57's less the `i` and `I` which 5.2 refuses and SURVIVES, which would be
+# the fail-open direction, and dash refuses more of them still but dies at the `set`, which runs
+# nothing. For a command line, where it means nothing RUNS, the UNION over the shells that refuse at
+# all -- and only those shells may be read that way, because zsh runs twenty of these letters and
+# ksh runs `-G` (`_MEASURED_SHELLS`). Which take a VALUE: `-o name`, and bash's `-O shopt` on a
+# command line.
 SET_OPTIONS = "abefhkmnoprtuvxBCEHPT"
 SHELL_OPTIONS = SET_OPTIONS + "cilsDOIV"
 VALUE_OPTIONS = "oO"
@@ -152,20 +149,17 @@ VALUE_OPTIONS = "oO"
 # `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash` could not
 # be measured (this box has none) -- so for them an option word is read ON.
 _MEASURED_SHELLS = ("sh", "bash", "dash")
-# The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's
-# `set -o` listing -- which is bash 3.2.57's, name for name -- and besides
-# those the three dash prints that bash has no such option for. A name outside
-# the table is one the shell REFUSES: `set: foo: invalid option name`, and on a
-# command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
-# `workflow_posture._rejected` and `_refused_name` read it as (#2560). Measured
-# on bash 3.2.57, bash 5.2.21 and dash, each table is the fail-closed pick for
-# the direction its reader takes, as the letter tables are. For the BUILTIN,
-# where a refused name means nothing was SET, bash's 27 alone: dash dies at
-# such a `set`, so nothing runs there at all, and its own names would only add
-# ones bash refuses. For a COMMAND LINE, where it means nothing RUNS, the UNION
-# -- dash runs `-o stdin`, `-o interactive` and `-o debug`, which bash exits 2
-# on, and dash has no `pipefail`, which bash takes. `-O` takes a SHOPT name
-# instead, a table this guard does not keep (`_refused_name`).
+# The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's `set -o` listing -- which
+# is bash 3.2.57's, name for name -- and besides those the three dash prints that bash has no such
+# option for. A name outside the table is one the shell REFUSES: `set: foo: invalid option name`,
+# and on a command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
+# `workflow_posture._rejected` and `_refused_name` read it as (#2560). Measured on bash 3.2.57, bash
+# 5.2.21 and dash, each table is the fail-closed pick for the direction its reader takes, as the
+# letter tables are. For the BUILTIN, where a refused name means nothing was SET, bash's 27 alone:
+# dash dies at such a `set`, so nothing runs there at all, and its own names would only add ones
+# bash refuses. For a COMMAND LINE, where it means nothing RUNS, the UNION -- dash runs `-o stdin`,
+# `-o interactive` and `-o debug`, which bash exits 2 on, and dash has no `pipefail`, which bash
+# takes. `-O` takes a SHOPT name instead, a table this guard does not keep (`_refused_name`).
 SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", "functrace",
                     "hashall", "histexpand", "history", "ignoreeof", "interactive-comments",
                     "keyword", "monitor", "noclobber", "noexec", "noglob", "nolog", "notify",
@@ -180,13 +174,11 @@ def _refused_name(argv, at):
     to a shell measured to refuse one at all (`sh -c -o foo P`, `sh -co foo
     P`, `+o foo`; `_MEASURED_SHELLS`, as `_refused` reads a letter).
 
-    One value per `o` or `O` letter, as `_past_options` counts them, and only
-    an `o`'s is a `set -o` name: `-O` takes a shopt name, and a table of
-    those is not kept here. A value that is not all letters -- bar the hyphen
-    of `interactive-comments` -- is read ON and fail-closed, as an option
-    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X`
-    holds a name the shell takes, and `${X:-pipefail}` is one spelling of
-    that."""
+    One value per `o` or `O` letter, as `_past_options` counts them, and only an `o`'s is a `set -o`
+    name: `-O` takes a shopt name, and a table of those is not kept here. A value that is not all
+    letters -- bar the hyphen of `interactive-comments` -- is read ON and fail-closed, as an option
+    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X` holds a name the shell
+    takes, and `${X:-pipefail}` is one spelling of that."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     value = at
@@ -204,14 +196,12 @@ def _refused(argv, at):
     `SHELL_OPTIONS`, handed to a shell that refuses such a letter at all
     (`sh -c -K P`, `sh -cK P`, `+Z`; `_MEASURED_SHELLS`).
 
-    False for every other command word, which the walk then reads ON as it
-    did before #2475: zsh and ksh, which RUN letters bash refuses, the
-    unmeasured `ash`, and any word not WRITTEN as that name -- a `$X`, a
-    lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell
-    it spells (`shell_wrappers.Defaulted`, #2337), every one of which is a
-    `str` SUBCLASS here. The program such a command word is handed is
-    #2337/#2344's own report, and a letter table cannot overrule it, because
-    `X` may hold `zsh`.
+    False for every other command word, which the walk then reads ON as it did before #2475: zsh and
+    ksh, which RUN letters bash refuses, the unmeasured `ash`, and any word not WRITTEN as that name
+    -- a `$X`, a lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell it spells
+    (`shell_wrappers.Defaulted`, #2337), every one of which is a `str` SUBCLASS here. The program
+    such a command word is handed is #2337/#2344's own report, and a letter table cannot overrule
+    it, because `X` may hold `zsh`.
 
     A word that is not all letters is read on too, and fail-closed: bash,
     dash and ksh refuse a digit or a brace (`-1`, `-I{}`, `-nw5`) but zsh
@@ -226,14 +216,12 @@ def _refused(argv, at):
 def _past_options(argv, at):
     """The first operand after `argv[at]`, the cluster that carries `-c`.
 
-    Bash and dash read on through the option words after `-c` (#2332): `sh
-    -c -e P`, `bash -c -x P` and `sh -c +x P` all run `P`. Each `o` or `O`
-    in a word takes the next word as its value (`-c -o pipefail P`, `-co
-    pipefail P`); a `-` or `--` ends the options, and the word after it is
-    the program even if it begins with `-`; a `--long` word after `-c` is
-    one both shells refuse, and nothing runs. So is a word of letters one of
-    which the shell in hand refuses (`sh -c -K P`, `sh -cK P`, `_refused`):
-    it exits before it reads `P`, so no program is handed over (#2475), and an
+    Bash and dash read on through the option words after `-c` (#2332): `sh -c -e P`, `bash -c -x P`
+    and `sh -c +x P` all run `P`. Each `o` or `O` in a word takes the next word as its value (`-c -o
+    pipefail P`, `-co pipefail P`); a `-` or `--` ends the options, and the word after it is the
+    program even if it begins with `-`; a `--long` word after `-c` is one both shells refuse, and
+    nothing runs. So is a word of letters one of which the shell in hand refuses (`sh -c -K P`, `sh
+    -cK P`, `_refused`): it exits before it reads `P`, so no program is handed over (#2475), and an
     `-o` whose value is no option NAME is one too (`_refused_name`, #2560).
     """
     while True:
@@ -301,7 +289,7 @@ def candidates(argv):
     (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
     (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
     expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
-    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    `stdin_program` keeps possible past a value (#2605); a literal long option remains #2616. So
     spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
     word after it, though not itself, which is `$0`, an option word or a script's file name, never a
     `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
@@ -479,6 +467,12 @@ def stdin_program(argv):
     over-report the guard's gap list does not separately name, beside the
     ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
+    A FILE after a value in the shell's option slot keeps stdin possible
+    (#2605): the value may be `-s`, making that file and every later word a
+    parameter, or `--rcfile`, making the file that option's value. This reads
+    `sh $X file.sh <<'EOF'` fail-closed at the disclosed `X=-e` price. An
+    explicit `--` before the value ends the option slot.
+
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
     table places may hold a shell, another language's interpreter or `true`.
@@ -586,16 +580,21 @@ def _options(argv, depth):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     reader = argv if shell and not depth else None
+    options, value_option = True, False
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
             return answer, reader
+        if token == "--":
+            options = False
+            continue
         if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts
+                value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return None, None               # the program is this file
+            return (answer, reader) if value_option else (None, None)
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
             return None, None               # the program is the `-c` string

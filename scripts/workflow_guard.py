@@ -11,9 +11,9 @@ guarded by two regexes, and run-13 found both failing OPEN:
 * the fetch pattern required a whitespace-separated short `-o`/`-O` and excluded pipe characters, so
   `curl -fsSL https://... | sh`, `wget -qO- ... | bash` and every `--output` form yielded an EMPTY
   fetch set -- not "unverified", not seen as a download at all; and
-* "verified" was the first `sha256sum`/`shasum` carrying `-c` anywhere earlier
-  in the step, bound to no path and no digest, so an unrelated checksum of one
-  artifact cleared a later `curl -o payload; chmod +x payload`.
+* "verified" was the first `sha256sum`/`shasum` carrying `-c` anywhere earlier in the step, bound to
+  no path and no digest, so an unrelated checksum of one artifact cleared a later `curl -o payload;
+  chmod +x payload`.
 
 A regex over shell text reports a clean pass on every form it cannot parse, which is the worst
 answer a control can give -- so the guard parses the shell instead. `scripts/shell_reader.py` does
@@ -151,23 +151,23 @@ live, so a change that catches one fails there and edits this list.
   or an option nothing runs under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`),
   over-reports; `python3 $S`, S unset, a FOREIGN word, under-reports (python runs the body), filed
   under #2331. A quoted body reaches an interpreter as written, so `workflow_forms.flattened`
-  catches a shell download there as it does at top level. A literal shell's EXPANDING body is
-  REPORTED unread: values and `$(...)` output remain unseen. A foreign-language program is reported
-  too. So is a hand-off to a `$` command word (#2473); since #2499, either is kept only beside a
-  reported fetch. A value word's body is read as shell with no check counted; an expanding one masks
-  substitutions as values (#2597). Inside a substitution, the body speaks before its hand-off
-  (#2598); the price remains shell-like non-shell text. A nearer literal shell remains the consumer
-  when a surrounding value word gets its output. A direct or carried stream into a `$` command
-  reports (#2602), as does a fetched file redirected into it. `CMD=cat` is the fail-closed price.
-  Still unread: an interpreter behind an option or stdin alias, one behind a TRANSPORT (`ssh`,
-  `docker run`, `docker exec`), and an unknown basename such as `python3.11` or `busybox sh`. A
-  program `echo`, `printf` or a heredoc-fed `cat` PIPES into a shell reads per shell (bash literal
-  unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval` string names
-  (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written (`echo "$X"
-  | sh`, a `printf` format past `%s`) or beside a fetch it reports (#2333, #2481, #2467, #2476). A
-  heredoc WRITTEN then run is the `sed -i` ruling (author-deterministic: `cat <<'EOF' > x.sh … bash
-  x.sh`), unaffected. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the table (`\x`,
-  `\e`); `cat` with an option is no printer; beside `-`, a file's text is unread.
+  catches a shell download as at top level. A literal shell's EXPANDING body is REPORTED unread:
+  values and `$(...)` output remain unseen. A foreign program is reported too. A `$` command
+  hand-off is reported (#2473); since #2499, either is kept only beside a reported fetch. A value
+  word's body is read as shell with no check counted; an expanding one masks substitutions as values
+  (#2597). Inside a substitution, the body speaks before its hand-off (#2598); the price remains
+  shell-like non-shell text. A nearer literal shell remains consumer when a surrounding value word
+  gets its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
+  file redirected into it. `CMD=cat` is the fail-closed price. A value option before a file keeps
+  stdin possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
+  aliases, a shell behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename
+  such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a shell
+  reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or
+  one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported where
+  words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a fetch it
+  reports (#2333, #2481, #2467, #2476). A heredoc WRITTEN then run (`cat <<'EOF' > x.sh … bash
+  x.sh`) is the `sed -i` ruling. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the
+  table (`\x`, `\e`); `cat` with an option is no printer; beside `-`, a file's text is unread.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and

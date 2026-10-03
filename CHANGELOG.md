@@ -13,6 +13,10 @@ evidence exposed.
   prints them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A
   shell a `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's
   `echo` into a decoder, which this rule does not follow.
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
 - **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
