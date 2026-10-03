@@ -10,6 +10,9 @@ evidence exposed.
 - **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
   carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
   the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
   shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
   a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
