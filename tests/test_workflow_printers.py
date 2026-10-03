@@ -354,6 +354,122 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
                                      "i.sh | sh\nEOF\n"))
 
 
+class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
+    """The task review's fail-open (R-F7): a stdin text whose reader is `()` or None because the
+    HOLDER's `-c`/`eval` string names the shell that reads it (`bash -c 'sh'`, `bash -s -c 'sh'`,
+    `eval 'bash -s'`, #2500) was flattened under the holder's name as a PLAIN string, so its `echo`
+    read under the holder's own (measured) table instead of `ANY` -- r62/r63's fail-open. `Named`
+    carries the holder's name for `_UNGATED`/`_RUNS_ON`/`_PIPED`'s sentences (unchanged text) AND
+    `ANY` for the printers (`_reading`), via `runs_under`."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+
+    def test_r62_r63_the_reviews_fail_open_now_reports(self):
+        # r62 (bash-truth: b3 FR, dash FR, gh FR; b5 F- -- a real version split, unmeasured): a
+        # `bash -s -c 'sh'` holder's own options read stdin, so the heredoc is the step's own, but
+        # the `echo 'sh\ttool' | sh` inside it must still read under `sh`'s table (ANY via `Named`),
+        # not bash's -- CLEAN on head before this fix, where main gave only a weak `_Quiet`.
+        found = defects(self.GET + "bash -s -c 'sh' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+        found = defects(self.GET + "bash -s -c 'sh' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n", "sh")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("nothing verifying what arrived", found[0][1])
+        # r63 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): the mirror holder, `echo "..." | bash -c
+        # 'sh'` -- the piped STRING names `sh`, so the inner `echo` must read under `sh` too.
+        found = defects(self.GET + "echo \"echo 'sh\\ttool' | sh\" | bash -c 'sh'\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+        found = defects(self.GET + "echo \"echo 'sh\\ttool' | sh\" | bash -c 'sh'\n", "sh")
+        self.assertEqual(1, len(found), found)
+
+    def test_n01_bash_c_sh_holder_beside_its_must_trip_control(self):
+        # n01 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): `bash -c 'sh'` without r62's `-s` -- the
+        # SAME string-names-the-shell shape, one level simpler. CLEAN before this fix.
+        found = defects(self.GET + "bash -c 'sh' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+        # n02, the must-trip control (bash-truth: FR x4, spelled under EVERY reading -- no escape
+        # to decode at all): a plain space needs no R-F7 to catch, and never did -- loud on main's
+        # scripts too (its own pre-#2467 generic `echo`-into-`sh` catch-all already reports this).
+        found = defects(self.GET + "bash -c 'sh' <<'EOF'\necho 'sh tool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+
+    def test_n03_n04_the_fix_is_narrow(self):
+        # n03 (bash-truth: F- x4): no `-c` STRING at all -- `bash <<'EOF'` is the holder running
+        # its OWN heredoc directly, read under bash's OWN (measured, literal) table, same as any
+        # top-level `echo` with no `-e`. CLEAN, unaffected by R-F7: the fix is only for a STRING
+        # that names a shell, never for a holder reading its own stdin.
+        self.assertEqual([], defects(self.GET + "bash <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+        # n04 (bash-truth: F- x4): `bash $X <<'EOF'` with `X=-s` -- a word that may VANISH (#2485)
+        # is read as if the holder itself were the runner (`runs_under`'s plain-`name` branch, no
+        # `scripts(argv)` string to wrap in `Named`), so this stays CLEAN too, like n03.
+        self.assertEqual([], defects(self.GET +
+                                     "X=-s\nbash $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+
+    def test_n05_sh_holder_was_already_right(self):
+        # n05 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): `sh $X <<'EOF'` with `X=-s` -- `sh` itself
+        # is a MEASURED row, and it is both the holder AND the reader here (no `-c` string at all),
+        # so this was never the r62/r63 fail-open: loud already at 55cacce3 (before this round),
+        # unaffected by it -- a confirmed-correct control, not a new catch (measured, not predicted).
+        found = defects(self.GET + "X=-s\nsh $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        found = defects(self.GET + "X=-s\nsh $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n", "sh")
+        self.assertEqual(1, len(found), found)
+
+    def test_n06_the_mirror_shape_too(self):
+        # n06 (bash-truth: FR x4 -- every column agrees): the mirror of r62/r63, `sh -c 'bash -s'`
+        # -- the string names `bash`, so the inner `echo -e 'sh\ttool' | sh` must read under
+        # `bash`'s table too (ANY via `Named`), where `-e` decodes the tab regardless of which
+        # reading wins. CLEAN before this fix.
+        found = defects(self.GET + "sh -c 'bash -s' <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+        found = defects(self.GET + "sh -c 'bash -s' <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n", "sh")
+        self.assertEqual(1, len(found), found)
+
+    def test_n07_eval_is_unaffected(self):
+        # n07 (bash-truth: F- x4 -- an accepted over-report for an unmeasured runner, same family
+        # as r68/ksh): `eval` has never been in `_ECHO`, so it already read as `ANY` by the lookup
+        # miss alone (R-F1), with no `Named` involved at all -- loud at 55cacce3 and loud after, a
+        # regression control proving R-F7 changes nothing for the case it does not touch.
+        found = defects(self.GET + "eval 'bash -s' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        found = defects(self.GET + "eval 'bash -s' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n", "sh")
+        self.assertEqual(1, len(found), found)
+
+    def test_the_ungated_sentence_still_names_the_holder_not_any(self):
+        # The controller's own naive fix (a bare `ANY` in the hook) broke `_UNGATED`'s sentence,
+        # which must keep naming the HOLDER ("bash"), never "any" -- r62's holder shape, with a
+        # check inside the body so its own statement earns an `_UNGATED` credit.
+        check = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
+        script = self.GET + "bash -s -c 'sh' <<'EOF'\n%s\nchmod +x tool\n./tool\nEOF\n" % check
+        found = [w for _step, w in wg.job_defects([("step", script, None)], strict=True)]
+        self.assertTrue(any(forms._UNGATED % "bash" in str(w) for w in found), found)
+        self.assertFalse(any(forms._UNGATED % wp.ANY in str(w) for w in found), found)
+
+    def test_named_wraps_a_runner_name_for_the_printers_alone(self):
+        self.assertEqual("bash", wp.Named("bash"))
+        self.assertEqual("bash", "%s" % wp.Named("bash"))
+        self.assertIs(wp.ANY, wp.Named("bash").runner)
+        self.assertEqual(["sh\\ttool\n", "sh\ttool\n"],
+                          wp.spellings(["echo", "sh\\ttool"], None, wp.Named("bash")))
+        self.assertEqual(["sh\\ttool\n"], wp.spellings(["echo", "sh\\ttool"], None, "bash"))
+
+    def test_runs_under_wraps_only_a_strings_own_holder(self):
+        bash_c = forms.runs_under(["bash", "-c", "sh"], None, "bash")
+        self.assertIsInstance(bash_c, wp.Named)
+        self.assertIs(wp.ANY, bash_c.runner)
+        bash_s_c = forms.runs_under(["bash", "-s", "-c", "sh"], (), "bash")
+        self.assertIsInstance(bash_s_c, wp.Named)
+        self.assertIs(wp.ANY, bash_s_c.runner)
+        vanishing = forms.runs_under(["bash", "$X"], None, "bash")
+        self.assertEqual("bash", vanishing)
+        self.assertIs(str, type(vanishing))
+        self.assertEqual("sh", forms.runs_under(["sudo", "sh"], ["sh"], "sudo"))
+
+
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
     """The gap list: "Open: `xpg_echo` (bash's `echo` decodes)" -- `workflow_guard`'s module
     docstring."""
