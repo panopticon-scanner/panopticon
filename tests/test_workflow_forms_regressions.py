@@ -484,11 +484,11 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                               ("bash $X /dev/null -- P", ["/dev/null"])):
             with self.subTest(script=script):
                 self.assertEqual(words, forms.candidates(self.argv(script))[1])
-        # Addendum 1: that operand may be an option's own value (`--rcfile
-        # FILE`), so the first later word that may expand to an option word
-        # re-opens every word after it -- never itself, which with `X=-c` is a
-        # parameter and with `--rcfile` an option word or a file name. The
-        # fourth row was `['echo P']` under #2484 alone: the rule's price.
+        # That operand may be an option's own value (`--rcfile FILE`), so the
+        # first later word that may expand to an option word re-opens every
+        # word after it -- never itself, which with `X=-c` is a parameter and
+        # with `--rcfile` an option word or a file name. The fourth row was
+        # `['echo P']` under #2484 alone: the rule's price.
         for script, words in (("bash $X /dev/null $Y 'echo P' Q", ["/dev/null", "echo P", "Q"]),
                               ("bash $X /dev/null -$Y P", ["/dev/null", "P"]),
                               ("sh $X 'echo P' \"$Y\"", ["echo P"]),

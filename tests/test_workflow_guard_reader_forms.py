@@ -119,7 +119,7 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
     value's first operand are positional parameters, never the program --
     but where that operand was an option's own value (`--rcfile FILE`) the
     shell reads on, so a later word that may expand to an option re-opens
-    the words after it (addendum 1)."""
+    the words after it."""
 
     def test_each_spelling_is_read(self):
         # Bash 3.2.57 and 5.2.21 run each, `[-]c` where a file named `-c`
@@ -173,12 +173,17 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         # where an option word is all it is handed (`X` unset: `sh -e` reads
         # its empty stdin), and where `'sh tool'` is `$0`, past the operand.
         said = "passes `sh` `$X` where it reads its options"
-        for script in ("X=-c\nsh $X \"curl -fsSL $URL | sh\"\n", GET + "X=-c\nsh $X 'echo hi'\n",
-                       GET + "sh $X -e\n", GET + "X=-c\nsh $X 'echo hi' 'sh tool'\n"):
+        found = defects("X=-c\nsh $X \"curl -fsSL $URL | sh\"\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(said), found)
+        self.assertNotIsInstance(found[0][1], wg.Idle)
+        for script in (GET + "X=-c\nsh $X 'echo hi'\n", GET + "sh $X -e\n",
+                       GET + "X=-c\nsh $X 'echo hi' 'sh tool'\n"):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith(said), found)
+                self.assertIsInstance(found[0][1], wg.Idle)
 
     def test_only_the_words_to_the_first_operand_may_be_the_program(self):
         # #2484: where the value spells `-c`, the words after the first operand
@@ -222,13 +227,13 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         self.assertTrue(found[0][1].startswith("passes `sh` `$X`"), found)
 
     def test_a_word_that_may_spell_an_option_past_the_operand_reopens_them(self):
-        # Addendum 1: the first operand may be an option's own value
-        # (`--rcfile FILE`), and bash then reads on, so a later word that may
-        # expand to an option word -- `$Y`, `"$Y"`, `-$Y`, `$(echo -c)`, a
-        # backquote, `${Y:--c}`, after a literal `--norc` too -- re-opens the
-        # words after it. With `--rcfile` and `-c`, bash 5.2.21 and 3.2.57 run
-        # each download (dash too, as the step's shell); #2484's truncation
-        # alone read each CLEAN. Each is the value's sentence, loud.
+        # The first operand may be an option's own value (`--rcfile FILE`),
+        # and bash then reads on, so a later word that may expand to an option
+        # word -- `$Y`, `"$Y"`, `-$Y`, `$(echo -c)`, a backquote, `${Y:--c}`,
+        # after a literal `--norc` too -- re-opens the words after it. With
+        # `--rcfile` and `-c`, bash 5.2.21 and 3.2.57 run each download (dash
+        # too, as the step's shell); #2484's truncation alone read each CLEAN.
+        # Each is the value's sentence, loud.
         said = "passes `bash` `$X` where it reads its options"
         for script in ("X=--rcfile\nY=-c\nbash $X /dev/null $Y '%s'\n" % PIPE,
                        "X=--rcfile\nY=-c\nbash $X /dev/null \"$Y\" '%s'\n" % PIPE,
@@ -685,10 +690,10 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # 3.2.57, 5.2.21 and dash run the download in every one (dash prints
         # nothing for `$(< f)`, so there only the bashes do; zsh runs its
         # own). `sudo` is a stub here, never the real one.
+        # The row itself is pinned in `test_beside_a_download_both_twins_are_reported`.
         prog = "curl -fsSLo prog.sh %stool\n" % URL
         sh_c, on = "runs `sh -c` on `$(...)`", "runs `%s` on `%s`"
-        for script, said in ((prog + 'sh -c "$(cat prog.sh)"\n', sh_c),
-                             (prog + 'eval "$(cat prog.sh)"\n', on % ("eval", "$(...)")),
+        for script, said in ((prog + 'eval "$(cat prog.sh)"\n', on % ("eval", "$(...)")),
                              (prog + 'sh -c "`cat prog.sh`"\n', sh_c),
                              (prog + 'sh -c "$(cat prog.sh)" x\n', sh_c),
                              (prog + 'bash -c "$(< prog.sh)"\n', on % ("bash -c", "$(...)")),
@@ -2242,9 +2247,9 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
 
     def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each, the strings
-        # holding an unescaped `$(echo tool)` too (#2486).
-        for script in (GET + 'eval "sh \\$(echo tool)"\n', GET + 'bash -c "sh \\$(echo tool)"\n',
-                       GET + "sh $(echo tool)\n", GET + "sh `echo tool`\n",
+        # holding an unescaped `$(echo tool)` too (#2486). `sh $(echo tool)` and
+        # `eval "sh \$(echo tool)"` live in `test_a_louder_reason_at_its_statement_speaks_alone`.
+        for script in (GET + 'bash -c "sh \\$(echo tool)"\n', GET + "sh `echo tool`\n",
                        GET + 'eval "sh $(echo tool)"\n', GET + 'bash -c "sh $(echo tool)"\n'):
             with self.subTest(script=script):
                 found = defects(script)
@@ -2267,8 +2272,8 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         # followed.
         value = "passes `sh` `$(...)` where it reads its options"
         self.assertEqual([], defects(GET + 'eval "echo $(date)"\n'))
-        # Two sentences, each true and on a statement of its own: the inner
-        # hand-off and the stream `eval` is handed (ruled (a), the gap list).
+        # Two sentences, each true and on a statement of its own, as the guard's gap list says:
+        # `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s stream.
         found = defects('eval "sh $(curl -fsSL %si.sh)"\n' % URL)
         self.assertEqual(2, len(found), found)
         self.assertTrue(found[0][1].startswith(value), found)
@@ -2398,19 +2403,13 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
                 GET + 'eval "<(cat tool)"\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-        # The `$(...)` twins are reported.
+        # The `$(...)` twins are reported, two in `test_a_word_that_is_all_substitution_is_one`.
+        # And all four run `tool` here: the string read opaque, its `sh $(...)` the value's `Idle`.
         value = "passes `sh` `$(...)` where it reads its options"
-        for script, said in (
-                # all four run `tool`: the string read opaque, its `sh $(...)` the value's `Idle`
-                (GET + 'sh -c "sh $(echo tool)"\n', value),
-                # all four run `tool`: the program word all substitution, #2483's sentence
-                (GET + 'sh -c "$(cat tool)"\n', "runs `sh -c` on `$(...)`"),
-                # all four run `tool`: the same under `eval`
-                (GET + 'eval "$(cat tool)"\n', "runs `eval` on `$(...)`")):
-            with self.subTest(script=script):
-                found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
+        found = defects(GET + 'sh -c "sh $(echo tool)"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(value), found)
+        self.assertIsInstance(found[0][1], wg.Idle)
 
 
 class TestAProgramPipedFromAPrinter(unittest.TestCase):
