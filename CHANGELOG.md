@@ -13,6 +13,9 @@ evidence exposed.
   prints them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A
   shell a `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's
   `echo` into a decoder, which this rule does not follow.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
 - **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
   relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
   workspace; subshells and command substitutions inherit, then restore, their caller. A branched
