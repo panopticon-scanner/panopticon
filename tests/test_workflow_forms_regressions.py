@@ -6,6 +6,7 @@ import shell_reader
 import workflow_fetch as fetches
 import workflow_forms as forms
 import workflow_guard as guard
+import workflow_printers
 import workflow_programs
 
 URL = 'https://example.test/tool'
@@ -753,3 +754,25 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     def parts(script):
         stages = shell_reader.statements(script)[0].stages
         return shell_reader.command(stages[-1].argv), stages[-1], stages[-2]
+
+
+class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
+    """#2331: `printed`, `_piped` and `_PRINTERS` moved out of `workflow_programs` into
+    `workflow_printers`, byte for byte; `workflow_programs` re-exports them so `stdin_scripts`,
+    `unprinted` and every caller read the one definition, and no stale copy can linger."""
+
+    def test_the_seam_is_one_object(self):
+        for name in ("printed", "_piped", "_PRINTERS"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(workflow_programs, name), getattr(workflow_printers, name))
+        self.assertIs(forms.unprinted, workflow_programs.unprinted)
+        self.assertIs(forms.stdin_scripts, workflow_programs.stdin_scripts)
+
+    def test_the_moved_text_reads_as_before(self):
+        # The printer's text, the pipe and the table answer as they did in `workflow_programs`.
+        self.assertEqual("sh tool\n", workflow_printers.printed(["echo", "sh", "tool"]))
+        self.assertIsNone(workflow_printers.printed(["echo", "sh\\ttool"]))
+        self.assertEqual(("echo", "printf"), workflow_printers._PRINTERS)
+        stages = shell_reader.statements("echo 'sh tool' | sh")[0].stages
+        self.assertTrue(workflow_printers._piped(stages[1], stages[0]))
+        self.assertFalse(workflow_printers._piped(stages[0], None))
