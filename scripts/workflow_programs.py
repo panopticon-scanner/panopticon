@@ -691,10 +691,10 @@ def unprinted(argv, stage, before, shell=None):
     spell it out, or [] (`unspelled`, once `stdin_program` names a shell reading stdin): the `echo`
     or `printf` `producer` finds in `before` (the stages in front) where a reading `spellings` gives
     is unspelled (`echo "$X" | sh`, an escape outside `_decoded`'s table, EITHER reading of a
-    `Named`/`ANY` runner: #2333, #2476 R-F1), or, where one between rewrites the text (`base64 -d`:
-    #2478, R-P4) or the walk stops at `_DEPTH`, the LAST stage in front's words and that text, so
-    a fetch in either is weighed (review I-1). Never a heredoc-fed `cat` handing it on intact
-    (`printed` or `_unread_stdin` has it, R-F13)."""
+    `Named`/`ANY` runner: #2333, #2476 R-F1); where one between rewrites the text (`base64 -d`:
+    #2478, R-P4), the LAST stage in front's words and that text, so a fetch in either is weighed
+    (review I-1); past `_DEPTH`, a LOUD answer (`_PAST_DEPTH`). Never a heredoc-fed `cat` handing
+    it on intact (`printed` or `_unread_stdin` has it, R-F13)."""
     if stage.stdin_heredoc is not None or stdin_program(argv) != SHELL_PROGRAM:
         return []
     return unspelled(stage, before, shell)

@@ -1281,16 +1281,16 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                 with self.subTest(middle=middle, shell=shell):
                     self.assertEqual([], defects("echo '%s' | %s | sh\n" % (PIPE, middle), shell))
 
-    def test_a_wrapper_or_the_pipe_itself_is_no_pass_through(self):
+    def test_xargs_or_the_pipe_itself_is_no_pass_through(self):
         # Review I-2: rv46 `echo 'x tool' | xargs cat | sh` (FR x4: `xargs` hands `cat` the words
         # `x` and `tool` as FILES, so `sh` runs the download's own text), CLEAN at the base, on
-        # main and at 70258154: the unread answer beside GET. rv21 `command cat` (FR x4): the
-        # ruling refuses every wrapper the reader strips alike -- the fetch-and-run sentence at
-        # 70258154, the unread answer now, the price. rv29 `echo 'tool' | xargs cat | sh` (FR
-        # x4) stays reported: the unread answer and the sentence the base gave it, the download
-        # piped into `sh`.
+        # main and at 70258154: the unread answer beside GET. rv29 `echo 'tool' | xargs cat | sh`
+        # (FR x4) stays reported: the unread answer and the sentence the base gave it, the
+        # download piped into `sh`. rv21 `command cat` (FR x4) is a pass-through (fix round 1b):
+        # `xargs` alone of the wrappers changes what the command reads, `command` only how it
+        # runs, so the fetch-and-run sentence stands, as at 70258154 (round 1 read it unread).
         self.assert_unread("echo 'x tool' | xargs cat | sh\n", "cat")
-        self.assert_unread("echo 'sh tool' | command cat | sh\n", "cat")
+        self.assert_fetch_exec("echo 'sh tool' | command cat | sh\n")
         for shell in (None, "sh"):
             with self.subTest(shell=shell, row="rv29"):
                 whys = [why for _n, why in defects(GET + "echo 'tool' | xargs cat | sh\n", shell)]
@@ -1438,16 +1438,30 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
 
     def test_the_walk_is_bounded_and_fail_closed(self):
         # p2n17: 63 `cat`s put the printer 64 stages back, the last `producer` reads (FR x4): the
-        # fetch-and-run sentence. p2n18: 64 put it one stage past the bound (FR x4): unread, from
-        # `cat`, fail-closed; p2n19, the same with `echo hi` (F- x4), pays the over-report, as
-        # seventy `eval`s pay `_stdin`'s bound (#2500). Bounded, a long pipeline costs linear time.
+        # fetch-and-run sentence. Past the bound the program is unread and LOUD -- reported alone,
+        # never `_Quiet` (fix round 1b): p2n18, 64 `cat`s (FR x4), and fx10, PIPE behind 65 `cat`s
+        # alone (FR x4), which round 1 read CLEAN, the stopped stage's empty words weighed; p2n19,
+        # p2n18 with `echo hi` (F- x4), pays the over-report, the documented price, as seventy
+        # `eval`s pay `_stdin`'s bound (#2500); fx11, a stream behind 70 `cat`s (FR x4), keeps
+        # its stream sentence and gains the unread row. Bounded, a long pipeline costs linear time.
+        past = "a pipeline longer than the 64 stages this guard follows"
+        cats = " | ".join(["cat"] * 64)
         self.assert_fetch_exec("echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 63))
-        self.assert_unread("echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 64), "cat")
-        self.assert_unread("echo 'echo hi' | %s | sh\n" % " | ".join(["cat"] * 64), "cat")
+        self.assert_loud(GET + "echo 'sh tool' | %s | sh\n" % cats, past)
+        self.assert_loud(GET + "echo 'echo hi' | %s | sh\n" % cats, past)
+        self.assert_loud("echo '%s' | cat | %s | sh\n" % (PIPE, cats), past)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, row="fx11"):
+                whys = [why for _n, why in defects("curl -fsSL %si.sh | cat | cat | cat | cat | "
+                                                   "cat | cat | %s | sh\n" % (URL, cats), shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(why.startswith(self.STREAM) for why in whys), whys)
+                self.assertTrue(any(not isinstance(why, forms.Idle) and why.startswith(
+                    "pipes `sh` its program from `%s`" % past) for why in whys), whys)
         stages = self.stages("echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70))
         source, intact = wp.producer(stages[-1], stages[:-1])
         self.assertIs(stages[-1 - 65], source)          # the stage it stopped at, 65 back
-        self.assertFalse(intact)
+        self.assertIsNone(intact)                       # unknown: neither intact nor rewritten
 
     def test_producer(self):
         def walk(script):
@@ -1483,8 +1497,9 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # on the pipe, and last that stage's other words, so `unread_program` weighs a fetch in
         # either (review I-1) and a quote among the words cannot swallow the text: the base64
         # rows carry `echo`'s text, a heredoc-fed `cat` its body, an unspelled `echo` its words.
-        # An `echo` with no words, and the stage `producer` stops at past `_DEPTH`, give the empty
-        # text, never an error; a stage with no command word in front (`X=1`) prints nothing.
+        # An `echo` with no words gives the empty text, never an error; past `_DEPTH` the answer
+        # is `_PAST_DEPTH`, whatever the stage stopped at (fix round 1b); a stage with no command
+        # word in front (`X=1`) prints nothing.
         deep = "echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70)
         for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
                               ["base64", "\n", "c2ggdG9vbA==\n", "\n", "-d"]),
@@ -1493,7 +1508,7 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                               ["tr", "\n", "body", "\n", "a-z", "A-Z"]),
                              ('echo "$X" | tr a b | sh\n', ["tr", "\n", "$X", "\n", "a", "b"]),
                              ("echo | tr a b | sh\n", ["tr", "\n", "\n", "\n", "a", "b"]),
-                             (deep, ["cat", "\n", "", "\n"]),
+                             (deep, list(wp._PAST_DEPTH)),
                              ("echo x | tr a b | X=1 | sh\n", []),
                              ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
                              ("echo 'sh tool' | tee f | sh\n", []),
@@ -1508,16 +1523,19 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                          forms.unprinted(["sh"], stages[-1], stages[:-1], wp.ANY))
 
     def test_what_passes_through(self):
-        # Fix round 1: no stage behind a wrapper the reader strips passes (review I-2) --
-        # `xargs cat` hands `cat` the piped words as file operands, and the ruling refuses every
-        # wrapper alike, so `sudo tee f` (True on 70258154) and `nice cat` are now unread too --
-        # and no `tee` operand that is the pipe itself (I-3a): `tee /dev/stdout` doubles the text.
+        # No stage behind `xargs` passes (review I-2): it hands `cat` or `tee` the piped words as
+        # operands, where every other wrapper the reader strips changes only how the command runs,
+        # so `sudo tee f`, `nice cat`, `command cat`, `time cat` and `stdbuf -oL tee f` pass (fix
+        # round 1b; round 1 refused them all). No `tee` operand is the pipe itself (I-3a):
+        # `tee /dev/stdout` doubles the text.
         for text, passes in (("tee f", True), ("tee", True), ("tee -a f", True), ("tee -p f", True),
                              ("tee -i f", True), ("tee --append f", True),
                              ("tee --output-error f", True), ("tee --output-error=warn f", True),
                              ("cat", True), ("cat -", True), ("cat -- -", True),
-                             ("A=1 cat", True), ("sudo tee f", False), ("nice cat", False),
-                             ("xargs cat", False), ("xargs tee f", False), ("command cat", False),
+                             ("A=1 cat", True), ("sudo tee f", True), ("nice cat", True),
+                             ("command cat", True), ("time cat", True), ("stdbuf -oL tee f", True),
+                             ("xargs cat", False), ("xargs tee f", False),
+                             ("sudo xargs cat", False), ("/usr/bin/xargs -n1 cat", False),
                              ("tee /dev/stdout", False), ("tee f /dev/fd/1", False),
                              ("tee >(cat)", False), ('tee "$F"', False),
                              ("tee -x f", False), ("tee -- f", False), ("tee -ai f", False),
