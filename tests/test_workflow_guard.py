@@ -1061,6 +1061,20 @@ class TestAUseInsideACommandSubstitution(unittest.TestCase):
         self.assertIn("verifies t.sh only AFTER running it under `bash` inside a command "
                       "substitution", "".join(self.job(self.GET + "x=$(bash t.sh)\n" + self.CHECK)))
 
+    def test_a_check_beside_the_use_obeys_the_substitution_shells_gate(self):
+        check = self.CHECK.rstrip()
+        self.assertEqual([], self.job(self.GET + "x=$(%s && bash t.sh)\n" % check))
+        for body in ("%s; bash t.sh" % check, "bash t.sh"):
+            with self.subTest(body=body):
+                why = self.job(self.GET + "x=$(%s)\n" % body)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("running it under `bash` inside a command substitution", why[0])
+        sibling = self.job(self.GET + "x=$(%s) y=$(bash t.sh)\n" % check)
+        self.assertIn("inside another command-substitution context", "".join(sibling))
+        self.assertEqual([], self.job(self.GET + "x=$(%s && y=$(bash t.sh))\n" % check))
+        outside = self.job(self.GET + 'echo "$(%s)"\nbash t.sh\n' % check)
+        self.assertIn("inside another command-substitution context", "".join(outside))
+
     def test_reading_it_or_running_another_file_there_is_not_a_use(self):
         for use in ("x=$(cat t.sh)\n", "x=$(bash other.sh)\n", "x=$(wc -l < t.sh)\n",
                     "x=$(sha256sum t.sh | cut -d' ' -f1)\n", 'x="$(grep -c . t.sh)"\n'):

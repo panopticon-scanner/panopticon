@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
