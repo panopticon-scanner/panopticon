@@ -301,6 +301,60 @@ class TestADynamicCommandWord(unittest.TestCase):
         self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
 
 
+class TestAValueCommandWordConsumesAStream(unittest.TestCase):
+    """#2602: a download piped or redirected into a `$` command word."""
+
+    def test_each_stream_shape_is_reported(self):
+        # Bash 3.2.57, 5.2.21 and dash execute the payload in every row.
+        rows = (("CMD=sh\ncurl -fsSL %si.sh | $CMD\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | \"$CMD\"\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | ${CMD}\n" % URL, "${CMD}"),
+                ("curl -fsSL %si.sh | $(echo sh)\n" % URL, "$(...)"),
+                ("CMD=sh\ncurl -fsSL %si.sh | $CMD -s\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | tee f | $CMD\n" % URL, "$CMD"),
+                ("CMD=eval\n$CMD \"$(curl -fsSL %si.sh)\"\n" % URL, "$CMD"),
+                ("SUDO=\ncurl -fsSL %si.sh | $SUDO sh\n" % URL, "$SUDO"))
+        for script, word in rows:
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(
+                    "pipes a download into `%s`, a command word this guard does not follow" % word
+                ), found)
+
+    def test_a_carried_download_reaches_the_value_consumer(self):
+        found = defects("CMD=sh\nx=$(curl -fsSL %si.sh)\necho \"$x\" | $CMD\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(
+            "carries %si.sh in `$x` and hands it to `$CMD`" % URL), found)
+
+    def test_the_stream_price_and_controls_are_explicit(self):
+        # `CMD=cat` executes no payload, but an unknown command gets the same
+        # fail-closed stream answer. A named file and the literal shell stay unchanged.
+        found = defects("CMD=cat\ncurl -fsSL %si.sh | $CMD\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("pipes a download into `$CMD`"), found)
+        self.assertEqual([], defects("curl -fsSLo f %si.sh\n" % URL))
+        found = defects("curl -fsSL %si.sh | sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+
+    def test_a_redirected_download_is_run_by_a_value_command_word(self):
+        for command in ("CMD=sh\n$CMD", "CMD=cat\n$CMD"):
+            with self.subTest(command=command):
+                found = defects("curl -fsSLo i.sh %si.sh\n%s < i.sh\n" % (URL, command))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `$CMD` from standard input", found[0][1])
+        found = defects("curl -fsSLo i.sh %si.sh\nsh < i.sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh` from standard input", found[0][1])
+        # A `-c` string is the program; the redirected download remains its data. Its existing
+        # dynamic-program sentence stays, without a second redirected-program sentence.
+        found = defects("curl -fsSLo i.sh %si.sh\nCMD=sh\n$CMD -c 'cat' < i.sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
+
+
 class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
     """#2344 and #2337 (review N2 of #2331): a `$` word after a value in a shell's
     options, or after a `$` command word's `-c`, may be the program. The guard
@@ -898,7 +952,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       or `python3 -O - file.py` running
       `os.system`, beside no reported fetch (option b's price, #2499); and,
       each filed under #2331, `eval 'bash -s | cat'` (#2500),
-      `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
+      `echo "$Y" | $CMD`, and `eval "$CMD"` or an
       exported `bash -c '$CMD'` handed a heredoc alone -- beside a reported
       fetch #2483 reports the word, never the body (#2473). Round 1 leaves
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
@@ -1307,20 +1361,29 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertTrue(any(ungated % "$(...)" in w for w in found), found)
         self.assertFalse(any("@@" in w for w in found), found)
 
-    def test_2473_a_dollar_command_words_body_inside_a_substitution_is_unread(self):
-        # A documented gap, filed under #2331: `_walk` asks `_unread_stdin`
-        # before `unread_program`, so inside a `$(...)` the hand-off's `Idle`
-        # answers first and `substitution_script`, which would read the body
-        # and report its download, is never asked. Beside no reported fetch
-        # the step reads CLEAN though bash 3.2.57, 5.2.21 and dash run that
-        # download; the literal `sh` there is reported (the control).
-        for script in ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE,
-                       "x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE):
+    def test_2598_a_dollar_command_words_body_inside_a_substitution_is_read_first(self):
+        # Inside a `$(...)`, the script reader speaks before the hand-off's
+        # `Idle`: both value-form words run the body in bash 3.2.57, 5.2.21
+        # and dash, and its download is reported under the stable runner name.
+        inside = "hands a script to `%s` inside a command substitution"
+        for script, runner in (
+                ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$CMD"),
+                ("x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$(...)")):
             with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(inside % runner), found)
+        # The literal control keeps the same sentence.
         found = defects("x=$(sh <<'EOF'\n%s\nEOF\n)\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("inside a command substitution", found[0][1])
+        self.assertTrue(found[0][1].startswith(inside % "sh"), found)
+        # An innocuous body remains CLEAN alone. Beside GET, the same script
+        # sentence is `Idle` and replaces today's hand-off sentence.
+        clean = "CMD=sh\nx=$($CMD <<'EOF'\necho hi\nEOF\n)\n"
+        self.assertEqual([], defects(clean))
+        found = defects(GET + clean)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(inside % "$CMD"), found)
 
     def test_2473_a_printed_pipe_into_a_dollar_word_inside_a_substitution_is_weighed(self):
         # T25-M2: `stdin_scripts` yields a printer's spelled-out text for a `$`

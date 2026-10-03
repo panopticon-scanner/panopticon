@@ -150,29 +150,24 @@ live, so a change that catches one fails there and edits this list.
   REPORTED though the step stops, as the guard cannot tell it from `X=/dev/null`; one naming a file
   or an option nothing runs under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`),
   over-reports; `python3 $S`, S unset, a FOREIGN word, under-reports (python runs the body), filed
-  under #2331. A quoted body reaches the interpreter as written, so `workflow_forms.flattened` reads
-  it as it reads an `eval` string -- a `curl … | sh` inside it is the defect it is at the top level.
-  An EXPANDING one is REPORTED unread (`_unread_stdin`): it runs what bash expands it to, values and
-  `$(...)` output this guard never sees. A program in a language with no grammar here is reported
-  too (the answer `unparseable` gives a `shell: python` step), and THAT report is weighed: kept,
-  since #2499, only beside a fetch this guard reports. So is the hand-off to a `$` command word no
-  table places (#2473). Its body is read as shell besides: a `curl … | sh` there is caught, a check
-  there clears nothing, and a non-shell body whose string spells a shell download (`print("$(curl …
-  | sh)")`) is reported loud, filed under #2331. An expanding one is read with substitutions as
-  values (#2597); but any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no
-  printer spells out (`echo "$X" | $CMD`) is unread, both filed under #2331. What that leaves
-  unread: an interpreter behind an option it reads as a filename / one taking a value other than
-  `-o`/`-O` (`bash --rcfile f <<'EOF'`), or named as a FILE by a builtin outside its table (`.
-  /dev/stdin <<'EOF'`); one behind a TRANSPORT (`ssh host bash -s <<'EOF'`, `docker run -i img bash
-  -s <<'EOF'`, `docker exec -i c sh <<'EOF'`), whose argv this walk reads as the transport's; and
-  one under a name no table carries (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on
-  the basename. A program `echo`, `printf` or a heredoc-fed `cat` PIPES into a shell reads per shell
-  (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval`
-  string names (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written
-  (`echo "$X" | sh`, a `printf` format past `%s`) or beside a fetch it reports (#2333, #2481, #2467,
-  #2476). A heredoc WRITTEN then run is the `sed -i` ruling (author-deterministic: `cat <<'EOF' >
-  x.sh … bash x.sh`), unaffected. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the
-  table (`\x`, `\e`); `cat` with an option is no printer; beside `-`, a file's text is unread.
+  under #2331. A quoted body reaches an interpreter as written, so `workflow_forms.flattened`
+  catches a shell download there as it does at top level. A literal shell's EXPANDING body is
+  REPORTED unread: values and `$(...)` output remain unseen. A foreign-language program is reported
+  too. So is a hand-off to a `$` command word (#2473); since #2499, either is kept only beside a
+  reported fetch. A value word's body is read as shell with no check counted; an expanding one masks
+  substitutions as values (#2597). Inside a substitution, the body speaks before its hand-off
+  (#2598); the price remains shell-like non-shell text. A nearer literal shell remains the consumer
+  when a surrounding value word gets its output. A direct or carried stream into a `$` command
+  reports (#2602), as does a fetched file redirected into it. `CMD=cat` is the fail-closed price.
+  Still unread: an interpreter behind an option or stdin alias, one behind a TRANSPORT (`ssh`,
+  `docker run`, `docker exec`), and an unknown basename such as `python3.11` or `busybox sh`. A
+  program `echo`, `printf` or a heredoc-fed `cat` PIPES into a shell reads per shell (bash literal
+  unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval` string names
+  (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written (`echo "$X"
+  | sh`, a `printf` format past `%s`) or beside a fetch it reports (#2333, #2481, #2467, #2476). A
+  heredoc WRITTEN then run is the `sed -i` ruling (author-deterministic: `cat <<'EOF' > x.sh … bash
+  x.sh`), unaffected. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the table (`\x`,
+  `\e`); `cat` with an option is no printer; beside `-`, a file's text is unread.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
@@ -265,8 +260,9 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = (_unread_stdin(stage, before) or unread_program(argv, stage, _walk,
-                      inside, before, ANY if isinstance(statement, Inlined) else shell))
+            program = unread_program(argv, stage, _walk, inside, before,
+                                     ANY if isinstance(statement, Inlined) else shell)
+            reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
@@ -302,8 +298,7 @@ def _unread_stdin(stage, before=None):
     fetch; a `$` word's body is READ as shell, a literal shell's where quoted (`stdin_scripts`)."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc or handed(stage, before)
-    kind = stdin_program(argv) if here else None
-    if kind is None:
+    if not here or (kind := stdin_program(argv)) is None:
         return None
     name = shell_reader.readable(argv[0])
     if kind == VALUE_PROGRAM:
@@ -312,18 +307,17 @@ def _unread_stdin(stage, before=None):
                     "interpreter (`bash -s`, `python3 -`), or exempt the step with a reason" % name)
     name = os.path.basename(name)
     if kind != SHELL_PROGRAM:
-        return Idle("hands a heredoc body or here-string to `%s` as the program "
-                    "to run, which this guard does not parse -- it cannot say whether "
-                    "that program downloads and executes anything; write it in "
-                    "bash/sh, or exempt the step with a reason" % name)
+        return Idle("hands a heredoc body or here-string to `%s` as the program to run, which "
+                    "this guard does not parse -- it cannot say whether that program downloads "
+                    "and executes anything; write it in bash/sh, or exempt the step with a "
+                    "reason" % name)
     if here[1]:
-        return ("hands an EXPANDING heredoc body or here-string to `%s` as the "
-                "script to run: it runs what bash expands it to -- values and "
-                "`$(...)` output this guard never sees -- so the guard cannot say "
-                "what the script runs; quote it (`<<'EOF'`, `<<< '...'`) and it is "
-                "read as written, pass job values as arguments instead "
-                "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
-                "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
+        return ("hands an EXPANDING heredoc body or here-string to `%s` as the script to run: it "
+                "runs what bash expands it to -- values and `$(...)` output this guard never sees "
+                "-- so the guard cannot say what the script runs; quote it (`<<'EOF'`, `<<< "
+                "'...'`) and it is read as written, pass job values as arguments instead (`%s -s "
+                "-- \"$VALUE\" <<'EOF'`), or exempt the step with a reason (`EXEMPT_FETCHES` in "
+                "tests/test_workflow_pins.py)"
                 % (name, name))
     return None
 
@@ -490,7 +484,7 @@ def _use(statement, position, stage, argv, dest, directory):
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if name in INTERPRETERS and any(
+    if (name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM) and any(
             same_file(at_directory(r, directory), dest) or (
                 stage.stdin_heredoc is None
                 and covers(at_directory(r, directory), dest)) for r in stage.reads):
@@ -568,7 +562,13 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
     if fetch.dest is None:
-        if not fetch.piped_to or os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
+        if not fetch.piped_to:
+            return None
+        if stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM:
+            return ("pipes a download into `%s`, a command word this guard does not follow -- "
+                    "download it to a file, `sha256sum -c` that file, then run it"
+                    % shell_reader.readable(fetch.piped_to[0]))
+        if os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
             return None
         # Nothing landed on disk, so no checksum anywhere in the step can be
         # about these bytes: the only fix is to stop streaming them into a
