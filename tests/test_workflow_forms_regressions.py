@@ -6,6 +6,8 @@ import shell_reader
 import workflow_fetch as fetches
 import workflow_forms as forms
 import workflow_guard as guard
+import workflow_printers
+import workflow_programs
 
 URL = 'https://example.test/tool'
 CHECK = "echo '" + 'a' * 64 + "  tool' | sha256sum -c -"
@@ -388,13 +390,72 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         self.assertEqual([], self.program("sh -c -x"))
         self.assertEqual([], self.program("bash -c --norc P"))
 
+    def test_a_substitution_among_the_strings_text_is_read_opaque(self):
+        # #2486: the string is a script, the substitution written as the
+        # reader renders it and the script marked `Opaque`, so no marker of
+        # this parse reaches the next -- two parses give one text. A word
+        # that is one lone `$(...)` is still none: `dynamic_program` names it.
+        for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
+            with self.subTest(script=script):
+                found = self.program(script)
+                self.assertEqual(["sh $(...)"], found)
+                self.assertIsInstance(found[0], workflow_programs.Opaque)
+                self.assertEqual(found, self.program(script))
+        self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+        # A text so rendered that the reader refuses is none, as before:
+        # `cat <<$(...)` names no line to end the body at. Nothing reaches a
+        # re-parse that would refuse the whole step.
+        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(echo E)\nE\nsh x"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+                self.assertEqual([], guard.fetch_exec_defects(script))
+
+    def test_a_word_that_is_all_substitution_is_the_dynamic_programs(self):
+        # #2486: it spells no command, so `scripts` hands on no text for it
+        # and `dynamic_program` names it; one with text of its own is not.
+        for script, how, word in (('sh -c "$(cat x)"', "sh -c", "$(...)"),
+                                  ('eval "$(cat x)"', "eval", "$(...)"),
+                                  ('sh -c "$P$(cat x)"', "sh -c", "$P$(...)")):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                found = workflow_programs.dynamic_program(argv)
+                self.assertEqual((how, word), (found[0], shell_reader.readable(found[1])))
+                self.assertEqual([], self.program(script))
+        for script in ('sh -c "echo $(date)"', 'sh -c "$(curl %s) x"' % URL):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
+
+    def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
+        # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
+        # string holding one beside a `$(...)` is no script at all, where its
+        # twin with the `$(...)` alone is read opaque (#2486) ...
+        for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+        found = self.program('sh -c "sh $(echo tool)" x')
+        self.assertEqual(["sh $(...)"], found)
+        self.assertIsInstance(found[0], workflow_programs.Opaque)
+        # ... and a program word that is all `<(...)` is not `dynamic_program`'s,
+        # where its `$(...)` twin is.
+        for script in ('sh -c "<(cat tool)"', 'eval "<(cat tool)"'):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
+        argv = shell_reader.statements('sh -c "$(cat tool)"')[0].stages[0].argv
+        found = workflow_programs.dynamic_program(argv)
+        self.assertEqual(("sh -c", "$(...)"), (found[0], shell_reader.readable(found[1])))
+
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be
     `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
-    under bash 3.2.57 and 5.2.21 -- so each word after it may be the
-    program. The guard does not follow the value; `candidates` hands on every
-    word after it, a dynamic one too, for `unread_program` (review N2 of #2331)."""
+    under bash 3.2.57 and 5.2.21 -- so a word after it may be the program.
+    The guard does not follow the value; `candidates` hands on the words
+    after it to the first operand, a dynamic one too, for `unread_program`
+    (review N2 of #2331), and none past it, a positional parameter (#2484),
+    until a later word that may expand to an option word re-opens the rest:
+    the operand may have been an option's own value (`--rcfile FILE`)."""
 
     @staticmethod
     def argv(script):
@@ -402,14 +463,40 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         assert len(stmts) == 1, stmts
         return shell_reader.command(stmts[0].stages[-1].argv)
 
-    def test_each_word_after_the_value_is_a_candidate(self):
+    def test_the_words_to_the_first_operand_after_the_value_are_candidates(self):
         for script, value in (("sh $X P", "$X"), ('sh "${X:--c}" P', "${X:--c}"),
                               ("sh $(echo -c) P", "$(...)"), ("bash -e $X -o pipefail P", "$X"),
                               ("echo -c | xargs -I{} sh {} P", "{}"), ("sh ${X}c P", "${X}c")):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words[-1:]))
+        # Bare words and `$` words may be an option's value, or vanish, so the
+        # walk reads past them: with no operand, every word after the value.
         self.assertEqual(["P", "$Y", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
+        # The first word that can be none of an option, an option's value (a
+        # bare word) or anything once expanded is the first operand, the last
+        # candidate; the option words before it stay (#2484), and a later word
+        # of literal text, `--` among them, re-opens nothing.
+        for script, words in (("sh $X P \"$Y\" 'echo Q' R", ["P", "$Y", "echo Q"]),
+                              ("sh $X -e -o pipefail 'echo P' Q", ["-e", "-o", "pipefail", "echo P"]),
+                              ("bash $X extglob 'echo P' Q", ["extglob", "echo P"]),
+                              ("sh $X x$Y 'echo P' Q", ["x$Y", "echo P"]), ("sh $X -e", ["-e"]),
+                              ("sh $X 'echo P' x$Y Q", ["echo P"]),
+                              ("bash $X /dev/null -- P", ["/dev/null"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
+        # That operand may be an option's own value (`--rcfile FILE`), so the
+        # first later word that may expand to an option word re-opens every
+        # word after it -- never itself, which with `X=-c` is a parameter and
+        # with `--rcfile` an option word or a file name. The fourth row was
+        # `['echo P']` under #2484 alone: the rule's price.
+        for script, words in (("bash $X /dev/null $Y 'echo P' Q", ["/dev/null", "echo P", "Q"]),
+                              ("bash $X /dev/null -$Y P", ["/dev/null", "P"]),
+                              ("sh $X 'echo P' \"$Y\"", ["echo P"]),
+                              ("sh $X 'echo P' \"$Y\" Q", ["echo P", "Q"]),
+                              ("sh $X 'echo P' \"$Y\" Q R", ["echo P", "Q", "R"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
 
     def test_none_where_the_options_end_first(self):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
@@ -427,6 +514,158 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
+
+    def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
+        # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
+        # heredoc in bash 3.2.57 and 5.2.21 alike -- the program string is one
+        # statement whose own command (`bash -s`, `sh`) already answers
+        # SHELL_PROGRAM, so the command handing it to `eval`/`-c` does too,
+        # and its own heredoc/here-string/pipe is read as that inner shell's.
+        for argv in (["eval", "bash -s"], ["bash", "-c", "sh"], ["eval", "sh"],
+                     ["sh", "-c", "bash -s"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+        # `echo hi` and `cat` do not read their own program from stdin, so
+        # nothing is inherited: it is the HEREDOC that stays `eval`'s or
+        # `-c`'s DATA, as one behind a literal filename does too.
+        for argv in (["eval", "echo hi"], ["bash", "-c", "cat"], ["eval", "sh x.sh"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(forms.stdin_program(argv))
+        # r0's N-4 (d13): `eval`'s own several words join into the ONE
+        # string bash runs before this check, never read one at a time --
+        # `eval bash script.sh` is `bash script.sh`, a FILE (bash runs the
+        # file, not the heredoc), not bare `bash` alone reading stdin, and
+        # `eval set -- "$ARGS"` is not `set` alone either.
+        for argv in (["eval", "bash", "script.sh"], ["eval", "set", "--", "$ARGS"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(forms.stdin_program(argv))
+        # `stdin_program` answers the unquoted and quoted spellings of the
+        # same joined string alike.
+        for argv in (["eval", "bash", "-s"], ["eval", "bash -s"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+
+    def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
+        # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash, as `bash $(true)` does -- the value form
+        # (`_value`) in the operand slot does not end the walk at a FILE,
+        # so it reads on to the heredoc exactly as `sh -s` does. Quoting is
+        # already lost by the time a word reaches here (`sh "$X"` and
+        # `sh $X` give the same argv), so `stdin_program` answers the quoted
+        # spelling alike -- true of the reader's parse, not a claim that
+        # bash runs every quoted value exactly as the unquoted one.
+        for script in ("sh $X", "bash $(true)", "bash $X"):
+            with self.subTest(script=script):
+                self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv(script)))
+        # Limited to shells: a FOREIGN interpreter's file operand is unaffected.
+        self.assertIsNone(forms.stdin_program(self.argv("python3 $S")))
+        # A literal word still ends the walk at a file, value-form or not.
+        self.assertIsNone(forms.stdin_program(self.argv("sh x.sh")))
+        # A `<(...)` is `_value`-shaped too (every substitution reads back as
+        # `$(...)`), but it never vanishes: a process substitution always
+        # substitutes a real path, so it stays a FILE, as `$(true)` (whose
+        # OUTPUT may vanish) does not. Found via the 11-corpus differential
+        # (i-sub row 106): `echo "$X" | bash <(curl ...)` gained a spurious
+        # "pipes `bash` its program from `echo`" report until this was
+        # excluded -- review I-3: a LITERAL `echo hi` would not have tripped
+        # it (`printed()` spells a literal out; `unprinted()`, the path this
+        # exclusion protects, is never reached for one).
+        self.assertIsNone(forms.stdin_program(self.argv("bash <(curl https://example.test/i.sh)")))
+        # The same exclusion on the COMMAND WORD half (commit 4 touched
+        # both): a `<(...)` there is `_value`-shaped too, but it is a FILE
+        # path, not a name any table carries -- unaffected, None, not a
+        # spurious SHELL or FOREIGN guess.
+        self.assertIsNone(forms.stdin_program(self.argv("<(echo sh)")))
+
+    def test_a_dollar_command_word_with_stdin_on_it_is_a_value_program(self):
+        # #2473: `CMD=sh; $CMD <<'EOF'` runs the heredoc in bash 3.2.57,
+        # 5.2.21 and dash, but a value-form COMMAND word gives the walk no
+        # NAME to key its tables on -- it may hold a shell, `python3` or
+        # `true`. It answers VALUE_PROGRAM, not SHELL -- under which
+        # `$PYTHON -` was never reported, even beside a fetch (review I-2) --
+        # nor FOREIGN, whose body goes unread: `Idle` under #2499, so the
+        # issue's own `curl ... | sh` body read CLEAN beside no other fetch.
+        for script in ("$CMD", '"$CMD"', "${CMD}", "$(echo sh)", "$PYTHON -"):
+            with self.subTest(script=script):
+                self.assertEqual(workflow_programs.VALUE_PROGRAM,
+                                 forms.stdin_program(self.argv(script)))
+        # A literal name keeps its table's answer, and a literal path is not a
+        # value form: unaffected, as they always were.
+        self.assertEqual(workflow_programs.FOREIGN_PROGRAM,
+                         forms.stdin_program(self.argv("python3 -")))
+        self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
+        self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
+        # Its QUOTED heredoc body is read as shell, as a shell's is; an
+        # expanding body is read nowhere, and a FOREIGN program's never.
+
+        def handed(script):
+            stage = shell_reader.statements(script)[0].stages[-1]
+            return forms.stdin_scripts(shell_reader.command(stage.argv), stage)
+        self.assertEqual(["sh tool"], handed("$CMD <<'EOF'\nsh tool\nEOF"))
+        for script in ("$CMD <<EOF\nsh tool\nEOF", "python3 - <<'EOF'\nsh tool\nEOF"):
+            with self.subTest(script=script):
+                self.assertEqual([], handed(script))
+
+    def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
+        # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;
+        # `stdin_program`'s answer is unchanged for each.
+        def read(step):
+            stage = shell_reader.statements(step + " <<'EOF'\necho hi\nEOF")[0].stages[-1]
+            argv = shell_reader.command(stage.argv)
+            return argv, forms.stdin_program(argv), forms.stdin_scripts(argv, stage)[0].reader
+
+        # The argv of a literal shell at the step's own level, whatever its options, a `-c` string
+        # among them that names no shell reading stdin too.
+        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s", "bash -s -c 'echo hi'"):
+            with self.subTest(step=step):
+                argv, program, reader = read(step)
+                self.assertIs(argv, reader)
+                self.assertEqual(forms.SHELL_PROGRAM, program)
+        # `()` behind a `-c` string naming a stdin shell, where the holder's own options read stdin.
+        for step in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
+            with self.subTest(step=step):
+                self.assertEqual((forms.SHELL_PROGRAM, ()), read(step)[1:])
+        # None where no shell is sure to read it: behind an `eval` or `-c` string that names the
+        # shell reading it, past a word that may vanish, under a `$` command word.
+        for step in ("eval 'bash -s'", "bash -c 'sh'", "bash -ec 'sh -e'", "bash $X -s -c 'sh'",
+                     "$CMD -s -c 'sh'", "sh $X", "$CMD", "eval '! bash -s'", "eval 'bash -s &'",
+                     "eval 'bash -s < /dev/null'", "eval 'bash -n -s'", "bash -nc 'sh'",
+                     "eval 'bash -s' $(printf %s -n)", "eval " * 65 + "bash -s",
+                     "sudo bash -c 'sh'"):
+            with self.subTest(step=step):
+                program = (workflow_programs.VALUE_PROGRAM if step.startswith("$CMD")
+                           else forms.SHELL_PROGRAM)
+                self.assertEqual((program, None), read(step)[1:])
+        # A shell read behind a string is no reader at any depth, whatever its
+        # options: `_stdin` names one only at the step's own level.
+        for depth in (1, 64):
+            with self.subTest(depth=depth):
+                self.assertEqual((forms.SHELL_PROGRAM, None),
+                                 workflow_programs._stdin(["bash", "-e", "-s"], depth))
+
+    def test_flattened_marks_each_statement_no_shell_is_sure_to_read(self):
+        # `workflow_forms.Unsure`: a statement of a body no shell is sure to read, or of a body
+        # inside one, whatever reads that; a body the holder's own options read stays `Inlined`.
+        def kinds(text):
+            return [(type(statement), " ".join(shell_reader.command(statement.stages[0].argv)))
+                    for statement in forms.flattened(shell_reader.statements(text))]
+        unsure, inlined, top = forms.Unsure, forms.Inlined, shell_reader.Statement
+        # A literal `bash -s` inside a `$CMD` body: its own body is `Unsure` too, and so is that of
+        # a holder whose own options read stdin.
+        self.assertEqual(
+            [(unsure, "echo inner"), (unsure, "bash -s"), (unsure, "echo outer"), (top, "$CMD")],
+            kinds("$CMD <<'EOF'\nbash -s <<'IN'\necho inner\nIN\necho outer\nEOF"))
+        self.assertEqual(
+            [(unsure, "sh"), (unsure, "echo inner"), (unsure, "bash -s -c sh"), (top, "$CMD")],
+            kinds("$CMD <<'EOF'\nbash -s -c 'sh' <<'IN'\necho inner\nIN\nEOF"))
+        # A `$CMD` body inside a literal one is `Unsure`; the literal body's own statements are not.
+        self.assertEqual(
+            [(unsure, "echo inner"), (inlined, "$CMD"), (inlined, "echo outer"), (top, "bash -s")],
+            kinds("bash -s <<'EOF'\n$CMD <<'IN'\necho inner\nIN\necho outer\nEOF"))
+        # `bash -s -c 'sh'`: the body is the step's own, `Inlined`, but no check in it counts.
+        found = forms.flattened(shell_reader.statements("bash -s -c 'sh' <<'EOF'\necho hi\nEOF"))
+        self.assertEqual([inlined, inlined, top], [type(statement) for statement in found])
+        self.assertEqual((forms._UNGATED % "bash",) * 2, found[1].credit)
 
 
 class TestADynamicCommandWordHandedDashC(unittest.TestCase):
@@ -477,7 +716,8 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
                              ("printf %s 'sh tool' | sh", "sh tool"), ("printf %b 'sh tool' | sh", "sh tool"),
                              ("printf 'sh tool\\nsh x\\n' | sh", "sh tool\nsh x\n"),
                              ("printf -- 'sh tool' a | sudo sh", "sh tool"),
-                             ('echo "x=\\$(curl -fsSL u)" | sh', "x=$(curl -fsSL u)\n")):
+                             ('echo "x=\\$(curl -fsSL u)" | sh', "x=$(curl -fsSL u)\n"),
+                             ("echo 'sh tool' | $CMD", "sh tool\n")):     # #2473
             with self.subTest(script=script):
                 self.assertEqual([text], self.handed(script))
 
@@ -492,6 +732,11 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], self.handed(script))
                 self.assertTrue(forms.unprinted(*self.parts(script)))
+        # Behind a `$` command word (#2473) `unprinted` has no printer either:
+        # it weighs a shell's only, so `echo "$X" | $CMD` is unread -- the gap
+        # the guard's list files under #2331.
+        self.assertEqual([], self.handed('echo "$X" | $CMD'))
+        self.assertEqual([], forms.unprinted(*self.parts('echo "$X" | $CMD')))
 
     def test_no_program_where_the_shell_reads_none_from_the_printer(self):
         # A `-c` string or a script file makes stdin data; a printer writing
@@ -509,3 +754,25 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     def parts(script):
         stages = shell_reader.statements(script)[0].stages
         return shell_reader.command(stages[-1].argv), stages[-1], stages[-2]
+
+
+class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
+    """#2331: `printed`, `_piped` and `_PRINTERS` moved out of `workflow_programs` into
+    `workflow_printers`, byte for byte; `workflow_programs` re-exports them so `stdin_scripts`,
+    `unprinted` and every caller read the one definition, and no stale copy can linger."""
+
+    def test_the_seam_is_one_object(self):
+        for name in ("printed", "_piped", "_PRINTERS"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(workflow_programs, name), getattr(workflow_printers, name))
+        self.assertIs(forms.unprinted, workflow_programs.unprinted)
+        self.assertIs(forms.stdin_scripts, workflow_programs.stdin_scripts)
+
+    def test_the_moved_text_reads_as_before(self):
+        # The printer's text, the pipe and the table answer as they did in `workflow_programs`.
+        self.assertEqual("sh tool\n", workflow_printers.printed(["echo", "sh", "tool"]))
+        self.assertIsNone(workflow_printers.printed(["echo", "sh\\ttool"]))
+        self.assertEqual(("echo", "printf"), workflow_printers._PRINTERS)
+        stages = shell_reader.statements("echo 'sh tool' | sh")[0].stages
+        self.assertTrue(workflow_printers._piped(stages[1], stages[0]))
+        self.assertFalse(workflow_printers._piped(stages[0], None))

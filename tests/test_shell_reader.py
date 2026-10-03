@@ -394,6 +394,42 @@ class TestSubshellBoundaryMetadata(unittest.TestCase):
                 self.assertEqual(expected, parsed.group_close)
 
 
+class TestLineOnlySubshellBoundaries(unittest.TestCase):
+    """#2420: structural-only lines keep the separator that follows them."""
+
+    def test_an_opener_and_each_status_bearing_closer_are_statements(self):
+        for separator, suffix in (("||", "true"), ("&&", "echo next"), ("&", "wait")):
+            script = "(\necho body\n) %s\n%s\n" % (separator, suffix)
+            with self.subTest(separator=separator):
+                parsed = shell_reader.statements(script)
+                self.assertEqual((1, 0, 0, 0), tuple(
+                    statement.stages[0].group_open for statement in parsed
+                ))
+                self.assertEqual((0, 0, 1, 0), tuple(
+                    statement.stages[0].group_close for statement in parsed
+                ))
+                self.assertEqual(("\n", "\n", separator, "\n"), tuple(
+                    statement.separator for statement in parsed
+                ))
+                self.assertEqual(
+                    ([], ["echo", "body"], [], suffix.split()),
+                    tuple(statement.stages[0].argv for statement in parsed),
+                )
+
+    def test_esac_followed_by_a_subshell_closer_keeps_both_boundaries(self):
+        parsed = shell_reader.statements("(\ncase x in\n  x) echo yes;;\nesac )\n")
+        self.assertEqual(["esac"], parsed[-1].stages[0].argv)
+        self.assertEqual(1, parsed[-1].stages[0].group_close)
+
+        arm = shell_reader.statements("case x in\n  x\n  ) ;;\nesac\n")[2].stages[0]
+        self.assertTrue(shell_reader.is_arm(arm.argv[0]))
+        self.assertEqual(0, arm.group_close)
+
+        named_arm = shell_reader.statements("case x in\n  esac) echo yes;;\nesac\n")[1].stages[0]
+        self.assertTrue(shell_reader.is_arm(named_arm.argv[0]))
+        self.assertEqual(0, named_arm.group_close)
+
+
 class TestPipelineStdinProvenance(unittest.TestCase):
     def test_input_aliases_copy_current_descriptor_origin(self):
         for script, expected in (("sh </dev/stdin", True),
@@ -1419,6 +1455,7 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
         # Once one body is unended, each later `D)` is followed by its exact
         # `D` only after every such body. Looking ahead to that line per body
         # would be quadratic; the index merely proves each short scan bounded.
+        # Each retained line-only `)` is a third statement for that body.
         def bounded(size):
             bodies = "".join("y=$(c <<D%d\nbody\nD%d)\n" % (k, k) for k in range(size))
             bounds = "".join("D%d\n)\n" % k for k in range(size))
@@ -1426,7 +1463,7 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
 
         self.assert_linear_growth(
             750, bounded,
-            lambda size, parsed: self.assertEqual(1 + 2 * size, len(parsed)))
+            lambda size, parsed: self.assertEqual(1 + 3 * size, len(parsed)))
 
 
 class TestTheHeredocIndexIsOneImplementation(unittest.TestCase):

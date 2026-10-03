@@ -259,7 +259,10 @@ def _split(text, context):
             continue
         if ch == ")":
             cond = max(cond - 1, 0)         # one it did not open ends it
-            if cases and cases[-1] == "pattern":
+            # `esac )` ends the case and its enclosing subshell. A pattern
+            # spelled `esac)` has no separating whitespace and remains an arm.
+            case_end = re.fullmatch(r"\s*esac\s+", "".join(buf))
+            if cases and cases[-1] == "pattern" and not case_end:
                 buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
                 cases[-1] = "body"
             elif cond:
@@ -513,7 +516,8 @@ def statements(script):
     out = []
     for raw, separator in _split(text, context):
         stages = [_stage(s, context) for s in raw]
-        if any(s.argv for s in stages):
+        # A line-only boundary has no argv; keep its marker and the closer's separator.
+        if any(s.argv or s.group_open or s.group_close for s in stages):
             out.append(Statement(stages, separator))
     return out
 
