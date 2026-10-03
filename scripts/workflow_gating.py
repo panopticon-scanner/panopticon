@@ -39,8 +39,9 @@ from shell_reader import command, conditional, negated
 from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach, _CLOSES,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
-                                     _SET_E as _SET_E, _control_depths, _function_scope,
-                                     _function_syntax, _posture_barrier, _stops_the_job,
+                                     _SET_E as _SET_E, _closes, _control_depths, _function_scope,
+                                     _function_syntax, _gating_function_call, _posture_barrier,
+                                     _stops_the_job,
                                      _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
@@ -246,6 +247,17 @@ class RescueGate(Reach):
         return self if self.start <= use <= self.through else self.outside
 
 
+class FunctionStatusGate(FunctionGate):
+    """A called function gate that also keeps the check's reach in its body."""
+
+    body_span: int | None
+
+    def __new__(cls, through, body=None, outer=None):
+        gate = FunctionGate.__new__(cls, through, outer)
+        gate.body_span = body.span if isinstance(body, Reach) else body
+        return gate
+
+
 def clears(why, check, use):
     """Whether a check clears this use, excluding its own rescue body."""
     if isinstance(why, RescueGate):
@@ -253,6 +265,9 @@ def clears(why, check, use):
         if contextual is why:
             return False
         why = contextual
+    if (isinstance(why, FunctionStatusGate) and why.body_span is not None
+            and check < use and use - check <= why.body_span):
+        return True
     return _clears(why, check, use)
 
 
@@ -347,6 +362,35 @@ def _stopping_rescue(stmts, index, errexit=True, pipefail=False):
 
 
 _UNMEASURED = object()
+_FUNCTION_BODY = ("is inside a function that has not run through a failure gate before that "
+                  "use")
+
+
+def _function_status(stmts, index, answer, errexit):
+    """Bind definition-time credit to a proved call, preserving body reach."""
+    function, carrier = _function_scope(stmts, index), index
+    if function is None and isinstance(stmts[index], Inlined):
+        carrier = next((at for at in range(index + 1, len(stmts))
+                        if not isinstance(stmts[at], Inlined)), index)
+        function = _function_scope(stmts, carrier)
+    if function is None or answer is not None and type(answer) is not Reach:
+        return answer
+    name, close = function
+    soft = isinstance(answer, Reach) and "continue-on-error" in answer
+    reaches_close = (isinstance(answer, Reach) and answer.span is not None
+                     and index + answer.span >= close)
+    if answer is not None and not reaches_close:
+        return answer
+    returned = reaches_close or (carrier != index and all(
+        _closes(item) for item in stmts[carrier + 1:close + 1]
+    )) or carrier == index
+    call = _gating_function_call(stmts, name, close, errexit, returned)
+    if call is None:
+        return _FUNCTION_BODY
+    body = answer if isinstance(answer, Reach) and not soft else close - index
+    return FunctionStatusGate(
+        call, body, answer if soft else None
+    )
 
 
 def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
@@ -415,10 +459,10 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         piped_end = function_end
     answer = (PipelineGate(piped_end, why)
               if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    pair = credit if isinstance(credit, tuple) else (None, None)
+    errexit = not (pair[0] == _SET_E or
+                   isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
     if measuring_uses and (answer is None or isinstance(answer, Reach)):
-        pair = credit if isinstance(credit, tuple) else (None, None)
-        errexit = not (pair[0] == _SET_E or
-                       isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
         rescue = _stopping_rescue(
             stmts, index, errexit, isinstance(credit, tuple) and pair[1] is None
         )
@@ -426,4 +470,4 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
             start, through, stops = rescue
             outside = stops if isinstance(stops, Reach) else answer
             return RescueGate(start, through, outside)
-    return answer
+    return _function_status(stmts, index, answer, errexit) if measuring_uses else answer
