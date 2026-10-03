@@ -168,6 +168,9 @@ live, so a change that catches one fails there and edits this list.
   (#2333, #2481, #2467, #2476). A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i`
   ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as
   printing its body (`-n` over-reports); beside `-`, a file's text is unread.
+  A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
+  `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload there, so #2626 kept #2493's
+  refusal limited to `)` instead of reporting code only Bash 5.2 parses.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
