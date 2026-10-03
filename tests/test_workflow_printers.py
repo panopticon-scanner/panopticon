@@ -695,11 +695,11 @@ class TestFixRound4(unittest.TestCase):
         self.assertEqual(["echo \\x; sh\\ttool\n", None],
                          wp.spellings(shell_reader.command(stages[0].argv), stages[0],
                                       wp.Named("bash")))
-        texts = forms.stdin_scripts(argv, stages[1], stages[0], wp.Named("bash"))
+        texts = forms.stdin_scripts(argv, stages[1], stages[:1], wp.Named("bash"))
         self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
         self.assertIsNone(texts[0].reader)
         # One spelled reading alone keeps the real reader (bash's own table: `[spelled]`).
-        texts = forms.stdin_scripts(argv, stages[1], stages[0], "bash")
+        texts = forms.stdin_scripts(argv, stages[1], stages[:1], "bash")
         self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
         self.assertIs(argv, texts[0].reader)
 
@@ -1054,7 +1054,7 @@ class TestFixRound5(unittest.TestCase):
             with self.subTest(script=script):
                 stages = shell_reader.statements(script)[0].stages
                 self.assertEqual([], forms.unprinted(shell_reader.command(stages[1].argv),
-                                                     stages[1], stages[0]))
+                                                     stages[1], stages[:1]))
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
@@ -1090,7 +1090,7 @@ class TestThePrintersUnitPins(unittest.TestCase):
 
     def test_handed_carries_the_heredoc_down_the_pipe(self):
         stages = shell_reader.statements("cat <<'EOF' | sh\nbody text\nEOF\n")[0].stages
-        self.assertEqual(("body text", False), wp.handed(stages[1], stages[0]))
+        self.assertEqual(("body text", False), wp.handed(stages[1], stages[:1]))
 
     def test_decoded_backslash_c_and_octal(self):
         self.assertEqual("a", wp._decoded("a\\cb"))

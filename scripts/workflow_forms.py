@@ -206,7 +206,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            argv, before = command(stage.argv), statement.stages[:position]
             # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
             name = _runner(argv) if argv else ""
             for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
@@ -380,8 +380,8 @@ def substitution_script(argv, stage, walk, before=None, shell=None):
     an unread form in is reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
     `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but the guard follows no
     download into a substitution, where a script may still run one the job fetched:
-    `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is the stage in front of this one, whose
-    `echo` or `printf` may pipe the shell its program under `shell` (`stdin_scripts`, #2333, #2476).
+    `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is the stages in front of this one in its
+    pipeline, whose printer may pipe it a program under `shell` (`stdin_scripts`, #2476, #2478).
     """
     handed = scripts(argv) + stdin_scripts(argv, stage, before, shell)
     if not handed:
@@ -404,24 +404,24 @@ def _weighed(why, texts, walk, idle=Idle):
 def unread_program(argv, stage, walk, inside, before=None, shell=None):
     """Why a program this stage hands a shell goes unread, or None: a script handed to one `inside`
     a command substitution (`substitution_script`), the words a value where it reads its options may
-    make its program (`candidates`, #2344, #2337), or those of a printer that pipes it one they do
-    not spell out (`unprinted`, `before` the stage in front of it, its text spelled under `shell`,
-    #2333, #2476), weighed alike -- so `X=-c; sh $X 'echo hi'` and `echo "$X" | sh` are `Idle`, and
-    `sh $X`, with no word after the value, hands none. A candidate is read as `scripts` reads a
-    `-c` string, so `sh $X "$Y"` alone is `Idle` too, but not one `Rewritten`. A lifted `$(…)`
-    stays opaque while the text around it is read, and `_walk` reads its inner script separately
-    (#2482). A command the guard reports unresolved (`sudo $CMD -c …`) is not read again here.
-    The handed script or the printer speaks before the value's reason where a shell reads that stdin
-    (`Stdin.reader` the argv or `()`), where a `-c` or `eval` string is handed and the handed answer
-    is LOUD, or where that reason is absent or `Idle`; an answer resting only on a stdin no shell is
-    sure to read (`Stdin.reader` None, as past a value, #2485) never speaks before that reason where
-    it is LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'` runs the word whatever the stdin holds.
-    LAST, where none of those speaks, the same word with the SHELL spelled out (`dynamic_program`,
-    #2483, #2486): one rule for a dynamic program wherever a shell takes one, said where nothing
-    louder (`carried`'s, a stream's) reports its statement. Last because a value in the options
-    answers for the whole statement and `_weighed` makes that answer LOUD where a word after it
-    fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this rule's droppable
-    `_Quiet` would have replaced."""
+    make its program (`candidates`, #2344, #2337), or those of the stage piping it one no printer
+    spells out (`unprinted`, `before` the stages in front of this one in its pipeline, its text
+    spelled under `shell`, #2333, #2476, #2478), weighed alike -- so `X=-c; sh $X 'echo hi'` and
+    `echo "$X" | sh` are `Idle`, and `sh $X`, with no word after the value, hands none. A candidate
+    is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone is `Idle` too, but not one
+    `Rewritten`. A lifted `$(…)` stays opaque while the text around it is read, and `_walk` reads
+    its inner script separately (#2482). A command the guard reports unresolved (`sudo $CMD -c …`)
+    is not read again here. The handed script or the printer speaks before the value's reason where
+    a shell reads that stdin (`Stdin.reader` the argv or `()`), where a `-c` or `eval` string is
+    handed and the handed answer is LOUD, or where that reason is absent or `Idle`; an answer
+    resting only on a stdin no shell is sure to read (`Stdin.reader` None, as past a value, #2485)
+    never speaks before that reason where it is LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'`
+    runs the word whatever the stdin holds. LAST, where none of those speaks, the same word with the
+    SHELL spelled out (`dynamic_program`, #2483, #2486): one rule for a dynamic program wherever a
+    shell takes one, said where nothing louder (`carried`'s, a stream's) reports its statement. Last
+    because a value in the options answers for the whole statement and `_weighed` makes that answer
+    LOUD where a word after it fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which
+    this rule's droppable `_Quiet` would have replaced."""
     handed = inside and substitution_script(argv, stage, walk, before, shell)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell)
     how, bare = (None, None) if handed else dynamic_program(argv)

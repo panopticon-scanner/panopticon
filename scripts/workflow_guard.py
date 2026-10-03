@@ -161,11 +161,13 @@ live, so a change that catches one fails there and edits this list.
   file redirected into it. `CMD=cat` is the fail-closed price. A value option before a file keeps
   stdin possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
   aliases, a shell behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename
-  such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a shell
-  reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or
-  one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported where
-  words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported fetch
-  (#2333, #2481, #2467, #2476). A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i`
+  such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a
+  shell, directly or through `tee f`/`cat` pass-throughs (#2478), reads per shell (bash literal
+  unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval` string names
+  (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written
+  (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported fetch (#2333, #2481, #2467,
+  #2476); a stage that rewrites the stream (`tr`, `base64 -d`) leaves the program unread, reported
+  beside a reported download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i`
   ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as
   printing its body (`-n` over-reports); beside `-`, a file's text is unread.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
@@ -226,7 +228,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            argv, before = command(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
@@ -279,8 +281,9 @@ def _unread_stdin(stage, before=None):
     (`workflow_programs.stdin_program`): one in a language with no grammar here, or handed to a `$`
     word no table places (#2473), is `Idle`, which `kept` stands only beside a fetch this guard
     reports (#2499). An EXPANDING one -- its `$(...)` lifted in, or a here-string bash expands first
-    (#2293) -- by NAME or down a `cat` printer's pipe (`handed`, #2467), is reported fetch or no
-    fetch; a `$` word's body is READ as shell, a literal shell's where quoted (`stdin_scripts`)."""
+    (#2293) -- by NAME or down a `cat` printer's pipe, through pass-through stages (#2478) too
+    (`handed`, #2467), is reported fetch or no fetch; a `$` word's body is READ as shell, a literal
+    shell's where quoted (`stdin_scripts`)."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc or handed(stage, before)
     if not here or (kind := stdin_program(argv)) is None:

@@ -747,7 +747,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
         stmts = shell_reader.statements(script)
         assert len(stmts) == 1, stmts
         stages = stmts[0].stages
-        before = stages[-2] if piped and len(stages) > 1 else None
+        before = stages[:-1] if piped else None
         return forms.stdin_scripts(shell_reader.command(stages[-1].argv), stages[-1], before)
 
     def test_the_text_a_printer_spells_out_is_the_program(self):
@@ -783,7 +783,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     def test_no_program_where_the_shell_reads_none_from_the_printer(self):
         # A `-c` string or a script file makes stdin data; a printer writing
         # elsewhere pipes nothing; only a printer is read, and only when the
-        # stage in front of the shell is given (`flattened`, `_walk`).
+        # stages in front of the shell are given (`flattened`, `_walk`).
         for script in ("echo 'sh tool' | sh -c 'echo hi'", "echo y | sh install.sh",
                        "echo 'sh tool' > f | sh", "cat notes.txt | sh", "echo 'sh tool' | python3"):
             with self.subTest(script=script):
@@ -795,7 +795,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     @staticmethod
     def parts(script):
         stages = shell_reader.statements(script)[0].stages
-        return shell_reader.command(stages[-1].argv), stages[-1], stages[-2]
+        return shell_reader.command(stages[-1].argv), stages[-1], stages[:-1]
 
 
 class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
