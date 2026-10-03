@@ -3596,13 +3596,14 @@ class TestPipelineStreamProvenance(unittest.TestCase):
                        "sh <<'EOF'\necho safe\nEOF", "sh <local",
                        "cat 3<&0 0<local | sh",
                        "cat 0<&3 3<&0 | sh",
-                       "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF"):
+                       "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF",
+                       "cat 3<&0 0<&3 <<'EOF' | sh\necho safe\nEOF"):
             with self.subTest(suffix=suffix):
                 self.assertFalse(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, suffix)))
-        # Here the download is disconnected too (fd 0's FINAL state is the heredoc, not the pipe),
-        # but `cat`'s own heredoc is now a printer handed down the pipe (`handed`, #2467), and it is
-        # UNQUOTED -- a different, genuine defect from the one this test is about.
+        # The same shape, UNQUOTED: fd 0's FINAL state still disconnects the download from `sh`,
+        # but now `cat`'s own heredoc is EXPANDING, a different, genuine defect from the one this
+        # test is about (a printer handed down the pipe, `handed`, #2467).
         found = wg.fetch_exec_defects(
             "curl -fsSL %s | cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF\n" % self.URL)
         self.assertEqual(1, len(found), found)
@@ -4213,7 +4214,8 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # #2341 follows `x=$(curl ...)` to a shell whole, or a whole copy of it
         # (`TestADownloadCarriedInAVariable`); through a cut, a command's output
         # or a file, from a substitution holding more than the fetch, or through
-        # a printer other than echo/printf, it is a value the guard does not follow.
+        # a printer other than echo, printf or a heredoc-fed `cat` (#2467), it is
+        # a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
         for run in (get + 'echo "$x" > f\nsh f\n',
                     "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
