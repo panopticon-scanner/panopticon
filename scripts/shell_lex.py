@@ -103,6 +103,10 @@ split the arm, and the reader took the pattern `a` and then a `|` for the
 command, so the body behind them went unread (#2345). So `lex` follows each
 `case` as bash's parser does (`casing`) and drops those spaces and tabs from a
 pattern list outside quotes; a newline there is a syntax error to all three.
+It also exposes two grammar boundaries the statement reader cannot infer: a
+nested `case` directly after an outer arm's `)`, and a literal `in` on the
+line after its subject (#2429). The first receives a statement boundary; the
+second has its intervening newline folded so each header reaches the reader.
 `closing` follows the same phases, so an arm's `)` does not close its
 surrounding substitution (#2474).
 
@@ -531,10 +535,21 @@ class _Lexer:
         if word and state == _SUBJECT:
             self.cases = rest + (_IN,)
         elif word and state == _IN:
+            if word == "in":
+                before = self.word - 1
+                while before >= 0 and self.out[before].isspace():
+                    self.out[before] = self.out[before].replace("\n", " ")
+                    before -= 1
             self.cases = rest + (_PATTERN,) if word == "in" else rest
         elif word == "esac" and (state == _PATTERN or state == _BODY and self.at in _HEADS):
             self.cases = rest
         elif word == "case" and self.at in _HEADS and state not in (_PATTERN, _ARM):
+            if state == _BODY:
+                if self.word and self.out[self.word - 1].isspace():
+                    self.out[self.word - 1] = "\n"
+                else:
+                    self.out.insert(self.word, "\n")
+                    self.word += 1
             self.cases += (_SUBJECT,)
         elif state == _PATTERN and (word or ch in "(|"):
             self.cases = rest + (_ARM,)

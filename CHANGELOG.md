@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested and multiline `case` headers stay visible (#2429, #2331).** A nested `case` directly
+  after an outer arm and a literal `in` on the line after its subject now reach the statement
+  reader. Commands in those arms no longer disappear from workflow-guard findings.
 - **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
