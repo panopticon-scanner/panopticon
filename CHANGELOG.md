@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
 - **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
   heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
   `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
