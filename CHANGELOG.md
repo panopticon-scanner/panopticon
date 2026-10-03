@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
+  shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
+  and an EXPANDING `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash
+  prints them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always.
+  Named gap: `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not
+  follow.
 - **Workflow guard: a value in a shell's options is weighed to its first operand, or past a word
   that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
   one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
