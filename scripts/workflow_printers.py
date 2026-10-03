@@ -3,9 +3,10 @@
 
 Split out of `scripts/workflow_programs.py` (#2331's follow-ups) the way `workflow_posture.py` was
 split out of `workflow_gating.py`, so the printer rules grow here and nowhere else: first a pure
-move (PR #2699 -- `_piped`, `_PRINTERS` and `printed` byte for byte), then a `cat` with a heredoc or
-here-string on its stdin (#2467) and an `echo`/`printf` read the way the step's own shell prints it
-(#2476), then fix round 1's `ANY` reading for a runner no row measures (#2467, #2476, review R-F1).
+move (PR #2699 -- `_piped`, `_PRINTERS` and `printed` byte for byte), then a `cat` with a heredoc
+or here-string on its stdin (#2467) and an `echo`/`printf` read the way the shell that RUNS the
+printer prints it (`ANY`/`Named` where that is not one measured shell) (#2476), then fix round 1's
+`ANY` reading for a runner no row measures (#2467, #2476, review R-F1).
 A pass-through stage between the printer and the shell (#2478) and a printer reaching a shell
 through a substitution (#2487, #2495) are still owed. `workflow_programs` re-exports every name its
 callers use:
@@ -115,11 +116,14 @@ def _decoded(text, fmt=False):
 
 
 def _cat_reads_stdin(argv):
-    """Whether `argv` is a bare `cat` reading its own stdin (R-P5, R-F5): no option word, and
-    either no operand at all or a `-` standing among its operands -- `cat -n` is no printer (an
-    option), but `cat - f` and `cat f -` both still read stdin, among `f`'s own text (fail-closed
-    for the body; `f` stays unread unless it is itself a download, as `cat f | sh` already is)."""
+    """Whether `argv` is a bare `cat` reading its own stdin (R-P5, R-F5): no option word past one
+    leading `--` (R-F10 -- `--` ends the options, itself no option), and either no operand at all or
+    a `-` standing among its operands -- `cat -n` is no printer (an option), but `cat - f` and `cat
+    f -` both still read stdin, among `f`'s own text (fail-closed for the body; `f` stays unread
+    unless it is itself a download, as `cat f | sh` already is)."""
     words = [getattr(w, "spelled", w) for w in argv[1:]]
+    if words[:1] == ["--"]:
+        words = words[1:]
     return (bool(argv) and os.path.basename(argv[0]) == "cat"
             and not any(w.startswith("-") and w != "-" for w in words)
             and (not words or "-" in words))

@@ -20,9 +20,10 @@ it, the stage in front of it (#2333):
                       `Stdin` naming the shell the step runs to read it, under whose `-e` a check
                       runs -- or none, where no check counts
     `unprinted`       the printer piping one in whose text no reading `spellings` gives spells out
-                      -- a heredoc-fed `cat` among them (#2467) -- for `unread_program` to weigh;
-                      `printed`, `spellings`, `ANY`, `Named`, `handed`, the pipe test `_piped` and
-                      the `_PRINTERS` table live in `workflow_printers` and are re-exported here
+                      -- only the EXPANDING heredoc-fed `cat` among them, which `_unread_stdin`
+                      reports first (#2467) -- for `unread_program` to weigh; `printed`,
+                      `spellings`, `ANY`, `Named`, `handed`, the pipe test `_piped` and the
+                      `_PRINTERS` table live in `workflow_printers` and are re-exported here
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
@@ -614,15 +615,19 @@ def _options(argv, depth):
 
 
 def runs_under(argv, reader, name):
-    """The shell `workflow_forms.flattened` reads a stdin text's body under: its READER's basename
-    (`sudo sh <<'EOF'` → `sh`), or the holder's `name` -- as a `Named` read by the printers as `ANY`
-    where `_stdin` names no reader BECAUSE the holder's `-c`/`eval` string names the shell that reads
-    the body (`bash -c 'sh'`, `bash -s -c 'sh'`, `eval 'bash -s'`: #2500, R-F7), the plain name where
-    no string does (a word that may vanish, #2485: `bash $X <<'EOF'` runs the body under bash or not
-    at all; a `$` command word, #2473, misses the table and reads as `ANY` already)."""
-    if reader:
-        return os.path.basename(reader[0])
-    return Named(name) if scripts(argv) else name
+    """The shell `workflow_forms.flattened` reads a stdin text's body under: another READER's basename,
+    where one differs from the holder's own argv (`sudo sh <<'EOF'` → `sh`); the holder's plain
+    `name`, where the reader IS its own argv and no value among its words could hand the body
+    elsewhere (`bash <<'EOF'`, `bash -s -c 'echo hi' <<'EOF'`); or `Named(name)` otherwise, read by
+    the printers as `ANY` -- no reader at all (#2473), a `-c`/`eval` string naming the shell that
+    reads the body (`bash -c 'sh'`, `bash -s -c 'sh'`, `eval 'bash -s'`: #2500, R-F7), or a VALUE
+    among the holder's words that may resolve to one at runtime (`bash $X <<'EOF'`, `X='-c sh'` →
+    `sh`, R-F9; refutes #2485's bash-or-nothing)."""
+    if reader and reader is not argv:
+        return os.path.basename(reader[0])        # another reader names itself (`sudo sh <<'EOF'` → `sh`)
+    if reader and candidates(argv)[0] is None:
+        return name                               # the holder reads its own text, no value among its words
+    return Named(name)                            # a string names the shell, a value may, or no reader: both ways
 
 
 def stdin_scripts(argv, stage, before=None, shell=None):
@@ -643,8 +648,8 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     string names no shell that reads stdin); `()` for the body of a holder whose own options read
     stdin (`bash -s -c 'sh'`), the step's own statements, with no check counting; and None behind a
     string that names the shell reading it (`eval 'bash -s'`, `bash -c 'sh'`), past a word that may
-    vanish or under a `$` command word, where no shell is sure to read it and nothing in it is the
-    step's own (`workflow_forms.Unsure`).
+    vanish, under a `$` command word, or where the printer spells two readings (R-F8), where no
+    shell is sure to read it and nothing in it is the step's own (`workflow_forms.Unsure`).
 
     Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
     though the word may hold none: what they fetch or run is read as at the top level, and
@@ -673,7 +678,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     out = []
     for spelled in texts:
         text = Stdin(spelled)
-        text.reader = reader
+        text.reader = reader if len(texts) == 1 else None
         out.append(text)
     return out
 

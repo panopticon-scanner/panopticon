@@ -119,7 +119,7 @@ live, so a change that catches one fails there and edits this list.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run. OUT OF SCOPE:
   the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* * a heredoc body printed inside a command substitution for `eval` to run (`eval "$(cat <<'EOF' …
+* a heredoc body printed inside a command substitution for `eval` to run (`eval "$(cat <<'EOF' …
   EOF)"`). The OUTER parse lifts the body, and the substitution's text carries it back to its
   redirection (#2336): a shell reading a quoted one as its program is reported as `x=$(sh -c '…')`
   is (review I-4), but `cat` reads data, and what `eval` runs is unread. KEPT: reading it means
@@ -169,8 +169,8 @@ live, so a change that catches one fails there and edits this list.
   the basename. A program `echo`, `printf` or a heredoc-fed `cat` PIPES into a shell reads per shell
   (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval`
   string names (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written
-  (`echo "$X" | sh`, a `printf` format past `%s`) or beside a fetch it reports (#2467, #2476). A
-  heredoc WRITTEN then run is the `sed -i` ruling (repo text, author-deterministic: `cat <<'EOF' >
+  (`echo "$X" | sh`, a `printf` format past `%s`) or beside a fetch it reports (#2333, #2481, #2467,
+  #2476). A heredoc WRITTEN then run is the `sed -i` ruling (author-deterministic: `cat <<'EOF' >
   x.sh … bash x.sh`), unaffected. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the
   table (`\x`, `\e`); `cat` with an option is no printer; beside `-`, a file's text is unread.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`

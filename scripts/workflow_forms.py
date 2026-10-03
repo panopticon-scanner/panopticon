@@ -216,7 +216,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     bool(who) and stops and swallowed(stmts, index, statement, stage) is None
                     and (top or on[index] or index == last)
                     and (fails[index] or stage is statement.stages[-1]))
-                runner, who = name if who is argv else runs_under(argv, who, name), who or argv
+                runner, who = runs_under(argv, who, name), who or argv
                 own = name == "eval" and who is argv    # runs in this shell, with its `-e`
                 read = flattened(
                     statements(text), gates,
