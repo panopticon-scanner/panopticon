@@ -168,12 +168,12 @@ live, so a change that catches one fails there and edits this list.
   named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
   (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
   whose argv this walk reads as the transport's; and one under a name no table carries
-  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on the basename. A program `echo` or
-  `printf` PIPES into a shell is read where their words spell it out; one they do not
-  (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as written or
-  beside a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
-  WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
-  the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
+  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on the basename. A program `echo`,
+  `printf` or a heredoc-fed `cat` PIPES into a shell is read per shell -- bash literal unless `-e`,
+  else decoded; `printf` always; unspelled text is reported as written or beside a fetch (#2333,
+  #2467, #2476, #2481). A heredoc WRITTEN to a file and run is the `sed -i` entry's ruling,
+  unaffected. Open: `xpg_echo` (bash's `echo` decodes); an escape outside the table (`\x`, `\e`);
+  `cat` with an option, no printer.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
@@ -202,7 +202,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOU
                             described, flattened, in_container, kept, may_run, names_file,
                             parse_fetch, regions, same_file, stdin_program, step_credit,
                             streamed_fetch, swallowed, unbound, unread_program, within)
-from workflow_programs import VALUE_PROGRAM
+from workflow_programs import VALUE_PROGRAM, handed
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -232,12 +232,12 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _walk(stmts, stream_exec=False, inside=False):
+def _walk(stmts, stream_exec=False, inside=False, shell=None):
     """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
 
     Every download in the script, and every command this module cannot read, asked of each stage in
     ONE walk -- the first read of each command substitution as a script of its own, so a caller that
-    walks inside a catch (`job_defects`) has read every text anything here reads.
+    walks inside a catch (`job_defects`) has read every text anything here reads (`shell`, #2476).
 
     A fetch in a substitution is credited to the command that CONSUMES it -- `eval`, `sh -c`,
     `bash <(...)` -- because that is what decides whether the downloaded bytes become behaviour, and
@@ -265,13 +265,14 @@ def _walk(stmts, stream_exec=False, inside=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside, before)
+            reason = (_unread_stdin(stage, before)
+                      or unread_program(argv, stage, _walk, inside, before, shell))
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             for inner in stage.substitutions:
-                fetched, nested = _walk(statements(inner), stream_exec, True)
+                fetched, nested = _walk(statements(inner), stream_exec, True, shell)
                 unread.extend((index, why) for _index, why in nested)
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)
@@ -284,18 +285,17 @@ def _fetch_records(stmts, stream_exec=False):
     return _walk(stmts, stream_exec)[0]
 
 
-def _unread_stdin(stage):
+def _unread_stdin(stage, before=None):
     """Why the program on this stage's STANDARD INPUT goes unread, or None.
 
     A heredoc body or here-string handed to an interpreter is a program, not data
     (`workflow_programs.stdin_program`). One in a language this module has no grammar for, and one
     handed to a `$` command word no table places (#2473), are `Idle`, which `kept` stands only
-    beside a fetch this guard reports (#2499); an EXPANDING one handed to a shell by name -- a body
-    whose `$(...)` were lifted into the outer parse's table before it reached here, or a here-string
-    whose word bash expands first (#2293) -- is reported fetch or no fetch. A QUOTED one handed to a
-    shell or a `$` command word is READ as shell, in `workflow_programs.stdin_scripts`."""
+    beside a fetch this guard reports (#2499); an EXPANDING one -- by name, a `$` word, or down the
+    pipe from a `cat` printer (`handed`, #2467) -- is reported fetch or no fetch. A QUOTED one is
+    READ as shell instead, in `workflow_programs.stdin_scripts`."""
     argv = command(stage.argv)
-    here = stage.stdin_heredoc
+    here = stage.stdin_heredoc or handed(stage, before)
     kind = stdin_program(argv) if here else None
     if kind is None:
         return None
@@ -668,7 +668,7 @@ def job_defects(steps, strict=False):
                     here = read(step.script, step.shell)
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
-                    walked = _walk(here, stream_exec=True)
+                    walked = _walk(here, stream_exec=True, shell=step.shell)
                 except (() if strict else shell_lex.Unreadable) as error:
                     why = "cannot read this step: %s; nothing in it is accepted" % error
             if why:

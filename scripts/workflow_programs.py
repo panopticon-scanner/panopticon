@@ -13,13 +13,15 @@ it, the stage in front of it (#2333):
     `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
                       is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
                       language, where a table names it (`$CMD` is a value none places)
-    `stdin_scripts`   the quoted body that program is, where it is or may be shell, or the text an
-                      `echo` or `printf` pipes in (`printed`), each a `Stdin` naming the shell the
-                      step itself runs to read it, under whose `-e` a check in it runs -- or none,
-                      where no check in it counts
-    `unprinted`       the printer piping one in whose text `printed` cannot spell out, for
-                      `unread_program` to weigh; `printed`, the pipe test `_piped` and the
-                      `_PRINTERS` table live in `workflow_printers` and are re-exported here
+    `stdin_scripts`   the quoted body that program is, where it is or may be shell, the heredoc or
+                      here-string a `cat` printer in front hands down the pipe (`handed`, #2467), or
+                      the text an `echo` or `printf` pipes in under the step's own shell (`printed`,
+                      #2476), each a `Stdin` naming the shell the step itself runs to read it, under
+                      whose `-e` a check in it runs -- or none, where no check in it counts
+    `unprinted`       the printer piping one in whose text `printed` cannot spell out -- a heredoc-
+                      fed `cat` among them (#2467) -- for `unread_program` to weigh; `printed`,
+                      `handed`, the pipe test `_piped` and the `_PRINTERS` table live in
+                      `workflow_printers` and are re-exported here
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
@@ -41,7 +43,8 @@ import re
 
 import shell_lex
 import shell_reader
-from workflow_printers import _PRINTERS as _PRINTERS, _piped as _piped, printed as printed
+from workflow_printers import (_PRINTERS as _PRINTERS, _piped as _piped, handed as handed,
+                               printed as printed)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
@@ -609,17 +612,19 @@ def _options(argv, depth):
     return answer, reader
 
 
-def stdin_scripts(argv, stage, before=None):
+def stdin_scripts(argv, stage, before=None, shell=None):
     """The QUOTED heredoc script this stage hands an interpreter, if it does.
 
     `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
     quoted delimiter the interpreter reads the body as the text it was written
     as, so reading it here is exactly as sound as reading that string -- and a
     `curl … | sh` inside it is the same defect it is at the top level; so is
-    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
-    `_unread_stdin`. Read here too is the text an `echo` or `printf` in front
-    of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
-    'sh tool' | sh`; where it does not, `unprinted` has the printer.
+    `sh <<< '…'` (#2293), and so is the quoted heredoc or here-string a `cat`
+    printer in front hands down the pipe (`handed`, #2467). What EXPANDS is
+    read nowhere: the guard's `_unread_stdin`. Read here too is the text an
+    `echo` or `printf` in front of it (`before`) pipes in, per the step's own
+    shell `shell` (#2476), where `printed` spells it out (#2333): `echo 'sh
+    tool' | sh`; where it does not, `unprinted` has the printer.
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -639,9 +644,9 @@ def stdin_scripts(argv, stage, before=None):
     whose text no printer spells out (`echo "$X" | $CMD`) is unread, filed
     under #2331.
     """
-    here = stage.stdin_heredoc
+    here = stage.stdin_heredoc or handed(stage, before)
     if here is None and _piped(stage, before):
-        text = printed(shell_reader.command(before.argv))
+        text = printed(shell_reader.command(before.argv), before, shell)
         here = None if text is None else (text, False)
     kind, reader = (None, None) if here is None or here[1] else _stdin(argv, 0)
     if kind not in (SHELL_PROGRAM, VALUE_PROGRAM):
@@ -651,13 +656,15 @@ def stdin_scripts(argv, stage, before=None):
     return [text]
 
 
-def unprinted(argv, stage, before):
-    """The `echo` or `printf` in front of this shell piping it its program
-    where `printed` does not spell that text out (`echo "$X" | sh`, #2333),
-    or []."""
+def unprinted(argv, stage, before, shell=None):
+    """The `echo`, `printf` or heredoc-fed `cat` in front of this shell piping it its program
+    where `printed` does not spell that text out under the step's shell `shell` (`echo "$X" | sh`,
+    #2333; `cat -n <<'EOF' | sh`, #2467), or []."""
     producer = (shell_reader.command(before.argv)
                 if stage.stdin_heredoc is None and _piped(stage, before) else [])
-    if (not producer or os.path.basename(producer[0]) not in _PRINTERS
-            or printed(producer) is not None or stdin_program(argv) != SHELL_PROGRAM):
+    is_printer = producer and (
+        os.path.basename(producer[0]) in _PRINTERS or handed(stage, before) is not None)
+    if (not is_printer or printed(producer, before, shell) is not None
+            or stdin_program(argv) != SHELL_PROGRAM):
         return []
     return producer
