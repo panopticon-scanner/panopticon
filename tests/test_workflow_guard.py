@@ -3506,6 +3506,53 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                 with self.subTest(body=body, shell=shell):
                     self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
 
+    def test_a_rescued_subshell_swallowed_or_continued_still_reports(self):
+        # #2631 fix round: the SUBSHELL mirrors of the brace must-stay controls.
+        # A rescue inside a bare/double `( )` subshell piped onward clears under
+        # `shell: bash` like its `{ }` sibling -- but only while its non-zero exit
+        # still stops the step. When a downstream `|| true` swallows the pipeline,
+        # an `&& use` runs past it, or a trailing command inside an `&&`-LHS
+        # subshell masks the rescue's exit, the use runs even with pipefail, so
+        # these must STAY reported in EVERY posture. Ground truth (mark-first
+        # stubs): the payload runs under bash 3.2.57 and 5.2.21 `-eo pipefail`,
+        # bash `-e`, and `sh`. The `{ }` analogues are the must-stays the sibling
+        # test already pins; these are the previously-unguarded `( )` spellings.
+        def defects(body, shell):
+            script = self.FETCH + body.replace("CHECK", self.CHECK) + (
+                "" if "sh payload" in body else self.USE)
+            return wg.job_defects([wg.Step("run", script, shell)])
+
+        must_report = (
+            "( CHECK || exit 1 ) | cat || true\n",               # swallowed pipeline
+            "( ( CHECK || exit 1 ) ) | cat || true\n",           # nested, swallowed
+            "( CHECK || exit 1 ; echo ok ) | cat || true\n",     # trailer, then swallowed
+            "( CHECK || return 1; echo a | cat ) || true\n",     # return-rescue, swallowed
+            "( ( CHECK || exit 1 ); echo ok ) && sh payload\n",  # masked exit, continued
+            "( CHECK || return 1; true ) && sh payload\n",       # masked exit, continued
+            "! ( CHECK || exit 1 ) | cat\n",                     # negated
+            "( CHECK || exit 1 ) | { sh payload; }\n",           # use in the concurrent stage
+        )
+        for body in must_report:
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+        # No over-correction. A bare subshell rescue with NO masking trailer still
+        # gates `&& use` (its non-zero exit skips the use) -- cleared in every
+        # posture -- and a plainly piped-onward subshell still SPLITS by posture
+        # (cleared under bash's pipefail, reported without it), exactly as the
+        # pinned `( CHECK || exit 1 ) | cat` does.
+        for body in ("( CHECK || exit 1 ) && sh payload\n",):
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual([], defects(body, shell))
+        for body in ("( CHECK || exit 1 ) | cat && sh payload\n",
+                     "( CHECK || exit 1 ) | cat\n"):
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], defects(body, "bash"))
+
     def test_the_piped_rescue_controls_keep_their_verdicts(self):
         # #2630 controls. Credited (pipefail carries the failed stage's status,
         # or there is no pipe and the exit stops the step):
