@@ -10,6 +10,9 @@ evidence exposed.
 - **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
   of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
   printer follow-ups have room; the guard's answers are byte-identical before and after.
+- **Interpreter redirections now bind expanded paths to fetched scripts (#2426, #2331).**
+  `bash < "$PWD/x.sh"` and a literal redirect after a fetch to `"$PWD/x.sh"` use the same
+  last-part path binding as interpreter operands. Other basenames and non-interpreters stay clean.
 - **Function checks now count only after a failure-gating call (#2421, #2331).**
   Definitions, rescued calls, and child scripts inside them no longer certify later execution;
   a plain call still credits a check whose failure stops that function and the step.

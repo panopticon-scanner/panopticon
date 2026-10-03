@@ -831,6 +831,61 @@ class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
                 self.assertEqual([], self.job(script))
 
 
+class TestADownloadRunFromADollarSpelledRedirection(unittest.TestCase):
+    """#2426: an interpreter can read a fetched script from a redirection.
+
+    The redirection path and the download destination use the same last-part
+    binding as an interpreter operand when either side has a dynamic directory.
+    """
+
+    URL = "https://example.test/x.sh"
+    GET = "curl -fsSLo x.sh %s\n" % URL
+    DYNAMIC_GET = 'curl -fsSLo "$PWD/x.sh" %s\n' % URL
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _name, why in wg.job_defects([("step", script)])]
+
+    def test_a_dynamic_source_path_is_the_download(self):
+        for use, shell in (('bash < "$PWD/x.sh"\n', "bash"),
+                           ('sh < "${PWD}/x.sh"\n', "sh"),
+                           ('sh < "$(pwd)/x.sh"\n', "sh"),
+                           ('D=$PWD\nbash < "$D/x.sh"\n', "bash")):
+            with self.subTest(use=use):
+                found = self.job(self.GET + use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `%s` from standard input" % shell, found[0])
+
+    def test_a_dynamic_destination_binds_a_literal_source_basename(self):
+        for source, shell in (("x.sh", "bash"), ("./x.sh", "sh"),
+                              ("scripts/x.sh", "bash")):
+            with self.subTest(source=source):
+                found = self.job(self.DYNAMIC_GET + "%s < %s\n" % (shell, source))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("-> $PWD/x.sh and running it under `%s` from standard input"
+                              % shell, found[0])
+
+    def test_another_path_or_a_non_interpreter_is_not_a_run(self):
+        for script in (self.GET + 'bash < "$PWD/other.sh"\n',
+                       self.GET + 'cat < "$PWD/x.sh"\n',
+                       "curl -fsSLo /tmp/x.sh %s\nbash < /opt/x.sh\n" % self.URL):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+        self.assertIn("running it under `bash` from standard input", "".join(
+            self.job(self.GET + "bash < x.sh\n")))
+        here_string = self.job(self.DYNAMIC_GET + "sh <<< 'x.sh'\n")
+        self.assertEqual(1, len(here_string), here_string)
+        self.assertNotIn("from standard input", here_string[0])
+
+    def test_a_check_keeps_its_exact_spelling(self):
+        self.assertEqual([], self.job(
+            self.GET + self.CHECK % "x.sh" + 'bash < "$PWD/x.sh"\n'
+        ))
+        found = self.job(self.GET + 'bash < "$PWD/x.sh"\n' + self.CHECK % "x.sh")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("only AFTER running it under `bash` from standard input", found[0])
+
+
 class TestADownloadWrittenToADollarSpelledPathBindsByItsBasename(unittest.TestCase):
     """#2442: the mirror of #2345 (b), and a fail-open until it. After
     `curl -o "$PWD/cuda_1.run"`, both `sh cuda_1.run` and
