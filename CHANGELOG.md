@@ -11,6 +11,9 @@ evidence exposed.
   second parse now expands bounded brace lists and numeric ranges before matching a fetched
   path, because treating every brace group as `*` misses real uses and binds excluded names;
   unbounded expansion was rejected because workflow text controls its cost.
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
   shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
   a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
