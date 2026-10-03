@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
 - **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
   its subject now reaches the statement reader, so commands in those arms remain visible to
   the workflow guard.
