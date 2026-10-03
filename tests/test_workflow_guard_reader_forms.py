@@ -2688,9 +2688,12 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
         self.assertTrue(defects(GET + "cat tool | sh\n"))
 
     def test_what_the_gap_list_leaves_is_read_as_before(self):
-        # Bash runs both: another printer is not read, and a `$` producer in
-        # a job with no download is `Idle`.
-        for script in ("cat <<'EOF' | sh\n%s\nEOF\n" % PIPE, "X='%s'\necho \"$X\" | sh\n" % PIPE):
+        # Bash runs BOTH this row and `cat <<'EOF' | sh` -- the OTHER half of this test before
+        # #2467, now a printer (`tests/test_workflow_printers.py`'s `TestACatPrintsItsQuotedHeredoc`)
+        # and FLIPPED there: bash runs it, and the guard reports it. This row stays open: a `$`
+        # producer in a job with no download is `Idle` -- bash runs it too, but no table places a
+        # `$` command word (#2473), so `[]` here is the documented gap, not a control.
+        for script in ("X='%s'\necho \"$X\" | sh\n" % PIPE,):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
