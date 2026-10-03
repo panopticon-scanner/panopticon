@@ -186,9 +186,12 @@ def _split(text, context):
         cond = 0
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
-            if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
-                cases.pop()
         del stages[:]
+
+    def close_case():
+        """Close a literal `esac` before an operator following it (#2610)."""
+        if cases and re.fullmatch(r"\s*esac\s*", "".join(buf)):
+            cases.pop()
 
     while i < n:
         ch = text[i]
@@ -279,6 +282,8 @@ def _split(text, context):
             i += 1
             continue
         redirect = _REDIRECT.match(text, i)
+        if redirect or ch in ";\n&|":
+            close_case()
         # `[[ $a < $b ]]` compares two strings: no descriptor is redirected.
         if redirect and not cond and not (cases and cases[-1] == "pattern"):
             # Only unquoted, unescaped digits comprising the whole preceding

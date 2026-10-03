@@ -10,6 +10,10 @@ evidence exposed.
 - **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
   its subject now reaches the statement reader, so commands in those arms remain visible to
   the workflow guard.
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
 - **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
   A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
   direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
