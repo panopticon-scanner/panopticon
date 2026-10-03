@@ -11,6 +11,10 @@ evidence exposed.
   `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
   before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
   stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
 - **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
   `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
   read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
