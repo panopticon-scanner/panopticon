@@ -233,17 +233,24 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
                        if inherited_subshells else 0)
     depth, subshell_depth = inherited_depth, inherited_subshells
     exited_subshell = None
-    stopped_job = exited = False
+    stopped_job = exited = aborted = False
     end = index
     for end, statement in enumerate(following, index + 1):
-        if (exited_subshell is None and (statement.separator == "&" or
-                len(statement.stages) != 1 and not (depth and _closes(statement)) or
+        # A non-zero `exit`/`return` inside a group that is a pipeline stage sets
+        # only that stage's status, which pipefail carries to the step (#2582);
+        # a rescue closing that subshell on its own statement (`exit 1 ) | cat`)
+        # or a command after it (`; echo ok; } | cat`) is read here too (#2631),
+        # not refused as an untrackable pipeline. `aborted` marks the enclosing
+        # group as unreachable once its rescued subshell has exited non-zero.
+        if (exited_subshell is None and not aborted and (statement.separator == "&" or
+                len(statement.stages) != 1 and not (depth and (_closes(statement)
+                    or subshell_depth and statement.stages[0].group_close)) or
                 any(negated(stage.argv) for stage in statement.stages))):
             return False
         for stage in statement.stages:
             depth += stage.group_open + stage.argv.count("{")
             subshell_depth += stage.group_open
-            if exited_subshell is None and not stopped_job:
+            if exited_subshell is None and not stopped_job and not aborted:
                 # The bounded status walk does not evaluate conditional arms.
                 if any(t in ("if", "then", "elif", "else", "fi", "while",
                              "until", "do", "done", "case", "esac", "for")
@@ -255,8 +262,8 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
                     status = _known_status(argv, status)
                     if name in ("exit", "return"):
                         if subshell_depth:
-                            if name == "return":
-                                return False
+                            # `return 1` in a piped subshell leaves it non-zero
+                            # just as `exit 1` does; pipefail carries either on.
                             exited_subshell = subshell_depth
                         else:
                             stopped_job, exited = True, name == "exit"
@@ -272,13 +279,20 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
             if not depth and len(statement.stages) > 1:
                 break                           # the other pipeline stages run concurrently
             if exited_subshell is not None and subshell_depth < exited_subshell:
+                # The subshell the check itself opened has closed with its
+                # non-zero status; under errexit the enclosing group takes it and
+                # runs nothing more (`{ ( CHECK || exit 1 ); echo ok; } | cat`).
+                # A subshell the rescue BODY opens (`|| ((exit 1); echo ok)`) is
+                # not the check's, and the group's last status is read as before.
+                if errexit and status not in (0, None) and exited_subshell <= inherited_subshells:
+                    aborted = True
                 exited_subshell = None
         if depth == 0 or not grouped and not inherited_depth:
             if (statement.separator in ("&&", "||") and not stopped_job
                     and not inherited_depth):
                 return False
             if inherited_depth and statement.separator == "||":
-                inherited_depth, grouped = 0, True
+                inherited_depth, grouped, aborted = 0, True, False
                 continue
             break
         if statement.separator in ("&&", "||") and exited_subshell is None:
@@ -305,7 +319,7 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     separator = stmts[end].separator
     if separator == "||":
         return _stops_the_job(stmts, end, errexit, pipefail)
-    if separator in ("&", "&&"):
+    if separator == "&":
         return False
     on = [errexit] * len(stmts)
     fails = [pipefail] * len(stmts)
