@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Line-only subshell boundaries now retain their shell status (#2420, #2331).**
+  The workflow reader keeps lone `(` and `)`, including `esac )`, so a following `||`, `&&`,
+  pipeline or background separator reaches the gate. Subshell-local options and assignments no
+  longer leak into the enclosing step's model.
 - **Interpreter redirections now bind expanded paths to fetched scripts (#2426, #2331).**
   `bash < "$PWD/x.sh"` and a literal redirect after a fetch to `"$PWD/x.sh"` use the same
   last-part path binding as interpreter operands. Other basenames and non-interpreters stay clean.

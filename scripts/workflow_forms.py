@@ -259,21 +259,19 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
     at the top, and after the last, in `shell` (a step's `shell:`, None for
     the default, or the name of a script's runner).
 
-    A `set` turns it on only as a plain statement outside every branch
-    (`where`, their `regions`), group, list and background job, and off
-    wherever it is. `shopt -s -o` and `shopt -u -o` are the `set -o` and
-    `set +o` they spell (`_as_set`, #2335, #2338), and a plain `shopt` turns
-    an option on only where the shell is bash: dash has no `shopt`. A `set`
-    or `shopt` behind `builtin`, `command` or `eval` runs in this shell too,
-    and so does a `set` in the script `eval` runs, read in the same `shell`
-    (#2335, review N-6); this guard reads all of them as able only to turn
-    an option off, a fail-closed choice -- bash itself turns it on through
-    each of them."""
-    depth, states = 0, []
+    A `set` turns an option on only as a plain statement outside a branch,
+    group, list or background job, and off within its current subshell; visible
+    `( )` restores caller state. `shopt -s -o` and `shopt -u -o` become `set`
+    forms (`_as_set`, #2335, #2338); plain `shopt` turns on only under bash. A
+    setter behind `builtin`, `command` or `eval`, including an `eval` script
+    (#2335, review N-6), runs in this shell. The guard reads those as able only
+    to turn off, a fail-closed choice, though bash can turn them on."""
+    depth, states, subshells = 0, [], []
     bash = os.path.basename((shell or "bash").split()[0]) == "bash"
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
+            subshells.extend([state] * stage.group_open)
             argv = command(stage.argv)
             while len(argv) > 1 and argv[0] in ("builtin", "eval") and argv[1] in _SETTERS:
                 argv = command(argv[1:])        # `builtin set`, `eval set`, either way round
@@ -291,6 +289,8 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
                 state = state and _errexit_states(inner, state, regions(inner), name, shell)[-1]
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
+            for _close in range(min(stage.group_close, len(subshells))):
+                state = subshells.pop()
     return states + [state]
 
 
