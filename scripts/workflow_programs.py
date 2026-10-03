@@ -1,45 +1,44 @@
 #!/usr/bin/env python3
 """Which program a command hands a shell, read off its argv and its stage.
 
-Split out of `scripts/workflow_forms.py` (#2331's follow-ups) the way
-`scripts/workflow_operands.py` and `scripts/workflow_gating.py` were: that
-module had 51 lines of room left, fewer than the third batch of those
-follow-ups adds to these readers. What is here answers one question of one
-command -- which program it hands a shell -- and reads no statement around it,
-only, for a program piped into it, the stage in front of it (#2333):
+Split out of `scripts/workflow_forms.py` (#2331's follow-ups) the way `scripts/workflow_operands.py`
+and `scripts/workflow_gating.py` were: that module had 51 lines of room left, fewer than the third
+batch of those follow-ups adds to these readers. What is here answers one question of one command --
+which program it hands a shell -- and reads no statement around it, only, for a program piped into
+it, the stage in front of it (#2333):
 
-    `scripts`         the script handed to `eval` or `sh -c` as a STRING,
-                      which is the same act one quote away from a substitution
-    `stdin_program`   whether an interpreter's program arrives on its standard
-                      input instead, which is the same act one REDIRECTION
-                      away (`bash -s <<'EOF'`), and in what language, where a
-                      table names it (`$CMD` is a value none places)
-    `stdin_scripts`   the quoted body that program is, where it is or may be
-                      shell, or the text an `echo` or `printf` pipes in
-                      (`printed`), each a `Stdin` naming the shell the step
-                      itself runs to read it, under whose `-e` a check in it
-                      runs -- or none, where no check in it counts
-    `unprinted`       the printer piping one in whose text `printed` cannot
-                      spell out, for `unread_program` to weigh
-    `candidates`      the words that may be the program, where a value this
-                      module does not follow stands in a shell's options
-    `dynamic_program` the program word a LITERAL shell is handed that is all
-                      expansion (`sh -c "$P"`), which spells no command at all
+    `scripts`         the script handed to `eval` or `sh -c` as a STRING, which is the same act one
+                      quote away from a substitution, `Opaque` where a `$(...)` among its text
+                      prints part of it
+    `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
+                      is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
+                      language, where a table names it (`$CMD` is a value none places)
+    `stdin_scripts`   the quoted body that program is, where it is or may be shell, or the text an
+                      `echo` or `printf` pipes in (`printed`), each a `Stdin` naming the shell the
+                      step itself runs to read it, under whose `-e` a check in it runs -- or none,
+                      where no check in it counts
+    `unprinted`       the printer piping one in whose text `printed` cannot spell out, for
+                      `unread_program` to weigh
+    `candidates`      the words that may be the program, up to the first operand and past a later
+                      word that may spell an option, where a value this module does not follow
+                      stands in a shell's options
+    `dynamic_program` the program word a LITERAL shell is handed that is all expansion
+                      (`sh -c "$P"`, `sh -c "$(cat f)"`), which spells no command at all
 
-`workflow_forms` imports all six: its `flattened` reads each script found
-here in place of the command handed it -- a stdin one under its reader's
-`-e`, and with no check in it counted where it has none, behind a string
-or under a `$` command word (`VALUE_PROGRAM`) -- its `unread_program` weighs
-the candidates, the unprinted and the dynamic program, and the guard takes
-`stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
-The option-letter tables below are read here and in `workflow_posture._errexit`,
-the one layer up that reads a shell's options too (#2443, #2475).
+`workflow_forms` imports all six and `Opaque`: its `flattened` reads each script found here in
+place of the command handed it -- a stdin one under its reader's `-e`, and with no check in it
+counted where it has none, behind a string, under a `$` command word (`VALUE_PROGRAM`) or where it
+is `Opaque` -- its `unread_program` weighs the candidates, the unprinted and the dynamic program,
+and the guard takes `stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
+The option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up
+that reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
 """
 import os
 import re
 
+import shell_lex
 import shell_reader
 
 
@@ -51,23 +50,56 @@ import shell_reader
 _SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 
 
-def scripts(argv):
-    """The shell scripts this command is handed as a string, in order, each
-    the text bash hands the shell: a double-quoted `\\$` or `` \\` `` without
-    its backslash (`shell_reader._stage`'s `spelled`, #2342).
+class Opaque(str):
+    """A script `scripts` hands on from a string holding a lifted `$(...)` or backquote among text
+    of its own, written as `shell_reader.readable` renders it (`sh $(...)`, #2486). Bash reads what
+    the substitution PRINTS as part of the script, and nothing here reads that, so
+    `workflow_forms.flattened` reads the rest in place and counts no check in it:
+    `bash -ec "$(echo 'true ||') <check>"` never runs the check."""
 
-    A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and the guard's `_walk` already credits what
-    is inside it.
+
+def scripts(argv):
+    """The shell scripts this command is handed as a string, in order, each the text bash hands the
+    shell: a double-quoted `\\$` or `` \\` `` without its backslash (`shell_reader._stage`'s
+    `spelled`, #2342).
+
+    A word that is all expansion -- one lifted `$(...)` or backquote, or several beside `$` words
+    (`$P$(...)`) -- is never one: it spells no command, and `dynamic_program` reports it (#2483,
+    #2486). Nor is a word holding a heredoc, a `<(...)` or any other marker: each stands for text
+    held in the parse it came from, and the guard's `_walk` already credits what is inside it. A
+    `$(...)` or backquote among text of the word's own does not make it none (#2486):
+    `eval "sh $(echo tool)"` hands on `sh $(...)`, `Opaque`, whose `sh` is weighed as
+    `sh $(echo tool)`'s is -- the substitution's own text still read where `_walk` reads it, what it
+    prints read nowhere (#2487), and no marker of this parse left to reach another. A text so
+    rendered that the reader refuses is none, as before #2486: `eval "cat <<$(a b) …"` takes its
+    delimiter from what `a b` prints, and `cat <<$(...)` is no spelling to end the body at, so the
+    string is unread and the rest of the step read.
     """
-    if not argv:
-        return []
-    name, found = os.path.basename(argv[0]), []
+    return [script for script in map(_script, _program_words(argv)) if script is not None]
+
+
+def _program_words(argv):
+    """The words where a program stands: `eval`'s, or a shell's `-c` operand."""
+    name = os.path.basename(argv[0]) if argv else ""
     if name == "eval":
-        found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING:
-        found = _after_dash_c(argv)
-    return [getattr(t, "spelled", t) for t in found if not shell_reader.is_marker(t)]
+        return [t for t in argv[1:] if not t.startswith("-")]
+    return _after_dash_c(argv) if name in _SHELL_STRING else []
+
+
+def _script(word):
+    """`word` as `scripts` hands it on, or None where it is no script."""
+    keys = getattr(word, "markers", {})
+    if not keys:
+        return getattr(word, "spelled", word)
+    text = shell_reader.readable(word)
+    if _all_expansion(text) or not all(
+            shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
+        return None
+    try:
+        shell_reader.statements(text)
+    except shell_lex.Unreadable:
+        return None
+    return Opaque(text)
 
 
 def _after_dash_c(argv):
@@ -225,21 +257,54 @@ def _value(word):
     return bool(_VALUE.fullmatch(shell_reader.readable(word)))
 
 
+# The letters an option's value is spelled with, as every `-o` or `-O` name of
+# bash, dash, zsh and ksh is: letters, digits, `_` and `-` (#2484).
+_BARE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _before_operand(word):
+    """Whether `word`, after a value in a shell's options, may still stand
+    before its program: an option word (`-…`, `+…`, `-`, `--`), an option's
+    value (`_BARE`), or a word bash expands -- a `$`, a lifted substitution,
+    a pattern (`shell_reader.dynamic`) -- which may vanish or be either."""
+    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word))
+            or shell_reader.dynamic(word, shell_reader.has_substitution))
+
+
+def _may_spell_option(word):
+    """Whether `word`, PAST the first operand, may be an option word once it is expanded: a word
+    bash expands (`shell_reader.dynamic`) that begins with `-`, a `$` or a lifted substitution, or a
+    pattern or an `xargs -I` replacement (`Rewritten`). One that begins with literal text of its own
+    (`x$Y`, `echo $Y`) is none."""
+    return shell_reader.dynamic(word, shell_reader.has_substitution) and (
+        shell_reader.readable(word)[:1] in ("-", "$") or isinstance(word, shell_reader.Rewritten))
+
+
 def candidates(argv):
-    """(the value, [the words it may make the program]) for a shell handed a
-    value where it reads its options (`_VALUE`, #2344): `X=-c; sh $X 'curl
-    … | sh'` runs that string, as `sh $(echo -c) '…'` and `echo -c | xargs
-    -I{} sh {} '…'` do. This module follows no value, so every word after it
-    may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern),
-    which `unread_program` weighs too (review N2 of #2331); (None, []) where
-    the options end first, at a program, a `-c` whose string `scripts` reads,
-    or a `-` or `--`. A value that is the command word, handed a `-c` cluster,
-    may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program after
-    the options is the candidate. A `$(…)` or backquote value with no word
-    after it is its own: bash makes the shell's words of its output, the
-    program among them (`sh $(echo tool)`), where a `<(…)` hands it a file
-    (`shell_reader.yields_words`).
-    """
+    """(the value, [the words it may make the program]) for a shell handed a value where it reads
+    its options (`_VALUE`, #2344): `X=-c; sh $X 'curl … | sh'` runs that string, as
+    `sh $(echo -c) '…'` and `echo -c | xargs -I{} sh {} '…'` do. This module follows no value, so a
+    word after it may be the program, a dynamic one too (`"$Y"`, `"$(…)"`, a pattern), which
+    `unread_program` weighs too (review N2 of #2331) -- up to the FIRST OPERAND, the first word that
+    can be none of an option word, an option's value (`_BARE`) or anything once expanded
+    (`_before_operand`), with the option words before it weighed, harmlessly, as `-c` strings. Where
+    the value spells `-c`, the words after that operand are positional parameters (#2484). A value
+    ending in `o` or `O` makes the next word an option name, which the shell refuses where it is not
+    bare: `X=-cO; bash $X 'echo hi' '…'` runs nothing. But the operand may be an option's own value
+    (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
+    (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
+    expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
+    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
+    word after it, though not itself, which is `$0`, an option word or a script's file name, never a
+    `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
+    The price: a value that was `-c` after all has a later program-like parameter weighed again, as
+    before #2484 (`X=-c; sh $X 'echo hi' "$Y" '…'` runs only `echo hi`). (None, []) where the
+    options end first, at a program, a `-c` whose string `scripts` reads, or a `-` or `--`. A value
+    that is the command word, handed a `-c` cluster, may be a shell itself (#2337,
+    `CMD=sh; $CMD -c '…'`): the program after the options is the candidate. A `$(…)` or backquote
+    value with no word after it is its own: bash makes the shell's words of its output, the program
+    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`)."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
@@ -249,7 +314,11 @@ def candidates(argv):
         if owed:
             owed -= 1
         elif _value(word):
-            return word, argv[at + 1:] or ([word] if shell_reader.yields_words(word) else [])
+            rest = argv[at + 1:]
+            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
+            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
+            return word, rest[:end] + rest[more + 1:] or (
+                [word] if shell_reader.yields_words(word) else [])
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
         elif word[:2] != "--":
@@ -265,15 +334,19 @@ _NAME = re.compile(r"\w+|[@*]")
 
 
 def _all_expansion(text):
-    """Whether `text` is nothing but parameter expansion -- `$P`, `${P}`,
-    `"$P"` as the reader hands it on with its quotes dropped, `$P$Q`, `$@`,
-    and a nest of any depth (`${A:-${B:-${C}}}`, r0 finding 3) -- and so
-    spells no command at all for `flattened` to read (#2483). `${A}x`,
-    `echo $X` and an unbalanced `${A` are not: they hold text of their own.
-    Braces are counted rather than matched by pattern, because no regular
-    expression can balance them."""
-    at = 0
+    """Whether `text` is nothing but expansion -- `$P`, `${P}`, `"$P"` as the reader hands it on
+    with its quotes dropped, `$P$Q`, `$@`, a nest of any depth (`${A:-${B:-${C}}}`, r0 finding 3),
+    and a lifted `$(...)` or backquote as `shell_reader.readable` renders it (`$P$(...)`, #2486) --
+    and so spells no command at all for `flattened` to read (#2483). `${A}x`, `echo $X` and an
+    unbalanced `${A` are not: they hold text of their own. Blanks around it and a trailing `;` are
+    no text of its own: `sh -c "$(cat f) "`, the `run: |` spelling. Braces are counted rather than
+    matched by pattern, because no regular expression can balance them. A `<(...)` renders as
+    `$(...)` too, so whether each hands on words is the caller's to ask of the token."""
+    at, text = 0, text.strip(" \t\n").removesuffix(";").rstrip(" \t\n")
     while at < len(text):
+        if text.startswith("$(...)", at):       # a lifted substitution, rendered
+            at += 6
+            continue
         if text[at] != "$" or at + 1 >= len(text):
             return False
         if text[at + 1] == "{":
@@ -292,26 +365,30 @@ def _all_expansion(text):
 
 
 def dynamic_program(argv):
-    """(how this command hands a shell a program, the word it hands it) where
-    that word is ENTIRELY parameter expansion, else (None, None).
+    """(how this command hands a shell a program, the word it hands it) where that word is ENTIRELY
+    expansion, else (None, None).
 
-    `sh -c "$P"`, `bash -c "${P}"`, `sh -ec "$P"`, `eval "$P"`, `sh -c "$@"`
-    and `${X:-sh} -c "$P"`, whose command word the reader rewrites to its
-    default, so the shell is literal by the time it arrives here
-    (`_all_expansion`). `flattened` reads such a word as no command at all,
-    which left the program UNREAD wherever a literal shell took one while the
-    `$CMD -c "$P"` twin `candidates` finds was reported: `unread_program` now
-    says it of both. A lifted `$(...)` marker is not one -- `scripts` drops it
-    and the guard's `_walk` reads what is inside it -- and neither is a string
-    that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
-    read as written. `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs
-    nothing of the value as a command: an accepted over-report, because a `;`
-    in that value does run (r0 finding 4).
-    """
+    `sh -c "$P"`, `bash -c "${P}"`, `sh -ec "$P"`, `eval "$P"`, `sh -c "$@"` and `${X:-sh} -c "$P"`,
+    whose command word the reader rewrites to its default, so the shell is literal by the time it
+    arrives here (`_all_expansion`). `flattened` reads such a word as no command at all, which left
+    the program UNREAD wherever a literal shell took one while the `$CMD -c "$P"` twin `candidates`
+    finds was reported: `unread_program` now says it of both. So is a word of lifted `$(...)` or
+    backquote substitutions that hand on words, `$` words beside them or not (`sh -c "$(cat f)"`,
+    `eval sh "$(echo tool)"`, `sh -c "$P$(cat f)"`, #2486), asked here before `scripts` drops it:
+    bash runs what they print, and nothing here reads that (#2487). The price is #2483's: beside an
+    unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"` are reported though they run
+    none of it. A `<(...)` or `>(...)` hands a file, not words (`shell_reader.yields_words`), and is
+    not one; nor is a string that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
+    read as written (`Opaque` where a `$(...)` is among its text). `set -- "$P"` IS one, and
+    `eval set -- "$OPTS"` runs nothing of the value as a command: an accepted over-report, because a
+    `;` in that value does run (r0 finding 4)."""
     name = os.path.basename(argv[0]) if argv else ""
-    for word in scripts(argv):
-        if _all_expansion(shell_reader.readable(word)):
-            return (name if name == "eval" else name + " -c"), word
+    for word in _program_words(argv):
+        keys = getattr(word, "markers", {})
+        text = shell_reader.readable(word) if keys else getattr(word, "spelled", word)
+        if _all_expansion(text) and all(
+                shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
+            return (name if name == "eval" else name + " -c"), (word if keys else text)
     return None, None
 
 

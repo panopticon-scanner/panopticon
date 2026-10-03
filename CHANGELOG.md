@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: a value in a shell's options is weighed to its first operand, or past a word
+  that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
+  one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
+  opaque, and `sh -c "$(cat f)"`, blanks around it too, is reported unread beside a download.
 - **Line-only subshell boundaries now retain their shell status (#2420, #2331).**
   The workflow reader keeps lone `(` and `)`, including `esac )`, so a following `||`, `&&`,
   pipeline or background separator reaches the gate. Subshell-local options and assignments no
