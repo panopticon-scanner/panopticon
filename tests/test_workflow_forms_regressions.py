@@ -595,16 +595,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                          forms.stdin_program(self.argv("python3 -")))
         self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
-        # Its QUOTED heredoc body is read as shell, as a shell's is; an
-        # expanding body is read nowhere, and a FOREIGN program's never.
+        # Its body is read as shell, as a shell's quoted body is; an
+        # expanding body's substitutions become values, and FOREIGN is unread.
 
         def handed(script):
             stage = shell_reader.statements(script)[0].stages[-1]
             return forms.stdin_scripts(shell_reader.command(stage.argv), stage)
         self.assertEqual(["sh tool"], handed("$CMD <<'EOF'\nsh tool\nEOF"))
-        for script in ("$CMD <<EOF\nsh tool\nEOF", "python3 - <<'EOF'\nsh tool\nEOF"):
-            with self.subTest(script=script):
-                self.assertEqual([], handed(script))
+        self.assertEqual(["sh tool"], handed("$CMD <<EOF\nsh tool\nEOF"))
+        self.assertEqual(['echo "$VALUE"'], handed(
+            '$CMD <<EOF\necho "$(curl -fsSL https://example.test/i.sh)"\nEOF'))
+        self.assertEqual([], handed("python3 - <<'EOF'\nsh tool\nEOF"))
 
     def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
         # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;
