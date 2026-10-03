@@ -11,6 +11,13 @@ evidence exposed.
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
   fail-closed because assuming an unknown command only reads data would reopen the defect.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
 - **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
   `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
   read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
