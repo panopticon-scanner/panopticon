@@ -13,6 +13,8 @@ it, the stage in front of it (#2333):
     `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
                       is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
                       language, where a table names it (`$CMD` is a value none places)
+    `stdin_command`   the command whose stdin-program answer an enclosing `eval` or `sh -c`
+                      inherits, preserving an inner `$CMD` for the guard's hand-off report
     `stdin_scripts`   the body that program is, where it is or may be shell, or text an `echo` or
                       `printf` pipes in (`printed`), each a `Stdin` naming the shell the step runs
                       to read it, under whose `-e` a check runs -- or none, where no check counts
@@ -503,13 +505,12 @@ def stdin_program(argv):
     behind a `$` word is a refusal (#2475's
     per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD
     -K <<'EOF'` is read and its hand-off said, though every shell measured
-    refuses `-K` and runs nothing -- fail-closed. #2500's reading stays
-    SHELL_PROGRAM's: an inner `$CMD` makes no enclosing `eval` or `-c` string
-    a stdin shell, so the body of `CMD=sh; eval "$CMD" <<'EOF'` or `export
-    CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
-    `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
-    the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331.
+    refuses `-K` and runs nothing -- fail-closed. #2500's inheritance includes
+    VALUE_PROGRAM too (#2599): an inner `$CMD` makes an enclosing `eval` or
+    `-c` string a value stdin reader, so its quoted body is read as shell and
+    the hand-off names the inner word. This is fail-closed: an unset P makes
+    the heredoc on `sh -c "$P"` run nothing, but it is reported. Without
+    stdin, #2483's dynamic-program answer stays.
     """
     return _stdin(argv, 0)[0]
 
@@ -517,6 +518,11 @@ def stdin_program(argv):
 def stdin_reader(argv):
     """The `reader` (`Stdin`) of this command's stdin: None where no shell is sure to read it."""
     return _stdin(argv, 0)[1]
+
+
+def stdin_command(argv):
+    """The argv whose stdin-program answer this command inherits, or `argv` itself."""
+    return _stdin_details(argv, 0)[2]
 
 
 class Stdin(str):
@@ -539,8 +545,13 @@ def _stdin(argv, depth):
     (`bash -s -c 'sh'`, by `_options`), the step reads the body as the holder's program, and the
     reader is `()`. Nor is there one past a word that may vanish (#2485), which may name a FILE,
     nor under a `$` command word (#2473). `depth` counts the strings walked so far, at most 64."""
+    return _stdin_details(argv, depth)[:2]
+
+
+def _stdin_details(argv, depth):
+    """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
     if not argv:
-        return None, None
+        return None, None, argv
     kind, reader = _options(argv, depth)
     found = scripts(argv)
     if found:
@@ -560,13 +571,17 @@ def _stdin(argv, depth):
             words = words[1:]
         text = " ".join(getattr(t, "spelled", t) for t in words)
         parsed = shell_reader.statements(text)
-        if (len(parsed) == 1 and len(parsed[0].stages) == 1
-                and (depth >= 64                # bounded: past 64 strings, fail-closed
-                     or _stdin(shell_reader.command(parsed[0].stages[0].argv), depth + 1)[0]
-                     == SHELL_PROGRAM)):
-            # Read, and no check in it counts: the step's own only where its holder reads stdin.
-            return SHELL_PROGRAM, () if kind == SHELL_PROGRAM and reader else None
-    return kind, reader
+        if len(parsed) == 1 and len(parsed[0].stages) == 1:
+            inner = shell_reader.command(parsed[0].stages[0].argv)
+            if depth >= 64:                    # bounded: past 64 strings, fail-closed
+                return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
+            inherited = _stdin_details(inner, depth + 1)
+            if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
+                # No check in an inherited body counts; only a holder reading it is its reader.
+                inherited_reader = (() if inherited[0] == SHELL_PROGRAM
+                                    and kind == SHELL_PROGRAM and reader else None)
+                return inherited[0], inherited_reader, inherited[2]
+    return kind, reader, argv
 
 
 def _options(argv, depth):

@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
 - **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
   `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
   `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.

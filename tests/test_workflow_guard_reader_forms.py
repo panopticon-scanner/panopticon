@@ -1471,24 +1471,42 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertTrue(any("nothing verifying what arrived" in w for w in found), found)
         self.assertFalse(any("@@" in w for w in found), found)
 
-    def test_2473_a_dollar_word_an_eval_or_dash_c_string_runs_is_unread(self):
-        # A documented gap, filed under #2331: #2500's reading stays
-        # SHELL_PROGRAM's, so a `-c` or `eval` string whose one statement is a
-        # `$` command word makes no stdin shell of the command around it, and
-        # its body is never read, though bash 3.2.57, 5.2.21 and dash run it.
-        # Alone the step reads CLEAN; beside a reported fetch #2483 reports
-        # the WORD (`dynamic_program`, `Idle`), never the stream in the body.
-        # The literal `eval 'bash -s'` is caught (the control).
+    def test_2599_a_dollar_word_an_eval_or_dash_c_string_runs_inherits_stdin(self):
+        # #2599: a `-c` or `eval` string whose one statement is a `$`
+        # command word inherits VALUE_PROGRAM. Its body and hand-off are read
+        # like the direct `$CMD` spelling, naming the inner word, in all three
+        # shells. The literal `eval 'bash -s'` remains the must-trip control.
+        def to(word):
+            return ("hands a heredoc body or here-string to `%s`, a command word this guard "
+                    "does not follow" % word)
+
+        streamed = "straight to `sh`"
         found = defects("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertTrue(any("straight to `sh`" in w for _step, w in found), found)
-        for runs, said in (("CMD=sh\neval \"$CMD\"", "runs `eval` on `$CMD`"),
-                           ("export CMD=sh\nbash -c '$CMD'", "runs `bash -c` on `$CMD`")):
+        for runs in ("CMD=sh\neval \"$CMD\"", "export CMD=sh\nbash -c '$CMD'"):
             script = "%s <<'EOF'\n%s\nEOF\n" % (runs, PIPE)
             with self.subTest(script=script):
-                self.assertEqual([], defects(script))
-                found = [w for _step, w in defects(GET + script)]
+                found = [w for _step, w in defects(script)]
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(streamed in w for w in found), found)
+                self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+            clean = "%s <<'EOF'\necho hi\nEOF\n" % runs
+            with self.subTest(clean=clean):
+                self.assertEqual([], defects(clean))
+                found = [w for _step, w in defects(GET + clean)]
                 self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0].startswith(said), found)
+                self.assertTrue(found[0].startswith(to("$CMD")), found)
+        # A dynamic `-c` word with no stdin keeps #2483's answer. With a
+        # heredoc it inherits VALUE_PROGRAM and is read fail-closed, though
+        # every measured shell runs nothing when P is unset.
+        self.assertEqual([], defects('sh -c "$P"\n'))
+        found = [w for _step, w in defects(GET + 'sh -c "$P"\n')]
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("runs `sh -c` on `$P`"), found)
+        found = [w for _step, w in defects('sh -c "$P" <<\'EOF\'\n%s\nEOF\n' % PIPE)]
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(any(streamed in w for w in found), found)
+        self.assertTrue(any(w.startswith(to("$P")) for w in found), found)
         # A `$` command word handed `-c` takes its program from the string
         # (`stdin_program` answers None), so the heredoc is that program's
         # input: #2337's `candidates` speaks, and no hand-off is said.
