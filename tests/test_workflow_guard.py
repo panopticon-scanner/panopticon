@@ -3371,6 +3371,17 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIsNone(self.finding(body))
 
+    def test_a_line_only_subshell_keeps_its_outer_rescue(self):
+        target = "(\nCHECK || exit 1\n) || true\n"
+        control = "(\nCHECK || exit 1\n)\n"
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell, case="outer rescue"):
+                found = self.job(target, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("does not fail the step", found[0][1])
+            with self.subTest(shell=shell, case="unrescued control"):
+                self.assertEqual([], self.job(control, shell))
+
     def test_the_subshell_rescue_controls_still_report(self):
         for body in ("( CHECK || exit 0 )\n", "( CHECK ) || true\n",
                      "set +e\n( CHECK || exit 1 )\n",
