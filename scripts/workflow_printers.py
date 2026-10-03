@@ -116,17 +116,18 @@ def _decoded(text, fmt=False):
 
 
 def _cat_reads_stdin(argv):
-    """Whether `argv` is a bare `cat` reading its own stdin (R-P5, R-F5): no option word past one
-    leading `--` (R-F10 -- `--` ends the options, itself no option), and either no operand at all or
-    a `-` standing among its operands -- `cat -n` is no printer (an option), but `cat - f` and `cat
-    f -` both still read stdin, among `f`'s own text (fail-closed for the body; `f` stays unread
-    unless it is itself a download, as `cat f | sh` already is)."""
+    """Whether `argv` is a `cat` reading its own stdin (R-P5, R-F5, R-F14): no operand, or a `-`
+    among its operands -- every word after the FIRST `--` (R-F10: it ends the options, itself none),
+    and before it each `-` or word not beginning with `-`. So `cat - f` and `cat f -` read stdin
+    among `f`'s own text (fail-closed for the body; `f` stays unread unless it is itself a download,
+    as `cat f | sh` already is), and an option word changes nothing: the body is read whole, as
+    `-u`, `-s` and `-v` (ASCII) print it. The price, over-reported: `-n`/`-b` number each line, so
+    its first command never runs, `-e` (GNU's `-E`/`-A`) ends it with `$`, spoiling its last word,
+    and BSD's `cat` prints nothing given `-E`, `-T`, `-A` or a piped `-l`."""
     words = [getattr(w, "spelled", w) for w in argv[1:]]
-    if words[:1] == ["--"]:
-        words = words[1:]
-    return (bool(argv) and os.path.basename(argv[0]) == "cat"
-            and not any(w.startswith("-") and w != "-" for w in words)
-            and (not words or "-" in words))
+    at = words.index("--") if "--" in words else len(words)
+    operands = [w for w in words[:at] if w == "-" or not w.startswith("-")] + words[at + 1:]
+    return bool(argv) and os.path.basename(argv[0]) == "cat" and (not operands or "-" in operands)
 
 
 def _reading(shell):
@@ -150,7 +151,7 @@ def printed(argv, stage=None, shell=None):
     mode (review R-F3), `%%` first to a literal `%`; a format with no other `%` is that decoded
     text; `%s`/`%s\\n` or `%b`/`%b\\n` with exactly one more word is that word -- LITERAL for `%s`,
     decoded in `echo`/`%b` mode for `%b` -- plus the decoded tail; any other `%` is None. `cat`
-    (#2467): a bare `cat` or one reading stdin among operands (`_cat_reads_stdin`) with a heredoc or
+    (#2467): one reading its own stdin, options or not (`_cat_reads_stdin`), with a heredoc or
     here-string on ITS OWN stdin (`stage.stdin_heredoc`) is that body where it is QUOTED; an
     EXPANDING one is None here -- `handed` carries it to `_unread_stdin` instead. None too where
     `stage` is absent or carries no such body, or where a word expands unpredictably (a `$(...)`, a
@@ -216,8 +217,8 @@ def spellings(argv, stage=None, shell=None):
 def handed(stage, before):
     """The `(body, expands)` a `cat` printer in front hands `stage` down the pipe (#2467), or None:
     `before` must pipe straight into `stage` (`_piped`), read a heredoc or here-string on ITS OWN
-    stdin, and read its own stdin (`_cat_reads_stdin`, R-P5, R-F5). The EXPANDING case is what
-    `_unread_stdin` reports; `printed` answers only the QUOTED one."""
+    stdin, and read its own stdin, options or not (`_cat_reads_stdin`, R-P5, R-F5, R-F14). The
+    EXPANDING case is what `_unread_stdin` reports; `printed` answers only the QUOTED one."""
     if not _piped(stage, before) or before.stdin_heredoc is None:
         return None
     return (before.stdin_heredoc if _cat_reads_stdin(shell_reader.command(before.argv))

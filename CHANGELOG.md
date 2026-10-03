@@ -9,10 +9,11 @@ evidence exposed.
 
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
   shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
-  and an EXPANDING `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash
-  prints them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A
-  shell a `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's
-  `echo` into a decoder, which this rule does not follow.
+  a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
+  `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
+  (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
+  `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's `echo`
+  into a decoder, which this rule does not follow.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
