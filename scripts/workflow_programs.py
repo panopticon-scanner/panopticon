@@ -245,9 +245,9 @@ def _past_options(argv, at):
 # A word bash expands, where a shell reads its options, that may spell one
 # (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
 # letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
-# `$'…'` the reader leaves undecoded (`shell_lex.ansi_c`) whose text BEGINS
-# with an escape, `$'\x2dc'` but not `$'-\x63'` (a residual), or a word
-# xargs puts a line of its input in (`{}`).
+# `$'…'` beginning with an unknown or non-ASCII escape that `shell_quote.ansi_c`
+# cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a line of
+# its input in (`{}`).
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
 

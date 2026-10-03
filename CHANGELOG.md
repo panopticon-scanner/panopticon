@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
