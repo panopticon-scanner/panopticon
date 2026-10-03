@@ -199,7 +199,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, Idle,
                             described, flattened, in_container, kept, may_run, names_file, located,
                             parse_fetch, regions, same_file, stdin_program, step_credit,
                             streamed_fetch, unbound, unread_program, working_directories)
-from workflow_programs import ANY, VALUE_PROGRAM, handed
+from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -292,7 +292,7 @@ def _unread_stdin(stage, before=None):
     here = stage.stdin_heredoc or handed(stage, before)
     if not here or (kind := stdin_program(argv)) is None:
         return None
-    name = shell_reader.readable(argv[0])
+    name = shell_reader.readable(stdin_command(argv)[0] if kind == VALUE_PROGRAM else argv[0])
     if kind == VALUE_PROGRAM:
         return Idle("hands a heredoc body or here-string to `%s`, a command word this guard does "
                     "not follow -- its body is read as shell, which it may not be; name the "

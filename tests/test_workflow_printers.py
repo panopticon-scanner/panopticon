@@ -744,13 +744,15 @@ class TestFixRound4(unittest.TestCase):
                     self.assertEqual(1, len(found), found)
                     self.assertIn(self.FETCH_EXEC, found[0][1])
         # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): a `-c` string that is a `$` word may name the
-        # shell reading the body too -- the dynamic program's `_Quiet` as before, and now the
-        # download the body runs beside it (c3113439: the `_Quiet` alone).
+        # shell reading the body too -- the download the body runs (c3113439: a `_Quiet` alone)
+        # beside the hand-off's `Idle`, which #2703 (fold 8) raises for the `$S` string as a value
+        # stdin reader where `unprinted`'s `_Quiet` stood (main reports that `Idle` too).
         for shell in (None, "sh"):
             with self.subTest(step="z09", shell=shell):
                 found = defects(self.GET + "S=sh\nbash -s -c \"$S\" " + body, shell)
                 self.assertEqual(2, len(found), found)
-                self.assertIsInstance(found[0][1], forms._Quiet)
+                self.assertIs(forms.Idle, type(found[0][1]))
+                self.assertIn("to `$S`, a command word", found[0][1])
                 self.assertIn(self.FETCH_EXEC, found[1][1])
 
     def test_runs_under_weighs_every_word_before_dashdash(self):
@@ -973,18 +975,21 @@ class TestFixRound5(unittest.TestCase):
 
     def test_z09_h10_h17_the_string_and_the_words_before_it_still_count(self):
         # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): the string itself stays in the scan, so a `$`
-        # string that may name the reading shell keeps its catch, Q+D. h10, z09 with `S` unset (F-
-        # x4: bash runs the empty string, rc 0, and never reads the body), is Q+D too: z09's rule's
-        # price. h17 `X='-O xpg_echo'; bash $X -c "…"` (FR x4): the value stands BEFORE the string,
-        # so the holder is still `Named`: the value's `Idle` and the download it runs, as before.
-        quiet = (("z09", "S=sh\nbash -s -c \"$S\" " + self.TAB),
-                 ("h10", "bash -s -c \"$S\" " + self.TAB))
-        for step, holder in quiet:
+        # string that may name the reading shell keeps its catch: the download the body runs beside
+        # the hand-off's `Idle` (#2703, fold 8: the `$S` string is a value stdin reader; before it,
+        # `unprinted`'s `_Quiet` stood there). h10, z09 with `S` unset (F- x4: bash runs the empty
+        # string, rc 0, and never reads the body), reads the same: z09's rule's price. h17
+        # `X='-O xpg_echo'; bash $X -c "…"` (FR x4): the value stands BEFORE the string, so the
+        # holder is still `Named`: the value's `Idle` and the download it runs, as before.
+        handed = (("z09", "S=sh\nbash -s -c \"$S\" " + self.TAB),
+                  ("h10", "bash -s -c \"$S\" " + self.TAB))
+        for step, holder in handed:
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
                     found = defects(self.GET + holder, shell)
                     self.assertEqual(2, len(found), found)
-                    self.assertIsInstance(found[0][1], forms._Quiet)
+                    self.assertIs(forms.Idle, type(found[0][1]))
+                    self.assertIn("to `$S`, a command word", found[0][1])
                     self.assertIn(self.FETCH_EXEC, found[1][1])
         h17 = "X='-O xpg_echo'\nbash $X -c \"echo 'sh\\ttool' | sh\"\n"
         for shell in (None, "sh"):

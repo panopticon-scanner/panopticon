@@ -574,6 +574,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
 
+    def test_a_stdin_reading_value_behind_eval_or_dash_c_is_inherited_and_named(self):
+        # #2599: the enclosing command inherits VALUE_PROGRAM too, while the
+        # naming seam retains the inner word that may name the stdin reader.
+        for argv, word in ((["eval", "$CMD"], "$CMD"),
+                           (["bash", "-c", "$CMD"], "$CMD"),
+                           (["sh", "-c", "$P"], "$P")):
+            with self.subTest(argv=argv):
+                self.assertEqual(workflow_programs.VALUE_PROGRAM,
+                                 forms.stdin_program(argv))
+                self.assertEqual(word, workflow_programs.stdin_command(argv)[0])
+
     def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
         # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,
         # 5.2.21 and dash, as `bash $(true)` does -- the value form
