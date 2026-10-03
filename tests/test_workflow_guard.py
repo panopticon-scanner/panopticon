@@ -739,6 +739,43 @@ class TestAGlobMatchCarriedThroughAValue(unittest.TestCase):
             with self.subTest(use=use):
                 self.assertEqual([], self.job(use))
 
+    def test_shift_reindexes_the_remaining_positional_values(self):
+        uses = (
+            'set -- ./cuda_*.run; shift 0; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift; sh "$1"\n',
+            'set -- other other ./cuda_*.run; shift 2; sh "$1"\n',
+            'f() { shift; sh "$1"; }; f other ./cuda_*.run\n',
+            'set -- ./cuda_*.run; shift 2; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift 3; sh "$2"\n',
+            'set -- other ./cuda_*.run; false && shift; sh "$1"\n',
+            ('set -- other ./cuda_*.run; if false; then shift; fi; '
+             'sh "$1"\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- ./cuda_*.run; shift; sh "$1"\n'
+        ))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; shift 2; sh "$1"\n'
+        ))
+
+    def test_all_positionals_flow_to_a_loop_and_the_first_flows_to_a_shell(self):
+        uses = (
+            'set -- ./cuda_*.run; sh "$@"\n',
+            'set -- ./cuda_*.run; sh "$*"\n',
+            'set -- other ./cuda_*.run; for f in "$@"; do sh "$f"; done\n',
+            ('f() { for value in "$@"; do sh "$value"; done; }; '
+             'f other ./cuda_*.run\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; sh "$@"\n'
+        ))
+
     def test_a_bound_value_can_be_passed_on_to_a_function_argument(self):
         uses = ('run() { sh "$1"; }; '
                 'for f in ./cuda_*.run; do run "$f"; done\n',

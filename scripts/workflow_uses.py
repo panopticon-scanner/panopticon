@@ -27,8 +27,8 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
 _REFERENCE = re.compile(
-    r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|([1-9][0-9]*)|"
-    r"\{([A-Za-z_][A-Za-z0-9_]*|[1-9][0-9]*)\})"
+    r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|([1-9][0-9]*)|([@*])|"
+    r"\{([A-Za-z_][A-Za-z0-9_]*|[1-9][0-9]*|[@*])\})"
 )
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\+?=")
 _DECLARATIONS = ("declare", "export", "local", "readonly", "typeset")
@@ -50,16 +50,36 @@ def _reference(word):
 
 
 def _active(bindings, word, directory):
-    """Whether this whole value still designates the matched file here."""
-    binding = bindings.get(_reference(word))
-    return bool(binding and (binding.absolute or binding.directory == directory))
+    """The binding this whole value still designates here, or None."""
+    name = _reference(word)
+    if name in ("@", "*"):
+        numbered = sorted(
+            ((int(key), binding) for key, binding in bindings.items() if key.isdecimal()),
+        )
+        binding = next((value for _number, value in numbered
+                        if value.absolute or value.directory == directory), None)
+    else:
+        binding = bindings.get(name)
+    return (binding if binding and (binding.absolute or binding.directory == directory)
+            else None)
+
+
+def _live(named, positional, directory):
+    """Bound names that still designate the file in `directory`."""
+    bound = {
+        name for name, binding in {**named, **positional}.items()
+        if binding.absolute or binding.directory == directory
+    }
+    if "1" in bound:
+        bound.update(("@", "*"))
+    return bound
 
 
 def _from_operand(word, dest, directory, bindings):
     """A binding made by a live matching pattern or another bound value."""
     name = _reference(word)
-    if name and _active(bindings, word, directory):
-        return bindings[name]
+    if name and (binding := _active(bindings, word, directory)):
+        return binding
     absolute = os.path.isabs(str(word))
     if (not absolute and directory.startswith("$CWD")
             or getattr(word, "lead", None) is None):
@@ -93,8 +113,30 @@ def _cleared(stage, named, positional, certain, direct_loop):
         for word in argv[1:]:
             if not str(word).startswith("-"):
                 drop(str(word))
-    if certain and (argv[:2] == ["set", "--"] or name == "shift"):
+    if certain and argv[:2] == ["set", "--"]:
         positional.clear()
+    elif name == "shift":
+        _shifted(positional, argv, certain)
+
+
+def _shifted(positional, argv, certain):
+    """Move known positional facts through a literal `shift [n]`."""
+    operands = [str(word) for word in argv[1:]]
+    if operands[:1] == ["--"]:
+        operands = operands[1:]
+    if len(operands) > 1 or operands and not operands[0].isdecimal():
+        return
+    amount = int(operands[0]) if operands else 1
+    if not amount:
+        return
+    numbered = {int(key): value for key, value in positional.items() if key.isdecimal()}
+    if not numbered:
+        return
+    shifted = {str(number - amount): binding for number, binding in numbered.items()
+               if number > amount}
+    if certain and amount <= max(numbered):
+        positional.clear()
+    positional.update(shifted)
 
 
 def _for_parts(stage):
@@ -273,8 +315,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited):
     kinds = _control_kinds(body)
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
-            bound = {name for name, binding in {**local_named, **positional}.items()
-                     if binding.absolute or binding.directory == here}
+            bound = _live(local_named, positional, here)
             argv = command(stage.argv)
             if answer := use(statement, position, stage, argv, dest, here, bound):
                 return answer
@@ -344,10 +385,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
             for name, start, close in starts.get(index, []):
                 functions[name] = (start, close)
         in_definition = index in occupied
-        bound = set() if in_definition else {
-            name for name, binding in {**named, **positional}.items()
-            if binding.absolute or binding.directory == directory
-        }
+        bound = set() if in_definition else _live(named, positional, directory)
         how = None
         for point, inner, position, stage, where, here in inside(
                 statement, index, directory=directory, scope=index):
