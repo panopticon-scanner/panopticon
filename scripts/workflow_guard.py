@@ -198,10 +198,11 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
-                            Unsure, carried, chmod_executable, chmod_targets, clears, covers,
-                            described, flattened, in_container, kept, may_run, names_file,
-                            parse_fetch, regions, same_file, stdin_program, step_credit,
-                            streamed_fetch, swallowed, unbound, unread_program, within)
+                            Unsure, at_directory, carried, chmod_executable, chmod_targets, clears,
+                            covers, described, flattened, in_container, kept, may_run, names_file,
+                            located, parse_fetch, regions, same_file, stdin_program, step_credit,
+                            streamed_fetch, swallowed, unbound, unread_program, within,
+                            working_directories)
 from workflow_programs import VALUE_PROGRAM
 
 
@@ -232,21 +233,17 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _walk(stmts, stream_exec=False, inside=False):
-    """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
-
-    Every download in the script, and every command this module cannot read, asked of each stage in
-    ONE walk -- the first read of each command substitution as a script of its own, so a caller that
-    walks inside a catch (`job_defects`) has read every text anything here reads.
-
-    A fetch in a substitution is credited to the command that CONSUMES it -- `eval`, `sh -c`,
-    `bash <(...)` -- because that is what decides whether the downloaded bytes become behaviour, and
-    so is one a variable carries (`carried`, where the walk found a fetch). Three forms are REPORTED
-    unread: a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a stdin program
-    not readable as written (`_unread_stdin`), and a program a shell may run that the walk cannot
-    read (`unread_program`), which `kept` weighs."""
+def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory="."):
+    """Fetches and unread forms, retaining nested cwd while attributing them to the outer line."""
+    stmts = list(stmts)
+    if working is None:
+        credit = step_credit(stmts, "bash {0}" if inside else None)
+        dirs = working_directories(stmts, regions(stmts), 0, credit, directory)
+        working = dict(enumerate(dirs))
+    scopes = scopes or range(len(stmts))
     found, unread = [], []
     for index, statement in enumerate(stmts):
+        here = working.get(index, directory)
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[position - 1] if position else None
             if argv and os.path.basename(argv[0]) in FETCHERS:
@@ -259,6 +256,8 @@ def _walk(stmts, stream_exec=False, inside=False):
                                                 stage, following, EXECUTORS)
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
                                            else fetch)
+                    if fetch.dest is not None:
+                        fetch = fetch._replace(dest=located(fetch.dest, here))
                     found.append((index, fetch))
             reason = shell_reader.unresolved_wrapper(stage.argv)
             if reason:
@@ -270,12 +269,18 @@ def _walk(stmts, stream_exec=False, inside=False):
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
-            for inner in stage.substitutions:
-                fetched, nested = _walk(statements(inner), stream_exec, True)
-                unread.extend((index, why) for _index, why in nested)
+            for subno, text in enumerate(stage.substitutions):
+                inner = list(statements(text))
+                child_scope = "%sS%d_%d" % (scopes[index], position, subno)
+                dirs = working_directories(inner, regions(inner), child_scope,
+                                           step_credit(inner, "bash {0}"), here)
+                fetched, nested = _walk(
+                    inner, stream_exec, True, dict(enumerate(dirs)),
+                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here)
+                unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)
-                             for _index, fetch in fetched)
+                             for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
 
 
@@ -347,16 +352,12 @@ def _operands(argv):
     return [t for t in argv[1:] if not t.startswith("-")]
 
 
-def _checked_text(statement, position, stage, argv, written):
-    """The text a checksum stage reads, or None if nothing ties it to one.
-
-    Three ways a step says what it expects, and each is BOUND to a source: a
-    heredoc body, a sums file this same step wrote, or the previous pipeline
-    stage (`echo "<sha>  <file>" | sha256sum -c -`). A `sha256sum -c` over a
-    file nothing in the step produced ties this check to no download."""
+def _checked_text(statement, position, stage, argv, written, directory):
+    """Text a checksum reads, bound to its heredoc, a locally written sums
+    file, or the previous pipeline stage; None when no source ties it."""
     if stage.heredoc:
         return stage.heredoc
-    files = [f for f in _operands(argv) + stage.reads if f not in STDOUT]
+    files = [at_directory(f, directory) for f in _operands(argv) + stage.reads if f not in STDOUT]
     # `shasum -a 256 -c -`: the `256` is `-a`'s value, not a sums file.
     files = [f for f in files if not re.fullmatch(r"\d+", f)]
     if files:
@@ -367,7 +368,7 @@ def _checked_text(statement, position, stage, argv, written):
     return None
 
 
-def _record_writes(statement, written):
+def _record_writes(statement, written, directory):
     """What this statement leaves in each file it writes, so a later
     `sha256sum -c <file>` can be bound to it."""
     for position, stage in enumerate(statement.stages):
@@ -379,7 +380,7 @@ def _record_writes(statement, written):
             if position:
                 text = " ".join(command(statement.stages[position - 1].argv))
         for target in targets:
-            written[target] = text
+            written[at_directory(target, directory)] = text
 
 
 # Why a checksum this job ran clears nothing. A refused check is KEPT with its reason rather than
@@ -404,73 +405,76 @@ def _unshared(conditions, check, use):
     return _UNSHARED_IF
 
 
-def _checks(stmts, credit=None):
+def _checks(stmts, credit=None, working=None):
     """[(statement index, checked text, why it clears nothing or None)]."""
     found = []
     written: dict[str, str] = {}
+    working = working or {}
     for index, statement in enumerate(stmts):
+        directory = working.get(index, ".")
         for position, stage in enumerate(statement.stages):
             argv = command(stage.argv)
             if not argv or os.path.basename(argv[0]) not in CHECKSUM_TOOLS:
                 continue
             if not _has_check_flag(argv):
                 continue
-            text = _checked_text(statement, position, stage, argv, written) or ""
+            text = _checked_text(statement, position, stage, argv, written, directory) or ""
             why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
             if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
                 why = _NO_DIGEST
             found.append((index, text, why))
-        _record_writes(statement, written)
+        _record_writes(statement, written, directory)
     return found
 
 
 # --- which statements execute what was fetched -------------------------------
 
-def _copies(statement, names):
-    """The new names this statement gives a file it already knows.
-
-    `cp payload alias`, `mv`, `ln -s`, `cat payload > alias`: renaming is not
-    executing, but it LAUNDERS -- run `alias` and the bytes are the download's,
-    under a name the guard never heard of. So the alias inherits, and the copy
-    itself stays innocent (copying a fetched JSON is still just a copy)."""
+def _copies(statement, names, directory):
+    """New names this statement gives a known file through `cp`, `mv`, `ln`
+    or `cat`: the alias inherits; the copy itself remains innocent."""
     new = set()
     for stage in statement.stages:
         argv = command(stage.argv)
         if not argv:
             continue
-        name, operands = os.path.basename(argv[0]), _operands(argv)
+        name = os.path.basename(argv[0])
+        operands = [at_directory(word, directory) for word in _operands(argv)]
         if name in ("cp", "mv", "ln") and len(operands) > 1:
             if any(same_file(o, n) for o in operands[:-1] for n in names):
                 new.add(operands[-1])
         if name == "cat" and stage.writes:
             if any(same_file(o, n) for o in operands for n in names):
-                new.update(stage.writes)
+                new.update(at_directory(word, directory) for word in stage.writes)
     return new
 
 
-def _uses(stmts, dest, after):
-    """(names the file goes by, [(statement index, what it does)]), walked in
-    order from the fetch so a name only counts once the statement creating it
-    has run; a use in a statement's substitutions (`within`) is that statement's."""
+def _uses(stmts, dest, after, working=None):
+    """Names the file gains and its later uses, walking in order so aliases count after creation.
+    A use in a statement's substitutions (`within`) belongs to that outer statement."""
     names, out = {dest}, []
+    working = working or {}
     for index, statement in enumerate(stmts[after:], after):
-        for inner, position, stage, where in within(statement):
+        directory = working.get(index, ".")
+        for inner, position, stage, where, here in within(
+                statement, directory=directory, scope=index):
             argv, how = command(stage.argv), None
             for name in sorted(names):
-                how = _use(inner, position, stage, argv, name)
+                how = _use(inner, position, stage, argv, name, here)
                 if how:
                     if not same_file(name, dest):
-                        how += " (as `%s`, copied from it earlier)" % name
+                        shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
+                        how += " (as `%s`, copied from it earlier)" % shown
                     break
             if how:
                 out.append((index, how + where))
                 break
-        names |= _copies(statement, names)
+        names |= _copies(statement, names, directory)
     return names, out
 
 
-def _use(statement, position, stage, argv, dest):
-    if any(may_run(word, dest) for word in shell_reader.wrapper_words(stage.argv)):
+def _use(statement, position, stage, argv, dest, directory):
+    if any(may_run(at_directory(word, directory, True), dest)
+           for word in shell_reader.wrapper_words(stage.argv)):
         return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
     if not argv:
         return None
@@ -478,18 +482,22 @@ def _use(statement, position, stage, argv, dest):
     name, rest = os.path.basename(argv[0]), argv[1:]
     if name == "chmod":
         rest = chmod_targets(argv)
+    rest = [at_directory(word, directory) for word in rest]
+    handed = [at_directory(word, directory) for word in handed]
     mentions = [t for t in rest + handed if covers(t, dest, recursive)]
     if name in CONTAINERS:
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if name in INTERPRETERS and any(same_file(r, dest) or (
-            stage.stdin_heredoc is None and covers(r, dest)) for r in stage.reads):
+    if name in INTERPRETERS and any(
+            same_file(at_directory(r, directory), dest) or (
+                stage.stdin_heredoc is None
+                and covers(at_directory(r, directory), dest)) for r in stage.reads):
         # File input is the shell's program even though argv carries no path.
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
-    if may_run(argv[0], dest):
+    if may_run(at_directory(argv[0], directory, True), dest):
         return "running it"
     if not mentions:
         return None
@@ -549,7 +557,7 @@ def _binds(conditions, check, use):
     return when is None or when == theirs
 
 
-def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
+def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None):
     """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
@@ -574,13 +582,15 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
                 "to a checksum or later use -- name a stable file and verify it"
                 % (shell_reader.readable(fetch.url) or "a download",
                    shell_reader.readable(fetch.dest)))
-    names, uses = _uses(stmts, fetch.dest, after=index)
+    working = working or {}
+    dest = at_directory(fetch.dest, getattr(fetch.dest, "directory", working.get(index, ".")))
+    names, uses = _uses(stmts, dest, after=index, working=working)
     uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
-              and any(names_file(text, name) for name in sorted(names))]
+              and any(names_file(text, name, working.get(i, ".")) for name in sorted(names))]
     first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
         clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
     if first_use is None:
@@ -611,22 +621,20 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, credit=None, walked=None):
+def _defects(stmts, conditions=None, credit=None, walked=None, working=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
-    `conditions` maps a statement index to the PAIR that decides whether it runs -- the step's `if:`
-    and the shell branch it sits in (`workflow_forms.regions`); absent = unconditional. A check
-    clears a use only where both halves match (see `_binds`). `credit` maps an index to what
-    `workflow_gating.swallowed` reads last: the `workflow_forms.step_credit` pair, each absent soft
-    answer bounded by a `_SOFT_STEP` reach. `walked` is `_walk`'s answer, supplied by `job_defects`.
-    `kept` weighs the unread forms (`what`: its sentence) beside the fetch defects: an `Idle` one
-    stands only where some fetch here is one `_defect` reports -- asked again with those forms as
-    uses -- or an `unbound` download (#2481), and nothing louder reports its statement (#2490)."""
-    checks, conditions = _checks(stmts, credit), conditions or {}
+    Conditions, failure credit and cwd bind checks and uses; `kept` weighs unread forms
+    beside fetch defects (#2481, #2490)."""
+    working, conditions = working or {}, conditions or {}
+    checks = _checks(stmts, credit, working)
     fetched, unread = walked or _walk(stmts, stream_exec=True)
-    found = [(i, why, f) for i, f in fetched if (why := _defect(f, i, stmts, checks, conditions))]
-    return kept(unread, found, bool(found or unread and (unbound(stmts, fetched, unread) or any(
-        _defect(f, i, stmts, checks, conditions, [u for u, _w in unread]) for i, f in fetched))))
+    found = [(index, why, fetch) for index, fetch in fetched
+             if (why := _defect(fetch, index, stmts, checks, conditions, working=working))]
+    unverified = bool(found or unread and (unbound(stmts, fetched, unread) or any(
+            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread], working)
+            for index, fetch in fetched)))
+    return kept(unread, found, unverified)
 
 
 def fetch_exec_defects(script):
@@ -640,26 +648,13 @@ def fetch_exec_defect(script):
 
 
 def job_defects(steps, strict=False):
-    """[(step name, why)] for one job's `run:` steps, folded in order.
-
-    A step carrying an `if:` is folded for what it FETCHES and RUNS; its CHECK is credited only
-    to a use sharing the same condition (`_binds`); a skipped check cannot clear that use.
-    A soft CHECK keeps the shell refusal and clears later uses only when that shell stops, and
-    only in its own step. `continue-on-error: true` still lets the job proceed to later steps.
-
-    THE SCOPE IS THE JOB, not the step (see the module docstring): steps share the workspace, /tmp
-    and PATH, so a fetch in step A and its run in step B is one act a later `sha256sum -c` checks.
-
-    Parsed STATEMENTS are concatenated, never the texts: each step is its own shell invocation, so
-    one step's stray quote or unterminated heredoc must not reach into the next step's parse. Each
-    defect is attributed to the step that performed the fetch. A script no shell is sure to read
-    (`workflow_forms.Unsure`) is never the step's own: a job holding one is folded again without
-    them, and a defect of that fold is added where the first has none for that fetch or unread form
-    (`_defects`'s `what`) at that statement. `strict`: a step the reader refuses raises."""
+    """Defects for a job: steps share files but start fresh shells and cwd.
+    Conditions and failure gates bind checks. `Unsure` scripts get a second fold;
+    `strict` rejects an unread step."""
     found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
     for sure in (False, True):              # the second fold leaves every `Unsure` statement out
         stmts: list[shell_reader.Statement] = []
-        owner, conditions, credit, entries, fetched, unread = [], {}, {}, [], [], []
+        owner, conditions, credit, working, entries, fetched, unread = [], {}, {}, {}, [], [], []
         for number, item in enumerate(steps):
             step = item if isinstance(item, Step) else Step(*item)
             why = unparseable(step.shell)
@@ -668,7 +663,11 @@ def job_defects(steps, strict=False):
                     here = read(step.script, step.shell)
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
-                    walked = _walk(here, stream_exec=True)
+                    branches, own = regions(here), step_credit(here, step.shell)
+                    directories = working_directories(here, branches, number, own)
+                    offset = len(stmts)
+                    walked = _walk(here, True, working=dict(enumerate(directories)),
+                                   scopes=range(offset, offset + len(here)))
                 except (() if strict else shell_lex.Unreadable) as error:
                     why = "cannot read this step: %s; nothing in it is accepted" % error
             if why:
@@ -678,7 +677,6 @@ def job_defects(steps, strict=False):
             unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
             # Per step, because each one is its own shell invocation: neither an
             # `if` left open nor a `set +e` in step A reaches step B.
-            branches, own = regions(here), step_credit(here, step.shell)
             for local, statement in enumerate(here):
                 when = (step.condition, branches.get(local))
                 if any(when):
@@ -687,10 +685,12 @@ def job_defects(steps, strict=False):
                 soft = Reach(len(here) - local - 1, _SOFT_STEP)
                 credit[len(stmts)] = (tuple(why or soft for why in answer or (None, None))
                                       if step.soft else answer)
+                working[len(stmts)] = directories[local]
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
         entries += [((owner[index][1], what), owner[index][0], why)
-                    for index, why, what in _defects(stmts, conditions, credit, (fetched, unread))]
+                    for index, why, what in _defects(
+                        stmts, conditions, credit, (fetched, unread), working)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
         if not any(isinstance(statement, Unsure) for statement in stmts):
