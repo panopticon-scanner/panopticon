@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
   shell prints it are printers too (#2467, #2476, #2478).** `cat <<'EOF' | sh` is read as
   `sh <<'EOF'` is, a `cat` with an option too (its body read whole: `-n` over-reports), and an
@@ -19,6 +25,10 @@ evidence exposed.
   stage that rewrites the stream (`tr`, `base64 -d`), leaves the program unread, reported where its
   words or the printer's text fetch, or beside a reported download. Named gap: `shopt -s xpg_echo`
   turns bash's `echo` into a decoder, which this rule does not follow.
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
 - **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
   A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
   direct function call stores it. Literal `shift` commands reindex that value, while `$@` and

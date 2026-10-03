@@ -3855,6 +3855,93 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                 self.assertIsNotNone(self.finding(body))
 
 
+class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
+    """#2430: a compound command's stdout belongs to its closing pipe."""
+
+    URL = "https://example.test/install.sh"
+    FETCH = "curl -fsSL %s" % URL
+
+    def assert_reported(self, script):
+        why = wg.fetch_exec_defects(script)
+        self.assertEqual(1, len(why), why)
+        self.assertIn("hands %s straight to `sh`" % self.URL, why[0])
+
+    def test_groups_and_branches_feed_the_executor_after_the_close(self):
+        for script in (
+                "{ %s; } | sh\n" % self.FETCH,
+                "{\n%s\n} | sh\n" % self.FETCH,
+                "(\n%s\n) | sh\n" % self.FETCH,
+                "if true; then\n%s\nfi | sh\n" % self.FETCH,
+                "while true; do\n%s\nbreak\ndone | sh\n" % self.FETCH,
+                "for value in one; do\n%s\ndone | sh\n" % self.FETCH,
+                "{ { %s; }; } | sh\n" % self.FETCH,
+                "{ { %s; } | sh; }\n" % self.FETCH,
+                "{ { %s; } | cat; } | sh\n" % self.FETCH,
+                "{ %s | cat; } | sh\n" % self.FETCH,
+                "{ %s | tee install.sh; } | sh\n" % self.FETCH,
+                "{ %s | sha256sum; } | sh\n" % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assert_reported(script)
+
+    def test_case_arms_feed_the_executor_after_esac(self):
+        for arm in ("x)", "x | y)", "( x | y )"):
+            script = "case x in\n  %s %s;;\nesac | sh\n" % (arm, self.FETCH)
+            with self.subTest(arm=arm):
+                self.assert_reported(script)
+        self.assert_reported(
+            "case x in x) %s;; esac | tee install.sh | sh\n" % self.FETCH
+        )
+
+    def test_a_carried_download_printed_inside_the_compound_is_reported(self):
+        assignment = "payload=$(%s)\n" % self.FETCH
+        for compound in ("{ echo \"$payload\"; } | sh\n",
+                         "{\necho \"$payload\"\n} | sh\n",
+                         "(\necho \"$payload\"\n) | sh\n",
+                         "case x in\n x) echo \"$payload\";;\nesac | sh\n",
+                         "{ { echo \"$payload\"; }; } | sh\n"):
+            with self.subTest(compound=compound):
+                why = wg.fetch_exec_defects(assignment + compound)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+
+    def test_a_local_stdout_redirect_disconnects_a_carried_printer(self):
+        assignment = "payload=$(%s)\n" % self.FETCH
+        for compound in ("{ echo \"$payload\" > f; } | sh\n",
+                         "{ echo \"$payload\" >f; } | sh\n",
+                         "{ echo \"$payload\" 1>f; } | sh\n",
+                         "{ echo \"$payload\" >>f; } | sh\n",
+                         "{ printf '%s' \"$payload\" >f; } | sh\n",
+                         "case x in x) echo \"$payload\" >f;; esac | sh\n"):
+            with self.subTest(compound=compound):
+                self.assertEqual([], wg.fetch_exec_defects(assignment + compound))
+        why = wg.fetch_exec_defects(assignment + "{ echo \"$payload\" 2>f; } | sh\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+
+    def test_nonexecutors_disconnected_streams_and_local_filters_stay_clean(self):
+        for script in (
+                "{ %s; } | tee install.sh\n" % self.FETCH,
+                "{ %s > install.sh; } | sh\n" % self.FETCH,
+                "{ %s; } | sh < local.sh\n" % self.FETCH,
+                "{ %s | cat > install.sh; } | sh\n" % self.FETCH,
+                "case x in x) %s;; esac | tee install.sh\n" % self.FETCH,
+                "case x in x) %s;; esac | sh < local.sh\n" % self.FETCH,
+                "{ %s; }\nif true; then :; fi | sh\n" % self.FETCH,
+                "{ %s; if true; then echo safe; fi | sh; }\n" % self.FETCH,
+                "%s\n{ echo safe; } | sh\n" % self.FETCH,
+                "{ { %s; } > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; } | cat > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; }; } > install.sh | sh\n" % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } > install.sh; } | sh\n"
+                % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } | cat > install.sh; } | sh\n"
+                % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetch_exec_defects(script))
+
+
 class TestPipelineStreamProvenance(unittest.TestCase):
     URL = "https://example.test/install"
 

@@ -224,6 +224,36 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
             50 * 1024 // 4, lambda size: "case " + "a" * size + " in x) :; esac\n", check)
 
 
+class TestEsacBeforeAPipeline(unittest.TestCase):
+    """#2610: a literal `esac` closes its case before a following operator."""
+
+    def test_the_following_use_is_a_separate_pipeline_stage(self):
+        for middle in (" | ", "|", " > case.out | "):
+            script = "case x in x) true;; esac" + middle + "sh payload"
+            with self.subTest(middle=middle):
+                parsed = shell_reader.statements(script)
+                final = parsed[-1]
+                self.assertEqual(["esac"], final.stages[0].argv)
+                self.assertEqual(["sh", "payload"], final.stages[1].argv)
+                expected = ["case.out"] if ">" in middle else []
+                self.assertEqual(expected, final.stages[0].writes)
+
+    def test_nested_case_closes_are_each_recognised(self):
+        script = ("case x in x) case y in y) true;; esac | cat;; "
+                  "esac | sh payload")
+        parsed = shell_reader.statements(script)
+        pipelines = [[stage.argv for stage in statement.stages] for statement in parsed]
+        self.assertIn([["esac"], ["cat"]], pipelines)
+        self.assertIn([["esac"], ["sh", "payload"]], pipelines)
+
+    def test_quoted_and_escaped_esac_patterns_are_not_case_closes(self):
+        for pattern in ("'esac'|other", "e\\sac|other", "(esac|other)"):
+            with self.subTest(pattern=pattern):
+                parsed = shell_reader.statements(
+                    "case esac in %s) true;; esac" % pattern)
+                arms = [stage.argv[0] for statement in parsed for stage in statement.stages
+                        if stage.argv and shell_reader.is_arm(stage.argv[0])]
+                self.assertEqual(1, len(arms), parsed)
 class TestNestedCaseHeaders(unittest.TestCase):
     """#2617: a parent arm must not become the first word of an inner header."""
 
