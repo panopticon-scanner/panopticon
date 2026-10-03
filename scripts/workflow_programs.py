@@ -13,10 +13,9 @@ it, the stage in front of it (#2333):
     `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
                       is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
                       language, where a table names it (`$CMD` is a value none places)
-    `stdin_scripts`   the quoted body that program is, where it is or may be shell, or the text an
-                      `echo` or `printf` pipes in (`printed`), each a `Stdin` naming the shell the
-                      step itself runs to read it, under whose `-e` a check in it runs -- or none,
-                      where no check in it counts
+    `stdin_scripts`   the body that program is, where it is or may be shell, or text an `echo` or
+                      `printf` pipes in (`printed`), each a `Stdin` naming the shell the step runs
+                      to read it, under whose `-e` a check runs -- or none, where no check counts
     `unprinted`       the printer piping one in whose text `printed` cannot spell out, for
                       `unread_program` to weigh; `printed`, the pipe test `_piped` and the
                       `_PRINTERS` table live in `workflow_printers` and are re-exported here
@@ -481,11 +480,11 @@ def stdin_program(argv):
     report nothing for `$PYTHON - <<'EOF'` even beside a fetch (review I-2);
     FOREIGN leaves the body unread, an `Idle` report `kept` drops beside no
     reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... |
-    sh` read CLEAN. As VALUE its QUOTED body is read as shell all the same,
-    additively (`stdin_scripts`; `workflow_forms.flattened` counts no check
-    in it, since `$CMD` may not run it) -- a body no interpreter runs, `$CAT
-    <<'EOF' > f`, over-reports -- and the guard's `_unread_stdin` reports the
-    hand-off `Idle` under a sentence of its own. Its walk takes a shell's
+    sh` read CLEAN. As VALUE its body is read as shell all the same, additively
+    (`stdin_scripts`; `workflow_forms.flattened` counts no check in it, since
+    `$CMD` may not run it) -- a body no interpreter runs, `$CAT <<'EOF' > f`,
+    over-reports -- and the guard's `_unread_stdin` reports the hand-off `Idle`.
+    Its walk takes a shell's
     `-c`, `-s`, vanishing-operand and option-value rules, since the word may
     be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read
     the heredoc, as does `$PYTHON -Ou - file.py <<'EOF'`, a stdin operand
@@ -493,9 +492,9 @@ def stdin_program(argv):
     file.py <<'EOF'` and an interpreter's own option value spelled `$`
     (`$NODE -e "$CODE" <<'EOF'`, `$PYTHON -m "$MOD" <<'EOF'`, read past as
     a vanishing operand) over-report a hand-off, like `$PYTHON -O file.py`),
-    and an EXPANDING body is read nowhere, so `$CMD <<EOF` running a download
-    reads CLEAN beside no reported fetch: option b's price, which `python3 -
-    <<EOF` pays too. No option word behind a `$` word is a refusal (#2475's
+    An EXPANDING VALUE body is read after substitutions become value words
+    (#2597), while a literal shell's stays unread and loud. No option word
+    behind a `$` word is a refusal (#2475's
     per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD
     -K <<'EOF'` is read and its hand-off said, though every shell measured
     refuses `-K` and runs nothing -- fail-closed. #2500's reading stays
@@ -610,16 +609,14 @@ def _options(argv, depth):
 
 
 def stdin_scripts(argv, stage, before=None):
-    """The QUOTED heredoc script this stage hands an interpreter, if it does.
+    """The heredoc script this stage hands an interpreter, if it does.
 
-    `bash -s <<'EOF' … EOF` is `sh -c '<script>'` one redirection away: with a
-    quoted delimiter the interpreter reads the body as the text it was written
-    as, so reading it here is exactly as sound as reading that string -- and a
-    `curl … | sh` inside it is the same defect it is at the top level; so is
-    `sh <<< '…'` (#2293). What EXPANDS is read nowhere: the guard's
-    `_unread_stdin`. Read here too is the text an `echo` or `printf` in front
-    of it (`before`) pipes in, where `printed` spells it out (#2333): `echo
-    'sh tool' | sh`; where it does not, `unprinted` has the printer.
+    A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
+    string; `curl … | sh` is the same defect, as is `sh <<< '…'` (#2293). An expanding body stays
+    unread for a literal shell. Behind a value command word, it is read after command and arithmetic
+    substitutions become value words (#2597), since the outer read owns them. Text an `echo` or
+    `printf` in front pipes in is read too where `printed` spells it (#2333); otherwise `unprinted`
+    has the printer.
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -630,23 +627,24 @@ def stdin_scripts(argv, stage, before=None):
     vanish or under a `$` command word, where no shell is sure to read it and nothing in it is the
     step's own (`workflow_forms.Unsure`).
 
-    Behind a `$` command word (VALUE_PROGRAM, #2473) the quoted body and the
-    printed text are read the same way, as shell, though the word may hold
-    none: what they fetch or run is read as at the top level, and
-    `workflow_forms.flattened` counts no check there; inside a `$(...)`,
-    `workflow_forms.substitution_script` weighs the printed text as a
-    shell's. `unprinted` weighs a shell's printer only, so a pipe into it
-    whose text no printer spells out (`echo "$X" | $CMD`) is unread, filed
-    under #2331.
+    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
+    though the word may hold none: what they fetch or run is read as at the top level, and
+    `workflow_forms.flattened` counts no check there. Inside a `$(...)`,
+    `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted` weighs a
+    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
     """
     here = stage.stdin_heredoc
     if here is None and _piped(stage, before):
         text = printed(shell_reader.command(before.argv))
         here = None if text is None else (text, False)
-    kind, reader = (None, None) if here is None or here[1] else _stdin(argv, 0)
-    if kind not in (SHELL_PROGRAM, VALUE_PROGRAM):
+    kind, reader = (None, None) if here is None else _stdin(argv, 0)
+    if kind not in (SHELL_PROGRAM, VALUE_PROGRAM) or here[1] and kind != VALUE_PROGRAM:
         return []
-    text = Stdin(here[0])
+    body = here[0]
+    if here[1]:
+        context = shell_reader._Parse(body)
+        body = context.pattern.sub("$VALUE", shell_reader._lift_substitutions(body, context)[0])
+    text = Stdin(body)
     text.reader = reader
     return [text]
 
