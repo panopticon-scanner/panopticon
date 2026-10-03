@@ -2086,6 +2086,57 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
             1, len(wg.job_defects([("step", "bash -e <<< '%s' &\n./tool\n" % body)]))
         )
 
+    def test_a_list_inside_a_script_keeps_only_its_reach(self):
+        # #2416: `-e` is suspended at the head of `&&`. The failed check
+        # skips the list's suffix, but a command after the list still runs.
+        def defects(form, shell=None):
+            return wg.job_defects([
+                wg.Step("step", self.FETCH + form % self.CHECK + "\n", shell=shell)
+            ])
+
+        for shell in (None, "sh", "bash", "bash -e {0}"):
+            with self.subTest(shell=shell, safe="child-list-use"):
+                self.assertEqual([], defects("sh -ec '%s && ./tool' | cat", shell))
+            with self.subTest(shell=shell, unsafe="child-after-list"):
+                self.assertEqual(
+                    1, len(defects("sh -ec '%s && echo ok; ./tool' | cat", shell))
+                )
+            with self.subTest(shell=shell, safe="child-list-eval-use"):
+                self.assertEqual(
+                    [], defects("sh -ec '%s && eval \"./tool\"' | cat", shell)
+                )
+            with self.subTest(shell=shell, unsafe="child-after-list-eval-use"):
+                self.assertEqual(
+                    1,
+                    len(defects(
+                        "sh -ec '%s && echo ok; eval \"./tool\"' | cat", shell
+                    )),
+                )
+            with self.subTest(shell=shell, unsafe="child-success-then-outer-use"):
+                self.assertEqual(
+                    1,
+                    len(defects(
+                        "sh -ec '%s && echo ok; true' | cat\n./tool", shell
+                    )),
+                )
+            with self.subTest(shell=shell, safe="eval-list-use"):
+                self.assertEqual([], defects("eval '%s && ./tool'", shell))
+            with self.subTest(shell=shell, unsafe="eval-after-list"):
+                self.assertEqual(1, len(defects("eval '%s && echo ok; ./tool'", shell)))
+            with self.subTest(shell=shell, unsafe="eval-success-then-outer-use"):
+                self.assertEqual(
+                    1, len(defects("eval '%s && echo ok; true'\n./tool", shell))
+                )
+
+        for shell in (None, "sh", "bash -e {0}"):
+            with self.subTest(shell=shell, control="child-list-status-is-lost"):
+                self.assertEqual(
+                    1, len(defects("sh -ec '%s && echo ok' | cat\n./tool", shell))
+                )
+        self.assertEqual(
+            [], defects("sh -ec '%s && echo ok' | cat\n./tool", "bash")
+        )
+
     def test_a_check_that_stops_the_script_and_the_step_still_clears(self):
         for form in ("sh -c '%s'", "sh <<< '%s'", "sh <<'EOF'\n%s\nEOF",
                      "sh -ec '%s; echo ok'", "sh -e -c '%s; echo ok'",

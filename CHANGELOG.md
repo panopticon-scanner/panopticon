@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Child-script `&&` gates stop at their list (#2416, #2331).** Checks inside handed or
+  evaluated scripts now retain the list's bounded reach even when the parent would accept the
+  script's status. Uses in the skipped suffix stay clean; commands after the list stay reported.
 - **Child checks keep local reach when their parent loses status (#2423, #2331).** A known
   `sh -e` script still gates its own later commands when its parent loses the child's failure to a
   pipeline or detached job. The new local credit stops at the child boundary; #2416 tracks an

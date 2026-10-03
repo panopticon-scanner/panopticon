@@ -178,9 +178,10 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     stdin script's READER's (`workflow_programs.Stdin`), without which no check in it counts; the
     step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
     (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell; false retains only its local
-    reach (#2423), and None means no shell is sure to read it (`Unsure`). It is never true for an
-    `Opaque` script, whose statements say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top
+    `stops`: this script's failure reaches the step's own shell; a bounded internal list keeps its
+    local reach (#2416), false retains only local reach (#2423), and None means no shell is sure to
+    read it (`Unsure`). It is never true for an `Opaque` script, whose statements say why
+    (`_OPAQUE`, #2486); `errexit`: `-e` at its top
     (None: the step's own shell); `pipefail`: a pipeline there fails on any command; `shell`: the
     script's runner, and at the step's own top its `shell:` (None: the default); `outer`: the bodies
     of the command running it, below the step's own, and `key` a name for the script, unique in the
@@ -228,11 +229,11 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
             (why, why or (None if fails[index] else _PIPED % shell))))
-    if stops is False:
+    if stops is not None:
         for index, at in enumerate(placed):
             old = out[at]
             out[at] = old._replace(credit=_local_script_credit(
-                stmts, index, begun, placed, at, on, fails, old.credit
+                stmts, index, begun, placed, at, on, fails, old.credit, not stops
             ))
     return out
 

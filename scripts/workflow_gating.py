@@ -248,20 +248,22 @@ class RescueGate(Reach):
         return self if self.start <= use <= self.through else self.outside
 
 
-def _local_script_credit(stmts, index, begun, placed, at, on, fails, parent):
-    """Retain a child script's local gate when its parent discards the child's status."""
+def _local_script_credit(stmts, index, begun, placed, at, on, fails, parent, local_only):
+    """Project a script's own bounded gate into flattened statement positions."""
     local = _stops_step(stmts, index, on, fails)
     if local is _LOST:
         local = Reach(0, _LOST)
     elif isinstance(local, int) and local >= 0:
         local = Reach(placed[local] - at)
+    elif local is None and not local_only:
+        return parent
     elif local is not None:
         return parent
     pair, credit = list(parent), (local, local if fails[index] else _NO_PIPEFAIL)
     for slot, stage in enumerate((stmts[index].stages[-1], stmts[index].stages[0])):
         reason = swallowed(stmts, index, stmts[index], stage, credit)
         if reason is None:
-            reason = Reach(placed[-1] - at, pair[slot])
+            reason = Reach(placed[-1] - at, pair[slot]) if local_only else pair[slot]
         if type(reason) is Reach:
             pair[slot] = reason
         elif (isinstance(reason, RescueGate)
