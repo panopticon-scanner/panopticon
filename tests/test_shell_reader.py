@@ -1212,15 +1212,22 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         escaped = "\\a\\b\\e\\E\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\cC"
         self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_quote.ansi_c(escaped))
         self.assertEqual("-c", shell_quote.ansi_c("\\x2dc"))
-        self.assertEqual("ab", shell_quote.ansi_c("a\\\nb"))
         self.assertEqual("a", shell_quote.ansi_c("a\\0discarded\\q\\u00e9"))
         self.assertIsNone(shell_quote.ansi_c("\\q"))
-        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9"):
-            with self.subTest(escape=escape), self.assertRaisesRegex(
-                    shell_lex.Unreadable, "outside ASCII"):
-                shell_quote.ansi_c(escape)
         # Inside "..." it is no quoting at all.
         self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
+
+    def test_ansi_c_non_ascii_escapes_leave_only_the_word_unknown(self):
+        # #2614: the ASCII decoder cannot spell these words, as with `\q`;
+        # ordinary CI prose must not refuse the surrounding shell script.
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9", "\\400", "\\cé", "\\q"):
+            with self.subTest(escape=escape):
+                self.assertIsNone(shell_quote.ansi_c(escape))
+
+    def test_ansi_c_backslash_newline_stays_inside_the_word(self):
+        # Both Bash 3.2 and 5.2 print bytes 61 5c 0a 62, not `ab`.
+        self.assertEqual("a\\\nb", shell_quote.ansi_c("a\\\nb"))
+        self.assertEqual(["echo", "a\\\nb"], stage("echo $'a\\\nb'").argv)
 
     def test_every_o_in_an_option_word_takes_a_value(self):
         for argv in (["bash", "-eo", "pipefail", "[-]c", "P"],
