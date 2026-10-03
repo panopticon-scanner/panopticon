@@ -159,11 +159,10 @@ live, so a change that catches one fails there and edits this list.
   a `shell: python` step), and THAT report is weighed: kept, since #2499, only beside a fetch this
   guard reports. So is the hand-off to a `$` command word no table places (#2473). Its body is
   read as shell besides: a `curl … | sh` there is caught, a check there clears nothing, and a
-  non-shell body whose string spells a shell download (`print("$(curl … | sh)")`) is reported
-  loud, filed under #2331. An expanding one is read with substitutions as values (#2597);
-  but any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no printer spells out
-  (`echo "$X" | $CMD`)
-  is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
+  shell-looking text in a non-shell body (`print("$(curl … | sh)")`) is reported loud (#2331).
+  An expanding body keeps substitutions as values (#2597); inside `$(...)`, its body speaks first
+  (#2598), at the cost of shell-looking non-shell text. A printer-unspelled `$CMD` pipe stays unread
+  (`echo "$X" | $CMD`, #2331). What remains unread: an interpreter behind an option it
   reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
   named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
   (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
@@ -264,7 +263,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside, before)
+            program = unread_program(argv, stage, _walk, inside, before)
+            reason = program if inside and program else _unread_stdin(stage) or program
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
