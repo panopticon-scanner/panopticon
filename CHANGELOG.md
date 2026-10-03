@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
 - **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
   of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
   printer follow-ups have room; the guard's answers are byte-identical before and after.
