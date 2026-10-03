@@ -411,10 +411,10 @@ def unread_program(argv, stage, walk, inside, before=None):
     read, and `_walk` reads its inner script separately (#2482). A command the guard reports
     unresolved (`sudo $CMD -c …`) is not read again here.
     The handed script or the printer speaks before the value's reason where a shell reads that stdin
-    (its `Stdin.reader` is the argv or `()`), where a `-c` or `eval` string is among what is handed,
-    or where that reason is absent or `Idle`; an answer resting only on a stdin no shell is sure to
-    read (`Stdin.reader` None, as past a value, #2485) never speaks before that reason where it is
-    LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'` runs the word whatever the stdin holds.
+    (`Stdin.reader` the argv or `()`), where a `-c` or `eval` string is handed and the handed answer
+    is LOUD, or where that reason is absent or `Idle`; an answer resting only on a stdin no shell is
+    sure to read (`Stdin.reader` None, as past a value, #2485) never speaks before that reason where
+    it is LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'` runs the word whatever the stdin holds.
     LAST, where none of those speaks, the same word with the SHELL spelled out (`dynamic_program`,
     #2483, #2486): one rule for a dynamic program wherever a shell takes one, said where nothing
     louder (`carried`'s, a stream's) reports its statement. Last because a value in the options
@@ -523,12 +523,12 @@ def carried(stmts, executors):
     """[(statement index, why)] for each download a step keeps in a variable and hands whole to a
     shell as its script (#2341): the word `$x` or `${x}` as what `eval` or a shell's `-c` runs
     (`scripts`) or as a word a value in its options or a `$` command word's `-c` may make the
-    program (`candidates`, #2479), but at a command the reader reports unresolved, or printed by
-    `echo` or `printf` down a pipe to one of `executors` (`stream_consumer`) or from a substitution
-    one of them is handed (`bash <(echo "$x")`) -- in the statement or in a script its substitutions
-    run (`within`), where `x` was assigned it before that statement and not since (`_assigned`). A
-    step is a shell of its own, so the guard asks of each step's statements apart, and of each
-    script a substitution runs for what it assigns itself.
+    program (`candidates`, #2479) -- except at a command the reader reports unresolved
+    (`unresolved_wrapper`) -- or printed by `echo` or `printf` down a pipe to one of `executors`
+    (`stream_consumer`) or from a substitution one of them is handed (`bash <(echo "$x")`) -- in the
+    statement or in a script its substitutions run (`within`), where `x` was assigned it before that
+    statement and not since (`_assigned`). A step is a shell of its own, so the guard asks of each
+    step's statements apart, and of each script a substitution runs for what it assigns itself.
 
     A download is held wherever a statement of its own assigns it. A reassignment empties the name
     only where the step's own shell always runs it, in the step's own scope (review I-1, I-2): not

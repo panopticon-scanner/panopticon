@@ -293,18 +293,18 @@ def candidates(argv):
     bare: `X=-cO; bash $X 'echo hi' '…'` runs nothing. But the operand may be an option's own value
     (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
     (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
-    expands to one, or (iii) as a script file or on stdin, which the operand reader and
-    `stdin_program` read. So the first word past the operand that may spell an option once expanded
-    (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every word after it, though not
-    itself, which is `$0`, an option word or a script's file name, never a `-c` string. The price: a
-    value that was `-c` after all has a later program-like parameter weighed again, as before #2484
-    (`X=-c; sh $X 'echo hi' "$Y" '…'` runs only `echo hi`). (None, []) where the options end first,
-    at a program, a `-c` whose string `scripts` reads, or a `-` or `--`. A value that is the command
-    word, handed a `-c` cluster, may be a shell itself (#2337, `CMD=sh; $CMD -c '…'`): the program
-    after the options is the candidate. A `$(…)` or backquote value with no word after it is its
-    own: bash makes the shell's words of its output, the program among them (`sh $(echo tool)`),
-    where a `<(…)` hands it a file (`shell_reader.yields_words`).
-    """
+    expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
+    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
+    word after it, though not itself, which is `$0`, an option word or a script's file name, never a
+    `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
+    The price: a value that was `-c` after all has a later program-like parameter weighed again, as
+    before #2484 (`X=-c; sh $X 'echo hi' "$Y" '…'` runs only `echo hi`). (None, []) where the
+    options end first, at a program, a `-c` whose string `scripts` reads, or a `-` or `--`. A value
+    that is the command word, handed a `-c` cluster, may be a shell itself (#2337,
+    `CMD=sh; $CMD -c '…'`): the program after the options is the candidate. A `$(…)` or backquote
+    value with no word after it is its own: bash makes the shell's words of its output, the program
+    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`)."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
@@ -338,9 +338,10 @@ def _all_expansion(text):
     with its quotes dropped, `$P$Q`, `$@`, a nest of any depth (`${A:-${B:-${C}}}`, r0 finding 3),
     and a lifted `$(...)` or backquote as `shell_reader.readable` renders it (`$P$(...)`, #2486) --
     and so spells no command at all for `flattened` to read (#2483). `${A}x`, `echo $X` and an
-    unbalanced `${A` are not: they hold text of their own. Braces are counted rather than matched by
-    pattern, because no regular expression can balance them. A `<(...)` renders as `$(...)` too, so
-    whether each hands on words is the caller's to ask of the token."""
+    unbalanced `${A` are not: they hold text of their own. Blanks around it and a trailing `;` are
+    no text of its own: `sh -c "$(cat f) "`, the `run: |` spelling. Braces are counted rather than
+    matched by pattern, because no regular expression can balance them. A `<(...)` renders as
+    `$(...)` too, so whether each hands on words is the caller's to ask of the token."""
     at, text = 0, text.strip(" \t\n").removesuffix(";").rstrip(" \t\n")
     while at < len(text):
         if text.startswith("$(...)", at):       # a lifted substitution, rendered
@@ -380,8 +381,7 @@ def dynamic_program(argv):
     not one; nor is a string that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
     read as written (`Opaque` where a `$(...)` is among its text). `set -- "$P"` IS one, and
     `eval set -- "$OPTS"` runs nothing of the value as a command: an accepted over-report, because a
-    `;` in that value does run (r0 finding 4).
-    """
+    `;` in that value does run (r0 finding 4)."""
     name = os.path.basename(argv[0]) if argv else ""
     for word in _program_words(argv):
         keys = getattr(word, "markers", {})
