@@ -525,6 +525,25 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
 
+    def test_2605_a_file_after_a_value_option_keeps_stdin_possible(self):
+        # The value may be `-s`, making every following word a parameter, or
+        # `--rcfile`, making the first literal word that option's value.
+        rows = (("sh $X file.sh", forms.SHELL_PROGRAM),
+                ("bash $X x.sh arg", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null -s arg", forms.SHELL_PROGRAM),
+                ("$CMD $X file.sh", workflow_programs.VALUE_PROGRAM))
+        for script, expected in rows:
+            with self.subTest(script=script):
+                self.assertEqual(expected, forms.stdin_program(self.argv(script)))
+        # A literal file, an ended option list and a literal `-c` remain files
+        # or strings. The literal `-s` must-trip remains a stdin program.
+        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+            with self.subTest(script=script):
+                self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh -s file.sh")))
+
     def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
         # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
         # heredoc in bash 3.2.57 and 5.2.21 alike -- the program string is one
@@ -554,6 +573,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for argv in (["eval", "bash", "-s"], ["eval", "bash -s"]):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+
+    def test_a_stdin_reading_value_behind_eval_or_dash_c_is_inherited_and_named(self):
+        # #2599: the enclosing command inherits VALUE_PROGRAM too, while the
+        # naming seam retains the inner word that may name the stdin reader.
+        for argv, word in ((["eval", "$CMD"], "$CMD"),
+                           (["bash", "-c", "$CMD"], "$CMD"),
+                           (["sh", "-c", "$P"], "$P")):
+            with self.subTest(argv=argv):
+                self.assertEqual(workflow_programs.VALUE_PROGRAM,
+                                 forms.stdin_program(argv))
+                self.assertEqual(word, workflow_programs.stdin_command(argv)[0])
 
     def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
         # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,

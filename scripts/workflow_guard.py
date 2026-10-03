@@ -152,19 +152,19 @@ live, so a change that catches one fails there and edits this list.
   stops, as the guard cannot tell it from `X=/dev/null`; one naming a file or an option nothing runs
   under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`), over-reports; `python3 $S`, S unset, a
   FOREIGN word, under-reports (python runs the body), filed under #2331. A quoted body reaches an
-  interpreter as written, so `workflow_forms.flattened` catches a shell download there as it does
-  at top level. A literal shell's EXPANDING body is REPORTED unread: values and `$(...)` output
-  remain unseen. A foreign-language program is reported too. So is a hand-off to a `$` command
-  word (#2473); since #2499, either is kept only beside a reported fetch. A value word's body is
-  read as shell with no check counted; an expanding one masks substitutions as values (#2597).
-  Inside a substitution, the body speaks before its hand-off (#2598); the price remains shell-like
-  non-shell text. A nearer literal shell remains the consumer when a surrounding value word gets
-  its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
-  file redirected into it.
-  `CMD=cat` is the fail-closed price. Still unread: an interpreter behind an option or stdin alias,
-  one behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), and an unknown basename such as
-  `python3.11` or `busybox sh`. A printer's unspelled text is reported only where its words fetch
-  or beside a reported fetch (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
+  interpreter as written, so `workflow_forms.flattened` catches a shell download as at top level.
+  A literal shell's EXPANDING body is REPORTED unread: values and `$(...)` output remain unseen.
+  A foreign program is reported too. A `$` command hand-off is reported (#2473); since #2499,
+  either is kept only beside a reported fetch. A value word's body is read as shell with no check
+  counted; an expanding one masks substitutions as values (#2597). Inside a substitution, the body
+  speaks before its hand-off (#2598); the price remains shell-like non-shell text. A nearer literal
+  shell remains consumer when a surrounding value word gets its output. A direct or carried stream
+  into a `$` command reports (#2602), as does a fetched file redirected into it.
+  `CMD=cat` is the fail-closed price. A value option before a file keeps stdin possible (#2605);
+  `X=-e` is its price. Still unread: untabled literal options or stdin aliases, a shell behind a
+  TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename such as `python3.11` or
+  `busybox sh`. A printer's unspelled text is reported only where its words fetch or beside a
+  reported fetch (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
   WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
   the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
@@ -190,13 +190,15 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
-                            Unsure, at_directory, carried, chmod_executable, chmod_targets, clears,
-                            covers, described, flattened, in_container, kept, may_run, names_file,
-                            located, parse_fetch, regions, same_file, stdin_program, step_credit,
-                            streamed_fetch, swallowed, unbound, unread_program, within,
+from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
+                             clears_nested as _clears_nested, contextual as _check_at_use)
+from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Reach, Unsure, at_directory, carried,
+                            flattened, kept, located, names_file, parse_fetch, regions,
+                            stdin_program, step_credit, streamed_fetch, unbound, unread_program,
                             working_directories)
-from workflow_programs import VALUE_PROGRAM
+from workflow_programs import VALUE_PROGRAM, stdin_command
+from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
+                           UNPACKERS as UNPACKERS, uses as _uses)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -208,24 +210,7 @@ Step = collections.namedtuple("Step", "name script shell condition soft",
 # The shells this module has a grammar for. Anything else is reported unread.
 PARSED_SHELLS = ("bash", "sh")
 UNNAMED = "<unnamed step>"
-CHECKSUM_TOOLS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
-INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
-                "perl", "ruby", "node", "php", "pwsh", "eval", "source", ".")
-# Unpacking a downloaded archive is executing it too: the bytes decide what
-# lands on disk and under what name. `install` places a file into a directory
-# with a mode; `tar`/`unzip` write whatever the archive says.
-UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
-EXECUTORS = INTERPRETERS + UNPACKERS
-# An expected digest: a hex literal, or the variable a workflow pins one in (`${HADOLINT_SHA256}`,
-# `$SHA`). Naming a file is not checking it -- something in the checked line has to BE the
-# expectation -- and ANY expansion is not good enough either: `echo "$FILE  /tmp/payload" |
-# sha256sum -c -` carries a path where the digest belongs, so the name has to say digest.
-_DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
-                     r"|\$\{?\w*(?:SHA|SUM|DIGEST|HASH|CHECKSUM)\w*\}?", re.I)
-
-
 # --- which statements fetch --------------------------------------------------
-
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory="."):
     """Fetches and unread forms, retaining nested cwd while attributing them to the outer line."""
     stmts = list(stmts)
@@ -298,7 +283,7 @@ def _unread_stdin(stage):
     kind = stdin_program(argv) if here else None
     if kind is None:
         return None
-    name = shell_reader.readable(argv[0])
+    name = shell_reader.readable(stdin_command(argv)[0] if kind == VALUE_PROGRAM else argv[0])
     if kind == VALUE_PROGRAM:
         return Idle("hands a heredoc body or here-string to `%s`, a command word this guard does "
                     "not follow -- its body is read as shell, which it may not be; name the "
@@ -331,59 +316,11 @@ def fetches(script):
     return [fetch for _index, fetch in _fetch_records(read(script))]
 
 
-# --- which statements check, and what they check -----------------------------
-
-def _has_check_flag(argv):
-    for token in argv[1:]:
-        if token in ("-c", "--check"):
-            return True
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
-            return True
-    return False
-
-
-def _operands(argv):
-    return [t for t in argv[1:] if not t.startswith("-")]
-
-
-def _checked_text(statement, position, stage, argv, written, directory):
-    """Text a checksum reads, bound to its heredoc, a locally written sums
-    file, or the previous pipeline stage; None when no source ties it."""
-    if stage.heredoc:
-        return stage.heredoc
-    files = [at_directory(f, directory) for f in _operands(argv) + stage.reads if f not in STDOUT]
-    # `shasum -a 256 -c -`: the `256` is `-a`'s value, not a sums file.
-    files = [f for f in files if not re.fullmatch(r"\d+", f)]
-    if files:
-        known = [written[f] for f in files if f in written]
-        return "\n".join(known) if known else None
-    if position:
-        return " ".join(command(statement.stages[position - 1].argv))
-    return None
-
-
-def _record_writes(statement, written, directory):
-    """What this statement leaves in each file it writes, so a later
-    `sha256sum -c <file>` can be bound to it."""
-    for position, stage in enumerate(statement.stages):
-        argv = command(stage.argv)
-        text = " ".join(argv) + ("\n" + stage.heredoc if stage.heredoc else "")
-        targets = list(stage.writes)
-        if argv and os.path.basename(argv[0]) == "tee":
-            targets += _operands(argv)
-            if position:
-                text = " ".join(command(statement.stages[position - 1].argv))
-        for target in targets:
-            written[at_directory(target, directory)] = text
-
-
 # Why a checksum this job ran clears nothing. A refused check is KEPT with its reason rather than
 # dropped, because "no checksum in the job names this file" and "the checksum that names it was
 # handed to a `|| true`" are different sentences, and only one of them is true of any given step.
 _SOFT_STEP = ("is in a step carrying `continue-on-error: true`, so the job "
               "carries on past its failure")
-_NO_DIGEST = ("carries no digest, so it says which file to read and not what "
-              "should have arrived")
 _UNSHARED_IF = ("runs under an `if:` the use does not share, so it may be "
                 "skipped while the use is not")
 _UNSHARED_BRANCH = ("is written inside an `if`/`while` branch the use is not "
@@ -397,120 +334,6 @@ def _unshared(conditions, check, use):
     if when[1] and when[1] != theirs[1]:
         return _UNSHARED_BRANCH
     return _UNSHARED_IF
-
-
-def _checks(stmts, credit=None, working=None):
-    """[(statement index, checked text, why it clears nothing or None)]."""
-    found = []
-    written: dict[str, str] = {}
-    working = working or {}
-    for index, statement in enumerate(stmts):
-        directory = working.get(index, ".")
-        for position, stage in enumerate(statement.stages):
-            argv = command(stage.argv)
-            if not argv or os.path.basename(argv[0]) not in CHECKSUM_TOOLS:
-                continue
-            if not _has_check_flag(argv):
-                continue
-            text = _checked_text(statement, position, stage, argv, written, directory) or ""
-            why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
-            if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
-                why = _NO_DIGEST
-            found.append((index, text, why))
-        _record_writes(statement, written, directory)
-    return found
-
-
-# --- which statements execute what was fetched -------------------------------
-
-def _copies(statement, names, directory):
-    """New names this statement gives a known file through `cp`, `mv`, `ln`
-    or `cat`: the alias inherits; the copy itself remains innocent."""
-    new = set()
-    for stage in statement.stages:
-        argv = command(stage.argv)
-        if not argv:
-            continue
-        name = os.path.basename(argv[0])
-        operands = [at_directory(word, directory) for word in _operands(argv)]
-        if name in ("cp", "mv", "ln") and len(operands) > 1:
-            if any(same_file(o, n) for o in operands[:-1] for n in names):
-                new.add(operands[-1])
-        if name == "cat" and stage.writes:
-            if any(same_file(o, n) for o in operands for n in names):
-                new.update(at_directory(word, directory) for word in stage.writes)
-    return new
-
-
-def _uses(stmts, dest, after, working=None):
-    """Names the file gains and its later uses, walking in order so aliases count after creation.
-    A use in a statement's substitutions (`within`) belongs to that outer statement."""
-    names, out = {dest}, []
-    working = working or {}
-    for index, statement in enumerate(stmts[after:], after):
-        directory = working.get(index, ".")
-        for inner, position, stage, where, here in within(
-                statement, directory=directory, scope=index):
-            argv, how = command(stage.argv), None
-            for name in sorted(names):
-                how = _use(inner, position, stage, argv, name, here)
-                if how:
-                    if not same_file(name, dest):
-                        shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
-                        how += " (as `%s`, copied from it earlier)" % shown
-                    break
-            if how:
-                out.append((index, how + where))
-                break
-        names |= _copies(statement, names, directory)
-    return names, out
-
-
-def _use(statement, position, stage, argv, dest, directory):
-    if any(may_run(at_directory(word, directory, True), dest)
-           for word in shell_reader.wrapper_words(stage.argv)):
-        return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
-    if not argv:
-        return None
-    argv, handed, recursive = described(statement, position, stage, argv)
-    name, rest = os.path.basename(argv[0]), argv[1:]
-    if name == "chmod":
-        rest = chmod_targets(argv)
-    rest = [at_directory(word, directory) for word in rest]
-    handed = [at_directory(word, directory) for word in handed]
-    mentions = [t for t in rest + handed if covers(t, dest, recursive)]
-    if name in CONTAINERS:
-        interpreter = in_container(argv, dest, INTERPRETERS)
-        if interpreter:
-            return "running it inside a container under `%s`" % interpreter
-    if (name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM) and any(
-            same_file(at_directory(r, directory), dest) or (
-                stage.stdin_heredoc is None
-                and covers(at_directory(r, directory), dest)) for r in stage.reads):
-        # File input is the shell's program even though argv carries no path.
-        return "running it under `%s` from standard input" % name
-    if name == "chmod" and mentions and chmod_executable(argv):
-        return "making it executable"
-    if may_run(at_directory(argv[0], directory, True), dest):
-        return "running it"
-    if not mentions:
-        return None
-    if name in INTERPRETERS:
-        return "running it under `%s`" % name
-    if name == "install":
-        return "installing it"
-    if name in UNPACKERS:
-        return "unpacking it with `%s`" % name
-    if name in ("mv", "cp", "ln") and any(
-            t.startswith(BIN_DIRS) or "/bin/" in t for t in rest):
-        # Including `ln -s`: a symlink on PATH runs the same bytes, and the
-        # name it is then invoked by (`hadolint`) is nowhere in this script.
-        return "putting it on PATH with `%s`" % name
-    if name == "cat" and position + 1 < len(statement.stages):
-        following = command(statement.stages[position + 1].argv)
-        if following and os.path.basename(following[0]) in INTERPRETERS:
-            return "piping it into `%s`" % os.path.basename(following[0])
-    return None
 
 
 # --- the rule ----------------------------------------------------------------
@@ -551,7 +374,7 @@ def _binds(conditions, check, use):
     return when is None or when == theirs
 
 
-def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None):
+def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None, scopes=None):
     """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
@@ -584,18 +407,20 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                    shell_reader.readable(fetch.dest)))
     working = working or {}
     dest = at_directory(fetch.dest, getattr(fetch.dest, "directory", working.get(index, ".")))
-    names, uses = _uses(stmts, dest, after=index, working=working)
+    names, uses = _uses(stmts, dest, after=index, working=working, scopes=scopes)
     uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
-              and any(names_file(text, name, working.get(i, ".")) for name in sorted(names))]
+              and any(names_file(text, name, getattr(i, "directory", working.get(i, ".")))
+                      for name in sorted(names))]
     first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
-        clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
+        _clears_nested(why, i, u) and _binds(conditions, i, u)
+        for i, why in naming)), (None, None))
     if first_use is None:
         return None
-    naming = [(i, why.at_use(i, first_use) if hasattr(why, "at_use") else why) for i, why in naming]
+    naming = [(i, _check_at_use(why, i, first_use)) for i, why in naming]
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
@@ -612,7 +437,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    why, _remedy(fetch.dest)))
     if [i for i, _text, why in checks if i > index
-            and (why.at_use(i, first_use) if hasattr(why, "at_use") else why) is None]:
+            and _check_at_use(why, i, first_use) is None]:
         return ("fetches %s and %s; no checksum in the job names %s, and a "
                 "checksum of a different file verifies nothing -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
@@ -621,7 +446,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, credit=None, walked=None, working=None):
+def _defects(stmts, conditions=None, credit=None, walked=None, working=None, scopes=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
     Conditions, failure credit and cwd bind checks and uses; `kept` weighs unread forms
@@ -630,9 +455,11 @@ def _defects(stmts, conditions=None, credit=None, walked=None, working=None):
     checks = _checks(stmts, credit, working)
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     found = [(index, why, fetch) for index, fetch in fetched
-             if (why := _defect(fetch, index, stmts, checks, conditions, working=working))]
+             if (why := _defect(fetch, index, stmts, checks, conditions, working=working,
+                                scopes=scopes))]
     unverified = bool(found or unread and (unbound(stmts, fetched, unread) or any(
-            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread], working)
+            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread], working,
+                    scopes)
             for index, fetch in fetched)))
     return kept(unread, found, unverified)
 
@@ -688,9 +515,10 @@ def job_defects(steps, strict=False):
                 working[len(stmts)] = directories[local]
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
+        scopes = {index: place[1][0] for index, place in enumerate(owner)}
         entries += [((owner[index][1], what), owner[index][0], why)
                     for index, why, what in _defects(
-                        stmts, conditions, credit, (fetched, unread), working)]
+                        stmts, conditions, credit, (fetched, unread), working, scopes)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
         if not any(isinstance(statement, Unsure) for statement in stmts):

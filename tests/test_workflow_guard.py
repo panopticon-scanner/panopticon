@@ -703,6 +703,167 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
                     self.assertEqual([], self.job(dest, use))
 
 
+class TestAGlobMatchCarriedThroughAValue(unittest.TestCase):
+    """#2585: a live glob keeps naming its match after the shell stores it."""
+
+    GET = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+    CHECK = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+    TARGETS = (
+        'for f in ./cuda_*.run; do sh "$f"; done\n',
+        'set -- ./cuda_*.run; sh "$1"\n',
+        'f() { sh "$1"; }; f ./cuda_*.run\n',
+    )
+
+    def job(self, use):
+        return [why for _name, why in wg.job_defects([("step", self.GET + use)])]
+
+    def test_a_match_reaches_a_loop_positional_or_function_value(self):
+        for use in self.TARGETS:
+            with self.subTest(use=use):
+                found = self.job(use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+    def test_a_checksum_ahead_of_the_binding_clears_each_use(self):
+        for use in self.TARGETS:
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(self.CHECK + use))
+
+    def test_each_positional_value_keeps_its_own_operand(self):
+        for use in ('set -- other ./cuda_*.run; sh "$2"\n',
+                    'f() { sh "$2"; }; f other ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        for use in ('set -- other ./cuda_*.run; sh "$1"\n',
+                    'f() { sh "$1"; }; f other ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+
+    def test_shift_reindexes_the_remaining_positional_values(self):
+        uses = (
+            'set -- ./cuda_*.run; shift 0; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift; sh "$1"\n',
+            'set -- other other ./cuda_*.run; shift 2; sh "$1"\n',
+            'f() { shift; sh "$1"; }; f other ./cuda_*.run\n',
+            'set -- ./cuda_*.run; shift 2; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift 3; sh "$2"\n',
+            'set -- other ./cuda_*.run; false && shift; sh "$1"\n',
+            ('set -- other ./cuda_*.run; if false; then shift; fi; '
+             'sh "$1"\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- ./cuda_*.run; shift; sh "$1"\n'
+        ))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; shift 2; sh "$1"\n'
+        ))
+
+    def test_all_positionals_flow_to_a_loop_and_the_first_flows_to_a_shell(self):
+        uses = (
+            'set -- ./cuda_*.run; sh "$@"\n',
+            'set -- ./cuda_*.run; sh "$*"\n',
+            'set -- other ./cuda_*.run; for f in "$@"; do sh "$f"; done\n',
+            ('f() { for value in "$@"; do sh "$value"; done; }; '
+             'f other ./cuda_*.run\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; sh "$@"\n'
+        ))
+
+    def test_a_bound_value_can_be_passed_on_to_a_function_argument(self):
+        uses = ('run() { sh "$1"; }; '
+                'for f in ./cuda_*.run; do run "$f"; done\n',
+                'run() { sh "$1"; }; set -- ./cuda_*.run; run "$1"\n')
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_function_defined_before_the_fetch_can_receive_the_match(self):
+        script = ('run() { sh "$1"; }; ' + self.GET +
+                  'run ./cuda_*.run\n')
+        self.assertIn("running it under `sh`", wg.fetch_exec_defect(script) or "")
+
+    def test_an_unset_or_unexecuted_definition_does_not_invent_a_function_call(self):
+        uses = ('run() { sh "$1"; }; unset -f run; run ./cuda_*.run\n',
+                'if false; then run() { sh "$1"; }; fi; run ./cuda_*.run\n')
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+        use = ('run() { sh "$1"; }; false && unset -f run; '
+               'run ./cuda_*.run\n')
+        self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_quoted_or_nonmatching_pattern_is_not_carried(self):
+        for pattern in ("'./cuda_*.run'", "./other_*.run"):
+            for template in ('for f in %s; do sh "$f"; done\n',
+                             'set -- %s; sh "$1"\n',
+                             'f() { sh "$1"; }; f %s\n'):
+                with self.subTest(pattern=pattern, template=template):
+                    self.assertEqual([], self.job(template % pattern))
+
+    def test_reassignment_clears_the_carried_match(self):
+        for use in ('for f in ./cuda_*.run; do f=other.run; sh "$f"; done\n',
+                    'set -- ./cuda_*.run; set -- other.run; sh "$1"\n',
+                    'f() { set -- other.run; sh "$1"; }; f ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+
+    def test_a_command_environment_or_export_does_not_clear_the_shell_value(self):
+        for use in ('for f in ./cuda_*.run; do f=other.run true; sh "$f"; done\n',
+                    'for f in ./cuda_*.run; do export f; sh "$f"; done\n'):
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_reassignment_that_may_not_run_does_not_clear_the_match(self):
+        uses = (
+            'for f in ./cuda_*.run; do false && f=other.run; sh "$f"; done\n',
+            'for f in ./cuda_*.run; do if false; then f=other.run; fi; sh "$f"; done\n',
+            'for f in ./cuda_*.run; do ( f=other.run ); sh "$f"; done\n',
+            ('for f in ./cuda_*.run; do while false; do f=other.run; done; '
+             'sh "$f"; done\n'),
+            ('f() { false && set -- other.run; sh "$1"; }; '
+             'f ./cuda_*.run\n'),
+            ('f() { if false; then set -- other.run; fi; sh "$1"; }; '
+             'f ./cuda_*.run\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_shell_values_do_not_cross_a_workflow_step_boundary(self):
+        bindings = ('for f in ./cuda_*.run; do :; done\n',
+                    'set -- ./cuda_*.run\n',
+                    'f() { sh "$1"; }\n')
+        uses = ('sh "$f"\n', 'sh "$1"\n', 'f ./cuda_*.run\n')
+        for binding, use in zip(bindings, uses, strict=True):
+            with self.subTest(binding=binding, use=use):
+                steps = [("bind", self.GET + binding), ("use", use)]
+                self.assertEqual([], wg.job_defects(steps))
+
+    def test_a_function_directory_change_keeps_only_absolute_matches_live(self):
+        self.assertEqual([], self.job(
+            'f() { cd /; sh "$1"; }; f ./cuda_*.run\n'
+        ))
+        get = "curl -fsSLo /opt/cuda_1.run https://example.test/cuda_1.run\n"
+        absolute = (
+            'for f in /opt/cuda_*.run; do cd sub; sh "$f"; done\n',
+            'f() { cd sub; sh "$1"; }; f /opt/cuda_*.run\n',
+        )
+        for use in absolute:
+            with self.subTest(kind="absolute", use=use):
+                found = wg.fetch_exec_defect(get + use)
+                self.assertIn("running it under `sh`", found or "")
+
+    def test_the_direct_glob_remains_the_must_trip_control(self):
+        self.assertIn("running it under `sh`", "".join(self.job("sh ./cuda_*.run\n")))
+
+
 class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
     """#2432: only unquoted pattern characters make a shell glob."""
 
@@ -1060,6 +1221,20 @@ class TestAUseInsideACommandSubstitution(unittest.TestCase):
         self.assertEqual([], self.job(self.GET + self.CHECK + "x=$(bash t.sh)\n"))
         self.assertIn("verifies t.sh only AFTER running it under `bash` inside a command "
                       "substitution", "".join(self.job(self.GET + "x=$(bash t.sh)\n" + self.CHECK)))
+
+    def test_a_check_beside_the_use_obeys_the_substitution_shells_gate(self):
+        check = self.CHECK.rstrip()
+        self.assertEqual([], self.job(self.GET + "x=$(%s && bash t.sh)\n" % check))
+        for body in ("%s; bash t.sh" % check, "bash t.sh"):
+            with self.subTest(body=body):
+                why = self.job(self.GET + "x=$(%s)\n" % body)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("running it under `bash` inside a command substitution", why[0])
+        sibling = self.job(self.GET + "x=$(%s) y=$(bash t.sh)\n" % check)
+        self.assertIn("inside another command-substitution context", "".join(sibling))
+        self.assertEqual([], self.job(self.GET + "x=$(%s && y=$(bash t.sh))\n" % check))
+        outside = self.job(self.GET + 'echo "$(%s)"\nbash t.sh\n' % check)
+        self.assertIn("inside another command-substitution context", "".join(outside))
 
     def test_reading_it_or_running_another_file_there_is_not_a_use(self):
         for use in ("x=$(cat t.sh)\n", "x=$(bash other.sh)\n", "x=$(wc -l < t.sh)\n",
@@ -5489,9 +5664,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # the same. The reader decodes Bash's ASCII ANSI-C table, but parses
         # no expansions. Neither reading short of those is safe: the regex
         # this replaced guessed that `<<EOF$(x)` was `<<EOF`, so the decoy
-        # line below the
-        # payload ended the body, and reading the body as code let the quote
-        # in `it's` hide the payload below the terminator, which bash 3.2 and
+        # line below the payload ended the body. Reading the body as code let
+        # the quote in `it's` hide the payload below the terminator, which bash 3.2 and
         # 5.2 both run (#2224). So the step is refused, and the reason names
         # the word. The same shape spelled with no parse -- quoted, or a
         # literal ANSI-C word decoded exactly -- remains readable.

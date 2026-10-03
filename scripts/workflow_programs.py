@@ -13,6 +13,8 @@ it, the stage in front of it (#2333):
     `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
                       is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
                       language, where a table names it (`$CMD` is a value none places)
+    `stdin_command`   the command whose stdin-program answer an enclosing `eval` or `sh -c`
+                      inherits, preserving an inner `$CMD` for the guard's hand-off report
     `stdin_scripts`   the body that program is, where it is or may be shell, or text an `echo` or
                       `printf` pipes in (`printed`), each a `Stdin` naming the shell the step runs
                       to read it, under whose `-e` a check runs -- or none, where no check counts
@@ -245,9 +247,9 @@ def _past_options(argv, at):
 # A word bash expands, where a shell reads its options, that may spell one
 # (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
 # letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
-# `$'…'` the reader leaves undecoded (`shell_lex.ansi_c`) whose text BEGINS
-# with an escape, `$'\x2dc'` but not `$'-\x63'` (a residual), or a word
-# xargs puts a line of its input in (`{}`).
+# `$'…'` beginning with an unknown or non-ASCII escape that `shell_quote.ansi_c`
+# cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a line of
+# its input in (`{}`).
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
 
@@ -295,7 +297,7 @@ def candidates(argv):
     (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
     (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
     expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
-    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    `stdin_program` keeps possible past a value (#2605); a literal long option remains #2616. So
     spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
     word after it, though not itself, which is `$0`, an option word or a script's file name, never a
     `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
@@ -473,6 +475,12 @@ def stdin_program(argv):
     over-report the guard's gap list does not separately name, beside the
     ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
+    A FILE after a value in the shell's option slot keeps stdin possible
+    (#2605): the value may be `-s`, making that file and every later word a
+    parameter, or `--rcfile`, making the file that option's value. This reads
+    `sh $X file.sh <<'EOF'` fail-closed at the disclosed `X=-e` price. An
+    explicit `--` before the value ends the option slot.
+
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
     table places may hold a shell, another language's interpreter or `true`.
@@ -497,13 +505,12 @@ def stdin_program(argv):
     behind a `$` word is a refusal (#2475's
     per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD
     -K <<'EOF'` is read and its hand-off said, though every shell measured
-    refuses `-K` and runs nothing -- fail-closed. #2500's reading stays
-    SHELL_PROGRAM's: an inner `$CMD` makes no enclosing `eval` or `-c` string
-    a stdin shell, so the body of `CMD=sh; eval "$CMD" <<'EOF'` or `export
-    CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
-    `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
-    the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331.
+    refuses `-K` and runs nothing -- fail-closed. #2500's inheritance includes
+    VALUE_PROGRAM too (#2599): an inner `$CMD` makes an enclosing `eval` or
+    `-c` string a value stdin reader, so its quoted body is read as shell and
+    the hand-off names the inner word. This is fail-closed: an unset P makes
+    the heredoc on `sh -c "$P"` run nothing, but it is reported. Without
+    stdin, #2483's dynamic-program answer stays.
     """
     return _stdin(argv, 0)[0]
 
@@ -511,6 +518,11 @@ def stdin_program(argv):
 def stdin_reader(argv):
     """The `reader` (`Stdin`) of this command's stdin: None where no shell is sure to read it."""
     return _stdin(argv, 0)[1]
+
+
+def stdin_command(argv):
+    """The argv whose stdin-program answer this command inherits, or `argv` itself."""
+    return _stdin_details(argv, 0)[2]
 
 
 class Stdin(str):
@@ -533,8 +545,13 @@ def _stdin(argv, depth):
     (`bash -s -c 'sh'`, by `_options`), the step reads the body as the holder's program, and the
     reader is `()`. Nor is there one past a word that may vanish (#2485), which may name a FILE,
     nor under a `$` command word (#2473). `depth` counts the strings walked so far, at most 64."""
+    return _stdin_details(argv, depth)[:2]
+
+
+def _stdin_details(argv, depth):
+    """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
     if not argv:
-        return None, None
+        return None, None, argv
     kind, reader = _options(argv, depth)
     found = scripts(argv)
     if found:
@@ -554,13 +571,17 @@ def _stdin(argv, depth):
             words = words[1:]
         text = " ".join(getattr(t, "spelled", t) for t in words)
         parsed = shell_reader.statements(text)
-        if (len(parsed) == 1 and len(parsed[0].stages) == 1
-                and (depth >= 64                # bounded: past 64 strings, fail-closed
-                     or _stdin(shell_reader.command(parsed[0].stages[0].argv), depth + 1)[0]
-                     == SHELL_PROGRAM)):
-            # Read, and no check in it counts: the step's own only where its holder reads stdin.
-            return SHELL_PROGRAM, () if kind == SHELL_PROGRAM and reader else None
-    return kind, reader
+        if len(parsed) == 1 and len(parsed[0].stages) == 1:
+            inner = shell_reader.command(parsed[0].stages[0].argv)
+            if depth >= 64:                    # bounded: past 64 strings, fail-closed
+                return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
+            inherited = _stdin_details(inner, depth + 1)
+            if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
+                # No check in an inherited body counts; only a holder reading it is its reader.
+                inherited_reader = (() if inherited[0] == SHELL_PROGRAM
+                                    and kind == SHELL_PROGRAM and reader else None)
+                return inherited[0], inherited_reader, inherited[2]
+    return kind, reader, argv
 
 
 def _options(argv, depth):
@@ -580,16 +601,21 @@ def _options(argv, depth):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     reader = argv if shell and not depth else None
+    options, value_option = True, False
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
             return answer, reader
+        if token == "--":
+            options = False
+            continue
         if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts
+                value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return None, None               # the program is this file
+            return (answer, reader) if value_option else (None, None)
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
             return None, None               # the program is the `-c` string

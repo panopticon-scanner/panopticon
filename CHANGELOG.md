@@ -10,6 +10,31 @@ evidence exposed.
 - **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
   its subject now reaches the statement reader, so commands in those arms remain visible to
   the workflow guard.
+- **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
+  A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
+  direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
+  `$*` retain it for loops and first-script uses. Quoted and nonmatching patterns, reassignment,
+  step boundaries, and relative path changes retain bounded controls.
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
 - **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
