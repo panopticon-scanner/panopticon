@@ -804,7 +804,7 @@ class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
     `unprinted` and every caller read the one definition, and no stale copy can linger."""
 
     def test_the_seam_is_one_object(self):
-        for name in ("printed", "_piped", "_PRINTERS", "handed", "producer"):
+        for name in ("printed", "_piped", "_PRINTERS", "handed", "producer", "unspelled"):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_programs, name), getattr(workflow_printers, name))
         self.assertIs(forms.unprinted, workflow_programs.unprinted)
