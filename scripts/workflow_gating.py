@@ -15,6 +15,8 @@ around it decides that, not the command:
     `_stops_step`              the imported function-call/status proof: how
                                far a failure reaches in the step's own shell
                                (`workflow_function_calls`)
+    `conditional_reach`        how far a use shares the path that reaches a
+                               check written behind `&&` or `||`
 
 The layers run one way: this module imports nothing from `workflow_forms`,
 which sits above it and hosts `step_credit`, the step's own answer -- the one
@@ -37,9 +39,10 @@ from shell_reader import command, conditional, negated
 from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach, _CLOSES,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
-                                     _SET_E as _SET_E, _control_depths, _function_scope,
-                                     _function_syntax, _posture_barrier, _stops_the_job,
-                                     _stops_step as _stops_step, clears as clears)
+                                     _SET_E as _SET_E, _closes, _control_depths, _function_scope,
+                                     _function_syntax, _gating_function_call, _posture_barrier,
+                                     _stops_the_job,
+                                     _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
 
@@ -86,8 +89,8 @@ def _pipeline_end(stmts, index, position):
             depth += opens - closes
         if started and depth <= 0:
             return following
-    # A closer the reader dropped leaves the boundary unknown. Refuse the
-    # remainder of the step rather than crediting a potentially concurrent use.
+    # An unbalanced group leaves the boundary unknown. Refuse the remainder
+    # of the step rather than crediting a potentially concurrent use.
     return len(stmts) - 1
 
 
@@ -121,8 +124,62 @@ def _piped_group_end(stmts, index):
     return None
 
 
+def _group_counts(stage):
+    """A stage's structural brace/subshell opens and closes -- the braces of a
+    `f() { ... }` header included, which `_structural_groups` leaves out, and
+    never a `{`/`}` that is an operand (`echo "{"`). `_function_syntax` reports
+    exactly the structural braces a stage carries."""
+    _name, braces = _function_syntax(stage.argv)
+    return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
+
+
+def _piped_group_stage(stmts, index):
+    """The end of the pipeline a `{ }`/`( )` enclosing `stmts[index]` feeds, or
+    None when no group it sits inside is a pipeline stage.
+
+    A group that is a pipeline stage runs in a subshell, so an `exit`/`return`
+    written in it -- or a function called in it -- sets only that stage's
+    status, which `pipefail` alone carries to the step (`{ CHECK || exit 1; } |
+    cat`, `{ f; } | cat`). Groups opened AFTER `index` are its children or
+    siblings and are stepped over (`nested`); only a closer of a group `index`
+    sits inside is read, and a closer with no visible open -- a `(` the reader
+    dropped at a line end -- counts too, its depth going negative, so a dropped
+    paren fails closed rather than reading as unpiped."""
+    inside = 0
+    for statement in stmts[:index + 1]:
+        for stage in statement.stages:
+            opens, closes = _group_counts(stage)
+            inside += opens - closes
+    nested = 0
+    for following in range(index + 1, len(stmts)):
+        statement = stmts[following]
+        for position, stage in enumerate(statement.stages):
+            opens, closes = _group_counts(stage)
+            nested += opens
+            for _close in range(closes):
+                if nested:
+                    nested -= 1
+                    continue
+                if position + 1 < len(statement.stages):
+                    return _pipeline_end(stmts, following, position + 1)
+                inside -= 1
+                if inside <= 0:
+                    return None
+    return None
+
+
+# A rescue (`|| exit 1`, `|| return 1`) written inside a group that is a
+# pipeline stage stops only that stage's subshell, so where this guard reads
+# `pipefail` as off the pipeline takes the last stage's status and the step
+# carries on past the checksum failure the rescue was meant to be fatal to.
+_PIPED_RESCUE = ("hands its failure to a rescue inside a group piped into another command, so the "
+                 "rescue stops only that stage and, where this guard reads `pipefail` as off, the "
+                 "pipeline takes the last stage's status and the step carries on past its failure")
+
+
 def _piped_function_end(stmts, index):
-    """The first pipeline entered by a call of this function.
+    """The first pipeline entered by a call of this function, directly
+    (`f | cat`) or inside a group that is a pipeline stage (`{ f; } | cat`).
 
     A top-level call has the pipeline's readable end. Where a prior statement
     makes posture uncertain, or the call is conditional, nested, or in a list,
@@ -150,12 +207,193 @@ def _piped_function_end(stmts, index):
                 if scope is not None or statement.separator in ("&", "&&", "||"):
                     return len(stmts) - 1
                 return _pipeline_end(stmts, call, position + 1)
+        # A call written as the last stage of its statement is not piped on its
+        # own, but one inside a group that is a pipeline stage (`{ f; } | cat`)
+        # loses the function's status to that pipeline, the call twin of a piped
+        # group ending a check.
+        tail = statement.stages[-1] if statement.stages else None
+        if tail is not None and command(tail.argv)[:1] == [name]:
+            group_end = _piped_group_stage(stmts, call)
+            if group_end is not None:
+                if (uncertain or controls[call] or negated(tail.argv)
+                        or conditional(tail.argv) or _function_scope(stmts, call) is not None):
+                    return len(stmts) - 1
+                return group_end
         if _posture_barrier(statement, functions):
             uncertain = True
     return None
 
 
-def swallowed(stmts, index, statement, stage, credit=None):
+_OWN_RESCUE = ("is followed by that use in its own `||` rescue branch, which runs only after "
+               "the checksum fails")
+_BOUNDED_RESCUE = ("; a use in its own `||` rescue branch runs only after the checksum fails, "
+                   "and a use after that reach still runs")
+_CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may be skipped "
+                "while that use still runs")
+
+
+class RescueGate(Reach):
+    """A check that gates only uses after its stopping rescue finishes."""
+
+    def __new__(cls, start, through, outside=None):
+        gate = str.__new__(cls, _OWN_RESCUE if outside is None
+                           else str(outside) + _BOUNDED_RESCUE)
+        gate.span = outside.span if isinstance(outside, Reach) else None
+        gate.start, gate.through, gate.outside = start, through, outside
+        return gate
+
+    def at_use(self, _check, use):
+        """This refusal inside the rescue; the original answer outside it."""
+        return self if self.start <= use <= self.through else self.outside
+
+
+class FunctionStatusGate(FunctionGate):
+    """A called function gate that also keeps the check's reach in its body."""
+
+    body_span: int | None
+
+    def __new__(cls, through, body=None, outer=None):
+        gate = FunctionGate.__new__(cls, through, outer)
+        gate.body_span = body.span if isinstance(body, Reach) else body
+        return gate
+
+
+def clears(why, check, use):
+    """Whether a check clears this use, excluding its own rescue body."""
+    if isinstance(why, RescueGate):
+        contextual = why.at_use(check, use)
+        if contextual is why:
+            return False
+        why = contextual
+    if (isinstance(why, FunctionStatusGate) and why.body_span is not None
+            and check < use and use - check <= why.body_span):
+        return True
+    return _clears(why, check, use)
+
+
+def conditional_contexts(stmts):
+    """{statement: ((list head, carrier end), ...)} for conditional groups."""
+    stack, active = [], []
+    for index, statement in enumerate(stmts):
+        opens = closes = 0
+        for stage in statement.stages:
+            opened, closed = _structural_groups(stage)
+            opens, closes = opens + opened, closes + closed
+        for _opening in range(opens):
+            group = [index, None]
+            stack.append(group)
+        active.append(tuple(stack))
+        for _closing in range(closes):
+            if stack:
+                stack.pop()[1] = index
+    contexts = {}
+    for position, groups in enumerate(active):
+        ends: dict[int, list[int | None]] = {}
+        for start, end in groups:
+            if start and stmts[start - 1].separator in ("&&", "||"):
+                ends.setdefault(start, []).append(end)
+        found = [(start - 1, None if None in bounds
+                  else max(end for end in bounds if end is not None))
+                 for start, bounds in ends.items()]
+        if (position and position not in ends
+                and stmts[position - 1].separator in ("&&", "||")):
+            found.append((position - 1, position))
+        if found:
+            contexts[position] = tuple(found)
+    return contexts
+
+
+def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
+    """Bound a conditional check to uses that require its carrier to run.
+
+    A failure before `&&` skips the check and the same suffix its failure
+    skips; `_stops_step` gives that suffix, including a stopping rescue or
+    step end. Success before `||` may skip the check but reach anything after
+    its carrier, so only statements inside its structural or inlined carrier
+    share that path.
+    """
+    if not contexts:
+        return why
+    spans = []
+    for source, carrier in contexts:
+        if stmts[source].separator == "&&":
+            end = _stops_step(stmts, source, on, fails)
+            if end is None:
+                continue
+        else:
+            end = carrier
+        through = indexes[end] if isinstance(end, int) and end > source else index
+        spans.append(through - inner)
+    if not spans:
+        return why
+    span = min(spans)
+    if why is None or isinstance(why, Reach) and why.span is not None and span < why.span:
+        return Reach(span, _CONDITIONAL)
+    return why
+
+
+def _rescue_bounds(stmts, branch):
+    """Inclusive statement bounds for the rescue after an `||` separator."""
+    start = branch + 1
+    if start >= len(stmts):
+        return None
+    depth = 0
+    for end, statement in enumerate(stmts[start:], start):
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
+        if end == start and depth <= 0:
+            return start, start
+        if depth <= 0:
+            return start, end
+    return None
+
+
+def _stopping_rescue(stmts, index, errexit=True, pipefail=False):
+    """Bounds and status proof for this check's later stopping rescue."""
+    branch = index
+    while branch < len(stmts) and stmts[branch].separator == "&&":
+        branch += 1
+    if branch >= len(stmts) or stmts[branch].separator != "||":
+        return None
+    stops = _stops_the_job(stmts, branch, errexit, pipefail)
+    bounds = _rescue_bounds(stmts, branch) if stops else None
+    return (*bounds, stops) if bounds is not None else None
+
+
+_UNMEASURED = object()
+_FUNCTION_BODY = ("is inside a function that has not run through a failure gate before that "
+                  "use")
+
+
+def _function_status(stmts, index, answer, errexit):
+    """Bind definition-time credit to a proved call, preserving body reach."""
+    function, carrier = _function_scope(stmts, index), index
+    if function is None and isinstance(stmts[index], Inlined):
+        carrier = next((at for at in range(index + 1, len(stmts))
+                        if not isinstance(stmts[at], Inlined)), index)
+        function = _function_scope(stmts, carrier)
+    if function is None or answer is not None and type(answer) is not Reach:
+        return answer
+    name, close = function
+    soft = isinstance(answer, Reach) and "continue-on-error" in answer
+    reaches_close = (isinstance(answer, Reach) and answer.span is not None
+                     and index + answer.span >= close)
+    if answer is not None and not reaches_close:
+        return answer
+    returned = reaches_close or (carrier != index and all(
+        _closes(item) for item in stmts[carrier + 1:close + 1]
+    )) or carrier == index
+    call = _gating_function_call(stmts, name, close, errexit, returned)
+    if call is None:
+        return _FUNCTION_BODY
+    body = answer if isinstance(answer, Reach) and not soft else close - index
+    return FunctionStatusGate(
+        call, body, answer if soft else None
+    )
+
+
+def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
@@ -169,6 +407,9 @@ def swallowed(stmts, index, statement, stage, credit=None):
     its list runs, its own command where the list's end is lost, or a group
     gate that takes effect only after its concurrent pipeline (`clears`).
     """
+    measuring_uses = credit is not _UNMEASURED
+    if credit is _UNMEASURED:
+        credit = None
     if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
         return statement.credit[stage is not statement.stages[-1]]
     if statement.separator == "&":
@@ -179,15 +420,29 @@ def swallowed(stmts, index, statement, stage, credit=None):
         why = credit[0] if isinstance(credit, tuple) else None
         errexit = not (why == _SET_E or
                        isinstance(why, str) and why.startswith("runs under `shell:"))
-        stops = _stops_the_job(
-            stmts, index, errexit, isinstance(credit, tuple) and credit[1] is None
-        )
+        pipefail = isinstance(credit, tuple) and credit[1] is None
+        stops = _stops_the_job(stmts, index, errexit, pipefail)
+        # The walk reads an `exit`/`return` rescue as stopping the step, but one
+        # written inside a group that is a pipeline stage stops only that stage;
+        # where pipefail is off its failure goes to the pipeline, not the step.
+        piped_group = not pipefail and _piped_group_stage(stmts, index) is not None
+        # The full walk includes an enclosing pipeline or rescue. Ask the local
+        # slice too so an exiting rescue still gets the established piped-group
+        # diagnosis when that carrier, rather than the rescue itself, swallows it.
+        carrier_stops = stops or (piped_group and _stops_the_job(
+            stmts[index:], 0, errexit, pipefail
+        ))
+        if piped_group and carrier_stops:
+            return _PIPED_RESCUE
         if isinstance(stops, FunctionGate) and why and errexit:
             # Keep the proved call as a lower bound and a Reach as its upper
             # bound; an ordinary refusal still applies to the whole check.
-            return FunctionGate(stops.through, why) if isinstance(why, Reach) else why
+            answer = FunctionGate(stops.through, why) if isinstance(why, Reach) else why
+            rescue = _rescue_bounds(stmts, index) if measuring_uses else None
+            return RescueGate(rescue[0], rescue[1], answer) if rescue is not None else answer
         if isinstance(stops, Reach):
-            return stops
+            rescue = _rescue_bounds(stmts, index) if measuring_uses else None
+            return RescueGate(rescue[0], rescue[1], stops) if rescue is not None else stops
         if not stops:
             return why if not errexit and why else _RESCUED
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
@@ -209,5 +464,17 @@ def swallowed(stmts, index, statement, stage, credit=None):
         # reader statements, so use it before applying the function's bound.
         why = credit[1] if credit else None
         piped_end = function_end
-    return (PipelineGate(piped_end, why)
-            if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    answer = (PipelineGate(piped_end, why)
+              if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    pair = credit if isinstance(credit, tuple) else (None, None)
+    errexit = not (pair[0] == _SET_E or
+                   isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
+    if measuring_uses and (answer is None or isinstance(answer, Reach)):
+        rescue = _stopping_rescue(
+            stmts, index, errexit, isinstance(credit, tuple) and pair[1] is None
+        )
+        if rescue is not None:
+            start, through, stops = rescue
+            outside = stops if isinstance(stops, Reach) else answer
+            return RescueGate(start, through, outside)
+    return _function_status(stmts, index, answer, errexit) if measuring_uses else answer

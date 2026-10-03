@@ -496,12 +496,13 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
         # A foreign body reaches that branch for no interpreter: `python3 -`
         # is answered by the rule above it, so #2499's predicate governs it
         # (the deviation #2499's pin list did not foresee). A `$(...)` lifted
-        # out of the body is still read where bash runs it, and reported.
+        # out of the body is still read where bash runs it, and reported: its
+        # stream is the louder reason on the statement, so the program's
+        # `Idle` is dropped beside it (#2490).
         self.assertEqual([], defects("python3 - <<EOF\nprint($(date))\nEOF\n"))
         found = defects("python3 - <<EOF\nprint(\"$(%s)\")\nEOF\n" % PIPE)
-        self.assertEqual(2, len(found), found)
-        self.assertIn(self.SAID, found[0][1])
-        self.assertIn("straight to `python3 -`", found[1][1])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `python3 -`", found[0][1])
 
 
 if __name__ == "__main__":  # pragma: no cover
