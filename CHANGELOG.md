@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
 - **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported

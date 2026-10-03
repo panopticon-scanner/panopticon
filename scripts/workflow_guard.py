@@ -152,19 +152,19 @@ live, so a change that catches one fails there and edits this list.
   stops, as the guard cannot tell it from `X=/dev/null`; one naming a file or an option nothing runs
   under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`), over-reports; `python3 $S`, S unset, a
   FOREIGN word, under-reports (python runs the body), filed under #2331. A quoted body reaches an
-  interpreter as written, so `workflow_forms.flattened` catches a shell download there as it does
-  at top level. A literal shell's EXPANDING body is REPORTED unread: values and `$(...)` output
-  remain unseen. A foreign-language program is reported too. So is a hand-off to a `$` command
-  word (#2473); since #2499, either is kept only beside a reported fetch. A value word's body is
-  read as shell with no check counted; an expanding one masks substitutions as values (#2597).
-  Inside a substitution, the body speaks before its hand-off (#2598); the price remains shell-like
-  non-shell text. A nearer literal shell remains the consumer when a surrounding value word gets
-  its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
-  file redirected into it.
-  `CMD=cat` is the fail-closed price. Still unread: an interpreter behind an option or stdin alias,
-  one behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), and an unknown basename such as
-  `python3.11` or `busybox sh`. A printer's unspelled text is reported only where its words fetch
-  or beside a reported fetch (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
+  interpreter as written, so `workflow_forms.flattened` catches a shell download as at top level.
+  A literal shell's EXPANDING body is REPORTED unread: values and `$(...)` output remain unseen.
+  A foreign program is reported too. A `$` command hand-off is reported (#2473); since #2499,
+  either is kept only beside a reported fetch. A value word's body is read as shell with no check
+  counted; an expanding one masks substitutions as values (#2597). Inside a substitution, the body
+  speaks before its hand-off (#2598); the price remains shell-like non-shell text. A nearer literal
+  shell remains consumer when a surrounding value word gets its output. A direct or carried stream
+  into a `$` command reports (#2602), as does a fetched file redirected into it.
+  `CMD=cat` is the fail-closed price. A value option before a file keeps stdin possible (#2605);
+  `X=-e` is its price. Still unread: untabled literal options or stdin aliases, a shell behind a
+  TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename such as `python3.11` or
+  `busybox sh`. A printer's unspelled text is reported only where its words fetch or beside a
+  reported fetch (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
   WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
   the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
