@@ -195,6 +195,16 @@ class TestCombinedPipeline(unittest.TestCase):
         self.assertEqual([], guard.fetch_exec_defects(
             f'curl {URL} >tool |& cat; {CHECK} && sh tool'))
 
+    def test_a_value_command_word_is_a_stream_consumer(self):
+        # #2602: the first word may name a shell even though no executor table
+        # can place it. The same walk must cross a pass-through `tee` stage.
+        for tail, word in (("$CMD", "$CMD"), ("${CMD}", "${CMD}"),
+                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO sh", "$SUDO")):
+            with self.subTest(tail=tail):
+                stages = shell_reader.statements(f"curl {URL} | {tail}")[0].stages
+                consumer = forms.stream_consumer(stages[1:], guard.EXECUTORS)
+                self.assertEqual(word, shell_reader.readable(consumer[0]))
+
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
