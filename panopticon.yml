@@ -152,7 +152,7 @@
 #     proof became its own module. Split the guard modules and their focused
 #     tests into `WorkflowGuard`; `Workflows` keeps `.github/**` and the tests
 #     for those committed workflows. Measured with discovery's assignment:
-#     `WorkflowGuard` 12 after #2435's checksum split, `Workflows` 30.
+#     `WorkflowGuard` 13 after #2585's use split, `Workflows` 30.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -652,6 +652,7 @@ groups:
       - scripts/workflow_programs.py
       - scripts/workflow_printers.py
       - scripts/workflow_fetch.py
+      - scripts/workflow_uses.py
       tests:
       - tests/test_workflow_guard.py
       - tests/test_workflow_guard_reader_forms.py

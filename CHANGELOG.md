@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
+  A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
+  direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
+  `$*` retain it for loops and first-script uses. Quoted and nonmatching patterns, reassignment,
+  step boundaries, and relative path changes retain bounded controls.
 - **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
   reader keeps a parent arm separate from the inner `case` header, so two- and three-level
   bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
