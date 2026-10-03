@@ -441,8 +441,8 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
          and (not shell_reader.is_marker(w) or shell_reader.has_substitution(w))], walk)
     if (handed or printer) and (not said or isinstance(said, Idle) or stdin_reader(argv) is not None
                                 or handed and scripts(argv) and not isinstance(handed, Idle)):
-        return handed or _weighed(_PRINTED % tuple(map(os.path.basename, (argv[0], printer[0]))),
-                                  [" ".join(printer[1:])], walk, _Quiet)
+        return handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
+            shell_reader.readable(printer[0]))), [" ".join(printer[1:])], walk, _Quiet)
     return said or _Quiet(              # the LAST resort (r0 finding 1)
         _DYNAMIC % (how, shell_reader.readable(bare).strip()))
 
