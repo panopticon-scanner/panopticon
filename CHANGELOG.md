@@ -15,6 +15,11 @@ evidence exposed.
   `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
   `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
   turns bash's `echo` into a decoder, which this rule does not follow.
+- **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
+  A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
+  direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
+  `$*` retain it for loops and first-script uses. Quoted and nonmatching patterns, reassignment,
+  step boundaries, and relative path changes retain bounded controls.
 - **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
   reader keeps a parent arm separate from the inner `case` header, so two- and three-level
   bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
