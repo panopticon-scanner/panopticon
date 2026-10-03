@@ -10,6 +10,14 @@ evidence exposed.
 - **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
   carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
   the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
+- **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
+  shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
+  a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
+  `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
+  (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
+  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
+  `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
+  turns bash's `echo` into a decoder, which this rule does not follow.
 - **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
   literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
   is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
