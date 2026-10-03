@@ -191,13 +191,13 @@ import shell_lex
 import shell_reader
 from shell_reader import command, statements
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
-                             clears_nested as _clears_nested, contextual as _check_at_use,
-                             inside as _inside, operands as _operands)
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, Idle, Reach,
-                            Unsure, at_directory, carried, chmod_executable, chmod_targets,
-                            covers, described, flattened, in_container, kept, may_run, names_file,
-                            located, parse_fetch, regions, same_file, stdin_program, step_credit,
-                            streamed_fetch, unbound, unread_program, working_directories)
+                             clears_nested as _clears_nested, contextual as _check_at_use)
+from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Reach, Unsure, at_directory, carried,
+                            flattened, kept, located, names_file, parse_fetch, regions,
+                            stdin_program, step_credit, streamed_fetch, unbound, unread_program,
+                            working_directories)
+from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
+                           UNPACKERS as UNPACKERS, uses as _uses)
 from workflow_programs import VALUE_PROGRAM
 
 
@@ -210,13 +210,6 @@ Step = collections.namedtuple("Step", "name script shell condition soft",
 # The shells this module has a grammar for. Anything else is reported unread.
 PARSED_SHELLS = ("bash", "sh")
 UNNAMED = "<unnamed step>"
-INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
-                "perl", "ruby", "node", "php", "pwsh", "eval", "source", ".")
-# Unpacking a downloaded archive is executing it too: the bytes decide what
-# lands on disk and under what name. `install` places a file into a directory
-# with a mode; `tar`/`unzip` write whatever the archive says.
-UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
-EXECUTORS = INTERPRETERS + UNPACKERS
 # --- which statements fetch --------------------------------------------------
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory="."):
     """Fetches and unread forms, retaining nested cwd while attributing them to the outer line."""
@@ -343,98 +336,6 @@ def _unshared(conditions, check, use):
     return _UNSHARED_IF
 
 
-# --- which statements execute what was fetched -------------------------------
-
-def _copies(statement, names, directory):
-    """New names this statement gives a known file through `cp`, `mv`, `ln`
-    or `cat`: the alias inherits; the copy itself remains innocent."""
-    new = set()
-    for stage in statement.stages:
-        argv = command(stage.argv)
-        if not argv:
-            continue
-        name = os.path.basename(argv[0])
-        operands = [at_directory(word, directory) for word in _operands(argv)]
-        if name in ("cp", "mv", "ln") and len(operands) > 1:
-            if any(same_file(o, n) for o in operands[:-1] for n in names):
-                new.add(operands[-1])
-        if name == "cat" and stage.writes:
-            if any(same_file(o, n) for o in operands for n in names):
-                new.update(at_directory(word, directory) for word in stage.writes)
-    return new
-
-
-def _uses(stmts, dest, after, working=None):
-    """Names the file gains and its later uses, walking in order so aliases count after creation.
-    A use in a statement's substitutions (`within`) belongs to that outer statement."""
-    names, out = {dest}, []
-    working = working or {}
-    for index, statement in enumerate(stmts[after:], after):
-        directory = working.get(index, ".")
-        for point, inner, position, stage, where, here in _inside(
-                statement, index, directory=directory, scope=index):
-            argv, how = command(stage.argv), None
-            for name in sorted(names):
-                how = _use(inner, position, stage, argv, name, here)
-                if how:
-                    if not same_file(name, dest):
-                        shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
-                        how += " (as `%s`, copied from it earlier)" % shown
-                    break
-            if how:
-                out.append((point, how + where))
-                break
-        names |= _copies(statement, names, directory)
-    return names, out
-
-
-def _use(statement, position, stage, argv, dest, directory):
-    if any(may_run(at_directory(word, directory, True), dest)
-           for word in shell_reader.wrapper_words(stage.argv)):
-        return "running it"  # `./flock 9` is read through as `flock`, but runs ./flock
-    if not argv:
-        return None
-    argv, handed, recursive = described(statement, position, stage, argv)
-    name, rest = os.path.basename(argv[0]), argv[1:]
-    if name == "chmod":
-        rest = chmod_targets(argv)
-    rest = [at_directory(word, directory) for word in rest]
-    handed = [at_directory(word, directory) for word in handed]
-    mentions = [t for t in rest + handed if covers(t, dest, recursive)]
-    if name in CONTAINERS:
-        interpreter = in_container(argv, dest, INTERPRETERS)
-        if interpreter:
-            return "running it inside a container under `%s`" % interpreter
-    if (name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM) and any(
-            same_file(at_directory(r, directory), dest) or (
-                stage.stdin_heredoc is None
-                and covers(at_directory(r, directory), dest)) for r in stage.reads):
-        # File input is the shell's program even though argv carries no path.
-        return "running it under `%s` from standard input" % name
-    if name == "chmod" and mentions and chmod_executable(argv):
-        return "making it executable"
-    if may_run(at_directory(argv[0], directory, True), dest):
-        return "running it"
-    if not mentions:
-        return None
-    if name in INTERPRETERS:
-        return "running it under `%s`" % name
-    if name == "install":
-        return "installing it"
-    if name in UNPACKERS:
-        return "unpacking it with `%s`" % name
-    if name in ("mv", "cp", "ln") and any(
-            t.startswith(BIN_DIRS) or "/bin/" in t for t in rest):
-        # Including `ln -s`: a symlink on PATH runs the same bytes, and the
-        # name it is then invoked by (`hadolint`) is nowhere in this script.
-        return "putting it on PATH with `%s`" % name
-    if name == "cat" and position + 1 < len(statement.stages):
-        following = command(statement.stages[position + 1].argv)
-        if following and os.path.basename(following[0]) in INTERPRETERS:
-            return "piping it into `%s`" % os.path.basename(following[0])
-    return None
-
-
 # --- the rule ----------------------------------------------------------------
 
 def _describe(fetch):
@@ -473,7 +374,7 @@ def _binds(conditions, check, use):
     return when is None or when == theirs
 
 
-def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None):
+def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None, scopes=None):
     """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
@@ -506,7 +407,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                    shell_reader.readable(fetch.dest)))
     working = working or {}
     dest = at_directory(fetch.dest, getattr(fetch.dest, "directory", working.get(index, ".")))
-    names, uses = _uses(stmts, dest, after=index, working=working)
+    names, uses = _uses(stmts, dest, after=index, working=working, scopes=scopes)
     uses += [(i, "may be run by a form the guard cannot read") for i in unread if i >= index]
     if not uses:
         return None                             # fetched and only read: not this rule
@@ -545,7 +446,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None, credit=None, walked=None, working=None):
+def _defects(stmts, conditions=None, credit=None, walked=None, working=None, scopes=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
     Conditions, failure credit and cwd bind checks and uses; `kept` weighs unread forms
@@ -554,9 +455,11 @@ def _defects(stmts, conditions=None, credit=None, walked=None, working=None):
     checks = _checks(stmts, credit, working)
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     found = [(index, why, fetch) for index, fetch in fetched
-             if (why := _defect(fetch, index, stmts, checks, conditions, working=working))]
+             if (why := _defect(fetch, index, stmts, checks, conditions, working=working,
+                                scopes=scopes))]
     unverified = bool(found or unread and (unbound(stmts, fetched, unread) or any(
-            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread], working)
+            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread], working,
+                    scopes)
             for index, fetch in fetched)))
     return kept(unread, found, unverified)
 
@@ -612,9 +515,10 @@ def job_defects(steps, strict=False):
                 working[len(stmts)] = directories[local]
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
+        scopes = {index: place[1][0] for index, place in enumerate(owner)}
         entries += [((owner[index][1], what), owner[index][0], why)
                     for index, why, what in _defects(
-                        stmts, conditions, credit, (fetched, unread), working)]
+                        stmts, conditions, credit, (fetched, unread), working, scopes)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
         if not any(isinstance(statement, Unsure) for statement in stmts):
