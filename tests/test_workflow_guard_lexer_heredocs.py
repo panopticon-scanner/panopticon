@@ -188,6 +188,36 @@ class TestAParenInsideASubstitutionHeredoc(unittest.TestCase):
         self.assertTrue(defects(PIPE + "\n"))
 
 
+class TestATabPrefixedSubstitutionHeredocDelimiter(unittest.TestCase):
+    """#2584: a `<<-` delimiter starting with a tab bypasses the `EOF)`
+    terminator reading. #2493 now refuses the `)` left in its body instead;
+    pin that protection without changing the Bash 5.2 delimiter reading."""
+
+    DATA = "x=$(cat <<-'\tB'\n\thi\n\tB\n)\n"
+
+    def test_the_bash32_early_close_is_refused_in_every_posture(self):
+        # Bash 3.2 runs the pipe then exits 2; Bash 5.2 runs no pipe and
+        # exits 0. Dash exits 2 without running it. This was CLEAN before
+        # #2493, even though the literal tab prevents the EOF)-line reading.
+        script = "x=$(cat <<-'\tB'\n\thi\n\tB)\n%s\n\tB\n)\n" % PIPE
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([wg.Step("step", script, shell=shell)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(PAREN, found[0][1])
+
+    def test_data_without_a_body_paren_keeps_its_reading(self):
+        # Both bashes read data; dash cannot close this tab-prefixed word.
+        # The direct pipe is the must-trip control under all three shells.
+        self.assertEqual([], defects(self.DATA))
+        self.assertTrue(defects(PIPE))
+
+    def test_a_pipe_after_the_exact_terminator_remains_visible(self):
+        found = defects(self.DATA + PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+
 class TestTheRestOfAnEOFParenLineMatchesBash52(unittest.TestCase):
     """#2492: bash 5.2 drops the first `;` token on a substitution
     heredoc's delimiter line and rejects a rest that starts with one."""
@@ -466,12 +496,13 @@ class TestAForeignProgramOnStandardInput(unittest.TestCase):
         # A foreign body reaches that branch for no interpreter: `python3 -`
         # is answered by the rule above it, so #2499's predicate governs it
         # (the deviation #2499's pin list did not foresee). A `$(...)` lifted
-        # out of the body is still read where bash runs it, and reported.
+        # out of the body is still read where bash runs it, and reported: its
+        # stream is the louder reason on the statement, so the program's
+        # `Idle` is dropped beside it (#2490).
         self.assertEqual([], defects("python3 - <<EOF\nprint($(date))\nEOF\n"))
         found = defects("python3 - <<EOF\nprint(\"$(%s)\")\nEOF\n" % PIPE)
-        self.assertEqual(2, len(found), found)
-        self.assertIn(self.SAID, found[0][1])
-        self.assertIn("straight to `python3 -`", found[1][1])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `python3 -`", found[0][1])
 
 
 if __name__ == "__main__":  # pragma: no cover

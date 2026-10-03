@@ -2,7 +2,7 @@
 """Bounded curl/wget transfer shapes and descriptor-aware pipe consumption.
 
 Single curl transfers are modeled; complex transfers remain explicitly unread.
-This layer depends on shell_reader only. workflow_forms re-exports the public API.
+This layer uses shell_reader and the stdin-program classifier. workflow_forms re-exports its API.
 """
 import collections
 import os
@@ -11,6 +11,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command
+from workflow_programs import VALUE_PROGRAM, stdin_program
 
 
 # A download: the tool that ran, the URL it was given, the file it lands in
@@ -302,7 +303,8 @@ def stream_consumer(following, executors):
         argv = command(next_stage.argv)
         if not argv or not _may_read_pipe(argv, next_stage):
             break
-        if os.path.basename(argv[0]) in executors:
+        if (os.path.basename(argv[0]) in executors
+                or stdin_program(argv[:1]) == VALUE_PROGRAM):
             return tuple(argv)
         if not next_stage.stdout_to_pipe:
             break
