@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard now lets bound downloads own value-form stdin (#2607, #2331).**
+  When `curl -o "$T"` is followed by `$T <<'EOF'`, the existing run finding now stands alone and
+  the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep
+  a checked download flagged. Unknown `$CMD` bodies stay fail-closed; disabling all value-body
+  reads was rejected because it would hide their real `curl … | sh` executions.
 - **Four Bash 3.2-only substitution-heredoc parse gaps are now explicit (#2626, #2608).** A body
   line with an apostrophe, unbalanced double quote, backquote, or bare `$(` can make Bash 3.2
   reject text Bash 5.2 accepts, but none of the measured shapes runs a payload under 3.2. The

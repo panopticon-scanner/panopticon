@@ -651,11 +651,11 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     unspelled one (R-F11), where no shell is sure to read it and nothing in it is the step's own
     (`workflow_forms.Unsure`).
 
-    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
-    though the word may hold none: what they fetch or run is read as at the top level, and
-    `workflow_forms.flattened` counts no check there. Inside a `$(...)`,
-    `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted` weighs a
-    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
+    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are tagged and read
+    as shell, though the word may hold none; `workflow_forms.flattened` counts no check there.
+    `bound_stdin` drops that uncertain read when a job fetch binds the word (#2607). Inside a
+    `$(...)`, `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted`
+    weighs a shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
     """
     here = stage.stdin_heredoc or handed(stage, before)
     if here is not None:
@@ -679,6 +679,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     for spelled in texts:
         text = Stdin(spelled)
         text.reader = reader if len(readings) == 1 else None
+        setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
     return out
 
