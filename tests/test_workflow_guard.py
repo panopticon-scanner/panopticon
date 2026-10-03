@@ -2806,6 +2806,81 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             wg.Step("run", self.USE)]))
 
 
+class TestAFunctionCheckRunsOnlyAtAGatingCall(unittest.TestCase):
+    """#2421: a definition does not run its body, and a rescued call gates nothing."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -' % HEX
+    USE = "chmod +x /tmp/payload\n/tmp/payload\n"
+
+    def defects(self, body, shell, use=USE):
+        script = self.FETCH + body.replace("CHECK", self.CHECK) + use
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def assert_function_refused(self, found):
+        self.assertEqual(1, len(found), found)
+        self.assertIn("inside a function", found[0][1])
+
+    def test_an_uncalled_or_rescued_function_does_not_credit_its_check(self):
+        for shell in (None, "sh", "bash"):
+            for body in (
+                "f() { CHECK; }\n",
+                "f() { CHECK; }\nf || true\n",
+            ):
+                with self.subTest(shell=shell, body=body):
+                    self.assert_function_refused(self.defects(body, shell))
+
+    def test_a_function_definition_cannot_gate_its_own_and_suffix(self):
+        body = ("f() { CHECK && echo ok; } && chmod +x /tmp/payload "
+                "&& /tmp/payload\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assert_function_refused(self.defects(body, shell, use=""))
+
+    def test_a_function_definition_in_an_earlier_step_does_not_run(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([
+                    wg.Step("define", self.FETCH + "set +e\nf() {\n" + self.CHECK
+                            + "\n}\n", shell),
+                    wg.Step("use", self.USE, shell),
+                ])
+                self.assert_function_refused(found)
+
+    def test_a_stdin_shell_inside_an_uncalled_or_rescued_function_is_not_credit(self):
+        handed = "f() { bash -s <<'EOF'\nCHECK\nEOF\n}\n"
+        for shell in (None, "sh", "bash"):
+            for call in ("", "f || true\n"):
+                with self.subTest(shell=shell, call=call):
+                    self.assert_function_refused(self.defects(handed + call, shell))
+
+    def test_a_rescued_function_inside_a_child_script_is_not_credit(self):
+        body = ("bash -e -s <<'EOF'\n"
+                "f() { CHECK; echo inner; }\n"
+                "f || true\n"
+                "echo done\n"
+                "EOF\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = self.defects(body, shell)
+                self.assertEqual(1, len(found), found)
+
+    def test_a_plain_call_keeps_checks_that_stop_the_function(self):
+        handed = "f() { bash -s <<'EOF'\nCHECK\nEOF\n}\nf\n"
+        for shell in (None, "sh", "bash"):
+            for body in ("f() { CHECK; }\nf\n",
+                         "f() { CHECK && echo ok; }\nf\n", handed):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.defects(body, shell))
+
+    def test_a_plain_call_keeps_inner_child_uses_behind_their_check(self):
+        body = ("f() { bash -e -s <<'EOF'\nCHECK\n" + self.USE
+                + "EOF\n}\nf\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.defects(body, shell, use=""))
+
+
 class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
     """#2422: a checksum cannot gate another stage of its own pipeline."""
 
@@ -3780,6 +3855,73 @@ class TestTheJobIsTheScope(unittest.TestCase):
 
     def test_a_job_with_no_fetch_is_clean(self):
         self.assertEqual([], wg.job_defects([("build", "make test\n")]))
+
+
+class TestAUseThatRunsAfterAFailedStepIsNotCredited(unittest.TestCase):
+    """#2632: a cross-step checksum that only stops ITS OWN step cannot clear a
+    use in a later step whose `if:` runs AFTER a failure. A step with `always()`,
+    `failure()` or `!cancelled()` runs even when an earlier step failed, so the
+    checksum in step a -- which stopped step a -- never gated the payload step b
+    runs; crediting it is fail-open. `success()`, a plain expression and no `if:`
+    are SKIPPED after a failure, so the earlier stop still gates them and the
+    credit stands. A check and a use inside ONE `always()` step share the `if:`
+    and still bind (the checksum's own failure kills the step before the use) --
+    the control against over-correcting this into a false positive.
+    """
+
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX
+    USE = "chmod +x /tmp/payload\n/tmp/payload --version\n"
+    SHELLS = (None, "bash", "sh")                      # default, bash, sh
+    AFTER_FAILURE = ("always()", "failure()", "!cancelled()")
+    GATED = ("success()", None, "${{ github.ref == 'refs/heads/main' }}")
+
+    def job(self, check_body, when, shell):
+        # step a: the fetch and the checksum, no `if:`; step b: the use under `when`.
+        return [wg.Step("get", self.FETCH + check_body, shell),
+                wg.Step("run", self.USE, shell, when)]
+
+    def _check_shapes(self):
+        return (self.CHECK, self.CHECK.rstrip() + " || exit 1\n")
+
+    def test_a_use_after_a_failed_step_is_not_cleared(self):
+        # RED before the fix: every cell read CLEAN -- the checksum stopped step a,
+        # but step b runs on regardless and the guard credited the stop anyway.
+        for check in self._check_shapes():
+            for when in self.AFTER_FAILURE:
+                for shell in self.SHELLS:
+                    with self.subTest(check=check, when=when, shell=shell):
+                        found = wg.job_defects(self.job(check, when, shell))
+                        self.assertEqual(1, len(found), found)
+                        self.assertEqual("get", found[0][0])
+                        self.assertIn(wg._UNSHARED_IF, found[0][1])
+
+    def test_a_skipped_use_keeps_the_credit(self):
+        # `success()`/plain-expression/none are skipped after a failure, so the
+        # step-a stop still gates them: these stay CLEAN (control).
+        for check in self._check_shapes():
+            for when in self.GATED:
+                for shell in self.SHELLS:
+                    with self.subTest(check=check, when=when, shell=shell):
+                        self.assertEqual([], wg.job_defects(self.job(check, when, shell)))
+
+    def test_a_check_and_use_in_one_always_step_still_bind(self):
+        # Same `always()` on both halves in ONE step: if the checksum fails under
+        # -e the step dies before the use, so the credit is real -- stays CLEAN.
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                self.assertEqual([], wg.job_defects(
+                    [wg.Step("one", self.FETCH + self.CHECK + self.USE, shell, "always()")]))
+
+    def test_a_soft_check_reports_under_every_if(self):
+        # Must-trip control: `|| true` makes the checksum clear nothing, so every
+        # posture reports -- proof the pins above can fail.
+        for when in self.AFTER_FAILURE + self.GATED:
+            for shell in self.SHELLS:
+                with self.subTest(when=when, shell=shell):
+                    found = wg.job_defects(
+                        self.job(self.CHECK.rstrip() + " || true\n", when, shell))
+                    self.assertEqual(1, len(found), found)
 
 
 class TestEveryUseIsAskedForItsCheck(unittest.TestCase):

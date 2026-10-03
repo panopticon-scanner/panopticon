@@ -11,6 +11,9 @@ evidence exposed.
   that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
   one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
   opaque, and `sh -c "$(cat f)"`, blanks around it too, is reported unread beside a download.
+- **Function checks now count only after a failure-gating call (#2421, #2331).**
+  Definitions, rescued calls, and child scripts inside them no longer certify later execution;
+  a plain call still credits a check whose failure stops that function and the step.
 - **Conditional carriers no longer hide a failed checksum behind a later command (#2418, #2331).**
   Brace groups, subshells and functions tested by `&&` or `||` now report a check whose status a
   later command replaces. A plain function call still gates uses that occur after that call.
@@ -41,6 +44,12 @@ evidence exposed.
   `shell: sh` postures now report them, while `shell: bash` (`-eo pipefail`) still clears them.
   The nested-paren spelling #2627 fixed, the `set -o pipefail` form and the no-pipe rescue keep
   their verdicts. 0 occurrences in the 11 corpora and the calibration pool.
+- **A use step that runs after a failed step is no longer cleared by an earlier step's check
+  (#2632, #2608).** A plain `CHECK` or `CHECK || exit 1` in step a stops step a, but a later step
+  whose `if:` runs after a failure -- `always()`, `failure()` or `!cancelled()` -- still runs the
+  payload; the default, `bash` and `sh` now report it. `success()`, a plain expression, no `if:`,
+  and a check that shares the use's own `always()` step keep their clear. 0 occurrences in the 11
+  corpora and the calibration pool.
 - **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
   56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
   one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
