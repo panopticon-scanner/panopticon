@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Function checks now count only after a failure-gating call (#2421, #2331).**
+  Definitions, rescued calls, and child scripts inside them no longer certify later execution;
+  a plain call still credits a check whose failure stops that function and the step.
 - **Conditional carriers no longer hide a failed checksum behind a later command (#2418, #2331).**
   Brace groups, subshells and functions tested by `&&` or `||` now report a check whose status a
   later command replaces. A plain function call still gates uses that occur after that call.

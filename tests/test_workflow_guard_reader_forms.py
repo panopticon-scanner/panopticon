@@ -1560,34 +1560,38 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
     def test_2500_mains_literal_shell_gaps_are_reported_behind_a_string(self):
-        # Class 3: each string row is reported; its literal twin is `main`'s gap, filed
-        # under #2331, CLEAN though a shell runs the download.
-        reported, gaps = [], []
-        for string, literal, body, pre, end in (
+        # Class 3: each string row is reported. #2421 also closes the three function
+        # literal gaps; the remaining literal twins stay filed under #2331.
+        reported, fixed, gaps = [], [], []
+        for string, literal, body, pre, end, function_gap in (
                 # `|| true` swallows the subshell's failure (rc 0, every shell)
-                ("( eval 'bash -s'", "( bash -s", CHECK, "", ") || true\n"),
+                ("( eval 'bash -s'", "( bash -s", CHECK, "", ") || true\n", False),
                 # a function called under `|| true`: `-e` off in it, its failure swallowed (rc 0)
                 ("eval 'bash -e -s'", "bash -e -s",
-                 "f() { %s; echo inner; }\nf || true\necho done" % CHECK, "", ""),
-                ("f() { eval 'bash -s'", "f() { bash -s", CHECK, "", "}\nf || true\n"),
+                 "f() { %s; echo inner; }\nf || true\necho done" % CHECK, "", "", True),
+                ("f() { eval 'bash -s'", "f() { bash -s", CHECK, "", "}\nf || true\n",
+                 True),
                 # a function never called runs no check (rc 0, every shell)
-                ("f() { eval 'bash -s'", "f() { bash -s", CHECK, "", "}\n"),
+                ("f() { eval 'bash -s'", "f() { bash -s", CHECK, "", "}\n", True),
                 # `-e` is off ahead of `&&` (rc 0, every shell)
-                ("eval 'bash -e -s'", "bash -e -s", CHECK + " && echo ok\necho done", "", ""),
+                ("eval 'bash -e -s'", "bash -e -s", CHECK + " && echo ok\necho done", "", "",
+                 False),
                 # the body reads the rest of itself away (rc 0, every shell)
-                ("eval 'bash -s'", "bash -s", "cat >/dev/null\n" + CHECK, "", ""),
+                ("eval 'bash -s'", "bash -s", "cat >/dev/null\n" + CHECK, "", "", False),
                 # `&>` is `&` and `>` to dash, which backgrounds the reader (rc 0 there)
-                ("eval 'bash -s &>/dev/null'", "bash -s &>/dev/null", CHECK, "", ""),
+                ("eval 'bash -s &>/dev/null'", "bash -s &>/dev/null", CHECK, "", "", False),
                 # `((bash -s))` is arithmetic to bash (rc 0 in the bashes)
-                ("eval '((bash -s))'", "((bash -s))", CHECK, "bash=1\n", ""),
+                ("eval '((bash -s))'", "((bash -s))", CHECK, "bash=1\n", "", False),
                 # `-o noexec` runs nothing (rc 0, every shell)
-                ("eval 'bash -o $X -s'", "bash -o $X -s", CHECK, "X=noexec\n", "")):
+                ("eval 'bash -o $X -s'", "bash -o $X -s", CHECK, "X=noexec\n", "", False)):
             reported.append((stdin_step(string, body, pre=pre, end=end), 1, UNGATED % "eval"))
-            gaps.append(stdin_step(literal, body, pre=pre, end=end))
+            literal_step = stdin_step(literal, body, pre=pre, end=end)
+            (fixed if function_gap else gaps).append(literal_step)
         # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell)
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
         gaps.append(GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE)
         self.assert_reported(reported)
+        self.assert_reported((script, 1, "inside a function") for script in fixed)
         self.assert_clean(gaps)
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 

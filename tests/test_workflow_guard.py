@@ -2795,6 +2795,81 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             wg.Step("run", self.USE)]))
 
 
+class TestAFunctionCheckRunsOnlyAtAGatingCall(unittest.TestCase):
+    """#2421: a definition does not run its body, and a rescued call gates nothing."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -' % HEX
+    USE = "chmod +x /tmp/payload\n/tmp/payload\n"
+
+    def defects(self, body, shell, use=USE):
+        script = self.FETCH + body.replace("CHECK", self.CHECK) + use
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def assert_function_refused(self, found):
+        self.assertEqual(1, len(found), found)
+        self.assertIn("inside a function", found[0][1])
+
+    def test_an_uncalled_or_rescued_function_does_not_credit_its_check(self):
+        for shell in (None, "sh", "bash"):
+            for body in (
+                "f() { CHECK; }\n",
+                "f() { CHECK; }\nf || true\n",
+            ):
+                with self.subTest(shell=shell, body=body):
+                    self.assert_function_refused(self.defects(body, shell))
+
+    def test_a_function_definition_cannot_gate_its_own_and_suffix(self):
+        body = ("f() { CHECK && echo ok; } && chmod +x /tmp/payload "
+                "&& /tmp/payload\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assert_function_refused(self.defects(body, shell, use=""))
+
+    def test_a_function_definition_in_an_earlier_step_does_not_run(self):
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = wg.job_defects([
+                    wg.Step("define", self.FETCH + "set +e\nf() {\n" + self.CHECK
+                            + "\n}\n", shell),
+                    wg.Step("use", self.USE, shell),
+                ])
+                self.assert_function_refused(found)
+
+    def test_a_stdin_shell_inside_an_uncalled_or_rescued_function_is_not_credit(self):
+        handed = "f() { bash -s <<'EOF'\nCHECK\nEOF\n}\n"
+        for shell in (None, "sh", "bash"):
+            for call in ("", "f || true\n"):
+                with self.subTest(shell=shell, call=call):
+                    self.assert_function_refused(self.defects(handed + call, shell))
+
+    def test_a_rescued_function_inside_a_child_script_is_not_credit(self):
+        body = ("bash -e -s <<'EOF'\n"
+                "f() { CHECK; echo inner; }\n"
+                "f || true\n"
+                "echo done\n"
+                "EOF\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                found = self.defects(body, shell)
+                self.assertEqual(1, len(found), found)
+
+    def test_a_plain_call_keeps_checks_that_stop_the_function(self):
+        handed = "f() { bash -s <<'EOF'\nCHECK\nEOF\n}\nf\n"
+        for shell in (None, "sh", "bash"):
+            for body in ("f() { CHECK; }\nf\n",
+                         "f() { CHECK && echo ok; }\nf\n", handed):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.defects(body, shell))
+
+    def test_a_plain_call_keeps_inner_child_uses_behind_their_check(self):
+        body = ("f() { bash -e -s <<'EOF'\nCHECK\n" + self.USE
+                + "EOF\n}\nf\n")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], self.defects(body, shell, use=""))
+
+
 class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
     """#2422: a checksum cannot gate another stage of its own pipeline."""
 
