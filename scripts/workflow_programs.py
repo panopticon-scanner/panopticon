@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Which program a command hands a shell, read off its argv and its stage.
+
 Split out of `scripts/workflow_forms.py` (#2331's follow-ups) the way `scripts/workflow_operands.py`
 and `scripts/workflow_gating.py` were: that module had 51 lines of room left, fewer than the third
 batch of those follow-ups adds to these readers. What is here answers one question of one command --
@@ -12,25 +13,38 @@ it, the stage in front of it (#2333):
     `stdin_program`   whether an interpreter's program arrives on its standard input instead, which
                       is the same act one REDIRECTION away (`bash -s <<'EOF'`), and in what
                       language, where a table names it (`$CMD` is a value none places)
-    `stdin_scripts`   the body that program is, where it is or may be shell, or text an `echo` or
-                      `printf` pipes in (`printed`), each a `Stdin` naming the shell the step runs
-                      to read it, under whose `-e` a check runs -- or none, where no check counts
-    `unprinted`       the printer piping one in whose text `printed` cannot spell out, for
-                      `unread_program` to weigh; `printed`, the pipe test `_piped` and the
-                      `_PRINTERS` table live in `workflow_printers` and are re-exported here
+    `stdin_command`   the command whose stdin-program answer an enclosing `eval` or `sh -c`
+                      inherits, preserving an inner `$CMD` for the guard's hand-off report
+    `stdin_scripts`   the body that program is, where it is or may be shell, the heredoc or
+                      here-string a `cat` printer in front hands down the pipe (`handed`, #2467), or
+                      the text (one per distinct reading, `spellings`, #2476 fix round 1 R-F1) an
+                      `echo` or `printf` pipes in under the runner `shell` (`printed`), each a
+                      `Stdin` naming the shell the step runs to read it, under whose `-e` a check
+                      runs -- or none, where no check counts
+    `unprinted`       the printer piping one in whose text no reading `spellings` gives spells out
+                      -- never a heredoc-fed `cat`, whose QUOTED body `printed` spells and EXPANDING
+                      one `_unread_stdin` reports (#2467, R-F13) -- for `unread_program` to weigh;
+                      `printed`, `spellings`, `ANY`, `Named`, `handed`, the pipe test `_piped` and
+                      the `_PRINTERS` table live in `workflow_printers` and are re-exported here
+    `runs_under`      the shell a stdin body is read under (#2476): another reader's basename
+                      (`sudo sh` → `sh`), the holder's plain name where its words through a `-c`
+                      string are all literal, or `Named(name)` -- both readings -- behind a value, a
+                      default or an `eval`/`-c` string that may name the reading shell
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
     `dynamic_program` the program word a LITERAL shell is handed that is all expansion
                       (`sh -c "$P"`, `sh -c "$(cat f)"`), which spells no command at all
 
-`workflow_forms` imports all six and `Opaque`: its `flattened` reads each script found here in
-place of the command handed it -- a stdin one under its reader's `-e`, and with no check in it
-counted where it has none, behind a string, under a `$` command word (`VALUE_PROGRAM`) or where it
-is `Opaque` -- its `unread_program` weighs the candidates, the unprinted and the dynamic program,
-and the guard takes `stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
-The option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up
-that reads a shell's options too (#2443, #2475).
+`workflow_forms` imports all but `stdin_command` (the guard's) and `Opaque`: its `flattened` reads
+each script found here in place of the command handed it -- a stdin one under its reader's `-e`
+(`runs_under`), and with no check in it counted where it has none, behind a string, under a `$`
+command word (`VALUE_PROGRAM`) or where it is `Opaque` -- its `unread_program` weighs the
+candidates, the unprinted and the dynamic program, and the guard takes `stdin_program` and
+`SHELL_PROGRAM` through it, `VALUE_PROGRAM`, `ANY`, `handed` and `stdin_command` directly. The
+option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up that
+reads a shell's options too (#2443, #2475).
+
 Stdlib only, like everything under it.
 """
 import os
@@ -38,15 +52,14 @@ import re
 
 import shell_lex
 import shell_reader
-from workflow_operands import at_directory, may_run
-from workflow_printers import _PRINTERS as _PRINTERS, _piped as _piped, printed as printed
+from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
+                               handed as handed, printed as printed, spellings as spellings)
 
 
-# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
-# The text is shell and this module reads shell, so the quotes are not a
-# grammar it lacks -- only one it was not looking through. `python3 -c` and
-# `perl -e` are NOT here: that text is another language, and the gap list says
-# so.
+# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`. The text is shell and
+# this module reads shell, so the quotes are not a grammar it lacks -- only one it was not looking
+# through. `python3 -c` and `perl -e` are NOT here: that text is another language, and the gap list
+# says so.
 _SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 
 
@@ -119,46 +132,39 @@ def _after_dash_c(argv):
     return []
 
 
-# The short option letters a shell takes, where it reads them: bash 5.2.21's
-# `set` builtin (`set -eo pipefail`, `set +x`, `set -r`), and besides those a
-# command line's own (`sh -c`, `bash -ilr`, `bash -D`, `bash -O extglob`, and
-# the `-I`/`-V` dash takes where bash does not). A letter outside the table is
-# one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option
-# changed; `sh -c -K P` exits before it reads `P` -- which is what
-# `workflow_posture._errexit` and `_past_options` read it as (#2443, #2475).
-# Measured, letter by letter, on bash 3.2.57, bash 5.2.21, dash, zsh 5.9 and
-# ksh 93u+, each table is the fail-closed pick for the direction its reader
-# takes. For the builtin, where an unknown letter means nothing was SET,
-# bash 5.2.21's letters: that is bash 3.2.57's less the `i` and `I` which 5.2
-# refuses and SURVIVES, which would be the fail-open direction, and dash
-# refuses more of them still but dies at the `set`, which runs nothing. For a
-# command line, where it means nothing RUNS, the UNION over the shells that
-# refuse at all -- and only those shells may be read that way, because zsh
-# runs twenty of these letters and ksh runs `-G` (`_MEASURED_SHELLS`). Which
-# take a VALUE: `-o name`, and bash's `-O shopt` on a command line.
+# The short option letters a shell takes, where it reads them: bash 5.2.21's `set` builtin (`set -eo
+# pipefail`, `set +x`, `set -r`), and besides those a command line's own (`sh -c`, `bash -ilr`,
+# `bash -D`, `bash -O extglob`, and the `-I`/`-V` dash takes where bash does not). A letter outside
+# the table is one the shell REFUSES -- `set: -Z: invalid option`, rc 2 and no option changed; `sh
+# -c -K P` exits before it reads `P` -- which is what `workflow_posture._errexit` and
+# `_past_options` read it as (#2443, #2475). Measured, letter by letter, on bash 3.2.57, bash
+# 5.2.21, dash, zsh 5.9 and ksh 93u+, each table is the fail-closed pick for the direction its
+# reader takes. For the builtin, where an unknown letter means nothing was SET, bash 5.2.21's
+# letters: that is bash 3.2.57's less the `i` and `I` which 5.2 refuses and SURVIVES, which would be
+# the fail-open direction, and dash refuses more of them still but dies at the `set`, which runs
+# nothing. For a command line, where it means nothing RUNS, the UNION over the shells that refuse at
+# all -- and only those shells may be read that way, because zsh runs twenty of these letters and
+# ksh runs `-G` (`_MEASURED_SHELLS`). Which take a VALUE: `-o name`, and bash's `-O shopt` on a
+# command line.
 SET_OPTIONS = "abefhkmnoprtuvxBCEHPT"
 SHELL_OPTIONS = SET_OPTIONS + "cilsDOIV"
 VALUE_OPTIONS = "oO"
-# The shells whose command-line letters the comment above measured as REFUSED:
-# `sh` (bash in sh mode on this box, dash on a runner), `bash` and `dash`. The
-# other names of `_SHELL_STRING` are not here -- zsh runs `-K`, `-F`, `-S`,
-# `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash` could not
-# be measured (this box has none) -- so for them an option word is read ON.
+# The shells whose command-line letters the comment above measured as REFUSED: `sh` (bash in sh mode
+# on this box, dash on a runner), `bash` and `dash`. The other names of `_SHELL_STRING` are not here
+# -- zsh runs `-K`, `-F`, `-S`, `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash`
+# could not be measured (this box has none) -- so for them an option word is read ON.
 _MEASURED_SHELLS = ("sh", "bash", "dash")
-# The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's
-# `set -o` listing -- which is bash 3.2.57's, name for name -- and besides
-# those the three dash prints that bash has no such option for. A name outside
-# the table is one the shell REFUSES: `set: foo: invalid option name`, and on a
-# command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
-# `workflow_posture._rejected` and `_refused_name` read it as (#2560). Measured
-# on bash 3.2.57, bash 5.2.21 and dash, each table is the fail-closed pick for
-# the direction its reader takes, as the letter tables are. For the BUILTIN,
-# where a refused name means nothing was SET, bash's 27 alone: dash dies at
-# such a `set`, so nothing runs there at all, and its own names would only add
-# ones bash refuses. For a COMMAND LINE, where it means nothing RUNS, the UNION
-# -- dash runs `-o stdin`, `-o interactive` and `-o debug`, which bash exits 2
-# on, and dash has no `pipefail`, which bash takes. `-O` takes a SHOPT name
-# instead, a table this guard does not keep (`_refused_name`).
+# The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's `set -o` listing -- which
+# is bash 3.2.57's, name for name -- and besides those the three dash prints that bash has no such
+# option for. A name outside the table is one the shell REFUSES: `set: foo: invalid option name`,
+# and on a command line `bash -c -o foo P` exits 2 before it reads `P`, which is what
+# `workflow_posture._rejected` and `_refused_name` read it as (#2560). Measured on bash 3.2.57, bash
+# 5.2.21 and dash, each table is the fail-closed pick for the direction its reader takes, as the
+# letter tables are. For the BUILTIN, where a refused name means nothing was SET, bash's 27 alone:
+# dash dies at such a `set`, so nothing runs there at all, and its own names would only add ones
+# bash refuses. For a COMMAND LINE, where it means nothing RUNS, the UNION -- dash runs `-o stdin`,
+# `-o interactive` and `-o debug`, which bash exits 2 on, and dash has no `pipefail`, which bash
+# takes. `-O` takes a SHOPT name instead, a table this guard does not keep (`_refused_name`).
 SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", "functrace",
                     "hashall", "histexpand", "history", "ignoreeof", "interactive-comments",
                     "keyword", "monitor", "noclobber", "noexec", "noglob", "nolog", "notify",
@@ -173,13 +179,11 @@ def _refused_name(argv, at):
     to a shell measured to refuse one at all (`sh -c -o foo P`, `sh -co foo
     P`, `+o foo`; `_MEASURED_SHELLS`, as `_refused` reads a letter).
 
-    One value per `o` or `O` letter, as `_past_options` counts them, and only
-    an `o`'s is a `set -o` name: `-O` takes a shopt name, and a table of
-    those is not kept here. A value that is not all letters -- bar the hyphen
-    of `interactive-comments` -- is read ON and fail-closed, as an option
-    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X`
-    holds a name the shell takes, and `${X:-pipefail}` is one spelling of
-    that."""
+    One value per `o` or `O` letter, as `_past_options` counts them, and only an `o`'s is a `set -o`
+    name: `-O` takes a shopt name, and a table of those is not kept here. A value that is not all
+    letters -- bar the hyphen of `interactive-comments` -- is read ON and fail-closed, as an option
+    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X` holds a name the shell
+    takes, and `${X:-pipefail}` is one spelling of that."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     value = at
@@ -197,14 +201,12 @@ def _refused(argv, at):
     `SHELL_OPTIONS`, handed to a shell that refuses such a letter at all
     (`sh -c -K P`, `sh -cK P`, `+Z`; `_MEASURED_SHELLS`).
 
-    False for every other command word, which the walk then reads ON as it
-    did before #2475: zsh and ksh, which RUN letters bash refuses, the
-    unmeasured `ash`, and any word not WRITTEN as that name -- a `$X`, a
-    lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell
-    it spells (`shell_wrappers.Defaulted`, #2337), every one of which is a
-    `str` SUBCLASS here. The program such a command word is handed is
-    #2337/#2344's own report, and a letter table cannot overrule it, because
-    `X` may hold `zsh`.
+    False for every other command word, which the walk then reads ON as it did before #2475: zsh and
+    ksh, which RUN letters bash refuses, the unmeasured `ash`, and any word not WRITTEN as that name
+    -- a `$X`, a lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell it spells
+    (`shell_wrappers.Defaulted`, #2337), every one of which is a `str` SUBCLASS here. The program
+    such a command word is handed is #2337/#2344's own report, and a letter table cannot overrule
+    it, because `X` may hold `zsh`.
 
     A word that is not all letters is read on too, and fail-closed: bash,
     dash and ksh refuse a digit or a brace (`-1`, `-I{}`, `-nw5`) but zsh
@@ -219,14 +221,12 @@ def _refused(argv, at):
 def _past_options(argv, at):
     """The first operand after `argv[at]`, the cluster that carries `-c`.
 
-    Bash and dash read on through the option words after `-c` (#2332): `sh
-    -c -e P`, `bash -c -x P` and `sh -c +x P` all run `P`. Each `o` or `O`
-    in a word takes the next word as its value (`-c -o pipefail P`, `-co
-    pipefail P`); a `-` or `--` ends the options, and the word after it is
-    the program even if it begins with `-`; a `--long` word after `-c` is
-    one both shells refuse, and nothing runs. So is a word of letters one of
-    which the shell in hand refuses (`sh -c -K P`, `sh -cK P`, `_refused`):
-    it exits before it reads `P`, so no program is handed over (#2475), and an
+    Bash and dash read on through the option words after `-c` (#2332): `sh -c -e P`, `bash -c -x P`
+    and `sh -c +x P` all run `P`. Each `o` or `O` in a word takes the next word as its value (`-c -o
+    pipefail P`, `-co pipefail P`); a `-` or `--` ends the options, and the word after it is the
+    program even if it begins with `-`; a `--long` word after `-c` is one both shells refuse, and
+    nothing runs. So is a word of letters one of which the shell in hand refuses (`sh -c -K P`, `sh
+    -cK P`, `_refused`): it exits before it reads `P`, so no program is handed over (#2475), and an
     `-o` whose value is no option NAME is one too (`_refused_name`, #2560).
     """
     while True:
@@ -241,12 +241,11 @@ def _past_options(argv, at):
             return [argv[at]]
 
 
-# A word bash expands, where a shell reads its options, that may spell one
-# (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
-# letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
-# `$'…'` the reader leaves undecoded (`shell_lex.ansi_c`) whose text BEGINS
-# with an escape, `$'\x2dc'` but not `$'-\x63'` (a residual), or a word
-# xargs puts a line of its input in (`{}`).
+# A word bash expands, where a shell reads its options, that may spell one (#2344): past the
+# `$NAME`, `${...}` or `$(...)` it begins with, nothing but letters -- `$X`, `"${X:--c}"`,
+# `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a `$'…'` beginning with an unknown or non-ASCII escape
+# that `shell_quote.ansi_c` cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a
+# line of its input in (`{}`).
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
 
@@ -294,7 +293,7 @@ def candidates(argv):
     (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
     (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
     expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
-    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    `stdin_program` keeps possible past a value (#2605); a literal long option remains #2616. So
     spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
     word after it, though not itself, which is `$0`, an option word or a script's file name, never a
     `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
@@ -399,9 +398,8 @@ def dynamic_program(argv):
 SHELL_PROGRAM = "shell"        # the body is shell, which this module reads
 FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
 VALUE_PROGRAM = "value"        # the command word is a value no table places; the body may be shell
-# The interpreters of the second kind. `python3 -c` and `perl -e` are already
-# ruled another language by `scripts` above, and a heredoc is the same text one
-# redirection over.
+# The interpreters of the second kind. `python3 -c` and `perl -e` are already ruled another language
+# by `scripts` above, and a heredoc is the same text one redirection over.
 _FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
 # The operands that ARE standard input.
 _STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
@@ -410,99 +408,82 @@ _STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
 def stdin_program(argv):
     """Whether this command's PROGRAM is its standard input, and in what.
 
-    `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare
-    `sh`, `dash -`), `FOREIGN_PROGRAM` for a program in a language this module
-    does not read (`python3 -`), `VALUE_PROGRAM` for one under a value-form
-    command word no table places (`$CMD`, `$PYTHON -`), and None when the
-    program is somewhere else -- a file (`bash x.sh`), a `-c` string, a `-m`
-    module -- which makes stdin that program's input DATA and not an act of
-    this job's own.
+    `SHELL_PROGRAM` for a shell reading a script from stdin (`bash -s`, a bare `sh`, `dash -`),
+    `FOREIGN_PROGRAM` for a program in a language this module does not read (`python3 -`),
+    `VALUE_PROGRAM` for one under a value-form command word no table places (`$CMD`, `$PYTHON -`),
+    and None when the program is somewhere else -- a file (`bash x.sh`), a `-c` string, a `-m`
+    module -- which makes stdin that program's input DATA and not an act of this job's own.
 
-    Read as OPERANDS rather than as a full option grammar: an interpreter's
-    first word that is not an option is its program, and a shell's `-s` says
-    every word after it is a positional parameter instead. See the guard's gap
-    list for the spelling that leaves behind. A letter the shell refuses is
-    read on, fail-closed: `sh -K <<'EOF'` runs nothing in bash or dash, but
-    only `_past_options` asks `_refused` (#2475), for a `-c` cluster. A stdin
-    operand (`-`, `/dev/stdin`) after an option owed a value ends the walk
-    there, except under a literal shell, whose `-o` takes it as an option name
-    and refuses it (`bash -o - x.sh` exits 2): python's `-O` takes no value,
-    so `python3 -O - file.py <<'EOF'` runs its heredoc.
+    Read as OPERANDS rather than as a full option grammar: an interpreter's first word that is not
+    an option is its program, and a shell's `-s` says every word after it is a positional parameter
+    instead. See the guard's gap list for the spelling that leaves behind. A letter the shell
+    refuses is read on, fail-closed: `sh -K <<'EOF'` runs nothing in bash or dash, but only
+    `_past_options` asks `_refused` (#2475), for a `-c` cluster. A stdin operand (`-`, `/dev/stdin`)
+    after an option owed a value ends the walk there, except under a literal shell, whose `-o` takes
+    it as an option name and refuses it (`bash -o - x.sh` exits 2): python's `-O` takes no value, so
+    `python3 -O - file.py <<'EOF'` runs its heredoc.
 
-    A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the
-    `-c` string itself, not stdin, is the program) -- UNLESS that string is
-    itself one statement whose own command is a stdin-reading shell (#2500):
-    `eval 'bash -s'` and `bash -c 'sh'` then answer SHELL_PROGRAM for the
-    ENCLOSING command, so its heredoc, here-string or pipe is read as
-    `bash -s`'s or `sh`'s program, not `eval`'s or `-c`'s -- a download in it
-    is caught -- and no check in it counts (`_stdin` names no reader), so a
-    body ending in its check is reported though the step stops at it.
-    `eval 'echo hi'` and `bash -c 'cat'` are not stdin-reading shells, so
-    they are unaffected. A `-c` cluster the shell refuses hands over no
-    string (`_past_options`), so `bash -c -K 'sh' <<'EOF'`, which runs
-    nothing, is not read so; an INNER shell's refused letter is read on, as
-    above, so `eval 'bash -K -s'` and `bash -c 'sh -K'` are, though bash and
-    dash refuse them and run nothing -- fail-closed. The reading looks at most
-    64 strings deep (`_stdin`'s `depth`) and answers SHELL_PROGRAM past that,
-    fail-closed, so seventy `eval`s before `echo hi <<'EOF'` over-report; with
-    `workflow_forms.flattened` asking once per stage, an `eval eval … bash -s`
-    chain costs time linear in its length and never overflows the stack (final
-    review F1: it was cubic, 37 s at 200, and raised RecursionError at 1,600).
+    A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the `-c` string itself, not
+    stdin, is the program) -- UNLESS that string is itself one statement whose own command is a
+    stdin-reading shell (#2500): `eval 'bash -s'` and `bash -c 'sh'` then answer SHELL_PROGRAM for
+    the ENCLOSING command, so its heredoc, here-string or pipe is read as `bash -s`'s or `sh`'s
+    program, not `eval`'s or `-c`'s -- a download in it is caught -- and no check in it counts
+    (`_stdin` names no reader), so a body ending in its check is reported though the step stops at
+    it. `eval 'echo hi'` and `bash -c 'cat'` are not stdin-reading shells, so they are unaffected. A
+    `-c` cluster the shell refuses hands over no string (`_past_options`), so `bash -c -K 'sh'
+    <<'EOF'`, which runs nothing, is not read so; an INNER shell's refused letter is read on, as
+    above, so `eval 'bash -K -s'` and `bash -c 'sh -K'` are, though bash and dash refuse them and
+    run nothing -- fail-closed. The reading looks at most 64 strings deep (`_stdin`'s `depth`) and
+    answers SHELL_PROGRAM past that, fail-closed, so seventy `eval`s before `echo hi <<'EOF'`
+    over-report; with `workflow_forms.flattened` asking once per stage, an `eval eval … bash -s`
+    chain costs time linear in its length and never overflows the stack (final review F1: it was
+    cubic, 37 s at 200, and raised RecursionError at 1,600).
 
-    For a SHELL, a value form or a word that may vanish (`_value`) does not
-    END the walk there either (#2485): `X=-s; sh $X <<'EOF'` runs the
-    heredoc in bash 3.2.57, 5.2.21 and dash alike, as `bash <<'EOF' $(true)`
-    and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
-    word outright. Read IN PLACE rather than weighed, fail-closed: `X`
-    may just as well spell a FILE (`X=script.sh`) or an option nothing
-    runs under -- one the shell refuses (`X=-K`, where bash and dash
-    exit 2), `X=-n` (they read the heredoc and run none of it) or a
-    bare `X=-c` (no string, rc 2) -- so this over-reports there; the
-    guard's gap list names the class. No check in the body counts either
-    (`_stdin` names no reader): where `X` names a file no shell reads the
-    body, so `X=/dev/null` runs a download past a body that is only the
-    check, and `X=-s`, which stops at it, over-reports too. A
-    `<(...)`/`>(...)` is NOT such a word, though `_value` matches its marker
-    too: it always substitutes a real path, never empty, so
-    `bash <(curl ...)` keeps reading as the FILE it is (`yields_words` tells
-    a process substitution from a command substitution, whose OUTPUT may
-    vanish instead) -- true only where EVERY substitution in the word is a
-    process one; a MIXED word (`$(true)<(...)`) still reads as may-vanish
-    even though bash always substitutes a real path for it too -- an
-    over-report the guard's gap list does not separately name, beside the
+    For a SHELL, a value form or a word that may vanish (`_value`) does not END the walk there
+    either (#2485): `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57, 5.2.21 and dash alike, as
+    `bash <<'EOF' $(true)` and `sh $X` with `X` unset do, where `$X`'s empty expansion drops the
+    word outright. Read IN PLACE rather than weighed, fail-closed: `X` may just as well spell a FILE
+    (`X=script.sh`) or an option nothing runs under -- one the shell refuses (`X=-K`, where bash and
+    dash exit 2), `X=-n` (they read the heredoc and run none of it) or a bare `X=-c` (no string, rc
+    2) -- so this over-reports there; the guard's gap list names the class. No check in the body
+    counts either (`_stdin` names no reader): where `X` names a file no shell reads the body, so
+    `X=/dev/null` runs a download past a body that is only the check, and `X=-s`, which stops at it,
+    over-reports too. A `<(...)`/`>(...)` is NOT such a word, though `_value` matches its marker
+    too: it always substitutes a real path, never empty, so `bash <(curl ...)` keeps reading as the
+    FILE it is (`yields_words` tells a process substitution from a command substitution, whose
+    OUTPUT may vanish instead) -- true only where EVERY substitution in the word is a process one; a
+    MIXED word (`$(true)<(...)`) still reads as may-vanish even though bash always substitutes a
+    real path for it too -- an over-report the guard's gap list does not separately name, beside the
     ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
-    A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
-    `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
-    table places may hold a shell, another language's interpreter or `true`.
-    SHELL would read another language's program as though it were one, and
-    report nothing for `$PYTHON - <<'EOF'` even beside a fetch (review I-2);
-    FOREIGN leaves the body unread, an `Idle` report `kept` drops beside no
-    reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... | sh` read CLEAN. As
-    VALUE its body is read as shell additively (`stdin_scripts`; `workflow_forms.flattened` counts
-    no check in it, since `$CMD` may not run it) -- `$CAT <<'EOF' > f` therefore over-reports --
-    and `_unread_stdin` reports the hand-off `Idle`. When `may_run` binds the command word to a job
-    fetch (#2607), the guard drops both uncertain answers: its run sentence owns stdin as data.
-    Otherwise its walk takes a shell's
-    `-c`, `-s`, vanishing-operand and option-value rules, since the word may
-    be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read
-    the heredoc, as does `$PYTHON -Ou - file.py <<'EOF'`, a stdin operand
-    being no option's value; `$PYTHON -s file.py <<'EOF'`, `$PYTHON -Ou
-    file.py <<'EOF'` and an interpreter's own option value spelled `$`
-    (`$NODE -e "$CODE" <<'EOF'`, `$PYTHON -m "$MOD" <<'EOF'`, read past as
-    a vanishing operand) over-report a hand-off, like `$PYTHON -O file.py`),
-    An EXPANDING VALUE body is read after substitutions become value words
-    (#2597), while a literal shell's stays unread and loud. No option word
-    behind a `$` word is a refusal (#2475's
-    per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD
-    -K <<'EOF'` is read and its hand-off said, though every shell measured
-    refuses `-K` and runs nothing -- fail-closed. #2500's reading stays
-    SHELL_PROGRAM's: an inner `$CMD` makes no enclosing `eval` or `-c` string
-    a stdin shell, so the body of `CMD=sh; eval "$CMD" <<'EOF'` or `export
-    CMD=sh; bash -c '$CMD' <<'EOF'` is never read, though bash runs it: a
-    `curl ... | sh` there reads CLEAN alone, and beside a reported fetch only
-    the word is reported, as a `dynamic_program` (`Idle`, #2483), never the
-    stream -- a gap filed under #2331.
+    A FILE after a value in the shell's option slot keeps stdin possible (#2605): the value may be
+    `-s`, making that file and every later word a parameter, or `--rcfile`, making the file that
+    option's value. This reads `sh $X file.sh <<'EOF'` fail-closed at the disclosed `X=-e` price. An
+    explicit `--` before the value ends the option slot.
+
+    A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`, `$PYTHON -`) with stdin on
+    it answers VALUE_PROGRAM (#2473): a name no table places may hold a shell, another language's
+    interpreter or `true`. SHELL would read another language's program as though it were one, and
+    report nothing for `$PYTHON - <<'EOF'` even beside a fetch (review I-2); FOREIGN leaves the body
+    unread, an `Idle` report `kept` drops beside no reported fetch (#2499), so `CMD=sh; $CMD
+    <<'EOF'` running `curl ... | sh` read CLEAN. As VALUE its body is read as shell all the same,
+    additively (`stdin_scripts`; `workflow_forms.flattened` counts no check in it, since `$CMD` may
+    not run it) -- a body no interpreter runs, `$CAT <<'EOF' > f`, over-reports -- and the guard's
+    `_unread_stdin` reports the hand-off `Idle`. Its walk takes a shell's `-c`, `-s`,
+    vanishing-operand and option-value rules, since the word may be a shell (`$CMD -s -- "$V"
+    <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read the heredoc, as does `$PYTHON -Ou - file.py
+    <<'EOF'`, a stdin operand being no option's value; `$PYTHON -s file.py <<'EOF'`, `$PYTHON -Ou
+    file.py <<'EOF'` and an interpreter's own option value spelled `$` (`$NODE -e "$CODE" <<'EOF'`,
+    `$PYTHON -m "$MOD" <<'EOF'`, read past as a vanishing operand) over-report a hand-off, like
+    `$PYTHON -O file.py`), An EXPANDING VALUE body is read after substitutions become value words
+    (#2597), while a literal shell's stays unread and loud. No option word behind a `$` word is a
+    refusal (#2475's per-shell scoping: `CMD` may hold zsh, which runs `-K`), so `CMD=sh; $CMD -K
+    <<'EOF'` is read and its hand-off said, though every shell measured refuses `-K` and runs
+    nothing -- fail-closed. #2500's inheritance includes VALUE_PROGRAM too (#2599): an inner `$CMD`
+    makes an enclosing `eval` or `-c` string a value stdin reader, so its quoted body is read as
+    shell and the hand-off names the inner word. This is fail-closed: an unset P makes the heredoc
+    on `sh -c "$P"` run nothing, but it is reported. Without stdin, #2483's dynamic-program answer
+    stays.
     """
     return _stdin(argv, 0)[0]
 
@@ -512,6 +493,11 @@ def stdin_reader(argv):
     return _stdin(argv, 0)[1]
 
 
+def stdin_command(argv):
+    """The argv whose stdin-program answer this command inherits, or `argv` itself."""
+    return _stdin_details(argv, 0)[2]
+
+
 class Stdin(str):
     """A script `stdin_scripts` read off standard input, and its `reader` (`_stdin`): the argv of
     the shell the step itself runs to read it, under whose `-e` a check in it runs; `()` where
@@ -519,45 +505,6 @@ class Stdin(str):
     (`bash -s -c 'sh'`), whose statements are the step's own and no check in them counts; or None,
     where no shell is sure to read it and nothing in it is the step's own."""
     reader: "list[str] | tuple[()] | None" = None
-    bound: str | None = None
-
-
-class BoundStdin(str):
-    """An uncertain value-form stdin reason, tied to its command word."""
-    word: str
-    def __new__(cls, reason, word):
-        answer = super().__new__(cls, reason)
-        answer.word = word
-        return answer
-
-
-def mark_stdin(stmts, word, unsure):
-    return [item._replace(credit=(BoundStdin(item.credit[0], word), item.credit[1]))
-            if word and isinstance(item, unsure) else item for item in stmts]
-
-
-def bound_stdin(stmts, prior, walk, unsure, back):
-    """Drop value-form stdin where a prior certain fetch binds its command, preserving cwd."""
-    walked, context = walk(stmts)
-    certain = [(i, f) for i, f in walked[0] if not isinstance(stmts[i], unsure)]
-
-    def bound(index, word):
-        available = prior + [fetch for at, fetch in certain if at < index]
-        command = at_directory(word, context[2][index], True)
-        return any(fetch.dest is not None and may_run(command, at_directory(fetch.dest,
-                   getattr(fetch.dest, "directory", "."))) for fetch in available)
-
-    skip = {i for i, s in enumerate(stmts) if isinstance(s, unsure)
-            and isinstance(s.credit[0], BoundStdin) and bound(i, s.credit[0].word)}
-    keep = [index for index in range(len(stmts)) if index not in skip]
-    if skip:
-        stmts = [stmts[index] for index in keep]
-        walked, context = walk(stmts)
-        certain = [(i, f) for i, f in walked[0] if not isinstance(stmts[i], unsure)]
-    unread = [(index, why) for index, why in walked[1]
-              if not isinstance(why, BoundStdin) or not bound(index, why.word)]
-    return (stmts, (walked[0], unread), prior + [fetch for _index, fetch in certain],
-            [back[index] for index in keep], context)
 
 
 def _stdin(argv, depth):
@@ -571,8 +518,13 @@ def _stdin(argv, depth):
     (`bash -s -c 'sh'`, by `_options`), the step reads the body as the holder's program, and the
     reader is `()`. Nor is there one past a word that may vanish (#2485), which may name a FILE,
     nor under a `$` command word (#2473). `depth` counts the strings walked so far, at most 64."""
+    return _stdin_details(argv, depth)[:2]
+
+
+def _stdin_details(argv, depth):
+    """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
     if not argv:
-        return None, None
+        return None, None, argv
     kind, reader = _options(argv, depth)
     found = scripts(argv)
     if found:
@@ -592,13 +544,17 @@ def _stdin(argv, depth):
             words = words[1:]
         text = " ".join(getattr(t, "spelled", t) for t in words)
         parsed = shell_reader.statements(text)
-        if (len(parsed) == 1 and len(parsed[0].stages) == 1
-                and (depth >= 64                # bounded: past 64 strings, fail-closed
-                     or _stdin(shell_reader.command(parsed[0].stages[0].argv), depth + 1)[0]
-                     == SHELL_PROGRAM)):
-            # Read, and no check in it counts: the step's own only where its holder reads stdin.
-            return SHELL_PROGRAM, () if kind == SHELL_PROGRAM and reader else None
-    return kind, reader
+        if len(parsed) == 1 and len(parsed[0].stages) == 1:
+            inner = shell_reader.command(parsed[0].stages[0].argv)
+            if depth >= 64:                    # bounded: past 64 strings, fail-closed
+                return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
+            inherited = _stdin_details(inner, depth + 1)
+            if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
+                # No check in an inherited body counts; only a holder reading it is its reader.
+                inherited_reader = (() if inherited[0] == SHELL_PROGRAM
+                                    and kind == SHELL_PROGRAM and reader else None)
+                return inherited[0], inherited_reader, inherited[2]
+    return kind, reader, argv
 
 
 def _options(argv, depth):
@@ -618,16 +574,21 @@ def _options(argv, depth):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     reader = argv if shell and not depth else None
+    options, value_option = True, False
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
             return answer, reader
+        if token == "--":
+            options = False
+            continue
         if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts
+                value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return None, None               # the program is this file
+            return (answer, reader) if value_option else (None, None)
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
             return None, None               # the program is the `-c` string
@@ -646,15 +607,39 @@ def _options(argv, depth):
     return answer, reader
 
 
-def stdin_scripts(argv, stage, before=None):
+def runs_under(argv, reader, name):
+    """The shell `workflow_forms.flattened` reads a stdin text's body under: another READER's
+    basename, where one differs from the holder's own argv (`sudo sh` → `sh`); the holder's plain
+    `name`, where the reader IS its own argv, no word of its own before `--`, up to and including a
+    `-c` string (`_after_dash_c`: the words after it are parameters, R-F16; found by identity, so to
+    `--` where that word's object recurs, as CPython's one-character `+` can), may spell an option
+    once expanded (`_may_spell_option`, R-F12: `bash <<'EOF'`, `bash -s -c 'echo hi'`), and the
+    command word is written as itself, not a `${X:-sh}` default (`Defaulted`, R-F15); or
+    `Named(name)`, read by the printers as `ANY` -- no reader at all (#2473), a `-c`/`eval` string
+    naming the shell that reads the body (`bash -c 'sh'`, `bash -s -c 'sh'`, `eval 'bash -s'`:
+    #2500, R-F7), or such a word, an option's value too, that may name one at runtime (`bash $X`,
+    `X='-c sh'` → `sh`; `bash -o $X`, `bash -$X`: R-F9, R-F12; refutes #2485's bash-or-nothing)."""
+    if reader and reader is not argv:
+        return os.path.basename(reader[0])  # another reader names itself (`sudo sh` → `sh`)
+    words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
+    string = [w for w in _after_dash_c(argv) if sum(v is w for v in argv) == 1]
+    words = words[:next((i + 1 for i, w in enumerate(words) if string and w is string[0]), None)]
+    if reader and type(argv[0]) is str and not any(map(_may_spell_option, words)):
+        return name                         # its own text, no word that may spell an option
+    return Named(name)                      # a string, a value, a default, or no reader: both ways
+
+
+def stdin_scripts(argv, stage, before=None, shell=None):
     """The heredoc script this stage hands an interpreter, if it does.
 
     A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
-    string; `curl … | sh` and `sh <<< '…'` are the same defect (#2293). Expanding bodies stay
-    unread for a literal shell. Behind a value command word, it is tagged with that word and read
-    after command and arithmetic substitutions become value words (#2597), since the outer read
-    owns them. Text an `echo` or `printf` in front pipes in is read too where `printed` spells it
-    (#2333); otherwise `unprinted` has the printer.
+    string; `curl … | sh` is the same defect, as is `sh <<< '…'` (#2293), and so is the quoted
+    heredoc or here-string a `cat` printer in front hands down the pipe (`handed`, #2467). An
+    expanding body stays unread for a literal shell (the guard's `_unread_stdin`). Behind a value
+    command word, it is read after command and arithmetic substitutions become value words (#2597),
+    since the outer read owns them. Text an `echo` or `printf` in front (`before`) pipes in is read
+    too, one text per distinct reading of the runner `shell` (`spellings`, #2476), where `printed`
+    spells it (#2333): `echo 'sh tool' | sh`; otherwise `unprinted` has the printer.
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -662,8 +647,9 @@ def stdin_scripts(argv, stage, before=None):
     string names no shell that reads stdin); `()` for the body of a holder whose own options read
     stdin (`bash -s -c 'sh'`), the step's own statements, with no check counting; and None behind a
     string that names the shell reading it (`eval 'bash -s'`, `bash -c 'sh'`), past a word that may
-    vanish or under a `$` command word, where no shell is sure to read it and nothing in it is the
-    step's own (`workflow_forms.Unsure`).
+    vanish, under a `$` command word, or where the printer spells two readings (R-F8) or one and an
+    unspelled one (R-F11), where no shell is sure to read it and nothing in it is the step's own
+    (`workflow_forms.Unsure`).
 
     Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are tagged and read
     as shell, though the word may hold none; `workflow_forms.flattened` counts no check there.
@@ -671,30 +657,43 @@ def stdin_scripts(argv, stage, before=None):
     `$(...)`, `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted`
     weighs a shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
     """
-    here = stage.stdin_heredoc
-    if here is None and _piped(stage, before):
-        text = printed(shell_reader.command(before.argv))
-        here = None if text is None else (text, False)
-    kind, reader = (None, None) if here is None else _stdin(argv, 0)
-    if kind not in (SHELL_PROGRAM, VALUE_PROGRAM) or here[1] and kind != VALUE_PROGRAM:
+    here = stage.stdin_heredoc or handed(stage, before)
+    if here is not None:
+        readings = texts = [here[0]]
+    elif _piped(stage, before):
+        readings = spellings(shell_reader.command(before.argv), before, shell)
+        texts = [t for t in readings if t is not None]
+    else:
+        readings = texts = []
+    if not texts:
         return []
-    body = here[0]
-    if here[1]:
-        context = shell_reader._Parse(body)
-        body = context.pattern.sub("$VALUE", shell_reader._lift_substitutions(body, context)[0])
-    text = Stdin(body)
-    text.reader = reader
-    text.bound = argv[0] if kind == VALUE_PROGRAM else None
-    return [text]
+    expands = here is not None and here[1]
+    kind, reader = _stdin(argv, 0)
+    if kind not in (SHELL_PROGRAM, VALUE_PROGRAM) or expands and kind != VALUE_PROGRAM:
+        return []
+    if expands:
+        context = shell_reader._Parse(texts[0])
+        lifted = shell_reader._lift_substitutions(texts[0], context)[0]
+        texts = [context.pattern.sub("$VALUE", lifted)]
+    out = []
+    for spelled in texts:
+        text = Stdin(spelled)
+        text.reader = reader if len(readings) == 1 else None
+        setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
+        out.append(text)
+    return out
 
 
-def unprinted(argv, stage, before):
-    """The `echo` or `printf` in front of this shell piping it its program
-    where `printed` does not spell that text out (`echo "$X" | sh`, #2333),
-    or []."""
+def unprinted(argv, stage, before, shell=None):
+    """The `echo` or `printf` in front of this shell piping it its program where no reading
+    `spellings` gives spells that text out (`echo "$X" | sh`, #2333; an `eval`'s or a `$` word's
+    `echo` unspelled under EITHER reading, #2476 fix round 1 R-F1), or []. A heredoc-fed `cat` is
+    never an unspelled printer: `printed` spells its QUOTED body whole and
+    `workflow_guard._unread_stdin` reports its EXPANDING one (a `$` command consumer reads that one
+    with masks instead, #2597)."""
     producer = (shell_reader.command(before.argv)
                 if stage.stdin_heredoc is None and _piped(stage, before) else [])
-    if (not producer or os.path.basename(producer[0]) not in _PRINTERS
-            or printed(producer) is not None or stdin_program(argv) != SHELL_PROGRAM):
+    is_printer = producer and os.path.basename(producer[0]) in _PRINTERS
+    if not is_printer or stdin_program(argv) != SHELL_PROGRAM:
         return []
-    return producer
+    return [] if None not in spellings(producer, before, shell) else producer

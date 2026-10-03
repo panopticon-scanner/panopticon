@@ -195,6 +195,16 @@ class TestCombinedPipeline(unittest.TestCase):
         self.assertEqual([], guard.fetch_exec_defects(
             f'curl {URL} >tool |& cat; {CHECK} && sh tool'))
 
+    def test_a_value_command_word_is_a_stream_consumer(self):
+        # #2602: the first word may name a shell even though no executor table
+        # can place it. The same walk must cross a pass-through `tee` stage.
+        for tail, word in (("$CMD", "$CMD"), ("${CMD}", "${CMD}"),
+                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO sh", "$SUDO")):
+            with self.subTest(tail=tail):
+                stages = shell_reader.statements(f"curl {URL} | {tail}")[0].stages
+                consumer = forms.stream_consumer(stages[1:], guard.EXECUTORS)
+                self.assertEqual(word, shell_reader.readable(consumer[0]))
+
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
@@ -515,6 +525,25 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
 
+    def test_2605_a_file_after_a_value_option_keeps_stdin_possible(self):
+        # The value may be `-s`, making every following word a parameter, or
+        # `--rcfile`, making the first literal word that option's value.
+        rows = (("sh $X file.sh", forms.SHELL_PROGRAM),
+                ("bash $X x.sh arg", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null -s arg", forms.SHELL_PROGRAM),
+                ("$CMD $X file.sh", workflow_programs.VALUE_PROGRAM))
+        for script, expected in rows:
+            with self.subTest(script=script):
+                self.assertEqual(expected, forms.stdin_program(self.argv(script)))
+        # A literal file, an ended option list and a literal `-c` remain files
+        # or strings. The literal `-s` must-trip remains a stdin program.
+        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+            with self.subTest(script=script):
+                self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh -s file.sh")))
+
     def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
         # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
         # heredoc in bash 3.2.57 and 5.2.21 alike -- the program string is one
@@ -544,6 +573,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for argv in (["eval", "bash", "-s"], ["eval", "bash -s"]):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
+
+    def test_a_stdin_reading_value_behind_eval_or_dash_c_is_inherited_and_named(self):
+        # #2599: the enclosing command inherits VALUE_PROGRAM too, while the
+        # naming seam retains the inner word that may name the stdin reader.
+        for argv, word in ((["eval", "$CMD"], "$CMD"),
+                           (["bash", "-c", "$CMD"], "$CMD"),
+                           (["sh", "-c", "$P"], "$P")):
+            with self.subTest(argv=argv):
+                self.assertEqual(workflow_programs.VALUE_PROGRAM,
+                                 forms.stdin_program(argv))
+                self.assertEqual(word, workflow_programs.stdin_command(argv)[0])
 
     def test_a_value_or_a_word_that_may_vanish_does_not_end_a_shells_walk(self):
         # #2485: `X=-s; sh $X <<'EOF'` runs the heredoc in bash 3.2.57,
@@ -723,13 +763,14 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
                 self.assertEqual([text], self.handed(script))
 
     def test_text_it_does_not_spell_out_is_no_program_here(self):
-        # A `$`, a backslash a printer may read as an escape (dash's `echo`
-        # does), a format other than `%s`, `%s\n` and `%b` with one word, or
-        # an option: `unprinted` has these.
-        for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo 'a\\tb' | sh",
+        # A `$`, an escape outside `_decoded`'s table (#2476 -- `echo -e` forces bash's decoder on
+        # and `printf` always decodes, so a plain `\t` would decode cleanly there; `\x` is outside
+        # that table and is what stays unspelled instead), a format other than `%s`, `%s\n` and `%b`
+        # with one word, or an option: `unprinted` has these.
+        for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo -e 'a\\xb' | sh",
                        "printf '%s %s\\n' sh tool | sh", "printf '%s\\n' sh tool | sh",
                        'printf "$F" | sh', "printf -v x %s y | sh", "printf '%d\\n' 1 | sh",
-                       "printf 'a\\tb' | sh", "echo `echo sh tool` | sh"):
+                       "printf 'a\\xb' | sh", "echo `echo sh tool` | sh"):
             with self.subTest(script=script):
                 self.assertEqual([], self.handed(script))
                 self.assertTrue(forms.unprinted(*self.parts(script)))
@@ -763,7 +804,7 @@ class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
     `unprinted` and every caller read the one definition, and no stale copy can linger."""
 
     def test_the_seam_is_one_object(self):
-        for name in ("printed", "_piped", "_PRINTERS"):
+        for name in ("printed", "_piped", "_PRINTERS", "handed"):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_programs, name), getattr(workflow_printers, name))
         self.assertIs(forms.unprinted, workflow_programs.unprinted)
@@ -772,7 +813,10 @@ class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
     def test_the_moved_text_reads_as_before(self):
         # The printer's text, the pipe and the table answer as they did in `workflow_programs`.
         self.assertEqual("sh tool\n", workflow_printers.printed(["echo", "sh", "tool"]))
-        self.assertIsNone(workflow_printers.printed(["echo", "sh\\ttool"]))
+        # #2476 FLIPS this: bash's `echo` (the default, no `shell` given) prints a backslash it does
+        # not decode literally, rather than leaving the whole text unspelled -- `printed` now hands
+        # that literal text on, for the next reader to read as `statements("sh\\ttool")` does.
+        self.assertEqual("sh\\ttool\n", workflow_printers.printed(["echo", "sh\\ttool"]))
         self.assertEqual(("echo", "printf"), workflow_printers._PRINTERS)
         stages = shell_reader.statements("echo 'sh tool' | sh")[0].stages
         self.assertTrue(workflow_printers._piped(stages[1], stages[0]))

@@ -224,6 +224,57 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
             50 * 1024 // 4, lambda size: "case " + "a" * size + " in x) :; esac\n", check)
 
 
+class TestEsacBeforeAPipeline(unittest.TestCase):
+    """#2610: a literal `esac` closes its case before a following operator."""
+
+    def test_the_following_use_is_a_separate_pipeline_stage(self):
+        for middle in (" | ", "|", " > case.out | "):
+            script = "case x in x) true;; esac" + middle + "sh payload"
+            with self.subTest(middle=middle):
+                parsed = shell_reader.statements(script)
+                final = parsed[-1]
+                self.assertEqual(["esac"], final.stages[0].argv)
+                self.assertEqual(["sh", "payload"], final.stages[1].argv)
+                expected = ["case.out"] if ">" in middle else []
+                self.assertEqual(expected, final.stages[0].writes)
+
+    def test_nested_case_closes_are_each_recognised(self):
+        script = ("case x in x) case y in y) true;; esac | cat;; "
+                  "esac | sh payload")
+        parsed = shell_reader.statements(script)
+        pipelines = [[stage.argv for stage in statement.stages] for statement in parsed]
+        self.assertIn([["esac"], ["cat"]], pipelines)
+        self.assertIn([["esac"], ["sh", "payload"]], pipelines)
+
+    def test_quoted_and_escaped_esac_patterns_are_not_case_closes(self):
+        for pattern in ("'esac'|other", "e\\sac|other", "(esac|other)"):
+            with self.subTest(pattern=pattern):
+                parsed = shell_reader.statements(
+                    "case esac in %s) true;; esac" % pattern)
+                arms = [stage.argv[0] for statement in parsed for stage in statement.stages
+                        if stage.argv and shell_reader.is_arm(stage.argv[0])]
+                self.assertEqual(1, len(arms), parsed)
+class TestNestedCaseHeaders(unittest.TestCase):
+    """#2617: a parent arm must not become the first word of an inner header."""
+
+    def test_each_nested_header_and_arm_remains_a_statement(self):
+        for depth in (2, 3):
+            for gap in ("", " ", "\n"):
+                script = ("case a in a)" + gap) * (depth - 1) + "case a in a) curl URL | sh"
+                script += ";; esac" * depth
+                with self.subTest(depth=depth, gap=gap):
+                    parsed = shell_reader.statements(script)
+                    heads = [statement.stages[0].argv for statement in parsed]
+                    self.assertEqual(depth, sum(argv[:1] == ["case"] for argv in heads))
+                    arms = [argv for argv in heads if argv and shell_reader.is_arm(argv[0])]
+                    self.assertEqual(depth, len(arms), heads)
+                    self.assertEqual([1] * (depth - 1), [len(argv) for argv in arms[:-1]])
+                    commands = [shell_reader.command(s.argv) for st in parsed for s in st.stages]
+                    self.assertIn(["curl", "URL"], commands)
+                    self.assertIn(["sh"], commands)
+                    self.assertFalse(any(s.group_close for st in parsed for s in st.stages))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1212,15 +1263,22 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         escaped = "\\a\\b\\e\\E\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\cC"
         self.assertEqual("\a\b\x1b\x1b\f\n\r\t\v\\'\"?\x03", shell_quote.ansi_c(escaped))
         self.assertEqual("-c", shell_quote.ansi_c("\\x2dc"))
-        self.assertEqual("ab", shell_quote.ansi_c("a\\\nb"))
         self.assertEqual("a", shell_quote.ansi_c("a\\0discarded\\q\\u00e9"))
         self.assertIsNone(shell_quote.ansi_c("\\q"))
-        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9"):
-            with self.subTest(escape=escape), self.assertRaisesRegex(
-                    shell_lex.Unreadable, "outside ASCII"):
-                shell_quote.ansi_c(escape)
         # Inside "..." it is no quoting at all.
         self.assertEqual(["echo", "$'-c'"], stage("echo \"$'-c'\"").argv)
+
+    def test_ansi_c_non_ascii_escapes_leave_only_the_word_unknown(self):
+        # #2614: the ASCII decoder cannot spell these words, as with `\q`;
+        # ordinary CI prose must not refuse the surrounding shell script.
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9", "\\400", "\\cé", "\\q"):
+            with self.subTest(escape=escape):
+                self.assertIsNone(shell_quote.ansi_c(escape))
+
+    def test_ansi_c_backslash_newline_stays_inside_the_word(self):
+        # Both Bash 3.2 and 5.2 print bytes 61 5c 0a 62, not `ab`.
+        self.assertEqual("a\\\nb", shell_quote.ansi_c("a\\\nb"))
+        self.assertEqual(["echo", "a\\\nb"], stage("echo $'a\\\nb'").argv)
 
     def test_every_o_in_an_option_word_takes_a_value(self):
         for argv in (["bash", "-eo", "pipefail", "[-]c", "P"],

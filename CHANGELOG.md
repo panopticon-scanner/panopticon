@@ -12,6 +12,68 @@ evidence exposed.
   the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep
   a checked download flagged. Unknown `$CMD` bodies stay fail-closed; disabling all value-body
   reads was rejected because it would hide their real `curl … | sh` executions.
+- **Four Bash 3.2-only substitution-heredoc parse gaps are now explicit (#2626, #2608).** A body
+  line with an apostrophe, unbalanced double quote, backquote, or bare `$(` can make Bash 3.2
+  reject text Bash 5.2 accepts, but none of the measured shapes runs a payload under 3.2. The
+  #2493 refusal stays limited to `)` because widening it would report parse-only differences.
+- **`eval` brace alternatives bind only downloads they can name (#2624, #2608).** The
+  second parse now expands bounded brace lists and numeric ranges before matching a fetched
+  path, because treating every brace group as `*` misses real uses and binds excluded names;
+  unbounded expansion was rejected because workflow text controls its cost.
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
+- **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
+  shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
+  a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
+  `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
+  (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
+  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
+  `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
+  turns bash's `echo` into a decoder, which this rule does not follow.
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
+- **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
+  A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
+  direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
+  `$*` retain it for loops and first-script uses. Quoted and nonmatching patterns, reassignment,
+  step boundaries, and relative path changes retain bounded controls.
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
+- **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
+  (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
+  `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
+  fail-closed because assuming an unknown command only reads data would reopen the defect.
+- **Workflow guard now reads `$` command stdin inside substitutions (#2598, #2331).**
+  `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
+  before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
+  stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
 - **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
   relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
   workspace; subshells and command substitutions inherit, then restore, their caller. A branched
