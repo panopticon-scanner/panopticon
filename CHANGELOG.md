@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
   shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
   a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
