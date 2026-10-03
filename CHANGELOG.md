@@ -20,11 +20,13 @@ evidence exposed.
   them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
   `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
   `$(…)`, where the step's shell or bash's own row still reads. A pass-through between the printer
-  and the shell -- `tee` writing plain files (`-a`/`-p`/`-i`, `--append` or `--output-error` at
-  most) or a bare `cat`/`cat -` -- is read through (#2478); any other `tee`/`cat` spelling, or a
-  stage that rewrites the stream (`tr`, `base64 -d`), leaves the program unread, reported where its
-  words or the printer's text fetch, or beside a reported download. Named gap: `shopt -s xpg_echo`
-  turns bash's `echo` into a decoder, which this rule does not follow.
+  and the shell -- `tee` writing plain files with `-a`/`-p`/`-i`, `--append` or
+  `--output-error[=MODE]` at most; a bare `cat`, `cat -` or `cat --` (`cat -- -` too) -- is read
+  through (#2478); any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`,
+  `base64 -d`), leaves the program unread, reported where its words or the printer's text fetch, or
+  beside a reported download. Named gaps: `shopt -s xpg_echo` turns bash's `echo` into a decoder,
+  which this rule does not follow, and a quote or a space inside one of a rewriting stage's own
+  words can hide a fetch after it.
 - **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
   literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
   is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`

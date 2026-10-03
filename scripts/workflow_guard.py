@@ -162,18 +162,19 @@ live, so a change that catches one fails there and edits this list.
   stdin possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
   aliases, a shell behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename
   such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a
-  shell, directly or through a pass-through -- `tee` writing plain files (`-a`/`-p`/`-i`, `--append`
-  or `--output-error` at most) or a bare `cat`/`cat -` (#2478) -- reads per shell (bash literal
-  unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or one a `-c`/`eval` string names
-  (`bash -c 'sh'`), both ways); unspelled text is reported where words fetch as written
-  (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported fetch (#2333, #2481, #2467,
-  #2476). Any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`),
-  leaves the program unread, reported where the stage's words or the printer's text fetch, or
-  beside a reported download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i`
-  ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as
-  printing its body (`-n` over-reports); beside `-`, a file's text is unread; `tee f 2>&1` stays a
-  pass-through though its diagnostic, which BSD `tee` writes with the file name unquoted, joins the
-  stream.
+  shell, directly or through a pass-through -- `tee` writing plain files with `-a`/`-p`/`-i`,
+  `--append` or `--output-error[=MODE]` at most; a bare `cat`, `cat -` or `cat --` (`cat -- -` too;
+  #2478) -- reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any
+  other, or one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported
+  where words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported
+  fetch (#2333, #2481, #2467, #2476). Any other `tee`/`cat` spelling, or a stage that rewrites the
+  stream (`tr`, `base64 -d`), leaves the program unread, reported where the stage's words or the
+  printer's text fetch, or beside a reported download. A heredoc WRITTEN then run
+  (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open: `xpg_echo`; an escape outside the table
+  (`\x`, `\e`); `cat` options are read as printing its body (`-n` over-reports); beside `-`, a
+  file's text is unread; `tee f 2>&1` stays a pass-through though its diagnostic, which BSD `tee`
+  writes with the file name unquoted, joins the stream; a quote or a space inside one of a rewriting
+  stage's own words can hide a fetch after it (they are weighed joined as one text).
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and

@@ -18,9 +18,10 @@ between the printer and the shell (#2478). A printer reaching a shell through a 
                  a pass-through (`_passes_through`: `tee` writing plain files, a bare `cat`)
                  handing it on unchanged -- unknown (None) where the walk stops at `_DEPTH`
     `handed`     the heredoc or here-string a `cat` printer in front hands a stage down the pipe
-    `unspelled`  what `unprinted` hands `unread_program` to weigh: an unspelled printer's argv, or,
-                 where a stage between rewrites the text, that stage's argv and the text (I-1),
-                 or past `_DEPTH` a LOUD answer (`_PAST_DEPTH`, fix round 1b)
+    `unspelled`  what `unprinted` hands `unread_program`: a name, then texts it weighs each apart
+                 (N-1) -- an unspelled printer's words, or, where a stage between rewrites the
+                 text, that text and the stage's words (I-1), or past `_DEPTH` a LOUD stand-in
+                 (`_PAST_DEPTH`, fix round 1b)
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
     `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
@@ -241,9 +242,12 @@ def _passes_through(argv, stage):
     `base64 -d`, `tee -x`, `tee >(...)`, `cat file` -- rewrites or adds to the text, and a shell
     after it reads a program no printer's words spell out."""
     name = os.path.basename(argv[0]) if argv else ""
-    # `shell_reader.command` only strips words, so where it stripped none there is no wrapper to
-    # ask `wrapper_words` about (asking at every stage made a long `cat` chain 1.5x slower).
-    if name not in ("tee", "cat") or (len(argv) < len(stage.argv) and any(
+    # A `tee` or `cat` is no wrapper, so where `shell_reader.command` hands back the stage's own
+    # first word, nothing stood in front of it and there is no wrapper to ask `wrapper_words`
+    # about (asking at every stage made a long `cat` chain 1.5x slower). Not a length test:
+    # `command` can SPLICE as well as strip -- `env -S 'xargs cat - -'` (`--split-string=`) gives
+    # back as many words as the stage has, `xargs` among the wrappers (review N-2).
+    if name not in ("tee", "cat") or (argv[:1] != stage.argv[:1] and any(
             os.path.basename(w) == "xargs" for w in shell_reader.wrapper_words(stage.argv))):
         return False
     if any(shell_reader.dynamic(w, shell_reader.has_substitution) or shell_reader.is_marker(w)
@@ -266,11 +270,11 @@ def _passes_through(argv, stage):
 _DEPTH = 64
 
 # What `unspelled` hands `unread_program` where `producer` stopped at `_DEPTH` (fix round 1b): the
-# sentence names the reason, and the line weighed is a program named by a value and run behind a
+# sentence names the reason, and the text weighed is a program named by a value and run behind a
 # wrapper -- one `workflow_guard._walk` "cannot read" -- so the answer is LOUD alone. The program
 # may come from any stage further back, a printer whose text fetches or none at all, so it is
 # never `_Quiet` there, and never CLEAN for want of a printer further back.
-_PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPTH, "\n",
+_PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPTH,
                'exec "$PROGRAM"')
 
 
@@ -319,24 +323,28 @@ def handed(stage, before):
 
 
 def unspelled(stage, before, shell=None):
-    """The words `workflow_forms.unread_program` weighs for the program `stage` (a shell's) reads
-    down its pipeline where no printer's words spell it out, or [] -- the answer of
-    `workflow_programs.unprinted` once it knows the stage is a shell reading stdin (#2478):
+    """What `workflow_forms.unread_program` weighs for the program `stage` (a shell's) reads down
+    its pipeline where no printer's words spell it out, or [] -- the answer of
+    `workflow_programs.unprinted` once it knows the stage is a shell reading stdin (#2478): the
+    NAME the sentence gives, then the TEXTS `unread_program` walks, each on its own, so a quote or
+    an open `case` in one cannot hide another (review N-1):
 
-    * the source `producer` finds behind `before` arrives INTACT: its argv where it is an `echo`
-      or `printf` some reading `spellings` gives does not spell out (`echo "$X" | sh`, an escape
+    * the source `producer` finds behind `before` arrives INTACT: where it is an `echo` or
+      `printf` some reading `spellings` gives does not spell out (`echo "$X" | sh`, an escape
       outside `_decoded`'s table, either reading of a `Named`/`ANY` runner: #2333, #2476 R-F1),
-      else [] -- a heredoc-fed `cat` is never unspelled: `printed` spells its QUOTED body whole
-      and `_unread_stdin` reports its EXPANDING one (#2467, R-F13);
+      its name and its words as ONE text, else [] -- a heredoc-fed `cat` is never unspelled:
+      `printed` spells its QUOTED body whole and `_unread_stdin` reports its EXPANDING one (#2467,
+      R-F13);
     * a stage between REWRITES it (`base64 -d`, R-P4): the name of the stage the shell reads from
-      -- the one the sentence names -- then, each on its own line, what the source put on the
-      pipe (#2478 fix round 1, review I-1): each reading `spellings` gives of an `echo` or
-      `printf` (its words where a reading spells none, as an unspelled printer's are weighed) or
-      a `cat`'s heredoc or here-string body; LAST, on a line of their own, that stage's other
-      words, so a quote among them (`tr "'" x`) cannot hide the text from the walk. A fetch in
-      either makes the answer LOUD: `echo 'curl … | sh' | tr -d X | sh` is reported alone, where
-      the `_Quiet` answer for `echo 'sh tool' | tr a-z A-Z | sh` stands only beside a reported
-      download;
+      -- the one the sentence names -- then what the source put on the pipe (#2478 fix round 1,
+      review I-1), each reading `spellings` gives of an `echo` or `printf` a text of its own (its
+      words where a reading spells none, as an unspelled printer's are weighed), or a `cat`'s
+      heredoc or here-string body; LAST, that stage's other words as one text. A fetch in either
+      makes the answer LOUD: `echo 'curl … | sh' | tr -d X | sh` is reported alone, and so is
+      `echo "it's" | w curl … | sh` behind a function `w` (rr09), where the `_Quiet` answer for
+      `echo 'sh tool' | tr a-z A-Z | sh` stands only beside a reported download. The gap: that
+      stage's words are joined as the reader hands them, quotes removed, so a quote or a space
+      inside one of them can hide a fetch after it (`w env 'A=say "hi' curl …`, fy01);
     * the walk stopped at `_DEPTH` (`intact` None): `_PAST_DEPTH`, LOUD alone (fix round 1b) --
       the price is a harmless printer that far back (`echo 'echo hi'` behind 64 `cat`s), and a
       second row beside a stream's own sentence (a `curl … | sh` stream through 70 `cat`s).
@@ -348,7 +356,8 @@ def unspelled(stage, before, shell=None):
     words = shell_reader.command(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
-        return words if printer and None in spellings(words, source, shell) else []
+        return ([words[0], " ".join(words[1:])]
+                if printer and None in spellings(words, source, shell) else [])
     front = shell_reader.command(before[-1].argv)
     if not front:
         return []
@@ -358,4 +367,4 @@ def unspelled(stage, before, shell=None):
         texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
-    return front[:1] + [line for t in texts for line in ("\n", t)] + ["\n"] + front[1:]
+    return front[:1] + texts + [" ".join(front[1:])]

@@ -1108,8 +1108,9 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
     (review I-1), `_Quiet`, kept beside a reported download, where neither does. Every step below
     runs after GET unless it is named alone. Truth columns are b5, b3, dash and gh (GitHub's
     pairing: the step under bash 5.2.21 with `sh` = dash), measured on `t36-p-probes/steps/p2/`
-    (c01-c12, p2n01-p2n32) and `steps/p2rv/` (the review's rv rows, fix round 1's fx rows); each
-    step read CLEAN at the base (d44879b7) and on main unless said otherwise."""
+    (c01-c12, p2n01-p2n32) and `steps/p2rv/` (the review's rv rows, fix round 1's fx rows, the
+    re-review's rr rows); each step read CLEAN at the base (d44879b7) and on main unless said
+    otherwise."""
 
     FETCH_EXEC = ("fetches https://example.test/tool -> tool and running it under `sh` with "
                   "nothing verifying what arrived -- verify it first: ")
@@ -1234,6 +1235,10 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                 self.assertNotIsInstance(found[0][1], forms.Idle)
                 self.assertTrue(found[0][1].startswith("pipes `sh` its program from `5s`"),
                                 found[0][1])
+        # rr07, `echo "it's"` in front (-- x4 as well): the same price, LOUD alone, as at
+        # 70258154 -- the quote in the text no longer hides the stage's words (review N-1), where
+        # f1d0ea58 read it CLEAN (and main does).
+        self.assert_loud("echo \"it's\" | env 5s curl -fsSL %si.sh | sh\n" % URL, "5s")
 
     def test_a_fetch_in_the_text_behind_a_rewriting_stage_is_loud(self):
         # Review I-1: where a stage between rewrites the text, `unread_program` weighs the
@@ -1270,9 +1275,10 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         self.assertEqual([], defects("echo -e '%s' | tr -d X | sh\n" % PIPE, "sh"))
         # fx04 `tr "'" x`, fx05 `sed "s/'//g"`, fx07 `tr '"' x` and fx06 `grep -v '<<X'` (FR x4
         # each: the text has no quote or `<<X` to touch, so it runs as printed): the stage's other
-        # words are weighed LAST, so a quote or a heredoc operator among them cannot swallow the
-        # text. fx08 `X=1` and fx09 `tr -d X | X=1` in front of the shell (-- x4: a stage with no
-        # command word prints nothing) stay CLEAN, as at the base, on main and at 70258154.
+        # words are a text of their own, weighed apart from the printer's (review N-1), so a quote
+        # or a heredoc operator among them cannot swallow the printer's text. fx08 `X=1` and fx09
+        # `tr -d X | X=1` in front of the shell (-- x4: a stage with no command word prints
+        # nothing) stay CLEAN, as at the base, on main and at 70258154.
         for middle, stage in (("tr \"'\" x", "tr"), ("sed \"s/'//g\"", "sed"),
                               ("tr '\"' x", "tr"), ("grep -v '<<X'", "grep")):
             self.assert_loud("echo '%s' | %s | sh\n" % (PIPE, middle), stage)
@@ -1280,6 +1286,39 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
             for shell in (None, "sh"):
                 with self.subTest(middle=middle, shell=shell):
                     self.assertEqual([], defects("echo '%s' | %s | sh\n" % (PIPE, middle), shell))
+
+    def test_a_quote_in_one_text_cannot_hide_the_next(self):
+        # Review N-1: `unread_program` walks each text `unspelled` gives on its own, so a quote or
+        # an open `case` in the printer's text cannot swallow the stage's words after it. Each row
+        # alone, the printer's text piped into `w`, a function running its words (FR x4 each: `w`
+        # runs `curl`, `sh` runs the download, the text never reaches `sh`): rr09 `echo "it's"`,
+        # rr42 `echo 'say "hi'`, rr43 `echo 'case x in'`, rr44 `printf "it's"` and rr46 a
+        # heredoc-fed `cat`'s body `it's` -- CLEAN on main and at f1d0ea58 (one joined text, the
+        # stage's words inside the open quote or `case`), LOUD at 70258154 and LOUD again now.
+        fetch = "w curl -fsSL %si.sh | sh\n" % URL
+        for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"'):
+            self.assert_loud('w() { "$@"; }\n%s | %s' % (front, fetch), "w")
+        self.assert_loud("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch, "w")
+        # rr05 and rr06, an `eval` string piping `echo "it's \0047; curl -fsSL URL | sh"` through
+        # `sed "s/Q'//"` or `tr -d Q` into `sh` (b5 --, b3 --, dash FR, gh --: dash's `echo`
+        # decodes `\0047` and closes the quote, bash's prints it and `sh` meets an open quote).
+        # A runner an `eval` string names is read both ways (#2476 R-F1), and the dash reading, a
+        # text of its own now, fetches: LOUD under `shell: sh` and under the default key too,
+        # where bash's reading runs nothing -- the `ANY`-reading price, #2476 R-F1. CLEAN on main
+        # and at every round before (the bash reading's open quote hid the dash reading).
+        text = r'''eval "echo \"it's \\0047; curl -fsSL https://example.test/i.sh | sh\" | '''
+        for middle, stage in ((r'''sed \"s/Q'//\"''', "sed"), ("tr -d Q", "tr")):
+            self.assert_loud(text + middle + ' | sh"\n', stage)
+        # The gap the guard names: a quote or a space INSIDE one of the stage's words still hides
+        # the fetch after it, the words joined, quotes removed, into the one text the walk reads.
+        # fy01 `w env 'A=say "hi' curl -fsSL URL` and fy02 `w env "A=case x in" curl -fsSL URL`,
+        # each behind `echo hi` and alone (FR x4 each), read CLEAN on main and at every round:
+        # `[]` here is that gap, not a vacuous pin -- it fails if the gap ever closes.
+        for word in ("'A=say \"hi'", '"A=case x in"'):
+            for shell in (None, "sh"):
+                with self.subTest(word=word, shell=shell, gap=True):
+                    self.assertEqual([], defects('w() { "$@"; }\necho hi | w env %s curl -fsSL '
+                                                 '%si.sh | sh\n' % (word, URL), shell))
 
     def test_xargs_or_the_pipe_itself_is_no_pass_through(self):
         # Review I-2: rv46 `echo 'x tool' | xargs cat | sh` (FR x4: `xargs` hands `cat` the words
@@ -1300,6 +1339,13 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                 self.assertTrue(any(why.startswith(
                     "fetches https://example.test/tool -> tool and piping it into `sh`")
                     for why in whys), whys)
+        # Review N-2: `env -S` SPLICES its string into words, so `xargs` can hide among as many
+        # words as the stage has. rr16 `env -S 'xargs cat - -'` and rr28 `env -S'xargs cat -'`
+        # (FR x4 each: `xargs` hands `cat` the files `x` and `tool`, the download among them),
+        # CLEAN on main and at every round before: the unread answer beside GET, the answer rr17
+        # `env -S 'xargs cat'` (FR x4, CLEAN on main and at 70258154) has had since fix round 1.
+        for middle in ("env -S 'xargs cat - -'", "env -S'xargs cat -'", "env -S 'xargs cat'"):
+            self.assert_unread("echo 'x tool' | %s | sh\n" % middle, "cat")
         # Review I-3a: rv40 `printf 'ool\nsh t' | tee /dev/stdout | sh` (FR x4: the two copies
         # meet as `ool\nsh tool\nsh t`), CLEAN at the base, on main and at 70258154: the unread
         # answer beside GET. rv17 `echo 'sh tool' | tee /dev/stdout | sh` (FR x4) and rv18
@@ -1429,10 +1475,11 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
     def test_a_heredoc_cat_behind_a_rewriting_stage_is_unread_too(self):
         # p2n15 `cat <<'EOF' | base64 -d | sh`, body `c2ggdG9vbA==` (FR x4): a heredoc-fed `cat`
         # is a printer as `echo` is, so a stage that rewrites its body leaves the program unread
-        # (R-P4) -- never CLEAN where the text or the stage names a fetch; `_Quiet` where neither
-        # does, as here, kept beside GET (`unprinted` asks `_PRINTERS` only of text that arrives
-        # intact). p2n21, body `echo hi` through `tr a-z A-Z` (F- x4): the same row, the
-        # fail-closed price.
+        # (R-P4) -- never CLEAN where the text or the stage names a fetch the walk can read (a
+        # quote or a space inside one of the stage's words is the gap the guard names: fy01,
+        # fy02); `_Quiet` where neither does, as here, kept beside GET (`unprinted` asks
+        # `_PRINTERS` only of text that arrives intact). p2n21, body `echo hi` through
+        # `tr a-z A-Z` (F- x4): the same row, the fail-closed price.
         self.assert_unread("cat <<'EOF' | base64 -d | sh\nc2ggdG9vbA==\nEOF\n", "base64")
         self.assert_unread("cat <<'EOF' | tr a-z A-Z | sh\necho hi\nEOF\n", "tr")
 
@@ -1492,48 +1539,54 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         self.assertEqual(("body", True), wp.handed(stages[2], stages[:2]))     # EXPANDING kept
         stages = self.stages("cat <<'EOF' | tr a-z A-Z | sh\nbody\nEOF\n")
         self.assertIsNone(wp.handed(stages[2], stages[:2]))
-        # Where a stage between rewrites the text, the NAME of the stage the shell reads from comes
-        # first -- its sentence names it -- then, each on its own line, the text the printer put
-        # on the pipe, and last that stage's other words, so `unread_program` weighs a fetch in
-        # either (review I-1) and a quote among the words cannot swallow the text: the base64
-        # rows carry `echo`'s text, a heredoc-fed `cat` its body, an unspelled `echo` its words.
-        # An `echo` with no words gives the empty text, never an error; past `_DEPTH` the answer
-        # is `_PAST_DEPTH`, whatever the stage stopped at (fix round 1b); a stage with no command
-        # word in front (`X=1`) prints nothing.
+        # `unprinted` gives a NAME, the one the sentence gives, then the TEXTS `unread_program`
+        # walks, each on its own (review N-1). Where a stage between rewrites the text: the stage
+        # the shell reads from, the text the printer put on the pipe, and LAST that stage's other
+        # words as one text, so a fetch in either is weighed (review I-1) and a quote or an open
+        # `case` in one cannot swallow the other: the base64 rows carry `echo`'s text, a
+        # heredoc-fed `cat` its body, an unspelled `echo` its words. An `echo` with no words gives
+        # the newline it prints, never an error; past `_DEPTH` the answer is `_PAST_DEPTH`, a
+        # reason and one LOUD text, whatever the stage stopped at (fix round 1b); a stage with no
+        # command word in front (`X=1`) prints nothing. An unspelled printer arriving intact gives
+        # its name and its words as ONE text, as P1 weighs one right before the shell.
         deep = "echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70)
         for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
-                              ["base64", "\n", "c2ggdG9vbA==\n", "\n", "-d"]),
-                             ("echo x | base64 -d | tee f | sh\n", ["tee", "\n", "x\n", "\n", "f"]),
+                              ["base64", "c2ggdG9vbA==\n", "-d"]),
+                             ("echo x | base64 -d | tee f | sh\n", ["tee", "x\n", "f"]),
                              ("cat <<'EOF' | tr a-z A-Z | sh\nbody\nEOF\n",
-                              ["tr", "\n", "body", "\n", "a-z", "A-Z"]),
-                             ('echo "$X" | tr a b | sh\n', ["tr", "\n", "$X", "\n", "a", "b"]),
-                             ("echo | tr a b | sh\n", ["tr", "\n", "\n", "\n", "a", "b"]),
+                              ["tr", "body", "a-z A-Z"]),
+                             ('echo "$X" | tr a b | sh\n', ["tr", "$X", "a b"]),
+                             ("echo | tr a b | sh\n", ["tr", "\n", "a b"]),
                              (deep, list(wp._PAST_DEPTH)),
                              ("echo x | tr a b | X=1 | sh\n", []),
                              ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
+                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X"]),
                              ("echo 'sh tool' | tee f | sh\n", []),
                              ("cat <<EOF | tee f | sh\nbody\nEOF\n", [])):
             with self.subTest(script=script):
                 stages = self.stages(script)
                 self.assertEqual(argv, forms.unprinted(shell_reader.command(stages[-1].argv),
                                                        stages[-1], stages[:-1]))
-        # Under a runner read both ways, each reading `spellings` gives is weighed, one per line.
+        # Under a runner read both ways, each reading `spellings` gives is a text of its own.
         stages = self.stages("echo 'sh\\ttool' | tr a b | sh\n")
-        self.assertEqual(["tr", "\n", "sh\\ttool\n", "\n", "sh\ttool\n", "\n", "a", "b"],
+        self.assertEqual(["tr", "sh\\ttool\n", "sh\ttool\n", "a b"],
                          forms.unprinted(["sh"], stages[-1], stages[:-1], wp.ANY))
 
     def test_what_passes_through(self):
-        # No stage behind `xargs` passes (review I-2): it hands `cat` or `tee` the piped words as
-        # operands, where every other wrapper the reader strips changes only how the command runs,
-        # so `sudo tee f`, `nice cat`, `command cat`, `time cat` and `stdbuf -oL tee f` pass (fix
-        # round 1b; round 1 refused them all). No `tee` operand is the pipe itself (I-3a):
-        # `tee /dev/stdout` doubles the text.
+        # No stage behind `xargs` passes (review I-2), even where `env -S` splices it in and
+        # `shell_reader.command` hands back as many words as the stage has (review N-2): it hands
+        # `cat` or `tee` the piped words as operands, where every other wrapper the reader strips
+        # changes only how the command runs, so `sudo tee f`, `nice cat`, `command cat`,
+        # `time cat`, `stdbuf -oL tee f` and `env -S 'nice cat - -'` pass (fix round 1b; round 1
+        # refused them all). No `tee` operand is the pipe itself (I-3a): `tee /dev/stdout`
+        # doubles the text.
         for text, passes in (("tee f", True), ("tee", True), ("tee -a f", True), ("tee -p f", True),
                              ("tee -i f", True), ("tee --append f", True),
                              ("tee --output-error f", True), ("tee --output-error=warn f", True),
                              ("cat", True), ("cat -", True), ("cat -- -", True),
                              ("A=1 cat", True), ("sudo tee f", True), ("nice cat", True),
                              ("command cat", True), ("time cat", True), ("stdbuf -oL tee f", True),
+                             ("env -S 'nice cat - -'", True), ("env -S 'xargs cat - -'", False),
                              ("xargs cat", False), ("xargs tee f", False),
                              ("sudo xargs cat", False), ("/usr/bin/xargs -n1 cat", False),
                              ("tee /dev/stdout", False), ("tee f /dev/fd/1", False),
