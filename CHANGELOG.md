@@ -11,6 +11,9 @@ evidence exposed.
   second parse now expands bounded brace lists and numeric ranges before matching a fetched
   path, because treating every brace group as `*` misses real uses and binds excluded names;
   unbounded expansion was rejected because workflow text controls its cost.
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
 - **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
   its subject now reaches the statement reader, so commands in those arms remain visible to
   the workflow guard.
