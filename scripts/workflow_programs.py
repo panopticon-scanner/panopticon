@@ -38,7 +38,7 @@ import re
 
 import shell_lex
 import shell_reader
-from workflow_operands import may_run
+from workflow_operands import at_directory, may_run
 from workflow_printers import _PRINTERS as _PRINTERS, _piped as _piped, printed as printed
 
 
@@ -536,28 +536,28 @@ def mark_stdin(stmts, word, unsure):
             if word and isinstance(item, unsure) else item for item in stmts]
 
 
-def bound_stdin(stmts, walked, prior, walk, unsure, back):
-    """Remove a value-form stdin body and hand-off when a prior certain fetch is its command."""
-    certain = [(index, fetch) for index, fetch in walked[0]
-               if not isinstance(stmts[index], unsure)]
+def bound_stdin(stmts, prior, walk, unsure, back):
+    """Drop value-form stdin where a prior certain fetch binds its command, preserving cwd."""
+    walked, context = walk(stmts)
+    certain = [(i, f) for i, f in walked[0] if not isinstance(stmts[i], unsure)]
 
     def bound(index, word):
         available = prior + [fetch for at, fetch in certain if at < index]
-        return any(fetch.dest is not None and may_run(word, fetch.dest) for fetch in available)
+        command = at_directory(word, context[2][index], True)
+        return any(fetch.dest is not None and may_run(command, at_directory(fetch.dest,
+                   getattr(fetch.dest, "directory", "."))) for fetch in available)
 
-    skip = {index for index, statement in enumerate(stmts)
-            if isinstance(statement, unsure) and isinstance(statement.credit[0], BoundStdin)
-            and bound(index, statement.credit[0].word)}
+    skip = {i for i, s in enumerate(stmts) if isinstance(s, unsure)
+            and isinstance(s.credit[0], BoundStdin) and bound(i, s.credit[0].word)}
     keep = [index for index in range(len(stmts)) if index not in skip]
     if skip:
         stmts = [stmts[index] for index in keep]
-        walked = walk(stmts, stream_exec=True)
-        certain = [(index, fetch) for index, fetch in walked[0]
-                   if not isinstance(stmts[index], unsure)]
+        walked, context = walk(stmts)
+        certain = [(i, f) for i, f in walked[0] if not isinstance(stmts[i], unsure)]
     unread = [(index, why) for index, why in walked[1]
               if not isinstance(why, BoundStdin) or not bound(index, why.word)]
     return (stmts, (walked[0], unread), prior + [fetch for _index, fetch in certain],
-            [back[index] for index in keep])
+            [back[index] for index in keep], context)
 
 
 def _stdin(argv, depth):
@@ -650,7 +650,7 @@ def stdin_scripts(argv, stage, before=None):
     """The heredoc script this stage hands an interpreter, if it does.
 
     A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
-    string; `curl … | sh` is the same defect, as is `sh <<< '…'` (#2293). An expanding body stays
+    string; `curl … | sh` and `sh <<< '…'` are the same defect (#2293). Expanding bodies stay
     unread for a literal shell. Behind a value command word, it is tagged with that word and read
     after command and arithmetic substitutions become value words (#2597), since the outer read
     owns them. Text an `echo` or `printf` in front pipes in is read too where `printed` spells it

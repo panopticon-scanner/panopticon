@@ -1295,6 +1295,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         check = 'echo "%s  $T" | sha256sum -c -\n' % ("a" * 64)
         with self.subTest(case="bound checksum"):
             self.assertEqual([], defects(get + check + 'chmod +x "$T"\n' + body % PIPE))
+        # The payload's text cannot change the outer shell's static cwd. Removing the synthetic
+        # body therefore recomputes #2427's directory state before the checksum and use are bound.
+        with self.subTest(case="bound checksum after payload cd"):
+            script = "mkdir -p d\ncd d\n" + get + check + 'chmod +x "$T"\n'
+            self.assertEqual([], defects(script + body % ("cd /\n" + PIPE)))
 
         # The literal twin remains CLEAN with its check and FLAGGED without
         # it; a mixed literal/value path keeps its one run finding. Neither

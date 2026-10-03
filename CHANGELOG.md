@@ -12,6 +12,10 @@ evidence exposed.
   the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep
   a checked download flagged. Unknown `$CMD` bodies stay fail-closed; disabling all value-body
   reads was rejected because it would hide their real `curl … | sh` executions.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
 - **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
   `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
   read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
