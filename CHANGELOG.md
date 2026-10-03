@@ -8,13 +8,15 @@ guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
-  shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
-  a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
-  `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
-  (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
+  shell prints it are printers too (#2467, #2476, #2478).** `cat <<'EOF' | sh` is read as
+  `sh <<'EOF'` is, a `cat` with an option too (its body read whole: `-n` over-reports), and an
+  EXPANDING `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints
+  them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
   `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
-  `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
-  turns bash's `echo` into a decoder, which this rule does not follow.
+  `$(…)`, where the step's shell or bash's own row still reads. A pass-through `tee f` or bare `cat`
+  between the printer and the shell is read through (#2478); a stage that rewrites the stream (`tr`,
+  `base64 -d`) leaves the program unread, reported beside a reported download. Named gap:
+  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not follow.
 - **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
   A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
   direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
