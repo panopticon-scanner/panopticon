@@ -12,8 +12,8 @@ evidence exposed.
   a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
   `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
   (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
-  `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's `echo`
-  into a decoder, which this rule does not follow.
+  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways. Named gap:
+  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not follow.
 - **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
   `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
   `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.

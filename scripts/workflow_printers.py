@@ -36,7 +36,7 @@ def _piped(stage, before):
 # `cat` is a producer too (#2467), but its text comes from the stage it reads,
 # not its words, so it is answered in `printed` and `handed` and never added
 # here: every caller that asks "is this a printer" by table membership alone
-# (`unprinted`'s `_PRINTERS` half) is right to leave it out.
+# (`unprinted`) is right to leave it out.
 _PRINTERS = ("echo", "printf")
 
 # A runner this module has not measured `echo` under (review R-F1): `eval` (which runs in no shell
@@ -123,7 +123,8 @@ def _cat_reads_stdin(argv):
     as `cat f | sh` already is), and an option word changes nothing: the body is read whole, as
     `-u`, `-s` and `-v` (ASCII) print it. The price, over-reported: `-n`/`-b` number each line, so
     its first command never runs, `-e` (GNU's `-E`/`-A`) ends it with `$`, spoiling its last word,
-    and BSD's `cat` prints nothing given `-E`, `-T`, `-A` or a piped `-l`."""
+    BSD's `cat` prints nothing given `-E`, `-T`, `-A` or a piped `-l`, and GNU refuses `-l` too;
+    `--help`/`--version` print their own text and read nothing (GNU; BSD refuses them)."""
     words = [getattr(w, "spelled", w) for w in argv[1:]]
     at = words.index("--") if "--" in words else len(words)
     operands = [w for w in words[:at] if w == "-" or not w.startswith("-")] + words[at + 1:]

@@ -142,11 +142,10 @@ def _after_dash_c(argv):
 SET_OPTIONS = "abefhkmnoprtuvxBCEHPT"
 SHELL_OPTIONS = SET_OPTIONS + "cilsDOIV"
 VALUE_OPTIONS = "oO"
-# The shells whose command-line letters the comment above measured as REFUSED:
-# `sh` (bash in sh mode on this box, dash on a runner), `bash` and `dash`. The
-# other names of `_SHELL_STRING` are not here -- zsh runs `-K`, `-F`, `-S`,
-# `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash` could not
-# be measured (this box has none) -- so for them an option word is read ON.
+# The shells whose command-line letters the comment above measured as REFUSED: `sh` (bash in sh mode
+# on this box, dash on a runner), `bash` and `dash`. The other names of `_SHELL_STRING` are not here
+# -- zsh runs `-K`, `-F`, `-S`, `-d`, `-g`, `-w`, `-y` and thirteen more, ksh runs `-G`, and `ash`
+# could not be measured (this box has none) -- so for them an option word is read ON.
 _MEASURED_SHELLS = ("sh", "bash", "dash")
 # The option NAMES an `-o` takes, where a shell reads them: bash 5.2.21's `set -o` listing -- which
 # is bash 3.2.57's, name for name -- and besides those the three dash prints that bash has no such
@@ -235,12 +234,11 @@ def _past_options(argv, at):
             return [argv[at]]
 
 
-# A word bash expands, where a shell reads its options, that may spell one
-# (#2344): past the `$NAME`, `${...}` or `$(...)` it begins with, nothing but
-# letters -- `$X`, `"${X:--c}"`, `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a
-# `$'…'` beginning with an unknown or non-ASCII escape that `shell_quote.ansi_c`
-# cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a line of
-# its input in (`{}`).
+# A word bash expands, where a shell reads its options, that may spell one (#2344): past the
+# `$NAME`, `${...}` or `$(...)` it begins with, nothing but letters -- `$X`, `"${X:--c}"`,
+# `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a `$'…'` beginning with an unknown or non-ASCII escape
+# that `shell_quote.ansi_c` cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a
+# line of its input in (`{}`).
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
 
@@ -393,9 +391,8 @@ def dynamic_program(argv):
 SHELL_PROGRAM = "shell"        # the body is shell, which this module reads
 FOREIGN_PROGRAM = "foreign"    # a program in a language it has no grammar for
 VALUE_PROGRAM = "value"        # the command word is a value no table places; the body may be shell
-# The interpreters of the second kind. `python3 -c` and `perl -e` are already
-# ruled another language by `scripts` above, and a heredoc is the same text one
-# redirection over.
+# The interpreters of the second kind. `python3 -c` and `perl -e` are already ruled another language
+# by `scripts` above, and a heredoc is the same text one redirection over.
 _FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
 # The operands that ARE standard input.
 _STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
@@ -615,8 +612,11 @@ def _options(argv, depth):
 def runs_under(argv, reader, name):
     """The shell `workflow_forms.flattened` reads a stdin text's body under: another READER's
     basename, where one differs from the holder's own argv (`sudo sh` → `sh`); the holder's plain
-    `name`, where the reader IS its own argv and no word of its own before `--` may spell an option
-    once expanded (`_may_spell_option`, R-F12: `bash <<'EOF'`, `bash -s -c 'echo hi'`); or
+    `name`, where the reader IS its own argv, no word of its own before `--`, up to and including a
+    `-c` string (`_after_dash_c`: the words after it are parameters, R-F16; found by identity, so to
+    `--` where that word's object recurs, as CPython's one-character `+` can), may spell an option
+    once expanded (`_may_spell_option`, R-F12: `bash <<'EOF'`, `bash -s -c 'echo hi'`), and the
+    command word is written as itself, not a `${X:-sh}` default (`Defaulted`, R-F15); or
     `Named(name)`, read by the printers as `ANY` -- no reader at all (#2473), a `-c`/`eval` string
     naming the shell that reads the body (`bash -c 'sh'`, `bash -s -c 'sh'`, `eval 'bash -s'`:
     #2500, R-F7), or such a word, an option's value too, that may name one at runtime (`bash $X`,
@@ -624,9 +624,11 @@ def runs_under(argv, reader, name):
     if reader and reader is not argv:
         return os.path.basename(reader[0])  # another reader names itself (`sudo sh` → `sh`)
     words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
-    if reader and not any(map(_may_spell_option, words)):
+    string = [w for w in _after_dash_c(argv) if sum(v is w for v in argv) == 1]
+    words = words[:next((i + 1 for i, w in enumerate(words) if string and w is string[0]), None)]
+    if reader and type(argv[0]) is str and not any(map(_may_spell_option, words)):
         return name                         # its own text, no word that may spell an option
-    return Named(name)                      # a string, a value, or no reader at all: both ways
+    return Named(name)                      # a string, a value, a default, or no reader: both ways
 
 
 def stdin_scripts(argv, stage, before=None, shell=None):
@@ -684,17 +686,15 @@ def stdin_scripts(argv, stage, before=None, shell=None):
 
 
 def unprinted(argv, stage, before, shell=None):
-    """The `echo`, `printf` or heredoc-fed `cat` in front of this shell piping it its program where
-    no reading `spellings` gives spells that text out (`echo "$X" | sh`, #2333; an `eval`'s or a `$`
-    word's `echo` unspelled under EITHER reading, #2476 fix round 1 R-F1), or []. A `cat` reading
-    its own stdin, options or not (`_cat_reads_stdin`, R-F14), is a printer only where its body is
-    QUOTED, and `printed` spells that whole; the EXPANDING case `handed` answers is no printer here
-    -- `workflow_guard._unread_stdin` reports it, fetch or no fetch (R-F13)."""
+    """The `echo` or `printf` in front of this shell piping it its program where no reading
+    `spellings` gives spells that text out (`echo "$X" | sh`, #2333; an `eval`'s or a `$` word's
+    `echo` unspelled under EITHER reading, #2476 fix round 1 R-F1), or []. A heredoc-fed `cat` is
+    never an unspelled printer: `printed` spells its QUOTED body whole and
+    `workflow_guard._unread_stdin` reports its EXPANDING one (a `$` command consumer reads that one
+    with masks instead, #2597)."""
     producer = (shell_reader.command(before.argv)
                 if stage.stdin_heredoc is None and _piped(stage, before) else [])
-    body = handed(stage, before)
-    is_printer = producer and (
-        os.path.basename(producer[0]) in _PRINTERS or body is not None and not body[1])
+    is_printer = producer and os.path.basename(producer[0]) in _PRINTERS
     if not is_printer or stdin_program(argv) != SHELL_PROGRAM:
         return []
     return [] if None not in spellings(producer, before, shell) else producer
