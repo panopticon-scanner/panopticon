@@ -2460,9 +2460,10 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
         self.assertTrue(defects(GET + "cat tool | sh\n"))
 
     def test_what_the_gap_list_leaves_is_read_as_before(self):
-        # Bash runs both: another printer is not read, and a `$` producer in
-        # a job with no download is `Idle`.
-        for script in ("cat <<'EOF' | sh\n%s\nEOF\n" % PIPE, "X='%s'\necho \"$X\" | sh\n" % PIPE):
+        # A `$` producer in a job with no download is `Idle`; `cat <<'EOF' | sh` -- the OTHER half
+        # of this test before #2467 -- is a printer now (`tests/test_workflow_printers.py`'s
+        # `TestACatPrintsItsQuotedHeredoc`), and it FLIPS: bash runs it, and the guard reports it.
+        for script in ("X='%s'\necho \"$X\" | sh\n" % PIPE,):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 

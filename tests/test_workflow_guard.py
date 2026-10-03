@@ -3596,11 +3596,17 @@ class TestPipelineStreamProvenance(unittest.TestCase):
                        "sh <<'EOF'\necho safe\nEOF", "sh <local",
                        "cat 3<&0 0<local | sh",
                        "cat 0<&3 3<&0 | sh",
-                       "cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF",
                        "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF"):
             with self.subTest(suffix=suffix):
                 self.assertFalse(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, suffix)))
+        # Here the download is disconnected too (fd 0's FINAL state is the heredoc, not the pipe),
+        # but `cat`'s own heredoc is now a printer handed down the pipe (`handed`, #2467), and it is
+        # UNQUOTED -- a different, genuine defect from the one this test is about.
+        found = wg.fetch_exec_defects(
+            "curl -fsSL %s | cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF\n" % self.URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("EXPANDING heredoc", found[0])
 
 
 class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
@@ -4209,11 +4215,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # or a file, from a substitution holding more than the fetch, or through
         # a printer other than echo/printf, it is a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'echo "$x" > f\nsh f\n', get + 'cat <<< "$x" | sh\n',
+        for run in (get + 'echo "$x" > f\nsh f\n',
                     "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
                     'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
             with self.subTest(run=run):
                 self.accepted(("run", run))
+        # `cat <<< "$x" | sh` no longer belongs beside those: #2467's `handed` carries ANY
+        # here-string or heredoc on a `cat` printer's own stdin down the pipe, EXPANDING or not, so
+        # a `$x` here-string is read as `sh <<< "$x"` already was -- reported unread, not `$x`'s
+        # value (#2341's gap stays open), but no longer silent.
+        self.assertIn("EXPANDING heredoc",
+                      self.flagged(("run", get + 'cat <<< "$x" | sh\n')))
         # Two of those hand a shell a word that is ALL expansion, and #2483
         # reports THAT, beside a download no checksum clears: the cut and the
         # copy are still not followed, so the sentence names the word and

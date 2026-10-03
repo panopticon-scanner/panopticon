@@ -722,13 +722,14 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
                 self.assertEqual([text], self.handed(script))
 
     def test_text_it_does_not_spell_out_is_no_program_here(self):
-        # A `$`, a backslash a printer may read as an escape (dash's `echo`
-        # does), a format other than `%s`, `%s\n` and `%b` with one word, or
-        # an option: `unprinted` has these.
-        for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo 'a\\tb' | sh",
+        # A `$`, an escape outside `_decoded`'s table (#2476 -- a backslash the shell in hand does
+        # NOT decode is spelled out literally now, unlike a plain `\t`: `echo -e` forces bash's
+        # decoder on, and `printf` always decodes, so `\x` is what stays unspelled), a format other
+        # than `%s`, `%s\n` and `%b` with one word, or an option: `unprinted` has these.
+        for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo -e 'a\\xb' | sh",
                        "printf '%s %s\\n' sh tool | sh", "printf '%s\\n' sh tool | sh",
                        'printf "$F" | sh', "printf -v x %s y | sh", "printf '%d\\n' 1 | sh",
-                       "printf 'a\\tb' | sh", "echo `echo sh tool` | sh"):
+                       "printf 'a\\xb' | sh", "echo `echo sh tool` | sh"):
             with self.subTest(script=script):
                 self.assertEqual([], self.handed(script))
                 self.assertTrue(forms.unprinted(*self.parts(script)))
@@ -771,7 +772,10 @@ class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
     def test_the_moved_text_reads_as_before(self):
         # The printer's text, the pipe and the table answer as they did in `workflow_programs`.
         self.assertEqual("sh tool\n", workflow_printers.printed(["echo", "sh", "tool"]))
-        self.assertIsNone(workflow_printers.printed(["echo", "sh\\ttool"]))
+        # #2476 FLIPS this: bash's `echo` (the default, no `shell` given) prints a backslash it does
+        # not decode literally, rather than leaving the whole text unspelled -- `printed` now hands
+        # that literal text on, for the next reader to read as `statements("sh\\ttool")` does.
+        self.assertEqual("sh\\ttool\n", workflow_printers.printed(["echo", "sh\\ttool"]))
         self.assertEqual(("echo", "printf"), workflow_printers._PRINTERS)
         stages = shell_reader.statements("echo 'sh tool' | sh")[0].stages
         self.assertTrue(workflow_printers._piped(stages[1], stages[0]))
