@@ -3905,6 +3905,20 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                 self.assertEqual(1, len(why), why)
                 self.assertIn("carries %s in `$payload`" % self.URL, why[0])
 
+    def test_a_local_stdout_redirect_disconnects_a_carried_printer(self):
+        assignment = "payload=$(%s)\n" % self.FETCH
+        for compound in ("{ echo \"$payload\" > f; } | sh\n",
+                         "{ echo \"$payload\" >f; } | sh\n",
+                         "{ echo \"$payload\" 1>f; } | sh\n",
+                         "{ echo \"$payload\" >>f; } | sh\n",
+                         "{ printf '%s' \"$payload\" >f; } | sh\n",
+                         "case x in x) echo \"$payload\" >f;; esac | sh\n"):
+            with self.subTest(compound=compound):
+                self.assertEqual([], wg.fetch_exec_defects(assignment + compound))
+        why = wg.fetch_exec_defects(assignment + "{ echo \"$payload\" 2>f; } | sh\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+
     def test_nonexecutors_disconnected_streams_and_local_filters_stay_clean(self):
         for script in (
                 "{ %s; } | tee install.sh\n" % self.FETCH,

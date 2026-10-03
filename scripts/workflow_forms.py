@@ -561,10 +561,10 @@ def carried(stmts, executors):
     for index, statement in enumerate(stmts):
         for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
-            printed = _prints(stage)
+            printed, piped = _prints(stage), stage.stdout_to_pipe
             to = (stream_consumer(inner.stages[position + 1:], executors)
-                  if printed and stage.stdout_to_pipe else None)
-            if printed and not to and not where and position == len(inner.stages) - 1:
+                  if printed and piped else None)
+            if printed and piped and not to and not where and position == len(inner.stages) - 1:
                 to = compound_stream_consumer(stmts, index, executors)
             words = scripts(argv) + (printed if to else []) + (
                 [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])
