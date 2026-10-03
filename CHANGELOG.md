@@ -10,6 +10,10 @@ evidence exposed.
 - **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
   of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
   printer follow-ups have room; the guard's answers are byte-identical before and after.
+- **Line-only subshell boundaries now retain their shell status (#2420, #2331).**
+  The workflow reader keeps lone `(` and `)`, including `esac )`, so a following `||`, `&&`,
+  pipeline or background separator reaches the gate. Subshell-local options and assignments no
+  longer leak into the enclosing step's model.
 - **Interpreter redirections now bind expanded paths to fetched scripts (#2426, #2331).**
   `bash < "$PWD/x.sh"` and a literal redirect after a fetch to `"$PWD/x.sh"` use the same
   last-part path binding as interpreter operands. Other basenames and non-interpreters stay clean.
