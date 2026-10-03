@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Fail-closed workflow messages now identify guard readings (#2424, #2331).** Carried
+  variables and conditional checksum rescues say when scope or status comes from a conservative
+  reading. Direct carries and proven non-stopping rescues keep their existing wording; verdicts
+  do not change.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
