@@ -157,11 +157,10 @@ live, so a change that catches one fails there and edits this list.
   remain unseen. A foreign-language program is reported too. So is a hand-off to a `$` command
   word (#2473); since #2499, either is kept only beside a reported fetch. A value word's body is
   read as shell with no check counted; an expanding one masks substitutions as values (#2597).
-  The price is a non-shell body whose text looks like shell. Any body inside a substitution remains
-  unread (`x=$($CMD <<'EOF' …)`), though bash may run it. A nearer literal shell remains the
-  consumer when a surrounding value word receives its output. A direct or carried download stream
-  into a `$` command is reported (#2602).
-  A fetched file redirected into it reports too.
+  Inside a substitution, the body speaks before its hand-off (#2598); the price remains shell-like
+  non-shell text. A nearer literal shell remains the consumer when a surrounding value word gets
+  its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
+  file redirected into it.
   `CMD=cat` is the fail-closed price. Still unread: an interpreter behind an option or stdin alias,
   one behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), and an unknown basename such as
   `python3.11` or `busybox sh`. A printer's unspelled text is reported only where its words fetch
@@ -258,7 +257,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside, before)
+            program = unread_program(argv, stage, _walk, inside, before)
+            reason = program if inside and program else _unread_stdin(stage) or program
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None

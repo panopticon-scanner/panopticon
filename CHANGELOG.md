@@ -11,6 +11,10 @@ evidence exposed.
   (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
   `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
   fail-closed because assuming an unknown command only reads data would reopen the defect.
+- **Workflow guard now reads `$` command stdin inside substitutions (#2598, #2331).**
+  `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
+  before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
+  stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
 - **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
   on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
   swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
