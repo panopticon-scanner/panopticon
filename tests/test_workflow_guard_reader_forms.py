@@ -804,10 +804,10 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
                 self.assertTrue(found[0][1].startswith(said), found)
 
     def test_row_6_alone_is_a_known_gap(self):
-        # CLEAN, though all three fetch and run the download: the dynamic twin of #2486, still
-        # open. `flattened` reads `"$P"` as no command, and `_DYNAMIC`'s `Idle` stands only beside
-        # a fetch the guard reports; `carried` follows a DOWNLOAD a variable keeps (`_assigned`),
-        # and a literal assignment's text handed to `-c` or `eval` is never read as a program.
+        # CLEAN, though all three fetch and run the download: the dynamic twin of #2486, filed
+        # as #2682. `flattened` reads `"$P"` as no command, and `_DYNAMIC`'s `Idle` stands only
+        # beside a fetch the guard reports; `carried` follows a DOWNLOAD a variable keeps
+        # (`_assigned`), and a literal assignment's text handed to `-c`/`eval` is never a program.
         self.assertEqual([], defects("P='%s'\nsh -c \"$P\"\n" % PIPE))
 
 
@@ -2391,7 +2391,7 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         # holding one is no script, though it holds a `$(...)` too, and a
         # program word that is all of one is not `dynamic_program`'s. So the
         # first two read CLEAN, as at the base, though they run `tool`: a
-        # string holding a `<(...)` is read nowhere, a gap filed under #2331.
+        # string holding a `<(...)` is read nowhere, a gap filed as #2684.
         for script in (
                 # runs `tool` where `sh` is bash 5.2.21; a 3.2.57 or dash `sh` exits 2 on the `(`
                 GET + 'sh -c "sh $(echo tool) <(echo x)"\n',
