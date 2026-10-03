@@ -13,6 +13,10 @@ evidence exposed.
   prints them (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A
   shell a `-c`/`eval` string names reads them both ways. Named gap: `shopt -s xpg_echo` turns bash's
   `echo` into a decoder, which this rule does not follow.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
 - **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
   `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
   read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text

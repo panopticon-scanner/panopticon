@@ -1158,6 +1158,188 @@ class TestAGlobFromAnotherDirectoryReachesABareDownload(unittest.TestCase):
                 self.assertEqual(1, len(self.job(get + use)))
 
 
+class TestAStaticWorkingDirectoryBindsPaths(unittest.TestCase):
+    """#2427: resolve literal paths from the directory each statement runs in."""
+
+    GET = "curl -fsSLo %s https://example.test/x.sh\n"
+    CHECK = 'echo "%s  x.sh" | sha256sum -c -\n' % ("a" * 64)
+
+    def defects(self, *steps):
+        return [why for _name, why in wg.job_defects(steps)]
+
+    def test_a_literal_cd_reaches_the_download(self):
+        cases = (
+            ("mkdir -p d\n" + self.GET % "d/x.sh" + "cd d\nsh x.sh\n", "d/x.sh"),
+            (self.GET % "cuda_1.run" + "mkdir -p s\ncd s\nsh ../cuda_1.run\n",
+             "cuda_1.run"),
+        )
+        for script, dest in cases:
+            with self.subTest(script=script):
+                found = self.defects(("run", script))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("-> %s and running it under `sh`" % dest, found[0])
+
+    def test_the_fetch_and_alias_are_resolved_in_their_own_directories(self):
+        fetched_there = "mkdir -p d\ncd d\n" + self.GET % "x.sh" + "sh x.sh\n"
+        copied_there = ("mkdir -p d\n" + self.GET % "d/x.sh"
+                        + "cd d\ncp x.sh y.sh\nsh y.sh\n")
+        for script in (fetched_there, copied_there):
+            with self.subTest(script=script):
+                found = self.defects(("run", script))
+                self.assertEqual(1, len(found), found)
+
+    def test_a_glob_is_resolved_in_the_directory_where_bash_expands_it(self):
+        script = "mkdir -p d\n" + self.GET % "d/x.sh" + "cd d\nsh x*.sh\n"
+        found = self.defects(("run", script))
+        self.assertEqual(1, len(found), found)
+
+    def test_a_check_in_the_same_directory_still_clears_the_use(self):
+        script = "mkdir -p d\n" + self.GET % "d/x.sh" + "cd d\n" + self.CHECK + "sh x.sh\n"
+        self.assertEqual([], self.defects(("run", script)))
+
+    def test_a_check_in_another_directory_does_not_clear_the_use(self):
+        script = ("mkdir -p d elsewhere\n" + self.GET % "d/x.sh" + "cd elsewhere\n"
+                  + self.CHECK + "sh ../d/x.sh\n")
+        found = self.defects(("run", script))
+        self.assertEqual(1, len(found), found)
+        self.assertIn("no checksum in the job names", found[0])
+
+    def test_a_written_checksum_list_is_bound_to_its_directory(self):
+        digest = "a" * 64
+        same = ("mkdir -p d\n" + self.GET % "d/x.sh"
+                + f'echo "{digest}  x.sh" > d/SHA256SUMS\n'
+                + "cd d\nsha256sum -c SHA256SUMS\nsh x.sh\n")
+        self.assertEqual([], self.defects(("run", same)))
+        other = ("mkdir -p d elsewhere\n" + self.GET % "d/x.sh"
+                 + f'echo "{digest}  x.sh" > elsewhere/SHA256SUMS\n'
+                 + "cd elsewhere\nsha256sum -c SHA256SUMS\nsh ../d/x.sh\n")
+        found = self.defects(("run", other))
+        self.assertEqual(1, len(found), found)
+        self.assertIn("no checksum in the job names", found[0])
+
+    def test_a_different_path_and_each_new_step_stay_clean(self):
+        get = "mkdir -p d elsewhere\n" + self.GET % "d/x.sh"
+        for steps in (
+            (("run", get + "cd d\nsh other.sh\n"),),
+            (("run", get + "cd elsewhere\nsh x.sh\n"),),
+            (("get", get + "cd d\n"), ("run", "sh x.sh\n")),
+        ):
+            with self.subTest(steps=steps):
+                self.assertEqual([], self.defects(*steps))
+
+    def test_a_dynamic_or_branched_cd_makes_the_directory_unknown(self):
+        get = "mkdir -p d\n" + self.GET % "d/x.sh"
+        for change in ('D=d\ncd "$D"\n', "if true; then cd d; fi\n",
+                       "pushd d >/dev/null\n"):
+            with self.subTest(change=change):
+                found = self.defects(("run", get + change + "sh x.sh\n"))
+                self.assertEqual(1, len(found), found)
+        self.assertEqual([], self.defects(("run", get + 'cd "$D"\nsh other.sh\n')))
+
+    def test_a_cd_reached_through_a_conditional_list_is_unknown(self):
+        script = self.GET % "x.sh" + "mkdir -p d\nfalse && cd d\nsh x.sh\n"
+        found = self.defects(("run", script))
+        self.assertEqual(1, len(found), found)
+
+    def test_a_cd_whose_failure_does_not_stop_the_step_is_unknown(self):
+        script = self.GET % "x.sh" + "set +e\ncd missing\nsh x.sh\n"
+        found = self.defects(("run", script))
+        self.assertEqual(1, len(found), found)
+
+    def test_only_a_shell_builtin_cd_is_followed_as_literal(self):
+        cases = (
+            "mkdir -p d\n" + self.GET % "d/x.sh" + "builtin cd d\nsh x.sh\n",
+            self.GET % "x.sh" + "mkdir -p d\nset +e\nenv cd d\nsh x.sh\n",
+            "mkdir -p d\n" + self.GET % "d/x.sh" + "command cd d\nsh x.sh\n",
+        )
+        for script in cases:
+            with self.subTest(script=script):
+                found = self.defects(("run", script))
+                self.assertEqual(1, len(found), found)
+
+    def test_each_unknown_directory_change_gets_a_new_identity(self):
+        one = ('mkdir -p d\nD=d\ncd "$D"\n' + self.GET % "x.sh"
+               + self.CHECK + "sh x.sh\n")
+        self.assertEqual([], self.defects(("run", one)))
+        changed = ('mkdir -p d e\nD=d\nE=../e\ncd "$D"\n' + self.GET % "x.sh"
+                   + 'cd "$E"\n' + self.CHECK + "sh x.sh\n")
+        found = self.defects(("run", changed))
+        self.assertEqual(1, len(found), found)
+
+    def test_unknown_directory_identities_do_not_collide_across_steps(self):
+        steps = (
+            ("fetch", 'mkdir -p d e\nD=d\ncd "$D"\n' + self.GET % "x.sh"),
+            ("wrong check", 'E=e\ncd "$E"\n' + self.CHECK),
+            ("run", 'F=d\ncd "$F"\nsh x.sh\n'),
+        )
+        found = self.defects(*steps)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("no checksum in the job names", found[0])
+
+    def test_a_parent_of_an_unknown_directory_stays_in_that_step(self):
+        steps = (
+            ("fetch", self.GET % "x.sh"),
+            ("wrong check", 'E=e/sub\ncd "$E"\ncd ..\n' + self.CHECK),
+            ("run", "sh x.sh\n"),
+        )
+        found = self.defects(*steps)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("no checksum in the job names", found[0])
+
+    def test_a_cd_in_a_finished_subshell_does_not_change_its_caller(self):
+        script = "mkdir -p d\n" + self.GET % "d/x.sh" + "(cd d)\nsh x.sh\n"
+        self.assertEqual([], self.defects(("run", script)))
+
+    def test_a_background_cd_does_not_change_its_caller(self):
+        script = "mkdir -p d\n" + self.GET % "d/x.sh" + "cd d &\nsh x.sh\n"
+        self.assertEqual([], self.defects(("run", script)))
+
+    def test_a_use_inside_the_same_subshell_sees_its_literal_cd(self):
+        script = "mkdir -p d\n" + self.GET % "d/x.sh" + "(\ncd d\nsh x.sh\n)\n"
+        found = self.defects(("run", script))
+        self.assertEqual(1, len(found), found)
+
+    def test_a_use_inside_a_command_substitution_sees_its_own_cd(self):
+        prefix = "mkdir -p d\n" + self.GET % "d/x.sh"
+        for change in ("cd d", "set -e; cd d"):
+            with self.subTest(change=change):
+                found = self.defects(("run", prefix + f"y=$({change}; sh x.sh)\n"))
+                self.assertEqual(1, len(found), found)
+
+    def test_a_command_substitution_restores_its_callers_directory(self):
+        script = ("mkdir -p d\n" + self.GET % "d/x.sh"
+                  + "y=$(set -e; cd d; true)\nsh x.sh\n")
+        self.assertEqual([], self.defects(("run", script)))
+
+    def test_a_fetch_inside_a_command_substitution_keeps_its_cd(self):
+        cases = (
+            "y=$(set -e; mkdir -p d; cd d; " + self.GET.strip() % "x.sh"
+            + "; cd ..; sh d/x.sh)\n",
+            "y=$(set -e; mkdir -p d; cd d; " + self.GET.strip() % "../x.sh"
+            + "; sh ../x.sh)\n",
+        )
+        for script in cases:
+            with self.subTest(script=script):
+                found = self.defects(("run", script))
+                self.assertEqual(1, len(found), found)
+
+    def test_a_substitution_fetch_stays_in_its_child_directory(self):
+        script = ("mkdir -p d\n"
+                  + "y=$(set -e; cd d; " + self.GET.strip() % "x.sh" + ")\n"
+                  + "sh x.sh\n")
+        self.assertEqual([], self.defects(("run", script)))
+
+    def test_a_fetch_destination_keeps_xargs_rewrite_provenance(self):
+        cases = (
+            "printf x | xargs -I R curl -fsSLo d/R https://example.test/x\nsh R\n",
+            "y=$(set -e; cd d; printf x | xargs -I R "
+            "curl -fsSLo sub/R https://example.test/x; sh R)\n",
+        )
+        for script in cases:
+            with self.subTest(script=script):
+                self.assertEqual(1, len(self.defects(("run", script))))
+
+
 class TestADownloadCarriedInAVariable(unittest.TestCase):
     """#2341: `x=$(curl -fsSL URL)` and then `eval "$x"`, `sh -c "$x"` or
     `echo "$x" | sh` read clean -- the fetch was read, writing to standard
@@ -4199,15 +4381,12 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                 self.flagged(fetch, ("run", run))
 
     def test_a_path_reached_through_a_cd(self):
-        # The guard follows no `cd`: a path is compared as written. #2345 (e)
-        # binds a glob from another directory by its last part
-        # (`TestAGlobFromAnotherDirectoryReachesABareDownload`); a literal
-        # name reached through a `cd` still matches nothing fetched.
+        # #2427 follows a static `cd`; #2345 (e) already bound the glob twin.
         cuda = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\nmkdir -p s\ncd s\n"
         for run in ("mkdir -p d\ncurl -fsSLo d/x.sh https://example.test/x.sh\ncd d\nsh x.sh\n",
                     cuda + "sh ../cuda_1.run\n"):
             with self.subTest(run=run):
-                self.accepted(("run", run))
+                self.flagged(("run", run))
         self.flagged(("run", cuda + "sh ../cuda_*.run\n"))
 
     def test_a_download_carried_in_a_variable_beyond_the_shape_that_is_read(self):
