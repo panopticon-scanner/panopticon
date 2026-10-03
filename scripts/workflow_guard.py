@@ -28,23 +28,19 @@ The scope is the JOB, not the step (`job_defects`): steps in one job share the w
 PATH, so a download in step A and the `chmod +x`/run in step B is one act split into two innocent
 halves, and a `sha256sum -c` in a later step is a real check of an earlier step's file. A step whose
 `shell:` is not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the same act in
-a grammar this module does not have, and so is a heredoc body handed to such an interpreter as its
-program (`python3 - <<'EOF'`). So is a step the reader refuses to guess at (`shell_lex.Unreadable`),
-by its name.
+a grammar this module lacks; so is a heredoc handed to such an interpreter (`python3 - <<'EOF'`),
+and a step the reader refuses to guess at (`shell_lex.Unreadable`), by its name.
 
-Stdlib only, so the test suite imports it with no dependency. `main()` reads
-YAML and is the same rule for a human at a shell:
+Stdlib only, so the test suite imports it with no dependency. `main()` is the same rule at a shell:
 
     python3 scripts/workflow_guard.py .github/workflows/*.yml
 
 CI gets NO separate lint step for it: `tests/test_workflow_pins.py` applies this module to every
-`run:` step in the fleet and `ci.yml` runs the suite on every PR, so a second invocation would be
-the same assertion wearing a different hat -- and one that can rot out of step with the first.
+`run:` step in the fleet and `ci.yml` runs the suite on every PR, so a second invocation would rot.
 
-What it does not model. Within the shell it reads, the standing requirement is to fail CLOSED -- an
-unparsed form must be REPORTED, not accepted, which is precisely what the two regexes did not do,
-and `tests/test_workflow_guard.py` states every form that was probed and found open before it was
-parsed. The classes below fall outside that and are accepted SILENT gaps, deliberately.
+What it does not model. Within the shell it reads, the requirement is to fail CLOSED -- an unparsed
+form must be REPORTED, not accepted (as the two regexes did not). `tests/test_workflow_guard.py`
+states every form probed and found open before parsing. The classes below are accepted SILENT gaps.
 
 #1697 ruled every entry by REACHABILITY -- can the form appear in a `run:` step of this fleet, or
 does it need a construct the runners never use or a grammar this module does not have by design?
@@ -523,22 +519,30 @@ def _remedy(dest):
             "the download and that use" % shell_reader.readable(dest))
 
 
+def _runs_after_failure(when):
+    """True when a step `if:` runs even after an earlier step failed -- `always()`,
+    `failure()` or `!cancelled()` (any expression holding one, whitespace and case
+    aside). `success()`, a plain expression and no `if:` are skipped then, so stay gated."""
+    cond = re.sub(r"\s+", "", when[0] or "").lower() if when else ""
+    return any(call in cond for call in ("always()", "failure()", "!cancelled()"))
+
+
 def _binds(conditions, check, use):
     """May a check at statement `check` clear a use at statement `use`?
 
-    Only if the check runs whenever the use does. A step carrying an `if:` may be skipped, so its
-    checksum cannot clear an execution that is not skipped with it -- crediting one is fail-open.
-    The condition has two halves: the step's `if:`, and the `if`/`while` branch of the SHELL the
-    statement was written inside (`workflow_forms.regions`) -- a check binds only where both match.
-    Conditions are compared as written (no expression evaluation), so a check and a use in the same
-    conditional step -- the shape the fleet actually has, where the fetch, the checksum and the
-    `unzip` share one `if:` -- binds, and a check under a DIFFERENT condition (or under one at all,
-    where the use has none) does not.
-
-    Comparing as written assumes the expression is stable between the two
-    steps; see the module docstring's gap list for the cases where it is not."""
+    Only if the check runs whenever the use does. Its condition is two halves -- the step's `if:`
+    and the `if`/`while` branch it sits in (`workflow_forms.regions`); a check binds where both
+    match, as written (no evaluation): a check and use sharing one `if:` (fleet's shape -- fetch,
+    checksum and `unzip`) bind; a different condition, or one the use lacks, does not. A use
+    whose `if:` RUNS AFTER A FAILED step (`_runs_after_failure` -- `always()`, `failure()` or
+    `!cancelled()`) is refused unless the check shares it, since it runs on even when an earlier
+    step's checksum stopped. Residual (#2608): a same-`if:` match in another step still binds --
+    conditions cannot tell it from a true same-step one; stability of the `if:` is assumed."""
     when = conditions.get(check)
-    return when is None or when == conditions.get(use)
+    theirs = conditions.get(use)
+    if _runs_after_failure(theirs) and when != theirs:
+        return False
+    return when is None or when == theirs
 
 
 def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
@@ -606,12 +610,11 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
 def _defects(stmts, conditions=None, credit=None, walked=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
-    `conditions` maps a statement index to the PAIR that decides whether it runs -- the `if:` of the
-    step it came from, and the shell branch it was written inside (`workflow_forms.regions`); absent
-    = unconditional on both counts. A check clears a use only where both halves match -- see
-    `_binds`. `credit` maps an index to the answer `workflow_gating.swallowed` reads last: the
-    shell-posture pair from `workflow_forms.step_credit`, with each absent soft-step answer bounded
-    by a `_SOFT_STEP` reach. `walked` is `_walk`'s answer for `stmts`, supplied by `job_defects`.
+    `conditions` maps a statement index to the PAIR that decides whether it runs -- the step's `if:`
+    and the shell branch it sits in (`workflow_forms.regions`); absent = unconditional. A check
+    clears a use only where both halves match (see `_binds`). `credit` maps an index to what
+    `workflow_gating.swallowed` reads last: the `workflow_forms.step_credit` pair, each absent soft
+    answer bounded by a `_SOFT_STEP` reach. `walked` is `_walk`'s answer, supplied by `job_defects`.
 
     An unread form (`what`: its sentence) stands only where some fetch here is one `_defect` reports
     -- asked again with those forms as uses -- or an `unbound` download (#2481)."""
@@ -644,11 +647,8 @@ def job_defects(steps, strict=False):
     A soft CHECK keeps the shell refusal and clears later uses only when that shell stops, and
     only in its own step. `continue-on-error: true` still lets the job proceed to later steps.
 
-    THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace, /tmp and PATH, so
-    `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x` in step B is one fetch-and-exec written
-    across two innocent-looking steps -- and a rule scoped to a single `run:` block sees neither
-    half. The same sharing is what makes a `sha256sum -c` in a later step a real check of an earlier
-    step's download, so the fold has to run both ways.
+    THE SCOPE IS THE JOB, not the step (see the module docstring): steps share the workspace, /tmp
+    and PATH, so a fetch in step A and its run in step B is one act a later `sha256sum -c` checks.
 
     Parsed STATEMENTS are concatenated, never the texts: each step is its own shell invocation, so
     one step's stray quote or unterminated heredoc must not reach into the next step's parse. Each
