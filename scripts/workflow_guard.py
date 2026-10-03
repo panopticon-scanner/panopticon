@@ -192,9 +192,11 @@ import shell_reader
 from shell_reader import command, statements
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
+from workflow_fetch import compound_streamed_fetch
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Reach, Unsure, at_directory, carried,
-                            flattened, kept, located, names_file, parse_fetch, regions,
-                            stdin_program, step_credit, streamed_fetch, unbound, unread_program,
+                            compound_stream_consumer, flattened, kept, located, names_file,
+                            parse_fetch, regions, stdin_program, step_credit,
+                            streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_programs import VALUE_PROGRAM, stdin_command
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
@@ -230,8 +232,11 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
-                        stream = streamed_fetch(os.path.basename(argv[0]), argv[1:],
-                                                stage, following, EXECUTORS)
+                        compound = compound_stream_consumer(stmts, index, EXECUTORS)
+                        stream = compound_streamed_fetch(
+                            os.path.basename(argv[0]), argv[1:], stage, following,
+                            EXECUTORS, compound,
+                        )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
                                            else fetch)
                     if fetch.dest is not None:

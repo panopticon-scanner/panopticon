@@ -60,6 +60,7 @@ from shell_reader import command, statements
 # Compatibility bindings share the single fetch owner with existing callers,
 # the operand questions with theirs, and the gating ones with theirs.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
+                            compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
@@ -552,21 +553,20 @@ def carried(stmts, executors):
     `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"`, `sh -c '...'` or
     `sh file`, read as `curl ... | sh x.sh` is.
 
-    Not followed, beside the gap list's cut, command output and file (`echo "$x" > f; sh f`,
-    `| tee f; sh f`): a substitution holding more than the fetch (`x=$(curl ... || true)`,
-    `x=$(curl ... | tr ...)`) or not alone in its stage (`x=$(curl ...) y=$(date)`),
-    `x+=$(curl ...)`, a printer other than echo or printf (`cat <<< "$x" | sh`, a heredoc naming
-    `$x` piped to `sh`), a printer inside a `{ }` group or a multi-line subshell whose closing line
-    is piped (`{ echo "$x"; } | sh`), which the stream walk does not read for a fetch either, and
+    Not followed: output written to a file (`echo "$x" > f; sh f`, `| tee f; sh f`);
+    multi-command or multi-substitution assignments; `+=`; `cat` here-doc/string printers; and
     `$x` inside a longer word (`eval "echo $x"`)."""
     held: dict[str, Fetch | None] = {}
     out, branches, depth = [], regions(stmts), 0
     for index, statement in enumerate(stmts):
         for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
+            printed = _prints(stage)
             to = (stream_consumer(inner.stages[position + 1:], executors)
-                  if _prints(stage) and stage.stdout_to_pipe else None)
-            words = scripts(argv) + (_prints(stage) if to else []) + (
+                  if printed and stage.stdout_to_pipe else None)
+            if printed and not to and not where and position == len(inner.stages) - 1:
+                to = compound_stream_consumer(stmts, index, executors)
+            words = scripts(argv) + (printed if to else []) + (
                 [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])
             if argv and os.path.basename(argv[0]) in executors:
                 words += [w for text in stage.substitutions for inside in statements(text)

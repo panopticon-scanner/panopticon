@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
 - **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
   literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
   is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
