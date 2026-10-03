@@ -157,11 +157,11 @@ live, so a change that catches one fails there and edits this list.
   (`_unread_stdin`): it runs what bash expands it to, values and `$(...)` output this guard never
   sees. A program in a language with no grammar here is reported too (the answer `unparseable` gives
   a `shell: python` step), and THAT report is weighed: kept, since #2499, only beside a fetch this
-  guard reports. So is the hand-off to a `$` command word no table places (#2473). Its body is
-  read as shell besides: a `curl … | sh` there is caught, a check there clears nothing, and a
-  non-shell body whose string spells a shell download (`print("$(curl … | sh)")`) is reported
-  loud, filed under #2331. An expanding one is read with substitutions as values (#2597);
-  but any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no printer spells out
+  guard reports. So is the hand-off to a `$` command word no table places (#2473), except where
+  `may_run` binds it to a job fetch (#2607): the run sentence stands alone and stdin is data, not
+  shell. Otherwise its body is read as shell: a `curl … | sh` is caught, a check clears nothing,
+  and a non-shell body spelling a shell download is reported loud (#2331). An expanding one is
+  read with substitutions as values (#2597); but any body inside a `$(...)`, and a pipe into it
   (`echo "$X" | $CMD`)
   is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
   reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
@@ -197,12 +197,12 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
-                            Unsure, carried, chmod_executable, chmod_targets, clears, covers,
-                            described, flattened, in_container, kept, may_run, names_file,
-                            parse_fetch, regions, same_file, stdin_program, step_credit,
-                            streamed_fetch, swallowed, unbound, unread_program, within)
-from workflow_programs import VALUE_PROGRAM
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, BoundStdin,
+                            Fetch, Idle, Reach, Unsure, VALUE_PROGRAM, carried,
+                            chmod_executable, chmod_targets, clears, covers, described, flattened,
+                            in_container, kept, may_run, names_file, parse_fetch, regions,
+                            stdin_program, step_credit, streamed_fetch, swallowed, unbound,
+                            bound_stdin as bind_stdin, same_file, unread_program, within)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -301,9 +301,10 @@ def _unread_stdin(stage):
         return None
     name = shell_reader.readable(argv[0])
     if kind == VALUE_PROGRAM:
-        return Idle("hands a heredoc body or here-string to `%s`, a command word this guard does "
-                    "not follow -- its body is read as shell, which it may not be; name the "
-                    "interpreter (`bash -s`, `python3 -`), or exempt the step with a reason" % name)
+        return BoundStdin(
+            "hands a heredoc body or here-string to `%s`, a command word this guard does not "
+            "follow -- its body is read as shell, which it may not be; name the interpreter "
+            "(`bash -s`, `python3 -`), or exempt the step with a reason" % name, argv[0])
     name = os.path.basename(name)
     if kind != SHELL_PROGRAM:
         return Idle("hands a heredoc body or here-string to `%s` as the program "
@@ -317,8 +318,7 @@ def _unread_stdin(stage):
                 "what the script runs; quote it (`<<'EOF'`, `<<< '...'`) and it is "
                 "read as written, pass job values as arguments instead "
                 "(`%s -s -- \"$VALUE\" <<'EOF'`), or exempt the step with a "
-                "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)"
-                % (name, name))
+                "reason (`EXEMPT_FETCHES` in tests/test_workflow_pins.py)" % (name, name))
     return None
 
 
@@ -588,8 +588,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=()):
     naming = [(i, why.at_use(i, first_use) if hasattr(why, "at_use") else why) for i, why in naming]
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
-        # Ordering is the substance: a checksum that runs after the bytes are
-        # made runnable is theatre.
+        # Ordering matters: a checksum that runs after the bytes are made runnable is theatre.
         return ("verifies %s only AFTER %s -- fetches %s, so %s"
                 % (shell_reader.readable(fetch.dest), how, _describe(fetch),
                    _remedy(fetch.dest)))
@@ -660,6 +659,7 @@ def job_defects(steps, strict=False):
     for sure in (False, True):              # the second fold leaves every `Unsure` statement out
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, entries, fetched, unread = [], {}, {}, [], [], []
+        bound: list[Fetch] = []
         for number, item in enumerate(steps):
             step = item if isinstance(item, Step) else Step(*item)
             why = unparseable(step.shell)
@@ -669,6 +669,7 @@ def job_defects(steps, strict=False):
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
                     walked = _walk(here, stream_exec=True)
+                    here, walked, bound, back = bind_stdin(here, walked, bound, _walk, Unsure, back)
                 except (() if strict else shell_lex.Unreadable) as error:
                     why = "cannot read this step: %s; nothing in it is accepted" % error
             if why:
@@ -676,8 +677,7 @@ def job_defects(steps, strict=False):
                 continue
             fetched += [(len(stmts) + i, fetch) for i, fetch in walked[0]]
             unread += [(len(stmts) + i, reason) for i, reason in walked[1]]
-            # Per step, because each one is its own shell invocation: neither an
-            # `if` left open nor a `set +e` in step A reaches step B.
+            # Per step: one shell invocation's open `if` or `set +e` cannot reach the next.
             branches, own = regions(here), step_credit(here, step.shell)
             for local, statement in enumerate(here):
                 when = (step.condition, branches.get(local))

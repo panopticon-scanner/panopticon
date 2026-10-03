@@ -70,9 +70,10 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, may_run as may_run,
                                names_file as names_file, same_file as same_file)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
-                               dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, unprinted as unprinted)
+from workflow_programs import (BoundStdin, Opaque, SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM,
+                               bound_stdin as bound_stdin, candidates, dynamic_program, scripts,
+                               stdin_program as stdin_program, stdin_reader, stdin_scripts,
+                               mark_stdin, unprinted as unprinted)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -156,7 +157,6 @@ def regions(stmts):
 
 
 # --- where a script hides ----------------------------------------------------
-
 # Why a checksum in a script handed to a shell clears nothing, as `flattened`
 # finds it for the `credit` of each `Inlined` statement.
 _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
@@ -226,6 +226,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     key + ((index, ordinal),))
                 if isinstance(text, Opaque):    # what its `$(...)` prints is read nowhere
                     read = [s._replace(credit=(_OPAQUE % name,) * 2) for s in read]
+                read = mark_stdin(read, getattr(text, "bound", None), Unsure)
                 out.extend(read)
         if top:
             out.append(statement)
@@ -351,17 +352,16 @@ def step_credit(flat, shell=None):
 
 
 class Idle(str):
-    """An unread reason `kept` keeps only where the job holds a fetch the
-    guard REPORTS (#2481): see `substitution_script`, `unread_program` and
+    """An unread reason `kept` keeps only where the job holds a fetch the guard REPORTS (#2481):
+    see `substitution_script`, `unread_program` and
     `workflow_guard._unread_stdin`'s foreign-language program (#2499)."""
 
 
 class _Quiet(Idle):
     """An `Idle` `kept` keeps only where no other reason reports its statement:
-    `unread_program`'s for a printer whose words it cannot spell out (#2333)
-    and for a dynamic program word (#2483, #2486), both of which `carried` says
-    louder where a variable carries the download -- `echo "$x" | sh` and
-    `sh -c "$x"` are its own."""
+    `unread_program`'s for a printer whose words it cannot spell out (#2333) and for a dynamic
+    program word (#2483, #2486), both of which `carried` says louder where a variable carries
+    the download -- `echo "$x" | sh` and `sh -c "$x"` are its own."""
 
 
 def _runner(argv):
@@ -396,7 +396,7 @@ def _weighed(why, texts, walk, idle=Idle):
     and `idle(why)` where none does. A foreign stdin program there is `Idle`, so it is not an unread
     form and the reason that hands the script is `Idle` too: #2499's predicate governs both (r0)."""
     live = [walk(flattened(statements(text))) for text in texts]
-    return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
+    return why if any(found or any(not isinstance(w, (Idle, BoundStdin)) for _i, w in unread)
                       for found, unread in live) else idle(why)
 
 
@@ -662,10 +662,10 @@ def kept(unread, found, unverified):
     the job holds a fetch this guard REPORTS -- a download no checksum clears, a stream handed to a
     shell, an unresolved transfer (#2481, #2499) -- and no loud reason of either reports its
     statement (`carried`'s, a stream's, a reported fetch's, #2490)."""
-    loud = {index for index, why in unread if not isinstance(why, Idle)}
+    loud = {index for index, why in unread if not isinstance(why, (Idle, BoundStdin))}
     loud |= {index for index, _why, _fetch in found}
     return [(index, why, why) for index, why in unread
-            if not isinstance(why, Idle) or unverified and index not in loud] + found
+            if not isinstance(why, (Idle, BoundStdin)) or unverified and index not in loud] + found
 
 
 # The container runners, and the subcommands of theirs that run a command. The

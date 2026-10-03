@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Which program a command hands a shell, read off its argv and its stage.
-
 Split out of `scripts/workflow_forms.py` (#2331's follow-ups) the way `scripts/workflow_operands.py`
 and `scripts/workflow_gating.py` were: that module had 51 lines of room left, fewer than the third
 batch of those follow-ups adds to these readers. What is here answers one question of one command --
@@ -32,7 +31,6 @@ is `Opaque` -- its `unread_program` weighs the candidates, the unprinted and the
 and the guard takes `stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
 The option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up
 that reads a shell's options too (#2443, #2475).
-
 Stdlib only, like everything under it.
 """
 import os
@@ -40,6 +38,7 @@ import re
 
 import shell_lex
 import shell_reader
+from workflow_operands import may_run
 from workflow_printers import _PRINTERS as _PRINTERS, _piped as _piped, printed as printed
 
 
@@ -479,12 +478,12 @@ def stdin_program(argv):
     SHELL would read another language's program as though it were one, and
     report nothing for `$PYTHON - <<'EOF'` even beside a fetch (review I-2);
     FOREIGN leaves the body unread, an `Idle` report `kept` drops beside no
-    reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... |
-    sh` read CLEAN. As VALUE its body is read as shell all the same, additively
-    (`stdin_scripts`; `workflow_forms.flattened` counts no check in it, since
-    `$CMD` may not run it) -- a body no interpreter runs, `$CAT <<'EOF' > f`,
-    over-reports -- and the guard's `_unread_stdin` reports the hand-off `Idle`.
-    Its walk takes a shell's
+    reported fetch (#2499), so `CMD=sh; $CMD <<'EOF'` running `curl ... | sh` read CLEAN. As
+    VALUE its body is read as shell additively (`stdin_scripts`; `workflow_forms.flattened` counts
+    no check in it, since `$CMD` may not run it) -- `$CAT <<'EOF' > f` therefore over-reports --
+    and `_unread_stdin` reports the hand-off `Idle`. When `may_run` binds the command word to a job
+    fetch (#2607), the guard drops both uncertain answers: its run sentence owns stdin as data.
+    Otherwise its walk takes a shell's
     `-c`, `-s`, vanishing-operand and option-value rules, since the word may
     be a shell (`$CMD -s -- "$V" <<'EOF'` and `$CMD -oe pipefail <<'EOF'` read
     the heredoc, as does `$PYTHON -Ou - file.py <<'EOF'`, a stdin operand
@@ -520,6 +519,45 @@ class Stdin(str):
     (`bash -s -c 'sh'`), whose statements are the step's own and no check in them counts; or None,
     where no shell is sure to read it and nothing in it is the step's own."""
     reader: "list[str] | tuple[()] | None" = None
+    bound: str | None = None
+
+
+class BoundStdin(str):
+    """An uncertain value-form stdin reason, tied to its command word."""
+    word: str
+    def __new__(cls, reason, word):
+        answer = super().__new__(cls, reason)
+        answer.word = word
+        return answer
+
+
+def mark_stdin(stmts, word, unsure):
+    return [item._replace(credit=(BoundStdin(item.credit[0], word), item.credit[1]))
+            if word and isinstance(item, unsure) else item for item in stmts]
+
+
+def bound_stdin(stmts, walked, prior, walk, unsure, back):
+    """Remove a value-form stdin body and hand-off when a prior certain fetch is its command."""
+    certain = [(index, fetch) for index, fetch in walked[0]
+               if not isinstance(stmts[index], unsure)]
+
+    def bound(index, word):
+        available = prior + [fetch for at, fetch in certain if at < index]
+        return any(fetch.dest is not None and may_run(word, fetch.dest) for fetch in available)
+
+    skip = {index for index, statement in enumerate(stmts)
+            if isinstance(statement, unsure) and isinstance(statement.credit[0], BoundStdin)
+            and bound(index, statement.credit[0].word)}
+    keep = [index for index in range(len(stmts)) if index not in skip]
+    if skip:
+        stmts = [stmts[index] for index in keep]
+        walked = walk(stmts, stream_exec=True)
+        certain = [(index, fetch) for index, fetch in walked[0]
+                   if not isinstance(stmts[index], unsure)]
+    unread = [(index, why) for index, why in walked[1]
+              if not isinstance(why, BoundStdin) or not bound(index, why.word)]
+    return (stmts, (walked[0], unread), prior + [fetch for _index, fetch in certain],
+            [back[index] for index in keep])
 
 
 def _stdin(argv, depth):
@@ -613,10 +651,10 @@ def stdin_scripts(argv, stage, before=None):
 
     A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
     string; `curl … | sh` is the same defect, as is `sh <<< '…'` (#2293). An expanding body stays
-    unread for a literal shell. Behind a value command word, it is read after command and arithmetic
-    substitutions become value words (#2597), since the outer read owns them. Text an `echo` or
-    `printf` in front pipes in is read too where `printed` spells it (#2333); otherwise `unprinted`
-    has the printer.
+    unread for a literal shell. Behind a value command word, it is tagged with that word and read
+    after command and arithmetic substitutions become value words (#2597), since the outer read
+    owns them. Text an `echo` or `printf` in front pipes in is read too where `printed` spells it
+    (#2333); otherwise `unprinted` has the printer.
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -627,11 +665,11 @@ def stdin_scripts(argv, stage, before=None):
     vanish or under a `$` command word, where no shell is sure to read it and nothing in it is the
     step's own (`workflow_forms.Unsure`).
 
-    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
-    though the word may hold none: what they fetch or run is read as at the top level, and
-    `workflow_forms.flattened` counts no check there. Inside a `$(...)`,
-    `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted` weighs a
-    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
+    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are tagged and read
+    as shell, though the word may hold none; `workflow_forms.flattened` counts no check there.
+    `bound_stdin` drops that uncertain read when a job fetch binds the word (#2607). Inside a
+    `$(...)`, `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted`
+    weighs a shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
     """
     here = stage.stdin_heredoc
     if here is None and _piped(stage, before):
@@ -646,6 +684,7 @@ def stdin_scripts(argv, stage, before=None):
         body = context.pattern.sub("$VALUE", shell_reader._lift_substitutions(body, context)[0])
     text = Stdin(body)
     text.reader = reader
+    text.bound = argv[0] if kind == VALUE_PROGRAM else None
     return [text]
 
 
