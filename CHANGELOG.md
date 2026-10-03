@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
+  of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
+  printer follow-ups have room; the guard's answers are byte-identical before and after.
 - **Workflow guard: a value in a shell's options is weighed to its first operand, or past a word
   that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
   one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
