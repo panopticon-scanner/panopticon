@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`eval` brace alternatives bind only downloads they can name (#2624, #2608).** The
+  second parse now expands bounded brace lists and numeric ranges before matching a fetched
+  path, because treating every brace group as `*` misses real uses and binds excluded names;
+  unbounded expansion was rejected because workflow text controls its cost.
 - **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
   carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
   the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.

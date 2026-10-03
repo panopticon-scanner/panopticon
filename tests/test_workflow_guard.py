@@ -908,6 +908,37 @@ class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
                 self.assertEqual(1, len(downloads), downloads)
                 self.assertIn("under `eval`", downloads[0])
 
+    def test_eval_reparses_brace_lists_and_ranges(self):
+        for use in ('eval sh "./cuda_{1,2}.run"', "eval sh ./cuda_{1,2}.run",
+                    'eval sh "./cuda_{1..2}.run"', 'eval sh "./cuda_{01..02}.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual(1, len(downloads), downloads)
+                self.assertIn("under `eval`", downloads[0])
+
+    def test_eval_braces_that_exclude_the_download_stay_unbound(self):
+        for use in ('eval sh "./cuda_{2,3}.run"', "eval sh ./cuda_{2,3}.run",
+                    'eval sh "./cuda_{2..3}.run"', 'eval sh "./cuda_{02..03}.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual([], downloads)
+
+    def test_braces_quoted_from_the_running_parse_stay_literal(self):
+        for use in ('sh "./cuda_{1,2}.run"', 'eval \'sh "./cuda_{1,2}.run"\''):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual([], downloads)
+
+    def test_an_ordinary_pattern_keeps_literal_braces_fail_closed(self):
+        script = ("curl -fsSLo 'cuda_{1,2}x.run' https://example.test/cuda.run\n"
+                  "sh ./cuda_\\{1,2\\}*.run\n")
+        downloads = [why for _name, why in wg.job_defects([("step", script)])
+                     if why.startswith("fetches ")]
+        self.assertEqual(1, len(downloads), downloads)
+
     def test_eval_keeps_quotes_that_are_inside_its_single_script_word(self):
         for use in ("eval 'sh \"./cuda_*.run\"'", "eval 'chmod +x \"./cuda_*.run\"'"):
             with self.subTest(use=use):
