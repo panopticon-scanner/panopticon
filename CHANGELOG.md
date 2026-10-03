@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Interpreter redirections now bind expanded paths to fetched scripts (#2426, #2331).**
+  `bash < "$PWD/x.sh"` and a literal redirect after a fetch to `"$PWD/x.sh"` use the same
+  last-part path binding as interpreter operands. Other basenames and non-interpreters stay clean.
 - **Function checks now count only after a failure-gating call (#2421, #2331).**
   Definitions, rescued calls, and child scripts inside them no longer certify later execution;
   a plain call still credits a check whose failure stops that function and the step.
