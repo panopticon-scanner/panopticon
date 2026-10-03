@@ -649,6 +649,7 @@ groups:
       - scripts/workflow_posture.py
       - scripts/workflow_operands.py
       - scripts/workflow_programs.py
+      - scripts/workflow_printers.py
       - scripts/workflow_fetch.py
       tests:
       - tests/test_workflow_guard.py
