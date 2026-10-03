@@ -1097,6 +1097,30 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertEqual(bare, piped)
         self.assertEqual(1, len(piped), piped)
 
+    def test_2605_a_file_after_a_value_option_does_not_hide_stdin(self):
+        # Bash 3.2.57, 5.2.21 and dash run every body: `$X` may be `-s`, or
+        # `--rcfile`, whose `/dev/null` argument is not the program file.
+        rows = ("X=-s\nsh $X file.sh",
+                "X=-s\nbash $X file.sh arg",
+                "CMD=bash\nX=-s\n$CMD $X file.sh",
+                "X=--rcfile\nbash $X /dev/null",
+                "X=--rcfile\nbash $X /dev/null -s arg")
+        for command in rows:
+            script = "%s <<'EOF'\n%s\nEOF\n" % (command, PIPE)
+            with self.subTest(command=command):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in why for _step, why in found), found)
+        # Literal file and ended-options controls run no body and stay CLEAN.
+        for command in ("sh file.sh", "X=-s\nsh -- $X file.sh"):
+            with self.subTest(command=command):
+                self.assertEqual([], defects("%s <<'EOF'\n%s\nEOF\n" % (command, PIPE)))
+        # Literal `-s` is the must-trip. A value that is really `-e` runs the
+        # file, not the body, but pays the issue's named fail-closed price.
+        for command in ("sh -s file.sh", "X=-e\nsh $X file.sh"):
+            with self.subTest(command=command):
+                found = defects("%s <<'EOF'\n%s\nEOF\n" % (command, PIPE))
+                self.assertTrue(any("straight to `sh`" in why for _step, why in found), found)
+
     def test_2486_an_opaque_dash_c_string_may_be_a_stdin_reading_shell(self):
         # #2486 reads a `-c` string holding a `$(...)` among its text with the
         # substitution opaque, and #2500's join reads that string here too:

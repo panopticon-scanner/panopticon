@@ -163,11 +163,11 @@ live, so a change that catches one fails there and edits this list.
   loud, filed under #2331. An expanding one is read with substitutions as values (#2597);
   but any body inside a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no printer spells out
   (`echo "$X" | $CMD`)
-  is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
-  reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
-  named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
-  (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
-  whose argv this walk reads as the transport's; and one under a name no table carries
+  is unread, both filed under #2331. A value option before a file keeps stdin possible (#2605),
+  with an `X=-e` price. Untabled literal options (`bash --rcfile f <<'EOF'`, #2616) and an
+  interpreter named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`) stay unread;
+  one behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), whose argv this walk reads as the
+  transport's; and one under a name no table carries
   (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on the basename. A program `echo` or
   `printf` PIPES into a shell is read where their words spell it out; one they do not
   (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as written or

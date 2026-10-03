@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
 - **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
   `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
   read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
