@@ -16,38 +16,24 @@ Three questions live here, each one a shape a step writes down:
                                (`same_file`, `names_file`, `covers`, `may_run`,
                                `described`, `chmod_targets`), split out when
                                this module reached its size
-    where a script hides       `flattened` reads in place of the command handed
-                               them the scripts workflow_programs finds: the
-                               shell handed to `eval` or `sh -c` as a STRING
-                               (`scripts`), and the program an interpreter reads
-                               on standard input (`stdin_program`,
-                               `stdin_scripts`, a printer's among them, #2333),
-                               each under its READER's `-e`, if any (`Stdin`)
-                               -- compatibility imports split out when this
-                               module ran short of room a third time;
-                               `unread_program` reports the programs it cannot
-                               read in place (`candidates`, `unprinted`,
-                               `dynamic_program`);
-                               `within` the scripts a statement's command
-                               substitutions run, where a use may be (#2345);
-                               `carried` a download a step keeps in a variable
-                               and hands to a shell (#2341);
-                               and `in_container` the operand a `docker run`
-                               hands to a shell on the far side of a bind mount
-    whether a failure matters  `regions` reads the branch bodies a command was
-                               written inside, `_errexit_states` the `-e` and
-                               `pipefail` each statement runs under as a `set`
-                               moves them, and `step_credit` the step's own
-                               answer from both; the rest are compatibility
-                               imports from workflow_gating (`swallowed`,
-                               `seed`, `Reach`, `clears`, `Inlined`), split out
-                               when this module reached its size again
+    where a script hides       `flattened` reads scripts in place: strings passed
+                               to `eval` or `sh -c`, and programs read on standard
+                               input (`stdin_program`, `stdin_scripts`, including
+                               a printer, #2333), under their reader's `-e`;
+                               `unread_program` reports programs it cannot inline
+                               (`candidates`, `unprinted`, `dynamic_program`);
+                               `within` walks command substitutions (#2345),
+                               `carried` follows a downloaded value (#2341), and
+                               `in_container` reads a `docker run` operand
+    whether a failure matters  `regions` reads branch bodies, `_errexit_states`
+                               reads the `-e` and `pipefail` state as `set` moves
+                               it, and `step_credit` combines both; compatibility
+                               imports from workflow_gating provide `swallowed`,
+                               `seed`, `Reach`, `clears` and `Inlined`
 
-The layers run one way: `workflow_gating` sits below this module and imports
-nothing from it, `step_credit` lives here because it is the one gating answer
-that needs this module's readers, and `workflow_guard` sits on top of both,
-importing the gating names through this one.
-
+The layers run one way: `workflow_gating` sits below this module, `step_credit`
+lives here because it needs these readers, and `workflow_guard` imports both
+through this module.
 Stdlib only, like everything under it.
 """
 import os
@@ -66,6 +52,7 @@ from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fet
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
                              conditional_reach as reach, seed as seed, swallowed as swallowed)
+from workflow_gating import _local_script_credit
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -182,29 +169,32 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     inside its own string must come out hardened, not unread. The wrapper is kept -- its
     redirections and the stage it pipes into are still the wrapper's.
 
-    Hardened means the checksum's failure stops the STEP (review I-2 of #1793): it stops the script
-    (`-e` holds, or it is the last command) and every command running a script around it passes that
-    on, up to the command the step's own shell runs, whose failure `swallowed` and `step_credit`
+    Hardened means the checksum's failure stops the STEP (review I-2 of #1793): it stops the
+    script and each surrounding runner passes that failure on to the step's own shell, where
+    `swallowed` and `step_credit`
     judge as they judge a check written there -- where one ahead of `&&` reaches only the rest of
     its list (#2334). A child shell has `-e` only from its options or a `set`, and `pipefail` so too
     (re-review N-D), read off the COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a
     stdin script's READER's (`workflow_programs.Stdin`), without which no check in it counts; the
     step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
     (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell, None where no shell is sure to read
-    it (`Unsure`), never true for an `Opaque` one (None inside an `Unsure` one), whose statements,
-    nested ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this is the
-    step's own shell); `pipefail`: a pipeline there fails on any of its commands; `shell`: the
+    `stops`: this script's failure reaches the step's own shell; false retains only its local
+    reach (#2423), and None means no shell is sure to read it (`Unsure`). It is never true for an
+    `Opaque` script, whose statements say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top
+    (None: the step's own shell); `pipefail`: a pipeline there fails on any command; `shell`: the
     script's runner, and at the step's own top its `shell:` (None: the default); `outer`: the bodies
     of the command running it, below the step's own, and `key` a name for the script, unique in the
     step, for its own bodies.
     """
-    out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
+    out: list = []
+    begun, placed = [], []
+    last, where, top = len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
     on = _errexit_states(stmts, errexit, where, shell=shell)
     fails = _errexit_states(stmts, pipefail, where, "pipefail", shell)
     for index, statement in enumerate(stmts):
+        begun.append(len(out))
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[position - 1] if position else None
@@ -234,9 +224,16 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             continue
         why = (_UNGATED % shell if not stops
                else None if on[index] or index == last else _RUNS_ON % shell)
+        placed.append(len(out))
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
             (why, why or (None if fails[index] else _PIPED % shell))))
+    if stops is False:
+        for index, at in enumerate(placed):
+            old = out[at]
+            out[at] = old._replace(credit=_local_script_credit(
+                stmts, index, begun, placed, at, on, fails, old.credit
+            ))
     return out
 
 

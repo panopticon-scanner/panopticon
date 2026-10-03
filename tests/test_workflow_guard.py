@@ -2027,6 +2027,65 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
             with self.subTest(form=form):
                 self.assertReported(form, "the step does not stop when that script fails")
 
+    def test_a_child_gate_keeps_its_local_reach_when_the_parent_loses_its_status(self):
+        # #2423: the outer pipeline may discard the child's failure, but `-e`
+        # still stops that child before its own later use. A failed `&&` head
+        # likewise skips the use in its list. Neither gate reaches a use after
+        # the pipeline, and a child without `-e` still runs its inner use.
+        def defects(form, shell=None):
+            return wg.job_defects([
+                wg.Step("step", self.FETCH + form % self.CHECK + "\n", shell=shell)
+            ])
+
+        for shell in (None, "sh", "bash -e {0}"):
+            with self.subTest(shell=shell, gate="errexit"):
+                self.assertEqual([], defects("sh -ec '%s; ./tool' | cat", shell))
+            with self.subTest(shell=shell, gate="and-list"):
+                self.assertEqual([], defects("sh -ec '%s && ./tool' | cat", shell))
+            with self.subTest(shell=shell, gate="exiting-rescue"):
+                self.assertEqual([], defects("sh -ec '%s || exit 1; ./tool' | cat", shell))
+            with self.subTest(shell=shell, gate="child-pipefail"):
+                self.assertEqual(
+                    [], defects("bash -eo pipefail -c '%s | cat; ./tool' | cat", shell)
+                )
+            with self.subTest(shell=shell, control="no-errexit"):
+                self.assertEqual(1, len(defects("sh -c '%s; ./tool' | cat", shell)))
+            with self.subTest(shell=shell, control="child-no-pipefail"):
+                self.assertEqual(1, len(defects("sh -ec '%s | cat; ./tool' | cat", shell)))
+            with self.subTest(shell=shell, control="rescued"):
+                self.assertEqual(1, len(defects("sh -ec '%s || true; ./tool' | cat", shell)))
+            with self.subTest(shell=shell, control="use-in-rescue"):
+                self.assertEqual(
+                    1, len(defects("sh -ec '%s || ./tool; echo ok' | cat", shell))
+                )
+            with self.subTest(shell=shell, control="use-in-stopping-rescue"):
+                self.assertEqual(
+                    1,
+                    len(defects(
+                        "sh -ec '%s || { ./tool; exit 1; }; ./tool' | cat", shell
+                    )),
+                )
+            with self.subTest(shell=shell, control="outside-child"):
+                self.assertEqual(
+                    1, len(defects("sh -ec '%s; ./tool' | cat\n./tool", shell))
+                )
+        # Explicit `shell: bash` still has #2416's older whole-child credit.
+        self.assertEqual(
+            [], defects("sh -ec '%s; ./tool' | cat || true", "bash")
+        )
+        self.assertEqual(
+            1, len(defects("sh -ec '%s; ./tool' | cat || true\n./tool", "bash"))
+        )
+
+        body = self.FETCH.rstrip() + "\n" + self.CHECK + "\n./tool"
+        self.assertEqual([], wg.job_defects([("step", "bash -e <<< '%s' &\n" % body)]))
+        self.assertEqual(
+            1, len(wg.job_defects([("step", "bash <<< '%s' &\n" % body)]))
+        )
+        self.assertEqual(
+            1, len(wg.job_defects([("step", "bash -e <<< '%s' &\n./tool\n" % body)]))
+        )
+
     def test_a_check_that_stops_the_script_and_the_step_still_clears(self):
         for form in ("sh -c '%s'", "sh <<< '%s'", "sh <<'EOF'\n%s\nEOF",
                      "sh -ec '%s; echo ok'", "sh -e -c '%s; echo ok'",

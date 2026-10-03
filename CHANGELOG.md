@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Child checks keep local reach when their parent loses status (#2423, #2331).** A known
+  `sh -e` script still gates its own later commands when its parent loses the child's failure to a
+  pipeline or detached job. The new local credit stops at the child boundary; #2416 tracks an
+  older whole-child reach that can still mask a later use under explicit `shell: bash`.
 - **Fail-closed workflow messages now identify guard readings (#2424, #2331).** Carried
   variables and conditional checksum rescues say when scope or status comes from a conservative
   reading. Direct carries and proven non-stopping rescues keep their existing wording; verdicts

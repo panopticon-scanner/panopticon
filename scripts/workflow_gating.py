@@ -235,16 +235,41 @@ _CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may
 class RescueGate(Reach):
     """A check that gates only uses after its stopping rescue finishes."""
 
-    def __new__(cls, start, through, outside=None):
+    def __new__(cls, start, through, outside=None, relative=False):
         gate = str.__new__(cls, _OWN_RESCUE if outside is None
                            else str(outside) + _BOUNDED_RESCUE)
         gate.span = outside.span if isinstance(outside, Reach) else None
-        gate.start, gate.through, gate.outside = start, through, outside
+        gate.start, gate.through, gate.outside, gate.relative = start, through, outside, relative
         return gate
 
-    def at_use(self, _check, use):
+    def at_use(self, check, use):
         """This refusal inside the rescue; the original answer outside it."""
+        use = use - check if self.relative else use
         return self if self.start <= use <= self.through else self.outside
+
+
+def _local_script_credit(stmts, index, begun, placed, at, on, fails, parent):
+    """Retain a child script's local gate when its parent discards the child's status."""
+    local = _stops_step(stmts, index, on, fails)
+    if local is _LOST:
+        local = Reach(0, _LOST)
+    elif isinstance(local, int) and local >= 0:
+        local = Reach(placed[local] - at)
+    elif local is not None:
+        return parent
+    pair, credit = list(parent), (local, local if fails[index] else _NO_PIPEFAIL)
+    for slot, stage in enumerate((stmts[index].stages[-1], stmts[index].stages[0])):
+        reason = swallowed(stmts, index, stmts[index], stage, credit)
+        if reason is None:
+            reason = Reach(placed[-1] - at, pair[slot])
+        if type(reason) is Reach:
+            pair[slot] = reason
+        elif (isinstance(reason, RescueGate)
+              and (reason.outside is None or type(reason.outside) is Reach)):
+            pair[slot] = RescueGate(begun[reason.start] - at,
+                                    placed[reason.through] - at,
+                                    reason.outside, True)
+    return tuple(pair)
 
 
 class FunctionStatusGate(FunctionGate):
