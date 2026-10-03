@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
 - **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
   A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
   direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
