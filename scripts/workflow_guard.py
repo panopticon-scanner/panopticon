@@ -161,9 +161,9 @@ live, so a change that catches one fails there and edits this list.
   is read as shell besides: a `curl … | sh` there is caught, a check there clears nothing, and a
   non-shell body whose string spells a shell download (`print("$(curl … | sh)")`) is reported loud,
   filed under #2331. Its EXPANDING body is unread: a download there reads CLEAN beside no reported
-  fetch, though bash runs it (#2499's price, as `python3 - <<EOF` pays it); so does any body inside
-  a `$(...)` (`x=$($CMD <<'EOF' …)`), and a pipe into it no printer spells out (`echo "$X" | $CMD`)
-  is unread, both filed under #2331. What that leaves unread: an interpreter behind an option it
+  fetch, though bash runs it (#2499's price, as `python3 - <<EOF` pays it). Inside a `$(...)`, its
+  body is read first (#2598); a pipe into a `$` word no printer spells (`echo "$X" | $CMD`) stays
+  unread, filed under #2331. What that leaves unread: an interpreter behind an option it
   reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
   named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
   (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
@@ -235,16 +235,14 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 def _walk(stmts, stream_exec=False, inside=False):
     """([(statement index, Fetch)], [(statement index, why it is unread or carried)]).
 
-    Every download in the script, and every command this module cannot read, asked of each stage in
-    ONE walk -- the first read of each command substitution as a script of its own, so a caller that
-    walks inside a catch (`job_defects`) has read every text anything here reads.
+    Every download and unread command is asked of each stage in one walk. It reads every command
+    substitution as its own script, so a caller inside `job_defects` has read all text this reads.
 
     A fetch in a substitution is credited to the command that CONSUMES it -- `eval`, `sh -c`,
     `bash <(...)` -- because that is what decides whether the downloaded bytes become behaviour, and
-    so is one a variable carries (`carried`, where the walk found a fetch). Three forms are REPORTED
-    unread: a command that cannot be resolved (`shell_reader.unresolved_wrapper`), a stdin program
-    not readable as written (`_unread_stdin`), and a program a shell may run that the walk cannot
-    read (`unread_program`), which `kept` weighs."""
+    so is one a variable carries (`carried`, where the walk found a fetch). The unresolved command,
+    unread stdin program and other program a shell may run are REPORTED (`unresolved_wrapper`,
+    `_unread_stdin`, `unread_program`); `kept` weighs them."""
     found, unread = [], []
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
@@ -265,7 +263,9 @@ def _walk(stmts, stream_exec=False, inside=False):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            reason = _unread_stdin(stage) or unread_program(argv, stage, _walk, inside, before)
+            program = unread_program(argv, stage, _walk, inside, before)
+            reason = (program if inside and program
+                      else _unread_stdin(stage) or program)
             if reason:
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None

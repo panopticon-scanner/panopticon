@@ -1288,20 +1288,29 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertTrue(any(ungated % "$(...)" in w for w in found), found)
         self.assertFalse(any("@@" in w for w in found), found)
 
-    def test_2473_a_dollar_command_words_body_inside_a_substitution_is_unread(self):
-        # A documented gap, filed under #2331: `_walk` asks `_unread_stdin`
-        # before `unread_program`, so inside a `$(...)` the hand-off's `Idle`
-        # answers first and `substitution_script`, which would read the body
-        # and report its download, is never asked. Beside no reported fetch
-        # the step reads CLEAN though bash 3.2.57, 5.2.21 and dash run that
-        # download; the literal `sh` there is reported (the control).
-        for script in ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE,
-                       "x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE):
+    def test_2598_a_dollar_command_words_body_inside_a_substitution_is_read_first(self):
+        # Inside a `$(...)`, the script reader speaks before the hand-off's
+        # `Idle`: both value-form words run the body in bash 3.2.57, 5.2.21
+        # and dash, and its download is reported under the stable runner name.
+        inside = "hands a script to `%s` inside a command substitution"
+        for script, runner in (
+                ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$CMD"),
+                ("x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$(...)")):
             with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(inside % runner), found)
+        # The literal control keeps the same sentence.
         found = defects("x=$(sh <<'EOF'\n%s\nEOF\n)\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("inside a command substitution", found[0][1])
+        self.assertTrue(found[0][1].startswith(inside % "sh"), found)
+        # An innocuous body remains CLEAN alone. Beside GET, the same script
+        # sentence is `Idle` and replaces today's hand-off sentence.
+        clean = "CMD=sh\nx=$($CMD <<'EOF'\necho hi\nEOF\n)\n"
+        self.assertEqual([], defects(clean))
+        found = defects(GET + clean)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(inside % "$CMD"), found)
 
     def test_2473_a_printed_pipe_into_a_dollar_word_inside_a_substitution_is_weighed(self):
         # T25-M2: `stdin_scripts` yields a printer's spelled-out text for a `$`
