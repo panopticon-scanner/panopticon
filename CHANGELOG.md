@@ -11,6 +11,9 @@ evidence exposed.
   `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
   before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
   stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
 - **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
   relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
   workspace; subshells and command substitutions inherit, then restore, their caller. A branched
