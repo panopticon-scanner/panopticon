@@ -360,10 +360,10 @@ def _redirected(words, pattern):
     return any(pattern.match(shell_reader.readable(word)) for word in words)
 
 
-def _inline_consumer(stage, executors):
-    """The consumer after a close whose whole pipeline stayed in its argv."""
+def _inline_pipeline(stage):
+    """Stages after a close whose whole pipeline stayed in one argv."""
     if "|" not in stage.argv:
-        return None
+        return []
     pipeline: list[list[str]] = []
     current: list[str] = []
     for word in stage.argv[stage.argv.index("|") + 1:]:
@@ -385,22 +385,23 @@ def _inline_consumer(stage, executors):
             stdout_to_pipe=stdout,
             pipe_input_fds=("0",) if stdin else (),
         ))
-    return stream_consumer(following, executors)
+    return following
 
 
-def _closing_consumer(statement, executors):
-    """The consumer piped from a compound close in `statement`, or None."""
+def _closing_stream(statement, executors):
+    """The consumer at a close and whether its output can reach an outer close."""
     for position, stage in enumerate(statement.stages):
         one = shell_reader.Statement([stage], statement.separator)
         if _compound_delta(one) >= 0:
             continue
-        consumer = stream_consumer(statement.stages[position + 1:], executors)
+        following = statement.stages[position + 1:] or _inline_pipeline(stage)
+        if not stage.stdout_to_pipe:
+            return None, False
+        consumer = stream_consumer(following, executors)
         if consumer:
-            return consumer
-        consumer = _inline_consumer(stage, executors)
-        if consumer:
-            return consumer
-    return None
+            return consumer, True
+        return None, _stream_forwarded(following) if following else True
+    return None, True
 
 
 def compound_stream_consumer(stmts, position, executors):
@@ -417,9 +418,11 @@ def compound_stream_consumer(stmts, position, executors):
         depth += _compound_delta(statement)
         if depth >= containing:
             continue
-        consumer = _closing_consumer(statement, executors)
+        consumer, forwarded = _closing_stream(statement, executors)
         if consumer:
             return consumer
+        if not forwarded:
+            return None
         containing = max(0, depth)
         if not containing:
             break

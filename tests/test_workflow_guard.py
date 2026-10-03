@@ -3876,6 +3876,7 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                 "for value in one; do\n%s\ndone | sh\n" % self.FETCH,
                 "{ { %s; }; } | sh\n" % self.FETCH,
                 "{ { %s; } | sh; }\n" % self.FETCH,
+                "{ { %s; } | cat; } | sh\n" % self.FETCH,
                 "{ %s | cat; } | sh\n" % self.FETCH,
                 "{ %s | tee install.sh; } | sh\n" % self.FETCH,
                 "{ %s | sha256sum; } | sh\n" % self.FETCH,
@@ -3897,7 +3898,8 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
         for compound in ("{ echo \"$payload\"; } | sh\n",
                          "{\necho \"$payload\"\n} | sh\n",
                          "(\necho \"$payload\"\n) | sh\n",
-                         "case x in\n x) echo \"$payload\";;\nesac | sh\n"):
+                         "case x in\n x) echo \"$payload\";;\nesac | sh\n",
+                         "{ { echo \"$payload\"; }; } | sh\n"):
             with self.subTest(compound=compound):
                 why = wg.fetch_exec_defects(assignment + compound)
                 self.assertEqual(1, len(why), why)
@@ -3914,6 +3916,13 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                 "{ %s; }\nif true; then :; fi | sh\n" % self.FETCH,
                 "{ %s; if true; then echo safe; fi | sh; }\n" % self.FETCH,
                 "%s\n{ echo safe; } | sh\n" % self.FETCH,
+                "{ { %s; } > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; } | cat > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; }; } > install.sh | sh\n" % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } > install.sh; } | sh\n"
+                % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } | cat > install.sh; } | sh\n"
+                % self.FETCH,
         ):
             with self.subTest(script=script):
                 self.assertEqual([], wg.fetch_exec_defects(script))
