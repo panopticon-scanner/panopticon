@@ -831,6 +831,61 @@ class TestADollarSpelledPathOnEitherSideBindsByItsLastPart(unittest.TestCase):
                 self.assertEqual([], self.job(script))
 
 
+class TestADownloadRunFromADollarSpelledRedirection(unittest.TestCase):
+    """#2426: an interpreter can read a fetched script from a redirection.
+
+    The redirection path and the download destination use the same last-part
+    binding as an interpreter operand when either side has a dynamic directory.
+    """
+
+    URL = "https://example.test/x.sh"
+    GET = "curl -fsSLo x.sh %s\n" % URL
+    DYNAMIC_GET = 'curl -fsSLo "$PWD/x.sh" %s\n' % URL
+    CHECK = 'echo "%s  %%s" | sha256sum -c -\n' % ("a" * 64)
+
+    def job(self, script):
+        return [why for _name, why in wg.job_defects([("step", script)])]
+
+    def test_a_dynamic_source_path_is_the_download(self):
+        for use, shell in (('bash < "$PWD/x.sh"\n', "bash"),
+                           ('sh < "${PWD}/x.sh"\n', "sh"),
+                           ('sh < "$(pwd)/x.sh"\n', "sh"),
+                           ('D=$PWD\nbash < "$D/x.sh"\n', "bash")):
+            with self.subTest(use=use):
+                found = self.job(self.GET + use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `%s` from standard input" % shell, found[0])
+
+    def test_a_dynamic_destination_binds_a_literal_source_basename(self):
+        for source, shell in (("x.sh", "bash"), ("./x.sh", "sh"),
+                              ("scripts/x.sh", "bash")):
+            with self.subTest(source=source):
+                found = self.job(self.DYNAMIC_GET + "%s < %s\n" % (shell, source))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("-> $PWD/x.sh and running it under `%s` from standard input"
+                              % shell, found[0])
+
+    def test_another_path_or_a_non_interpreter_is_not_a_run(self):
+        for script in (self.GET + 'bash < "$PWD/other.sh"\n',
+                       self.GET + 'cat < "$PWD/x.sh"\n',
+                       "curl -fsSLo /tmp/x.sh %s\nbash < /opt/x.sh\n" % self.URL):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+        self.assertIn("running it under `bash` from standard input", "".join(
+            self.job(self.GET + "bash < x.sh\n")))
+        here_string = self.job(self.DYNAMIC_GET + "sh <<< 'x.sh'\n")
+        self.assertEqual(1, len(here_string), here_string)
+        self.assertNotIn("from standard input", here_string[0])
+
+    def test_a_check_keeps_its_exact_spelling(self):
+        self.assertEqual([], self.job(
+            self.GET + self.CHECK % "x.sh" + 'bash < "$PWD/x.sh"\n'
+        ))
+        found = self.job(self.GET + 'bash < "$PWD/x.sh"\n' + self.CHECK % "x.sh")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("only AFTER running it under `bash` from standard input", found[0])
+
+
 class TestADownloadWrittenToADollarSpelledPathBindsByItsBasename(unittest.TestCase):
     """#2442: the mirror of #2345 (b), and a fail-open until it. After
     `curl -o "$PWD/cuda_1.run"`, both `sh cuda_1.run` and
@@ -2523,18 +2578,88 @@ class TestAConditionalCheckGatesOnlyItsReachedPath(unittest.TestCase):
                 ))
 
 
-class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
-    """#2334 review I-1: the guard finds where a check's `&&` list ends by
-    counting compound commands, but the reader drops a line holding only `(`
-    or `)`. A count that never balanced was once credited through the step;
-    now a list whose end cannot be placed clears nothing after its check.
-    Review I-3: nor does a list followed by a `)` that no statement up to
-    the check opened -- `CHECK && (` ending its line, which the reader drops,
-    then `echo b` and `) 2>&1 | tee log` -- which read as a list ending its
-    own subshell, whose failure pipefail hands the step. Review N-7 gives such
-    lists their own refusal. #2474 now keeps a `case` arm's `)` inside its
-    substitution, so the case controls below take the normal readable-list
-    reason instead of this compatibility refusal."""
+class TestLineOnlySubshellBoundariesReachTheGuard(unittest.TestCase):
+    """#2420: a subshell closer carries its list, pipe, or detach separator."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+
+    def defects(self, body, shell):
+        script = self.FETCH + body.replace("CHECK", self.CHECK) + self.USE
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def assert_reported(self, body, shell, reason=None):
+        found = self.defects(body, shell)
+        self.assertEqual(1, len(found), found)
+        if reason is not None:
+            self.assertIn(reason, found[0][1])
+
+    def test_a_multiline_closer_keeps_each_unsafe_separator(self):
+        for shell in (None, "sh", "bash"):
+            for body, reason in (
+                    ("(\nCHECK\n) || true\n", "ends a group that hands its failure"),
+                    ("(\nCHECK\n) && echo verified\n", "runs ahead of `&&`"),
+                    ("(\nCHECK\n) &\nwait\n", "ends a group that is detached")):
+                with self.subTest(shell=shell, body=body):
+                    self.assert_reported(body, shell, reason)
+
+    def test_a_stdin_child_inside_the_subshell_keeps_the_closer(self):
+        for shell in (None, "sh", "bash"):
+            for runner, suffix in (("bash -s", ") || true\n"),
+                                   ("bash -s", ") &\nwait\n"),
+                                   ("sh", ") || true\n")):
+                body = "( %s <<'EOF'\nCHECK\nEOF\n%s" % (runner, suffix)
+                with self.subTest(shell=shell, runner=runner, suffix=suffix):
+                    self.assert_reported(body, shell)
+
+    def test_line_only_parens_keep_option_changes_inside_the_subshell(self):
+        for shell in (None, "sh", "bash"):
+            body = "set +e\n(\n  shopt -so errexit\n)\nCHECK\n"
+            with self.subTest(shell=shell, option="errexit"):
+                found = self.defects(body, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+        found = self.defects("(\n  shopt -so pipefail\n)\nCHECK | cat\n", None)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("where this guard reads `pipefail` as off", found[0][1])
+
+        for shell in (None, "sh", "bash"):
+            for prefix in ("(\n  set +e\n)\n", "(set +e; true) &\nwait\n"):
+                with self.subTest(shell=shell, option="errexit restored", prefix=prefix):
+                    self.assertEqual([], self.defects(prefix + "CHECK\n", shell))
+        for prefix in ("(\n  set +o pipefail\n)\n",
+                       "(set +o pipefail; true) &\nwait\n"):
+            with self.subTest(option="pipefail restored", prefix=prefix):
+                self.assertEqual([], self.defects(prefix + "CHECK | cat\n", "bash"))
+
+    def test_array_parens_cannot_cancel_a_later_subshell_boundary(self):
+        body = "arr=(\n  a\n)\nCHECK && (\n  echo skipped\n)\n"
+        for shell in (None, "bash"):
+            with self.subTest(shell=shell):
+                self.assert_reported(body, shell)
+
+    def test_a_plain_or_stopping_multiline_subshell_remains_a_gate(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("(\nCHECK\n)\n",
+                         "(\nCHECK && echo verified\n)\n",
+                         "( CHECK && case x in x) echo yes;; esac )\n",
+                         "(\nCHECK\n) || exit 1\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.defects(body, shell))
+
+    def test_the_one_line_unsafe_controls_stay_reported(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("( CHECK ) || true\n", "( CHECK ) &\nwait\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assert_reported(body, shell)
+
+
+class TestAConditionalListKeepsItsCompoundCommandBoundaries(unittest.TestCase):
+    """#2334, #2420 and #2474: the guard places the end of an `&&` list by
+    counting its visible compound commands. Line-only subshell boundaries and
+    case arms inside substitutions remain visible, so each list gets its real
+    reach instead of the compatibility refusal for an unread boundary."""
 
     FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
     CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
@@ -2543,24 +2668,17 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
     both = TestACheckAheadOfAndGatesOnlyItsList.both
 
     AHEAD = "runs ahead of `&&`, where the shell suspends `-e`"
-    LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for example a "
-            "line ending in `(` or starting with `)`, or a `case` inside `$(...)`), so it "
-            "clears nothing after its own command in that list")
-
     def assertAhead(self, body, shell, why=AHEAD):
         found = self.both(body, shell)
         self.assertEqual(1, len(found), found)
         self.assertIn("the checksum that names /tmp/payload " + why, found[0])
 
-    def assertLost(self, body, shell):
-        self.assertAhead(body, shell, self.LOST)
-
-    def test_a_lone_paren_line_clears_nothing_after(self):
+    def test_a_line_only_paren_keeps_the_ordinary_list_reach(self):
         for shell in (None, "sh", "bash"):
             for body in ("%s && ( echo a\n)\n", "%s && ( echo a\n  echo b\n)\n",
                          "%s && ( cd / && echo a\n)\n", "%s && (\n  echo a )\n"):
                 with self.subTest(shell=shell, body=body):
-                    self.assertLost(body, shell)
+                    self.assertAhead(body, shell)
 
     def test_a_case_inside_a_substitution_leaves_the_list_end_readable(self):
         bodies = (
@@ -2574,9 +2692,9 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                     self.assertAhead(body, shell)
 
     def test_the_spellings_the_count_reads_whole_keep_their_verdicts(self):
-        # The subshell on one line, both parens on lines of their own (the
-        # reader drops both, leaving the list), the substitution without the
-        # `if` and the `if` without the `case`: reported before and after.
+        # The subshell on one line, both parens on lines of their own, the
+        # substitution without the `if` and the `if` without the `case` all
+        # keep an ordinary readable list.
         for shell in (None, "sh", "bash"):
             for body in ("%s && ( echo a )\n", "%s && (\n  echo a\n)\n",
                          "%s && echo $(case x in x) echo y | cat;; esac)\n",
@@ -2590,9 +2708,9 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual([], self.both(body))
 
-    def test_a_paren_the_reader_dropped_after_and_ends_no_group(self):
-        # Under pipefail each read as a list ending its own subshell; bash
-        # skips the subshell after `&&` and runs the use.
+    def test_a_multiline_subshell_after_and_keeps_its_boundary(self):
+        # Each check heads an `&&` list whose skipped subshell cannot gate the
+        # later use, with or without pipefail.
         for shell, body in (("bash", "%s && (\n  echo b\n) 2>&1 | tee log\n"),
                             ("bash", "%s &&\n(\n  echo b\n) 2>&1 | tee log\n"),
                             ("bash", "%s && (\n  cd / && echo b\n) 2>&1 | tee log\n"),
@@ -2600,10 +2718,8 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                             (None, "set -o pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n"),
                             (None, "shopt -so pipefail\n%s && (\n  echo b\n) 2>&1 | tee log\n")):
             with self.subTest(shell=shell, body=body):
-                self.assertLost(body, shell)
-        # The controls, reported before and after: the subshell on one line,
-        # its `(` kept on the next statement, a `{ }` group after `&&`, and
-        # the dropped `(` where pipefail is off, now in the lost list's words.
+                self.assertAhead(body, shell)
+        # The controls keep that same ordinary `&&` reach.
         for shell in (None, "sh", "bash"):
             for body in ("%s && ( echo b ) 2>&1 | tee log\n", "%s && ( echo b\n) 2>&1 | tee log\n",
                          "%s && {\n  echo b\n} 2>&1 | tee log\n"):
@@ -2611,11 +2727,10 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
                     self.assertAhead(body, shell)
         for shell in (None, "sh"):
             with self.subTest(shell=shell):
-                self.assertLost("%s && (\n  echo b\n) 2>&1 | tee log\n", shell)
-        # The fail-closed price: `(` alone before the check gives the reader
-        # the same statements, so it is refused too, though bash stops the step
-        # there; a `{`, which the reader keeps, still reads as the group.
-        self.assertLost("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash")
+                self.assertAhead("%s && (\n  echo b\n) 2>&1 | tee log\n", shell)
+        # When the subshell contains the check, pipefail carries its failure
+        # and bash stops the step, just as it does for the brace twin.
+        self.assertEqual([], self.both("(\n  %s && echo b\n) 2>&1 | tee log\n", "bash"))
         self.assertEqual([], self.job("{\n  %s && echo b\n} 2>&1 | tee log\n", "bash"))
 
     def test_a_case_inside_a_substitution_is_readable_whatever_surrounds_it(self):
@@ -2654,22 +2769,22 @@ class TestAListWhoseEndTheReaderLostFailsClosed(unittest.TestCase):
             with self.subTest(shell=shell):
                 self.assertEqual([], self.both("( %s && " + sub + " )\n", shell))
 
-    def test_the_refusal_keeps_its_reach_inside_a_script_handed_on(self):
-        # Review N-7: a lost list's check still stops the rest of its own
-        # command. Inside `sh -ec '...'` that is the rest of the script, which
-        # bash 5.2.21 and dash never reach; a use after the command is refused.
+    def test_a_child_check_ahead_of_and_keeps_its_real_reach(self):
+        # Inside `sh -ec '...'` the failed check stops the rest of the child
+        # script. The child command itself is ahead of an outer `&&`, so its
+        # failure does not gate a use after that outer list.
         for shell in (None, "sh", "bash"):
             for body in ("sh -ec '%s; chmod +x /tmp/payload; /tmp/payload' && ( echo a\n)\n",
                          "{ sh -ec '%s; chmod +x /tmp/payload; /tmp/payload'; } && ( echo a\n)\n"):
                 with self.subTest(shell=shell, body=body):
                     self.assertEqual([], self.both(body + "echo done\n", shell, use=""))
             with self.subTest(shell=shell):
-                self.assertLost("sh -ec '%s' && ( echo a\n)\n", shell)
+                self.assertAhead("sh -ec '%s' && ( echo a\n)\n", shell)
 
 
 class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
     """#2334 and #2338 review I-2: a check that is the last command of a
-    `{ }` group -- or of a `( )` whose `(` line the reader dropped -- is the
+    `{ }` or `( )` group, including one with line-only boundaries, is the
     group's status, so what bash applies to it is what follows the group:
     ahead of `&&` or `||` it suspends `-e` for the whole group, a piped group
     loses its status where pipefail is off, and `&` detaches it. The reader
@@ -2935,7 +3050,7 @@ class TestAUseInTheChecksPipelineIsConcurrent(unittest.TestCase):
         found = wg.job_defects([wg.Step("run", body, "bash")])
         self.assertIn("same pipeline", found[0][1])
 
-    def test_a_line_only_subshell_opener_stays_fail_closed(self):
+    def test_a_line_only_subshell_opener_keeps_the_concurrent_pipeline(self):
         body = self.FETCH + ("(\nCHECK && echo ok\n) | sh payload\n"
                              .replace("CHECK", self.CHECK))
         for shell in (None, "sh", "bash"):
@@ -4109,17 +4224,13 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(("run", run))
 
-    def test_a_subshell_whose_paren_is_alone_on_its_line_empties_a_carried_download(self):
-        # Review I-2: the reader drops a line holding only `(` or `)`, so the
-        # reassignment inside reads as the step's own and empties the variable,
-        # though bash runs the download; on one line the group is read, and
-        # keeps it held.
+    def test_a_subshell_with_line_only_parens_keeps_a_carried_download(self):
+        # A reassignment in a subshell does not escape it, whether the parens
+        # share its commands' lines or occupy their own.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        # Emptied, the name carries nothing #2341 can name -- what stands is
-        # #2483's unread program word; held, the sentence is the carried one.
-        self.assertIn("a program this guard does not follow",
-                      self.flagged(("run", get + '(\n  x=1\n)\neval "$x"\n')))
-        self.assertIn("carries", self.flagged(("run", get + '( x=1 )\neval "$x"\n')))
+        for group in ('(\n  x=1\n)\n', '( x=1 )\n'):
+            with self.subTest(group=group):
+                self.assertIn("carries", self.flagged(("run", get + group + 'eval "$x"\n')))
 
     # Grouping parentheses are read with or without surrounding whitespace.
     def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
