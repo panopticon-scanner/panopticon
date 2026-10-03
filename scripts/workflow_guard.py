@@ -65,7 +65,7 @@ live, so a change that catches one fails there and edits this list.
   mirror #2442 with a literal basename; argv only), and for a glob where one spells the download's
   or the download is a bare name. A download kept in a variable is followed to a shell whole
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
-  `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
+  `> f`; `( x=1 )` empties it in neither spelling, the `(` alone on its line kept (#2420). A
   value in shell options (`sh $X '…'`) is not followed; later words are read as `-c` strings
   (`candidates`, #2344) to the first operand and past a later word that may expand to an option, as
   the operand may be an option's value (`--rcfile f $Y '…'`, #2484): `X=-c; sh $X tool '…'` and

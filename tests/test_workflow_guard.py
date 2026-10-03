@@ -1293,16 +1293,18 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # A `{ }` group and a function body are read as `_errexit_states` reads
         # them, not as the step's own scope, though bash runs `{ x=1; }` and a
         # called `f() { x=1; }` in it and then runs nothing: accepted
-        # over-reports. A group closed before the reassignment is out of the way.
+        # over-reports. A group closed before the reassignment is out of the way,
+        # its `(` or `)` on a line of its own too (#2420 keeps such a line).
         for between in ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
-                        "f() { x=1; }\n", "f() {\n  x=1\n}\n", "function f { x=1; }\n",
-                        "f() { local x=1; }\nf\n", "f() { declare x=1; }\nf\n",
-                        "f() { x=1; }\nf\n", "{ x=1; }\n"):
+                        "(\n  x=1\n)\n", "f() { x=1; }\n", "f() {\n  x=1\n}\n",
+                        "function f { x=1; }\n", "f() { local x=1; }\nf\n",
+                        "f() { declare x=1; }\nf\n", "f() { x=1; }\nf\n", "{ x=1; }\n"):
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)
                 self.assertIn(self.SAID % ("eval", ""), why[0])
-        for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "f() { :; }\nx=1\n"):
+        for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "( cd .\n)\nx=1\n",
+                        "(\n  cd .\n)\nx=1\n", "f() { :; }\nx=1\n"):
             with self.subTest(between=between):
                 self.not_carried(self.GET + between + 'eval "$x"\n')
 

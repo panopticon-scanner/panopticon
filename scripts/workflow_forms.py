@@ -539,9 +539,9 @@ def carried(stmts, executors):
     in a scope of its own. Where bash does empty it before the use, the name stays held, which is
     fail-closed: `eval 'x=:'`, `{ x=1; }`, a called `f() { x=1; }`, a use inside the same `( )` as
     its reassignment (`(x=1; eval "$x")`), bash's arithmetic `((x=1))` (dash runs it as two
-    subshells), and any reassignment after an argument `{` (`echo {`) or after a `( ...` whose `)`
-    stands alone on its line. The reader drops a line holding only `(` or `)`, so a subshell opened
-    on one reads as the step's own scope: the guard's gap list.
+    subshells), and any reassignment after an argument `{` (`echo {`). A line holding only `(` or
+    `)` is a stage the reader keeps (#2420), so a subshell opened or closed on its own line reads
+    as the `( )` it is.
 
     More readings fail closed. The reader drops quotes, so `eval '$x'` and `sh -c '$x'` read as
     `"$x"`: bash runs the first as one command made of the payload's words -- a true positive -- and
