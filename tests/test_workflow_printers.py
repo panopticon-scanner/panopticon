@@ -49,20 +49,28 @@ class TestACatPrintsItsQuotedHeredoc(unittest.TestCase):
         self.assertIn("`sh`", found[0][1])
 
     def test_the_controls_read_as_they_did(self):
-        # a03 (CLEAN: the body is no download), a04 (CLEAN: `tee` is no shell), a05 alone (CLEAN:
-        # `cat -n` is no printer -- R-P5 -- bash-truth "1: command not found"), `cat`'s file-operand
+        # a03 (CLEAN: the body is no download), a04 (CLEAN: `tee` is no shell), `cat`'s file-operand
         # rule (R-P5, beside #2293's pre-existing `cat tool | sh`).
         for script in ("cat <<'EOF' | sh\necho hi\nEOF\n",
                        "cat <<'EOF' | tee x.sh\n%s\nEOF\n" % PIPE,
-                       "cat -n <<'EOF' | sh\n%s\nEOF\n" % PIPE,
                        "echo hi > notes.txt\ncat notes.txt | sh\n"):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-        # `cat -n` beside an already-reported use of the SAME download: exactly the one row the
-        # use's own fetch-and-exec sentence gives, no second row about the `cat -n` heredoc.
-        found = defects(GET + "cat -n <<'EOF' | sh\n%s\nEOF\n" % PIPE + "sh tool\n")
+        # a05, flipped by fix round 4 (R-F14): `cat -n` reads its own stdin, so its body is read
+        # as written -- an OVER-report (bash-truth -- x4, measured as g01: `-n` numbers the line,
+        # so the inner `sh` runs `1`, "1: command not found"), the price of reading every option's
+        # `cat` as printing its body, rather than leaving `cat -u`/`-s`/`-v` (FR x4) unread.
+        found = defects("cat -n <<'EOF' | sh\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("running it under `sh`", found[0][1])
+        self.assertIn("i.sh straight to `sh`", found[0][1])
+        # `cat -n` beside an already-reported use of the SAME download (g17, bash-truth FR x4 from
+        # the `sh tool` line alone): the use's own fetch-and-exec row, and beside it the `cat -n`
+        # body's over-reported one (R-F14) -- no longer the use's row alone.
+        found = defects(GET + "cat -n <<'EOF' | sh\n%s\nEOF\n" % PIPE + "sh tool\n")
+        self.assertEqual(2, len(found), found)
+        whys = [why for _n, why in found]
+        self.assertTrue(any("running it under `sh`" in why for why in whys), whys)
+        self.assertTrue(any("i.sh straight to `sh`" in why for why in whys), whys)
         # GET + `cat tool | sh` is still the pre-existing file rule, unaffected.
         self.assertTrue(defects(GET + "cat tool | sh\n"))
 
@@ -351,7 +359,9 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
                          "curl -fsSL https://example.test/i.sh | sh\nEOF\n")
         self.assertEqual(1, len(found), found)
         self.assertIn("i.sh", found[0][1])
-        # `cat -n f <<'EOF' | sh` (an OPTION, not just a file beside `-`) is still no printer.
+        # `cat -n f <<'EOF' | sh` is still no printer, though no longer for its option (R-F14):
+        # `f` is its only operand and no `-` stands beside it, so `cat` never reads its stdin
+        # (bash-truth -- x4, measured as g18: "cat: f: No such file or directory").
         self.assertEqual([], defects("cat -n f <<'EOF' | sh\ncurl -fsSL https://example.test/"
                                      "i.sh | sh\nEOF\n"))
 
@@ -438,15 +448,19 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("running it under", found[0][1])
 
-    def test_n07_eval_is_unaffected(self):
+    def test_n07_an_eval_holder_reads_both_ways_and_reports(self):
         # n07 (bash-truth: F- x4 -- an accepted over-report for an unmeasured runner, same family
         # as r68/ksh): `eval` has never been in `_ECHO`, so it already read as `ANY` by the lookup
-        # miss alone (R-F1), with no `Named` involved at all -- loud at 55cacce3 and loud after, a
-        # regression control proving R-F7 changes nothing for the case it does not touch.
+        # miss alone (R-F1), with no `Named` involved at all. A POSITIVE against main, which gave
+        # only the printer's `_Quiet` here (re-review #2's R2-M2): the fetch-and-exec sentence
+        # under both keys, as at 55cacce3 -- R-F7 changed nothing for it, which is all the old
+        # name ("is unaffected") ever showed.
         found = defects(self.GET + "eval 'bash -s' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
         found = defects(self.GET + "eval 'bash -s' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n", "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_the_ungated_sentence_still_names_the_holder_not_any(self):
         # The controller's own naive fix (a bare `ANY` in the hook) broke `_UNGATED`'s sentence,
@@ -504,6 +518,7 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         x07 = self.GET + "eval \"echo 'sh\\ttool\\c; %s' | sh\"\n" % check
         found = defects(x07)
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
         found = defects(x07, "sh")
         self.assertEqual(1, len(found), found)
         self.assertIn("running it under", found[0][1])
@@ -518,6 +533,7 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
                 with self.subTest(step=step, shell=shell):
                     found = defects(script, shell)
                     self.assertEqual(1, len(found), found)
+                    self.assertIn("running it under", found[0][1])
         # x10 (the control without `eval`'s ANY wrapping: ONE measured reading, bash's own) --
         # CLEAN under bash (no `-e`, no decode), D under `sh`/dash (always decodes).
         check = "echo %s  tool | sha256sum -c -" % ("a" * 64)
@@ -525,6 +541,7 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         self.assertEqual([], defects(x10))
         found = defects(x10, "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_v01_v04_a_vanishing_value_may_hand_the_body_elsewhere(self):
         # v01 (bash-truth: F- FR FR FR): `X='-c sh'; bash $X <<'EOF'` -- the VALUE `$X` may resolve
@@ -536,8 +553,9 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         # under both keys, the tab decodes regardless of which reading wins once `Named` is in play.
         v02 = self.GET + "X='-c bash'\nsh $X <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n"
         # v03 (bash-truth: FR x4): v02's body under `sh -s $X` -- `-s` makes the reader the
-        # holder's own argv, but `$X` still stands among its words, so `runs_under`'s `candidates`
-        # check still routes it to `Named`, not the plain-name branch. D under both keys.
+        # holder's own argv, but `$X` still stands among its words, so `runs_under`'s word test
+        # (`_may_spell_option`, R-F12) still routes it to `Named`, not the plain-name branch. D
+        # under both keys.
         v03 = self.GET + "X='-c bash'\nsh -s $X <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n"
         # v04 (bash-truth: F- FR FR FR): v01's body under `bash -s $X` -- the same `-s`-plus-value
         # shape as v03, the other way round. D under both keys.
@@ -551,8 +569,8 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
 
     def test_bash_s_c_echo_hi_control_still_reads_under_bash(self):
         # The one shape R-F9 must NOT touch: `bash -s -c 'echo hi' <<'EOF'` -- `-s` makes the
-        # reader the holder's own argv, and `candidates` finds no value among its words (`-c`'s
-        # STRING is its own operand, not a value this module follows), so `runs_under`'s plain-name
+        # reader the holder's own argv, and no word of its own may spell an option (`-c`'s STRING
+        # `echo hi` holds no expansion: `_may_spell_option`, R-F12), so `runs_under`'s plain-name
         # branch still applies -- CLEAN, read under bash's own (literal) table, same as n03.
         self.assertEqual([], defects(
             self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
@@ -564,7 +582,8 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         self.assertIsInstance(v01_shape, wp.Named)
         self.assertIs(wp.ANY, v01_shape.runner)
         # v03/v04's shape: `-s` present, so `_stdin` gives the holder's OWN argv as reader, but a
-        # value still stands among its words -- `candidates` keeps it out of the plain-name branch.
+        # value still stands among its words -- `_may_spell_option` (R-F12) keeps it out of the
+        # plain-name branch.
         argv = ["sh", "-s", "$X"]
         v03_shape = forms.runs_under(argv, argv, "sh")
         self.assertIsInstance(v03_shape, wp.Named)
@@ -587,15 +606,274 @@ class TestFixRound3CatDashDashReadsStdin(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("i.sh", found[0][1])
 
-    def test_a_file_operand_or_an_earlier_option_still_rule_it_out(self):
+    def test_a_file_operand_rules_it_out_an_earlier_option_no_longer_does(self):
         # `cat -- f <<'EOF' | sh` prints `f` only, like `cat f` -- the heredoc is `cat`'s own data,
         # unread (no printer: `f` alone, no `-`, among its operands).
         self.assertEqual([], defects(
             "cat -- f <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n"))
-        # `cat -n -- <<'EOF' | sh`: an option word BEFORE the `--` still rules it out -- `--` only
-        # strips ONE LEADING pair, so a real option ahead of it still disqualifies.
-        self.assertEqual([], defects(
-            "cat -n -- <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n"))
+        # x23d `cat -n -- <<'EOF' | sh`, flipped by fix round 4 (R-F14): an option word before the
+        # `--` no longer rules the `cat` out -- it has no operand, so it reads its stdin, and its
+        # body is read as written. An OVER-report (bash-truth -- x4: `-n` numbers the line, so the
+        # inner `sh` runs `1`, "1: command not found"), R-F14's named price.
+        found = defects("cat -n -- <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("i.sh straight to `sh`", found[0][1])
+
+
+class TestFixRound4(unittest.TestCase):
+    """Re-review #2's R2-C1, R2-C2, R2-I1 and R2-M1 (rulings R-F11-R-F14). R-F11: an `echo` whose
+    readings are one spelled and one unspelled is a text no shell is sure of -- the readings are
+    counted BEFORE the None one is dropped -- so a check the spelled one holds no longer clears the
+    printer the unspelled one leaves. R-F12: a word that may spell an option anywhere among the
+    holder's words before `--` (an option's value slot, `-o $X`/`-O $X`, or an option word that
+    expands, `-$X`) may hand the body to another shell, so its printers read both ways. R-F13: an
+    EXPANDING body a `cat` hands down a pipe is no printer for `unprinted`, so `_unread_stdin`
+    reports it inside a `$(...)` too. R-F14: a `cat` reading its stdin prints its body as written,
+    options or not, and the FIRST `--` ends its options wherever it stands. Truth columns are b5,
+    b3, dash and gh (GitHub's default pairing), measured on this box, whose `cat` is BSD's."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+    CHECK = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+    PIPE = "curl -fsSL https://example.test/i.sh | sh\n"
+    FETCH_EXEC = "fetches https://example.test/tool -> tool and running it under `sh`"
+
+    def test_y01_y09_a_check_one_reading_spells_no_longer_clears_the_unspelled_one(self):
+        # y01 (bash-truth: F- FR FR FR), y02 (F- F- FR F-), y03 (F- FR FR FR), y08 (F- F- FR F-),
+        # y09 (F- FR FR FR): x11, x07 and v04 with an out-of-table `\x` in the `echo` text, so
+        # `spellings` gives bash's literal reading and a None (the decoding one stops at `\x`).
+        # The None was dropped BEFORE the count, so the spelled text kept the REAL reader and its
+        # check cleared the printer `unprinted` raises for the unspelled reading: CLEAN under both
+        # keys at c3113439. Now that text is `Unsure` and the printer's `_Quiet` stands -- main's
+        # answer. Not the fetch-and-exec sentence: the reading that runs `tool` is the unspelled
+        # one, and no reading this module spells uses `tool` (bash's runs one word, `shttool…`).
+        sh_eval = "sh <<'EOF'\neval \"echo '%s' | sh\"\nEOF\n"
+        steps = {"y01": self.GET + sh_eval % ("echo \\x; sh\\ttool\\c; " + self.CHECK),
+                 "y02": self.GET + "eval \"echo 'echo \\x; sh\\ttool\\c; %s' | sh\"\n" % self.CHECK,
+                 "y03": self.GET + "X='-c sh'\nbash -s $X <<'EOF'\necho 'echo \\x; sh\\ttool\\c; "
+                        "%s' | sh\nEOF\n" % self.CHECK,
+                 "y08": self.GET + "eval \"echo 'sh\\ttool; echo \\x; %s' | sh\"\n" % self.CHECK,
+                 "y09": self.GET + sh_eval % ("sh\\ttool; echo \\x; " + self.CHECK)}
+        for step, script in steps.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIsInstance(found[0][1], forms._Quiet)
+                    self.assertIn("pipes `sh` its program from `echo`", found[0][1])
+        # y07 (bash-truth: F- FR FR FR): y01 with no check at all -- the `_Quiet` it always had,
+        # which y01-y09 now share: a check in the spelled reading changes nothing.
+        y07 = self.GET + sh_eval % "echo \\x; sh\\ttool\\c; echo hi"
+        for shell in (None, "sh"):
+            with self.subTest(step="y07", shell=shell):
+                found = defects(y07, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIsInstance(found[0][1], forms._Quiet)
+
+    def test_y10_y11_a_download_a_spelled_reading_holds_is_still_reported(self):
+        # y10 (bash-truth: FR x4; `[spelled, None]`) and y11 (FR x4; two spelled readings): an
+        # `eval`'s `echo` printing `curl … | sh` -- D+D under both keys, as at c3113439. y10: the
+        # printer's words fetch as written (`_PRINTED`, loud) beside the spelled text's `curl |
+        # sh`; y11: each reading's `curl | sh`.
+        y10 = "eval \"echo 'curl -fsSL https://example.test/i.sh | sh; echo \\x' | sh\"\n"
+        y11 = "eval \"echo 'curl -fsSL https://example.test/i.sh | sh; echo \\t' | sh\"\n"
+        for step, script in (("y10", y10), ("y11", y11)):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertFalse(any(isinstance(w, forms._Quiet) for _n, w in found), found)
+                    self.assertTrue(any("i.sh straight to `sh`" in w for _n, w in found), found)
+
+    def test_stdin_scripts_counts_a_none_reading_before_it_drops_it(self):
+        # `[spelled, None]` under `Named("bash")` (`ANY` for the printers): ONE text, and no reader.
+        stages = shell_reader.statements("echo 'echo \\x; sh\\ttool' | sh\n")[0].stages
+        argv = shell_reader.command(stages[1].argv)
+        self.assertEqual(["echo \\x; sh\\ttool\n", None],
+                         wp.spellings(shell_reader.command(stages[0].argv), stages[0],
+                                      wp.Named("bash")))
+        texts = forms.stdin_scripts(argv, stages[1], stages[0], wp.Named("bash"))
+        self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
+        self.assertIsNone(texts[0].reader)
+        # One spelled reading alone keeps the real reader (bash's own table: `[spelled]`).
+        texts = forms.stdin_scripts(argv, stages[1], stages[0], "bash")
+        self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
+        self.assertIs(argv, texts[0].reader)
+
+    def test_z04_z06_a_value_in_an_option_slot_hands_the_body_on(self):
+        # z04 `bash -o $X` (X='posix -c sh'), z05 `bash -$X` (X='c sh'), z06 `bash -O $X`
+        # (X='extglob -c sh'); bash-truth for each: F- FR FR FR -- the value becomes `-c sh`, and
+        # `sh` reads the body and decodes the tab. `runs_under` asked `candidates`, which never
+        # weighs an option's value slot or reads `-$X` as more than a letter cluster with no `c`,
+        # so it gave the plain `bash` and its literal table: CLEAN under both keys at c3113439.
+        # Now a word before `--` that may spell an option (`_may_spell_option`) makes it `Named`.
+        body = "<<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"
+        steps = {"z04": "X='posix -c sh'\nbash -o $X ", "z05": "X='c sh'\nbash -$X ",
+                 "z06": "X='extglob -c sh'\nbash -O $X "}
+        for step, holder in steps.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder + body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(self.FETCH_EXEC + " with nothing verifying what arrived",
+                                  found[0][1])
+
+    def test_r_f12_reads_the_other_holders_as_they_were(self):
+        body = "<<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"
+        # Plain `bash` (CLEAN, every column F-): z01 `bash -s -- "$VALUE"` (the value is past
+        # `--`, a parameter), z08 `bash -s -c 'echo hi'`, s01 `bash -s -c 'echo $X'` (the `$` is
+        # inside a string bash runs itself and begins no word: measured F- x4, `echo` prints
+        # `-c sh` and nothing reads the body), n03 `bash <<'EOF'` (no word at all).
+        clean = {"z01": "VALUE='-c sh'\nbash -s -- \"$VALUE\" ",
+                 "z08": "bash -s -c 'echo hi' ",
+                 "s01": "export X='-c sh'\nbash -s -c 'echo $X' ", "n03": "bash "}
+        for step, holder in clean.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    self.assertEqual([], defects(self.GET + holder + body, shell))
+        # `Named`, as before R-F12: n04 `X=-s; bash $X` (F- x4, R-F9's accepted over-report) and
+        # z02 `bash "$X"` (F- x4: bash refuses the one word `-c sh`) -- the fail-closed price of
+        # reading every `$` word that may spell an option, quoted or not -- and v01 `bash $X`
+        # (F- FR FR FR).
+        loud = {"n04": "X=-s\nbash $X ", "z02": "X='-c sh'\nbash \"$X\" ",
+                "v01": "X='-c sh'\nbash $X "}
+        for step, holder in loud.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder + body, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(self.FETCH_EXEC, found[0][1])
+        # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): a `-c` string that is a `$` word may name the
+        # shell reading the body too -- the dynamic program's `_Quiet` as before, and now the
+        # download the body runs beside it (c3113439: the `_Quiet` alone).
+        for shell in (None, "sh"):
+            with self.subTest(step="z09", shell=shell):
+                found = defects(self.GET + "S=sh\nbash -s -c \"$S\" " + body, shell)
+                self.assertEqual(2, len(found), found)
+                self.assertIsInstance(found[0][1], forms._Quiet)
+                self.assertIn(self.FETCH_EXEC, found[1][1])
+
+    def test_runs_under_weighs_every_word_before_dashdash(self):
+        for argv in (["bash", "-o", "$X"], ["bash", "-$X"], ["bash", "-O", "$X"]):
+            with self.subTest(argv=argv):
+                runner = forms.runs_under(argv, argv, "bash")
+                self.assertIsInstance(runner, wp.Named)
+                self.assertIs(wp.ANY, runner.runner)
+        for argv in (["bash", "-s", "--", "$VALUE"], ["bash", "-s", "-c", "echo $X"]):
+            with self.subTest(argv=argv):
+                self.assertIs(str, type(forms.runs_under(argv, argv, "bash")))
+                self.assertEqual("bash", forms.runs_under(argv, argv, "bash"))
+
+    def test_f01_f09_f02_an_expanding_cat_body_in_a_substitution_is_reported(self):
+        # f01 (bash-truth: FR x4) and f09 (-- x4, `echo hi`): `x=$(cat <<EOF | sh …)`. #2702's
+        # order lets `unread_program` speak first inside a substitution, and `unprinted` took the
+        # EXPANDING `cat` for a printer it cannot spell: a `_Quiet` nothing kept, CLEAN under both
+        # keys at c3113439 (D at 240d72a4). That `cat` is no printer now, so `_unread_stdin`
+        # speaks: the EXPANDING sentence, fetch or no fetch.
+        f01 = "x=$(cat <<EOF | sh\n%sEOF\n)\n" % self.PIPE
+        f09 = "x=$(cat <<EOF | sh\necho hi\nEOF\n)\n"
+        for step, script in (("f01", f01), ("f09", f09)):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0][1].startswith("hands an EXPANDING heredoc body"),
+                                    found[0][1])
+                    self.assertIn("`sh`", found[0][1])
+        # f02 (FR x4): f01 beside GET and `sh tool` -- D+D, where c3113439 gave Q+D.
+        for shell in (None, "sh"):
+            with self.subTest(step="f02", shell=shell):
+                found = defects(self.GET + f01 + "sh tool\n", shell)
+                self.assertEqual(2, len(found), found)
+                self.assertFalse(any(isinstance(w, forms._Quiet) for _n, w in found), found)
+                self.assertTrue(found[0][1].startswith("hands an EXPANDING heredoc body"))
+                self.assertIn(self.FETCH_EXEC, found[1][1])
+
+    def test_the_other_expanding_and_value_shapes_read_as_they_did(self):
+        expanding = "hands an EXPANDING heredoc body"
+        in_subst = "hands a script to `%s` inside a command substitution"
+        # f03 `x=$(cat <<'EOF' | sh …)` (FR x4): the quoted body, read inside the substitution.
+        # f04/f11 `x=$(sh <<EOF …)` (FR x4 / -- x4) and f05/f13 top-level `cat <<EOF | sh` (FR x4 /
+        # -- x4): the EXPANDING sentence. f06 `x=$($CMD <<'EOF' …)` (FR x4): #2598's own sentence.
+        cases = (("f03", "x=$(cat <<'EOF' | sh\n%sEOF\n)\n" % self.PIPE, in_subst % "sh"),
+                 ("f04", "x=$(sh <<EOF\n%sEOF\n)\n" % self.PIPE, expanding),
+                 ("f11", "x=$(sh <<EOF\necho hi\nEOF\n)\n", expanding),
+                 ("f05", "cat <<EOF | sh\n%sEOF\n" % self.PIPE, expanding),
+                 ("f13", "cat <<EOF | sh\necho hi\nEOF\n", expanding),
+                 ("f06", "CMD=sh\nx=$($CMD <<'EOF'\n%sEOF\n)\n" % self.PIPE, in_subst % "$CMD"))
+        for step, script, why in cases:
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0][1].startswith(why), found[0][1])
+        # e01 `cat <<'EOF' | $CMD` and e05 `cat <<EOF | $CMD` (FR x4): the `$CMD` hand-off `Idle`
+        # beside the body's `curl | sh`, I+D as at c3113439 -- `unprinted` never weighs a `$` word.
+        for step, heredoc in (("e01", "<<'EOF'"), ("e05", "<<EOF")):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects("CMD=sh\ncat %s | $CMD\n%sEOF\n" % (heredoc, self.PIPE), shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertIs(forms.Idle, type(found[0][1]))
+                    self.assertIn("i.sh straight to `sh`", found[1][1])
+
+    def test_a_cat_reading_its_stdin_prints_its_body_whatever_its_options(self):
+        # Each bash-truth FR x4 (BSD `cat` here; GNU's, per its manual, prints these the same):
+        # `-u`, `-s`, `-v` (an ASCII body) and `-t` (a body without a tab) print the body whole;
+        # z11 `cat - --` and `cat - -- -n` read `-` first (BSD then fails on the file `--`/`-n`,
+        # GNU takes `--` as the end of its options); `-n` before `true; curl … | sh` spoils only
+        # `true`, and `-e` after `curl … | sh; true` only `true$`. CLEAN under both keys before.
+        cases = {"-u": "cat -u", "-s": "cat -s", "-v": "cat -v", "-t": "cat -t",
+                 "z11": "cat - --", "- -- -n": "cat - -- -n"}
+        for step, cat in cases.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects("%s <<'EOF' | sh\n%sEOF\n" % (cat, self.PIPE), shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("i.sh straight to `sh`", found[0][1])
+        for option, body in (("-n", "true; " + self.PIPE),
+                             ("-e", self.PIPE.rstrip("\n") + "; true\n")):
+            with self.subTest(option=option, body=body):
+                found = defects("cat %s <<'EOF' | sh\n%sEOF\n" % (option, body))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("i.sh straight to `sh`", found[0][1])
+        # `cat -u <<EOF | sh` (FR x4): an EXPANDING body is `_unread_stdin`'s, options or not.
+        found = defects("cat -u <<EOF | sh\n%sEOF\n" % self.PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands an EXPANDING heredoc body"), found[0][1])
+
+    def test_an_option_that_spoils_or_empties_the_body_is_over_reported(self):
+        # R-F14's price, D under both keys though nothing runs the download: `-n`/`-b` (-- x4: the
+        # number is the line's first word, "1: command not found"), `-e` (F- x4: `curl` runs, but
+        # `sh$` is no command), and `-l` (-- x4: BSD's lock fails on a pipe, GNU has no `-l`).
+        # `-E`, `-T` and `-A` are -- x4 HERE, where BSD's `cat` refuses them ("illegal option");
+        # GNU's takes them, per its manual: `-T` prints the tab-free body whole (a real catch
+        # there), `-E`/`-A` end each line with `$` (F-, as `-e`).
+        for option in ("-n", "-b", "-e", "-l", "-E", "-T", "-A"):
+            for shell in (None, "sh"):
+                with self.subTest(option=option, shell=shell):
+                    found = defects("cat %s <<'EOF' | sh\n%sEOF\n" % (option, self.PIPE), shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("i.sh straight to `sh`", found[0][1])
+
+    def test_the_first_dashdash_ends_the_options_and_a_file_operand_still_rules_it_out(self):
+        # z10 `cat -- --` and `cat -- -n` (-- x4 each): every word after the first `--` is an
+        # operand, here a FILE that does not exist, and no `-` stands among them, so `cat` never
+        # reads its stdin -- CLEAN, as main and c3113439 were.
+        for cat in ("cat -- --", "cat -- -n"):
+            for shell in (None, "sh"):
+                with self.subTest(cat=cat, shell=shell):
+                    self.assertEqual([], defects("%s <<'EOF' | sh\n%sEOF\n" % (cat, self.PIPE),
+                                                 shell))
+
+    def test_cat_reads_stdin_unit_pins(self):
+        for argv in (["cat"], ["cat", "-u"], ["cat", "-n", "--"], ["cat", "-", "--"],
+                     ["cat", "-", "--", "-n"], ["cat", "f", "-"], ["cat", "--", "-"]):
+            with self.subTest(argv=argv):
+                self.assertTrue(wp._cat_reads_stdin(argv))
+        for argv in ([], ["cat", "--", "-n"], ["cat", "--", "--"], ["cat", "-n", "f"],
+                     ["cat", "--", "f"], ["tac"]):
+            with self.subTest(argv=argv):
+                self.assertFalse(wp._cat_reads_stdin(argv))
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
