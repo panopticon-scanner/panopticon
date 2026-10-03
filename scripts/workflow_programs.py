@@ -15,13 +15,14 @@ it, the stage in front of it (#2333):
                       language, where a table names it (`$CMD` is a value none places)
     `stdin_scripts`   the quoted body that program is, where it is or may be shell, the heredoc or
                       here-string a `cat` printer in front hands down the pipe (`handed`, #2467), or
-                      the text an `echo` or `printf` pipes in under the step's own shell (`printed`,
-                      #2476), each a `Stdin` naming the shell the step itself runs to read it, under
-                      whose `-e` a check in it runs -- or none, where no check in it counts
-    `unprinted`       the printer piping one in whose text `printed` cannot spell out -- a heredoc-
-                      fed `cat` among them (#2467) -- for `unread_program` to weigh; `printed`,
-                      `handed`, the pipe test `_piped` and the `_PRINTERS` table live in
-                      `workflow_printers` and are re-exported here
+                      the text (one per distinct reading, `spellings`, #2476 fix round 1 R-F1) an
+                      `echo` or `printf` pipes in under the step's own shell (`printed`), each a
+                      `Stdin` naming the shell the step itself runs to read it, under whose `-e` a
+                      check in it runs -- or none, where no check in it counts
+    `unprinted`       the printer piping one in whose text no reading `spellings` gives spells out
+                      -- a heredoc-fed `cat` among them (#2467) -- for `unread_program` to weigh;
+                      `printed`, `spellings`, `ANY`, `handed`, the pipe test `_piped` and the
+                      `_PRINTERS` table live in `workflow_printers` and are re-exported here
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
@@ -43,8 +44,8 @@ import re
 
 import shell_lex
 import shell_reader
-from workflow_printers import (_PRINTERS as _PRINTERS, _piped as _piped, handed as handed,
-                               printed as printed)
+from workflow_printers import (ANY as ANY, _PRINTERS as _PRINTERS, _piped as _piped,
+                               handed as handed, printed as printed, spellings as spellings)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
@@ -645,26 +646,37 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     under #2331.
     """
     here = stage.stdin_heredoc or handed(stage, before)
-    if here is None and _piped(stage, before):
-        text = printed(shell_reader.command(before.argv), before, shell)
-        here = None if text is None else (text, False)
-    kind, reader = (None, None) if here is None or here[1] else _stdin(argv, 0)
+    if here is not None:
+        texts = [] if here[1] else [here[0]]
+    elif _piped(stage, before):
+        texts = [t for t in spellings(shell_reader.command(before.argv), before, shell)
+                if t is not None]
+    else:
+        texts = []
+    if not texts:
+        return []
+    kind, reader = _stdin(argv, 0)
     if kind not in (SHELL_PROGRAM, VALUE_PROGRAM):
         return []
-    text = Stdin(here[0])
-    text.reader = reader
-    return [text]
+    out = []
+    for spelled in texts:
+        text = Stdin(spelled)
+        text.reader = reader
+        out.append(text)
+    return out
 
 
 def unprinted(argv, stage, before, shell=None):
-    """The `echo`, `printf` or heredoc-fed `cat` in front of this shell piping it its program
-    where `printed` does not spell that text out under the step's shell `shell` (`echo "$X" | sh`,
-    #2333; `cat -n <<'EOF' | sh`, #2467), or []."""
+    """The `echo`, `printf` or heredoc-fed `cat` in front of this shell piping it its program where
+    no reading `spellings` gives spells that text out (`echo "$X" | sh`, #2333; an `eval`'s or a `$`
+    word's `echo` unspelled under EITHER reading, #2476 fix round 1 R-F1), or []. A `cat` with an
+    option (`cat -n <<'EOF' | sh`) is no printer: its heredoc is `cat`'s own data, read as `cat -n`'s
+    always was, and `handed` answers it None; the EXPANDING case `handed` DOES answer is read by
+    `workflow_guard._unread_stdin` first, so this never reaches it with that text unspelled."""
     producer = (shell_reader.command(before.argv)
                 if stage.stdin_heredoc is None and _piped(stage, before) else [])
     is_printer = producer and (
         os.path.basename(producer[0]) in _PRINTERS or handed(stage, before) is not None)
-    if (not is_printer or printed(producer, before, shell) is not None
-            or stdin_program(argv) != SHELL_PROGRAM):
+    if not is_printer or stdin_program(argv) != SHELL_PROGRAM:
         return []
-    return producer
+    return [] if None not in spellings(producer, before, shell) else producer
