@@ -479,9 +479,9 @@ def _use(statement, position, stage, argv, dest):
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if name in INTERPRETERS and any(same_file(r, dest) for r in stage.reads):
-        # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
-        # argument, so argv alone shows an interpreter with nothing after it.
+    if name in INTERPRETERS and any(same_file(r, dest) or (
+            stage.stdin_heredoc is None and covers(r, dest)) for r in stage.reads):
+        # File input is the shell's program even though argv carries no path.
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
