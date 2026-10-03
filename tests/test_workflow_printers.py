@@ -322,6 +322,7 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
         self.assertEqual([], defects(script))
         found = defects(script, "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
         # r86 (bash-truth: FR on b5/b3/dash alike): `printf` always decodes, so the NUL drops and
         # `sh tool` runs under every shell.
         script = self.GET + "printf 'sh to\\00ol\\n' | sh\n"
@@ -329,6 +330,7 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
             with self.subTest(shell=shell):
                 found = defects(script, shell)
                 self.assertEqual(1, len(found), found)
+                self.assertIn("running it under", found[0][1])
 
     def test_dash_takes_exactly_one_leading_n(self):
         # r30, r31 (bash-truth: b5/b3 FR -- bash's `-[neE]+` consumes either repeated form, DEFECT;
@@ -365,10 +367,11 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
     GET = "curl -fsSLo tool https://example.test/tool\n"
 
     def test_r62_r63_the_reviews_fail_open_now_reports(self):
-        # r62 (bash-truth: b3 FR, dash FR, gh FR; b5 F- -- a real version split, unmeasured): a
-        # `bash -s -c 'sh'` holder's own options read stdin, so the heredoc is the step's own, but
-        # the `echo 'sh\ttool' | sh` inside it must still read under `sh`'s table (ANY via `Named`),
-        # not bash's -- CLEAN on head before this fix, where main gave only a weak `_Quiet`.
+        # r62 (bash-truth: b3 FR, dash FR, gh FR; b5 F- -- its `sh` is bash, whose `echo` does not
+        # decode): a `bash -s -c 'sh'` holder's own options read stdin, so the heredoc is the step's
+        # own, but the `echo 'sh\ttool' | sh` inside it must still read under `sh`'s table (ANY via
+        # `Named`), not bash's -- CLEAN on head before this fix, where main gave only a weak
+        # `_Quiet`.
         found = defects(self.GET + "bash -s -c 'sh' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
         self.assertEqual(1, len(found), found)
         self.assertIn("running it under", found[0][1])
@@ -382,6 +385,7 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         self.assertIn("running it under", found[0][1])
         found = defects(self.GET + "echo \"echo 'sh\\ttool' | sh\" | bash -c 'sh'\n", "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_n01_bash_c_sh_holder_beside_its_must_trip_control(self):
         # n01 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): `bash -c 'sh'` without r62's `-s` -- the
@@ -402,11 +406,13 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         # top-level `echo` with no `-e`. CLEAN, unaffected by R-F7: the fix is only for a STRING
         # that names a shell, never for a holder reading its own stdin.
         self.assertEqual([], defects(self.GET + "bash <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
-        # n04 (bash-truth: F- x4): `bash $X <<'EOF'` with `X=-s` -- a word that may VANISH (#2485)
-        # is read as if the holder itself were the runner (`runs_under`'s plain-`name` branch, no
-        # `scripts(argv)` string to wrap in `Named`), so this stays CLEAN too, like n03.
-        self.assertEqual([], defects(self.GET +
-                                     "X=-s\nbash $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+        # n04 (bash-truth: F- x4): `bash $X <<'EOF'` with `X=-s` -- a VALUE among the holder's own
+        # words (#2485) that may resolve to a `-c STRING` at runtime exactly as `X='-c sh'` does
+        # (v01, R-F9) -- `runs_under` cannot tell this from v01's shape, so it is D now, the
+        # over-report R-F1 already accepts for a runner the guard is not sure of, not n03's CLEAN.
+        found = defects(self.GET + "X=-s\nbash $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_n05_sh_holder_was_already_right(self):
         # n05 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): `sh $X <<'EOF'` with `X=-s` -- `sh` itself
@@ -415,8 +421,10 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         # unaffected by it -- a confirmed-correct control, not a new catch (measured, not predicted).
         found = defects(self.GET + "X=-s\nsh $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
         found = defects(self.GET + "X=-s\nsh $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n", "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_n06_the_mirror_shape_too(self):
         # n06 (bash-truth: FR x4 -- every column agrees): the mirror of r62/r63, `sh -c 'bash -s'`
@@ -428,6 +436,7 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         self.assertIn("running it under", found[0][1])
         found = defects(self.GET + "sh -c 'bash -s' <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n", "sh")
         self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
 
     def test_n07_eval_is_unaffected(self):
         # n07 (bash-truth: F- x4 -- an accepted over-report for an unmeasured runner, same family
@@ -465,9 +474,128 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         self.assertIsInstance(bash_s_c, wp.Named)
         self.assertIs(wp.ANY, bash_s_c.runner)
         vanishing = forms.runs_under(["bash", "$X"], None, "bash")
-        self.assertEqual("bash", vanishing)
-        self.assertIs(str, type(vanishing))
+        self.assertIsInstance(vanishing, wp.Named)
+        self.assertIs(wp.ANY, vanishing.runner)
         self.assertEqual("sh", forms.runs_under(["sudo", "sh"], ["sh"], "sudo"))
+
+
+class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
+    """The scoped re-review's two new Criticals. NC1 (R-F8): `stdin_scripts` gave both spellings of
+    one `echo` the SAME reader, so a check the bash reading spells cleared the use the dash reading
+    ran -- x11/x07's fail-open. NC2 (R-F9): a VALUE among a holder's own words may hand its body to
+    another shell at runtime (`bash $X <<'EOF'` with `X='-c sh'`), so `runs_under` must read it as
+    `Named` too, not under the holder's own table -- v01-v04's fail-open."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+
+    def test_x11_x07_two_readings_of_one_echo_are_unsure(self):
+        # x11 (bash-truth: b5 F-, b3 FR, dash FR, gh FR): `sh <<'EOF'` wrapping x07's eval line --
+        # CLEAN on head before R-F8 (main gave only a weak `_Quiet`); the bash-literal reading of
+        # the inner `echo` spells no check, but the SAME reader was handed to the dash-decoding
+        # reading too, so a check the bash reading never spells cleared the download the decoding
+        # reading actually runs. Both readings are Unsure now -- D under the default key.
+        check = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+        x11 = self.GET + "sh <<'EOF'\neval \"echo 'sh\\ttool\\c; %s' | sh\"\nEOF\n" % check
+        found = defects(x11)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+        # x07 (bash-truth: b5 F-, b3 F-, dash FR, gh F-): the same eval line at the step's own top,
+        # no `sh <<'EOF'` wrapper -- D under `shell: sh` too, now that neither reading counts.
+        x07 = self.GET + "eval \"echo 'sh\\ttool\\c; %s' | sh\"\n" % check
+        found = defects(x07)
+        self.assertEqual(1, len(found), found)
+        found = defects(x07, "sh")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under", found[0][1])
+
+    def test_x09_x12_x10_the_controls_still_read_as_they_did(self):
+        # x09/x12 (D|D as before, `echo hi` in place of the check -- no check in EITHER reading to
+        # begin with, so R-F8 changes nothing here): x09 at the top, x12 under `sh <<'EOF'`.
+        x09 = self.GET + "eval \"echo 'sh\\ttool\\c; echo hi' | sh\"\n"
+        x12 = self.GET + "sh <<'EOF'\neval \"echo 'sh\\ttool\\c; echo hi' | sh\"\nEOF\n"
+        for step, script in (("x09", x09), ("x12", x12)):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+        # x10 (the control without `eval`'s ANY wrapping: ONE measured reading, bash's own) --
+        # CLEAN under bash (no `-e`, no decode), D under `sh`/dash (always decodes).
+        check = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+        x10 = self.GET + "echo 'sh\\ttool\\c; %s' | sh\n" % check
+        self.assertEqual([], defects(x10))
+        found = defects(x10, "sh")
+        self.assertEqual(1, len(found), found)
+
+    def test_v01_v04_a_vanishing_value_may_hand_the_body_elsewhere(self):
+        # v01 (bash-truth: F- FR FR FR): `X='-c sh'; bash $X <<'EOF'` -- the VALUE `$X` may resolve
+        # to a `-c STRING` that hands the body to `sh`, same family as r62/r63's STRING shape, but
+        # `_stdin` names no reader at all for a holder with no `-s` and a value among its words, so
+        # `runs_under` must read it as `Named` on that ground too (R-F9) -- D under both keys.
+        v01 = self.GET + "X='-c sh'\nbash $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"
+        # v02 (bash-truth: FR x4): the mirror, `X='-c bash'; sh $X <<'EOF'` with `echo -e` -- D
+        # under both keys, the tab decodes regardless of which reading wins once `Named` is in play.
+        v02 = self.GET + "X='-c bash'\nsh $X <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n"
+        # v03 (bash-truth: FR x4): v02's body under `sh -s $X` -- `-s` makes the reader the
+        # holder's own argv, but `$X` still stands among its words, so `runs_under`'s `candidates`
+        # check still routes it to `Named`, not the plain-name branch. D under both keys.
+        v03 = self.GET + "X='-c bash'\nsh -s $X <<'EOF'\necho -e 'sh\\ttool' | sh\nEOF\n"
+        # v04 (bash-truth: F- FR FR FR): v01's body under `bash -s $X` -- the same `-s`-plus-value
+        # shape as v03, the other way round. D under both keys.
+        v04 = self.GET + "X='-c sh'\nbash -s $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"
+        for step, script in (("v01", v01), ("v02", v02), ("v03", v03), ("v04", v04)):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("running it under", found[0][1])
+
+    def test_bash_s_c_echo_hi_control_still_reads_under_bash(self):
+        # The one shape R-F9 must NOT touch: `bash -s -c 'echo hi' <<'EOF'` -- `-s` makes the
+        # reader the holder's own argv, and `candidates` finds no value among its words (`-c`'s
+        # STRING is its own operand, not a value this module follows), so `runs_under`'s plain-name
+        # branch still applies -- CLEAN, read under bash's own (literal) table, same as n03.
+        self.assertEqual([], defects(
+            self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+
+    def test_runs_under_reads_a_value_among_the_holders_words_as_named(self):
+        # v01/v04's shape: `_stdin` gives `None` for a holder with no `-s` and a value among its
+        # words -- `runs_under` now reads it `Named`, `ANY` for the printers.
+        v01_shape = forms.runs_under(["bash", "$X"], None, "bash")
+        self.assertIsInstance(v01_shape, wp.Named)
+        self.assertIs(wp.ANY, v01_shape.runner)
+        # v03/v04's shape: `-s` present, so `_stdin` gives the holder's OWN argv as reader, but a
+        # value still stands among its words -- `candidates` keeps it out of the plain-name branch.
+        argv = ["sh", "-s", "$X"]
+        v03_shape = forms.runs_under(argv, argv, "sh")
+        self.assertIsInstance(v03_shape, wp.Named)
+        self.assertIs(wp.ANY, v03_shape.runner)
+
+
+class TestFixRound3CatDashDashReadsStdin(unittest.TestCase):
+    """The review's x23 (R-F10): `--` ends `cat`'s options and is no option itself, so `cat --
+    <<'EOF'` still reads its own stdin -- `_cat_reads_stdin` wrongly counted the bare `--` as an
+    option word and read it as no printer at all."""
+
+    def test_cat_dashdash_alone_or_with_a_dash_reads_stdin(self):
+        # x23 (CLEAN on main and head before this fix, in all four shell/holder pairings): a bare
+        # `cat --` reads its own stdin, same as `cat` alone.
+        found = defects("cat -- <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("i.sh", found[0][1])
+        # `cat -- - <<'EOF' | sh`: the explicit `-` after `--` reads stdin too, same as `cat --`.
+        found = defects("cat -- - <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("i.sh", found[0][1])
+
+    def test_a_file_operand_or_an_earlier_option_still_rule_it_out(self):
+        # `cat -- f <<'EOF' | sh` prints `f` only, like `cat f` -- the heredoc is `cat`'s own data,
+        # unread (no printer: `f` alone, no `-`, among its operands).
+        self.assertEqual([], defects(
+            "cat -- f <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n"))
+        # `cat -n -- <<'EOF' | sh`: an option word BEFORE the `--` still rules it out -- `--` only
+        # strips ONE LEADING pair, so a real option ahead of it still disqualifies.
+        self.assertEqual([], defects(
+            "cat -n -- <<'EOF' | sh\ncurl -fsSL https://example.test/i.sh | sh\nEOF\n"))
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):

@@ -723,10 +723,10 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
                 self.assertEqual([text], self.handed(script))
 
     def test_text_it_does_not_spell_out_is_no_program_here(self):
-        # A `$`, an escape outside `_decoded`'s table (#2476 -- a backslash the shell in hand does
-        # NOT decode is spelled out literally now, unlike a plain `\t`: `echo -e` forces bash's
-        # decoder on, and `printf` always decodes, so `\x` is what stays unspelled), a format other
-        # than `%s`, `%s\n` and `%b` with one word, or an option: `unprinted` has these.
+        # A `$`, an escape outside `_decoded`'s table (#2476 -- `echo -e` forces bash's decoder on
+        # and `printf` always decodes, so a plain `\t` would decode cleanly there; `\x` is outside
+        # that table and is what stays unspelled instead), a format other than `%s`, `%s\n` and `%b`
+        # with one word, or an option: `unprinted` has these.
         for script in ('echo "$X" | sh', 'echo "sh $X" | sh', "echo -e 'a\\xb' | sh",
                        "printf '%s %s\\n' sh tool | sh", "printf '%s\\n' sh tool | sh",
                        'printf "$F" | sh', "printf -v x %s y | sh", "printf '%d\\n' 1 | sh",
