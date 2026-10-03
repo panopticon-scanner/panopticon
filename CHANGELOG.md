@@ -11,6 +11,10 @@ evidence exposed.
   `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
   `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
   Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script

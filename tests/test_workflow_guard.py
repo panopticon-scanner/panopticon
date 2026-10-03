@@ -5503,9 +5503,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # the same. The reader decodes Bash's ASCII ANSI-C table, but parses
         # no expansions. Neither reading short of those is safe: the regex
         # this replaced guessed that `<<EOF$(x)` was `<<EOF`, so the decoy
-        # line below the
-        # payload ended the body, and reading the body as code let the quote
-        # in `it's` hide the payload below the terminator, which bash 3.2 and
+        # line below the payload ended the body. Reading the body as code let
+        # the quote in `it's` hide the payload below the terminator, which bash 3.2 and
         # 5.2 both run (#2224). So the step is refused, and the reason names
         # the word. The same shape spelled with no parse -- quoted, or a
         # literal ANSI-C word decoded exactly -- remains readable.
