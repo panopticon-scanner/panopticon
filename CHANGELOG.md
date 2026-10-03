@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
+  (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
+  `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
+  fail-closed because assuming an unknown command only reads data would reopen the defect.
 - **Workflow guard now reads `$` command stdin inside substitutions (#2598, #2331).**
   `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
   before the stdin hand-off only inside substitutions. Top-level wording and option-value priority

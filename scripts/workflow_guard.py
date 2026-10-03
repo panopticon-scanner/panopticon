@@ -151,26 +151,20 @@ live, so a change that catches one fails there and edits this list.
   check past one counts, fail-closed: `X=-s; sh $X` around a check alone is REPORTED though the step
   stops, as the guard cannot tell it from `X=/dev/null`; one naming a file or an option nothing runs
   under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`), over-reports; `python3 $S`, S unset, a
-  FOREIGN word, under-reports (python runs the body), filed under #2331. A quoted body reaches the
-  interpreter as written, so `workflow_forms.flattened` reads it as it reads an `eval` string -- a
-  `curl … | sh` inside it is the defect it is at the top level. An EXPANDING one is REPORTED unread
-  (`_unread_stdin`): it runs what bash expands it to, values and `$(...)` output this guard never
-  sees. A program in a language with no grammar here is reported too (the answer `unparseable` gives
-  a `shell: python` step), and THAT report is weighed: kept, since #2499, only beside a fetch this
-  guard reports. So is the hand-off to a `$` command word no table places (#2473). Its body is
-  read as shell besides: a `curl … | sh` there is caught, a check there clears nothing, and a
-  shell-looking text in a non-shell body (`print("$(curl … | sh)")`) is reported loud (#2331).
-  An expanding body keeps substitutions as values (#2597); inside `$(...)`, its body speaks first
-  (#2598), at the cost of shell-looking non-shell text. A printer-unspelled `$CMD` pipe stays unread
-  (`echo "$X" | $CMD`, #2331). What remains unread: an interpreter behind an option it
-  reads as a filename / one taking a value other than `-o`/`-O` (`bash --rcfile f <<'EOF'`), or
-  named as a FILE by a builtin outside its table (`. /dev/stdin <<'EOF'`); one behind a TRANSPORT
-  (`ssh host bash -s <<'EOF'`, `docker run -i img bash -s <<'EOF'`, `docker exec -i c sh <<'EOF'`),
-  whose argv this walk reads as the transport's; and one under a name no table carries
-  (`python3.11 -`, `busybox sh`) -- keyed, as everywhere here, on the basename. A program `echo` or
-  `printf` PIPES into a shell is read where their words spell it out; one they do not
-  (`echo "$X" | sh`, a `printf` format past `%s`) is reported where its words fetch as written or
-  beside a fetch it reports (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
+  FOREIGN word, under-reports (python runs the body), filed under #2331. A quoted body reaches an
+  interpreter as written, so `workflow_forms.flattened` catches a shell download there as it does
+  at top level. A literal shell's EXPANDING body is REPORTED unread: values and `$(...)` output
+  remain unseen. A foreign-language program is reported too. So is a hand-off to a `$` command
+  word (#2473); since #2499, either is kept only beside a reported fetch. A value word's body is
+  read as shell with no check counted; an expanding one masks substitutions as values (#2597).
+  Inside a substitution, the body speaks before its hand-off (#2598); the price remains shell-like
+  non-shell text. A nearer literal shell remains the consumer when a surrounding value word gets
+  its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
+  file redirected into it.
+  `CMD=cat` is the fail-closed price. Still unread: an interpreter behind an option or stdin alias,
+  one behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), and an unknown basename such as
+  `python3.11` or `busybox sh`. A printer's unspelled text is reported only where its words fetch
+  or beside a reported fetch (#2333, #2481); `cat <<'EOF' | sh` is not read. A heredoc the step
   WRITES to a file and then runs (`cat <<'EOF' > x.sh` … `bash x.sh`) is not this rule's business:
   the script is text in the repo under review, the `sed -i` entry's author-deterministic ruling.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
@@ -489,7 +483,7 @@ def _use(statement, position, stage, argv, dest, directory):
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if name in INTERPRETERS and any(
+    if (name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM) and any(
             same_file(at_directory(r, directory), dest) or (
                 stage.stdin_heredoc is None
                 and covers(at_directory(r, directory), dest)) for r in stage.reads):
@@ -567,7 +561,13 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
     if fetch.dest is None:
-        if not fetch.piped_to or os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
+        if not fetch.piped_to:
+            return None
+        if stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM:
+            return ("pipes a download into `%s`, a command word this guard does not follow -- "
+                    "download it to a file, `sha256sum -c` that file, then run it"
+                    % shell_reader.readable(fetch.piped_to[0]))
+        if os.path.basename(fetch.piped_to[0]) not in EXECUTORS:
             return None
         # Nothing landed on disk, so no checksum anywhere in the step can be
         # about these bytes: the only fix is to stop streaming them into a
