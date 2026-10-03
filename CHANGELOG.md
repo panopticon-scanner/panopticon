@@ -11,6 +11,110 @@ evidence exposed.
   reader keeps a parent arm separate from the inner `case` header, so two- and three-level
   bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
   inner checksum from clearing execution in the parent's sibling arm.
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
+- **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
+  (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
+  `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
+  fail-closed because assuming an unknown command only reads data would reopen the defect.
+- **Workflow guard now reads `$` command stdin inside substitutions (#2598, #2331).**
+  `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
+  before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
+  stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
+- **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
+  `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
+  read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
+  resembles shell, while preserving innocent `$PYTHON`; a blanket unread warning was rejected
+  because it would flag that control.
+- **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
+  of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
+  printer follow-ups have room; the guard's answers are byte-identical before and after.
+- **Workflow guard: a value in a shell's options is weighed to its first operand, or past a word
+  that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
+  one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
+  opaque, and `sh -c "$(cat f)"`, blanks around it too, is reported unread beside a download.
+- **Line-only subshell boundaries now retain their shell status (#2420, #2331).**
+  The workflow reader keeps lone `(` and `)`, including `esac )`, so a following `||`, `&&`,
+  pipeline or background separator reaches the gate. Subshell-local options and assignments no
+  longer leak into the enclosing step's model.
+- **Interpreter redirections now bind expanded paths to fetched scripts (#2426, #2331).**
+  `bash < "$PWD/x.sh"` and a literal redirect after a fetch to `"$PWD/x.sh"` use the same
+  last-part path binding as interpreter operands. Other basenames and non-interpreters stay clean.
+- **Function checks now count only after a failure-gating call (#2421, #2331).**
+  Definitions, rescued calls, and child scripts inside them no longer certify later execution;
+  a plain call still credits a check whose failure stops that function and the step.
+- **Conditional carriers no longer hide a failed checksum behind a later command (#2418, #2331).**
+  Brace groups, subshells and functions tested by `&&` or `||` now report a check whose status a
+  later command replaces. A plain function call still gates uses that occur after that call.
+- **Nested conditional groups no longer inherit an earlier checksum status (#2578, #2331).**
+  When a later command replaces a checksum's status before an enclosing group reaches `&&` or
+  `||`, the guard reports the later use. Checks that remain the group's final status still gate.
+- **Conditional checks no longer certify uses that can outlive their list (#2419, #2331).**
+  A checksum behind `A &&` or `A ||` clears only paths that require the check to run. A final
+  `A && CHECK` can still gate a later job step, while `A || CHECK` cannot. Literal commands get
+  no special exit-status proof, keeping the rule fail-closed.
+- **Checksum rescues no longer certify their own failure-only body (#2417, #2331).** A use
+  inside the check's `||` branch is reported even when that branch later exits. The same
+  stopping rescue still certifies uses after it, and unrelated checks retain their existing
+  ordering and file-binding diagnoses.
+- **Workflow guard: a stdin program is read behind `eval`/`-c`, past a value in the option slot, and
+  under a `$` command word (#2500, #2485, #2473).** The quoted heredoc `eval 'bash -s'`, `sh $X` and
+  `$CMD` run is caught.
+  A check behind an `eval`/`-c` string counts for nothing; the body is still read. Nor does a check
+  count past `$X` or under `$CMD`: one clears a download only in the body of a shell written at its
+  own level, as before. Nothing else in a body behind a string, past `$X` or under `$CMD` is taken
+  for the step's own either (bar one whose holder's own options read stdin, `bash -s -c 'sh'`): the
+  job is read with such bodies and without them, and a defect of either reading is reported.
+  `X=script.sh` over-reports; `$CMD` itself is `Idle` beside a reported fetch.
+- **A checksum rescue inside a piped group is not credited without pipefail (#2630, #2608).**
+  `{ CHECK || exit 1; } | cat`, its multi-line and subshell spellings, a `{ f; } | cat` call and
+  a `|| return 1` twin leave only the piped stage's subshell, so without `pipefail` the pipeline
+  takes the last stage's status and bash 3.2.57/5.2.21 and dash run the payload; the default and
+  `shell: sh` postures now report them, while `shell: bash` (`-eo pipefail`) still clears them.
+  The nested-paren spelling #2627 fixed, the `set -o pipefail` form and the no-pipe rescue keep
+  their verdicts. 0 occurrences in the 11 corpora and the calibration pool.
+- **A use step that runs after a failed step is no longer cleared by an earlier step's check
+  (#2632, #2608).** A plain `CHECK` or `CHECK || exit 1` in step a stops step a, but a later step
+  whose `if:` runs after a failure -- `always()`, `failure()` or `!cancelled()` -- still runs the
+  payload; the default, `bash` and `sh` now report it. `success()`, a plain expression, no `if:`,
+  and a check that shares the use's own `always()` step keep their clear. 0 occurrences in the 11
+  corpora and the calibration pool.
+- **Workflow function gates reach proved later calls (#2586, #2331).** The guard recovers 8 of
+  56 previously declined real call sites (25 to 33 of 105 scopes), including grouped calls and
+  one proved wrapper. The other 48 remain fail-closed, chiefly on multi-helper steps. Distant
+  piped calls retain their concurrent-use bound; posture changes, removals, redefinitions, and
+  conditional calls still refuse the proof. An `||`-suppressed call is credited only when the
+  gate remains the function's final status; the conservative `unset` barrier is disclosed. The
+  mutually recursive function/status proof now lives in `workflow_function_calls.py`, leaving
+  both proof modules room under the 700-line ceiling. A success handler after the inner
+  subshell's nonzero exit invalidates each supported call form; assignment-only handlers do not
+  inherit that failure. `continue-on-error` keeps the shell's posture and bounds credit after the
+  proved call and before the end of its own step.
+- **Tab-prefixed substitution heredoc delimiters have a regression pin (#2584, #2331).**
+  A `<<-` word starting with a tab bypasses the `EOF)` terminator reading, but #2493 already
+  refuses the `)` retained in its body. The pin preserves that protection because Bash 3.2
+  runs the following payload where Bash 5.2 treats it as data; no new lexer rule is needed.
 - **`[[ ... ]]` is one statement to the workflow reader (#2441, #2331).** The `&&`, `||`, `(`,
   `)`, `<` and `>` inside a conditional are its operators, not list separators, subshells or
   redirections, so `CHECK && [[ -f a || -f b ]] || exit 1` no longer reaches the guard as three
