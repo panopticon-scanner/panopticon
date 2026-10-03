@@ -11,6 +11,34 @@ evidence exposed.
   heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
   `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
   treating an unknown value as data.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
+- **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
+  `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
+  `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
+  file would reopen the execution defect.
+- **Workflow guard: value-form consumers no longer hide streamed or redirected downloads
+  (#2602).** Direct, carried and pass-through streams, plus fetched file stdin, now report under
+  `$CMD`, closing a CLEAN execution path; a `$CMD` holding `cat` is deliberately reported
+  fail-closed because assuming an unknown command only reads data would reopen the defect.
+- **Workflow guard now reads `$` command stdin inside substitutions (#2598, #2331).**
+  `x=$($CMD <<'EOF' …)` no longer hides a written `curl … | sh`: the program reader now speaks
+  before the stdin hand-off only inside substitutions. Top-level wording and option-value priority
+  stay unchanged; directly prioritizing the body reader was rejected because it hid louder reasons.
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
+- **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
+  relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
+  workspace; subshells and command substitutions inherit, then restore, their caller. A branched
+  or dynamic `cd` stays fail-closed as an unknown directory. Known different paths remain clean.
+- **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
+  `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
+  read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
+  resembles shell, while preserving innocent `$PYTHON`; a blanket unread warning was rejected
+  because it would flag that control.
 - **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
   of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
   printer follow-ups have room; the guard's answers are byte-identical before and after.

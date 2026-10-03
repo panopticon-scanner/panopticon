@@ -144,11 +144,35 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
-    def test_an_ansi_c_code_point_outside_ascii_fails_closed(self):
-        found = defects("sh $'-\\u00e9' '%s'\n" % PIPE)
+    def test_an_ansi_c_code_point_outside_ascii_keeps_the_fetch_sentence(self):
+        # #2614: these words, like `\q`, are unknown rather than a refusal
+        # of the whole step. Both bashes and dash still run the adjacent pipe.
+        for escape in ("\\200", "\\x80", "\\u00e9", "\\U000000e9", "\\400", "\\cé", "\\q"):
+            with self.subTest(escape=escape):
+                prose = "echo $'%s build ok'" % escape
+                self.assertEqual([], defects(prose))
+                found = defects(prose + "; " + PIPE)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_assignment_keeps_the_fetch_sentence(self):
+        found = defects("MSG=$'caf\\u00e9'; echo \"$MSG\"; " + PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("cannot read this step", found[0][1])
-        self.assertIn("outside ASCII", found[0][1])
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_backslash_newline_keeps_the_fetch_sentence(self):
+        prose = "echo $'a\\\nb'"
+        self.assertEqual([], defects(prose))
+        found = defects(prose + "; " + PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
+
+    def test_an_ansi_c_option_does_not_invent_dash_c(self):
+        # Both bashes reject this option; dash takes it as a missing file.
+        self.assertEqual([], defects("sh $'-\\u00e9' '%s'\n" % PIPE))
+        found = defects("sh -c '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands %si.sh straight to `sh`" % URL, found[0][1])
 
     def test_an_ansi_c_here_string_is_read_as_written(self):
         found = defects("sh <<< $'%s\\n'\n" % PIPE)
@@ -299,6 +323,60 @@ class TestADynamicCommandWord(unittest.TestCase):
         # program no word here names is reported, as a script in a
         # substitution is (`Idle`).
         self.assertTrue(defects(GET + "$PYTHON -c 'import sys'\n"))
+
+
+class TestAValueCommandWordConsumesAStream(unittest.TestCase):
+    """#2602: a download piped or redirected into a `$` command word."""
+
+    def test_each_stream_shape_is_reported(self):
+        # Bash 3.2.57, 5.2.21 and dash execute the payload in every row.
+        rows = (("CMD=sh\ncurl -fsSL %si.sh | $CMD\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | \"$CMD\"\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | ${CMD}\n" % URL, "${CMD}"),
+                ("curl -fsSL %si.sh | $(echo sh)\n" % URL, "$(...)"),
+                ("CMD=sh\ncurl -fsSL %si.sh | $CMD -s\n" % URL, "$CMD"),
+                ("CMD=sh\ncurl -fsSL %si.sh | tee f | $CMD\n" % URL, "$CMD"),
+                ("CMD=eval\n$CMD \"$(curl -fsSL %si.sh)\"\n" % URL, "$CMD"),
+                ("SUDO=\ncurl -fsSL %si.sh | $SUDO sh\n" % URL, "$SUDO"))
+        for script, word in rows:
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(
+                    "pipes a download into `%s`, a command word this guard does not follow" % word
+                ), found)
+
+    def test_a_carried_download_reaches_the_value_consumer(self):
+        found = defects("CMD=sh\nx=$(curl -fsSL %si.sh)\necho \"$x\" | $CMD\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(
+            "carries %si.sh in `$x` and hands it to `$CMD`" % URL), found)
+
+    def test_the_stream_price_and_controls_are_explicit(self):
+        # `CMD=cat` executes no payload, but an unknown command gets the same
+        # fail-closed stream answer. A named file and the literal shell stay unchanged.
+        found = defects("CMD=cat\ncurl -fsSL %si.sh | $CMD\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("pipes a download into `$CMD`"), found)
+        self.assertEqual([], defects("curl -fsSLo f %si.sh\n" % URL))
+        found = defects("curl -fsSL %si.sh | sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("straight to `sh`", found[0][1])
+
+    def test_a_redirected_download_is_run_by_a_value_command_word(self):
+        for command in ("CMD=sh\n$CMD", "CMD=cat\n$CMD"):
+            with self.subTest(command=command):
+                found = defects("curl -fsSLo i.sh %si.sh\n%s < i.sh\n" % (URL, command))
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `$CMD` from standard input", found[0][1])
+        found = defects("curl -fsSLo i.sh %si.sh\nsh < i.sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh` from standard input", found[0][1])
+        # A `-c` string is the program; the redirected download remains its data. Its existing
+        # dynamic-program sentence stays, without a second redirected-program sentence.
+        found = defects("curl -fsSLo i.sh %si.sh\nCMD=sh\n$CMD -c 'cat' < i.sh\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
 
 
 class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
@@ -857,9 +935,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       is sure to read and a download in it reported by the job's first
       reading (#2500), though it runs `sh tool` and the heredoc is that
       program's data; and a
-      non-shell body under a `$` word whose string spells a shell download
-      (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh`
-      body), read as shell and reported loud, filed under #2331; a check read
+      non-shell body under a `$` word whose string spells a shell download,
+      quoted or expanding (`print("$(curl ... | sh)")` under `$PYTHON -`, a
+      `$CAT <<'EOF' > i.sh` body), read as shell and reported loud, filed
+      under #2331; a check read
       past a value or a word that may vanish (`X=-s`, `X=-e`, `X` unset,
       `$(true)`), where the guard cannot tell the word from `X=/dev/null`
       (#2485); behind a string no check counts (#2500), so a body ending in
@@ -893,11 +972,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
       program the guard cannot read, kept beside a fetch it reports (#2499),
       not a claim that a download runs;
-    * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -`,
-      `python3 -`, `$PYTHON -Ou - file.py` or `python3 -O - file.py` running
+    * fail-open readings: `$PYTHON -`, `python3 -`, `$PYTHON -Ou - file.py`
+      or `python3 -O - file.py` running
       `os.system`, beside no reported fetch (option b's price, #2499); and,
       each filed under #2331, `eval 'bash -s | cat'` (#2500),
-      `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
+      `echo "$Y" | $CMD`, and `eval "$CMD"` or an
       exported `bash -c '$CMD'` handed a heredoc alone -- beside a reported
       fetch #2483 reports the word, never the body (#2473). Round 1 leaves
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
@@ -1096,6 +1175,30 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertEqual(bare, piped)
         self.assertEqual(1, len(piped), piped)
 
+    def test_2605_a_file_after_a_value_option_does_not_hide_stdin(self):
+        # Bash 3.2.57, 5.2.21 and dash run every body: `$X` may be `-s`, or
+        # `--rcfile`, whose `/dev/null` argument is not the program file.
+        rows = ("X=-s\nsh $X file.sh",
+                "X=-s\nbash $X file.sh arg",
+                "CMD=bash\nX=-s\n$CMD $X file.sh",
+                "X=--rcfile\nbash $X /dev/null",
+                "X=--rcfile\nbash $X /dev/null -s arg")
+        for command in rows:
+            script = "%s <<'EOF'\n%s\nEOF\n" % (command, PIPE)
+            with self.subTest(command=command):
+                found = defects(script)
+                self.assertTrue(any("straight to `sh`" in why for _step, why in found), found)
+        # Literal file and ended-options controls run no body and stay CLEAN.
+        for command in ("sh file.sh", "X=-s\nsh -- $X file.sh"):
+            with self.subTest(command=command):
+                self.assertEqual([], defects("%s <<'EOF'\n%s\nEOF\n" % (command, PIPE)))
+        # Literal `-s` is the must-trip. A value that is really `-e` runs the
+        # file, not the body, but pays the issue's named fail-closed price.
+        for command in ("sh -s file.sh", "X=-e\nsh $X file.sh"):
+            with self.subTest(command=command):
+                found = defects("%s <<'EOF'\n%s\nEOF\n" % (command, PIPE))
+                self.assertTrue(any("straight to `sh`" in why for _step, why in found), found)
+
     def test_2486_an_opaque_dash_c_string_may_be_a_stdin_reading_shell(self):
         # #2486 reads a `-c` string holding a `$(...)` among its text with the
         # substitution opaque, and #2500's join reads that string here too:
@@ -1120,13 +1223,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2473_a_dollar_command_words_body_is_read_as_shell_and_its_hand_off_weighed(self):
         # A value-form command word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
         # `$PYTHON -`) is a name no table places: `stdin_program` answers
-        # VALUE_PROGRAM. Its QUOTED body is read as shell, additively -- a
+        # VALUE_PROGRAM. Its body is read as shell, additively -- a
         # download there is the defect it is at the top level -- and the
         # hand-off is `Idle`, under its own sentence, which `kept` stands only
         # beside a fetch the guard reports (#2499).
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1167,15 +1270,33 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         found = reasons(GET + "CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n")
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0].startswith(to("$CMD")), found)
-        # (c) An EXPANDING body is read nowhere: alone it is CLEAN though the
-        # shells run its download -- option b's price, the one `python3 -
-        # <<EOF` pays on main. Beside a reported fetch the hand-off is kept,
-        # under its own sentence, never the EXPANDING one.
-        self.assertEqual([], reasons("CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE))
-        found = reasons(GET + "CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE)
+        # (c) #2597: an EXPANDING body under a `$` word is read as shell too.
+        # Its download and the hand-off stand together, alone or beside GET;
+        # the hand-off remains `Idle`, never the literal-shell EXPANDING one.
+        expanding = "CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE
+        for script in (expanding, GET + expanding):
+            with self.subTest(script=script):
+                found = reasons(script)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(streamed in w for w in found), found)
+                self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+                self.assertFalse(any("EXPANDING" in w for w in found), found)
+        # A command substitution in that expanding body was already lifted by
+        # the outer read. In the added body read its output is only a value, so
+        # neither `$()` nor backquotes duplicates the one real stream defect.
+        for syntax in ('$(%s)' % PIPE, '`%s`' % PIPE):
+            script = 'CMD=sh\n$CMD <<EOF\necho "%s"\nEOF\n' % syntax
+            with self.subTest(syntax=syntax):
+                found = reasons(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(streamed, found[0])
+        # The owner's innocent foreign-language control remains CLEAN. A
+        # literal shell's existing loud EXPANDING answer remains unchanged.
+        python = 'PYTHON=python3\n$PYTHON - <<EOF\nprint("$VAR")\nEOF\n'
+        self.assertEqual([], reasons(python))
+        found = reasons("bash <<EOF\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0].startswith(to("$CMD")), found)
-        self.assertNotIn("EXPANDING", found[0])
+        self.assertIn("EXPANDING", found[0])
         # (d) `$PYTHON - <<'EOF'` is kept and dropped where `python3 - <<'EOF'`
         # is -- CLEAN alone, an innocuous body or an `os.system` download alike
         # (option b's price again: python runs that download) -- under its own
@@ -1288,20 +1409,29 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assertTrue(any(ungated % "$(...)" in w for w in found), found)
         self.assertFalse(any("@@" in w for w in found), found)
 
-    def test_2473_a_dollar_command_words_body_inside_a_substitution_is_unread(self):
-        # A documented gap, filed under #2331: `_walk` asks `_unread_stdin`
-        # before `unread_program`, so inside a `$(...)` the hand-off's `Idle`
-        # answers first and `substitution_script`, which would read the body
-        # and report its download, is never asked. Beside no reported fetch
-        # the step reads CLEAN though bash 3.2.57, 5.2.21 and dash run that
-        # download; the literal `sh` there is reported (the control).
-        for script in ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE,
-                       "x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE):
+    def test_2598_a_dollar_command_words_body_inside_a_substitution_is_read_first(self):
+        # Inside a `$(...)`, the script reader speaks before the hand-off's
+        # `Idle`: both value-form words run the body in bash 3.2.57, 5.2.21
+        # and dash, and its download is reported under the stable runner name.
+        inside = "hands a script to `%s` inside a command substitution"
+        for script, runner in (
+                ("CMD=sh\nx=$($CMD <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$CMD"),
+                ("x=$($(echo sh) <<'EOF'\n%s\nEOF\n)\n" % PIPE, "$(...)")):
             with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(inside % runner), found)
+        # The literal control keeps the same sentence.
         found = defects("x=$(sh <<'EOF'\n%s\nEOF\n)\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertIn("inside a command substitution", found[0][1])
+        self.assertTrue(found[0][1].startswith(inside % "sh"), found)
+        # An innocuous body remains CLEAN alone. Beside GET, the same script
+        # sentence is `Idle` and replaces today's hand-off sentence.
+        clean = "CMD=sh\nx=$($CMD <<'EOF'\necho hi\nEOF\n)\n"
+        self.assertEqual([], defects(clean))
+        found = defects(GET + clean)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(inside % "$CMD"), found)
 
     def test_2473_a_printed_pipe_into_a_dollar_word_inside_a_substitution_is_weighed(self):
         # T25-M2: `stdin_scripts` yields a printer's spelled-out text for a `$`
@@ -1394,7 +1524,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # <<'EOF'` reads.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1487,7 +1617,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # letter, read as they did.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1969,7 +2099,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     HOLDERS = (("eval 'bash -s'", ""), ("sh $X", "X=/dev/null\n"), ("$CMD", "CMD=true\n"))
     UNSURE = "eval 'bash -s' <<'EOF'\necho hi\nEOF\n"
     HANDED = ("hands a heredoc body or here-string to `$CMD`, a command word this guard does not"
-              " follow -- a quoted body is read as shell, which it may not be; name the interpreter"
+              " follow -- its body is read as shell, which it may not be; name the interpreter"
               " (`bash -s`, `python3 -`), or exempt the step with a reason")
     RESCUED = ("making it executable; the checksum that names tool hands its failure to a `||`"
                " branch that does not fail the step")

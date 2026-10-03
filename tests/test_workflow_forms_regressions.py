@@ -195,6 +195,16 @@ class TestCombinedPipeline(unittest.TestCase):
         self.assertEqual([], guard.fetch_exec_defects(
             f'curl {URL} >tool |& cat; {CHECK} && sh tool'))
 
+    def test_a_value_command_word_is_a_stream_consumer(self):
+        # #2602: the first word may name a shell even though no executor table
+        # can place it. The same walk must cross a pass-through `tee` stage.
+        for tail, word in (("$CMD", "$CMD"), ("${CMD}", "${CMD}"),
+                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO sh", "$SUDO")):
+            with self.subTest(tail=tail):
+                stages = shell_reader.statements(f"curl {URL} | {tail}")[0].stages
+                consumer = forms.stream_consumer(stages[1:], guard.EXECUTORS)
+                self.assertEqual(word, shell_reader.readable(consumer[0]))
+
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
@@ -515,6 +525,25 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
 
+    def test_2605_a_file_after_a_value_option_keeps_stdin_possible(self):
+        # The value may be `-s`, making every following word a parameter, or
+        # `--rcfile`, making the first literal word that option's value.
+        rows = (("sh $X file.sh", forms.SHELL_PROGRAM),
+                ("bash $X x.sh arg", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null -s arg", forms.SHELL_PROGRAM),
+                ("$CMD $X file.sh", workflow_programs.VALUE_PROGRAM))
+        for script, expected in rows:
+            with self.subTest(script=script):
+                self.assertEqual(expected, forms.stdin_program(self.argv(script)))
+        # A literal file, an ended option list and a literal `-c` remain files
+        # or strings. The literal `-s` must-trip remains a stdin program.
+        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+            with self.subTest(script=script):
+                self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh -s file.sh")))
+
     def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
         # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
         # heredoc in bash 3.2.57 and 5.2.21 alike -- the program string is one
@@ -606,16 +635,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                          forms.stdin_program(self.argv("python3 -")))
         self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(self.argv("sh")))
         self.assertIsNone(forms.stdin_program(self.argv("$HOME/bin/tool")))
-        # Its QUOTED heredoc body is read as shell, as a shell's is; an
-        # expanding body is read nowhere, and a FOREIGN program's never.
+        # Its body is read as shell, as a shell's quoted body is; an
+        # expanding body's substitutions become values, and FOREIGN is unread.
 
         def handed(script):
             stage = shell_reader.statements(script)[0].stages[-1]
             return forms.stdin_scripts(shell_reader.command(stage.argv), stage)
         self.assertEqual(["sh tool"], handed("$CMD <<'EOF'\nsh tool\nEOF"))
-        for script in ("$CMD <<EOF\nsh tool\nEOF", "python3 - <<'EOF'\nsh tool\nEOF"):
-            with self.subTest(script=script):
-                self.assertEqual([], handed(script))
+        self.assertEqual(["sh tool"], handed("$CMD <<EOF\nsh tool\nEOF"))
+        self.assertEqual(['echo "$VALUE"'], handed(
+            '$CMD <<EOF\necho "$(curl -fsSL https://example.test/i.sh)"\nEOF'))
+        self.assertEqual([], handed("python3 - <<'EOF'\nsh tool\nEOF"))
 
     def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
         # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;

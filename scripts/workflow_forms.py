@@ -66,10 +66,11 @@ from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
                              conditional_reach as reach, seed as seed, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
-                               chmod_executable as chmod_executable,
+                               at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
-                               described as described, may_run as may_run,
-                               names_file as names_file, same_file as same_file)
+                               described as described, located as located, may_run as may_run,
+                               names_file as names_file, same_file as same_file,
+                               working_directories as working_directories)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
                                dynamic_program, scripts, stdin_program as stdin_program,
                                stdin_reader, stdin_scripts, unprinted as unprinted)
@@ -455,22 +456,21 @@ _PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not s
 INSIDE = " inside a command substitution"
 
 
-def within(statement, where=""):
-    """(statement, position, stage, where) for each stage of `statement` and,
-    under each, of the scripts it runs in a command substitution -- `$(...)`,
-    backquotes, `<(...)` -- read as scripts of their own (#2345), as the
-    guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
-    those. A script handed to a shell there as a string (`sh -c '...'`) is
-    not read: `substitution_script` reports it where the job holds a fetch the
-    guard reports (`kept`, #2481). Nor is a check (the guard's `_checks` walks
-    the outer stages only), so `x=$(echo "<sha>  t" | sha256sum -c - && sh t)`
-    reports its use though the check gates it: fail-closed. Each fetch's
-    `_uses` parses the later substitutions again."""
+def within(statement, where="", directory=".", scope=0):
+    """Each stage and cwd, recursively through command substitutions.
+
+    A substitution inherits and restores its caller's cwd. A shell string is
+    reported by `kept`, not read; checks inside stay unread and fail closed
+    (#2345)."""
     for position, stage in enumerate(statement.stages):
-        yield statement, position, stage, where
-        for text in stage.substitutions:
-            for inner in statements(text):
-                yield from within(inner, INSIDE)
+        yield statement, position, stage, where, directory
+        for nested, text in enumerate(stage.substitutions):
+            inner = list(statements(text))
+            child_scope = "%sS%d_%d" % (scope, position, nested)
+            working = working_directories(inner, regions(inner), child_scope,
+                                           step_credit(inner, "bash {0}"), directory)
+            for index, child in enumerate(inner):
+                yield from within(child, INSIDE, working[index], "%sI%d" % (child_scope, index))
 
 
 # A download a step keeps in a variable and hands a shell as its script
@@ -562,7 +562,7 @@ def carried(stmts, executors):
     held: dict[str, Fetch | None] = {}
     out, branches, depth = [], regions(stmts), 0
     for index, statement in enumerate(stmts):
-        for inner, position, stage, where in within(statement):
+        for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
             to = (stream_consumer(inner.stages[position + 1:], executors)
                   if _prints(stage) and stage.stdout_to_pipe else None)

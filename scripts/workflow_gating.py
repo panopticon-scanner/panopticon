@@ -425,7 +425,14 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         # The walk reads an `exit`/`return` rescue as stopping the step, but one
         # written inside a group that is a pipeline stage stops only that stage;
         # where pipefail is off its failure goes to the pipeline, not the step.
-        if stops and not pipefail and _piped_group_stage(stmts, index) is not None:
+        piped_group = not pipefail and _piped_group_stage(stmts, index) is not None
+        # The full walk includes an enclosing pipeline or rescue. Ask the local
+        # slice too so an exiting rescue still gets the established piped-group
+        # diagnosis when that carrier, rather than the rescue itself, swallows it.
+        carrier_stops = stops or (piped_group and _stops_the_job(
+            stmts[index:], 0, errexit, pipefail
+        ))
+        if piped_group and carrier_stops:
             return _PIPED_RESCUE
         if isinstance(stops, FunctionGate) and why and errexit:
             # Keep the proved call as a lower bound and a Reach as its upper
