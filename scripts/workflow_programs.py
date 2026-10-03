@@ -15,17 +15,19 @@ it, the stages in front of it in its pipeline (#2333, #2478):
                       language, where a table names it (`$CMD` is a value none places)
     `stdin_command`   the command whose stdin-program answer an enclosing `eval` or `sh -c`
                       inherits, preserving an inner `$CMD` for the guard's hand-off report
-    `stdin_scripts`   the body that program is, where it may be shell: the heredoc or here-string a
-                      `cat` printer in front hands down the pipe (`handed`, #2467), or the text (one
-                      per distinct reading, `spellings`, #2476 R-F1) an `echo` or `printf` pipes in
-                      under the runner `shell` (`printed`), through pass-through stages (`producer`,
-                      #2478) too, each a `Stdin` naming the shell the step runs to read it, under
-                      whose `-e` a check runs -- or none, where none counts
+    `stdin_scripts`   the body that program is, where it is or may be shell: the heredoc or
+                      here-string a `cat` printer in front hands down the pipe (`handed`, #2467), or
+                      the text (one per distinct reading, `spellings`, #2476 R-F1) an `echo` or
+                      `printf` pipes in under the runner `shell` (`printed`), through pass-through
+                      stages (`producer`, #2478) too, each a `Stdin` naming the shell the step runs
+                      to read it, under whose `-e` a check runs -- or none, where none counts
     `unprinted`       the printer piping one in whose text no reading `spellings` gives spells out,
-                      or the stage in front where one between rewrites it (#2478) -- never a
-                      heredoc-fed `cat` handing it on intact (`printed` or `_unread_stdin` has it,
-                      R-F13); `printed`, `spellings`, `producer`, `ANY`, `Named`, `handed`, `_piped`
-                      and `_PRINTERS` live in `workflow_printers`, re-exported here
+                      or, where one between rewrites it, the stage in front and that text (#2478,
+                      review I-1) -- for `unread_program` to weigh; never a heredoc-fed `cat`
+                      handing it on intact (`printed` or `_unread_stdin` has it, #2467, R-F13);
+                      `printed`, `spellings`, `producer`, `unspelled` (its answer), `ANY`, `Named`,
+                      `handed`, the pipe test `_piped` and the `_PRINTERS` table live in
+                      `workflow_printers`, re-exported here
     `runs_under`      the shell a stdin body is read under (#2476): another reader's basename
                       (`sudo sh` → `sh`), the holder's plain name where its words through a `-c`
                       string are all literal, or `Named(name)` -- both readings -- behind a value, a
@@ -54,7 +56,7 @@ import shell_lex
 import shell_reader
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                handed as handed, printed as printed, producer as producer,
-                               spellings as spellings)
+                               spellings as spellings, unspelled as unspelled)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`. The text is shell and
@@ -638,9 +640,10 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     heredoc or here-string a `cat` printer in front hands down the pipe (`handed`, #2467). An
     expanding body stays unread for a literal shell (the guard's `_unread_stdin`). Behind a value
     command word, it is read after command and arithmetic substitutions become value words (#2597),
-    since the outer read owns them. Text an `echo` or `printf` in front pipes in is read too, one
-    text per distinct reading of the runner `shell` (`spellings`, #2476), where `printed` spells it
-    (#2333), else `unprinted` has it -- each through pass-through stages too (`producer`, #2478).
+    since the outer read owns them. Text an `echo` or `printf` in front (`before`) pipes in is read
+    too, one text per distinct reading of the runner `shell` (`spellings`, #2476), where `printed`
+    spells it (#2333): `echo 'sh tool' | sh`; else `unprinted` has it -- each through pass-through
+    stages too (`producer`, #2478).
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -684,17 +687,14 @@ def stdin_scripts(argv, stage, before=None, shell=None):
 
 
 def unprinted(argv, stage, before, shell=None):
-    """The argv of the stage this shell READS its program from where no printer's words spell it
-    out, or []: the `echo` or `printf` `producer` finds in `before` (the stages in front) where a
-    reading `spellings` gives is unspelled (`echo "$X" | sh`, an escape outside `_decoded`'s table,
-    EITHER reading of a `Named`/`ANY` runner: #2333, #2476 R-F1), or the LAST stage in front where
-    one between rewrites the text (`base64 -d`: #2478, R-P4). Never a heredoc-fed `cat` handing it
-    on intact (`printed` or `_unread_stdin` has it, R-F13)."""
+    """The words `unread_program` weighs for the program this shell reads where no printer's words
+    spell it out, or [] (`unspelled`, once `stdin_program` names a shell reading stdin): the `echo`
+    or `printf` `producer` finds in `before` (the stages in front) where a reading `spellings` gives
+    is unspelled (`echo "$X" | sh`, an escape outside `_decoded`'s table, EITHER reading of a
+    `Named`/`ANY` runner: #2333, #2476 R-F1), or, where one between rewrites the text (`base64 -d`:
+    #2478, R-P4) or the walk stops at `_DEPTH`, the LAST stage in front's words and that text, so
+    a fetch in either is weighed (review I-1). Never a heredoc-fed `cat` handing it on intact
+    (`printed` or `_unread_stdin` has it, R-F13)."""
     if stage.stdin_heredoc is not None or stdin_program(argv) != SHELL_PROGRAM:
         return []
-    source, intact = producer(stage, before)
-    if source is None or not intact:
-        return [] if source is None else shell_reader.command(before[-1].argv)
-    words = shell_reader.command(source.argv)
-    printer = os.path.basename(words[0]) in _PRINTERS
-    return words if printer and None in spellings(words, source, shell) else []
+    return unspelled(stage, before, shell)

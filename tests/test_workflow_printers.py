@@ -1339,8 +1339,11 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         self.assertEqual(("body", True), wp.handed(stages[2], stages[:2]))     # EXPANDING kept
         stages = self.stages("cat <<'EOF' | tr a-z A-Z | sh\nbody\nEOF\n")
         self.assertIsNone(wp.handed(stages[2], stages[:2]))
-        for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n", ["base64", "-d"]),
-                             ("echo x | base64 -d | tee f | sh\n", ["tee", "f"]),
+        # Behind a rewriting stage: the stage's name, the printer's text, then its other words, so
+        # `unread_program` weighs a fetch in either (review I-1).
+        for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
+                              ["base64", "\n", "c2ggdG9vbA==\n", "\n", "-d"]),
+                             ("echo x | base64 -d | tee f | sh\n", ["tee", "\n", "x\n", "\n", "f"]),
                              ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
                              ("echo 'sh tool' | tee f | sh\n", []),
                              ("cat <<EOF | tee f | sh\nbody\nEOF\n", [])):
@@ -1350,10 +1353,11 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                                                        stages[-1], stages[:-1]))
 
     def test_what_passes_through(self):
+        # No stage behind a wrapper the reader strips passes (review I-2): `sudo tee f` is unread.
         for text, passes in (("tee f", True), ("tee", True), ("tee -a f", True), ("tee -p f", True),
                              ("tee -i f", True), ("tee --append f", True),
                              ("tee --output-error f", True), ("tee --output-error=warn f", True),
-                             ("sudo tee f", True), ("cat", True), ("cat -", True),
+                             ("sudo tee f", False), ("cat", True), ("cat -", True),
                              ("cat -- -", True), ("tee >(cat)", False), ('tee "$F"', False),
                              ("tee -x f", False), ("tee -- f", False), ("tee -ai f", False),
                              ("tee *.log", False), ("cat -n", False), ("cat f", False),

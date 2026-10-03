@@ -15,8 +15,11 @@ between the printer and the shell (#2478). A printer reaching a shell through a 
     `printed`    that text under ONE reading, where the words spell it out, or None
     `spellings`  the DISTINCT texts `printed` gives under the readings a runner may be (#2476 R-F1)
     `producer`   the printer a stage's pipeline feeds it from, and whether every stage between is
-                 a pass-through (`_passes_through`: `tee f`, a bare `cat`) handing it on unchanged
+                 a pass-through (`_passes_through`: `tee` writing plain files, a bare `cat`)
+                 handing it on unchanged
     `handed`     the heredoc or here-string a `cat` printer in front hands a stage down the pipe
+    `unspelled`  what `unprinted` hands `unread_program` to weigh: an unspelled printer's argv, or,
+                 where a stage between rewrites the text, that stage's argv and the text (I-1)
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
     `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
@@ -33,11 +36,12 @@ def _piped(stage, before):
     return before is not None and before.stdout_to_pipe and stage.stdin_from_pipe
 
 
-# The commands whose output is the text of their words (#2333). A heredoc-fed
-# `cat` is a producer too (#2467), but its text comes from the stage it reads,
-# not its words, so it is answered in `printed` and `handed` and never added
-# here: every caller that asks "is this a printer" by table membership alone
-# (`unprinted`) is right to leave it out.
+# The commands whose output is the text of their words (#2333). A heredoc-fed `cat` prints a text
+# too (#2467), but from its stdin, not its words, so it is never added here: `printed`, `handed`
+# and `producer` answer it beside this table. A caller asking "is this a printer" of the table
+# alone is right to leave it out -- `unspelled` (for `unprinted`) asks it of a source whose text
+# arrives intact, where only an `echo` or `printf` can be unspelled; where a stage between
+# rewrites the text, it returns that stage whatever the source, and weighs a `cat`'s body too.
 _PRINTERS = ("echo", "printf")
 
 # A runner this module has not measured `echo` under (review R-F1): `eval` (which runs in no shell
@@ -225,20 +229,29 @@ def _passes_through(argv, stage):
     """Whether this stage hands what its stdin reads on to its stdout UNCHANGED (#2478): a `tee`
     whose words are all plain -- no marker, no `$` value, no pattern (`shell_reader.dynamic`: a
     `>(...)` operand may write into the stream too) -- each a FILE operand or one of
-    `_TEE_OPTIONS`, `--output-error` or `--output-error=…`; or a `cat` reading its own stdin
-    (`_cat_reads_stdin`) with no heredoc or here-string there and no OPTION word -- only `-` and
-    the `--` that ends the options (R-P5): `cat -n` numbers the lines it hands on. Any other stage
-    that reads the pipe -- `tr`, `sed`, `base64 -d`, `tee -x`, `tee >(...)`, `cat file` -- rewrites
-    or adds to the text, and a shell after it reads a program no printer's words spell out."""
+    `_TEE_OPTIONS`, `--output-error` or `--output-error=…`, and no operand the pipe itself
+    (`shell_reader._STDOUT_ALIASES`: `tee /dev/stdout` hands the text on twice, review I-3a); or
+    a `cat` reading its own stdin (`_cat_reads_stdin`) with no heredoc or here-string there and no
+    OPTION word -- only `-` and the `--` that ends the options (R-P5): `cat -n` numbers the lines
+    it hands on. Neither behind a wrapper the reader strips (`shell_reader.wrapper_words`, review
+    I-2): `xargs cat` hands `cat` the piped words as FILE operands. Any other stage that reads the
+    pipe -- `tr`, `sed`, `base64 -d`, `tee -x`, `tee >(...)`, `cat file` -- rewrites or adds to
+    the text, and a shell after it reads a program no printer's words spell out."""
     name = os.path.basename(argv[0]) if argv else ""
+    # `xargs cat`: `shell_reader.command` only strips words, so where it stripped none there is no
+    # wrapper to ask `wrapper_words` about (asking every stage made a long `cat` chain 1.5x slower).
+    if name not in ("tee", "cat") or (len(argv) < len(stage.argv)
+                                       and shell_reader.wrapper_words(stage.argv)):
+        return False
     if any(shell_reader.dynamic(w, shell_reader.has_substitution) or shell_reader.is_marker(w)
            for w in argv[1:]):
         return False
     words = [getattr(w, "spelled", w) for w in argv[1:]]
     if name == "tee":
-        return all(not w.startswith("-") or w in _TEE_OPTIONS or w == "--output-error"
+        return all((not w.startswith("-") and w not in shell_reader._STDOUT_ALIASES)
+                   or w in _TEE_OPTIONS or w == "--output-error"
                    or w.startswith("--output-error=") for w in words)
-    if name != "cat" or stage.stdin_heredoc is not None or not _cat_reads_stdin(argv):
+    if stage.stdin_heredoc is not None or not _cat_reads_stdin(argv):
         return False
     at = words.index("--") if "--" in words else len(words)
     return all(w == "-" for w in words[:at] + words[at + 1:])
@@ -260,10 +273,11 @@ def producer(stage, before):
     here-string there (#2467) -- is the source. A PASS-THROUGH (`_passes_through`: `tee f`,
     `tee -a f`, a bare `cat` or `cat -`) keeps `intact`, so `echo 'sh tool' | tee log | sh` reads
     as `echo 'sh tool' | sh`; any other stage clears it, and the walk goes on through it, so a
-    printer behind `base64 -d` is still found: its program is UNREAD (`unprinted`), never the
-    printer's words (R-P4). Running out of stages is no source. Past `_DEPTH` stages the walk
-    stops, fail-closed: the stage it reached stands as a source NOT intact, so the program is
-    unread -- never read, and never clean for want of a printer further back."""
+    printer behind `base64 -d` is still found: its program is UNREAD (`unprinted`), never read as
+    the printer's words (R-P4), though a fetch in them is weighed (`unspelled`, review I-1).
+    Running out of stages is no source. Past `_DEPTH` stages the walk stops, fail-closed: the
+    stage it reached stands as a source NOT intact, so the program is unread -- never read, and
+    never clean for want of a printer further back."""
     intact, current = True, stage
     for walked, front in enumerate(reversed(before or [])):
         if not _piped(current, front):
@@ -290,3 +304,40 @@ def handed(stage, before):
         return None
     return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.command(source.argv))
             else None)
+
+
+def unspelled(stage, before, shell=None):
+    """The words `workflow_forms.unread_program` weighs for the program `stage` (a shell's) reads
+    down its pipeline where no printer's words spell it out, or [] -- the answer of
+    `workflow_programs.unprinted` once it knows the stage is a shell reading stdin (#2478):
+
+    * the source `producer` finds behind `before` arrives INTACT: its argv where it is an `echo`
+      or `printf` some reading `spellings` gives does not spell out (`echo "$X" | sh`, an escape
+      outside `_decoded`'s table, either reading of a `Named`/`ANY` runner: #2333, #2476 R-F1),
+      else [] -- a heredoc-fed `cat` is never unspelled: `printed` spells its QUOTED body whole
+      and `_unread_stdin` reports its EXPANDING one (#2467, R-F13);
+    * a stage between REWRITES it (`base64 -d`, R-P4), or the walk stopped at `_DEPTH`: the name
+      of the stage the shell reads from -- the one the sentence names -- then, each on its own
+      line, what the source put on the pipe (#2478 fix round 1, review I-1): each reading
+      `spellings` gives of an `echo` or `printf` (its words where a reading spells none, as an
+      unspelled printer's are weighed), a `cat`'s heredoc or here-string body, or past `_DEPTH`
+      the words of the stage the walk stopped at; LAST, on a line of their own, that stage's
+      other words, so a quote among them (`tr "'" x`) cannot hide the text from the walk. A
+      fetch in either makes the answer LOUD: `echo 'curl … | sh' | tr -d X | sh` is reported
+      alone, where the `_Quiet` answer for `echo 'sh tool' | tr a-z A-Z | sh` stands only beside
+      a reported download. A stage with no command word (`echo x | X=1 | sh`) prints nothing: []."""
+    source, intact = producer(stage, before)
+    if source is None:
+        return []
+    words = shell_reader.command(source.argv)
+    printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
+    if intact:
+        return words if printer and None in spellings(words, source, shell) else []
+    if printer:
+        texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
+    else:
+        texts = [source.stdin_heredoc[0] if source.stdin_heredoc else " ".join(words[1:])]
+    front = shell_reader.command(before[-1].argv)
+    if not front:
+        return []
+    return front[:1] + [line for t in texts for line in ("\n", t)] + ["\n"] + front[1:]
