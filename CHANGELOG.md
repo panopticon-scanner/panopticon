@@ -11,6 +11,11 @@ evidence exposed.
   escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
   fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
   inside `$'...'`, matching both bashes instead of joining text they keep separate.
+- **Workflow guard now reads expanding heredocs under `$` command words (#2597, #2331).**
+  `$CMD <<EOF` no longer hides a written `curl … | sh`; substitutions stay values in this second
+  read to avoid duplicate findings. This fail-closed reading can flag non-shell bodies whose text
+  resembles shell, while preserving innocent `$PYTHON`; a blanket unread warning was rejected
+  because it would flag that control.
 - **Workflow guard: the printer rules move to `scripts/workflow_printers.py` (#2331).** A pure move
   of `printed`, `_piped` and `_PRINTERS` out of `workflow_programs`, which re-exports them, so the
   printer follow-ups have room; the guard's answers are byte-identical before and after.

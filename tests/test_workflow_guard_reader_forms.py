@@ -881,9 +881,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       is sure to read and a download in it reported by the job's first
       reading (#2500), though it runs `sh tool` and the heredoc is that
       program's data; and a
-      non-shell body under a `$` word whose string spells a shell download
-      (`print("$(curl ... | sh)")` under `$PYTHON -`, a `$CAT <<'EOF' > i.sh`
-      body), read as shell and reported loud, filed under #2331; a check read
+      non-shell body under a `$` word whose string spells a shell download,
+      quoted or expanding (`print("$(curl ... | sh)")` under `$PYTHON -`, a
+      `$CAT <<'EOF' > i.sh` body), read as shell and reported loud, filed
+      under #2331; a check read
       past a value or a word that may vanish (`X=-s`, `X=-e`, `X` unset,
       `$(true)`), where the guard cannot tell the word from `X=/dev/null`
       (#2485); behind a string no check counts (#2500), so a body ending in
@@ -917,8 +918,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `$CMD -c "$P"` candidate (#2337), each beside GET): a report of a
       program the guard cannot read, kept beside a fetch it reports (#2499),
       not a claim that a download runs;
-    * fail-open readings: `$CMD <<EOF` expanding, and `$PYTHON -`,
-      `python3 -`, `$PYTHON -Ou - file.py` or `python3 -O - file.py` running
+    * fail-open readings: `$PYTHON -`, `python3 -`, `$PYTHON -Ou - file.py`
+      or `python3 -O - file.py` running
       `os.system`, beside no reported fetch (option b's price, #2499); and,
       each filed under #2331, `eval 'bash -s | cat'` (#2500),
       `echo "$Y" | $CMD`, `x=$($CMD <<'EOF' ...)`, and `eval "$CMD"` or an
@@ -1144,13 +1145,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2473_a_dollar_command_words_body_is_read_as_shell_and_its_hand_off_weighed(self):
         # A value-form command word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
         # `$PYTHON -`) is a name no table places: `stdin_program` answers
-        # VALUE_PROGRAM. Its QUOTED body is read as shell, additively -- a
+        # VALUE_PROGRAM. Its body is read as shell, additively -- a
         # download there is the defect it is at the top level -- and the
         # hand-off is `Idle`, under its own sentence, which `kept` stands only
         # beside a fetch the guard reports (#2499).
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1191,15 +1192,33 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         found = reasons(GET + "CMD=sh\n$CMD <<'EOF'\necho hi\nEOF\n")
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0].startswith(to("$CMD")), found)
-        # (c) An EXPANDING body is read nowhere: alone it is CLEAN though the
-        # shells run its download -- option b's price, the one `python3 -
-        # <<EOF` pays on main. Beside a reported fetch the hand-off is kept,
-        # under its own sentence, never the EXPANDING one.
-        self.assertEqual([], reasons("CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE))
-        found = reasons(GET + "CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE)
+        # (c) #2597: an EXPANDING body under a `$` word is read as shell too.
+        # Its download and the hand-off stand together, alone or beside GET;
+        # the hand-off remains `Idle`, never the literal-shell EXPANDING one.
+        expanding = "CMD=sh\n$CMD <<EOF\n%s\nEOF\n" % PIPE
+        for script in (expanding, GET + expanding):
+            with self.subTest(script=script):
+                found = reasons(script)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(streamed in w for w in found), found)
+                self.assertTrue(any(w.startswith(to("$CMD")) for w in found), found)
+                self.assertFalse(any("EXPANDING" in w for w in found), found)
+        # A command substitution in that expanding body was already lifted by
+        # the outer read. In the added body read its output is only a value, so
+        # neither `$()` nor backquotes duplicates the one real stream defect.
+        for syntax in ('$(%s)' % PIPE, '`%s`' % PIPE):
+            script = 'CMD=sh\n$CMD <<EOF\necho "%s"\nEOF\n' % syntax
+            with self.subTest(syntax=syntax):
+                found = reasons(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(streamed, found[0])
+        # The owner's innocent foreign-language control remains CLEAN. A
+        # literal shell's existing loud EXPANDING answer remains unchanged.
+        python = 'PYTHON=python3\n$PYTHON - <<EOF\nprint("$VAR")\nEOF\n'
+        self.assertEqual([], reasons(python))
+        found = reasons("bash <<EOF\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0].startswith(to("$CMD")), found)
-        self.assertNotIn("EXPANDING", found[0])
+        self.assertIn("EXPANDING", found[0])
         # (d) `$PYTHON - <<'EOF'` is kept and dropped where `python3 - <<'EOF'`
         # is -- CLEAN alone, an innocuous body or an `os.system` download alike
         # (option b's price again: python runs that download) -- under its own
@@ -1400,7 +1419,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # <<'EOF'` reads.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1493,7 +1512,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # letter, read as they did.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
-                    "does not follow -- a quoted body is read as shell" % word)
+                    "does not follow -- its body is read as shell" % word)
 
         def reasons(script):
             return [why for _step, why in defects(script)]
@@ -1975,7 +1994,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     HOLDERS = (("eval 'bash -s'", ""), ("sh $X", "X=/dev/null\n"), ("$CMD", "CMD=true\n"))
     UNSURE = "eval 'bash -s' <<'EOF'\necho hi\nEOF\n"
     HANDED = ("hands a heredoc body or here-string to `$CMD`, a command word this guard does not"
-              " follow -- a quoted body is read as shell, which it may not be; name the interpreter"
+              " follow -- its body is read as shell, which it may not be; name the interpreter"
               " (`bash -s`, `python3 -`), or exempt the step with a reason")
     RESCUED = ("making it executable; the checksum that names tool hands its failure to a `||`"
                " branch that does not fail the step")
