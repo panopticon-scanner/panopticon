@@ -89,8 +89,8 @@ def _pipeline_end(stmts, index, position):
             depth += opens - closes
         if started and depth <= 0:
             return following
-    # A closer the reader dropped leaves the boundary unknown. Refuse the
-    # remainder of the step rather than crediting a potentially concurrent use.
+    # An unbalanced group leaves the boundary unknown. Refuse the remainder
+    # of the step rather than crediting a potentially concurrent use.
     return len(stmts) - 1
 
 

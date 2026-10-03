@@ -336,9 +336,8 @@ _NO_PIPEFAIL = ("is piped into another command where this guard reads `pipefail`
                 "before it where the shell is bash)")
 _AHEAD = ("runs ahead of `&&`, where the shell suspends `-e`, so its failure skips only the "
           "rest of that list and the step carries on past it")
-_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for example a line "
-         "ending in `(` or starting with `)`, or a `case` inside `$(...)`), so it clears "
-         "nothing after its own command in that list")
+_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read, so it clears nothing "
+         "after its own command in that list")
 
 
 class Reach(str):
@@ -423,8 +422,7 @@ def _nesting(statement):
 
 
 def _closes(statement):
-    """Whether this statement closes a group: a `}`, or a subshell's `)` at
-    the head of its line (the reader drops a `)` that stands alone)."""
+    """Whether this statement closes a group with `}` or a subshell's `)`."""
     first = statement.stages[0] if statement.stages else None
     return first is not None and (first.argv == ["}"] or not first.argv and first.group_close > 0)
 
@@ -493,9 +491,9 @@ def _stops_step(stmts, position, on, fails):
     A check followed by another command in a group or function does not supply
     the carrier's eventual status when that carrier heads `&&` or `||`; a
     later command may replace the check's failure. A plain function call can
-    still gate uses after that call. A check that ends a `{ }` group, or a
-    `( )` whose `(` line the reader dropped, is that group's status, and what
-    follows the statements closing its groups decides: `&`, a pipe where
+    still gate uses after that call. A check that ends a `{ }` or `( )` group
+    is that group's status. What follows the statements closing its groups
+    decides: `&`, a pipe where
     pipefail is off, an `||` branch that does not fail the step, or an `&&`
     list the group heads (review I-2). Ahead of `&&` the answer is the end of
     the list -- the first `||`
@@ -507,14 +505,10 @@ def _stops_step(stmts, position, on, fails):
     plain `{ ...; }` group's, which `-e` lets pass, and not from a group
     detached with `&`, or piped where pipefail is off (`fails`).
 
-    A count of compound commands that never balances, or a list that closes
-    a subshell no statement up to the check opened, or is followed by the
-    `)` of one (review I-3), is a paren the reader lost -- it drops a `(`
-    that ends a line and a `)` alone on one -- and a list that closes a
-    `case` it never opened is a `$(...)` it ended at a `case` pattern's `)`,
-    whatever the count says (`_lost_case`, review I-4): there the list's end
-    is unknown, and the failure stops only its own statement (`_LOST`, review
-    I-1, N-7)."""
+    A compound-command count that never balances, a list that closes a
+    subshell no visible statement up to the check opened, or a `case` close
+    without its open (`_lost_case`, review I-4) leaves the list's end unknown.
+    The failure then stops only its own statement (`_LOST`, review I-1, N-7)."""
     last, close = len(stmts) - 1, position
     while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
             stmts[close + 1]):
@@ -544,7 +538,7 @@ def _stops_step(stmts, position, on, fails):
     opened = sum(stage.group_open - stage.group_close for statement in stmts[:position + 1]
                  for stage in statement.stages)
     if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
-        return _LOST                            # a lost paren: the list's end is unknown
+        return _LOST                            # an unbalanced group's end is unknown
     closed_subshells = 0
     while (not depth or depth < 0) and end < last and stmts[end].separator not in (
             "&", "&&", "||") and _closes(stmts[end + 1]):
@@ -552,7 +546,7 @@ def _stops_step(stmts, position, on, fails):
         if stmts[end].stages[0].argv != ["}"]:
             closed_subshells += 1
             if opened < closed_subshells:
-                return _LOST                    # a `)` whose `(` the reader dropped
+                return _LOST                    # a closer with no visible opener
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere

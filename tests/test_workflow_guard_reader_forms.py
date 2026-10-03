@@ -1562,7 +1562,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2500_mains_literal_shell_gaps_are_reported_behind_a_string(self):
         # Class 3: each string row is reported. #2421 also closes the three function
         # literal gaps; the remaining literal twins stay filed under #2331.
-        reported, fixed, gaps = [], [], []
+        reported, fixed, group_handoffs, gaps = [], [], [], []
         for string, literal, body, pre, end, function_gap in (
                 # `|| true` swallows the subshell's failure (rc 0, every shell)
                 ("( eval 'bash -s'", "( bash -s", CHECK, "", ") || true\n", False),
@@ -1586,12 +1586,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 ("eval 'bash -o $X -s'", "bash -o $X -s", CHECK, "X=noexec\n", "", False)):
             reported.append((stdin_step(string, body, pre=pre, end=end), 1, UNGATED % "eval"))
             literal_step = stdin_step(literal, body, pre=pre, end=end)
-            (fixed if function_gap else gaps).append(literal_step)
+            if literal == "( bash -s":
+                group_handoffs.append(literal_step)
+            else:
+                (fixed if function_gap else gaps).append(literal_step)
         # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell)
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
         gaps.append(GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE)
         self.assert_reported(reported)
         self.assert_reported((script, 1, "inside a function") for script in fixed)
+        self.assert_reported((script, 1, "ends a group that hands its failure")
+                             for script in group_handoffs)
         self.assert_clean(gaps)
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
