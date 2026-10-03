@@ -65,19 +65,24 @@ live, so a change that catches one fails there and edits this list.
   mirror #2442 with a literal basename; argv only), and for a glob where one spells the download's
   or the download is a bare name. A download kept in a variable is followed to a shell whole
   (`carried`, #2341), not through a cut (`${x//$'\r'/}`), a command's output (`y=$(echo "$x")`) or
-  `> f`, and `( x=1 )` empties it only with the `(` alone on its line, which the reader drops. A
+  `> f`; `( x=1 )` empties it in neither spelling, the `(` alone on its line kept (#2420). A
   value in shell options (`sh $X '…'`) is not followed; later words are read as `-c` strings
-  (`candidates`, #2344). In a candidate program word, substitutions stay opaque while outer text is
-  read (#2482); a literal `-c` word holding one stays unread (#2486). One alone or a `Rewritten`
-  word stays unread beside a download. A `$` command's `${X:-sh}` default is read, as is a program
-  after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` is reported (#2483). A
-  `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
+  (`candidates`, #2344) to the first operand and past a later word that may expand to an option, as
+  the operand may be an option's value (`--rcfile f $Y '…'`, #2484): `X=-c; sh $X tool '…'` and
+  `sh $X 'echo hi' "$Y" '…'` over-report. In a candidate program word, substitutions stay opaque
+  while outer text is read (#2482), as a `$(…)` among a `-c`/`eval` string's text is (#2486): what
+  it prints is unread (#2487), no check there counts, `eval "sh $(curl …)"` reports the inner
+  `sh $(...)` beside `eval`'s stream, and one the reader refuses so read is unread (`cat <<$(…)`).
+  One alone or a `Rewritten` word stays unread beside a download. A `$` command's `${X:-sh}` default
+  is read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a
+  word all substitution are reported beside a download (#2483, #2486), though they may run none of
+  it (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
+  A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
-  runs `-G`, those read on; so does a word after a shell whose name is itself a word.
-  KEPT: binding two spellings of one path means EVALUATING the shell, which
-  the reader does not do by design; the fleet puts its variables in the URL
-  and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
+  runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
+  two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
+  fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
 * directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308), `$HOME/.cargo/bin`
   and `/snap/bin` among them, or one a step puts there (`PATH=…`, `>> "$GITHUB_PATH"`): a bare name
   finds a download in neither, past the `$`-spelled paths #2442's mirror binds by their basename.
@@ -377,10 +382,9 @@ def _record_writes(statement, written):
             written[target] = text
 
 
-# Why a checksum this job ran clears nothing. A refused check is KEPT with its
-# reason rather than dropped, because "no checksum in the job names this file"
-# and "the checksum that names it was handed to a `|| true`" are different
-# sentences, and only one of them is true of any given step.
+# Why a checksum this job ran clears nothing. A refused check is KEPT with its reason rather than
+# dropped, because "no checksum in the job names this file" and "the checksum that names it was
+# handed to a `|| true`" are different sentences, and only one of them is true of any given step.
 _SOFT_STEP = ("is in a step carrying `continue-on-error: true`, so the job "
               "carries on past its failure")
 _NO_DIGEST = ("carries no digest, so it says which file to read and not what "
@@ -615,18 +619,14 @@ def _defects(stmts, conditions=None, credit=None, walked=None):
     clears a use only where both halves match (see `_binds`). `credit` maps an index to what
     `workflow_gating.swallowed` reads last: the `workflow_forms.step_credit` pair, each absent soft
     answer bounded by a `_SOFT_STEP` reach. `walked` is `_walk`'s answer, supplied by `job_defects`.
-
-    An unread form (`what`: its sentence) stands only where some fetch here is one `_defect` reports
-    -- asked again with those forms as uses -- or an `unbound` download (#2481)."""
-    checks = _checks(stmts, credit)
-    conditions = conditions or {}
+    `kept` weighs the unread forms (`what`: its sentence) beside the fetch defects: an `Idle` one
+    stands only where some fetch here is one `_defect` reports -- asked again with those forms as
+    uses -- or an `unbound` download (#2481), and nothing louder reports its statement (#2490)."""
+    checks, conditions = _checks(stmts, credit), conditions or {}
     fetched, unread = walked or _walk(stmts, stream_exec=True)
-    found = [(index, why, fetch) for index, fetch in fetched
-             if (why := _defect(fetch, index, stmts, checks, conditions))]
-    return [(index, why, why) for index, why in kept(unread, bool(found) or bool(unread) and (
-        unbound(stmts, fetched, unread) or any(
-            _defect(fetch, index, stmts, checks, conditions, [i for i, _w in unread])
-            for index, fetch in fetched)))] + found
+    found = [(i, why, f) for i, f in fetched if (why := _defect(f, i, stmts, checks, conditions))]
+    return kept(unread, found, bool(found or unread and (unbound(stmts, fetched, unread) or any(
+        _defect(f, i, stmts, checks, conditions, [u for u, _w in unread]) for i, f in fetched))))
 
 
 def fetch_exec_defects(script):

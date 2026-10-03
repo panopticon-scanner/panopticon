@@ -390,13 +390,72 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         self.assertEqual([], self.program("sh -c -x"))
         self.assertEqual([], self.program("bash -c --norc P"))
 
+    def test_a_substitution_among_the_strings_text_is_read_opaque(self):
+        # #2486: the string is a script, the substitution written as the
+        # reader renders it and the script marked `Opaque`, so no marker of
+        # this parse reaches the next -- two parses give one text. A word
+        # that is one lone `$(...)` is still none: `dynamic_program` names it.
+        for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
+            with self.subTest(script=script):
+                found = self.program(script)
+                self.assertEqual(["sh $(...)"], found)
+                self.assertIsInstance(found[0], workflow_programs.Opaque)
+                self.assertEqual(found, self.program(script))
+        self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+        # A text so rendered that the reader refuses is none, as before:
+        # `cat <<$(...)` names no line to end the body at. Nothing reaches a
+        # re-parse that would refuse the whole step.
+        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(echo E)\nE\nsh x"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+                self.assertEqual([], guard.fetch_exec_defects(script))
+
+    def test_a_word_that_is_all_substitution_is_the_dynamic_programs(self):
+        # #2486: it spells no command, so `scripts` hands on no text for it
+        # and `dynamic_program` names it; one with text of its own is not.
+        for script, how, word in (('sh -c "$(cat x)"', "sh -c", "$(...)"),
+                                  ('eval "$(cat x)"', "eval", "$(...)"),
+                                  ('sh -c "$P$(cat x)"', "sh -c", "$P$(...)")):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                found = workflow_programs.dynamic_program(argv)
+                self.assertEqual((how, word), (found[0], shell_reader.readable(found[1])))
+                self.assertEqual([], self.program(script))
+        for script in ('sh -c "echo $(date)"', 'sh -c "$(curl %s) x"' % URL):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
+
+    def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
+        # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
+        # string holding one beside a `$(...)` is no script at all, where its
+        # twin with the `$(...)` alone is read opaque (#2486) ...
+        for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.program(script))
+        found = self.program('sh -c "sh $(echo tool)" x')
+        self.assertEqual(["sh $(...)"], found)
+        self.assertIsInstance(found[0], workflow_programs.Opaque)
+        # ... and a program word that is all `<(...)` is not `dynamic_program`'s,
+        # where its `$(...)` twin is.
+        for script in ('sh -c "<(cat tool)"', 'eval "<(cat tool)"'):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
+        argv = shell_reader.statements('sh -c "$(cat tool)"')[0].stages[0].argv
+        found = workflow_programs.dynamic_program(argv)
+        self.assertEqual(("sh -c", "$(...)"), (found[0], shell_reader.readable(found[1])))
+
 
 class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     """#2344: a value bash expands where a shell reads its options may be
     `-c` -- `X=-c; sh $X P`, `sh $(echo -c) P`, `xargs -I{} sh {} P` run `P`
-    under bash 3.2.57 and 5.2.21 -- so each word after it may be the
-    program. The guard does not follow the value; `candidates` hands on every
-    word after it, a dynamic one too, for `unread_program` (review N2 of #2331)."""
+    under bash 3.2.57 and 5.2.21 -- so a word after it may be the program.
+    The guard does not follow the value; `candidates` hands on the words
+    after it to the first operand, a dynamic one too, for `unread_program`
+    (review N2 of #2331), and none past it, a positional parameter (#2484),
+    until a later word that may expand to an option word re-opens the rest:
+    the operand may have been an option's own value (`--rcfile FILE`)."""
 
     @staticmethod
     def argv(script):
@@ -404,14 +463,40 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         assert len(stmts) == 1, stmts
         return shell_reader.command(stmts[0].stages[-1].argv)
 
-    def test_each_word_after_the_value_is_a_candidate(self):
+    def test_the_words_to_the_first_operand_after_the_value_are_candidates(self):
         for script, value in (("sh $X P", "$X"), ('sh "${X:--c}" P', "${X:--c}"),
                               ("sh $(echo -c) P", "$(...)"), ("bash -e $X -o pipefail P", "$X"),
                               ("echo -c | xargs -I{} sh {} P", "{}"), ("sh ${X}c P", "${X}c")):
             with self.subTest(script=script):
                 found, words = forms.candidates(self.argv(script))
                 self.assertEqual((value, ["P"]), (shell_reader.readable(found), words[-1:]))
+        # Bare words and `$` words may be an option's value, or vanish, so the
+        # walk reads past them: with no operand, every word after the value.
         self.assertEqual(["P", "$Y", "Q"], forms.candidates(self.argv('sh $X P "$Y" Q'))[1])
+        # The first word that can be none of an option, an option's value (a
+        # bare word) or anything once expanded is the first operand, the last
+        # candidate; the option words before it stay (#2484), and a later word
+        # of literal text, `--` among them, re-opens nothing.
+        for script, words in (("sh $X P \"$Y\" 'echo Q' R", ["P", "$Y", "echo Q"]),
+                              ("sh $X -e -o pipefail 'echo P' Q", ["-e", "-o", "pipefail", "echo P"]),
+                              ("bash $X extglob 'echo P' Q", ["extglob", "echo P"]),
+                              ("sh $X x$Y 'echo P' Q", ["x$Y", "echo P"]), ("sh $X -e", ["-e"]),
+                              ("sh $X 'echo P' x$Y Q", ["echo P"]),
+                              ("bash $X /dev/null -- P", ["/dev/null"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
+        # That operand may be an option's own value (`--rcfile FILE`), so the
+        # first later word that may expand to an option word re-opens every
+        # word after it -- never itself, which with `X=-c` is a parameter and
+        # with `--rcfile` an option word or a file name. The fourth row was
+        # `['echo P']` under #2484 alone: the rule's price.
+        for script, words in (("bash $X /dev/null $Y 'echo P' Q", ["/dev/null", "echo P", "Q"]),
+                              ("bash $X /dev/null -$Y P", ["/dev/null", "P"]),
+                              ("sh $X 'echo P' \"$Y\"", ["echo P"]),
+                              ("sh $X 'echo P' \"$Y\" Q", ["echo P", "Q"]),
+                              ("sh $X 'echo P' \"$Y\" Q R", ["echo P", "Q", "R"])):
+            with self.subTest(script=script):
+                self.assertEqual(words, forms.candidates(self.argv(script))[1])
 
     def test_none_where_the_options_end_first(self):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
