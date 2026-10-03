@@ -15,6 +15,10 @@ evidence exposed.
   `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
   `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
   turns bash's `echo` into a decoder, which this rule does not follow.
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
 - **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
   heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
   `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
