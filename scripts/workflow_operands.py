@@ -9,6 +9,8 @@ for the guard.
 The guard binds a use to a download by NAME, and shell has several ways to
 designate a file without ever writing its name:
 
+    `working_directories`,       a literal `cd` per step, with subshell
+    `at_directory`               restoration and fail-closed unknown states
     `same_file`, `names_file`  exactly, and for a checksum's text, word for
                                word
     `covers`                   by a glob, by a word bash expands that ends
@@ -74,6 +76,141 @@ def chmod_executable(argv):
         return False
     return any(op in "+=" and any(bit in permissions for bit in "xX")
                for op, permissions in re.findall(r"([+=-])([rwxXstugo]*)", mode))
+
+
+def _joined(directory, token):
+    """Join a relative token without letting `..` erase an unknown cwd."""
+    if not directory.startswith("$CWD"):
+        return os.path.normpath(os.path.join(directory, token))
+    marker, *parts = directory.split("/")
+    for part in token.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if parts and parts[-1] != "$UP":
+                parts.pop()
+            else:
+                parts.append("$UP")
+        else:
+            parts.append(part)
+    return "/".join((marker, *parts))
+
+
+class _Located(str):
+    """A fetch spelling carrying its scanner-internal working directory."""
+    directory: str
+
+
+def located(token, directory):
+    """Copy a destination's provenance and attach its working directory."""
+    if hasattr(token, "markers"):
+        value = type(token)(token, token.markers)
+    elif type(token) is not str:
+        value = type(token)(token)
+    else:
+        value = _Located(token)
+    for attribute in ("lead", "readable", "spelled"):
+        if hasattr(token, attribute):
+            setattr(value, attribute, getattr(token, attribute))
+    value.directory = directory
+    return value
+
+
+def at_directory(token, directory, command_word=False):
+    """Spell relative `token` from the static directory where it is used.
+
+    An internal `$CWD...` state is one a branch or dynamic `cd` made unknown. It gives
+    the existing last-part rule an explicit unknown directory while retaining
+    the basename it can safely bind. A bare command word remains a PATH lookup;
+    only one carrying `/` is cwd-relative.
+    """
+    pattern = getattr(token, "lead", None) is not None
+    if (not token or token.startswith("-") or os.path.isabs(token) or directory == "."
+            or dynamic(token, shell_reader.has_substitution) and not pattern
+            or command_word and "/" not in token):
+        return token
+    path = _joined(directory, token)
+    if command_word and "/" in token and "/" not in path:
+        path = "./" + path
+    if pattern:
+        moved = type(token)(path, token.markers)
+        moved.lead = token.lead
+        return moved
+    if hasattr(token, "readable"):
+        moved = type(token)(path)
+        moved.readable = _joined(directory, token.readable)
+        return moved
+    return shell_reader.derived(path, token)
+
+
+def _changed_directory(argv, directory):
+    """The directory after one bounded literal `cd`, or None when unknown."""
+    args = list(argv[1:])
+    if args[:1] == ["--"]:
+        args.pop(0)
+    if (len(args) != 1 or args[0] == "-" or args[0].startswith("~")
+            or dynamic(args[0], shell_reader.has_substitution)):
+        return None
+    if os.path.isabs(args[0]):
+        return os.path.normpath(args[0])
+    return _joined(directory, args[0])
+
+
+def _directory_command(words):
+    """A directory builtin and whether wrappers make its effect uncertain."""
+    argv = command(words)
+    if argv and os.path.basename(argv[0]) == "builtin":
+        rest = list(argv[1:])
+        while rest and rest[0].startswith("-"):
+            rest.pop(0)
+        if rest and os.path.basename(rest[0]) in ("cd", "pushd", "popd"):
+            return rest, True               # bash changes cwd; dash has no `builtin`
+    if argv and os.path.basename(argv[0]) in ("cd", "pushd", "popd"):
+        wrappers = shell_reader.wrapper_words(words)
+        return argv, any(word != "command" for word in wrappers)
+    return argv, False
+
+
+def working_directories(stmts, branches, scope=0, credit=None, directory="."):
+    """Directory before each statement; each step starts at the workspace.
+
+    A literal `cd` in an unconditional, foreground statement is followed.
+    Branches and conditional lists make the result unknown. Visible subshells
+    keep their own changes and restore the caller's directory when they close.
+    `scope` keeps unknown states from separate shells distinct. `credit` says
+    when a failed `cd` can fall through. `directory` is a nested shell's start.
+    """
+    states, subshells, braces, unknown = [], [], 0, 0
+    for index, statement in enumerate(stmts):
+        states.append(directory)
+        for stage in statement.stages:
+            subshells.extend([directory] * stage.group_open)
+            argv, wrapped = _directory_command(stage.argv)
+            if argv and os.path.basename(argv[0]) == "cd":
+                failure = (credit or {}).get(index)
+                if (wrapped or failure and failure[0] is not None
+                        or index in branches or hasattr(statement, "region")
+                        or braces or "{" in stage.argv
+                        or len(statement.stages) != 1
+                        or statement.separator in ("&&", "||")
+                        or index and stmts[index - 1].separator in ("&&", "||")):
+                    unknown += 1
+                    directory = "$CWD%s_%d" % (scope, unknown)
+                elif statement.separator != "&":
+                    changed = _changed_directory(argv, directory)
+                    if changed is None:
+                        unknown += 1
+                        directory = "$CWD%s_%d" % (scope, unknown)
+                    else:
+                        directory = changed
+            elif (argv and os.path.basename(argv[0]) in ("pushd", "popd")
+                  and statement.separator != "&"):
+                unknown += 1
+                directory = "$CWD%s_%d" % (scope, unknown)
+            braces = max(0, braces + stage.argv.count("{") - stage.argv.count("}"))
+            for _close in range(min(stage.group_close, len(subshells))):
+                directory = subshells.pop()
+    return states
 
 
 def same_file(token, path):
@@ -151,11 +288,12 @@ def may_run(word, dest):
         word == name and os.path.dirname(os.path.normpath(dest)) in PATH_DIRS)
 
 
-def names_file(content, dest):
+def names_file(content, dest, directory="."):
     """Does this checked text name `dest`?
 
-    Word-exact against the path, and NEVER a substring match: `/tmp/payload-old`
-    must not clear `/tmp/payload`. A checksum list legitimately carries bare
+    Words are resolved from `directory`, then matched exactly against the path,
+    NEVER as a substring: `/tmp/payload-old` must not clear `/tmp/payload`. A
+    checksum list legitimately carries bare
     names, so a BARE dest may also be matched by its basename -- but only a
     bare one: with a directory in the dest, `x.sh` is a different file, and
     accepting it is the unbound checksum this rule exists to refuse, wearing a
@@ -163,8 +301,8 @@ def names_file(content, dest):
     """
     base = os.path.basename(dest)
     bare = not os.path.dirname(dest)
-    return any(same_file(word, dest)
-               or (bare and base and same_file(word, base))
+    return any(same_file(at_directory(word, directory), dest)
+               or (bare and base and same_file(at_directory(word, directory), base))
                for word in content.split())
 
 
@@ -189,8 +327,8 @@ class _Reparsed(str):
 # names what the name after it names: so `sh ./cuda_*.run` runs a download
 # `cuda_1.run` (re-review N-C). With a `$` in it, or in the download's name,
 # only the shell knows the directory, so the last parts bind, as in `may_run`
-# (#2345); so do they for a bare download and a glob with a directory part,
-# which reaches it from another directory: the guard follows no `cd`.
+# (#2345); the established fail-closed rule also binds a bare download to a
+# glob that carries a directory part.
 _BRACE = re.compile(r"\{([^{}]*)\}")
 _EXTGROUP = re.compile(r"[@+!*?]\([^()]*\)")
 _EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\(\.\.\.\)|\$(?:\w+|[^\w{])")

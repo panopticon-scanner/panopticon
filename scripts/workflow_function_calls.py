@@ -223,12 +223,22 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     grouped = bool(first_stage and (first_stage.group_open or
                                     (first and first[0] in _GROUP_OPEN)))
     status: int | None = 1  # The rescue is entered only after the checksum fails.
-    # A rescue can close a subshell the check opened on the same statement:
-    # `( CHECK || exit 1 )`. Start inside that shell so its `)` is not read as
-    # an unmatched closer; the non-zero exit becomes the subshell's status.
-    inherited_subshells = max(0, sum(
+    # A rescue can close a subshell the check opened on the same statement or
+    # one whose bare `(` immediately precedes it. Start inside those shells so
+    # `)` is not read as unmatched; a command between `(` and the check keeps
+    # the older fail-closed answer until this bounded status walk models it.
+    inherited_subshells = sum(
         stage.group_open - stage.group_close for stage in stmts[index].stages
-    ))
+    )
+    for opener in reversed(stmts[:index]):
+        if (not opener.stages or
+                any(stage.argv or stage.group_close for stage in opener.stages)):
+            break
+        opened = sum(stage.group_open for stage in opener.stages)
+        if not opened:
+            break
+        inherited_subshells += opened
+    inherited_subshells = max(0, inherited_subshells)
     inherited_depth = (max(inherited_subshells, _nesting(stmts[index]))
                        if inherited_subshells else 0)
     depth, subshell_depth = inherited_depth, inherited_subshells
@@ -322,6 +332,8 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
 _DETACHED = "is detached with `&`"
 _RESCUED = "hands its failure to a `||` branch that does not fail the step"
 _ENDS = "ends a group that %s"
+_GROUP_TAIL = ("runs before a later command in an enclosing conditional group, so that "
+               "command replaces the checksum's status")
 _SET_E = ("runs after a `set +e` or a spelling of it (`set +o errexit`, `shopt -uo errexit`, "
           "`builtin set +e`), which this guard reads as turning errexit off from where it is "
           "written, and is not in the step's last command, so the step carries on past its "
@@ -334,9 +346,8 @@ _NO_PIPEFAIL = ("is piped into another command where this guard reads `pipefail`
                 "before it where the shell is bash)")
 _AHEAD = ("runs ahead of `&&`, where the shell suspends `-e`, so its failure skips only the "
           "rest of that list and the step carries on past it")
-_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read (for example a line "
-         "ending in `(` or starting with `)`, or a `case` inside `$(...)`), so it clears "
-         "nothing after its own command in that list")
+_LOST = ("runs ahead of `&&` in a list whose end this guard cannot read, so it clears nothing "
+         "after its own command in that list")
 
 
 class Reach(str):
@@ -421,10 +432,48 @@ def _nesting(statement):
 
 
 def _closes(statement):
-    """Whether this statement closes a group: a `}`, or a subshell's `)` at
-    the head of its line (the reader drops a `)` that stands alone)."""
+    """Whether this statement closes a group with `}` or a subshell's `)`."""
     first = statement.stages[0] if statement.stages else None
     return first is not None and (first.argv == ["}"] or not first.argv and first.group_close > 0)
+
+
+def _structural_groups(stage):
+    """Leading brace and subshell opens/closes carried by this stage."""
+    braces = []
+    for token in stage.argv:
+        if token not in shell_reader.KEYWORDS:
+            break
+        if token in ("{", "}"):
+            braces.append(token)
+    return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
+
+
+def _conditional_group_tail(stmts, position, errexit):
+    """Why a later command replaces this check before its carrier is tested."""
+    if function := _function_scope(stmts, position):
+        name, close = function
+        later = any(not _closes(statement) for statement in stmts[position + 1:close + 1])
+        if not later:
+            return None
+        call = _gating_function_call(stmts, name, close, errexit, False)
+        return (_GROUP_TAIL if call is None
+                else FunctionGate(call, Reach(None, _GROUP_TAIL)))
+    depth = 0
+    for statement in stmts[:position + 1]:
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
+    if depth < 1:
+        return None
+    later = False
+    for statement in stmts[position + 1:]:
+        later = later or not _closes(statement)
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            depth += opens - closes
+        if depth <= 0:
+            return _GROUP_TAIL if later and statement.separator in ("&&", "||") else None
+    return None
 
 
 def _lost_case(stmts):
@@ -449,11 +498,15 @@ def _stops_step(stmts, position, on, fails):
     statement only, the refusal where a group it ends lets it go, else the
     index of the last statement it still stops.
 
-    A check that ends a `{ }` group, or a `( )` whose `(` line the reader
-    dropped, is that group's status, and what follows the statements closing
-    its groups decides: `&`, a pipe where pipefail is off, an `||` branch
-    that does not fail the step, or an `&&` list the group heads (review
-    I-2). Ahead of `&&` the answer is the end of the list -- the first `||`
+    A check followed by another command in a group or function does not supply
+    the carrier's eventual status when that carrier heads `&&` or `||`; a
+    later command may replace the check's failure. A plain function call can
+    still gate uses after that call. A check that ends a `{ }` or `( )` group
+    is that group's status. What follows the statements closing its groups
+    decides: `&`, a pipe where
+    pipefail is off, an `||` branch that does not fail the step, or an `&&`
+    list the group heads (review I-2). Ahead of `&&` the answer is the end of
+    the list -- the first `||`
     or the list's own end, a compound command in it taken whole -- or of the
     `( )` or `{ }` group the list ends, whose status is the list's. That
     status still stops the step as the step's last command, through an `||`
@@ -462,14 +515,10 @@ def _stops_step(stmts, position, on, fails):
     plain `{ ...; }` group's, which `-e` lets pass, and not from a group
     detached with `&`, or piped where pipefail is off (`fails`).
 
-    A count of compound commands that never balances, or a list that closes
-    a subshell no statement up to the check opened, or is followed by the
-    `)` of one (review I-3), is a paren the reader lost -- it drops a `(`
-    that ends a line and a `)` alone on one -- and a list that closes a
-    `case` it never opened is a `$(...)` it ended at a `case` pattern's `)`,
-    whatever the count says (`_lost_case`, review I-4): there the list's end
-    is unknown, and the failure stops only its own statement (`_LOST`, review
-    I-1, N-7)."""
+    A compound-command count that never balances, a list that closes a
+    subshell no visible statement up to the check opened, or a `case` close
+    without its open (`_lost_case`, review I-4) leaves the list's end unknown.
+    The failure then stops only its own statement (`_LOST`, review I-1, N-7)."""
     last, close = len(stmts) - 1, position
     while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
             stmts[close + 1]):
@@ -479,6 +528,10 @@ def _stops_step(stmts, position, on, fails):
         if len(stmts[close].stages) > 1 and not fails[close]:
             return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
+    if separator not in ("&&", "||"):
+        tail = _conditional_group_tail(stmts, position, on[position])
+        if tail is not None:
+            return tail
     if close > position and separator == "||":
         return None if _stops_the_job(
             stmts, close, on[position], fails[position]) else _ENDS % _RESCUED
@@ -495,7 +548,7 @@ def _stops_step(stmts, position, on, fails):
     opened = sum(stage.group_open - stage.group_close for statement in stmts[:position + 1]
                  for stage in statement.stages)
     if depth > 0 or depth < 0 and opened < 1 or _lost_case(stmts[position + 1:end + 1]):
-        return _LOST                            # a lost paren: the list's end is unknown
+        return _LOST                            # an unbalanced group's end is unknown
     closed_subshells = 0
     while (not depth or depth < 0) and end < last and stmts[end].separator not in (
             "&", "&&", "||") and _closes(stmts[end + 1]):
@@ -503,7 +556,7 @@ def _stops_step(stmts, position, on, fails):
         if stmts[end].stages[0].argv != ["}"]:
             closed_subshells += 1
             if opened < closed_subshells:
-                return _LOST                    # a `)` whose `(` the reader dropped
+                return _LOST                    # a closer with no visible opener
     here = stmts[end]
     if depth < 0 and (here.separator == "&" or len(here.stages) > 1 and not fails[end]):
         return end                              # the group's failure goes nowhere
