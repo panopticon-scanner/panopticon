@@ -7,6 +7,9 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Line-only subshell rescues keep their enclosing status context (#2579, #2331).** When `(` is
+  on the line before a checksum, its `|| exit` now carries through `)` into an outer `||`, so a
+  swallowing branch no longer certifies later execution. Unrescued and piped diagnoses remain.
 - **Workflow paths now follow a static working directory (#2427, #2331).** A literal `cd` binds
   relative fetches, checks, aliases and uses to the file they reach. Each step starts at the
   workspace; subshells and command substitutions inherit, then restore, their caller. A branched
