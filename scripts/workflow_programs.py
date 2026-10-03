@@ -21,8 +21,8 @@ it, the stage in front of it (#2333):
                       runs -- or none, where no check counts
     `unprinted`       the printer piping one in whose text no reading `spellings` gives spells out
                       -- a heredoc-fed `cat` among them (#2467) -- for `unread_program` to weigh;
-                      `printed`, `spellings`, `ANY`, `handed`, the pipe test `_piped` and the
-                      `_PRINTERS` table live in `workflow_printers` and are re-exported here
+                      `printed`, `spellings`, `ANY`, `Named`, `handed`, the pipe test `_piped` and
+                      the `_PRINTERS` table live in `workflow_printers` and are re-exported here
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
@@ -44,7 +44,7 @@ import re
 
 import shell_lex
 import shell_reader
-from workflow_printers import (ANY as ANY, _PRINTERS as _PRINTERS, _piped as _piped,
+from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                handed as handed, printed as printed, spellings as spellings)
 
 
@@ -611,6 +611,18 @@ def _options(argv, depth):
             if next(rest, None) in _STDIN_OPERANDS and not shell:
                 return answer, reader       # the program is stdin after all
     return answer, reader
+
+
+def runs_under(argv, reader, name):
+    """The shell `workflow_forms.flattened` reads a stdin text's body under: its READER's basename
+    (`sudo sh <<'EOF'` → `sh`), or the holder's `name` -- as a `Named` read by the printers as `ANY`
+    where `_stdin` names no reader BECAUSE the holder's `-c`/`eval` string names the shell that reads
+    the body (`bash -c 'sh'`, `bash -s -c 'sh'`, `eval 'bash -s'`: #2500, R-F7), the plain name where
+    no string does (a word that may vanish, #2485: `bash $X <<'EOF'` runs the body under bash or not
+    at all; a `$` command word, #2473, misses the table and reads as `ANY` already)."""
+    if reader:
+        return os.path.basename(reader[0])
+    return Named(name) if scripts(argv) else name
 
 
 def stdin_scripts(argv, stage, before=None, shell=None):

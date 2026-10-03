@@ -72,7 +72,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                names_file as names_file, same_file as same_file)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
                                dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, unprinted as unprinted)
+                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted)
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -187,15 +187,15 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     its list (#2334). A child shell has `-e` only from its options or a `set`, and `pipefail` so too
     (re-review N-D), read off the COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a
     stdin script's READER's (`workflow_programs.Stdin`), without which no check in it counts; the
-    step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
-    (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell, None where no shell is sure to read
-    it (`Unsure`), never true for an `Opaque` one (None inside an `Unsure` one), whose statements,
-    nested ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this is the
-    step's own shell); `pipefail`: a pipeline there fails on any of its commands; `shell`: the
-    script's runner, and at the step's own top its `shell:` (None: the default); `outer`: the bodies
-    of the command running it, below the step's own, and `key` a name for the script, unique in the
-    step, for its own bodies.
+    step's own shell has what `shell:` starts it with (`seed`, #2338) as a `set` moves it (#2335),
+    and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it. `stops`:
+    this script's failure reaches the step's own shell, None where no shell is sure to read it
+    (`Unsure`), never true for an `Opaque` one (None in an `Unsure` one), whose statements, nested
+    ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this is the step's own
+    shell); `pipefail`: a pipeline there fails on any of its commands; `shell`: the script's runner,
+    and at the step's own top its `shell:` (None: the default) -- a `Named` one where the holder's
+    string names it (`runs_under`); `outer`: the bodies of the command running it, below the step's
+    own, and `key` a name for the script, unique in the step, for its own bodies.
     """
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
@@ -215,14 +215,14 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     bool(who) and stops and swallowed(stmts, index, statement, stage) is None
                     and (top or on[index] or index == last)
                     and (fails[index] or stage is statement.stages[-1]))
-                who = who or argv
+                runner, who = name if who is argv else runs_under(argv, who, name), who or argv
                 own = name == "eval" and who is argv    # runs in this shell, with its `-e`
                 read = flattened(
                     statements(text), gates,
                     on[index] and statement.separator not in ("&&", "||") if own
                     else _errexit(who[1:], invocation=True),
                     fails[index] if own else _errexit(who[1:], False, "pipefail", True),
-                    name if who is argv else os.path.basename(who[0]), region,
+                    runner, region,
                     key + ((index, ordinal),))
                 if isinstance(text, Opaque):    # what its `$(...)` prints is read nowhere
                     read = [s._replace(credit=(_OPAQUE % name,) * 2) for s in read]

@@ -16,6 +16,7 @@ callers use:
     `spellings`  the DISTINCT texts `printed` gives under the readings a runner may be (#2476 R-F1)
     `handed`     the heredoc or here-string a `cat` printer in front hands a stage down the pipe
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
+    `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
 Stdlib only, like everything under it.
 """
@@ -41,6 +42,14 @@ _PRINTERS = ("echo", "printf")
 # of its own), a `$` command word, ksh, ash, busybox, or any other `shell:` -- a lookup miss in
 # `_ECHO` below. `spellings` reads such a runner's `echo` under BOTH readings instead of guessing one.
 ANY = "any"
+
+
+class Named(str):
+    """A runner's NAME as `workflow_forms.flattened`'s sentences print it (`_UNGATED` and kin name the
+    holder: `bash`, `eval`, `$CMD`), whose `echo` the printers read as `runner` instead: `ANY` where the
+    holder's `-c`/`eval` string names the shell that reads the body (`bash -c 'sh'`, #2500, R-F7)."""
+    runner: str = ANY
+
 
 # echo per shell (#2476, fix round 1 R-F1/R-F5/M1): the option word(s) it reads, the cap on how many
 # may stand (None: as many consecutive ones as match), and whether it decodes by default. Bash
@@ -116,6 +125,13 @@ def _cat_reads_stdin(argv):
             and (not words or "-" in words))
 
 
+def _reading(shell):
+    """The `_ECHO` row a runner is read under: `shell`'s basename (None: bash, GitHub's default), or the
+    `runner` a `Named` one carries for the printers (`ANY` where a string names the shell, R-F7)."""
+    shell = getattr(shell, "runner", shell)
+    return os.path.basename((shell or "bash").split()[0])
+
+
 def printed(argv, stage=None, shell=None):
     """The text this `echo`, `printf` or heredoc-fed `cat` writes under ONE reading -- `shell`'s,
     where its words spell it out, or None. `spellings` is the one to ask where the runner may be
@@ -149,8 +165,7 @@ def printed(argv, stage=None, shell=None):
         return None
     words = [getattr(w, "spelled", w) for w in argv[1:]]
     if name == "echo":
-        pattern, decode, cap = _ECHO.get(os.path.basename((shell or "bash").split()[0]),
-                                         (None, None, None))
+        pattern, decode, cap = _ECHO.get(_reading(shell), (None, None, None))
         if pattern is None:
             return None                     # `ANY`, or an unmeasured name asked for directly
         options = 0
@@ -188,7 +203,7 @@ def spellings(argv, stage=None, shell=None):
     where BOTH are, and the two collapse to one where they happen to agree. A None reading is kept
     in the list as None: the caller's to know some reading is unspelled, never dropped silently."""
     name = os.path.basename(argv[0]) if argv else ""
-    if name != "echo" or os.path.basename((shell or "bash").split()[0]) in _ECHO:
+    if name != "echo" or _reading(shell) in _ECHO:
         return [printed(argv, stage, shell)]
     bash, decoding = printed(argv, stage, "bash"), printed(argv, stage, "sh")
     return [bash] if bash == decoding else [bash, decoding]
