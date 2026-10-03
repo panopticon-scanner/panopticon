@@ -295,7 +295,7 @@ def candidates(argv):
     (`X=--rcfile; bash $X /dev/null …`), and the shell then reads on: its program can follow only
     (i) in a literal `-c` cluster, which `scripts` reads wherever it stands, (ii) behind a word that
     expands to one, or (iii) as a script file, which the operand reader reads, or on stdin, which
-    nothing here reads past a value (#2605, #2616). So the first word past the operand that may
+    `stdin_program` keeps possible past a value (#2605); a literal long option remains #2616. So
     spell an option once expanded (`_may_spell_option`: `$Y`, `-$Y`, `$(echo -c)`) re-opens every
     word after it, though not itself, which is `$0`, an option word or a script's file name, never a
     `-c` string, unless brace expansion spells one (`{-c,…}`, a `Rewritten` word nothing weighs).
@@ -473,6 +473,12 @@ def stdin_program(argv):
     over-report the guard's gap list does not separately name, beside the
     ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
+    A FILE after a value in the shell's option slot keeps stdin possible
+    (#2605): the value may be `-s`, making that file and every later word a
+    parameter, or `--rcfile`, making the file that option's value. This reads
+    `sh $X file.sh <<'EOF'` fail-closed at the disclosed `X=-e` price. An
+    explicit `--` before the value ends the option slot.
+
     A value-form COMMAND word (`$CMD`, `"$CMD"`, `${CMD}`, `$(echo sh)`,
     `$PYTHON -`) with stdin on it answers VALUE_PROGRAM (#2473): a name no
     table places may hold a shell, another language's interpreter or `true`.
@@ -580,16 +586,21 @@ def _options(argv, depth):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     reader = argv if shell and not depth else None
+    options, value_option = True, False
     rest = iter(argv[1:])
     for token in rest:
         if token in _STDIN_OPERANDS:
             return answer, reader
+        if token == "--":
+            options = False
+            continue
         if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts
+                value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return None, None               # the program is this file
+            return (answer, reader) if value_option else (None, None)
         letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
             return None, None               # the program is the `-c` string

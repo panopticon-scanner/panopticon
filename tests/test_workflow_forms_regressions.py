@@ -195,6 +195,16 @@ class TestCombinedPipeline(unittest.TestCase):
         self.assertEqual([], guard.fetch_exec_defects(
             f'curl {URL} >tool |& cat; {CHECK} && sh tool'))
 
+    def test_a_value_command_word_is_a_stream_consumer(self):
+        # #2602: the first word may name a shell even though no executor table
+        # can place it. The same walk must cross a pass-through `tee` stage.
+        for tail, word in (("$CMD", "$CMD"), ("${CMD}", "${CMD}"),
+                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO sh", "$SUDO")):
+            with self.subTest(tail=tail):
+                stages = shell_reader.statements(f"curl {URL} | {tail}")[0].stages
+                consumer = forms.stream_consumer(stages[1:], guard.EXECUTORS)
+                self.assertEqual(word, shell_reader.readable(consumer[0]))
+
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
@@ -514,6 +524,25 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(argv))
         self.assertIsNone(forms.stdin_program(["bash", "-oe", "pipefail", "x.sh"]))
+
+    def test_2605_a_file_after_a_value_option_keeps_stdin_possible(self):
+        # The value may be `-s`, making every following word a parameter, or
+        # `--rcfile`, making the first literal word that option's value.
+        rows = (("sh $X file.sh", forms.SHELL_PROGRAM),
+                ("bash $X x.sh arg", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null", forms.SHELL_PROGRAM),
+                ("bash $X /dev/null -s arg", forms.SHELL_PROGRAM),
+                ("$CMD $X file.sh", workflow_programs.VALUE_PROGRAM))
+        for script, expected in rows:
+            with self.subTest(script=script):
+                self.assertEqual(expected, forms.stdin_program(self.argv(script)))
+        # A literal file, an ended option list and a literal `-c` remain files
+        # or strings. The literal `-s` must-trip remains a stdin program.
+        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+            with self.subTest(script=script):
+                self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh -s file.sh")))
 
     def test_a_stdin_reading_shell_behind_eval_or_dash_c_is_the_enclosings_answer(self):
         # #2500: `eval 'bash -s' <<'EOF'` and `bash -c 'sh' <<'EOF'` run the
