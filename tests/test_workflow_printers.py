@@ -6,6 +6,7 @@ must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers` 
 import unittest
 
 import shell_reader
+import shell_wrappers
 import workflow_forms as forms
 import workflow_guard as wg
 import workflow_printers as wp
@@ -874,6 +875,178 @@ class TestFixRound4(unittest.TestCase):
                      ["cat", "--", "f"], ["tac"]):
             with self.subTest(argv=argv):
                 self.assertFalse(wp._cat_reads_stdin(argv))
+
+
+class TestFixRound5(unittest.TestCase):
+    """Re-review #3's R3-C1, R3-M1 and R3-M2(a) (rulings R-F15, R-F16) and R-F13's dead clause.
+    R-F15: a holder whose command word is a `${X:-sh}` default (`shell_wrappers.Defaulted`) is not
+    WRITTEN as the shell it spells -- `X` may hold another -- so its printers read both ways, as
+    `_refused` already reads such a word. R-F16: the words after a `-c` string are `$0`, `$1`, ...,
+    never options, so `runs_under`'s scan stops at the string, which it still weighs. `unprinted`
+    asks `_PRINTERS` alone now. Truth columns are b5, b3, dash and gh (GitHub's default pairing),
+    measured on this box, whose `cat` is BSD's."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+    TAB = "<<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"
+    CHECK = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+    FETCH_EXEC = ("fetches https://example.test/tool -> tool and running it under `sh` with "
+                  "nothing verifying what arrived")
+
+    def command(self, script):
+        """The argv `flattened` hands `runs_under`, from a real statement."""
+        return shell_reader.command(shell_reader.statements(script)[0].stages[0].argv)
+
+    def test_h15_a_default_command_word_reads_both_ways(self):
+        # CLEAN under both keys at bc6f04c7, where main reported each: `_command_result` reads the
+        # word as the shell it spells (#2337) and marks it `Defaulted`, which `runs_under`'s
+        # plain-name branch ignored. h15 `X=dash; ${X:-bash} -s`, h15b its `-c "…"` twin, h15e with
+        # no option and j05 `${X:=bash} -s` (FR x4: dash runs the body and decodes the tab); h15d
+        # `X=sh` (F- FR FR FR); h15g `X=bash; ${X:-sh} -c "echo -e 'sh tool' | sh"` and h15h, its
+        # `-s` heredoc (FR x4: bash reads `-e` as an option, where sh's row reads it as text).
+        steps = {"h15": "X=dash\n${X:-bash} -s " + self.TAB,
+                 "h15b": "X=dash\n${X:-bash} -c \"echo 'sh\\ttool' | sh\"\n",
+                 "h15d": "X=sh\n${X:-bash} -s " + self.TAB,
+                 "h15e": "X=dash\n${X:-bash} " + self.TAB,
+                 "h15g": "X=bash\n${X:-sh} -c \"echo -e 'sh tool' | sh\"\n",
+                 "h15h": "X=bash\n${X:-sh} -s <<'EOF'\necho -e 'sh tool' | sh\nEOF\n",
+                 "j05": "X=dash\n${X:=bash} -s " + self.TAB}
+        for step, holder in steps.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(self.FETCH_EXEC, found[0][1])
+        # h15g's sentence, main's own: "fetches https://example.test/tool -> tool and running it
+        # under `sh` with nothing verifying what arrived -- verify it first: …".
+        found = defects(self.GET + steps["h15g"])
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(self.FETCH_EXEC + " -- verify it first: "), found)
+
+    def test_h15c_h15f_an_unset_default_is_the_fail_closed_price(self):
+        # h15c `${X:-bash} -s` and h15f `${X:-bash} -c "…"` with `X` unset: the default bash runs
+        # the body, and its `echo` prints the tab literally (F- x4). D, read both ways because `X`
+        # may hold another shell: the same fail-closed price as n04's and z02's value among the
+        # holder's words. Main reports both too (`_Quiet`).
+        for step, holder in (("h15c", "${X:-bash} -s " + self.TAB),
+                             ("h15f", "${X:-bash} -c \"echo 'sh\\ttool' | sh\"\n")):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(self.FETCH_EXEC, found[0][1])
+
+    def test_a_written_holder_keeps_its_own_row(self):
+        # The controls R-F15 must not touch, CLEAN at bc6f04c7 and now. n03 `bash <<'EOF'` and j04
+        # `bash -s <<'EOF'`, h15's body under a WRITTEN bash (F- x4: its `echo` prints the tab
+        # literally). j02 `sh -s <<'EOF'` with h15h's `echo -e 'sh tool' | sh`: a WRITTEN `sh` keeps
+        # sh's row, where `-e` is text (b3, dash and gh F-, "-e: not found"; b5 FR only because this
+        # box's b5 `sh` is bash 5, where GitHub's is dash). Under `shell: bash` and `shell: sh`.
+        for step, holder in (("n03", "bash " + self.TAB), ("j04", "bash -s " + self.TAB),
+                             ("j02", "sh -s <<'EOF'\necho -e 'sh tool' | sh\nEOF\n")):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    self.assertEqual([], defects(self.GET + holder, shell))
+
+    def test_runs_under_reads_a_default_command_word_as_named(self):
+        argv = self.command("${X:-sh} -s")
+        self.assertIs(shell_wrappers.Defaulted, type(argv[0]))
+        runner = forms.runs_under(argv, argv, "sh")
+        self.assertIsInstance(runner, wp.Named)
+        self.assertIs(wp.ANY, runner.runner)
+        written = self.command("sh -s")
+        self.assertIs(str, type(forms.runs_under(written, written, "sh")))
+
+    def test_h14_h16_h16b_the_words_after_a_dash_c_string_are_parameters(self):
+        # D under both keys at bc6f04c7: R-F12's scan weighed a `$` or `{}` word AFTER the string
+        # as a possible option, so the holder was `Named`. h14 `xargs -I{} bash -c "…" {}` (`{}` a
+        # `Rewritten` word) and h16 `bash -c "…" _ "$X"` (F- x4: bash runs the string and its
+        # `echo` prints the tab literally). h16b `bash -c 'set -e; echo -e "<check>" | sh; sh tool'
+        # _ "$X"` (F- x4: the check runs, fails and stops the step) was D where main is CLEAN: the
+        # two readings `Named` gives differ, so neither counted the check. It counts again.
+        steps = {"h14": "echo x | xargs -I{} bash -c \"echo 'sh\\ttool' | sh\" {}\n",
+                 "h16": "bash -c \"echo 'sh\\ttool' | sh\" _ \"$X\"\n",
+                 "h16b": "bash -c 'set -e; echo -e \"%s\" | sh; sh tool' _ \"$X\"\n" % self.CHECK}
+        for step, script in steps.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    self.assertEqual([], defects(self.GET + script, shell))
+
+    def test_z09_h10_h17_the_string_and_the_words_before_it_still_count(self):
+        # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): the string itself stays in the scan, so a `$`
+        # string that may name the reading shell keeps its catch, Q+D. h10, z09 with `S` unset (F-
+        # x4: bash runs the empty string, rc 0, and never reads the body), is Q+D too: z09's rule's
+        # price. h17 `X='-O xpg_echo'; bash $X -c "…"` (FR x4): the value stands BEFORE the string,
+        # so the holder is still `Named`: the value's `Idle` and the download it runs, as before.
+        quiet = (("z09", "S=sh\nbash -s -c \"$S\" " + self.TAB),
+                 ("h10", "bash -s -c \"$S\" " + self.TAB))
+        for step, holder in quiet:
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertIsInstance(found[0][1], forms._Quiet)
+                    self.assertIn(self.FETCH_EXEC, found[1][1])
+        h17 = "X='-O xpg_echo'\nbash $X -c \"echo 'sh\\ttool' | sh\"\n"
+        for shell in (None, "sh"):
+            with self.subTest(step="h17", shell=shell):
+                found = defects(self.GET + h17, shell)
+                self.assertEqual(2, len(found), found)
+                self.assertIs(forms.Idle, type(found[0][1]))
+                self.assertIn(self.FETCH_EXEC, found[1][1])
+
+    def test_the_string_is_found_by_identity_only_where_its_object_is_unique(self):
+        # CPython shares a one-character `str`: the `-c` string `+` after `-` IS the earlier `+`'s
+        # object, so stopping at the FIRST word that `is` the string ends the scan at that `+`,
+        # before `-$X`. j06 `X='c sh'; bash -s + -$X -c - +` (F- FR FR FR: bash reads `+` as an
+        # option word and `-$X` as `-c sh`, so `sh` reads the body and decodes the tab) is CLEAN
+        # with that line, where bc6f04c7 gave D and main `_Quiet`. Where the string's object recurs
+        # in the argv, the scan reads on to `--`: j06 is D, and j01 (`$X` in place of `-$X`, the
+        # same truth) keeps the value's `Idle` and its D. j03 `bash -s -c x "$X" x` is that
+        # fallback's price (F- x4: bash runs `x` and never reads the body): D, as at bc6f04c7.
+        steps = {"j06": "X='c sh'\nbash -s + -$X -c - + " + self.TAB,
+                 "j01": "X='-c sh'\nbash -s + $X -c - + " + self.TAB,
+                 "j03": "X='-c sh'\nbash -s -c x \"$X\" x " + self.TAB}
+        for step, holder in steps.items():
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder, shell)
+                    self.assertEqual(2 if step == "j01" else 1, len(found), found)
+                    self.assertIn(self.FETCH_EXEC, found[-1][1])
+        argv = self.command("bash -s + -$X -c - +")
+        self.assertIs(argv[2], argv[6])
+        self.assertIsInstance(forms.runs_under(argv, argv, "bash"), wp.Named)
+        # A string whose object is the argv's only one ends the scan there: a `$X` after it is a
+        # parameter. A `$` string itself stays in the scan (z09's shape).
+        for script in ("bash -c 'echo hi' _ \"$X\"", "bash -s -c 'echo hi' \"$X\""):
+            with self.subTest(script=script):
+                argv = self.command(script)
+                self.assertIs(str, type(forms.runs_under(argv, argv, "bash")))
+        argv = self.command("bash -s -c \"$S\"")
+        self.assertIsInstance(forms.runs_under(argv, argv, "bash"), wp.Named)
+
+    def test_h20_h21_cat_help_and_version_are_over_reported(self):
+        # `cat --help` and `cat --version` read nothing: GNU prints its own usage or version text,
+        # so the body never runs, and BSD's `cat` (this box) refuses them, "illegal option -- -":
+        # truth -- x4 here. `_cat_reads_stdin` sees no operand there and reads the body as written:
+        # D, an over-report, R-F14's price, named in its docstring.
+        for option in ("--help", "--version"):
+            for shell in (None, "sh"):
+                with self.subTest(option=option, shell=shell):
+                    found = defects("cat %s <<'EOF' | sh\n%s\nEOF\n" % (option, PIPE), shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("i.sh straight to `sh`", found[0][1])
+
+    def test_unprinted_asks_the_printers_table_alone(self):
+        # R-F13's handed clause is gone: a heredoc-fed `cat` is never an unspelled printer.
+        # `printed` spells a QUOTED body whole (an option word or not), and `_unread_stdin`
+        # reports an EXPANDING one; `unprinted` gave `[]` for each at bc6f04c7 too, the clause
+        # being dead (re-review #3: 29,055 instrumented calls, no changed answer).
+        for script in ("cat <<'EOF' | sh\n%s\nEOF\n" % PIPE, "cat <<EOF | sh\n%s\nEOF\n" % PIPE,
+                       "cat <<<'%s' | sh\n" % PIPE, "cat -n <<'EOF' | sh\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                stages = shell_reader.statements(script)[0].stages
+                self.assertEqual([], forms.unprinted(shell_reader.command(stages[1].argv),
+                                                     stages[1], stages[0]))
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
