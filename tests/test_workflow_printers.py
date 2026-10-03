@@ -249,7 +249,8 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
     reads under BOTH the bash and the dash table (`spellings`), so a download it hands a shell is
     caught under WHICHEVER reading shows it, even where the other reading shows nothing (the fail
     side is over-reporting inside such a string, never a fail-open, R-F1/C1/C5). `printf`'s FORMAT
-    decodes `\\c` literal and an octal escape counting a leading `0`, in every shell alike (R-F3/C2);
+    decodes `\\c` literal and an octal escape counting a leading `0`, in every shell alike
+    (R-F3/C2);
     a decoded NUL is dropped, as the shell drops it from the script it reads (R-F4/C3); `cat` reads
     its own stdin with a `-` among its operands beside a file (R-F5/M7); `sh`/dash take exactly ONE
     leading `-n`, never a repeated or combined one (M1)."""
@@ -286,7 +287,8 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
         # r67/r68: `ksh` is in no `_ECHO` row -- ANY, same as `eval`. r67 (bash-truth FR on all
         # three): both readings agree, reported as before. r68 (bash-truth: F- on all three,
         # measured -- ksh's own `echo` does not decode without `-e` either): the DASH reading still
-        # catches it, an accepted over-report for an unmeasured shell, where main gave only `_Quiet`.
+        # catches it, an accepted over-report for an unmeasured shell, where main gave only
+        # `_Quiet`.
         found = defects(self.GET + 'ksh -c "echo -e \'sh tool\' | sh"\n')
         self.assertEqual(1, len(found), found)
         found = defects(self.GET + 'ksh -c "echo \'sh\\ttool\' | sh"\n')
@@ -429,7 +431,8 @@ class TestFixRound2TheRunnerAStringNames(unittest.TestCase):
         # n05 (bash-truth: b3 FR, dash FR, gh FR; b5 F-): `sh $X <<'EOF'` with `X=-s` -- `sh` itself
         # is a MEASURED row, and it is both the holder AND the reader here (no `-c` string at all),
         # so this was never the r62/r63 fail-open: loud already at 55cacce3 (before this round),
-        # unaffected by it -- a confirmed-correct control, not a new catch (measured, not predicted).
+        # unaffected by it -- a confirmed-correct control, not a new catch (measured, not
+        # predicted).
         found = defects(self.GET + "X=-s\nsh $X <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
         self.assertEqual(1, len(found), found)
         self.assertIn("running it under", found[0][1])
@@ -746,7 +749,7 @@ class TestFixRound4(unittest.TestCase):
         # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): a `-c` string that is a `$` word may name the
         # shell reading the body too -- the download the body runs (c3113439: a `_Quiet` alone)
         # beside the hand-off's `Idle`, which #2703 (fold 8) raises for the `$S` string as a value
-        # stdin reader where `unprinted`'s `_Quiet` stood (main reports that `Idle` too).
+        # stdin reader where `dynamic_program`'s `_Quiet` stood (main reports that `Idle` too).
         for shell in (None, "sh"):
             with self.subTest(step="z09", shell=shell):
                 found = defects(self.GET + "S=sh\nbash -s -c \"$S\" " + body, shell)
@@ -977,8 +980,8 @@ class TestFixRound5(unittest.TestCase):
         # z09 `S=sh; bash -s -c "$S"` (F- FR FR FR): the string itself stays in the scan, so a `$`
         # string that may name the reading shell keeps its catch: the download the body runs beside
         # the hand-off's `Idle` (#2703, fold 8: the `$S` string is a value stdin reader; before it,
-        # `unprinted`'s `_Quiet` stood there). h10, z09 with `S` unset (F- x4: bash runs the empty
-        # string, rc 0, and never reads the body), reads the same: z09's rule's price. h17
+        # `dynamic_program`'s `_Quiet` stood there). h10, z09 with `S` unset (F- x4: bash runs the
+        # empty string, rc 0, and never reads the body), reads the same: z09's rule's price. h17
         # `X='-O xpg_echo'; bash $X -c "…"` (FR x4): the value stands BEFORE the string, so the
         # holder is still `Named`: the value's `Idle` and the download it runs, as before.
         handed = (("z09", "S=sh\nbash -s -c \"$S\" " + self.TAB),
@@ -1055,8 +1058,7 @@ class TestFixRound5(unittest.TestCase):
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
-    """The gap list: "Open: `xpg_echo` (bash's `echo` decodes)" -- `workflow_guard`'s module
-    docstring."""
+    """The gap list: "Open: `xpg_echo`;" -- `workflow_guard`'s module docstring."""
 
     def test_xpg_echo_is_not_read(self):
         # b08 (bash-truth: b5/b3 FR -- bash actually decodes and runs it; dash has no `shopt`, F-).

@@ -26,19 +26,24 @@ it, the stage in front of it (#2333):
                       one `_unread_stdin` reports (#2467, R-F13) -- for `unread_program` to weigh;
                       `printed`, `spellings`, `ANY`, `Named`, `handed`, the pipe test `_piped` and
                       the `_PRINTERS` table live in `workflow_printers` and are re-exported here
+    `runs_under`      the shell a stdin body is read under (#2476): another reader's basename
+                      (`sudo sh` → `sh`), the holder's plain name where its words through a `-c`
+                      string are all literal, or `Named(name)` -- both readings -- behind a value, a
+                      default or an `eval`/`-c` string that may name the reading shell
     `candidates`      the words that may be the program, up to the first operand and past a later
                       word that may spell an option, where a value this module does not follow
                       stands in a shell's options
     `dynamic_program` the program word a LITERAL shell is handed that is all expansion
                       (`sh -c "$P"`, `sh -c "$(cat f)"`), which spells no command at all
 
-`workflow_forms` imports all six and `Opaque`: its `flattened` reads each script found here in
-place of the command handed it -- a stdin one under its reader's `-e`, and with no check in it
-counted where it has none, behind a string, under a `$` command word (`VALUE_PROGRAM`) or where it
-is `Opaque` -- its `unread_program` weighs the candidates, the unprinted and the dynamic program,
-and the guard takes `stdin_program` and `SHELL_PROGRAM` through it and `VALUE_PROGRAM` directly.
-The option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up
-that reads a shell's options too (#2443, #2475).
+`workflow_forms` imports all but `stdin_command` (the guard's) and `Opaque`: its `flattened` reads
+each script found here in place of the command handed it -- a stdin one under its reader's `-e`
+(`runs_under`), and with no check in it counted where it has none, behind a string, under a `$`
+command word (`VALUE_PROGRAM`) or where it is `Opaque` -- its `unread_program` weighs the
+candidates, the unprinted and the dynamic program, and the guard takes `stdin_program` and
+`SHELL_PROGRAM` through it, `VALUE_PROGRAM`, `ANY`, `handed` and `stdin_command` directly. The
+option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up that
+reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
 """

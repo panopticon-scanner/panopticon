@@ -221,7 +221,7 @@ EXECUTORS = INTERPRETERS + UNPACKERS
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory=".",
-          shell=ANY):   # read under the step's shell; `ANY` inside an `Inlined` one (#2476)
+          shell=ANY):   # read under the step's shell; `ANY` for an `Inlined` one (#2476)
     """Fetches and unread forms under `shell`; nested cwd kept, attributed to the outer line."""
     stmts = list(stmts)
     if working is None:

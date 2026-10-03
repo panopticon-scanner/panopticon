@@ -12,8 +12,9 @@ evidence exposed.
   a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
   `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
   (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
-  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways. Named gap:
-  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not follow.
+  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
+  `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
+  turns bash's `echo` into a decoder, which this rule does not follow.
 - **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
   heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
   `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
