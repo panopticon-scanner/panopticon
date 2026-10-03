@@ -2744,6 +2744,59 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
                 with self.subTest(shell=shell, body=body):
                     self.assertEqual([], self.job(body, shell))
 
+    def test_a_later_command_replaces_a_nested_groups_checksum_status(self):
+        for shell in (None, "sh", "bash"):
+            for ending in ("|| exit 1", "|| true", "&& echo recovered"):
+                for nested in ("{ { %s; echo ok; }; }",
+                               "{ { { %s; echo ok; }; }; }"):
+                    body = nested + " " + ending + "\n"
+                    with self.subTest(shell=shell, body=body):
+                        self.reported(body, shell, "runs before a later command in an "
+                                                   "enclosing conditional group")
+
+    def test_nested_groups_keep_a_checksum_that_really_is_final(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("{ { %s; echo ok; }; }\n",
+                         "{ { %s; }; } || exit 1\n",
+                         "{ { { %s; }; }; } || exit 1\n",
+                         "{ { %s && echo ok; }; } || exit 1\n",
+                         "{ { { %s && echo ok; }; }; } || exit 1\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.both(body, shell))
+
+    def test_a_later_command_replaces_a_conditional_groups_checksum_status(self):
+        for shell in (None, "sh", "bash"):
+            for ending in ("|| exit 1", "|| true", "&& echo recovered"):
+                for carrier in ("{ %s; echo ok; }", "( %s; echo ok )",
+                                "f() { %s; echo ok; }\nf"):
+                    body = carrier + " " + ending + "\n"
+                    with self.subTest(shell=shell, body=body):
+                        self.reported(body, shell, "runs before a later command in an "
+                                                   "enclosing conditional group")
+
+    def test_a_single_groups_final_checksum_status_remains_a_gate(self):
+        for shell in (None, "sh", "bash"):
+            for carrier in ("{ %s; }", "( %s )", "f() { %s; }\nf",
+                            "{ %s && echo ok; }", "( %s && echo ok )"):
+                with self.subTest(shell=shell, carrier=carrier):
+                    self.assertEqual([], self.both(carrier + " || exit 1\n", shell))
+
+    def test_an_unconditional_single_group_still_uses_errexit(self):
+        for shell in (None, "sh", "bash"):
+            for body in ("{ %s; echo ok; }\n", "( %s; echo ok )\n",
+                         "f() { %s; echo ok; }\nf\n"):
+                with self.subTest(shell=shell, body=body):
+                    self.assertEqual([], self.both(body, shell))
+
+    def test_a_plain_function_call_gates_only_uses_after_that_call(self):
+        for shell in (None, "sh", "bash"):
+            body = "f() { %s; echo ok; }\n" + self.USE + "f\n"
+            with self.subTest(shell=shell):
+                found = self.both(body, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs before a later command in an enclosing conditional group",
+                              found[0])
+
     def test_with_errexit_off_a_group_stops_the_step_only_as_its_last_command(self):
         self.assertIn("runs after a `set +e`", self.job("set +e\n{ %s; }\n")[0][1])
         # The group, not the check, is the step's last command: its status is

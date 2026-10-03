@@ -11,6 +11,12 @@ evidence exposed.
   that may re-open it (#2490, #2479, #2484, #2486).** A louder reason drops a statement's `Idle`
   one, `sh $X "$x"` names its carried download, a `-c`/`eval` string holding a `$(…)` is read
   opaque, and `sh -c "$(cat f)"`, blanks around it too, is reported unread beside a download.
+- **Conditional carriers no longer hide a failed checksum behind a later command (#2418, #2331).**
+  Brace groups, subshells and functions tested by `&&` or `||` now report a check whose status a
+  later command replaces. A plain function call still gates uses that occur after that call.
+- **Nested conditional groups no longer inherit an earlier checksum status (#2578, #2331).**
+  When a later command replaces a checksum's status before an enclosing group reaches `&&` or
+  `||`, the guard reports the later use. Checks that remain the group's final status still gate.
 - **Conditional checks no longer certify uses that can outlive their list (#2419, #2331).**
   A checksum behind `A &&` or `A ||` clears only paths that require the check to run. A final
   `A && CHECK` can still gate a later job step, while `A || CHECK` cannot. Literal commands get
