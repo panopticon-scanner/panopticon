@@ -190,12 +190,14 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, STDOUT, Idle, Reach,
-                            Unsure, at_directory, carried, chmod_executable, chmod_targets, clears,
+from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
+                             clears_nested as _clears_nested, contextual as _check_at_use,
+                             inside as _inside, operands as _operands)
+from workflow_forms import (BIN_DIRS, CONTAINERS, FETCHERS, SHELL_PROGRAM, Idle, Reach,
+                            Unsure, at_directory, carried, chmod_executable, chmod_targets,
                             covers, described, flattened, in_container, kept, may_run, names_file,
                             located, parse_fetch, regions, same_file, stdin_program, step_credit,
-                            streamed_fetch, swallowed, unbound, unread_program, within,
-                            working_directories)
+                            streamed_fetch, unbound, unread_program, working_directories)
 from workflow_programs import VALUE_PROGRAM, stdin_command
 
 
@@ -208,7 +210,6 @@ Step = collections.namedtuple("Step", "name script shell condition soft",
 # The shells this module has a grammar for. Anything else is reported unread.
 PARSED_SHELLS = ("bash", "sh")
 UNNAMED = "<unnamed step>"
-CHECKSUM_TOOLS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
                 "perl", "ruby", "node", "php", "pwsh", "eval", "source", ".")
 # Unpacking a downloaded archive is executing it too: the bytes decide what
@@ -216,16 +217,7 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 # with a mode; `tar`/`unzip` write whatever the archive says.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
-# An expected digest: a hex literal, or the variable a workflow pins one in (`${HADOLINT_SHA256}`,
-# `$SHA`). Naming a file is not checking it -- something in the checked line has to BE the
-# expectation -- and ANY expansion is not good enough either: `echo "$FILE  /tmp/payload" |
-# sha256sum -c -` carries a path where the digest belongs, so the name has to say digest.
-_DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
-                     r"|\$\{?\w*(?:SHA|SUM|DIGEST|HASH|CHECKSUM)\w*\}?", re.I)
-
-
 # --- which statements fetch --------------------------------------------------
-
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory="."):
     """Fetches and unread forms, retaining nested cwd while attributing them to the outer line."""
     stmts = list(stmts)
@@ -331,59 +323,11 @@ def fetches(script):
     return [fetch for _index, fetch in _fetch_records(read(script))]
 
 
-# --- which statements check, and what they check -----------------------------
-
-def _has_check_flag(argv):
-    for token in argv[1:]:
-        if token in ("-c", "--check"):
-            return True
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
-            return True
-    return False
-
-
-def _operands(argv):
-    return [t for t in argv[1:] if not t.startswith("-")]
-
-
-def _checked_text(statement, position, stage, argv, written, directory):
-    """Text a checksum reads, bound to its heredoc, a locally written sums
-    file, or the previous pipeline stage; None when no source ties it."""
-    if stage.heredoc:
-        return stage.heredoc
-    files = [at_directory(f, directory) for f in _operands(argv) + stage.reads if f not in STDOUT]
-    # `shasum -a 256 -c -`: the `256` is `-a`'s value, not a sums file.
-    files = [f for f in files if not re.fullmatch(r"\d+", f)]
-    if files:
-        known = [written[f] for f in files if f in written]
-        return "\n".join(known) if known else None
-    if position:
-        return " ".join(command(statement.stages[position - 1].argv))
-    return None
-
-
-def _record_writes(statement, written, directory):
-    """What this statement leaves in each file it writes, so a later
-    `sha256sum -c <file>` can be bound to it."""
-    for position, stage in enumerate(statement.stages):
-        argv = command(stage.argv)
-        text = " ".join(argv) + ("\n" + stage.heredoc if stage.heredoc else "")
-        targets = list(stage.writes)
-        if argv and os.path.basename(argv[0]) == "tee":
-            targets += _operands(argv)
-            if position:
-                text = " ".join(command(statement.stages[position - 1].argv))
-        for target in targets:
-            written[at_directory(target, directory)] = text
-
-
 # Why a checksum this job ran clears nothing. A refused check is KEPT with its reason rather than
 # dropped, because "no checksum in the job names this file" and "the checksum that names it was
 # handed to a `|| true`" are different sentences, and only one of them is true of any given step.
 _SOFT_STEP = ("is in a step carrying `continue-on-error: true`, so the job "
               "carries on past its failure")
-_NO_DIGEST = ("carries no digest, so it says which file to read and not what "
-              "should have arrived")
 _UNSHARED_IF = ("runs under an `if:` the use does not share, so it may be "
                 "skipped while the use is not")
 _UNSHARED_BRANCH = ("is written inside an `if`/`while` branch the use is not "
@@ -397,28 +341,6 @@ def _unshared(conditions, check, use):
     if when[1] and when[1] != theirs[1]:
         return _UNSHARED_BRANCH
     return _UNSHARED_IF
-
-
-def _checks(stmts, credit=None, working=None):
-    """[(statement index, checked text, why it clears nothing or None)]."""
-    found = []
-    written: dict[str, str] = {}
-    working = working or {}
-    for index, statement in enumerate(stmts):
-        directory = working.get(index, ".")
-        for position, stage in enumerate(statement.stages):
-            argv = command(stage.argv)
-            if not argv or os.path.basename(argv[0]) not in CHECKSUM_TOOLS:
-                continue
-            if not _has_check_flag(argv):
-                continue
-            text = _checked_text(statement, position, stage, argv, written, directory) or ""
-            why = swallowed(stmts, index, statement, stage, (credit or {}).get(index))
-            if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
-                why = _NO_DIGEST
-            found.append((index, text, why))
-        _record_writes(statement, written, directory)
-    return found
 
 
 # --- which statements execute what was fetched -------------------------------
@@ -449,8 +371,8 @@ def _uses(stmts, dest, after, working=None):
     working = working or {}
     for index, statement in enumerate(stmts[after:], after):
         directory = working.get(index, ".")
-        for inner, position, stage, where, here in within(
-                statement, directory=directory, scope=index):
+        for point, inner, position, stage, where, here in _inside(
+                statement, index, directory=directory, scope=index):
             argv, how = command(stage.argv), None
             for name in sorted(names):
                 how = _use(inner, position, stage, argv, name, here)
@@ -460,7 +382,7 @@ def _uses(stmts, dest, after, working=None):
                         how += " (as `%s`, copied from it earlier)" % shown
                     break
             if how:
-                out.append((index, how + where))
+                out.append((point, how + where))
                 break
         names |= _copies(statement, names, directory)
     return names, out
@@ -590,12 +512,14 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
         return None                             # fetched and only read: not this rule
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks if i > index
-              and any(names_file(text, name, working.get(i, ".")) for name in sorted(names))]
+              and any(names_file(text, name, getattr(i, "directory", working.get(i, ".")))
+                      for name in sorted(names))]
     first_use, how = next(((u, h) for u, h in uses if not any(  # the first use no check clears
-        clears(why, i, u) and _binds(conditions, i, u) for i, why in naming)), (None, None))
+        _clears_nested(why, i, u) and _binds(conditions, i, u)
+        for i, why in naming)), (None, None))
     if first_use is None:
         return None
-    naming = [(i, why.at_use(i, first_use) if hasattr(why, "at_use") else why) for i, why in naming]
+    naming = [(i, _check_at_use(why, i, first_use)) for i, why in naming]
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
@@ -612,7 +536,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    why, _remedy(fetch.dest)))
     if [i for i, _text, why in checks if i > index
-            and (why.at_use(i, first_use) if hasattr(why, "at_use") else why) is None]:
+            and _check_at_use(why, i, first_use) is None]:
         return ("fetches %s and %s; no checksum in the job names %s, and a "
                 "checksum of a different file verifies nothing -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),

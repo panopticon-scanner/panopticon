@@ -11,6 +11,10 @@ evidence exposed.
   heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
   `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
   treating an unknown value as data.
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
 - **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
   escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
   fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
