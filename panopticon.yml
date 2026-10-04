@@ -654,11 +654,13 @@ groups:
       - scripts/workflow_fetch.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
+      - scripts/workflow_values.py
       tests:
       - tests/test_workflow_guard.py
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
+      - tests/test_workflow_values.py
       panels:
       - SEC
     Workflows:

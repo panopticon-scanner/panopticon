@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard follows a download through the step's own values (#2425, #2489, #2331).**
+  Where a use as written names no download, a name the step itself assigns a literal or an array
+  literal is read through that value (`T=cuda_1.run; sh "$T"`, `declare -a a=(sh tool); "${a[@]}"`,
+  a `for` header's words), and a call hands the values it sees to the function body; the use as
+  written keeps main's reading. Quotes are gone to the reader, so a quoted twin over-reports, as
+  does a reassignment the shell may skip; a table kept statement by statement was rejected because
+  it cannot repeat the loop, condition and function-body walks of one asked per use.
 - **Fail-closed workflow messages now identify guard readings (#2424, #2331).** Carried
   variables and conditional checksum rescues say when scope or status comes from a conservative
   reading. Direct carries and proven non-stopping rescues keep their existing wording; verdicts

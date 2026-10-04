@@ -59,7 +59,20 @@ live, so a change that catches one fails there and edits this list.
   second tool needs a second option grammar (`gh`'s `-O` is not curl's, and `aws s3 cp` copies
   locally too), and a fetch inside `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
-  writes. A checksum naming the same variable binds; a path spelled differently at fetch and at use
+  writes -- except a name the step itself assigns a literal or an array literal, which a use reads
+  through that value (`workflow_uses.static_values`, #2425, #2489: `T=cuda_1.run; sh "$T"`,
+  `p=./cuda_*.run; sh $p`, `declare -a a=(sh tool); "${a[@]}"`, a `for` header's words), held
+  wherever assigned and replaced only where the shell surely runs the statement. Its prices: as
+  quotes are gone to the reader, a quoted reference reads as an unquoted one (`sh "$p"` globs, a
+  `"$CMD"` holding blanks splits) and a quoted literal word is live, and a value the shell may not
+  assign stays a candidate -- these over-report; a child shell's program -- a `-c` string, a heredoc
+  or a printed stream it reads (`sh <<'EOF'`, `echo 'T=x' | sh`) -- reads the step's values,
+  exported or not, and its own assignments as the step's (`sh -c 'T=x'` and a heredoc's `T=x`
+  replace `T`); a `$(...)` child's own assignments, `a[1]=x`, `mapfile`/`readarray` and `${T:=d}`'s
+  side effect are not read; and a prefix assignment is never a value. A checksum binds where it
+  names the download as written or by a name the fetch wrote (`-o "$T"`); one naming it through a
+  value the step assigns (`F=x.run; echo "$S  $F" | sha256sum -c -; sh "$F"`) is not read through
+  the table, so that use over-reports (a price); a path spelled differently at fetch and at use
   matches nothing, and no `cd` is followed (`curl -o d/x; cd d; sh x`) -- but the side that RUNS
   compares last parts where a `$` spells either directory (`may_run` #2310, `covers` #2345, its
   mirror #2442 with a literal basename; argv only), and for a glob where one spells the download's

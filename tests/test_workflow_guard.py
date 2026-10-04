@@ -805,7 +805,17 @@ class TestAGlobMatchCarriedThroughAValue(unittest.TestCase):
                              'set -- %s; sh "$1"\n',
                              'f() { sh "$1"; }; f %s\n'):
                 with self.subTest(pattern=pattern, template=template):
-                    self.assertEqual([], self.job(template % pattern))
+                    found = self.job(template % pattern)
+                    if pattern.startswith("'") and template.startswith("for"):
+                        # #2425's admitted over-report, the quoting price, as
+                        # `p=./cuda_*.run; sh "$p"` is in test_workflow_values: bash walks
+                        # the quoted header's one word and runs nothing (bash 5.2, bash 3.2,
+                        # dash and a runner's bash each fetch only), but the reader drops
+                        # the quotes, so the step's value table hands `$f` a live pattern.
+                        self.assertEqual(1, len(found), found)
+                        self.assertIn("-> cuda_1.run and running it under `sh`", found[0])
+                    else:
+                        self.assertEqual([], found)
 
     def test_reassignment_clears_the_carried_match(self):
         for use in ('for f in ./cuda_*.run; do f=other.run; sh "$f"; done\n',
@@ -4855,14 +4865,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
 
     def test_a_use_spelled_another_way_off_the_command_word(self):
         # #2310 closed a command word with a `$` ending in the download's
-        # basename (`TestADownloadRunThroughAnExpandedPath`), and #2345 an
-        # operand (`TestADollarSpelledPathOnEitherSideBindsByItsLastPart`); a
-        # word whose last part expands and a tilde still name nothing fetched.
+        # basename (`TestADownloadRunThroughAnExpandedPath`), #2345 an operand
+        # (`TestADollarSpelledPathOnEitherSideBindsByItsLastPart`), and #2425 a
+        # word the step's own value expands (`P=./payload`, read through
+        # `workflow_uses.static_values`); a tilde still names nothing fetched.
         fetch = ("get", "curl -sfL https://example.test/p -o payload\n")
-        for run in ('P=./payload\n"$P" 9\n', 'P=./payload\nsh "$P"\n', "~/payload 9\n"):
+        for run in ("~/payload 9\n",):
             with self.subTest(run=run):
                 self.accepted(fetch, ("run", run))
-        for run in ('"$PWD/payload" 9\n', 'sh "$PWD/payload"\n'):
+        for run in ('P=./payload\n"$P" 9\n', 'P=./payload\nsh "$P"\n',
+                    '"$PWD/payload" 9\n', 'sh "$PWD/payload"\n'):
             with self.subTest(run=run):
                 self.flagged(fetch, ("run", run))
 
