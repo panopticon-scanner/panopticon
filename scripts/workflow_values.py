@@ -32,6 +32,7 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     or behind `builtin`, an element's assignment or unset
                     (`a[1]=x`, `declare a[1]=x`, `unset 'a[1]'`), a `for`
                     header's `"$@"` or `$(...)`, a subscripted literal, a
+                    literal left open at its line's end (`a=(`), a
                     declaration with `-l`, `-u`, `-i`, `-A` or `-n`, more
                     than `_CANDIDATES` candidates -- is the name's own
                     reference `$NAME`, the STAND-IN: the reading the guard
@@ -79,15 +80,15 @@ beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
 holds its stand-in alone, a word resolves to the first `_CANDIDATES` of its
 product, and a text over `_LONGEST` is dropped, both of which can lose a
 candidate; a brace word the table cannot expand -- past 64 words, or with a
-reference in it (`{a,b}$X`, `{a,$X}`) -- gives its name the stand-in, a
-limit, not a price. Not read: the assignment `${T:=d}` makes, an attribute
-an earlier declaration set rewriting a later assignment, a call's own
-assignments, a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the
-numbers of a redirection's `{fd}`, `wait -p` and `coproc`), held only where
-the step assigned it too, and arithmetic -- `let T=5` and `((T++))` are not
-read, and `((T=x+1))` is read as its text beside the old value -- whose
-values are numbers, so a download hides there only under a numeric
-filename.
+reference inside a group (`{a,$X}`) or a braced one beside it (`{a,b}${X}`)
+-- gives its name the stand-in, a limit, not a price. Not read: the
+assignment `${T:=d}` makes, an attribute an earlier declaration set
+rewriting a later assignment, a call's own assignments, a name bash sets
+itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers of a redirection's `{fd}`,
+`wait -p` and `coproc`), held only where the step assigned it too, and
+arithmetic -- `let T=5` and `((T++))` are not read, and `((T=x+1))` is read
+as its text beside the old value -- whose values are numbers, so a download
+hides there only under a numeric filename.
 
 Stdlib only, like everything under it.
 """
@@ -177,15 +178,16 @@ def assigned(stage):
     "sh", "tool"]`, #2348): an empty `NAME=` and the words up to the next one
     while groups remain -- and its brace words are expanded, as bash expands
     them before it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
-    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), an
-    element's assignment (`a[1]=x`, `declare a[1]=x`), a declaration with
-    `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` -- and a scalar the
-    statement only may assign are `record`'s. The prices: a folded literal is
-    re-split on blanks; a quoted brace word is expanded; a subshell's empty
-    prefix assignment `( T= sh tool )` and its quoted value `( T='(x y)' )`
-    read as literals; and a `NAME=text` element of an open unfolded literal is
-    read as a scalar too, a `NAME[N]=text` one as an element's assignment. A
-    `for` header is `record`'s.
+    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), a
+    literal still open where the stage ends (its later lines' words are not
+    gathered), an element's assignment (`a[1]=x`, `declare a[1]=x`), a
+    declaration with `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` --
+    and a scalar the statement only may assign are `record`'s. The prices: a
+    folded literal is re-split on blanks; a quoted brace word is expanded; a
+    subshell's empty prefix assignment `( T= sh tool )` and its quoted value
+    `( T='(x y)' )` read as literals; and a `NAME=text` element of an open
+    unfolded literal is read as a scalar too, a `NAME[N]=text` one as an
+    element's assignment. A `for` header is `record`'s.
     """
     scalars, arrays = _assignments(stage)[:2]
     return scalars, arrays
@@ -249,6 +251,8 @@ def _assignments(stage):
             scalars[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
         elif element or rewriting and _NAME.match(str(word)):
             unseen.add(element[1] if element else str(word))
+    if unfolded is not None and stage.group_close < literals:
+        unseen.add(opened)              # a literal its later lines continue
     if rewriting:
         unseen.update(scalars, arrays)
     for name in unseen:
@@ -260,7 +264,8 @@ def _assignments(stage):
 def _braced(text):
     """The words bash makes of `text`'s brace groups (`{cuda_1,x}.run`), or
     `text` alone where it has none -- or None where it has one the table
-    cannot expand: past 64 words, or holding a reference (`{a,b}$X`)."""
+    cannot expand: past 64 words, a reference inside a group (`{a,$X}`) or a
+    braced one beside it (`{a,b}${X}`)."""
     words = _brace_patterns(text)
     if words is None and re.search(r"(?<!\$)\{[^{}]*(?:,|\.\.)[^{}]*\}", text):
         return None

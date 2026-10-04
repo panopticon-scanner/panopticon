@@ -389,63 +389,98 @@ def _functions_before(stmts, starts, kinds, scopes, after):
     return functions
 
 
-def _forked(stmts):
-    """The statements the step's shell forks (#2425): a `( ... )` subshell's
-    past its opening statement, an `&&`/`||` list's sent to the background
-    whole (`T=x && : &`), and every statement of a `{ ...; }` piped into,
-    piped on or sent to the background, by its own `&` or the one ending its
-    list -- a list is not followed past a compound command, so `T=x && if c;
-    then :; fi &` reads `T=x` as sure (a limit). Their assignments end with
-    the child, as `working_directories` keeps a subshell's `cd`. A `{` or `}`
-    is one only where the stage's command would stand; an array literal's
-    parentheses count as a group's, which marks a multi-line literal's word
-    lines unsure."""
+# The words that open a group or compound `_forked` follows, and each one's close.
+_COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "done",
+              "while": "done", "until": "done"}
+
+
+def _forked(stmts, index):
+    """The statements the step's shell forks (#2425) in a child the statement
+    at `index` is not in: a `( ... )` subshell's past its opening statement,
+    an `&&`/`||` list's sent to the background whole (`T=x && : &`), and
+    every statement of a `{ ...; }` group or an `if`, `case`, `for`,
+    `select`, `while` or `until` compound, from its head to its close, that
+    is piped into, piped on, run by `coproc`, or sent to the background by
+    its own `&` or the one ending its list (`if T=x; then :; fi &`) -- a
+    list is not followed past a compound command, so `T=x && if c; then :;
+    fi &` reads `T=x` as sure (a limit). Their assignments end with the
+    child, as `working_directories` keeps a subshell's `cd`; a use in the
+    same child sees them as its own. A keyword is one only where the stage's
+    command would stand (`_openers`); an array literal's parentheses count
+    as a group's, which marks a multi-line literal's word lines unsure."""
     forked: set[int] = set()
-    opened: list[tuple[int, bool]] = []
-    depth = 0
+    opened: list[tuple[int, bool, str]] = []
+    subshells: list[int] = []
+
+    def fork(start, end):
+        if not start <= index <= end:
+            forked.update(range(start, end + 1))
+
     for position, statement in enumerate(stmts):
         end = position                      # the end of its `&&`/`||` list
         while stmts[end].separator in ("&&", "||") and end + 1 < len(stmts):
             end += 1
-        if depth or stmts[end].separator == "&":
-            forked.add(position)
+        if stmts[end].separator == "&":
+            fork(position, end)
         last = len(statement.stages) - 1
         for number, stage in enumerate(statement.stages):
-            depth = max(0, depth + stage.group_open - stage.group_close)
-            for word in stage.argv[:len(stage.argv) - len(command(stage.argv))]:
-                if word == "{":
-                    opened.append((position, number > 0))
-                elif word == "}" and opened:
-                    start, piped = opened.pop()
+            subshells += [position + 1] * stage.group_open
+            for _ in range(min(stage.group_close, len(subshells))):
+                fork(subshells.pop(), position)
+            for word, child in _openers(stage):
+                if str(word) in _COMPOUNDS:
+                    opened.append((position, child or number > 0, _COMPOUNDS[str(word)]))
+                elif opened and word == opened[-1][2]:
+                    start, piped, _close = opened.pop()
                     if piped or number < last or stmts[end].separator == "&":
-                        forked.update(range(start, position + 1))
+                        fork(start, position)
+    for start in subshells:                 # a group the step leaves open
+        fork(start, len(stmts) - 1)
     return forked
+
+
+def _openers(stage):
+    """The words `_forked` reads in `stage` for a compound's head or close,
+    each with whether the compound surely runs in a child: the lead words,
+    and the `select` or the compound after `coproc` (and its NAME) that the
+    reader leaves in the command -- a coprocess runs in a child."""
+    argv = command(stage.argv)
+    words = [(word, False) for word in stage.argv[:len(stage.argv) - len(argv)]]
+    if argv[:1] == ["select"]:
+        return words + [(argv[0], False)]
+    if argv[:1] == ["coproc"]:
+        return words + [(word, True) for word in argv[1:3] if str(word) in _COMPOUNDS][:1]
+    return words
 
 
 def static_values(stmts, index, working=None, scopes=None):
     """The step's literal values live at statement `index` (#2425, #2489):
     `_cleared`, then `record`, over each statement before it in its scope,
     walked as `_functions_before` walks, as sure as `_table_certainty` says
-    and never sure inside a group the shell forks (`_forked`). A pipeline's
-    stages run in subshells, but its last runs in the shell under `lastpipe`,
-    so that stage's assignments are read unsure. Inside a loop, the body's
-    statements after `index` are walked too, unsure: an earlier pass ran them;
-    and so is the body after a `while`/`until` head's own command (`while !
-    sh "$T"; do`) -- a later command of the condition, or one on the lines
-    after a bare `while`, is not found (a limit). At an index inside a
-    function body only that body is walked, under its own control flow and
-    from an empty table -- a call's values are its caller's at the call,
-    which `_function_use` carries -- and a body is otherwise skipped, so a
-    call's own assignments are not read (`f() { T=b; }; T=a; f` holds `a`, a
-    price); a subshell body (`g() ( ... )`) ends where its parentheses close
-    (`_body_end`). A function defined after `then` or `do` on the same line
-    is not found (`_function_ranges`' limit), and its body is walked as the
-    code around it. `working` is accepted and unused: a value resolves at
-    the directory of its USE, bash's rule for a relative path.
+    -- and a serial statement directly in a top-level loop body is sure where
+    the use follows it in that body (`direct_loop`), as bash surely ran it on
+    the pass that reaches the use; one in a nested loop's body stays unsure
+    (a limit) -- and never sure in a child the shell forks that the use is not
+    in (`_forked`). A pipeline's stages run in subshells, but its last runs in
+    the shell under `lastpipe`, so that stage's assignments are read unsure.
+    Inside a loop, the body's statements after `index` are walked too,
+    unsure: an earlier pass ran them; and so is the body after a
+    `while`/`until` head's own command (`while ! sh "$T"; do`) -- a later
+    command of the condition, or one on the lines after a bare `while`, is
+    not found (a limit). At an index inside a function body only that body is
+    walked, under its own control flow and from an empty table -- a call's
+    values are its caller's at the call, which `_function_use` carries -- and
+    a body is otherwise skipped, so a call's own assignments are not read
+    (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
+    (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
+    function defined after `then` or `do` on the same line is not found
+    (`_function_ranges`' limit), and its body is walked as the code around
+    it. `working` is accepted and unused: a value resolves at the directory
+    of its USE, bash's rule for a relative path.
     """
     scopes = scopes or {}
     table = Values()
-    forked = _forked(stmts)
+    forked = _forked(stmts, index)
     bodies = [(start, *_body_end(stmts, start, close))
               for entries in _function_ranges(stmts)[0].values() for _name, start, close in entries]
     first, last = max([(start, end) for start, end, found in bodies
@@ -463,7 +498,9 @@ def static_values(stmts, index, working=None, scopes=None):
             if position in nested or scopes.get(position) != scopes.get(index) or not stages:
                 continue
             certain, direct_loop = _table_certainty(stmts, position, kinds)
-            certain = sure and certain and position not in forked and len(stages) == 1
+            looped = direct_loop and index < len(stmts) and all(    # on the pass that reaches it
+                kind[:1] == ("do",) for kind in kinds[position:index + 1])
+            certain = sure and (certain or looped) and position not in forked and len(stages) == 1
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
 
@@ -490,19 +527,26 @@ def static_values(stmts, index, working=None, scopes=None):
 def _body_end(stmts, start, close):
     """The last statement of the body defined at `start`, and whether its end
     was found: `close`, where `_function_ranges` found the `}`, or where a
-    subshell body's parentheses close (`g() ( ... )`), which it reads to the
-    step's end."""
+    subshell body's parentheses close, opened on the definition's line
+    (`g() ( ... )`) or the next -- searched for to the step's end, past a
+    `}` inside the body that `_function_ranges` takes for its close."""
+    following = stmts[start + 1].stages[:1] if start + 1 < len(stmts) else []
     for stage in stmts[start].stages:
         name, braces = _function_syntax(stage.argv)
-        if name and "{" not in braces and stage.group_open > _literals(stage):
+        if name and "{" not in braces and (_opens(stage) or any(map(_opens, following))):
             depth = 0
-            for end in range(start, close + 1):
+            for end in range(start if _opens(stage) else start + 1, len(stmts)):
                 depth += sum(item.group_open - item.group_close for item in stmts[end].stages)
                 if depth <= 0:
                     return end, True
             return close, False
     return close, close < len(stmts) - 1 or any("}" in _function_syntax(stage.argv)[1]
                                                 for stage in stmts[close].stages)
+
+
+def _opens(stage):
+    """Whether `stage` opens a group, past its array literals' parentheses."""
+    return stage.group_open > _literals(stage)
 
 
 def uses(stmts, dest, after, working=None, scopes=None):
