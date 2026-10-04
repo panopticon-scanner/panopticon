@@ -11,6 +11,74 @@ evidence exposed.
   variables and conditional checksum rescues say when scope or status comes from a conservative
   reading. Direct carries and proven non-stopping rescues keep their existing wording; verdicts
   do not change.
+- **Workflow guard now lets bound downloads own value-form stdin (#2607, #2331).**
+  When `curl -o "$T"` is followed by `$T <<'EOF'`, the existing run finding now stands alone and
+  the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep
+  a checked download flagged. Unknown `$CMD` bodies stay fail-closed; disabling all value-body
+  reads was rejected because it would hide their real `curl … | sh` executions.
+- **Four Bash 3.2-only substitution-heredoc parse gaps are now explicit (#2626, #2608).** A body
+  line with an apostrophe, unbalanced double quote, backquote, or bare `$(` can make Bash 3.2
+  reject text Bash 5.2 accepts, but none of the measured shapes runs a payload under 3.2. The
+  #2493 refusal stays limited to `)` because widening it would report parse-only differences.
+- **`eval` brace alternatives bind only downloads they can name (#2624, #2608).** The
+  second parse now expands bounded brace lists and numeric ranges before matching a fetched
+  path, because treating every brace group as `*` misses real uses and binds excluded names;
+  unbounded expansion was rejected because workflow text controls its cost.
+- **Compound-command streams now reach their closing executor (#2430, #2331).** Fetches and
+  carried downloads printed inside `{ }`, `( )`, `if`, loops, or `case` now bind to a shell after
+  the compound's closing pipe. File redirects, disconnected input, and nonexecutors stay clean.
+- **Multiline `case` headers stay visible (#2429, #2331).** A literal `in` on the line after
+  its subject now reaches the statement reader, so commands in those arms remain visible to
+  the workflow guard.
+- **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
+  shell prints it are printers too, through a substitution as well (#2467, #2476, #2478, #2487,
+  #2495, #2728).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is, a `cat` with an option too (its
+  body read whole: `-n` over-reports), and an EXPANDING `cat <<EOF | sh` is reported as `sh <<EOF`
+  is; `echo`'s backslashes read as bash prints them (literal unless `-e`) or as `sh`/dash decode
+  them, and a `printf` format's always. A shell a `-c`/`eval` string names, or a `${X:-sh}` default
+  stands for, reads them both ways, as does one inside a `$(…)` in a script handed on or in a script
+  a `$(…)` hands a shell (#2728); the step's own `$(…)` reads per the step's shell. A pass-through
+  between the printer and the shell -- `tee` writing plain files with `-a`/`-p`/`-i`, `--append` or
+  `--output-error[=MODE]` at most; a `cat` whose only operands are `-` (and one `--`) -- is read
+  through (#2478); any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`,
+  `base64 -d`), leaves the program unread, reported where its words or the printer's text fetch, or
+  beside a reported download. A printer inside a `$(…)` or a `<(…)` is read as the text the shell
+  runs where every reading agrees on it (#2487, #2495): `eval "$(echo 'sh tool')"`,
+  `sh <(echo 'sh tool')` and `bash <(cat <<'EOF' … EOF)` report the download they run, and the
+  documented `eval "$(cat <<'EOF' … EOF)"` gap closes; an unquoted `$(…)` is read unsplit (`eval`
+  joins bash's fields; `-c` runs the first alone, an over-report), a backquote whose text escapes
+  `$`, `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and
+  the catch-all row for a word all substitution stays beside every such read. Named gaps:
+  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not
+  follow; a word the shell reads specially once unquoted (a quote, space, newline,
+  `#`, `\`, `<`, `>`, an open `$(`) or a lifted `$(…)` word inside the unread stage's words still
+  hides the fetch that follows; and a substitution's printer the readings disagree on
+  (`sh -c "$(echo 'sh\ttool')"`) stays unread.
+- **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
+  literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
+  is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`
+  spelling earlier was rejected because quoted and escaped forms can still be arm patterns.
+- **Workflow glob matches now reach loop, positional and function values (#2585, #2331).**
+  A live pattern such as `./cuda_*.run` stays tied to the download when `for`, `set --`, or a
+  direct function call stores it. Literal `shift` commands reindex that value, while `$@` and
+  `$*` retain it for loops and first-script uses. Quoted and nonmatching patterns, reassignment,
+  step boundaries, and relative path changes retain bounded controls.
+- **Nested `case` arms expose their commands to the workflow guard (#2617, #2608).** The
+  reader keeps a parent arm separate from the inner `case` header, so two- and three-level
+  bodies no longer hide a fetch-and-execute pipeline. Retaining the parent arm also keeps an
+  inner checksum from clearing execution in the parent's sibling arm.
+- **Workflow guard: value stdin inherited through `eval` or `sh -c` is read (#2599).** A quoted
+  heredoc handed to an inner `$CMD` now gets shell analysis and names that word, closing a CLEAN
+  `curl | sh` path; an unset `sh -c "$P"` is deliberately reported fail-closed rather than
+  treating an unknown value as data.
+- **Checks inside command substitutions now gate the uses beside them (#2435, #2331).**
+  `x=$(CHECK && bash t.sh)` credits `CHECK` under that substitution shell's own failure reach;
+  `CHECK; bash t.sh`, a plain use, and a check in a sibling substitution remain reported.
+  Check discovery moved to `workflow_checks.py`, taking `workflow_guard.py` to 700 lines.
+- **ANSI-C words no longer hide adjacent workflow findings (#2614, #2470).** A non-ASCII
+  escape now leaves only its word unknown, so ordinary CI prose does not replace a nearby
+  fetch-and-execute finding with a whole-step refusal. Backslash-newline also stays literal
+  inside `$'...'`, matching both bashes instead of joining text they keep separate.
 - **Workflow guard keeps stdin possible after a value-form shell option (#2605).**
   `sh $X file.sh <<'EOF'` no longer hides its body when `$X` may be `-s` or `--rcfile`;
   `X=-e` is the disclosed fail-closed cost, because always treating the bare word as a script
@@ -82,6 +150,16 @@ evidence exposed.
   `shell: sh` postures now report them, while `shell: bash` (`-eo pipefail`) still clears them.
   The nested-paren spelling #2627 fixed, the `set -o pipefail` form and the no-pipe rescue keep
   their verdicts. 0 occurrences in the 11 corpora and the calibration pool.
+- **Bare-subshell rescues piped onward clear only when pipefail stops the step (#2631, #2608).**
+  The `( CHECK || exit 1 ) | cat` family -- the bare-`( )` sibling of the `{ ... }` forms #2582 and
+  #2630 handle -- now reads CLEAN under `shell: bash` (`-eo pipefail`), where the failed group stops
+  the step and no shell runs the payload, matching its brace twin; 19 such spellings (a trailer after
+  the rescue, a `|| return 1`, a subshell stage, a called function body, `if`/`while` conditions) are
+  covered. Where the failure is swallowed (`|| true`) or the exit masked by a command on an `&&`
+  list's errexit-suspended left side, the payload still runs on bash 3.2.57/5.2.21 and the guard
+  keeps reporting it -- the subshell's abort is resolved before the concurrent-stage break, and a
+  `return` does not leave its subshell. The 10 named clears, the `( CHECK || exit 1 ) | cat` posture
+  split, and the `{ ... } | cat` must-stays are unchanged. 0 occurrences in the corpora and the pool.
 - **A use step that runs after a failed step is no longer cleared by an earlier step's check
   (#2632, #2608).** A plain `CHECK` or `CHECK || exit 1` in step a stops step a, but a later step
   whose `if:` runs after a failure -- `always()`, `failure()` or `!cancelled()` -- still runs the

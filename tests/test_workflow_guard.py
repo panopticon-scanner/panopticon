@@ -703,6 +703,167 @@ class TestAGlobSpelledWithADotSlashIsAUseOfTheDownload(unittest.TestCase):
                     self.assertEqual([], self.job(dest, use))
 
 
+class TestAGlobMatchCarriedThroughAValue(unittest.TestCase):
+    """#2585: a live glob keeps naming its match after the shell stores it."""
+
+    GET = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+    CHECK = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+    TARGETS = (
+        'for f in ./cuda_*.run; do sh "$f"; done\n',
+        'set -- ./cuda_*.run; sh "$1"\n',
+        'f() { sh "$1"; }; f ./cuda_*.run\n',
+    )
+
+    def job(self, use):
+        return [why for _name, why in wg.job_defects([("step", self.GET + use)])]
+
+    def test_a_match_reaches_a_loop_positional_or_function_value(self):
+        for use in self.TARGETS:
+            with self.subTest(use=use):
+                found = self.job(use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("running it under `sh`", found[0])
+
+    def test_a_checksum_ahead_of_the_binding_clears_each_use(self):
+        for use in self.TARGETS:
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(self.CHECK + use))
+
+    def test_each_positional_value_keeps_its_own_operand(self):
+        for use in ('set -- other ./cuda_*.run; sh "$2"\n',
+                    'f() { sh "$2"; }; f other ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        for use in ('set -- other ./cuda_*.run; sh "$1"\n',
+                    'f() { sh "$1"; }; f other ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+
+    def test_shift_reindexes_the_remaining_positional_values(self):
+        uses = (
+            'set -- ./cuda_*.run; shift 0; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift; sh "$1"\n',
+            'set -- other other ./cuda_*.run; shift 2; sh "$1"\n',
+            'f() { shift; sh "$1"; }; f other ./cuda_*.run\n',
+            'set -- ./cuda_*.run; shift 2; sh "$1"\n',
+            'set -- other ./cuda_*.run; shift 3; sh "$2"\n',
+            'set -- other ./cuda_*.run; false && shift; sh "$1"\n',
+            ('set -- other ./cuda_*.run; if false; then shift; fi; '
+             'sh "$1"\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- ./cuda_*.run; shift; sh "$1"\n'
+        ))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; shift 2; sh "$1"\n'
+        ))
+
+    def test_all_positionals_flow_to_a_loop_and_the_first_flows_to_a_shell(self):
+        uses = (
+            'set -- ./cuda_*.run; sh "$@"\n',
+            'set -- ./cuda_*.run; sh "$*"\n',
+            'set -- other ./cuda_*.run; for f in "$@"; do sh "$f"; done\n',
+            ('f() { for value in "$@"; do sh "$value"; done; }; '
+             'f other ./cuda_*.run\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+        self.assertEqual([], self.job(
+            'set -- other ./cuda_*.run; sh "$@"\n'
+        ))
+
+    def test_a_bound_value_can_be_passed_on_to_a_function_argument(self):
+        uses = ('run() { sh "$1"; }; '
+                'for f in ./cuda_*.run; do run "$f"; done\n',
+                'run() { sh "$1"; }; set -- ./cuda_*.run; run "$1"\n')
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_function_defined_before_the_fetch_can_receive_the_match(self):
+        script = ('run() { sh "$1"; }; ' + self.GET +
+                  'run ./cuda_*.run\n')
+        self.assertIn("running it under `sh`", wg.fetch_exec_defect(script) or "")
+
+    def test_an_unset_or_unexecuted_definition_does_not_invent_a_function_call(self):
+        uses = ('run() { sh "$1"; }; unset -f run; run ./cuda_*.run\n',
+                'if false; then run() { sh "$1"; }; fi; run ./cuda_*.run\n')
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+        use = ('run() { sh "$1"; }; false && unset -f run; '
+               'run ./cuda_*.run\n')
+        self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_quoted_or_nonmatching_pattern_is_not_carried(self):
+        for pattern in ("'./cuda_*.run'", "./other_*.run"):
+            for template in ('for f in %s; do sh "$f"; done\n',
+                             'set -- %s; sh "$1"\n',
+                             'f() { sh "$1"; }; f %s\n'):
+                with self.subTest(pattern=pattern, template=template):
+                    self.assertEqual([], self.job(template % pattern))
+
+    def test_reassignment_clears_the_carried_match(self):
+        for use in ('for f in ./cuda_*.run; do f=other.run; sh "$f"; done\n',
+                    'set -- ./cuda_*.run; set -- other.run; sh "$1"\n',
+                    'f() { set -- other.run; sh "$1"; }; f ./cuda_*.run\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+
+    def test_a_command_environment_or_export_does_not_clear_the_shell_value(self):
+        for use in ('for f in ./cuda_*.run; do f=other.run true; sh "$f"; done\n',
+                    'for f in ./cuda_*.run; do export f; sh "$f"; done\n'):
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_a_reassignment_that_may_not_run_does_not_clear_the_match(self):
+        uses = (
+            'for f in ./cuda_*.run; do false && f=other.run; sh "$f"; done\n',
+            'for f in ./cuda_*.run; do if false; then f=other.run; fi; sh "$f"; done\n',
+            'for f in ./cuda_*.run; do ( f=other.run ); sh "$f"; done\n',
+            ('for f in ./cuda_*.run; do while false; do f=other.run; done; '
+             'sh "$f"; done\n'),
+            ('f() { false && set -- other.run; sh "$1"; }; '
+             'f ./cuda_*.run\n'),
+            ('f() { if false; then set -- other.run; fi; sh "$1"; }; '
+             'f ./cuda_*.run\n'),
+        )
+        for use in uses:
+            with self.subTest(use=use):
+                self.assertIn("running it under `sh`", "".join(self.job(use)))
+
+    def test_shell_values_do_not_cross_a_workflow_step_boundary(self):
+        bindings = ('for f in ./cuda_*.run; do :; done\n',
+                    'set -- ./cuda_*.run\n',
+                    'f() { sh "$1"; }\n')
+        uses = ('sh "$f"\n', 'sh "$1"\n', 'f ./cuda_*.run\n')
+        for binding, use in zip(bindings, uses, strict=True):
+            with self.subTest(binding=binding, use=use):
+                steps = [("bind", self.GET + binding), ("use", use)]
+                self.assertEqual([], wg.job_defects(steps))
+
+    def test_a_function_directory_change_keeps_only_absolute_matches_live(self):
+        self.assertEqual([], self.job(
+            'f() { cd /; sh "$1"; }; f ./cuda_*.run\n'
+        ))
+        get = "curl -fsSLo /opt/cuda_1.run https://example.test/cuda_1.run\n"
+        absolute = (
+            'for f in /opt/cuda_*.run; do cd sub; sh "$f"; done\n',
+            'f() { cd sub; sh "$1"; }; f /opt/cuda_*.run\n',
+        )
+        for use in absolute:
+            with self.subTest(kind="absolute", use=use):
+                found = wg.fetch_exec_defect(get + use)
+                self.assertIn("running it under `sh`", found or "")
+
+    def test_the_direct_glob_remains_the_must_trip_control(self):
+        self.assertIn("running it under `sh`", "".join(self.job("sh ./cuda_*.run\n")))
+
+
 class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
     """#2432: only unquoted pattern characters make a shell glob."""
 
@@ -746,6 +907,37 @@ class TestAQuotedGlobIsALiteralOperand(unittest.TestCase):
                 downloads = [why for why in self.job(use + "\n") if why.startswith("fetches ")]
                 self.assertEqual(1, len(downloads), downloads)
                 self.assertIn("under `eval`", downloads[0])
+
+    def test_eval_reparses_brace_lists_and_ranges(self):
+        for use in ('eval sh "./cuda_{1,2}.run"', "eval sh ./cuda_{1,2}.run",
+                    'eval sh "./cuda_{1..2}.run"', 'eval sh "./cuda_{01..02}.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual(1, len(downloads), downloads)
+                self.assertIn("under `eval`", downloads[0])
+
+    def test_eval_braces_that_exclude_the_download_stay_unbound(self):
+        for use in ('eval sh "./cuda_{2,3}.run"', "eval sh ./cuda_{2,3}.run",
+                    'eval sh "./cuda_{2..3}.run"', 'eval sh "./cuda_{02..03}.run"'):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual([], downloads)
+
+    def test_braces_quoted_from_the_running_parse_stay_literal(self):
+        for use in ('sh "./cuda_{1,2}.run"', 'eval \'sh "./cuda_{1,2}.run"\''):
+            with self.subTest(use=use):
+                downloads = [why for why in self.job(use + "\n")
+                             if why.startswith("fetches ")]
+                self.assertEqual([], downloads)
+
+    def test_an_ordinary_pattern_keeps_literal_braces_fail_closed(self):
+        script = ("curl -fsSLo 'cuda_{1,2}x.run' https://example.test/cuda.run\n"
+                  "sh ./cuda_\\{1,2\\}*.run\n")
+        downloads = [why for _name, why in wg.job_defects([("step", script)])
+                     if why.startswith("fetches ")]
+        self.assertEqual(1, len(downloads), downloads)
 
     def test_eval_keeps_quotes_that_are_inside_its_single_script_word(self):
         for use in ("eval 'sh \"./cuda_*.run\"'", "eval 'chmod +x \"./cuda_*.run\"'"):
@@ -1060,6 +1252,20 @@ class TestAUseInsideACommandSubstitution(unittest.TestCase):
         self.assertEqual([], self.job(self.GET + self.CHECK + "x=$(bash t.sh)\n"))
         self.assertIn("verifies t.sh only AFTER running it under `bash` inside a command "
                       "substitution", "".join(self.job(self.GET + "x=$(bash t.sh)\n" + self.CHECK)))
+
+    def test_a_check_beside_the_use_obeys_the_substitution_shells_gate(self):
+        check = self.CHECK.rstrip()
+        self.assertEqual([], self.job(self.GET + "x=$(%s && bash t.sh)\n" % check))
+        for body in ("%s; bash t.sh" % check, "bash t.sh"):
+            with self.subTest(body=body):
+                why = self.job(self.GET + "x=$(%s)\n" % body)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("running it under `bash` inside a command substitution", why[0])
+        sibling = self.job(self.GET + "x=$(%s) y=$(bash t.sh)\n" % check)
+        self.assertIn("inside another command-substitution context", "".join(sibling))
+        self.assertEqual([], self.job(self.GET + "x=$(%s && y=$(bash t.sh))\n" % check))
+        outside = self.job(self.GET + 'echo "$(%s)"\nbash t.sh\n' % check)
+        self.assertIn("inside another command-substitution context", "".join(outside))
 
     def test_reading_it_or_running_another_file_there_is_not_a_use(self):
         for use in ("x=$(cat t.sh)\n", "x=$(bash other.sh)\n", "x=$(wc -l < t.sh)\n",
@@ -1436,9 +1642,18 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                        self.GET + 'echo "$x"\n',
                        self.GET + 'echo "$x" | grep -c .\n',
                        self.GET + "sh -c 'echo hi' \"$x\"\n",         # there it is `$0`
-                       self.GET + 'diff <(echo "$x") f\n', self.GET + 'bash <(echo "$y")\n'):
+                       self.GET + 'diff <(echo "$x") f\n'):
             with self.subTest(script=script):
                 self.assertEqual([], self.job(script))
+        # A `<(...)` a shell reads as its FILE hands it the program its printer prints (#2487):
+        # `$y`, unspelled, is weighed as the pipe twin `echo "$y" | bash` is -- `_PRINTED`'s
+        # `_Quiet`, never the carried sentence -- though no shell runs the download (b5 b3 dash gh:
+        # F- F- F- F- for both): that twin's over-report, kept beside the download `x` holds.
+        for use in ('bash <(echo "$y")\n', 'echo "$y" | bash\n'):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertTrue(why[0].startswith("pipes `bash` its program from `echo`"), why)
         # Where the shell IS handed a word, the download is not what it runs,
         # and #2483 reports the word itself (as it does the `$CMD -c "$x"`
         # twin beside the same download): one sentence, and not this one.
@@ -3705,11 +3920,115 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                     self.assertIn("piped", found[0][1])
             with self.subTest(body=body, shell="bash"):
                 self.assertEqual([], self.job(body, "bash"))
-        # Shape 6's single-line piped subshell is read fail-closed in every
-        # posture (its pipeline stage reports before pipefail is consulted).
-        for shell in (None, "sh", "bash"):
+        # Shape 6's single-line piped subshell `( CHECK || exit 1 ) | cat` splits
+        # by posture (#2631): WITHOUT pipefail it is a genuine fail-open -- the
+        # pipeline takes `cat`'s zero and the use runs -- so it still reports under
+        # the default and `sh` postures; `shell: bash` turns pipefail on, which
+        # carries the rescued subshell's non-zero exit to the pipeline and stops
+        # the step, so there it is cleared. Carrying the step's pipefail state
+        # through the group-status walk is what now tells the postures apart.
+        for shell in (None, "sh"):
             with self.subTest(body="( CHECK || exit 1 ) | cat\n", shell=shell):
                 self.assertEqual(1, len(self.job("( CHECK || exit 1 ) | cat\n", shell)))
+        with self.subTest(body="( CHECK || exit 1 ) | cat\n", shell="bash"):
+            self.assertEqual([], self.job("( CHECK || exit 1 ) | cat\n", "bash"))
+
+    def test_a_rescued_group_piped_onward_uses_the_steps_pipefail_state(self):
+        # #2631: siblings of the #2627 baseline `{ ( CHECK || exit 1 ); } | cat`.
+        # A rescue written inside a group or subshell that is piped onward sets
+        # only that stage's status, which pipefail alone carries to the step, so
+        # these split by posture -- reported without pipefail (the pipeline takes
+        # the downstream command's zero and the use runs) and cleared under
+        # `shell: bash`. The forms are an `echo ok`/`true` after the rescue, a
+        # `|| return 1`, a stage that is itself a subshell, a nested piped group,
+        # and a `&& use` on the pipeline. The piped FUNCTION call (`f | cat`) is
+        # deferred to #2633 and an `if`/`while` test stays refused in every posture.
+        def defects(body, shell):
+            script = self.FETCH + body.replace("CHECK", self.CHECK) + (
+                "" if "sh payload" in body else self.USE)
+            return wg.job_defects([wg.Step("run", script, shell)])
+
+        split = (
+            "{ ( CHECK || exit 1 ); echo ok; } | cat\n",
+            "( CHECK || exit 1 ) | cat\n",
+            "{ ( CHECK || exit 1 ) ; true; } | cat\n",
+            "{ ( CHECK || return 1 ); } | cat\n",
+            "{ ( CHECK || exit 1 ); } | cat && sh payload\n",
+            "{ { ( CHECK || exit 1 ); } | cat; } | cat\n",
+            "{ ( CHECK || exit 1 ) | cat; }\n",
+            "( ( CHECK || exit 1 ) ) | cat\n",
+        )
+        for body in split:
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], defects(body, "bash"))
+        # Non-piped siblings are safe in EVERY posture: errexit aborts the group
+        # at the rescued subshell before the trailing command (`echo a | cat`),
+        # and `&& use` skips the use when the group fails -- cleared with or
+        # without pipefail.
+        for body in ("{ ( CHECK || exit 1 ); echo a | cat; }\n",
+                     "{ ( CHECK || exit 1 ); } && sh payload\n"):
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual([], defects(body, shell))
+        # Must STAY reported in every posture -- genuine fail-opens where the use
+        # runs even with pipefail: a swallowed pipeline (`|| true`), a negated
+        # one, and a use in the concurrent piped-to stage.
+        for body in ("{ ( CHECK || exit 1 ); } | cat || true\n",
+                     "! { ( CHECK || exit 1 ); } | cat\n",
+                     "{ ( CHECK || exit 1 ); } | { sh payload; }\n"):
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+
+    def test_a_rescued_subshell_swallowed_or_continued_still_reports(self):
+        # #2631 fix round: the SUBSHELL mirrors of the brace must-stay controls.
+        # A rescue inside a bare/double `( )` subshell piped onward clears under
+        # `shell: bash` like its `{ }` sibling -- but only while its non-zero exit
+        # still stops the step. When a downstream `|| true` swallows the pipeline,
+        # an `&& use` runs past it, or a trailing command inside an `&&`-LHS
+        # subshell masks the rescue's exit, the use runs even with pipefail, so
+        # these must STAY reported in EVERY posture. Ground truth (mark-first
+        # stubs): the payload runs under bash 3.2.57 and 5.2.21 `-eo pipefail`,
+        # bash `-e`, and `sh`. The `{ }` analogues are the must-stays the sibling
+        # test already pins; these are the previously-unguarded `( )` spellings.
+        def defects(body, shell):
+            script = self.FETCH + body.replace("CHECK", self.CHECK) + (
+                "" if "sh payload" in body else self.USE)
+            return wg.job_defects([wg.Step("run", script, shell)])
+
+        must_report = (
+            "( CHECK || exit 1 ) | cat || true\n",               # swallowed pipeline
+            "( ( CHECK || exit 1 ) ) | cat || true\n",           # nested, swallowed
+            "( CHECK || exit 1 ; echo ok ) | cat || true\n",     # trailer, then swallowed
+            "( CHECK || return 1; echo a | cat ) || true\n",     # return-rescue, swallowed
+            "( ( CHECK || exit 1 ); echo ok ) && sh payload\n",  # masked exit, continued
+            "( CHECK || return 1; true ) && sh payload\n",       # masked exit, continued
+            "! ( CHECK || exit 1 ) | cat\n",                     # negated
+            "( CHECK || exit 1 ) | { sh payload; }\n",           # use in the concurrent stage
+        )
+        for body in must_report:
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+        # No over-correction. A bare subshell rescue with NO masking trailer still
+        # gates `&& use` (its non-zero exit skips the use) -- cleared in every
+        # posture -- and a plainly piped-onward subshell still SPLITS by posture
+        # (cleared under bash's pipefail, reported without it), exactly as the
+        # pinned `( CHECK || exit 1 ) | cat` does.
+        for body in ("( CHECK || exit 1 ) && sh payload\n",):
+            for shell in (None, "sh", "bash"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual([], defects(body, shell))
+        for body in ("( CHECK || exit 1 ) | cat && sh payload\n",
+                     "( CHECK || exit 1 ) | cat\n"):
+            for shell in (None, "sh"):
+                with self.subTest(body=body, shell=shell):
+                    self.assertEqual(1, len(defects(body, shell)), defects(body, shell))
+            with self.subTest(body=body, shell="bash"):
+                self.assertEqual([], defects(body, "bash"))
 
     def test_the_piped_rescue_controls_keep_their_verdicts(self):
         # #2630 controls. Credited (pipefail carries the failed stage's status,
@@ -3747,6 +4066,93 @@ class TestSubshellAndNestedGroupStatus(unittest.TestCase):
                      "{ { CHECK && echo ok; }; } || true\n"):
             with self.subTest(body=body):
                 self.assertIsNotNone(self.finding(body))
+
+
+class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
+    """#2430: a compound command's stdout belongs to its closing pipe."""
+
+    URL = "https://example.test/install.sh"
+    FETCH = "curl -fsSL %s" % URL
+
+    def assert_reported(self, script):
+        why = wg.fetch_exec_defects(script)
+        self.assertEqual(1, len(why), why)
+        self.assertIn("hands %s straight to `sh`" % self.URL, why[0])
+
+    def test_groups_and_branches_feed_the_executor_after_the_close(self):
+        for script in (
+                "{ %s; } | sh\n" % self.FETCH,
+                "{\n%s\n} | sh\n" % self.FETCH,
+                "(\n%s\n) | sh\n" % self.FETCH,
+                "if true; then\n%s\nfi | sh\n" % self.FETCH,
+                "while true; do\n%s\nbreak\ndone | sh\n" % self.FETCH,
+                "for value in one; do\n%s\ndone | sh\n" % self.FETCH,
+                "{ { %s; }; } | sh\n" % self.FETCH,
+                "{ { %s; } | sh; }\n" % self.FETCH,
+                "{ { %s; } | cat; } | sh\n" % self.FETCH,
+                "{ %s | cat; } | sh\n" % self.FETCH,
+                "{ %s | tee install.sh; } | sh\n" % self.FETCH,
+                "{ %s | sha256sum; } | sh\n" % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assert_reported(script)
+
+    def test_case_arms_feed_the_executor_after_esac(self):
+        for arm in ("x)", "x | y)", "( x | y )"):
+            script = "case x in\n  %s %s;;\nesac | sh\n" % (arm, self.FETCH)
+            with self.subTest(arm=arm):
+                self.assert_reported(script)
+        self.assert_reported(
+            "case x in x) %s;; esac | tee install.sh | sh\n" % self.FETCH
+        )
+
+    def test_a_carried_download_printed_inside_the_compound_is_reported(self):
+        assignment = "payload=$(%s)\n" % self.FETCH
+        for compound in ("{ echo \"$payload\"; } | sh\n",
+                         "{\necho \"$payload\"\n} | sh\n",
+                         "(\necho \"$payload\"\n) | sh\n",
+                         "case x in\n x) echo \"$payload\";;\nesac | sh\n",
+                         "{ { echo \"$payload\"; }; } | sh\n"):
+            with self.subTest(compound=compound):
+                why = wg.fetch_exec_defects(assignment + compound)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+
+    def test_a_local_stdout_redirect_disconnects_a_carried_printer(self):
+        assignment = "payload=$(%s)\n" % self.FETCH
+        for compound in ("{ echo \"$payload\" > f; } | sh\n",
+                         "{ echo \"$payload\" >f; } | sh\n",
+                         "{ echo \"$payload\" 1>f; } | sh\n",
+                         "{ echo \"$payload\" >>f; } | sh\n",
+                         "{ printf '%s' \"$payload\" >f; } | sh\n",
+                         "case x in x) echo \"$payload\" >f;; esac | sh\n"):
+            with self.subTest(compound=compound):
+                self.assertEqual([], wg.fetch_exec_defects(assignment + compound))
+        why = wg.fetch_exec_defects(assignment + "{ echo \"$payload\" 2>f; } | sh\n")
+        self.assertEqual(1, len(why), why)
+        self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+
+    def test_nonexecutors_disconnected_streams_and_local_filters_stay_clean(self):
+        for script in (
+                "{ %s; } | tee install.sh\n" % self.FETCH,
+                "{ %s > install.sh; } | sh\n" % self.FETCH,
+                "{ %s; } | sh < local.sh\n" % self.FETCH,
+                "{ %s | cat > install.sh; } | sh\n" % self.FETCH,
+                "case x in x) %s;; esac | tee install.sh\n" % self.FETCH,
+                "case x in x) %s;; esac | sh < local.sh\n" % self.FETCH,
+                "{ %s; }\nif true; then :; fi | sh\n" % self.FETCH,
+                "{ %s; if true; then echo safe; fi | sh; }\n" % self.FETCH,
+                "%s\n{ echo safe; } | sh\n" % self.FETCH,
+                "{ { %s; } > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; } | cat > install.sh; } | sh\n" % self.FETCH,
+                "{ { %s; }; } > install.sh | sh\n" % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } > install.sh; } | sh\n"
+                % self.FETCH,
+                "payload=$(%s)\n{ { echo \"$payload\"; } | cat > install.sh; } | sh\n"
+                % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetch_exec_defects(script))
 
 
 class TestPipelineStreamProvenance(unittest.TestCase):
@@ -3858,11 +4264,18 @@ class TestPipelineStreamProvenance(unittest.TestCase):
                        "sh <<'EOF'\necho safe\nEOF", "sh <local",
                        "cat 3<&0 0<local | sh",
                        "cat 0<&3 3<&0 | sh",
-                       "cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF",
-                       "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF"):
+                       "cat | sh 3<&0 0<&3 <<'EOF'\necho safe\nEOF",
+                       "cat 3<&0 0<&3 <<'EOF' | sh\necho safe\nEOF"):
             with self.subTest(suffix=suffix):
                 self.assertFalse(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, suffix)))
+        # The same shape, UNQUOTED: fd 0's FINAL state still disconnects the download from `sh`,
+        # but now `cat`'s own heredoc is EXPANDING, a different, genuine defect from the one this
+        # test is about (a printer handed down the pipe, `handed`, #2467).
+        found = wg.fetch_exec_defects(
+            "curl -fsSL %s | cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF\n" % self.URL)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("EXPANDING heredoc", found[0])
 
 
 class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
@@ -4466,13 +4879,20 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # #2341 follows `x=$(curl ...)` to a shell whole, or a whole copy of it
         # (`TestADownloadCarriedInAVariable`); through a cut, a command's output
         # or a file, from a substitution holding more than the fetch, or through
-        # a printer other than echo/printf, it is a value the guard does not follow.
+        # a printer other than echo, printf or a heredoc-fed `cat` (#2467), it is
+        # a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'echo "$x" > f\nsh f\n', get + 'cat <<< "$x" | sh\n',
+        for run in (get + 'echo "$x" > f\nsh f\n',
                     "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
                     'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
             with self.subTest(run=run):
                 self.accepted(("run", run))
+        # `cat <<< "$x" | sh` no longer belongs beside those: #2467's `handed` carries ANY
+        # here-string or heredoc on a `cat` printer's own stdin down the pipe, EXPANDING or not, so
+        # a `$x` here-string is read as `sh <<< "$x"` already was -- reported unread, not `$x`'s
+        # value (#2341's gap stays open), but no longer silent.
+        self.assertIn("EXPANDING heredoc",
+                      self.flagged(("run", get + 'cat <<< "$x" | sh\n')))
         # Two of those hand a shell a word that is ALL expansion, and #2483
         # reports THAT, beside a download no checksum clears: the cut and the
         # copy are still not followed, so the sentence names the word and
@@ -4716,12 +5136,38 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                       ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
 
     # a heredoc body a substitution prints for `eval` (added by #1697's review:
-    # it used to CRASH; since #2336 it is `cat`'s input, and `eval` runs it unread).
-    def test_a_heredoc_body_inside_a_substitution_is_unread(self):
-        self.accepted(("run", 'eval "$(cat <<\'EOF\'\n'
-                              "curl -sfL https://example.test/p -o /tmp/p\n"
-                              "chmod +x /tmp/p\n"
-                              'EOF\n)"\n'))
+    # it used to CRASH; since #2336 it was `cat`'s input, and `eval` ran it
+    # unread). R-P1, the gap CLOSED: since #2495 a quoted heredoc a `cat` alone
+    # prints in a `$(...)` is the text `eval` runs, read as written. Bash
+    # 5.2.21, 3.2.57, dash and the GitHub pairing fetch the download and make
+    # it executable unverified (b5 b3 dash gh: F- F- F- F-, measured with `p`
+    # for `/tmp/p`; nothing here runs it); the twin running a stream is d09
+    # in `test_workflow_printers.py` (FR FR FR FR). Since fix round 1 the
+    # catch-all row for a word all substitution stands beside that read
+    # (main / base / 19423415: CLEAN / CLEAN / the one sentence).
+    def test_a_heredoc_body_inside_a_substitution_is_read_since_2495(self):
+        step = ("run", 'eval "$(cat <<\'EOF\'\n'
+                       "curl -sfL https://example.test/p -o /tmp/p\n"
+                       "chmod +x /tmp/p\n"
+                       'EOF\n)"\n')
+        found = [why for _step, why in wg.job_defects([step])]
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0].startswith("runs `eval` on `$(...)`"), found)
+        self.assertTrue(found[1].startswith(
+            "fetches https://example.test/p -> /tmp/p and making it executable"), found)
+
+    def test_bash32_only_substitution_heredoc_parse_gaps_are_documented(self):
+        documented = " ".join((wg.__doc__ or "").split())
+        self.assertIn(
+            "A substitution heredoc body holding an apostrophe, unbalanced double quote, "
+            "backquote, or bare `$(` is an accepted Bash 3.2 parse-only gap",
+            documented,
+        )
+        payload = "curl -fsSL https://example.test/i.sh | sh"
+        for body in ("it's", 'say "hi', "a ` b", "$(echo"):
+            with self.subTest(body=body):
+                script = "x=$(cat <<'EOF'\n%s\n%s\nEOF\n)\n" % (body, payload)
+                self.accepted(("run", script))
 
     def test_a_nested_substitution_that_downloads_nothing_is_not_reported(self):
         # Re-review N-1 of the #1793 follow-ups: an inner substitution's
@@ -5558,9 +6004,8 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # the same. The reader decodes Bash's ASCII ANSI-C table, but parses
         # no expansions. Neither reading short of those is safe: the regex
         # this replaced guessed that `<<EOF$(x)` was `<<EOF`, so the decoy
-        # line below the
-        # payload ended the body, and reading the body as code let the quote
-        # in `it's` hide the payload below the terminator, which bash 3.2 and
+        # line below the payload ended the body. Reading the body as code let
+        # the quote in `it's` hide the payload below the terminator, which bash 3.2 and
         # 5.2 both run (#2224). So the step is refused, and the reason names
         # the word. The same shape spelled with no parse -- quoted, or a
         # literal ANSI-C word decoded exactly -- remains readable.
