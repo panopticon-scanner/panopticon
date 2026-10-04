@@ -996,17 +996,21 @@ class TestTheCallersContract(unittest.TestCase):
         self.assertEqual([], self.resolved("E=", ["$E"]))
 
     def test_a_shells_dash_c_string_is_its_program(self):
-        # The `-c` stdin rule: ONE simple command with no interpreter among its words and
-        # no `$` head reads no program off standard input; the rest still may, fail-closed:
-        # an interpreter word past a wrapper `command()` keeps reads it (`builtin .`,
-        # `busybox sh`), and so does an operand that only names one (`echo sh`, the price).
+        # The `-c` stdin rule: ONE simple command that only hands its input on as data,
+        # `cat` or `tee`, reads no program off standard input; every other string still
+        # may, fail-closed as main read them all: a wrapper `command()` keeps (`builtin .`,
+        # `busybox sh`) and a reader the guard does not list (`csh`, `sudo -s`) report, and
+        # so, the price, does a command the rule does not know (`echo sh`, `awk -f`).
         rows = {("sh", "-c", "cat"): False, ("bash", "-ec", "cat -"): False,
-                ("sh", "-c", "T=x"): False, ("sh", "-c", "sh"): True,
-                ("sh", "-c", "exec bash -s"): True, ("sh", "-c", "$CMD"): True,
-                ("sh", "-c", "cat | sh"): True, ("sh", "-c", "cat; sh"): True,
-                ("sh", "-c", "source /dev/stdin"): True, ("sh", "-c", "python3"): True,
-                ("sh", "-c", "builtin . /dev/stdin"): True, ("sh", "-c", "busybox sh"): True,
-                ("sh", "-c", "echo sh"): True, ("sh", "-c", "awk -f /dev/stdin"): False,
+                ("sh", "-c", "tee x"): False, ("sh", "-c", "T=x"): False,
+                ("sh", "-c", "sh"): True, ("sh", "-c", "exec bash -s"): True,
+                ("sh", "-c", "$CMD"): True, ("sh", "-c", "cat | sh"): True,
+                ("sh", "-c", "cat; sh"): True, ("sh", "-c", "source /dev/stdin"): True,
+                ("sh", "-c", "python3"): True, ("sh", "-c", "builtin . /dev/stdin"): True,
+                ("sh", "-c", "busybox sh"): True, ("sh", "-c", "csh"): True,
+                ("sh", "-c", "sudo -s"): True, ("sh", "-c", "echo sh"): True,
+                # unknown to the rule, main's report kept:
+                ("sh", "-c", "awk -f /dev/stdin"): True,
                 ("sh",): True, ("eval", "cat"): True, ("python3", "-c", "x"): True}
         for argv, expected in rows.items():
             with self.subTest(argv=argv):
@@ -1172,6 +1176,9 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
         # f02 FR FR FR FR; main reported: an interpreter word past `builtin` reads it.
         self.assertReports(fetch + "bash -c 'builtin . /dev/stdin' < i.sh\n",
                            "running it under `bash` from standard input", "i.sh")
+        # h01 FR FR FR FR; main reported: `csh` is no printer, so it reads the program.
+        self.assertReports(fetch + "sh -c 'csh' < i.sh\n",
+                           "running it under `sh` from standard input", "i.sh")
 
 
 class TestADownloadNamedThroughAnArray(unittest.TestCase):

@@ -315,9 +315,10 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
 
 def _on_stdin(argv):
     """Whether interpreter `argv` may run its standard input (#2425: a `-c` string's own program):
-    not where that string is ONE simple command with no `$` head (`sh -c 'cat'`, as `stdin_program`
-    reads `$CMD -c`); any word of the string an interpreter may: fail-closed through a wrapper that
-    `command()` keeps (`builtin . f`, `busybox sh`), at the price of `echo sh`'s operand."""
+    not where that string is ONE simple command that only hands its input on as data, a printer
+    (`workflow_printers`' `cat` or `tee`: `sh -c 'cat'`); any other may, fail-closed as main read
+    them all (`builtin . f`, `busybox sh`, `csh`, `sudo -s`), so a command the rule does not know
+    keeps main's over-report: the price (`echo sh`, `awk -f /dev/stdin`)."""
     strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
     try:
         parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
@@ -326,8 +327,7 @@ def _on_stdin(argv):
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return True
     inner = command(parsed[0].stages[0].argv)
-    return bool(inner) and (any(os.path.basename(str(word)) in INTERPRETERS for word in inner)
-                            or stdin_program(inner) == VALUE_PROGRAM)
+    return bool(inner) and os.path.basename(str(inner[0])) not in ("cat", "tee")
 
 
 def _resolved(argv, table):
