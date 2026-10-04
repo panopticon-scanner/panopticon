@@ -27,13 +27,29 @@ evidence exposed.
   its subject now reaches the statement reader, so commands in those arms remain visible to
   the workflow guard.
 - **Workflow guard: a `cat` with a quoted heredoc on its stdin and an `echo` read as the step's
-  shell prints it are printers too (#2467, #2476).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is,
-  a `cat` with an option too (its body read whole: `-n` over-reports), and an EXPANDING
-  `cat <<EOF | sh` is reported as `sh <<EOF` is; `echo`'s backslashes read as bash prints them
-  (literal unless `-e`) or as `sh`/dash decode them, and a `printf` format's always. A shell a
-  `-c`/`eval` string names, or a `${X:-sh}` default stands for, reads them both ways -- outside a
-  `$(…)`, where the step's shell or bash's own row still reads. Named gap: `shopt -s xpg_echo`
-  turns bash's `echo` into a decoder, which this rule does not follow.
+  shell prints it are printers too, through a substitution as well (#2467, #2476, #2478, #2487,
+  #2495, #2728).** `cat <<'EOF' | sh` is read as `sh <<'EOF'` is, a `cat` with an option too (its
+  body read whole: `-n` over-reports), and an EXPANDING `cat <<EOF | sh` is reported as `sh <<EOF`
+  is; `echo`'s backslashes read as bash prints them (literal unless `-e`) or as `sh`/dash decode
+  them, and a `printf` format's always. A shell a `-c`/`eval` string names, or a `${X:-sh}` default
+  stands for, reads them both ways, as does one inside a `$(…)` in a script handed on or in a script
+  a `$(…)` hands a shell (#2728); the step's own `$(…)` reads per the step's shell. A pass-through
+  between the printer and the shell -- `tee` writing plain files with `-a`/`-p`/`-i`, `--append` or
+  `--output-error[=MODE]` at most; a `cat` whose only operands are `-` (and one `--`) -- is read
+  through (#2478); any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`,
+  `base64 -d`), leaves the program unread, reported where its words or the printer's text fetch, or
+  beside a reported download. A printer inside a `$(…)` or a `<(…)` is read as the text the shell
+  runs where every reading agrees on it (#2487, #2495): `eval "$(echo 'sh tool')"`,
+  `sh <(echo 'sh tool')` and `bash <(cat <<'EOF' … EOF)` report the download they run, and the
+  documented `eval "$(cat <<'EOF' … EOF)"` gap closes; an unquoted `$(…)` is read unsplit (`eval`
+  joins bash's fields; `-c` runs the first alone, an over-report), a backquote whose text escapes
+  `$`, `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and
+  the catch-all row for a word all substitution stays beside every such read. Named gaps:
+  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not
+  follow; a word the shell reads specially once unquoted (a quote, space, newline,
+  `#`, `\`, `<`, `>`, an open `$(`) or a lifted `$(…)` word inside the unread stage's words still
+  hides the fetch that follows; and a substitution's printer the readings disagree on
+  (`sh -c "$(echo 'sh\ttool')"`) stays unread.
 - **Pipeline uses after `case` compounds reach the workflow guard (#2610, #2608).** A
   literal `esac` now closes its case before a following redirect or pipe, so `| sh payload`
   is a real stage instead of one argv hidden in case-pattern state. Closing every `esac`

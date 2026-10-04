@@ -405,20 +405,29 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # reader renders it and the script marked `Opaque`, so no marker of
         # this parse reaches the next -- two parses give one text. A word
         # that is one lone `$(...)` is still none: `dynamic_program` names it.
-        for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
+        # Since #2487 a `$(...)` that is one printer is written as the text it
+        # prints (`workflow_printers.rendered`), the script still `Opaque`, and
+        # a lone one so written is a script, no dynamic program.
+        for script, text in (('sh -c "sh $(cat f)" x', "sh $(...)"),
+                             ('eval "sh $(cat f)"', "sh $(...)"),
+                             ('sh -c "sh $(echo tool)" x', "sh tool"),
+                             ('eval "sh $(echo tool)"', "sh tool"),
+                             ('sh -c "$(echo tool)" x', "tool")):
             with self.subTest(script=script):
                 found = self.program(script)
-                self.assertEqual(["sh $(...)"], found)
+                self.assertEqual([text], found)
                 self.assertIsInstance(found[0], workflow_programs.Opaque)
                 self.assertEqual(found, self.program(script))
-        self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+        self.assertEqual([], self.program('sh -c "$(cat f)" x'))
         # A text so rendered that the reader refuses is none, as before:
         # `cat <<$(...)` names no line to end the body at. Nothing reaches a
-        # re-parse that would refuse the whole step.
-        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(echo E)\nE\nsh x"'):
+        # re-parse that would refuse the whole step. A printer's `E` is a
+        # delimiter like any other (#2487).
+        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(cat d)\nE\nsh x"'):
             with self.subTest(script=script):
                 self.assertEqual([], self.program(script))
                 self.assertEqual([], guard.fetch_exec_defects(script))
+        self.assertEqual(["cat <<E\nE\nsh x"], self.program('sh -c "cat <<$(echo E)\nE\nsh x"'))
 
     def test_a_word_that_is_all_substitution_is_the_dynamic_programs(self):
         # #2486: it spells no command, so `scripts` hands on no text for it
@@ -439,12 +448,13 @@ class TestTheProgramAfterDashC(unittest.TestCase):
     def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
         # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
         # string holding one beside a `$(...)` is no script at all, where its
-        # twin with the `$(...)` alone is read opaque (#2486) ...
+        # twin with the `$(...)` alone is read opaque (#2486), the one
+        # printer's text written in (#2487) ...
         for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
             with self.subTest(script=script):
                 self.assertEqual([], self.program(script))
         found = self.program('sh -c "sh $(echo tool)" x')
-        self.assertEqual(["sh $(...)"], found)
+        self.assertEqual(["sh tool"], found)
         self.assertIsInstance(found[0], workflow_programs.Opaque)
         # ... and a program word that is all `<(...)` is not `dynamic_program`'s,
         # where its `$(...)` twin is.
@@ -747,7 +757,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
         stmts = shell_reader.statements(script)
         assert len(stmts) == 1, stmts
         stages = stmts[0].stages
-        before = stages[-2] if piped and len(stages) > 1 else None
+        before = stages[:-1] if piped else None
         return forms.stdin_scripts(shell_reader.command(stages[-1].argv), stages[-1], before)
 
     def test_the_text_a_printer_spells_out_is_the_program(self):
@@ -783,7 +793,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     def test_no_program_where_the_shell_reads_none_from_the_printer(self):
         # A `-c` string or a script file makes stdin data; a printer writing
         # elsewhere pipes nothing; only a printer is read, and only when the
-        # stage in front of the shell is given (`flattened`, `_walk`).
+        # stages in front of the shell are given (`flattened`, `_walk`).
         for script in ("echo 'sh tool' | sh -c 'echo hi'", "echo y | sh install.sh",
                        "echo 'sh tool' > f | sh", "cat notes.txt | sh", "echo 'sh tool' | python3"):
             with self.subTest(script=script):
@@ -795,7 +805,7 @@ class TestAProgramAPrinterPipesIntoAShell(unittest.TestCase):
     @staticmethod
     def parts(script):
         stages = shell_reader.statements(script)[0].stages
-        return shell_reader.command(stages[-1].argv), stages[-1], stages[-2]
+        return shell_reader.command(stages[-1].argv), stages[-1], stages[:-1]
 
 
 class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
@@ -804,7 +814,7 @@ class TestThePrinterRulesLiveInWorkflowPrinters(unittest.TestCase):
     `unprinted` and every caller read the one definition, and no stale copy can linger."""
 
     def test_the_seam_is_one_object(self):
-        for name in ("printed", "_piped", "_PRINTERS", "handed"):
+        for name in ("printed", "_piped", "_PRINTERS", "handed", "producer", "unspelled"):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_programs, name), getattr(workflow_printers, name))
         self.assertIs(forms.unprinted, workflow_programs.unprinted)

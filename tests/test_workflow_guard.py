@@ -1638,9 +1638,18 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                        self.GET + 'echo "$x"\n',
                        self.GET + 'echo "$x" | grep -c .\n',
                        self.GET + "sh -c 'echo hi' \"$x\"\n",         # there it is `$0`
-                       self.GET + 'diff <(echo "$x") f\n', self.GET + 'bash <(echo "$y")\n'):
+                       self.GET + 'diff <(echo "$x") f\n'):
             with self.subTest(script=script):
                 self.assertEqual([], self.job(script))
+        # A `<(...)` a shell reads as its FILE hands it the program its printer prints (#2487):
+        # `$y`, unspelled, is weighed as the pipe twin `echo "$y" | bash` is -- `_PRINTED`'s
+        # `_Quiet`, never the carried sentence -- though no shell runs the download (b5 b3 dash gh:
+        # F- F- F- F- for both): that twin's over-report, kept beside the download `x` holds.
+        for use in ('bash <(echo "$y")\n', 'echo "$y" | bash\n'):
+            with self.subTest(use=use):
+                why = self.job(self.GET + use)
+                self.assertEqual(1, len(why), why)
+                self.assertTrue(why[0].startswith("pipes `bash` its program from `echo`"), why)
         # Where the shell IS handed a word, the download is not what it runs,
         # and #2483 reports the word itself (as it does the `$CMD -c "$x"`
         # twin beside the same download): one sentence, and not this one.
@@ -4954,12 +4963,25 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                       ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
 
     # a heredoc body a substitution prints for `eval` (added by #1697's review:
-    # it used to CRASH; since #2336 it is `cat`'s input, and `eval` runs it unread).
-    def test_a_heredoc_body_inside_a_substitution_is_unread(self):
-        self.accepted(("run", 'eval "$(cat <<\'EOF\'\n'
-                              "curl -sfL https://example.test/p -o /tmp/p\n"
-                              "chmod +x /tmp/p\n"
-                              'EOF\n)"\n'))
+    # it used to CRASH; since #2336 it was `cat`'s input, and `eval` ran it
+    # unread). R-P1, the gap CLOSED: since #2495 a quoted heredoc a `cat` alone
+    # prints in a `$(...)` is the text `eval` runs, read as written. Bash
+    # 5.2.21, 3.2.57, dash and the GitHub pairing fetch the download and make
+    # it executable unverified (b5 b3 dash gh: F- F- F- F-, measured with `p`
+    # for `/tmp/p`; nothing here runs it); the twin running a stream is d09
+    # in `test_workflow_printers.py` (FR FR FR FR). Since fix round 1 the
+    # catch-all row for a word all substitution stands beside that read
+    # (main / base / 19423415: CLEAN / CLEAN / the one sentence).
+    def test_a_heredoc_body_inside_a_substitution_is_read_since_2495(self):
+        step = ("run", 'eval "$(cat <<\'EOF\'\n'
+                       "curl -sfL https://example.test/p -o /tmp/p\n"
+                       "chmod +x /tmp/p\n"
+                       'EOF\n)"\n')
+        found = [why for _step, why in wg.job_defects([step])]
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0].startswith("runs `eval` on `$(...)`"), found)
+        self.assertTrue(found[1].startswith(
+            "fetches https://example.test/p -> /tmp/p and making it executable"), found)
 
     def test_bash32_only_substitution_heredoc_parse_gaps_are_documented(self):
         documented = " ".join((wg.__doc__ or "").split())

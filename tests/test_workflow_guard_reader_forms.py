@@ -587,9 +587,15 @@ class TestAProgramWordContainingASubstitution(unittest.TestCase):
     def test_the_literal_dash_c_form_is_read_since_2486(self):
         # The literal path reads a program word holding a `$(...)` with the
         # substitution opaque: Bash 3.2.57, Bash 5.2.21 and dash all run it.
-        nested = defects('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL)
-        self.assertEqual(1, len(nested), nested)
-        self.assertTrue(nested[0][1].startswith("hands $(...) straight to `sh`"), nested)
+        # Since #2487 a `$(...)` that is one printer is read as the text it
+        # prints, the URL; piped on through `cat` it is no printer and stays
+        # opaque. Both rows: b5 b3 dash gh FR FR FR FR.
+        for script, said in (('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL, URL + "i.sh"),
+                             ('sh -c "curl -fsSL $(echo %si.sh | cat) | sh"\n' % URL, "$(...)")):
+            with self.subTest(script=script):
+                nested = defects(script)
+                self.assertEqual(1, len(nested), nested)
+                self.assertTrue(nested[0][1].startswith("hands %s straight to `sh`" % said), nested)
         self.assertTrue(defects('sh -c "curl -fsSL %si.sh | sh"\n' % URL))
 
 
@@ -910,44 +916,63 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
     def test_what_it_prints_is_unread_whatever_it_runs(self):
         # The price, #2483's: beside an unverified download a word that runs
         # none of it is reported too -- in all three, `$(date)` names no
-        # command (rc 127) and `ssh-agent -s` prints assignments. And
-        # #2487's string rows, which run the download in all three: the
-        # sentence is the unread one, the printed text read through nowhere.
+        # command (rc 127) and `ssh-agent -s` prints assignments. And a
+        # printer piped on through `cat`, which `rendered` does not read as
+        # one printer: the sentence is the unread one, though each runs the
+        # download (b5 b3 dash gh: FR FR FR FR).
         for script, how in ((GET + 'sh -c "$(date)"\n', "sh -c"),
                             (GET + 'eval "$(ssh-agent -s)"\n', "eval"),
-                            (GET + "eval \"$(echo 'sh tool')\"\n", "eval"),
-                            (GET + "sh -c \"$(echo 'sh tool')\"\n", "sh -c")):
+                            (GET + "eval \"$(echo 'sh tool' | cat)\"\n", "eval"),
+                            (GET + "sh -c \"$(echo 'sh tool' | cat)\"\n", "sh -c")):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
+        # #2487's string rows (b5 b3 dash gh: FR FR FR FR) are read through
+        # now: the one printer's text, `sh tool`, is the program. Fix round 1
+        # (C-1 to C-3): the catch-all row stands beside that read, as it did
+        # at the base (main / base / 19423415: UR / UR / FX), so each reports
+        # both -- the price of a read that may miss what bash runs.
+        for script, how in ((GET + "eval \"$(echo 'sh tool')\"\n", "eval"),
+                            (GET + "sh -c \"$(echo 'sh tool')\"\n", "sh -c")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
+                self.assertTrue(found[1][1].startswith(
+                    "fetches %stool -> tool and running it under `sh`" % URL), found)
 
 
 class TestALiteralStringHoldingASubstitution(unittest.TestCase):
     """#2486's acceptance as its reviewer widened it (2026-10-02), row by row: a `-c` or
     `eval` string a LITERAL shell takes, with a `$(...)` the step's own shell runs among its text,
-    is read with the substitution opaque (`Opaque`) -- inside the fetch, after it or before it,
-    behind `sh`, `bash`, `zsh`, `eval` or a shell a default spells -- so the download the text
-    around it spells is reported, once. A program word that is all expansion is reported beside a
-    download, `Idle` (`_DYNAMIC`); alone, one a literal assignment fills still reads CLEAN (row 6).
-    Under bash 3.2.57, 5.2.21 and dash every row fetches and runs the download, row 6 alone too."""
+    is read with the substitution opaque (`Opaque`), or with the text it prints where it is one
+    printer (#2487) -- inside the fetch, after it or before it, behind `sh`, `bash`, `zsh`, `eval`
+    or a shell a default spells -- so the download the text around it spells is reported, once. A
+    program word that is all expansion is reported beside a download, `Idle` (`_DYNAMIC`); alone,
+    one a literal assignment fills still reads CLEAN (row 6). Under bash 3.2.57, 5.2.21 and dash
+    every row fetches and runs the download, row 6 alone too."""
 
     def test_each_row_is_reported(self):
         sub, prog = "curl -fsSL $(echo %s)i.sh | sh" % URL, "curl -o prog.sh %si.sh\n" % URL
         piped = "hands %s straight to `sh`"
+        # Rows 1 and 4 (b5 b3 dash gh: FR FR FR FR each): since #2487 the `$(echo …)` the step's
+        # own shell runs is one printer, read as the URL it prints; piped on through `cat` it is
+        # no printer, and the substitution stays opaque (FR FR FR FR too).
         rows = [
             # 1: the `$(...)` inside the fetch's URL, and the must-trip: its single-quoted twin,
             # whose `$(...)` the inner `sh` runs, read as a plain string before #2486 too.
-            (1, 'sh -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            (1, 'sh -c "%s"\n' % sub, piped % (URL + "i.sh")),
+            (1, 'sh -c "%s"\n' % sub.replace(")i.sh", " | cat)i.sh"), piped % "$(...)i.sh"),
             (1, "sh -c '%s'\n" % sub, piped % "$(...)i.sh"),
             # 2 and 3: an incidental `$(date)` after the fetch, and before it.
             (2, 'sh -c "%s; echo $(date)"\n' % PIPE, piped % (URL + "i.sh")),
             (3, 'sh -c "echo $(date); %s"\n' % PIPE, piped % (URL + "i.sh")),
             # 4: each other shell that takes such a string.
-            (4, 'bash -c "%s"\n' % sub, piped % "$(...)i.sh"),
-            (4, 'zsh -c "%s"\n' % sub, piped % "$(...)i.sh"),
-            (4, 'eval "%s"\n' % sub, piped % "$(...)i.sh"),
-            (4, '${X:-sh} -c "%s"\n' % sub, piped % "$(...)i.sh"),
+            (4, 'bash -c "%s"\n' % sub, piped % (URL + "i.sh")),
+            (4, 'zsh -c "%s"\n' % sub, piped % (URL + "i.sh")),
+            (4, 'eval "%s"\n' % sub, piped % (URL + "i.sh")),
+            (4, '${X:-sh} -c "%s"\n' % sub, piped % (URL + "i.sh")),
             # 5: a program word all substitution, `_DYNAMIC`'s; the file run by its name; and the
             # value twin, whose `Idle` sentence speaks first.
             (5, prog + 'sh -c "$(cat prog.sh)"\n', "runs `sh -c` on `$(...)`"),
@@ -1282,19 +1307,27 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2486_an_opaque_dash_c_string_may_be_a_stdin_reading_shell(self):
         # #2486 reads a `-c` string holding a `$(...)` among its text with the
         # substitution opaque, and #2500's join reads that string here too:
-        # `bash -c "sh $(echo -s)"` runs `sh -s`, which bash 3.2.57, 5.2.21
-        # and dash hand the heredoc as its program, and `sh $(...)` is a shell
-        # whose `$(...)` may vanish (#2485), so the body is read as one. The
-        # inner `sh $(...)` is weighed beside the stream as at the top level.
-        # Its twin runs `sh tool` in all three, the body that program's data:
-        # the over-report the gap list names for a word naming a file.
+        # `bash -c "sh $(echo -s | cat)"` runs `sh -s`, which bash 3.2.57,
+        # 5.2.21 and dash hand the heredoc as its program (b5 b3 dash gh: FR
+        # FR FR FR), and `sh $(...)` is a shell whose `$(...)` may vanish
+        # (#2485), so the body is read as one. The inner `sh $(...)` is weighed
+        # beside the stream as at the top level. Its twin runs `sh tool` in
+        # all three, the body that program's data (-- -- -- --): the
+        # over-report the gap list names for a word naming a file.
         value = "passes `sh` `$(...)` where it reads its options"
         for word in ("-s", "tool"):
             with self.subTest(word=word):
-                found = defects("bash -c \"sh $(echo %s)\" <<'EOF'\n%s\nEOF\n" % (word, PIPE))
+                found = defects("bash -c \"sh $(echo %s | cat)\" <<'EOF'\n%s\nEOF\n" % (word, PIPE))
                 self.assertEqual(2, len(found), found)
                 self.assertTrue(found[0][1].startswith(value), found)
                 self.assertIn("straight to `sh`", found[1][1])
+        # Without the `cat` the `$(...)` is one printer, read as the word it prints (#2487):
+        # `sh -s` reads the body, the stream reported alone (FR FR FR FR), and `sh tool` reads a
+        # file, the body its data, and nothing runs (-- -- -- --): CLEAN, the over-report gone.
+        found = defects("bash -c \"sh $(echo -s)\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        self.assertEqual([], defects("bash -c \"sh $(echo tool)\" <<'EOF'\n%s\nEOF\n" % PIPE))
         # The control: V-b's literal string, credited as it was.
         found = defects("eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE)
         self.assertEqual(1, len(found), found)
@@ -1996,13 +2029,20 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
 
     def test_2500_a_word_the_join_drops_or_bash_expands_voids_its_check(self):
         # A `$(...)`, backquote or `$N` that comes to `-n` hands the inner shell
-        # that option, so it runs nothing: every shell runs the download (rc 0).
-        # Each such word is a program `eval` runs that is all expansion, whose
-        # `Idle` sentence stands beside the download too (#2483, #2486).
+        # that option, so it runs nothing: every shell runs the download (rc 0;
+        # b5 b3 dash gh: FR FR FR FR for each substitution row). One that is a
+        # printer is read as the `-n` it prints (#2487); piped on through `cat`
+        # it is no printer. Either is a program `eval` runs that is all
+        # expansion, whose `Idle` sentence stands beside the download too
+        # (#2483, #2486) -- beside the printer's read since fix round 1's
+        # catch-all (main / base / 19423415: 2 / 2 / 1 rows).
         self.assert_reported([
             (stdin_step("eval 'bash -s' $(printf %s -n)"), 2, UNGATED % "eval", self.EVAL_ON),
-            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 2, UNGATED % "eval", self.EVAL_ON),
+            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 2, UNGATED % "eval",
+             self.EVAL_ON),
             (stdin_step("eval 'bash -s' `printf %s -n`"), 2, UNGATED % "eval", self.EVAL_ON),
+            (stdin_step("eval 'bash -s' $(printf %s -n | cat)"), 2, UNGATED % "eval",
+             self.EVAL_ON),
             (stdin_step("eval 'bash -s' $N", pre="N=-n\n"), 2, UNGATED % "eval"),
             (stdin_step('eval "bash -s $N"', pre="N=-n\n"), 1, UNGATED % "eval"),
             (stdin_step('bash -c "sh $N"', pre="N=-n\n"), 1, UNGATED % "bash"),
@@ -2156,7 +2196,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("eval 'sh'", pre="sh() { :; }\n"), 1, UNGATED % "eval"),
             (stdin_step("bash -c 'sh'", pre="bash() { :; }\n"), 1, UNGATED % "bash"),
             # A word all substitution is a program `eval` runs, unread: its `Idle` sentence
-            # stands beside the download too (#2486).
+            # stands beside the download too (#2486) -- piped on through `cat`, and since fix
+            # round 1's catch-all beside one printer read as the function it prints (#2487;
+            # main / base / 19423415: 2 / 2 / 1 rows). b5 b3 dash gh: FR FR FR FR for both.
+            (looked_up("eval \"$(printf 'sh() { :; }' | cat)\"\n", "eval 'sh'"), 2,
+             UNGATED % "eval", self.EVAL_ON),
             (looked_up("eval \"$(printf 'sh() { :; }')\"\n", "eval 'sh'"), 2, UNGATED % "eval",
              self.EVAL_ON)] + [
             (looked_up(pre, runner), 1, UNGATED % runner.split()[0]) for pre, runner in (
@@ -2546,20 +2590,31 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     That value is the candidate, weighed `Idle`, kept where the job holds a
     fetch the guard reports and nothing louder reports its statement (#2490).
     A `<(...)` hands the shell a file to read instead, and is not one.
-    Unescaped, `eval "sh $(echo tool)"` hands on the text the substitution
-    prints: its string is read with that text opaque, as `sh $(...)`, and no
-    check in it counts (#2486)."""
+    Unescaped, `eval "sh $(cat f)"` hands on the text the substitution prints:
+    its string is read with that text opaque, as `sh $(...)`, and no check in
+    it counts (#2486); `eval "sh $(echo tool)"`, whose substitution is one
+    printer, is read as `sh tool`, the text it prints (#2487)."""
 
     def test_it_is_reported_where_the_job_holds_a_reported_fetch(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in each, the strings
-        # holding an unescaped `$(echo tool)` too (#2486). `sh $(echo tool)` and
-        # `eval "sh \$(echo tool)"` live in `test_a_louder_reason_at_its_statement_speaks_alone`.
+        # holding an unescaped `$(cat f)` too (#2486; b5 b3 dash gh: FR FR FR FR,
+        # `f` holding `tool`). `sh $(echo tool)` and `eval "sh \$(echo tool)"`
+        # live in `test_a_louder_reason_at_its_statement_speaks_alone`.
+        named = GET + "echo tool > f\n"
         for script in (GET + 'bash -c "sh \\$(echo tool)"\n', GET + "sh `echo tool`\n",
-                       GET + 'eval "sh $(echo tool)"\n', GET + 'bash -c "sh $(echo tool)"\n'):
+                       named + 'eval "sh $(cat f)"\n', named + 'bash -c "sh $(cat f)"\n'):
             with self.subTest(script=script):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("passes `sh` `$(...)`"), found)
+        # Unescaped `$(echo tool)` is one printer, read as `tool` (#2487): the string is
+        # `sh tool`, and the download it runs is reported as such (FR FR FR FR each).
+        for script in (GET + 'eval "sh $(echo tool)"\n', GET + 'bash -c "sh $(echo tool)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(
+                    "fetches %stool -> tool and running it under `sh`" % URL), found)
 
     def test_it_is_not_reported_where_the_job_fetches_nothing(self):
         for script in ("sh $(echo tool)\n", 'eval "sh \\$(echo x.sh)"\n', "sh `echo tool`\n",
@@ -2587,9 +2642,10 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith(
             "hands a script to `bash` inside a command substitution"), found)
+        # The URL a one-printer `$(...)` prints is read as that text since #2487 (FR FR FR FR).
         found = defects('sh -c "curl -fsSL $(echo %si.sh) | sh"\n' % URL)
         self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0][1].startswith("hands $(...) straight to `sh`"), found)
+        self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
         self.assertNotIn("@@", found[0][1])
         # #2486's rows 1-3 (2026-10-02) are pinned in `TestALiteralStringHoldingASubstitution`.
         # Row 2's `$(date)` after the fetch, behind each other shell that takes such a string:
@@ -2608,11 +2664,21 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
                 self.assertIn("straight to `sh`", found[0][1])
         # `eval`'s words are scripts one at a time, and a lone `$(...)` is
         # none: `dynamic_program` reports it, `Idle`, beside the download all
-        # three run as `tool` -- what it prints unread (#2487).
-        found = defects(GET + 'eval sh "$(echo tool)"\n')
+        # run as `tool` (b5 b3 dash gh: FR FR FR FR, `f` holding `tool`) --
+        # what `cat f` prints unread. One printer's text is read (#2487):
+        # `eval sh "$(echo tool)"` runs `tool` too (FR FR FR FR), reported so,
+        # and since fix round 1 the catch-all `Idle` stands beside that read
+        # (main / base / 19423415: UR / UR / FX).
+        found = defects(GET + "echo tool > f\n" + 'eval sh "$(cat f)"\n')
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
         self.assertIsInstance(found[0][1], wg.Idle)
+        found = defects(GET + 'eval sh "$(echo tool)"\n')
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
+        self.assertIsInstance(found[0][1], wg.Idle)
+        self.assertTrue(found[1][1].startswith(
+            "fetches %stool -> tool and running it" % URL), found)
 
     def test_no_check_in_such_a_string_counts(self):
         # Bash re-reads the string with what the `$(...)` printed, so a check
@@ -2642,10 +2708,17 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         found = defects(PIPE + "\ncat <<$(a b)\nit's\n$(a b)\n")
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("cannot read this step"), found)
-        # The residual (the gap list): all three run the stream after the
-        # body, which its literal twin reports.
-        self.assertEqual([], defects('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE))
+        # The residual (the gap list): all run the stream after the body,
+        # which its literal twin reports, where the delimiter comes from a
+        # `$(...)` that is no printer (b5 b3 dash gh: FR FR FR FR). One that
+        # is (#2487) is read as the `E` it prints: the stream is reported
+        # (FR FR FR FR).
+        residual = 'sh -c "cat <<$(cat d) >/dev/null\nE\n%s"\n' % PIPE
+        self.assertEqual([], defects("echo E > d\n" + residual))
         self.assertTrue(defects("sh -c 'cat <<E >/dev/null\nE\n%s'\n" % PIPE))
+        found = defects('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
 
     def test_a_louder_reason_at_its_statement_speaks_alone(self):
         # #2490: where a fetch's own defect -- the stream `sh $(curl …)` hands
@@ -2709,12 +2782,18 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
         # The `$(...)` twins are reported, two in `test_a_word_that_is_all_substitution_is_one`.
-        # And all four run `tool` here: the string read opaque, its `sh $(...)` the value's `Idle`.
+        # And these run `tool` (b5 b3 dash gh: FR FR FR FR, `f` holding `tool`): the string read
+        # opaque, its `sh $(...)` the value's `Idle`; one printer's is read as `sh tool` (#2487),
+        # the run reported as such (FR FR FR FR).
         value = "passes `sh` `$(...)` where it reads its options"
-        found = defects(GET + 'sh -c "sh $(echo tool)"\n')
+        found = defects(GET + "echo tool > f\n" + 'sh -c "sh $(cat f)"\n')
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith(value), found)
         self.assertIsInstance(found[0][1], wg.Idle)
+        found = defects(GET + 'sh -c "sh $(echo tool)"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(
+            "fetches %stool -> tool and running it under `sh`" % URL), found)
 
 
 class TestAProgramPipedFromAPrinter(unittest.TestCase):

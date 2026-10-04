@@ -70,13 +70,14 @@ live, so a change that catches one fails there and edits this list.
   (`candidates`, #2344) to the first operand and past a later word that may expand to an option, as
   the operand may be an option's value (`--rcfile f $Y '…'`, #2484): `X=-c; sh $X tool '…'` and
   `sh $X 'echo hi' "$Y" '…'` over-report. In a candidate program word, substitutions stay opaque
-  while outer text is read (#2482), as a `$(…)` among a `-c`/`eval` string's text is (#2486): what
-  it prints is unread (#2487), no check there counts, `eval "sh $(curl …)"` reports the inner
-  `sh $(...)` beside `eval`'s stream, and one the reader refuses so read is unread (`cat <<$(…)`).
-  One alone or a `Rewritten` word stays unread beside a download. A `$` command's `${X:-sh}` default
-  is read, as is a program after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a
-  word all substitution are reported beside a download (#2483, #2486), though they may run none of
-  it (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
+  while outer text is read (#2482), as a `$(…)` among a `-c`/`eval` string's text is (#2486) unless
+  one printer prints it, read as that text (#2487, below): any other's output is unread, no check in
+  the string counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s stream, and
+  one the reader refuses so read is unread (`cat <<$(…)`). One alone, no printer, or a `Rewritten`
+  word stays unread beside a download. A `$` command's `${X:-sh}` default is read, as is a program
+  after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution are
+  reported beside a download (#2483, #2486), though they may run none of it
+  (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
   A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
@@ -119,16 +120,10 @@ live, so a change that catches one fails there and edits this list.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run. OUT OF SCOPE:
   the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
-* a heredoc body printed inside a command substitution for `eval` to run (`eval "$(cat <<'EOF' …
-  EOF)"`). The OUTER parse lifts the body, and the substitution's text carries it back to its
-  redirection (#2336): a shell reading a quoted one as its program is reported as `x=$(sh -c '…')`
-  is (review I-4), but `cat` reads data, and what `eval` runs is unread. KEPT: reading it means
-  teaching the reader that a heredoc `cat` reads in a substitution is a SCRIPT -- a second expansion
-  model. The fleet writes one heredoc-ish form (a `<<<` here-string in docker-publish.yml) and no
-  `cat <<EOF`. It no longer CRASHES, as it did until #1697's review. CLOSED outside a substitution
-  for the OTHER heredoc spelling, the body handed to an interpreter as the PROGRAM it runs (`bash -s
-  <<'EOF'`, `sh <<< '…'`, `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts
-  already parsed decide it: whether a command's program is its stdin at all
+* a heredoc body or the text a printer hands a shell as its PROGRAM, past what is CLOSED: the body
+  handed to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
+  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts already parsed decide
+  it: whether a command's program is its stdin at all
   (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module and a script
   FILE each put it elsewhere, the body then its input DATA), and which body descriptor 0 finally
   reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval` string whose one
@@ -151,8 +146,9 @@ live, so a change that catches one fails there and edits this list.
   or an option nothing runs under, or quoted and empty (`X=script.sh`, `X=-K`, `X=-n`),
   over-reports; `python3 $S`, S unset, a FOREIGN word, under-reports (python runs the body), filed
   under #2331. A quoted body reaches an interpreter as written, so `workflow_forms.flattened`
-  catches a shell download as at top level. A literal shell's EXPANDING body is REPORTED unread:
-  values and `$(...)` output remain unseen. A foreign program is reported too. A `$` command
+  catches a shell download as at top level. A literal shell's EXPANDING body is REPORTED unread
+  (one a `cat` prints into a `<(…)` the shell reads as its FILE too, #2495): values and `$(...)`
+  output remain unseen. A foreign program is reported too. A `$` command
   hand-off is reported (#2473); since #2499, either is kept only beside a reported fetch. A value
   word's body is read as shell with no check counted. Where a job fetch binds that command (#2607),
   its run sentence owns stdin as data and both uncertain answers drop; unknown words stay
@@ -163,13 +159,42 @@ live, so a change that catches one fails there and edits this list.
   file redirected into it. `CMD=cat` is the fail-closed price. A value option before a file keeps
   stdin possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
   aliases, a shell behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename
-  such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a shell
-  reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any other, or
-  one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported where
-  words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported fetch
-  (#2333, #2481, #2467, #2476). A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i`
-  ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as
-  printing its body (`-n` over-reports); beside `-`, a file's text is unread.
+  such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a
+  shell, directly or through a pass-through -- `tee` writing plain files with `-a`/`-p`/`-i`,
+  `--append` or `--output-error[=MODE]` at most; a `cat` whose only operands are `-` (and one `--`;
+  #2478) -- reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any
+  other, or one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported
+  where words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported
+  fetch (#2333, #2481, #2467, #2476). Inside a `$(…)`, such a printer reads per the step's shell
+  where the step itself runs the substitution, and both ways where it stands in a script handed on
+  (a `-c`/`eval` string, a heredoc body) or a substitution hands it to a shell (`x=$(sh -c '…')`)
+  (#2728). A printer inside a `$(…)` or a `<(…)` is read as the text the shell runs where every
+  reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the body,
+  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` is read unsplit, where `eval`
+  joins bash's fields with spaces (a newline or tab read as a space) and `-c` runs only the
+  first (`sh -c $(echo 'curl … | sh')` over-reports), a backquote whose text escapes `$`,
+  `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and the
+  catch-all row for a word all substitution stays beside every such read (review C-1 to C-3);
+  a `<(…)` printer `substituted` cannot spell is weighed as a piped one (`sh <(echo "$X")`,
+  `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE, the reader
+  keeping no direction (`sh >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)`
+  reads as bash runs it, though dash refuses the syntax and runs nothing (over-reports); and
+  bash 3.2.57 races a sourced `<(…)`, often reading it empty, so a check `source <(…)` prints
+  is credited where 3.2 may skip it (a 3.2-only gap; 5.2 wins). Any
+  other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
+  program unread, reported where the stage's words or the printer's text fetch, or beside a reported
+  download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open:
+  `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as printing its body
+  (`-n` over-reports); beside `-`, a file's text is unread; `tee f 2>&1` stays a pass-through though
+  its diagnostic, which BSD `tee` writes with the file name unquoted, joins the stream; a word the
+  shell reads specially once unquoted (a quote, space, newline, `#`, `\`, `<`, `>`, an open `$(`) or
+  a lifted `$(…)` word inside the unread stage's words still hides the fetch that follows (they are
+  weighed joined as one text); a substitution's printer the readings disagree on stays unread
+  (`sh -c "$(echo 'sh\ttool')"`: `Idle` beside a reported download, though a `shell: sh` step runs
+  `sh tool`), and so do a `<(…)` that is not one printer (`sh <(echo a; echo 'sh tool')`) or that a
+  shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
+  on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
+  `$(…)` (`eval "$(cat <<EOF … EOF)"`).
   A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
   `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload there, so #2626 kept #2493's
   refusal limited to `)` instead of reporting code only Bash 5.2 parses.
@@ -204,6 +229,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             names_file, parse_fetch, regions, stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
+from workflow_printers import fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
@@ -222,7 +248,7 @@ UNNAMED = "<unnamed step>"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory=".",
-          shell=ANY):   # read under the step's shell; `ANY` for an `Inlined` one (#2476)
+          shell=ANY):   # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
     """Fetches and unread forms under `shell`; nested cwd kept, attributed to the outer line."""
     stmts = list(stmts)
     if working is None:
@@ -233,8 +259,9 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
     found, unread = [], []
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
+        under = ANY if isinstance(statement, Inlined) else shell
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            argv, before = command(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
@@ -256,8 +283,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            program = unread_program(argv, stage, _walk, inside, before,
-                                     ANY if isinstance(statement, Inlined) else shell)
+            program = unread_program(argv, stage, _walk, inside, before, under)
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
@@ -270,7 +296,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                            step_credit(inner, "bash {0}"), here)
                 fetched, nested = _walk(
                     inner, stream_exec, True, dict(enumerate(dirs)),
-                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, shell)
+                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)
@@ -284,17 +310,23 @@ def _fetch_records(stmts, stream_exec=False):
 
 
 def _unread_stdin(stage, before=None):
-    """Why the program on this stage's STANDARD INPUT goes unread, or None.
+    """Why the program on this stage's STANDARD INPUT, or in a `<(...)` FILE it reads, goes unread,
+    or None.
 
     A heredoc body or here-string handed to an interpreter is a program, not data
     (`workflow_programs.stdin_program`): one in a language with no grammar here, or handed to a `$`
     word no table places (#2473), is `Idle`, which `kept` stands only beside a fetch this guard
     reports (#2499). An EXPANDING one -- its `$(...)` lifted in, or a here-string bash expands first
-    (#2293) -- by NAME or down a `cat` printer's pipe (`handed`, #2467), is reported fetch or no
-    fetch; a `$` word's body is READ as shell, a literal shell's where quoted (`stdin_scripts`)."""
+    (#2293) -- by NAME or down a `cat` printer's pipe, through pass-through stages (#2478) too
+    (`handed`, #2467), or printed by a `cat` alone in a `<(...)` a shell or `source` reads as its
+    FILE (`fed`, #2495), is reported fetch or no fetch; a `$` word's body is READ as shell, a
+    literal shell's where quoted (`stdin_scripts`)."""
     argv = command(stage.argv)
     here = stage.stdin_heredoc or handed(stage, before)
-    if not here or (kind := stdin_program(argv)) is None:
+    kind = here and stdin_program(argv)
+    if not kind:                        # or a `cat` in a `<(...)` it reads as its FILE (#2495)
+        here, kind = fed(operand(argv)), SHELL_PROGRAM
+    if not here:
         return None
     stdin_argv = stdin_command(argv)
     name = shell_reader.readable(stdin_argv[0] if kind == VALUE_PROGRAM else argv[0])
@@ -316,7 +348,7 @@ def _unread_stdin(stage, before=None):
                 "'...'`) and it is read as written, pass job values as arguments instead (`%s -s "
                 "-- \"$VALUE\" <<'EOF'`), or exempt the step with a reason (`EXEMPT_FETCHES` in "
                 "tests/test_workflow_pins.py)"
-                % (name, name))
+                % (name, "bash" if name in ("source", ".") else name))
     return None
 
 
