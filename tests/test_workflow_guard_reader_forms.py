@@ -929,12 +929,17 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
         # #2487's string rows (b5 b3 dash gh: FR FR FR FR) are read through
-        # now: the one printer's text, `sh tool`, is the program.
-        for script in (GET + "eval \"$(echo 'sh tool')\"\n", GET + "sh -c \"$(echo 'sh tool')\"\n"):
+        # now: the one printer's text, `sh tool`, is the program. Fix round 1
+        # (C-1 to C-3): the catch-all row stands beside that read, as it did
+        # at the base (main / base / 19423415: UR / UR / FX), so each reports
+        # both -- the price of a read that may miss what bash runs.
+        for script, how in ((GET + "eval \"$(echo 'sh tool')\"\n", "eval"),
+                            (GET + "sh -c \"$(echo 'sh tool')\"\n", "sh -c")):
             with self.subTest(script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(found[0][1].startswith("runs `%s` on `$(...)`" % how), found)
+                self.assertTrue(found[1][1].startswith(
                     "fetches %stool -> tool and running it under `sh`" % URL), found)
 
 
@@ -1959,12 +1964,15 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # that option, so it runs nothing: every shell runs the download (rc 0;
         # b5 b3 dash gh: FR FR FR FR for each substitution row). One that is a
         # printer is read as the `-n` it prints (#2487); piped on through `cat`
-        # it is no printer, but a program `eval` runs that is all expansion,
-        # whose `Idle` sentence stands beside the download too (#2483, #2486).
+        # it is no printer. Either is a program `eval` runs that is all
+        # expansion, whose `Idle` sentence stands beside the download too
+        # (#2483, #2486) -- beside the printer's read since fix round 1's
+        # catch-all (main / base / 19423415: 2 / 2 / 1 rows).
         self.assert_reported([
-            (stdin_step("eval 'bash -s' $(printf %s -n)"), 1, UNGATED % "eval"),
-            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 1, UNGATED % "eval"),
-            (stdin_step("eval 'bash -s' `printf %s -n`"), 1, UNGATED % "eval"),
+            (stdin_step("eval 'bash -s' $(printf %s -n)"), 2, UNGATED % "eval", self.EVAL_ON),
+            (stdin_step("eval 'bash -s' \"$(printf %s -n)\""), 2, UNGATED % "eval",
+             self.EVAL_ON),
+            (stdin_step("eval 'bash -s' `printf %s -n`"), 2, UNGATED % "eval", self.EVAL_ON),
             (stdin_step("eval 'bash -s' $(printf %s -n | cat)"), 2, UNGATED % "eval",
              self.EVAL_ON),
             (stdin_step("eval 'bash -s' $N", pre="N=-n\n"), 2, UNGATED % "eval"),
@@ -2120,11 +2128,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("eval 'sh'", pre="sh() { :; }\n"), 1, UNGATED % "eval"),
             (stdin_step("bash -c 'sh'", pre="bash() { :; }\n"), 1, UNGATED % "bash"),
             # A word all substitution is a program `eval` runs, unread: its `Idle` sentence
-            # stands beside the download too (#2486) -- piped on through `cat`; one printer is
-            # read as the function it prints (#2487). b5 b3 dash gh: FR FR FR FR for both.
+            # stands beside the download too (#2486) -- piped on through `cat`, and since fix
+            # round 1's catch-all beside one printer read as the function it prints (#2487;
+            # main / base / 19423415: 2 / 2 / 1 rows). b5 b3 dash gh: FR FR FR FR for both.
             (looked_up("eval \"$(printf 'sh() { :; }' | cat)\"\n", "eval 'sh'"), 2,
              UNGATED % "eval", self.EVAL_ON),
-            (looked_up("eval \"$(printf 'sh() { :; }')\"\n", "eval 'sh'"), 1, UNGATED % "eval")] + [
+            (looked_up("eval \"$(printf 'sh() { :; }')\"\n", "eval 'sh'"), 2, UNGATED % "eval",
+             self.EVAL_ON)] + [
             (looked_up(pre, runner), 1, UNGATED % runner.split()[0]) for pre, runner in (
                 ("sh() { :; }\n", "eval 'sh'"), ("bash() { :; }\n", "bash -c 'sh'"),
                 ("eval() { :; }\n", "eval 'bash -s'"), ("alias sh=:\n", "eval 'sh'"),
@@ -2588,14 +2598,18 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
         # none: `dynamic_program` reports it, `Idle`, beside the download all
         # run as `tool` (b5 b3 dash gh: FR FR FR FR, `f` holding `tool`) --
         # what `cat f` prints unread. One printer's text is read (#2487):
-        # `eval sh "$(echo tool)"` runs `tool` too (FR FR FR FR), reported so.
+        # `eval sh "$(echo tool)"` runs `tool` too (FR FR FR FR), reported so,
+        # and since fix round 1 the catch-all `Idle` stands beside that read
+        # (main / base / 19423415: UR / UR / FX).
         found = defects(GET + "echo tool > f\n" + 'eval sh "$(cat f)"\n')
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
         self.assertIsInstance(found[0][1], wg.Idle)
         found = defects(GET + 'eval sh "$(echo tool)"\n')
-        self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0][1].startswith(
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
+        self.assertIsInstance(found[0][1], wg.Idle)
+        self.assertTrue(found[1][1].startswith(
             "fetches %stool -> tool and running it" % URL), found)
 
     def test_no_check_in_such_a_string_counts(self):

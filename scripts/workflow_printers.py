@@ -26,8 +26,11 @@ a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as i
                  (`_PAST_DEPTH`, fix round 1b)
     `substituted`  the text a substitution's script prints where it is ONE printer and every
                  reading agrees on it (R-P3), or None; `rendered`, a word with each such
-                 `$(...)` replaced by that text; `file_operand`, the word a shell or `source`
-                 reads its program from as a FILE, and `operand`, the script of a `<(...)` there
+                 `$(...)` replaced by that text -- no backquote holding a backslash, and none
+                 where the reader refuses the result -- beside which `dynamic_program` still
+                 reports a word all substitution (review C-1 to C-3); `file_operand`, the word a
+                 shell or `source` reads its program from as a FILE, and `operand`, the script
+                 of a `<(...)` there
     `unsubstituted`  the `echo`/`printf` alone in such a script that `substituted` cannot spell,
                  as `unspelled` names one; `fed`, the heredoc a `cat` alone in it prints
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
@@ -40,6 +43,7 @@ import re
 
 import shell_lex
 import shell_reader
+import shell_text
 
 
 def _piped(stage, before):
@@ -437,15 +441,26 @@ def rendered(word):
     `substituted` spells replaced by that text, its trailing newlines dropped as a command
     substitution drops them, and every other substitution -- a `<(...)` or `>(...)` always, which
     hands a FILE, never its text -- rendered `$(...)`, as `shell_reader.readable` renders them all.
-    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. The reader keeps
-    no quoting for a lifted substitution, so an unquoted one is rendered as a quoted one is,
-    unsplit: bash splits its text into words."""
+    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. A backquote
+    holding a backslash is not replaced: bash strips the one before `$`, `` ` `` or `\\` (and
+    `"` in double quotes) and then runs the text, which the reader lifts raw (review C-2). Where
+    the reader refuses the text so written, the word is `readable`'s (C-1). The reader keeps no
+    quoting for a lifted substitution, so an unquoted one is rendered as a quoted one is, unsplit,
+    though bash splits its text into fields `eval` and `-c` join with spaces: a newline or tab in
+    it is read where bash reads a space (C-2(b), documented). No read here stands alone --
+    `workflow_programs.dynamic_program` still reports a word all substitution beside it, the
+    catch-all (C-1 to C-3), so the design's "no `Idle` row beside the read" is overruled."""
     text = word
     for key, (kind, value) in getattr(word, "markers", {}).items():
         if kind == "subst":
             spelled = (substituted(value)
-                       if shell_reader.yields_words(shell_reader.derived(key, word)) else None)
+                       if shell_reader.yields_words(shell_reader.derived(key, word))
+                       and (isinstance(value, shell_text.Lifted) or "\\" not in value) else None)
             text = text.replace(key, "$(...)" if spelled is None else spelled.rstrip("\n"))
+    try:
+        shell_reader.statements(text)
+    except shell_lex.Unreadable:
+        return shell_reader.readable(word)
     return text
 
 
@@ -477,7 +492,8 @@ def file_operand(argv):
 
 def _filed(word):
     """The script of `word` where it is ONE lifted `<(...)`, whole -- what bash runs to fill the
-    file it hands the command -- or None."""
+    file it hands the command -- or None. A `>(...)` is taken for one: the reader keeps no
+    direction (`shell_text.Process`), so `sh >(echo 'sh tool')` over-reports (review m-3)."""
     entry = getattr(word, "markers", {}).get(word)
     return (entry[1] if entry and entry[0] == "subst" and not shell_reader.yields_words(word)
             else None)

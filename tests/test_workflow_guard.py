@@ -4938,14 +4938,19 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     # 5.2.21, 3.2.57, dash and the GitHub pairing fetch the download and make
     # it executable unverified (b5 b3 dash gh: F- F- F- F-, measured with `p`
     # for `/tmp/p`; nothing here runs it); the twin running a stream is d09
-    # in `test_workflow_printers.py` (FR FR FR FR).
+    # in `test_workflow_printers.py` (FR FR FR FR). Since fix round 1 the
+    # catch-all row for a word all substitution stands beside that read
+    # (main / base / 19423415: CLEAN / CLEAN / the one sentence).
     def test_a_heredoc_body_inside_a_substitution_is_read_since_2495(self):
-        why = self.flagged(("run", 'eval "$(cat <<\'EOF\'\n'
-                                   "curl -sfL https://example.test/p -o /tmp/p\n"
-                                   "chmod +x /tmp/p\n"
-                                   'EOF\n)"\n'))
-        self.assertTrue(why.startswith(
-            "fetches https://example.test/p -> /tmp/p and making it executable"), why)
+        step = ("run", 'eval "$(cat <<\'EOF\'\n'
+                       "curl -sfL https://example.test/p -o /tmp/p\n"
+                       "chmod +x /tmp/p\n"
+                       'EOF\n)"\n')
+        found = [why for _step, why in wg.job_defects([step])]
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0].startswith("runs `eval` on `$(...)`"), found)
+        self.assertTrue(found[1].startswith(
+            "fetches https://example.test/p -> /tmp/p and making it executable"), found)
 
     def test_a_nested_substitution_that_downloads_nothing_is_not_reported(self):
         # Re-review N-1 of the #1793 follow-ups: an inner substitution's

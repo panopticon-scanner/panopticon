@@ -376,10 +376,10 @@ def dynamic_program(argv):
     the program UNREAD wherever a literal shell took one while the `$CMD -c "$P"` twin `candidates`
     finds was reported: `unread_program` now says it of both. So is a word of lifted `$(...)` or
     backquote substitutions that hand on words, `$` words beside them or not (`sh -c "$(cat f)"`,
-    `eval sh "$(cat f)"`, `sh -c "$P$(cat f)"`, #2486), asked here before `scripts` drops it: bash
-    runs what they print, unread here unless one printer spells it (`rendered`, #2487). The price is
-    #2483's: beside an unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"` are
-    reported though they run none of it. A `<(...)` or `>(...)` hands a file, not words
+    `eval sh "$(cat f)"`, `sh -c "$P$(cat f)"`, #2486), asked here as `readable` writes it: bash
+    runs what they print, a catch-all even where one printer spells it (`rendered`, #2487). The
+    price is #2483's: beside an unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"`
+    are reported though they run none of it. A `<(...)` or `>(...)` hands a file, not words
     (`shell_reader.yields_words`), and is not one; nor is a string that MIXES literal text with an
     expansion (`sh -c "echo $X"`), which is read as written (`Opaque` where a `$(...)` is among its
     text). `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs nothing of the value as a command:
@@ -387,7 +387,7 @@ def dynamic_program(argv):
     name = os.path.basename(argv[0]) if argv else ""
     for word in _program_words(argv):
         keys = getattr(word, "markers", {})
-        text = rendered(word) if keys else getattr(word, "spelled", word)
+        text = shell_reader.readable(word) if keys else getattr(word, "spelled", word)
         if _all_expansion(text) and all(
                 shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
             return (name if name == "eval" else name + " -c"), (word if keys else text)

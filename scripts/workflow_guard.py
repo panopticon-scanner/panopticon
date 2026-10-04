@@ -168,21 +168,26 @@ live, so a change that catches one fails there and edits this list.
   (a `-c`/`eval` string, a heredoc body) or a substitution hands it to a shell (`x=$(sh -c '…')`)
   (#2728). A printer inside a `$(…)` or a `<(…)` is read as the text the shell runs where every
   reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the body,
-  `sh <(echo 'sh tool')` as `sh tool`; a `<(…)` printer no reading spells is weighed as a piped one
-  (`sh <(echo "$X")`). Any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`,
-  `base64 -d`), leaves the program unread, reported where the stage's words or the printer's text
-  fetch, or beside a reported download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the
-  `sed -i` ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are
-  read as printing its body (`-n` over-reports); beside `-`, a file's text is unread; `tee f 2>&1`
-  stays a pass-through though its diagnostic, which BSD `tee` writes with the file name unquoted,
-  joins the stream; a word the shell reads specially once unquoted (a quote, space, newline, `#`,
-  `\`, `<`, `>`, an open `$(`) or a lifted `$(…)` word inside the unread stage's words still hides
-  the fetch that follows (they are weighed joined as one text); a substitution's printer the
-  readings disagree on stays unread (`sh -c "$(echo 'sh\ttool')"`: `Idle` beside a reported
-  download, though a `shell: sh` step runs `sh tool`), and so do a `<(…)` that is not one printer
-  (`sh <(echo a; echo 'sh tool')`) or that a shell reads past `--` or on its stdin (`bash -- <(…)`,
-  `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a `$(…)`
-  (`eval "$(cat <<EOF … EOF)"`).
+  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` whose text holds a newline or tab is
+  read unsplit, where bash joins its fields with spaces, a backquote holding a backslash and a text
+  the reader refuses are not rendered, and the catch-all row for a word all substitution stays
+  beside every such read (review C-1 to C-3); a `<(…)` printer the readings do not agree on is
+  weighed as a piped one (`sh <(echo "$X")`, `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken
+  for a `<(…)` FILE, the reader keeping no direction (`sh >(echo 'sh tool')` over-reports). Any
+  other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
+  program unread, reported where the stage's words or the printer's text fetch, or beside a reported
+  download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open:
+  `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as printing its body
+  (`-n` over-reports); beside `-`, a file's text is unread; `tee f 2>&1` stays a pass-through though
+  its diagnostic, which BSD `tee` writes with the file name unquoted, joins the stream; a word the
+  shell reads specially once unquoted (a quote, space, newline, `#`, `\`, `<`, `>`, an open `$(`) or
+  a lifted `$(…)` word inside the unread stage's words still hides the fetch that follows (they are
+  weighed joined as one text); a substitution's printer the readings disagree on stays unread
+  (`sh -c "$(echo 'sh\ttool')"`: `Idle` beside a reported download, though a `shell: sh` step runs
+  `sh tool`), and so do a `<(…)` that is not one printer (`sh <(echo a; echo 'sh tool')`) or that a
+  shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
+  on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
+  `$(…)` (`eval "$(cat <<EOF … EOF)"`).
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
