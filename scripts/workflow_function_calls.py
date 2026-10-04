@@ -214,6 +214,8 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     refusing them would push authors toward the exemption list instead.
     Where `errexit` is off a branch that only FAILS stops nothing (`|| false`
     sets a status the step carries on past), so there it has to `exit`.
+    `_UNPROVED_RESCUE` is the falsey answer for a conditional arm this bounded
+    walk cannot evaluate; callers use its identity to qualify their wording.
     """
     following = stmts[index + 1:index + 11]
     if not following:
@@ -265,7 +267,7 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
                 if any(t in ("if", "then", "elif", "else", "fi", "while",
                              "until", "do", "done", "case", "esac", "for")
                        for t in stage.argv):
-                    return False
+                    return _UNPROVED_RESCUE
                 argv = command(stage.argv)
                 if argv:
                     name = os.path.basename(argv[0])
@@ -366,6 +368,9 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
 # N-3, N-7), and `_LOST` is the one for a list whose end the reader lost.
 _DETACHED = "is detached with `&`"
 _RESCUED = "hands its failure to a `||` branch that does not fail the step"
+_READ_RESCUED = ("hands its failure to a `||` branch that this guard reads as not failing "
+                 "the step")
+_UNPROVED_RESCUE = ()  # Falsey like False, but distinct by identity for the explanation.
 _ENDS = "ends a group that %s"
 _GROUP_TAIL = ("runs before a later command in an enclosing conditional group, so that "
                "command replaces the checksum's status")
@@ -568,8 +573,9 @@ def _stops_step(stmts, position, on, fails):
         if tail is not None:
             return tail
     if close > position and separator == "||":
-        return None if _stops_the_job(
-            stmts, close, on[position], fails[position]) else _ENDS % _RESCUED
+        rescue = _stops_the_job(stmts, close, on[position], fails[position])
+        return (None if rescue else _ENDS % (
+            _READ_RESCUED if rescue is _UNPROVED_RESCUE else _RESCUED))
     if close > position and separator == "&&":
         return _stops_step(stmts, close, on, fails)     # the group heads a list of its own
     if separator != "&&":

@@ -1558,6 +1558,8 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
     GET = "x=$(curl -fsSL https://example.test/i.sh)\n"
     SAID = ("carries https://example.test/i.sh in `$x` and hands it to `%s`%s, so there "
             "is no file to check")
+    READ = ("carries https://example.test/i.sh in `$x` and hands it to `%s`%s in this "
+            "guard's conservative reading, so there is no file to check")
 
     def job(self, *scripts):
         return [why for _n, why in wg.job_defects(
@@ -1585,7 +1587,8 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                 with self.subTest(get=get, use=use):
                     why = self.job(get + use)
                     self.assertEqual(1, len(why), why)
-                    self.assertIn(self.SAID % (to, ""), why[0])
+                    said = self.READ if to in ("sh -c", "bash -c") else self.SAID
+                    self.assertIn(said % (to, ""), why[0])
         # A trailing blank: bash 5.2.21, 3.2.57 and dash run the download as above (rc 0), but the
         # word is no longer `$x` whole, so this sentence does not bind it; #2483's unread program
         # word reports it instead, `Idle`, beside the download -- CLEAN until blanks around such a
@@ -1610,7 +1613,8 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
             with self.subTest(script=script):
                 why = self.job(script)
                 self.assertEqual(1, len(why), why)
-                self.assertIn(self.SAID % (to, where), why[0])
+                said = self.READ if script.startswith("f()") else self.SAID
+                self.assertIn(said % (to, where), why[0])
         # A whole copy holds it too, and the sentence names the variable used.
         for copy in ('y="$x"\n', "y=$x\n", 'export y="${x}"\n'):
             with self.subTest(copy=copy):
@@ -1676,12 +1680,15 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # a reassignment the step's own shell always runs empties it (`x=1`,
         # pinned CLEAN above). `eval 'x=:'` does run in the step's shell and
         # reads as a child's: an accepted over-report, beside its control.
-        for between in ('[ -n "$x" ] || x=1\n', 'if [ -z "$x" ]; then x=1; fi\n',
-                        "sh -c 'x=1'\n", "x=1 | cat\n", "eval 'x=:'\n", "eval 'y=:'\n"):
+        cases = (('[ -n "$x" ] || x=1\n', self.READ),
+                 ('if [ -z "$x" ]; then x=1; fi\n', self.READ),
+                 ("sh -c 'x=1'\n", self.SAID), ("x=1 | cat\n", self.SAID),
+                 ("eval 'x=:'\n", self.READ), ("eval 'y=:'\n", self.SAID))
+        for between, said in cases:
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)
-                self.assertIn(self.SAID % ("eval", ""), why[0])
+                self.assertIn(said % ("eval", ""), why[0])
 
     def test_a_reassignment_outside_the_steps_own_scope_keeps_it_held(self):
         # Review I-2: bash runs `x=1 &` and `( x=1 )` in subshells, a function
@@ -1692,18 +1699,65 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # called `f() { x=1; }` in it and then runs nothing: accepted
         # over-reports. A group closed before the reassignment is out of the way,
         # its `(` or `)` on a line of its own too (#2420 keeps such a line).
-        for between in ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
-                        "(\n  x=1\n)\n", "f() { x=1; }\n", "f() {\n  x=1\n}\n",
-                        "function f { x=1; }\n", "f() { local x=1; }\nf\n",
-                        "f() { declare x=1; }\nf\n", "f() { x=1; }\nf\n", "{ x=1; }\n"):
+        strong = ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
+                  "(\n  x=1\n)\n")
+        readings = ("f() { x=1; }\n", "f() {\n  x=1\n}\n", "function f { x=1; }\n",
+                    "f() { local x=1; }\nf\n", "f() { declare x=1; }\nf\n",
+                    "f() { x=1; }\nf\n", "{ x=1; }\n")
+        for between in strong + readings:
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)
-                self.assertIn(self.SAID % ("eval", ""), why[0])
+                said = self.SAID if between in strong else self.READ
+                self.assertIn(said % ("eval", ""), why[0])
         for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "( cd .\n)\nx=1\n",
                         "(\n  cd .\n)\nx=1\n", "f() { :; }\nx=1\n"):
             with self.subTest(between=between):
                 self.not_carried(self.GET + between + 'eval "$x"\n')
+
+    def test_a_fail_closed_carry_says_that_it_is_the_guards_reading(self):
+        for between in ("if true; then x=1; fi\n", "{ x=1; }\n",
+                        "f() { x=1; }\nf\n", "eval 'x=:'\n"):
+            with self.subTest(between=between):
+                why = self.job(self.GET + between + 'eval "$x"\n')
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.READ % ("eval", ""), why[0])
+                self.assertNotIn(self.SAID % ("eval", ""), why[0])
+
+    def test_a_child_reset_consumed_inside_that_child_is_a_reading(self):
+        for script in (self.GET + '( x=1; eval "$x" )\n',
+                       self.GET + "sh -c 'x=1; eval \"$x\"'\n",
+                       self.GET + '(x=1; eval "$x") &\nwait\n'):
+            with self.subTest(script=script):
+                why = self.job(script)
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.READ % ("eval", ""), why[0])
+
+    def test_a_quote_lost_child_handoff_and_a_child_value_used_outside_are_readings(self):
+        cases = (
+            (self.GET + 'sh -c "$x"\n', "sh -c"),
+            (self.GET + "sh -c '$x'\n", "sh -c"),
+            ("sh -c 'x=$(curl -fsSL https://example.test/i.sh)'\neval \"$x\"\n", "eval"),
+        )
+        for script, consumer in cases:
+            with self.subTest(script=script):
+                why = self.job(script)
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.READ % (consumer, ""), why[0])
+
+    def test_true_carry_proofs_keep_the_direct_words(self):
+        cases = (
+            (self.GET + 'eval "$x"\n', "eval"),
+            ("sh -c 'x=$(curl -fsSL https://example.test/i.sh); eval \"$x\"'\n", "eval"),
+            ("(\n" + self.GET + 'eval "$x"\n)\n', "eval"),
+            (self.GET + "sh -c 'x=1'\neval \"$x\"\n", "eval"),
+        )
+        for script, consumer in cases:
+            with self.subTest(script=script):
+                why = self.job(script)
+                self.assertEqual(1, len(why), why)
+                self.assertIn(self.SAID % (consumer, ""), why[0])
+                self.assertNotIn("conservative reading", why[0])
 
 
 class TestAPatternWhereTheCommandStarts(unittest.TestCase):
@@ -3219,6 +3273,13 @@ class TestACheckThatEndsAGroupIsJudgedByWhatFollowsIt(unittest.TestCase):
             with self.subTest(shell=shell, body="&"):
                 self.reported("{ %s; } &\nwait\n", shell, "ends a group that is detached with `&`")
 
+    def test_a_group_with_an_unread_rescue_qualifies_the_status_reading(self):
+        reason = ("ends a group that hands its failure to a `||` branch that this guard reads "
+                  "as not failing the step")
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell):
+                self.reported("{ %s; } || { if true; then exit 1; fi; }\n", shell, reason)
+
     def test_a_piped_group_gates_only_under_pipefail(self):
         piped = ("ends a group that is piped into another command where this guard reads "
                  "`pipefail` as off")
@@ -3528,6 +3589,14 @@ class TestChecksumRescueStatus(unittest.TestCase):
                        "return nope"):
             with self.subTest(rescue=rescue):
                 self.assertIsNotNone(self.checked(rescue))
+
+    def test_an_unread_rescue_branch_says_that_it_is_the_guards_reading(self):
+        uncertain = self.checked("{ if true; then exit 1; fi; }") or ""
+        self.assertIn("this guard reads as not failing the step", uncertain)
+        self.assertNotIn("branch that does not fail the step", uncertain)
+        certain = self.checked("{ true; }") or ""
+        self.assertIn("branch that does not fail the step", certain)
+        self.assertNotIn("this guard reads", certain)
 
     def test_group_uses_its_last_status(self):
         for rescue in ("{ false; echo recovered; }",
@@ -6117,12 +6186,12 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
         self.assertIn("unresolved transfers", why[1])
 
     def test_a_carried_download_keeps_it(self):
-        # #2341's sentence is unchanged, and the `Idle` form beside it stands:
-        # a download no file holds is a fetch this guard reports.
+        # The `Idle` form stands beside #2341's report. The reader loses the
+        # `-c` operand's quotes, so #2424 qualifies that report as its reading.
         why = self.job("x=$(curl -fsSL https://example.test/s)\nsh -c \"$x\"\n" + self.IDLE)
         self.assertEqual(2, len(why), why)
         self.assertIn(self.SAID, why[0])
-        self.assertIn("carries https://example.test/s in `$x`", why[1])
+        self.assertIn("in this guard's conservative reading", why[1])
 
     def test_the_reach_pr_2465_gave_the_rule_follows_the_predicate(self):
         # #2481's reach note: a dynamic operand after a `$` command word's

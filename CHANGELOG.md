@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Fail-closed workflow messages now identify guard readings (#2424, #2331).** Carried
+  variables and conditional checksum rescues say when scope or status comes from a conservative
+  reading. Direct carries and proven non-stopping rescues keep their existing wording; verdicts
+  do not change.
 - **Workflow guard now lets bound downloads own value-form stdin (#2607, #2331).**
   When `curl -o "$T"` is followed by `$T <<'EOF'`, the existing run finding now stands alone and
   the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep

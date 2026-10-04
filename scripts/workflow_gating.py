@@ -39,9 +39,9 @@ from shell_reader import command, conditional, negated
 from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach, _CLOSES,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
-                                     _SET_E as _SET_E, _closes, _control_depths, _function_scope,
-                                     _function_syntax, _gating_function_call, _posture_barrier,
-                                     _stops_the_job,
+                                     _READ_RESCUED, _SET_E as _SET_E, _UNPROVED_RESCUE,
+                                     _closes, _control_depths, _function_scope, _function_syntax,
+                                     _gating_function_call, _posture_barrier, _stops_the_job,
                                      _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
@@ -444,7 +444,8 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
             rescue = _rescue_bounds(stmts, index) if measuring_uses else None
             return RescueGate(rescue[0], rescue[1], stops) if rescue is not None else stops
         if not stops:
-            return why if not errexit and why else _RESCUED
+            return (why if not errexit and why else
+                    _READ_RESCUED if stops is _UNPROVED_RESCUE else _RESCUED)
     # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
     # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
     # module's own remedy text recommends -- the checksum is the second stage
