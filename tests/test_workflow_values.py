@@ -118,10 +118,13 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
                 self.assertEqual({"T": expected}, table(script).scalars)
 
     def test_a_name_an_uncertain_statement_assigns_first_may_be_unset(self):
-        # The "maybe unset" candidate, which a `:-` default reads as null.
-        self.assertEqual({"F": ["x", ""]}, table("if x; then F=x; fi").scalars)
-        self.assertEqual(["x", "./install.sh"],
-                         wv.valued("${F:-./install.sh}", table("if x; then F=x; fi")))
+        # The "maybe unset" candidate, over which a default stands.
+        values = table("if x; then F=x; fi")
+        self.assertEqual({"F": ["x", ""]}, values.scalars)
+        self.assertEqual(["x", "./install.sh"], wv.valued("${F:-./install.sh}", values))
+        self.assertEqual(["x", "", "./install.sh"], wv.valued("${F-./install.sh}", values))
+        self.assertEqual([["sh", "x"], ["sh"], ["sh", "./install.sh"]],
+                         wv.valued_argvs(["sh", "${F-./install.sh}"], values))
 
     def test_a_certain_unset_read_or_bare_local_empties_the_name(self):
         for script in ("T=a; unset T", "T=a; read -r T", "T=a; local T",
@@ -195,9 +198,11 @@ class TestHowAWordResolves(unittest.TestCase):
                 self.assertEqual(bare, wv.valued(word, unassigned))
                 self.assertEqual(held, wv.valued(word, assigned))
 
-    def test_a_null_value_takes_a_colon_default_only(self):
+    def test_a_null_value_takes_a_colon_default_and_keeps_a_plain_one_beside_it(self):
+        # `""` cannot say whether the name was set empty or left unset, so under
+        # `-` and `=` it stands for both: bash gives `""` here, an over-report.
         values = table("X=")
-        rows = {"${X:-d}": ["d"], "${X:=d}": ["d"], "${X-d}": [""], "${X=d}": [""]}
+        rows = {"${X:-d}": ["d"], "${X:=d}": ["d"], "${X-d}": ["", "d"], "${X=d}": ["", "d"]}
         for word, expected in rows.items():
             with self.subTest(word=word):
                 self.assertEqual(expected, wv.valued(word, values))
@@ -322,6 +327,15 @@ class TestAnArrayLiteral(unittest.TestCase):
                 self.assertEqual(unset, wv.valued(word, maybe))
         # A name that holds a scalar resolves through it.
         self.assertEqual(["s"], wv.valued("$arr", table("arr=(a); arr=s")))
+
+    def test_a_default_stands_where_an_array_has_no_word_zero(self):
+        # Bash: `arr=(); echo "${arr-d}"` prints `d`, under each of the four forms.
+        maybe, empty = table("false && arr=(x)"), table("arr=()")
+        for word in ("${arr:-d}", "${arr-d}", "${arr:=d}", "${arr=d}"):
+            with self.subTest(word=word):
+                self.assertEqual(["x", "d"], wv.valued(word, maybe))
+                self.assertEqual(["d"], wv.valued(word, empty))
+        self.assertEqual([], wv.valued("$arr", empty))
 
     def test_argvs_splice_an_array_and_substitute_a_value(self):
         values = table("arr=(sh tool); a=(./cuda_*.run); T=cuda_1.run")

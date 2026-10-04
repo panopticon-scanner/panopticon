@@ -20,8 +20,8 @@ and `workflow_uses` re-exports `Values`, `assigned`, `record`, `valued` and
                     replaced or emptied only where the caller says the shell
                     surely runs the statement; one it may not run adds its
                     value to the name's candidates, and a name it may leave
-                    unset gains the empty candidate, `""` or `[]`, which a
-                    `:-` default reads as null
+                    unset gains the empty candidate, `""` or `[]`, over
+                    which a default stands (beside `""` under `-` and `=`)
     resolved        in the words of the stage that USES a value
                     (`valued_argvs`), so a relative value is read from the
                     directory of its use, bash's rule, and a text bash globs
@@ -36,9 +36,10 @@ the empty words itself.
 The prices: the reader's words have lost their quotes, so `sh "$p"` after
 `p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash does
 not expand, as `"$T"`, and the quoted twin `"" sh x` of an empty `$SUDO`
-dropped from `$SUDO sh x` as `sh x`; a `-` or `=` default does not stand for
-the empty candidate, which cannot say whether the name was unset or set
-empty; a literal folded behind a declaration is re-split on blanks; a
+dropped from `$SUDO sh x` as `sh x`; the empty candidate cannot say whether
+the name was unset or set empty, so a `-` or `=` default stands beside it
+and the set-but-null twin (`X=; sh "${X-d}"`, where bash gives `""`)
+over-reports; a literal folded behind a declaration is re-split on blanks; a
 subshell's empty prefix assignment `( T= sh tool )` reads as the literal
 `T=(sh tool)`; a `for` header whose words the table cannot hold keeps the
 name's old candidates; and `a[1]=x`, `mapfile` and `readarray`, the
@@ -251,9 +252,13 @@ def valued(word, table):
     Each `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}` or `${T=d}`, whole or
     embedded, stands for a held name's candidates, left to right; the texts
     are the first `_CANDIDATES` of their product, less any over `_LONGEST`.
-    A name that holds an array and no scalar stands for `${a[0]}`'s texts. A
-    default stands where its name is not held, and for a held empty value
-    under `:-` or `:=`, as bash reads one. An unheld name, and every other
+    A name that holds an array and no scalar stands for word 0 of each
+    candidate, and is unset where one has none. A default stands where its
+    name is unset, and for a held empty value under `:-` or `:=`, as bash
+    reads one; under `-` or `=` a held empty value stands for itself AND the
+    default, as it may be the mark of a name left unset: the set-but-null
+    twin (`X=; sh "${X-d}"`, where bash gives `""`) over-reports, a price.
+    An unheld name with no default, and every other
     `${T...}` form (`${T:+d}`, `${T#x}`, `${T%x}`, `${T//a/b}`, `${T:0:3}`,
     `${#T}`, `${!T}`), stays as written; a lifted `$(...)` holds no `$` to
     match. A whole `${a[N]}` is word N of each candidate that has one, and
@@ -279,16 +284,26 @@ def valued(word, table):
 
 
 def _held(match, table):
-    """What one `_VALUE` reference stands for, or [] where it stays as written."""
+    """What one `_VALUE` reference stands for, or [] where it stays as written:
+    each candidate, `None` where the name is unset -- not held, or an array
+    candidate without word 0 -- and the default where it stands."""
     name, operator, default = match[1] or match[2], match[3], match[4]
-    held = table.scalars.get(name)
-    if held is None and name in table.arrays:
-        held = _element(name, "0", table) or None
-    if held is None:
-        return [default] if operator else []
-    if operator in (":-", ":="):
-        return _deduped([text or default for text in held])
-    return held
+    held: list[str | None]
+    if name in table.scalars:
+        held = list(table.scalars[name])
+    elif name in table.arrays:
+        held = [words[0] if words else None for words in table.arrays[name]]
+    else:
+        held = [None]
+    texts: list[str] = []
+    for text in held:
+        if text is None:
+            texts += [default] if operator else []
+        elif text or not operator:
+            texts.append(text)
+        else:
+            texts += [default] if ":" in operator else ["", default]
+    return _deduped(texts)
 
 
 def _element(name, key, table):
