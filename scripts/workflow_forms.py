@@ -52,6 +52,7 @@ Stdlib only, like everything under it.
 """
 import os
 import re
+from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
@@ -480,6 +481,9 @@ def within(statement, where="", directory=".", scope=0):
 # `eval "$(curl URL)"`; the sentence names the variable.
 _CARRIES = ("carries %s in `$%s` and hands it to `%s`%s, so there is no file to check -- "
             "download it to a file, `sha256sum -c` that file, then run it")
+_READS_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s in this guard's conservative "
+                  "reading, so there is no file to check -- download it to a file, `sha256sum "
+                  "-c` that file, then run it")
 _NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 _WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 _DECLARES = ("export", "local", "declare", "typeset", "readonly")
@@ -498,7 +502,7 @@ def _prints(stage):
 
 
 def _assigned(stage, held):
-    """{name: the download it now holds, or None} for what this stage assigns,
+    """{name: (download, certain), or None} for what this stage assigns,
     in whatever shell runs it (`carried` weighs that). A bare assignment or a
     declaration's (`export x=...`) holds one when its value is the stage's one
     substitution and that is one fetch to standard output (`stdout_fetch`), or
@@ -515,50 +519,28 @@ def _assigned(stage, held):
             value = shell_reader.derived(word[match.end():], word)
             whole = (len(stage.substitutions) == 1 and shell_reader.has_substitution(value)
                      and shell_reader.readable(value) == "$(...)")
-            now[match[1]] = (stdout_fetch(stage.substitutions[0]) if whole
-                             else held.get(_held(value)))
+            fetch = stdout_fetch(stage.substitutions[0]) if whole else None
+            now[match[1]] = (fetch, True) if fetch else held.get(_held(value))
     return now
 
 
 def carried(stmts, executors):
-    """[(statement index, why)] for each download a step keeps in a variable and hands whole to a
-    shell as its script (#2341): the word `$x` or `${x}` as what `eval` or a shell's `-c` runs
-    (`scripts`) or as a word a value in its options or a `$` command word's `-c` may make the
-    program (`candidates`, #2479) -- except at a command the reader reports unresolved
-    (`unresolved_wrapper`) -- or printed by `echo` or `printf` down a pipe to one of `executors`
-    (`stream_consumer`) or from a substitution one of them is handed (`bash <(echo "$x")`) -- in the
-    statement or in a script its substitutions run (`within`), where `x` was assigned it before that
-    statement and not since (`_assigned`). A step is a shell of its own, so the guard asks of each
-    step's statements apart, and of each script a substitution runs for what it assigns itself.
-
-    A download is held wherever a statement of its own assigns it. A reassignment empties the name
-    only where the step's own shell always runs it, in the step's own scope (review I-1, I-2): not
-    in a script `flattened` inlined, which `sh -c 'x=1'` runs in a child shell; not in a branch
-    (`regions`) or behind `&&` or `||`, which bash may skip; not in a pipeline or a background job
-    (`&`), which run in subshells; and not in a `( )` or `{ }` group or a function body, read as
-    `_errexit_states` reads them: a subshell, or a body that runs only when called, with its `local`
-    in a scope of its own. Where bash does empty it before the use, the name stays held, which is
-    fail-closed: `eval 'x=:'`, `{ x=1; }`, a called `f() { x=1; }`, a use inside the same `( )` as
-    its reassignment (`(x=1; eval "$x")`), bash's arithmetic `((x=1))` (dash runs it as two
-    subshells), and any reassignment after an argument `{` (`echo {`). A line holding only `(` or
-    `)` is a stage the reader keeps (#2420), so a subshell opened or closed on its own line reads
-    as the `( )` it is.
-
-    More readings fail closed. The reader drops quotes, so `eval '$x'` and `sh -c '$x'` read as
-    `"$x"`: bash runs the first as one command made of the payload's words -- a true positive -- and
-    the second runs nothing unless `x` is exported. These are reported where bash need not run the
-    download: `sh -c 'x=$(curl ...)'` then `eval "$x"`, as `flattened` inlines the child's
-    assignment; `local x`, `read -r x` or `for x in ...` in between, which leave the name held; a
-    printing substitution anywhere in an executor's argv (`bash other.sh "$(echo "$x")"`, read as
-    `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"`, `sh -c '...'` or
-    `sh file`, read as `curl ... | sh x.sh` is.
-
-    Not followed: output written to a file (`echo "$x" > f; sh f`, `| tee f; sh f`);
-    multi-command or multi-substitution assignments; `+=`; `cat` here-doc/string printers; and
-    `$x` inside a longer word (`eval "echo $x"`)."""
-    held: dict[str, Fetch | None] = {}
-    out, branches, depth = [], regions(stmts), 0
+    """Reasons for a download held in a variable and handed whole to a shell (#2341).
+    Follows `$x`/`${x}` through `eval`, `-c`, candidate programs, supported printers, piped
+    compounds, and executor substitutions; each substitution has its own assignment state.
+    Uncertain scope, status, or quote loss keeps a name held and identifies the guard's reading
+    (#2424). Saved files, compound assignments, `+=`, and embedded `$x` are not followed."""
+    held: dict[str, tuple[Fetch, bool] | None] = {}
+    out, branches, depth, subshells = [], regions(stmts), 0, 0
+    child_values: dict[str, tuple[int | None, bool, bool]] = {}  # boundary, introduced, uncertain
     for index, statement in enumerate(stmts):
+        escaped = {key for key, (boundary, _introduced, _uncertain) in child_values.items()
+                   if boundary is None and not isinstance(statement, Inlined)
+                   or boundary is not None and subshells < boundary}
+        held.update({key: (cast(tuple[Fetch, bool], held[key])[0], False)
+                     for key in escaped if child_values[key][1] and held.get(key)})
+        child_values = {key: value for key, value in child_values.items()
+                        if key not in escaped}
         for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
             printed, piped = _prints(stage), stage.stdout_to_pipe
@@ -572,11 +554,14 @@ def carried(stmts, executors):
                 words += [w for text in stage.substitutions for inside in statements(text)
                           for w in _prints(inside.stages[-1])]
             for word in words:
-                fetch = held.get(_held(word))
-                if fetch:
+                kept = held.get(_held(word))
+                if kept:
+                    fetch, certain = kept
                     consumer = to or [w for w in argv if getattr(w, "spelled", w) is not word
                                       and not shell_reader.is_marker(w)]
-                    out.append((index, _CARRIES % (
+                    scope = child_values.get(_held(word))
+                    certain = certain and not (scope and scope[2]) and "-c" not in consumer
+                    out.append((index, (_CARRIES if certain else _READS_CARRIES) % (
                         shell_reader.readable(fetch.url), _held(word),
                         " ".join(shell_reader.readable(w) for w in consumer), where)))
                     break
@@ -586,10 +571,25 @@ def carried(stmts, executors):
             sure = not (isinstance(statement, Inlined) or branches.get(index) or depth
                         or stage.group_open or "{" in stage.argv or statement.separator == "&"
                         or index and stmts[index - 1].separator in ("&&", "||"))
-            held.update(now if sure else {k: v for k, v in now.items() if v})
+            inlined_child = (isinstance(statement, Inlined)
+                             and "script `eval` runs" not in str(statement.credit))
+            child = bool(statement.separator == "&" or stage.group_open or subshells
+                         or inlined_child)
+            held.update(now if sure else {
+                key: (cast(tuple[Fetch, bool], value or held[key])[0],
+                      bool(value and (child or isinstance(statement, Inlined))))
+                for key, value in now.items()
+                if value or not child and held.get(key)})
+            if child:
+                boundary = None if inlined_child else max(1, subshells + stage.group_open)
+                for key, value in now.items():
+                    prior = child_values.get(key)
+                    child_values[key] = (boundary, bool(value) or bool(prior and prior[1]),
+                                         not bool(value))
         for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
+            subshells = max(0, subshells + stage.group_open - stage.group_close)
     return out
 
 
