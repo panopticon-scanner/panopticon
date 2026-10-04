@@ -1967,6 +1967,7 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # backslash is read as written (fix round 2, re-review N-1).
         self.assertEqual("$(...)", wp.rendered(self.word('eval "`echo \\"sh tool\\"`"')))
         self.assertEqual("$(...)", wp.rendered(self.word("eval \"`printf 'sh\\\\ttool'`\"")))
+        self.assertEqual("$(...)", wp.rendered(self.word("eval \"`cat <<'E'\nsh \\$tool\nE\n`\"")))
         self.assertEqual("sh tool", wp.rendered(self.word("eval \"`printf 'sh tool\\n'`\"")))
         refused = "eval \"echo hi; $(cat <<'EOF'\nsh tool\ncat <<${X}\nx\n${X}\nEOF\n)\""
         self.assertEqual("echo hi; $(...)", wp.rendered(self.word(refused)))

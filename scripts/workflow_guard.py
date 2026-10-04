@@ -73,7 +73,7 @@ live, so a change that catches one fails there and edits this list.
   while outer text is read (#2482), as a `$(…)` among a `-c`/`eval` string's text is (#2486) unless
   one printer prints it, read as that text (#2487, below): any other's output is unread, no check in
   the string counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s stream, and
-  one the reader refuses so read is unread (`cat <<$(…)`). One alone or a `Rewritten`
+  one the reader refuses so read is unread (`cat <<$(…)`). One alone, no printer, or a `Rewritten`
   word stays unread beside a download. A `$` command's `${X:-sh}` default is read, as is a program
   after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution are
   reported beside a download (#2483, #2486), though they may run none of it
