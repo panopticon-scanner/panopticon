@@ -26,17 +26,18 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     value to the name's candidates, and a name it may leave
                     unset gains the empty candidate, `""` or `[]`, over
                     which a default stands (beside `""` under `-` and `=`)
-    unseen          a value the table cannot see -- `read`, `printf -v`,
-                    `getopts`, `mapfile` and `readarray`, bare or behind
-                    `builtin`, an element's assignment or unset (`a[1]=x`,
-                    `declare a[1]=x`, `unset 'a[1]'`), a `for` header's
-                    `"$@"` or `$(...)`, a subscripted literal, a declaration
-                    with `-l`, `-u`, `-i`, `-A` or `-n`, more than
-                    `_CANDIDATES` candidates -- is the name's own reference
-                    `$NAME`, the STAND-IN: the reading the guard makes
-                    without the table, never a claim, beside which a default
-                    stands too; after `eval`, `source` or `.`, or a name
-                    taken from a value (`read "$n"`, `export "$k=$v"`,
+    unseen          a value the table cannot see -- `read` (`REPLY` without
+                    a name), `printf -v`, `getopts` (its `OPTARG` and
+                    `OPTIND` too), `mapfile`, `readarray` and `select`, bare
+                    or behind `builtin`, an element's assignment or unset
+                    (`a[1]=x`, `declare a[1]=x`, `unset 'a[1]'`), a `for`
+                    header's `"$@"` or `$(...)`, a subscripted literal, a
+                    declaration with `-l`, `-u`, `-i`, `-A` or `-n`, more
+                    than `_CANDIDATES` candidates -- is the name's own
+                    reference `$NAME`, the STAND-IN: the reading the guard
+                    makes without the table, never a claim, beside which a
+                    default stands too; after `eval`, `source` or `.`, or a
+                    name taken from a value (`read "$n"`, `export "$k=$v"`,
                     `export $(cat .env)`), every held name gains its
                     stand-in
     resolved        in the words of the stage that USES a value
@@ -44,13 +45,15 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     directory of its use, bash's rule, and a text bash globs
                     is a live pattern for `covers`
 
-What `valued_argvs` leaves to its caller: re-reading each argv it makes with
-`shell_reader.command()` before asking `use()` what it runs, and splitting on
-its blanks a word that is ONE whole reference (`$T`, `${T}`) whose value
-holds blanks, as bash splits an unquoted expansion -- the quoted twin
-over-reports, as it does for a pattern; a word with other text around a
-reference keeps its own blanks (`sh -c 'sh "$T"'`). It drops the empty words
-itself.
+What `valued_argvs` leaves to its caller: weighing the stage's words AS
+WRITTEN too, and first -- the guard names a download by the words its fetch
+wrote (`-o "$TMP"`), which only the use as written still spells; re-reading
+each argv it makes with `shell_reader.command()` before asking `use()` what
+it runs; and splitting on its blanks a word that is ONE whole reference
+(`$T`, `${T}`) whose value holds blanks, as bash splits an unquoted
+expansion -- the quoted twin over-reports, as it does for a pattern; a word
+with other text around a reference keeps its own blanks (`sh -c 'sh "$T"'`).
+It drops the empty words itself.
 
 The prices. Quoting: the reader's words have lost their quotes, so `sh "$p"`
 after `p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash
@@ -75,11 +78,16 @@ where bash matched it; a header that may not run keeps the old candidates
 beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
 holds its stand-in alone, a word resolves to the first `_CANDIDATES` of its
 product, and a text over `_LONGEST` is dropped, both of which can lose a
-candidate. Not read: the assignment `${T:=d}` makes, an attribute an
-earlier declaration set rewriting a later assignment, a call's own
-assignments, and arithmetic -- `let T=5` and `((T++))` are not read, and
-`((T=x+1))` is read as its text beside the old value -- whose values are
-numbers, so a download hides there only under a numeric filename.
+candidate; a brace word the table cannot expand -- past 64 words, or with a
+reference in it (`{a,b}$X`, `{a,$X}`) -- gives its name the stand-in, a
+limit, not a price. Not read: the assignment `${T:=d}` makes, an attribute
+an earlier declaration set rewriting a later assignment, a call's own
+assignments, a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the
+numbers of a redirection's `{fd}`, `wait -p` and `coproc`), held only where
+the step assigned it too, and arithmetic -- `let T=5` and `((T++))` are not
+read, and `((T=x+1))` is read as its text beside the old value -- whose
+values are numbers, so a download hides there only under a numeric
+filename.
 
 Stdlib only, like everything under it.
 """
@@ -222,16 +230,17 @@ def _assignments(stage):
         element = _SUBSCRIPTED.match(str(word))
         if match and (folded or room and not match[3]):
             literals += 1
-            parts = [shell_reader.derived(text, word) for part in match[3].split()
-                     for text in _braced(part)] if folded else []
+            braced = [_braced(part) for part in match[3].split()] if folded else []
+            parts = [shell_reader.derived(text, word) for texts in braced for text in texts or []]
             arrays[match[1]] = (bool(match[2]), parts)
             unfolded, opened = (None, "") if folded else (parts, match[1])
-            if folded and any(_SUBSCRIPT.match(part) for part in match[3].split()):
+            if None in braced or folded and any(map(_SUBSCRIPT.match, match[3].split())):
                 unseen.add(match[1])
         elif unfolded is not None:
-            if _SUBSCRIPT.match(str(word)):
+            texts = _braced(str(word))
+            if texts is None or _SUBSCRIPT.match(str(word)):
                 unseen.add(opened)
-            unfolded.extend(shell_reader.derived(text, word) for text in _braced(str(word)))
+            unfolded.extend(shell_reader.derived(text, word) for text in texts or [])
             if match and match[3]:
                 maybe[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
             elif element:
@@ -249,9 +258,13 @@ def _assignments(stage):
 
 
 def _braced(text):
-    """The words bash makes of `text`'s brace groups (`{cuda_1,x}.run`), at most
-    64, or `text` alone where it has none or more than that."""
-    return _brace_patterns(text) or [text]
+    """The words bash makes of `text`'s brace groups (`{cuda_1,x}.run`), or
+    `text` alone where it has none -- or None where it has one the table
+    cannot expand: past 64 words, or holding a reference (`{a,b}$X`)."""
+    words = _brace_patterns(text)
+    if words is None and re.search(r"(?<!\$)\{[^{}]*(?:,|\.\.)[^{}]*\}", text):
+        return None
+    return words or [text]
 
 
 def record(table, stage, certain):
@@ -336,7 +349,8 @@ def _looped(words, table):
     """The texts a `for` header's words give its NAME; whether one of the words
     is written out, with no `$` or `$(...)`, so bash surely runs the loop; and
     whether one is a value the table cannot see -- `$@`, `$*`, a lone
-    `$(...)`, an array the table does not hold."""
+    `$(...)`, an array the table does not hold, a brace word `_braced` cannot
+    expand, which is not written out either."""
     texts, written, unknown = [], False, False
     for word in words:
         element = _ELEMENT.match(str(word))
@@ -350,8 +364,12 @@ def _looped(words, table):
         else:
             held = valued(word, table) or [shell_reader.derived(str(word), word)]
             if getattr(word, "lead", None) is not None:     # bash expands its braces first
-                held = [shell_reader.derived(text, part) for part in held
-                        for text in _braced(str(part))]
+                braced = [_braced(str(part)) for part in held]
+                if None in braced:
+                    unknown = True
+                    continue
+                held = [shell_reader.derived(text, part)
+                        for part, parts in zip(held, braced) for text in parts]
             texts += held
             written = written or "$" not in word and not shell_reader.has_substitution(word)
     return [text for text in texts if text], written, unknown
@@ -359,13 +377,14 @@ def _looped(words, table):
 
 def _unread(table, argv, certain):
     """The commands that set a name the reader never reads the value of:
-    `printf -v NAME`, `getopts OPTSTRING NAME`, `mapfile` and `readarray` --
-    `MAPFILE` without a name -- as `read NAME` does; an element's assignment
-    the reader takes for a command (`a[${#a[@]}]=x`); `eval`, `source` and
-    `.`, and a command taking a name it sets from a value (`_dynamic`), which
-    may set any name at all; and, behind `builtin`, the `read` and `unset`
-    `_cleared` reads bare -- for the table alone, as the bindings stay
-    `_cleared`'s."""
+    `printf -v NAME`, `getopts OPTSTRING NAME` with its `OPTARG` and `OPTIND`,
+    `select NAME` with its `REPLY`, `mapfile` and `readarray`, as `read NAME`
+    does -- `REPLY` or `MAPFILE` where they name none; an element's
+    assignment the reader takes for a command (`a[${#a[@]}]=x`); `eval`,
+    `source` and `.`, and a command taking a name it sets from a value
+    (`_dynamic`), which may set any name at all; and, behind `builtin`, the
+    `read` and `unset` `_cleared` reads bare -- for the table alone, as the
+    bindings stay `_cleared`'s."""
     builtin = argv[:1] == ["builtin"]
     argv = argv[1:] if builtin else argv
     head = os.path.basename(str(argv[0])) if argv else ""
@@ -374,16 +393,17 @@ def _unread(table, argv, certain):
         for name in list(dict.fromkeys([*table.scalars, *table.arrays])):
             _update(table, name, ["$" + name], False)
     names: list[str] = []
-    if head in ("printf", "getopts"):
+    if head in ("printf", "getopts", "select", "mapfile", "readarray"):
         names = [str(word) for word in named]
-    elif head in ("mapfile", "readarray"):
-        names = [str(word) for word in named] or ["MAPFILE"]
+        names += {"getopts": ["OPTARG", "OPTIND"], "select": ["REPLY"]}.get(head, [])
     elif argv and (element := _SUBSCRIPTED.match(str(argv[0]))):
         names = [element[1]]
     elif builtin and (head == "read" or head == "unset" and "-f" not in argv):
         for word in argv[1:]:
             if not str(word).startswith("-"):
                 emptied(table, str(word), certain, head == "read")
+    if not named and head in ("read", "mapfile", "readarray"):     # bash's default name
+        names = ["REPLY" if head == "read" else "MAPFILE"]
     for name in names:
         emptied(table, name, certain, True)
 
@@ -391,15 +411,16 @@ def _unread(table, argv, certain):
 def _naming(head, argv):
     """The words of command `head` that name what it sets, or []: `read`'s
     and `mapfile`'s (`_operands`), `unset`'s but not `unset -f`'s, a
-    declaration's operands, `printf -v NAME` and `getopts OPTSTRING NAME`."""
+    declaration's operands, `printf -v NAME` (`-vNAME` too), `getopts
+    OPTSTRING NAME` and `select NAME`."""
     if head == "read":
         return _operands(argv, _READING, "a")
     if head in ("mapfile", "readarray"):
         return _operands(argv, _MAPPING)
-    if head == "printf":
-        return argv[2:3] if argv[1:2] == ["-v"] else []
-    if head == "getopts":
-        return argv[2:3]
+    if head == "printf" and argv[1:] and str(argv[1]).startswith("-v"):
+        return _operands(argv, "v", "v")[:1]
+    if head in ("getopts", "select"):
+        return argv[2:3] if head == "getopts" else argv[1:2]
     if head in _DECLARATIONS or head == "unset" and "-f" not in argv:
         return [word for word in argv[1:] if not str(word).startswith(("-", "+"))]
     return []
@@ -605,14 +626,14 @@ def _element(name, key, table):
 
 
 def valued_argvs(argv, table):
-    """The argvs `use()` must weigh for one stage's words (#2425, #2489, #2581):
-    `[argv]` where no word resolves, else the first `_CANDIDATES` of the
-    product of each word's `valued` texts (or the word itself), a whole
-    `${a[@]}` or `${a[*]}` SPLICED as each word-list's words. An empty text is
-    dropped, as bash drops an unquoted empty expansion, and an argv left empty
-    is not made. A text with `*`, `?`, `[` or an extglob group, or from a word
-    bash expands as a pattern (`{$T,x}`), is a `live_pattern`, as bash globs
-    an unquoted `$p` and a literal's words.
+    """The argvs `use()` must weigh BESIDE the stage's words as written
+    (#2425, #2489, #2581): `[argv]` where no word resolves, else the first
+    `_CANDIDATES` of the product of each word's `valued` texts (or the word
+    itself), a whole `${a[@]}` or `${a[*]}` SPLICED as each word-list's words.
+    An empty text is dropped, as bash drops an unquoted empty expansion, and
+    an argv left empty is not made. A text with `*`, `?`, `[` or an extglob
+    group, or from a word bash expands as a pattern (`{$T,x}`), is a
+    `live_pattern`, as bash globs an unquoted `$p` and a literal's words.
     """
     choices: list[list[list[str]]] = []
     resolved = False

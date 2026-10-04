@@ -206,13 +206,24 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
         # An extglob group stays its text, and is live where it is used.
         (argv,) = wv.valued_argvs(["sh", "$T"], table("for T in @(a|b).run; do :; done"))
         self.assertIsInstance(argv[1], _Reparsed)
+        # z01-z03: a brace word the table cannot expand, with a reference in it or
+        # past 64 words, is the stand-in and no written word: the loop may not run.
+        rows = {"for s in {install,setup}${SUFFIX}.sh; do :; done": {"s": ["$s", ""]},
+                "for s in {install,setup,$EXTRA}.sh; do :; done": {"s": ["$s", ""]},
+                "T=x; for T in {1..100}.run; do :; done": {"T": ["x", "$T"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars)
 
-    def test_a_function_body_and_a_pipeline_record_nothing(self):
-        # A call's own assignments are not read (a price); a pipeline's
-        # stages run in subshells, where bash keeps no assignment.
+    def test_a_call_records_nothing_and_a_pipeline_its_last_stage_unsure(self):
+        # A call's own assignments are not read (a price); a pipeline's stages
+        # run in subshells, but its last runs in the shell under `lastpipe`.
         self.assertEqual({"T": ["a"]}, table("f() { T=b; }; T=a; f").scalars)
-        self.assertEqual({}, table("T=a | cat; echo").scalars)
-        self.assertEqual({"T": ["a"]}, table("T=a; echo | { T=x; }").scalars)
+        rows = {"T=a | cat; echo": {}, "T=a; echo | { T=x; }": {"T": ["a", "x"]},
+                "T=a; cat | T=b": {"T": ["a", "b"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars)
 
     def test_a_name_past_eight_candidates_holds_its_stand_in_alone(self):
         # x20: the guard's reading without the table, rather than the last eight.
@@ -233,15 +244,23 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
             "T=a; read -r T": ({"T": ["$T"]}, {}),
             "arr=(a b); read -ra arr": ({"arr": ["$arr"]}, {}),
             "T=x; printf -v T '%s' cuda_1.run": ({"T": ["$T"]}, {}),     # x08
-            "T=x; getopts ab T": ({"T": ["$T"]}, {}),
+            "T=x; printf -vT '%s' cuda_1.run": ({"T": ["$T"]}, {}),      # q01
+            "REPLY=x; read -r < list": ({"REPLY": ["$REPLY"]}, {}),      # q02
+            "T=x; getopts ab T": ({"T": ["$T"], "OPTARG": ["$OPTARG"], "OPTIND": ["$OPTIND"]}, {}),
+            "OPTARG=x; set -- -a cuda_1.run; getopts a: o":                          # q04
+                ({"OPTARG": ["$OPTARG"], "o": ["$o"], "OPTIND": ["$OPTIND"]}, {}),
+            "T=x; select T in cuda_1.run; do break; done <<< 1":                     # z11
+                ({"T": ["$T"], "REPLY": ["$REPLY"]}, {}),
             "arr=(echo hi); mapfile -t arr < list": ({"arr": ["$arr"]}, {}),         # x22
             "arr=(echo hi); arr[0]=sh; arr[1]=tool": ({"arr": ["$arr"]}, {}),        # x23
             "arr=(a); readarray arr": ({"arr": ["$arr"]}, {}),
             "arr=(a b); declare arr[1]=x": ({"arr": ["$arr"]}, {}),
             # Behind `builtin` as bare, for the table alone.
             "T=a; builtin read -r T": ({"T": ["$T"]}, {}),
+            "REPLY=x; builtin read -r": ({"REPLY": ["$REPLY"]}, {}),
             "T=x; builtin printf -v T y": ({"T": ["$T"]}, {}),
-            "T=x; builtin getopts ab T": ({"T": ["$T"]}, {}),
+            "T=x; builtin getopts ab T":
+                ({"T": ["$T"], "OPTARG": ["$OPTARG"], "OPTIND": ["$OPTIND"]}, {}),
             "arr=([1]=tool [0]=sh)": ({"arr": ["$arr"]}, {}),            # x10
             "declare -a arr=([0]=sh)": ({"arr": ["$arr"]}, {}),
             "declare -A m=([k]=tool)": ({"m": ["$m"]}, {}),              # y13
@@ -312,10 +331,12 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
         for script in ('T=a; export "$k=$v"', "T=a; export $(cat .env | xargs)",
                        'T=a; export "${p}_HOME=/x"', 'T=a; unset "$n"', 'T=a; local "$n"',
                        'T=a; declare "$n=x"', 'T=a; readonly "$n"', 'T=a; printf -v "$n" x',
-                       'T=a; getopts ab "$n"', 'T=a; read -ra "$n"', 'T=a; builtin read "$n"',
+                       'T=a; read -ra "$n"', 'T=a; builtin read "$n"',
                        'T=a; false && read -r "$n"'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["a", "$T"]}, table(script).scalars)
+        self.assertEqual({"T": ["a", "$T"], "OPTARG": ["$OPTARG"], "OPTIND": ["$OPTIND"]},
+                         table('T=a; getopts ab "$n"').scalars)
         # A name-less `mapfile` sets `MAPFILE`; one naming `"$n"` does not.
         values = table('arr=(a); mapfile -t "$n"')
         self.assertEqual(({"arr": ["$arr"]}, {"arr": [["a"]]}), (values.scalars, values.arrays))
@@ -335,7 +356,11 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
                 "arr=(a); false && read -ra arr": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
                 "arr=(a); false && mapfile arr": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
                 "arr=(a); false && arr[0]=b": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
-                "T=a; false && builtin read -r T": ({"T": ["a", "$T"]}, {})}
+                "T=a; false && builtin read -r T": ({"T": ["a", "$T"]}, {}),
+                # z10: a pipeline's last stage runs in the shell under `lastpipe`.
+                "shopt -s lastpipe; T=x; echo cuda_1.run | read -r T": ({"T": ["x", "$T"]}, {}),
+                "arr=(a); cat list | mapfile -t arr": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
+                "T=x; echo a | printf -v T y": ({"T": ["x", "$T"]}, {})}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 values = table(script)
@@ -469,6 +494,15 @@ class TestAnArrayLiteral(unittest.TestCase):
                 values = table(script)
                 self.assertEqual({"a": [["cuda_1.run", "x.run"]]}, values.arrays)
                 self.assertEqual([["sh", "cuda_1.run"]], wv.valued_argvs(["sh", "${a[0]}"], values))
+        # z03b: one it cannot expand leaves the name unseen, as x10's, folded or not.
+        for script in ("a=({1..100}.run)", "declare -a a=({1..100}.run)", "a=({a,$X}.sh x)"):
+            with self.subTest(script=script):
+                values = table(script)
+                self.assertEqual(({"a": ["$a"]}, {}), (values.scalars, values.arrays))
+                self.assertEqual([], wv.valued("${a[0]}", values))
+                self.assertEqual([["sh", "${a[0]}"]], wv.valued_argvs(["sh", "${a[0]}"], values))
+        # `${X:-a,b}` is a reference, no brace group.
+        self.assertEqual({"a": [["${X:-a,b}"]]}, table("a=(${X:-a,b})").arrays)
 
     def test_a_literal_is_as_sure_as_its_statement(self):
         # The reader counts a literal's parentheses as a group; the table does
@@ -632,14 +666,23 @@ class TestTheTableAtAStatement(unittest.TestCase):
         self.assertEqual({"T": ["b"], "U": ["c"]}, wu.static_values(stmts, 9).scalars)
 
     def test_an_assignment_inside_a_forked_group_is_not_sure(self):
-        # x01-x04: bash keeps `cuda_1.run`, as the group runs in a child.
+        # x01-x04: bash keeps `cuda_1.run`, as the group runs in a child; z04 with
+        # a literal's lines inside, z05 and its twins an `&&` list sent off whole.
         for script in ('T=cuda_1.run; ( :; T=x; : ); sh "$T"',
                        'T=cuda_1.run\n(\n  T=x\n)\nsh "$T"',
                        'T=cuda_1.run; { T=x; } &\nwait; sh "$T"',
-                       'T=cuda_1.run; { T=x; } | cat; sh "$T"'):
+                       'T=cuda_1.run; { T=x; } | cat; sh "$T"',
+                       'T=cuda_1.run\n(\n  arr=(\n    a\n  )\n  T=x\n)\nsh "$T"',
+                       'T=cuda_1.run; { T=x; } && : &\nwait; sh "$T"',
+                       'T=cuda_1.run; T=x || : &\nwait; sh "$T"',
+                       'T=cuda_1.run; T=x &&\n: &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["cuda_1.run", "x"]}, at_use(script).scalars)
-        self.assertEqual({"T": ["x"]}, at_use('T=cuda_1.run; { T=x; }; sh "$T"').scalars)
+        for script in ('T=cuda_1.run; { T=x; }; sh "$T"', 'T=cuda_1.run; { T=x; } && :; sh "$T"',
+                       # A list is not followed past a compound command (a limit).
+                       'T=cuda_1.run; T=x && if c; then :; fi &\nwait; sh "$T"'):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["x"]}, at_use(script).scalars)
         self.assertEqual({"T": ["a", "b", "c"], "U": ["d"]},
                          table("T=a; ( T=b; T=c; ); U=d").scalars)
 
@@ -651,9 +694,18 @@ class TestTheTableAtAStatement(unittest.TestCase):
                 'T=x; n=0; while [ $n -lt 2 ]; do sh "$T" || :; T=cuda_1.run; '
                 'n=$((n+1)); done': ["x", "cuda_1.run"],
                 'for i in 1; do for j in 1; do sh "$T"; T=x; done; T=y; done; T=z':
-                    ["x", "", "y"]}
+                    ["x", "", "y"],
+                # z08, z09: and so does a use in the condition, its head's own command.
+                'T=x; until sh "$T" 2>/dev/null; do T=cuda_1.run; done': ["x", "cuda_1.run"],
+                'T=x; while ! sh "$T"; do T=cuda_1.run; done': ["x", "cuda_1.run"],
+                'T=x; while ! sh "$T"; do T=y; done; T=b': ["x", "y"],
+                'T=x; if c; then until sh "$T"; do T=y; done; fi': ["x", "y"],
+                # A later command of the condition, or one on the lines after a bare
+                # `while`, is not found (a limit).
+                'T=x; while a; b "$T"; do T=y; done': ["x"],
+                'T=x; while\n  sh "$T"\ndo\n  T=y\ndone': ["x"]}
         for script, expected in rows.items():
-            with self.subTest(script=script[:24]):
+            with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars["T"])
 
     def test_a_function_body_holds_what_the_body_assigns_alone(self):
@@ -669,6 +721,16 @@ class TestTheTableAtAStatement(unittest.TestCase):
         # The `if` around the definition is not around the call: `T=x` is sure.
         inside = 'if c; then\n  f() {\n    T=x\n    sh "$T"\n  }\nfi\nf'
         self.assertEqual({"T": ["x"]}, at_use(inside).scalars)
+        # q03: a subshell body ends where its parentheses close, and a `{ }` body
+        # where its `}` does, at the step's end too or opened on its own line.
+        rows = {'T=cuda_1.run\ng() ( T=x )\nsh "$T"': ["cuda_1.run"],
+                'T=a\ng() ( T=b; sh "$T" )\ng': ["b", ""],
+                'T=a\ng() (\n  :\n)\nT=b\nsh "$T"': ["b"],
+                'T=x; f() { T=cuda_1.run; sh "$T"; }': ["cuda_1.run"],
+                'T=x\nf()\n{\n  T=y\n  sh "$T"\n}\nf': ["y"]}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, at_use(script).scalars["T"])
 
     def test_another_scope_is_not_read(self):
         stmts = statements("T=a\nU=b\nsh x")
