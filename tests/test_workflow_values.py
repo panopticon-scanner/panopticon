@@ -954,8 +954,8 @@ class TestTheTableAtAStatement(unittest.TestCase):
 
 class TestTheCallersContract(unittest.TestCase):
     """`workflow_uses._resolved`: the argvs `use()` weighs after a stage as
-    written, on the terms `valued_argvs` leaves its caller, and the one place
-    `use()` changed with them, a shell's `-c` string on standard input."""
+    written, on the terms `valued_argvs` leaves its caller, and the one made argv
+    it drops beyond them, a shell whose `-c` string only prints its input."""
 
     def resolved(self, script, argv):
         return list(wu._resolved(argv, table(script)))
@@ -995,12 +995,19 @@ class TestTheCallersContract(unittest.TestCase):
         self.assertEqual([["sh", "x"]], self.resolved("A=T=y", ["$A", "sh", "x"]))
         self.assertEqual([], self.resolved("E=", ["$E"]))
 
+    def test_a_made_shell_whose_dash_c_string_only_prints_is_dropped(self):
+        # The `-c` printer rule is the table's: a made `sh -c 'cat'` adds no stdin row.
+        self.assertEqual([], self.resolved("CMD=sh", ["$CMD", "-c", "cat"]))
+        self.assertEqual([], self.resolved("S=tee", ["sh", "-c", "$S"]))
+        self.assertEqual([["sh", "-c", "sh"]], self.resolved("CMD=sh", ["$CMD", "-c", "sh"]))
+
     def test_a_shells_dash_c_string_is_its_program(self):
-        # The `-c` stdin rule: ONE simple command that only hands its input on as data,
-        # `cat` or `tee`, reads no program off standard input; every other string still
-        # may, fail-closed as main read them all: a wrapper `command()` keeps (`builtin .`,
-        # `busybox sh`) and a reader the guard does not list (`csh`, `sudo -s`) report, and
-        # so, the price, does a command the rule does not know (`echo sh`, `awk -f`).
+        # The `-c` printer rule the table applies to an argv it made: ONE simple command
+        # that only hands its input on as data, `cat` or `tee`, reads no program off
+        # standard input; every other string still may, fail-closed as main read them all:
+        # a wrapper `command()` keeps (`builtin .`, `busybox sh`) and a reader the guard
+        # does not list (`csh`, `sudo -s`) report, and so, the price, does a command the
+        # rule does not know (`echo sh`, `awk -f`).
         rows = {("sh", "-c", "cat"): False, ("bash", "-ec", "cat -"): False,
                 ("sh", "-c", "tee x"): False, ("sh", "-c", "T=x"): False,
                 ("sh", "-c", "sh"): True, ("sh", "-c", "exec bash -s"): True,
@@ -1158,18 +1165,23 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
         self.assertEqual([], defects(fetch % ("1.run", "1.run") + use))
 
     def test_a_dash_c_string_is_the_program_of_a_redirected_shell(self):
-        # The `-c` stdin rule. c01, c04 F- F- F- F-: main reported "running it under `sh`
-        # from standard input"; `cat` prints it. c02 F- F- F- F-: main's one sentence, the
-        # value command word's (the resolved `sh -c cat` adds none). c03, n06 FR FR FR FR:
-        # main's report, kept -- `sh` reads it, and `cat | sh` is not ONE command.
+        # The use as written keeps main's stdin reading; the `-c` printer rule is the
+        # table's, for an argv it made. c01, c04 F- F- F- F-, main's over-report and the
+        # price: the guard does not follow where a `-c` printer's stream goes, so main's
+        # blanket report stays for the literal -- the table's resolved twin adds none.
+        # c02 F- F- F- F-: main's one sentence, the value command word's.
         fetch = "curl -fsSLo i.sh %si.sh\n" % URL
-        for use in ("sh -c 'cat' < i.sh\n", "bash -c 'cat' < i.sh\n"):
+        for use, shell in (("sh -c 'cat' < i.sh\n", "sh"), ("bash -c 'cat' < i.sh\n", "bash")):
             with self.subTest(use=use):
-                self.assertEqual([], defects(fetch + use))
+                self.assertReports(fetch + use, "running it under `%s` from standard input"
+                                   % shell, "i.sh")
         found = defects(fetch + "CMD=sh\n$CMD -c 'cat' < i.sh\n")
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
-        for use in ("sh -c 'sh' < i.sh\n", "sh -c 'cat | sh' < i.sh\n"):
+        # c03, n06 (`sh` reads it; `cat | sh` is not ONE command), then k01, k07, where the
+        # printed stream is run: each FR FR FR FR, main's report, kept.
+        for use in ("sh -c 'sh' < i.sh\n", "sh -c 'cat | sh' < i.sh\n",
+                    "sh -c 'cat' < i.sh | sh\n", "sh -c 'cat > x.sh' < i.sh; sh x.sh\n"):
             with self.subTest(use=use):
                 self.assertReports(fetch + use, "running it under `sh` from standard input",
                                    "i.sh")

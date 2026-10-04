@@ -289,7 +289,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
     if any(same_file(at_directory(read, directory), dest) or (
             stage.stdin_heredoc is None and covers(at_directory(read, directory), dest)
             ) for read in stage.reads) and (
-            name in INTERPRETERS and _on_stdin(argv) or stdin_program(argv) == VALUE_PROGRAM):
+            name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
@@ -314,11 +314,11 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
 
 
 def _on_stdin(argv):
-    """Whether interpreter `argv` may run its standard input (#2425: a `-c` string's own program):
-    not where that string is ONE simple command that only hands its input on as data, a printer
-    (`workflow_printers`' `cat` or `tee`: `sh -c 'cat'`); any other may, fail-closed as main read
-    them all (`builtin . f`, `busybox sh`, `csh`, `sudo -s`), so a command the rule does not know
-    keeps main's over-report: the price (`echo sh`, `awk -f /dev/stdin`)."""
+    """Whether a shell argv the table MADE may run its standard input (#2425: a `-c` string's own
+    program), as `_resolved` asks: not where that string is ONE simple command that only hands its
+    input on, `cat` or `tee` (`CMD=sh; $CMD -c 'cat' < f` adds no stdin row); any other may, failing
+    closed (`csh`, `sudo -s`, `echo sh`). The rule is the table's: the use as written keeps main's
+    reading, as a printer's stream is not followed: `sh -c 'cat' < f` over-reports (the price)."""
     strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
     try:
         parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
@@ -331,11 +331,11 @@ def _on_stdin(argv):
 
 
 def _resolved(argv, table):
-    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`'
-    on the terms it leaves its caller -- a word that was ONE whole reference
-    (`_WHOLE`) split on its value's blanks, then `command()` re-reading the argv, one
-    left empty dropped -- and none where nothing resolves. A mark that never resolves
-    fences each word, so a made word's source is known."""
+    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`' on the
+    terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
+    value's blanks, then `command()` re-reading the argv, one left empty or a shell whose `-c`
+    string only prints (`_on_stdin`) dropped -- and none where nothing resolves. A mark that never
+    resolves fences each word, so a made word's source is known."""
     mark = object()
     fenced = [part for word in argv for part in (mark, word)]
     for words in valued_argvs(fenced, table):
@@ -350,7 +350,7 @@ def _resolved(argv, table):
                          for part in re.split("[ \t\n]+", word) if part]
             else:
                 kept.append(word)
-        if kept := command(kept):
+        if (kept := command(kept)) and _on_stdin(kept):
             yield kept
 
 
