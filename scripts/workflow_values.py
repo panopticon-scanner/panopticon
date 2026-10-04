@@ -6,45 +6,72 @@ that name in a variable it assigns itself hid the use: `T=cuda_1.run; sh
 "$T"`, `p=./cuda_*.run; sh $p`, `declare -a a=(sh tool); "${a[@]}"`, and the
 #2581 rows `./cuda_$X.run`, `${X:-*}` and `${a[0]}`. This is the table that
 reads them: `Values` holds, per name, the CANDIDATE texts a scalar may hold
-and the CANDIDATE word-lists of the array literals it may hold. Split out of
-`scripts/workflow_uses.py` at that module's size, it imports nothing from it,
-and `workflow_uses` re-exports `Values`, `assigned`, `record`, `valued` and
-`valued_argvs` beside `static_values`, the table live at one statement.
+and the CANDIDATE word-lists of the array literals it may hold -- views of
+ONE variable, as bash keeps one per name: `$a` reads every scalar candidate
+and word 0 of every word-list, and `${a[@]}` every word-list and each scalar
+candidate as one word. Split out of `scripts/workflow_uses.py` at that
+module's size, it imports nothing from it, and `workflow_uses` re-exports
+`Values`, `assigned`, `record`, `valued` and `valued_argvs` beside
+`static_values`, the table live at one statement.
 
     who assigns     a statement that only assigns, a declaration's operands
-                    (`export T=x`, `declare -a a=(sh tool)`) and a literal
-                    `for NAME in WORDS` header -- never a PREFIX assignment
-                    (`T=x sh "$T"`), which bash makes after it expands the
-                    command's words and which does not outlive the command
+                    (`export T=x`, `declare -a a=(sh tool)`), either behind
+                    `command`, `builtin` or `time`, and a literal `for NAME`
+                    header -- never a PREFIX assignment (`T=x sh "$T"`),
+                    which bash makes after it expands the command's words
+                    and which does not outlive the command
     held, emptied   a value is held wherever a statement assigns it, and
                     replaced or emptied only where the caller says the shell
                     surely runs the statement; one it may not run adds its
                     value to the name's candidates, and a name it may leave
                     unset gains the empty candidate, `""` or `[]`, over
                     which a default stands (beside `""` under `-` and `=`)
+    unseen          a value the table cannot see -- `read`, `printf -v`,
+                    `getopts`, a `for` header's `"$@"` or `$(...)`, a
+                    subscripted literal, a declaration with `-l`, `-u`,
+                    `-i`, `-A` or `-n`, more than `_CANDIDATES` candidates --
+                    is the name's own reference `$NAME`, the STAND-IN: the
+                    reading the guard makes without the table, never a
+                    claim, beside which a default stands too; after `eval`,
+                    `source` or `.`, every held name gains its stand-in
     resolved        in the words of the stage that USES a value
                     (`valued_argvs`), so a relative value is read from the
                     directory of its use, bash's rule, and a text bash globs
                     is a live pattern for `covers`
 
 What `valued_argvs` leaves to its caller: re-reading each argv it makes with
-`shell_reader.command()` before asking `use()` what it runs, and splitting a
-resolved scalar text that holds blanks on them, as bash splits an unquoted
-expansion -- the quoted twin over-reports, as it does for a pattern. It drops
-the empty words itself.
+`shell_reader.command()` before asking `use()` what it runs, and splitting on
+its blanks a word that is ONE whole reference (`$T`, `${T}`) whose value
+holds blanks, as bash splits an unquoted expansion -- the quoted twin
+over-reports, as it does for a pattern; a word with other text around a
+reference keeps its own blanks (`sh -c 'sh "$T"'`). It drops the empty words
+itself.
 
-The prices: the reader's words have lost their quotes, so `sh "$p"` after
-`p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash does
-not expand, as `"$T"`, and the quoted twin `"" sh x` of an empty `$SUDO`
-dropped from `$SUDO sh x` as `sh x`; the empty candidate cannot say whether
-the name was unset or set empty, so a `-` or `=` default stands beside it
-and the set-but-null twin (`X=; sh "${X-d}"`, where bash gives `""`)
-over-reports; a literal folded behind a declaration is re-split on blanks; a
-subshell's empty prefix assignment `( T= sh tool )` reads as the literal
-`T=(sh tool)`; a `for` header whose words the table cannot hold keeps the
-name's old candidates; and `a[1]=x`, `mapfile` and `readarray`, the
-assignment `${T:=d}` makes, and the attributes of `local -n` and `declare
--i` are not read. `$a` is read as `${a[0]}`, bash's rule.
+The prices. Quoting: the reader's words have lost their quotes, so `sh "$p"`
+after `p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash
+does not expand, as `"$T"`, the quoted twin `"" sh x` of an empty `$SUDO`
+dropped from `$SUDO sh x` as `sh x`, a literal's quoted word
+(`a=('./cuda_*.run')`) as live, a quoted brace word in a literal as expanded,
+and a quoted `"${a[*]}"`, one word to bash, as spliced; a literal `@(x)`
+value is live too. Null: the empty candidate cannot say whether the name was
+unset or set empty, so a `-` or `=` default stands beside it and the
+set-but-null twin (`X=; sh "${X-d}"`, where bash gives `""`) over-reports.
+Literals: one folded behind a declaration is re-split on blanks, which
+shifts the words after a quoted blank too (`declare -a a=("my file" x)`
+reads `${a[1]}` as `file`; a reader-lane follow-up would keep a literal's
+words on its token); a subshell's empty prefix assignment `( T= sh tool )`
+and its quoted value `( T='(x y)' )` read as the literal `T=(...)`, and both
+REPLACE the outer value; and a `NAME=text` word inside an open unfolded
+literal is read as a scalar the statement may assign as well, which
+over-reports where it was an element. Walks: after a loop that ran to its
+end bash holds its last word and the table every word; a literal's glob is
+matched at the use, not where bash matched it; a header that may not run
+keeps the old candidates beside its stand-in. Caps: a name with more than
+`_CANDIDATES` candidates holds its stand-in alone, a word resolves to the
+first `_CANDIDATES` of its product, and a text over `_LONGEST` is dropped,
+both of which can lose a candidate. Not read: `a[1]=x`, `mapfile` and
+`readarray`, the assignment `${T:=d}` makes, an attribute an earlier
+declaration set rewriting a later assignment, and a call's own assignments.
 
 Stdlib only, like everything under it.
 """
@@ -55,27 +82,38 @@ import re
 
 import shell_reader
 from shell_reader import _DECLARATIONS, command
-from workflow_operands import live_pattern
+from workflow_operands import _brace_patterns, live_pattern
 
 
 # `_LITERAL` is an assignment word (`NAME=text`, `NAME+=text`), `_ARRAY` one
 # holding a literal the reader folded in (`NAME=(words)`), `_OPENER` an empty
-# one, which an UNFOLDED literal's words follow; `_VALUE` a reference -- `$T`,
-# `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}`, `${T=d}`; `_ELEMENT` a whole `${a[0]}`,
-# `${a[@]}` or `${a[*]}`; `_SPLAT` a whole `$@` or `$*`, any number of words;
-# `_GLOB` what bash globs a value by.
+# one, which an UNFOLDED literal's words follow, `_SUBSCRIPT` a literal's
+# `[key]=word`; `_VALUE` a reference -- `$T`, `${T}`, `${T:-d}`, `${T-d}`,
+# `${T:=d}`, `${T=d}`; `_ELEMENT` a whole `${a[0]}`, `${a[@]}` or `${a[*]}`;
+# `_SPLAT` a whole `$@` or `$*`, any number of words; `_REFERENCES` any
+# reference at all, `_TAIL` an unbraced one ending a text, `_NAME` a name;
+# `_GLOB` what bash globs a value by, an extglob group too.
 _LITERAL = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.S)
 _ARRAY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=\((.*)\)$", re.S)
 _OPENER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=$")
+_SUBSCRIPT = re.compile(r"^\[[^]]*\]\+?=")
 _VALUE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)"
                     r"|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^{}]*))?\})")
 _ELEMENT = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+|[@*])\]\}$")
 _SPLAT = re.compile(r"^\$(?:[@*]|\{[@*]\})$")
-_GLOB = re.compile(r"[*?\[]")
-# A name holds the LAST `_CANDIDATES` candidates assigned, a word resolves to
-# the first as many, and no text built is longer than `_LONGEST`: a value
-# doubling itself (`T=$T$T`, line after line) in a TARGET repo's `run:` block
-# would grow without bound.
+_REFERENCES = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]|\{[^{}]*\})")
+_TAIL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)$")
+_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_GLOB = re.compile(r"[*?\[]|[@+!]\(")
+# The attributes that rewrite the value a declaration assigns: case, integer,
+# associative keys, and -- not behind `export`, where it un-exports -- a name
+# reference.
+_REWRITING = frozenset("luiA")
+# A name holds at most `_CANDIDATES` candidates, and past them its stand-in
+# alone, the guard's reading without the table; a word resolves to the first
+# `_CANDIDATES` of its product; and no text built is longer than `_LONGEST`: a
+# value doubling itself (`T=$T$T`, line after line) in a TARGET repo's `run:`
+# block would grow without bound. Each bound can lose a candidate: a price.
 _CANDIDATES = 8
 _LONGEST = 4096
 
@@ -107,19 +145,25 @@ def assigned(stage):
     (append, text)}, {name: (append, words)})`, `append` for a `+=`.
 
     A statement that only assigns assigns, and so do a declaration's operands
-    (`export T=x`, `declare -a a=(sh tool)`); not a bare `export T`, nor a
-    PREFIX assignment (`T=x sh "$T"`: bash expands the command's words first,
-    and the value does not outlive the command), nor one behind a wrapper
-    other than `command` (`env T=x`). A text is `derived`: a lifted `$(...)`
-    stays its marker. A literal is read only where the stage opened a group,
-    as the reader counts its parentheses -- folded into its word behind a
-    declaration, else handed UNFOLDED (`["a=", "sh", "tool"]`, #2348): an
-    empty `NAME=` and the words up to the next one while groups remain. Two
-    prices: a folded literal is re-split on blanks, and a subshell's empty
-    prefix assignment `( T= sh tool )` reads as `T=(sh tool)`. A `for`
-    header is `record`'s.
+    (`export T=x`, `declare -a a=(sh tool)`), behind `command`, `builtin` or
+    `time` as without; not a bare `export T`, nor a PREFIX assignment (`T=x sh
+    "$T"`: bash expands the command's words first, and the value does not
+    outlive the command), nor one behind any other wrapper (`env T=x`). A text
+    is `derived`: a lifted `$(...)` stays its marker. A literal is read only
+    where the stage opened a group, as the reader counts its parentheses --
+    folded into its word behind a declaration, else handed UNFOLDED (`["a=",
+    "sh", "tool"]`, #2348): an empty `NAME=` and the words up to the next one
+    while groups remain -- and its brace words are expanded, as bash expands
+    them before it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
+    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), a
+    declaration with `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` --
+    and a scalar the statement only may assign are `record`'s. The prices: a
+    folded literal is re-split on blanks; a quoted brace word is expanded; a
+    subshell's empty prefix assignment `( T= sh tool )` and its quoted value
+    `( T='(x y)' )` read as literals; and a `NAME=text` element of an open
+    unfolded literal is read as a scalar too. A `for` header is `record`'s.
     """
-    scalars, arrays, _count = _assignments(stage)
+    scalars, arrays = _assignments(stage)[:2]
     return scalars, arrays
 
 
@@ -130,35 +174,65 @@ def _literals(stage):
 
 
 def _assignments(stage):
-    """`assigned`'s reading, and the number of array literals it read."""
+    """`assigned`'s reading, the number of array literals it read, the scalars
+    the statement only may assign, and the names it sets to a value the table
+    cannot see."""
     scalars: dict[str, tuple[bool, str]] = {}
     arrays: dict[str, tuple[bool, list[str]]] = {}
+    maybe: dict[str, tuple[bool, str]] = {}
+    unseen: set[str] = set()
+    if any(word not in ("command", "time") for word in shell_reader.wrapper_words(stage.argv)):
+        return scalars, arrays, 0, maybe, unseen
     argv = command(stage.argv)
-    if any(word != "command" for word in shell_reader.wrapper_words(stage.argv)):
-        return scalars, arrays, 0
-    if argv and os.path.basename(argv[0]) in _DECLARATIONS:
+    if argv[:1] == ["builtin"] and argv[1:2] and os.path.basename(argv[1]) in _DECLARATIONS:
+        argv = argv[1:]
+    builtin = os.path.basename(argv[0]) if argv else ""
+    rewriting = False
+    if builtin in _DECLARATIONS:
         words = list(argv[1:])
+        letters = {letter for word in words if str(word).startswith("-")
+                   for letter in str(word)[1:]}
+        rewriting = bool(letters & _REWRITING) or "n" in letters and builtin != "export"
     else:
-        lead = stage.argv[:len(stage.argv) - len(argv)]
-        if argv and not (stage.group_open and any(_OPENER.match(str(word)) for word in lead)):
-            return scalars, arrays, 0       # a prefix assignment, or none at all
+        before = stage.argv[:len(stage.argv) - len(argv)]
+        if argv and not (stage.group_open and any(_OPENER.match(str(word)) for word in before)):
+            return scalars, arrays, 0, maybe, unseen      # a prefix assignment, or none at all
         words = list(stage.argv)
-    literals, unfolded = 0, None
+    literals, unfolded, opened = 0, None, ""
     for word in words:
         room = literals < stage.group_open
         folded = _ARRAY.match(str(word)) if room else None
         match = folded or _LITERAL.match(str(word))
         if match and (folded or room and not match[3]):
             literals += 1
-            parts = ([shell_reader.derived(part, word) for part in match[3].split()]
-                     if folded else [])
+            parts = [shell_reader.derived(text, word) for part in match[3].split()
+                     for text in _braced(part)] if folded else []
             arrays[match[1]] = (bool(match[2]), parts)
-            unfolded = None if folded else parts
+            unfolded, opened = (None, "") if folded else (parts, match[1])
+            if folded and any(_SUBSCRIPT.match(part) for part in match[3].split()):
+                unseen.add(match[1])
         elif unfolded is not None:
-            unfolded.append(word)
+            if _SUBSCRIPT.match(str(word)):
+                unseen.add(opened)
+            unfolded.extend(shell_reader.derived(text, word) for text in _braced(str(word)))
+            if match and match[3]:
+                maybe[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
         elif match:
             scalars[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
-    return scalars, arrays, literals
+        elif rewriting and _NAME.match(str(word)):
+            unseen.add(str(word))
+    if rewriting:
+        unseen.update(scalars, arrays)
+    for name in unseen:
+        scalars.pop(name, None)
+        arrays.pop(name, None)
+    return scalars, arrays, literals, maybe, unseen
+
+
+def _braced(text):
+    """The words bash makes of `text`'s brace groups (`{cuda_1,x}.run`), at most
+    64, or `text` alone where it has none or more than that."""
+    return _brace_patterns(text) or [text]
 
 
 def record(table, stage, certain):
@@ -168,71 +242,158 @@ def record(table, stage, certain):
     A scalar's text resolves through the table as it is assigned (`valued`,
     bash's rule for `T=$U`), else is held as written; `T+=x` appends to each
     candidate, and on a name not held it holds `x` alone, the known suffix: a
-    price. A `certain` append that could only build a text over `_LONGEST`
-    leaves the name unread. An array literal is one candidate word-list, and
-    `+=` extends each candidate. A literal `for NAME in WORDS` header gives
-    NAME every word, each resolved as a value is: a whole `${a[@]}` the
-    words of each candidate, `$@` or a lone `$(...)` none at all. With none
-    left NAME keeps its candidates; where no word is written out, the loop
-    may not run, so the words join them, as an uncertain assignment's do.
+    price. On a name that holds an array it is element 0 (`arr=s` is
+    `arr[0]=s`). An array literal is one candidate word-list -- a certain one
+    ends the name's scalar candidates -- and `+=` extends each candidate, a
+    scalar one as a one-word list. A scalar the statement only may assign is
+    added; a name set to a value the table cannot see holds its stand-in
+    (`emptied`). A literal `for NAME [in WORDS]` header gives NAME every word,
+    each resolved as a value is: a brace word expanded, a whole `${a[@]}` the
+    words of each candidate, and `$@`, `$*`, a lone `$(...)` or an array the
+    table does not hold the stand-in; without `in` it walks `"$@"`. Where no
+    word is written out, the loop may not run, so the words join the old
+    candidates, as an uncertain assignment's do. `printf -v NAME` and
+    `getopts OPTSTRING NAME` are read as `read NAME`, and after `eval`,
+    `source` or `.` every held name gains its stand-in, kept beside its old
+    candidates even where the statement is certain.
     """
-    scalars, arrays = assigned(stage)
+    scalars, arrays, _count, maybe, unseen = _assignments(stage)
     for name, (append, text) in scalars.items():
-        new = valued(text, table) or [text]
-        if append:
-            new = [shell_reader.derived(head + tail, head, tail)
-                   for head in table.scalars.get(name) or [""] for tail in new
-                   if len(head) + len(tail) <= _LONGEST]
-        _update(table.scalars, name, new, certain, "")
+        _assign(table, name, append, text, certain)
+    for name, (append, text) in maybe.items():
+        _assign(table, name, append, text, False)
     for name, (append, words) in arrays.items():
-        lists = [held + words for held in table.arrays.get(name) or [[]]] if append else [words]
-        _update(table.arrays, name, lists, certain, [])
-    variable, words = _for_parts(stage)
+        lists = [old + words for old in _lists(table, name) or [[]]] if append else [words]
+        if certain:
+            table.scalars.pop(name, None)       # a literal makes the name an array
+        _update(table, name, lists, certain, True)
+    for name in unseen:
+        emptied(table, name, certain, True)
     argv = command(stage.argv)
-    if variable and stage.argv[:len(stage.argv) - len(argv)][-1:] == ["for"]:
-        texts, written = _looped(words, table)
-        if texts:
-            _update(table.scalars, variable, texts, certain and written, "")
+    variable, operands = _header(stage, argv)
+    if variable:
+        texts, written, unknown = _looped(operands, table)
+        if unknown:
+            texts.append("$" + variable)
+        _update(table, variable, texts, certain and written)
+    _unread(table, argv, certain)
+
+
+def _assign(table, name, append, text, certain):
+    """`NAME=text`, or `NAME+=text`, as bash assigns it: to the scalar
+    candidates, and to word 0 of each word-list where the name holds an array."""
+    new = valued(text, table) or [text]
+    if name in table.arrays:
+        scalar = name in table.scalars
+        lists = [[shell_reader.derived(_glued(head, tail), head, tail)] + words[1:]
+                 for words in table.arrays[name]
+                 for head in ((words[:1] or [""]) if append else [""])
+                 for tail in new if len(head) + len(tail) <= _LONGEST]
+        _update(table, name, lists, certain, True)
+        if not scalar or name not in table.arrays:
+            return              # word 0 written, or the name is past the table
+    if append:
+        new = [shell_reader.derived(_glued(head, tail), head, tail)
+               for head in table.scalars.get(name) or [""] for tail in new
+               if len(head) + len(tail) <= _LONGEST]
+    _update(table, name, new, certain)
+
+
+def _header(stage, argv):
+    """A `for NAME [in WORDS]` header where the stage's command would stand
+    (`echo for T in x` is none): NAME and the words it walks -- `"$@"`
+    without `in` -- or (None, [])."""
+    if stage.argv[:len(stage.argv) - len(argv)][-1:] != ["for"]:
+        return None, []
+    variable, operands = _for_parts(stage)
+    if variable is None and len(argv) == 1 and _NAME.match(str(argv[0])):
+        return str(argv[0]), ["$@"]
+    return variable, operands
 
 
 def _looped(words, table):
-    """The texts a `for` header's words give its NAME, and whether one of the
-    words is written out, with no `$` or `$(...)`: bash surely runs the loop."""
-    texts, written = [], False
+    """The texts a `for` header's words give its NAME; whether one of the words
+    is written out, with no `$` or `$(...)`, so bash surely runs the loop; and
+    whether one is a value the table cannot see -- `$@`, `$*`, a lone
+    `$(...)`, an array the table does not hold."""
+    texts, written, unknown = [], False, False
     for word in words:
         element = _ELEMENT.match(str(word))
         if element and element[2] in ("@", "*"):
-            texts += [part for parts in table.arrays.get(element[1], []) for part in parts]
-        elif not (_SPLAT.match(str(word)) or str(word) in getattr(word, "markers", {})):
-            texts += valued(word, table) or [shell_reader.derived(str(word), word)]
+            if element[1] in table.arrays:
+                texts += [part for parts in _lists(table, element[1]) for part in parts]
+            else:
+                unknown = True
+        elif _SPLAT.match(str(word)) or str(word) in getattr(word, "markers", {}):
+            unknown = True
+        else:
+            held = valued(word, table) or [shell_reader.derived(str(word), word)]
+            if getattr(word, "lead", None) is not None:     # bash expands its braces first
+                held = [shell_reader.derived(text, part) for part in held
+                        for text in _braced(str(part))]
+            texts += held
             written = written or "$" not in word and not shell_reader.has_substitution(word)
-    return [text for text in texts if text], written
+    return [text for text in texts if text], written, unknown
 
 
-def _update(candidates, name, new, certain, empty):
-    """A name's candidates after it is assigned `new`: replaced where `certain`;
-    else added to, and followed by `empty`, the "maybe unset" candidate, where
-    the name was not held. The last `_CANDIDATES` are kept; with none, the
-    name is unread."""
-    held = candidates.get(name)
+def _unread(table, argv, certain):
+    """The commands that set a name the reader never reads the value of:
+    `printf -v NAME` and `getopts OPTSTRING NAME`, as `read NAME` does, and
+    `eval`, `source` and `.`, which may set any name at all."""
+    argv = argv[1:] if argv[:1] == ["builtin"] else argv
+    head = os.path.basename(str(argv[0])) if argv else ""
+    if head in ("eval", "source", "."):
+        for name in list(dict.fromkeys([*table.scalars, *table.arrays])):
+            _update(table, name, ["$" + name], False)
+    elif head == "printf" and argv[1:2] == ["-v"] and len(argv) > 2:
+        emptied(table, str(argv[2]).split("[", 1)[0], certain, True)
+    elif head == "getopts" and len(argv) > 2:
+        emptied(table, str(argv[2]), certain, True)
+
+
+def _update(table, name, new, certain, array=False):
+    """`name`'s scalar candidates -- or, `array`, its word-lists -- after it is
+    assigned `new`: replaced where `certain`; else added to, with the "maybe
+    unset" candidate, `""` or `[]`, where the name was not held at all. Past
+    `_CANDIDATES` candidates, or with none, the name holds its stand-in."""
+    candidates = table.arrays if array else table.scalars
     if not certain:
-        new = (held or []) + new + ([] if held is not None else [empty])
-    kept = _deduped(new)[-_CANDIDATES:]
-    if kept:
+        held = name in table.scalars or name in table.arrays
+        new = candidates.get(name, []) + new + ([] if held else [[] if array else ""])
+    kept = _deduped(new)
+    if 0 < len(kept) <= _CANDIDATES:
         candidates[name] = kept
     else:
-        candidates.pop(name, None)
+        _unseen(table, name)
 
 
-def emptied(table, name, certain):
-    """A command that empties `name` -- `unset`, `read`, a bare `local`: its
-    candidates go where `certain`; else, where the table holds the name, it
-    gains the "maybe unset" candidate, `""` or `[]`."""
-    for candidates, empty in ((table.scalars, ""), (table.arrays, [])):
+def _unseen(table, name):
+    """`name` set to a value the table cannot see: it holds its own reference,
+    `$NAME`, alone -- the reading the guard makes without the table."""
+    table.scalars[name] = ["$" + name]
+    table.arrays.pop(name, None)
+
+
+def emptied(table, name, certain, unknown=False):
+    """A command that empties `name` -- `unset`, a bare `local` -- or, with
+    `unknown`, sets it to a value the table cannot see -- `read`: where
+    `certain` the name goes, or holds its stand-in alone; else, where held,
+    it gains the "maybe unset" candidate, `""` or `[]`, or the stand-in, held
+    or not."""
+    if not _NAME.match(name):
+        return
+    if unknown:
+        if certain:
+            _unseen(table, name)
+        else:
+            _update(table, name, ["$" + name], False)
+        return
+    for array, empty in ((False, ""), (True, [])):
+        candidates = table.arrays if array else table.scalars
         if certain:
             candidates.pop(name, None)
         elif name in candidates:
-            candidates[name] = _deduped(candidates[name] + [empty])[-_CANDIDATES:]
+            _update(table, name, [empty], False, array)
 
 
 def _deduped(candidates):
@@ -245,6 +406,20 @@ def _deduped(candidates):
     return list(unique.values())
 
 
+def _lists(table, name):
+    """Every word-list `name` may hold: its array candidates, and each scalar
+    candidate as a one-word list, the one variable bash keeps."""
+    return table.arrays.get(name, []) + [[text] for text in table.scalars.get(name, [])]
+
+
+def _glued(head, tail):
+    """`head` then `tail`, a `$NAME` ending `head` braced where `tail` would
+    lengthen the name: the stand-in `$T` and `x` make `${T}x`, not `$Tx`."""
+    if re.match(r"[A-Za-z0-9_]", tail):
+        head = _TAIL.sub(r"${\1}", head)
+    return head + tail
+
+
 def valued(word, table):
     """The candidate texts ONE word resolves to through `table`, or [] where
     nothing in it does (#2425, #2489; #2581's `./cuda_$X.run`, `${X:-*}`, `${a[0]}`).
@@ -252,19 +427,22 @@ def valued(word, table):
     Each `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}` or `${T=d}`, whole or
     embedded, stands for a held name's candidates, left to right; the texts
     are the first `_CANDIDATES` of their product, less any over `_LONGEST`.
-    A name that holds an array and no scalar stands for word 0 of each
-    candidate, and is unset where one has none. A default stands where its
-    name is unset, and for a held empty value under `:-` or `:=`, as bash
-    reads one; under `-` or `=` a held empty value stands for itself AND the
+    A name stands for every scalar candidate and word 0 of every word-list,
+    and is unset in a word-list without one. A default stands where its name
+    is unset, and for a held empty value under `:-` or `:=`, as bash reads
+    one; under `-` or `=` a held empty value stands for itself AND the
     default, as it may be the mark of a name left unset: the set-but-null
-    twin (`X=; sh "${X-d}"`, where bash gives `""`) over-reports, a price.
-    An unheld name with no default, and every other
-    `${T...}` form (`${T:+d}`, `${T#x}`, `${T%x}`, `${T//a/b}`, `${T:0:3}`,
-    `${#T}`, `${!T}`), stays as written; a lifted `$(...)` holds no `$` to
-    match. A whole `${a[N]}` is word N of each candidate that has one, and
-    `${a[@]}` or `${a[*]}` each candidate joined by blanks (`valued_argvs`
-    splices them). The texts carry the markers of the word and of its values,
-    and are otherwise plain: the caller decides what kind of word each is.
+    twin (`X=; sh "${X-d}"`, where bash gives `""`) over-reports, a price. A
+    value the table cannot see -- the stand-in, a text of references alone --
+    may be null, so every default stands beside it. An unheld name with no
+    default, and every other `${T...}` form (`${T:+d}`, `${T#x}`, `${T%x}`,
+    `${T//a/b}`, `${T:0:3}`, `${#T}`, `${!T}`), stays as written; a lifted
+    `$(...)` holds no `$` to match. A whole `${a[N]}` is word N of each
+    word-list that has one, and `${a[@]}` or `${a[*]}` each joined by blanks
+    (`valued_argvs` splices them), a scalar candidate as one word where the
+    name holds an array. The texts carry the markers of the word and of its
+    values, and are otherwise plain: the caller decides what kind of word
+    each is.
     """
     text = str(word)
     if element := _ELEMENT.match(text):
@@ -279,39 +457,57 @@ def valued(word, table):
         return []
     factors.append([text[start:]])
     combinations = itertools.islice(itertools.product(*factors), _CANDIDATES)
-    return [shell_reader.derived("".join(parts), word, *parts) for parts in combinations
+    return [shell_reader.derived(_joined(parts), word, *parts) for parts in combinations
             if sum(map(len, parts)) <= _LONGEST]
+
+
+def _joined(parts):
+    """`parts` side by side, each `_glued` to the text before it."""
+    text = ""
+    for part in parts:
+        text = _glued(text, part)
+    return text
 
 
 def _held(match, table):
     """What one `_VALUE` reference stands for, or [] where it stays as written:
-    each candidate, `None` where the name is unset -- not held, or an array
-    candidate without word 0 -- and the default where it stands."""
+    each candidate, `None` where the name is unset -- not held, or a word-list
+    without word 0 -- and the default where it stands."""
     name, operator, default = match[1] or match[2], match[3], match[4]
-    held: list[str | None]
-    if name in table.scalars:
-        held = list(table.scalars[name])
-    elif name in table.arrays:
-        held = [words[0] if words else None for words in table.arrays[name]]
-    else:
-        held = [None]
+    held: list[str | None] = [None]
+    if name in table.scalars or name in table.arrays:
+        held = [*table.scalars.get(name, []),
+                *(words[0] if words else None for words in table.arrays.get(name, []))]
     texts: list[str] = []
     for text in held:
         if text is None:
             texts += [default] if operator else []
-        elif text or not operator:
+        elif not operator:
             texts.append(text)
-        else:
+        elif not text:
             texts += [default] if ":" in operator else ["", default]
+        else:
+            texts += [text, default] if _unknown(text) else [text]
     return _deduped(texts)
 
 
+def _unknown(text):
+    """Whether `text` is references and lifted `$(...)`s alone -- the stand-in,
+    or a `$U` held as written: a value the table cannot see, which may be
+    null."""
+    rest = str(text)
+    for key in getattr(text, "markers", {}):
+        rest = rest.replace(key, "")
+    return not _REFERENCES.sub("", rest)
+
+
 def _element(name, key, table):
-    """A whole `${name[key]}` through `table`: word `key` of each candidate that
-    has one, or for `@` and `*` each candidate joined by blanks."""
-    candidates = table.arrays.get(name)
-    if candidates is None:
+    """A whole `${name[key]}` through `table`, where `name` holds an array: word
+    `key` of each word-list that has one, or for `@` and `*` each word-list
+    joined by blanks."""
+    if name not in table.arrays:
         return []
+    candidates = _lists(table, name)
     if key in ("@", "*"):
         return _deduped([shell_reader.derived(" ".join(words), *words) for words in candidates])
     # A subscript is arithmetic: a leading 0 is octal, so it, and a long one, stay unread.
@@ -324,11 +520,11 @@ def valued_argvs(argv, table):
     """The argvs `use()` must weigh for one stage's words (#2425, #2489, #2581):
     `[argv]` where no word resolves, else the first `_CANDIDATES` of the
     product of each word's `valued` texts (or the word itself), a whole
-    `${a[@]}` or `${a[*]}` SPLICED as each candidate's words. An empty text is
+    `${a[@]}` or `${a[*]}` SPLICED as each word-list's words. An empty text is
     dropped, as bash drops an unquoted empty expansion, and an argv left empty
-    is not made. A text with `*`, `?` or `[`, or from a word bash expands as a
-    pattern (`{$T,x}`), is a `live_pattern`, as bash globs an unquoted `$p`
-    and a literal's words.
+    is not made. A text with `*`, `?`, `[` or an extglob group, or from a word
+    bash expands as a pattern (`{$T,x}`), is a `live_pattern`, as bash globs
+    an unquoted `$p` and a literal's words.
     """
     choices: list[list[list[str]]] = []
     resolved = False
@@ -336,7 +532,7 @@ def valued_argvs(argv, table):
         element = _ELEMENT.match(str(word))
         if element and element[2] in ("@", "*") and element[1] in table.arrays:
             choices.append([[_as_word(text, word) for text in words if text]
-                            for words in table.arrays[element[1]]])
+                            for words in _lists(table, element[1])])
         elif texts := valued(word, table):
             choices.append([[_as_word(text, word)] if text else [] for text in texts])
         else:

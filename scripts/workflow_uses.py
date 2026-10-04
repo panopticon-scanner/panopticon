@@ -26,9 +26,9 @@ from workflow_function_calls import _function_scope, _function_syntax
 from workflow_programs import VALUE_PROGRAM
 # Compatibility bindings: the value table moved to `workflow_values` with its
 # names, and its callers keep reaching them here.
-from workflow_values import (Values as Values, _for_parts, _literals, assigned as assigned,
-                             emptied, record as record, valued as valued,
-                             valued_argvs as valued_argvs)
+from workflow_values import (Values as Values, assigned as assigned, record as record,
+                             valued as valued, valued_argvs as valued_argvs)
+from workflow_values import _for_parts, _literals, emptied
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -103,19 +103,20 @@ def _from_operand(word, dest, directory, bindings):
 def _cleared(stage, named, positional, certain, direct_loop, table=None):
     """Drop value facts a command overwrites; it does not create new ones.
 
-    With `table` (#2425, #2489), an `unset`, `read` or bare `local` empties the
-    name's literal values too (`emptied`): they go where `certain` -- the
-    table's, `_table_certainty`'s answer -- and gain the "maybe unset"
-    candidate where not. An assignment's are left to `record`, which replaces
-    them where certain: dropping them here first would lose the value `T+=.run`
-    appends to and the one `T=$T.run` reads.
+    With `table` (#2425, #2489), an `unset` or bare `local` empties the name's
+    literal values too (`emptied`): they go where `certain` -- the table's
+    answer, `static_values`' -- and gain the "maybe unset" candidate where
+    not; a `read` sets the name to a value the table cannot see, its
+    stand-in. An assignment's are left to `record`, which replaces them where
+    certain: dropping them here first would lose the value `T+=.run` appends
+    to and the one `T=$T.run` reads.
     """
-    def drop(name, valueless=True):
+    def drop(name, valueless=True, unknown=False):
         binding = named.get(name)
         if binding and (certain or direct_loop and binding.loop):
             named.pop(name)
         if table is not None and valueless:
-            emptied(table, name, certain)
+            emptied(table, name, certain, unknown)
 
     argv = command(stage.argv)
     raw = list(stage.argv)
@@ -133,7 +134,7 @@ def _cleared(stage, named, positional, certain, direct_loop, table=None):
     elif name == "read" or (name == "unset" and "-f" not in argv):
         for word in argv[1:]:
             if not str(word).startswith("-"):
-                drop(str(word))
+                drop(str(word), True, name == "read")
     if certain and argv[:2] == ["set", "--"]:
         positional.clear()
     elif name == "shift":
@@ -387,27 +388,82 @@ def _functions_before(stmts, starts, kinds, scopes, after):
     return functions
 
 
+def _forked(stmts):
+    """The statements inside a group the step's shell forks (#2425): a `( ... )`
+    subshell past its opening statement, and every statement of a `{ ...; }`
+    piped into, piped on or sent to the background. Their assignments end
+    with the child, as `working_directories` keeps a subshell's `cd`. An array
+    literal's parentheses are no group (`_literals`), and a `{` or `}` is one
+    only where the stage's command would stand."""
+    forked: set[int] = set()
+    opened: list[tuple[int, bool]] = []
+    depth = 0
+    for position, statement in enumerate(stmts):
+        if depth:
+            forked.add(position)
+        last = len(statement.stages) - 1
+        for number, stage in enumerate(statement.stages):
+            count = _literals(stage)
+            depth = max(0, depth + max(0, stage.group_open - count)
+                        - max(0, stage.group_close - count))
+            for word in stage.argv[:len(stage.argv) - len(command(stage.argv))]:
+                if word == "{":
+                    opened.append((position, number > 0))
+                elif word == "}" and opened:
+                    start, piped = opened.pop()
+                    if piped or number < last or statement.separator == "&":
+                        forked.update(range(start, position + 1))
+    return forked
+
+
 def static_values(stmts, index, working=None, scopes=None):
     """The step's literal values live at statement `index` (#2425, #2489):
     `_cleared`, then `record`, over each one-stage statement before it in its
-    scope, walked as `_functions_before` walks and as sure as
-    `_table_certainty` says. A pipeline runs in subshells and records
-    nothing; a function body is skipped, so a call's own assignments are not
-    read (`f() { T=b; }; T=a; f` holds `a`, a price). `working` is accepted
-    and unused: a value resolves at the directory of its USE, bash's rule
-    for a relative path.
+    scope, walked as `_functions_before` walks, as sure as `_table_certainty`
+    says and never sure inside a group the shell forks (`_forked`). A
+    pipeline runs in subshells and records nothing. Inside a loop, the body's
+    statements after `index` are walked too, unsure: an earlier pass ran
+    them. At an index inside a function body only that body is walked, under
+    its own control flow and from an empty table -- a call's values are its
+    caller's at the call, which `_function_use` carries -- and a body is
+    otherwise skipped, so a call's own assignments are not read (`f() { T=b;
+    }; T=a; f` holds `a`, a price).
+    `working` is accepted and unused: a value resolves at the directory of
+    its USE, bash's rule for a relative path.
     """
     scopes = scopes or {}
     table = Values()
+    forked = _forked(stmts)
+    ranges = [(start, close) for entries in _function_ranges(stmts)[0].values()
+              for _name, start, close in entries]
+    first, last = max([(start, close) for start, close in ranges if start <= index <= close],
+                      default=(-1, len(stmts) - 1))
+    nested = {position for start, close in ranges if start > first
+              for position in range(start, close + 1)}
     kinds = _control_kinds(stmts)
-    occupied = _function_ranges(stmts)[1]
-    for position in range(min(index, len(stmts))):
-        stages = stmts[position].stages
-        if position in occupied or scopes.get(position) != scopes.get(index) or len(stages) != 1:
-            continue
-        certain, direct_loop = _table_certainty(stmts, position, kinds)
-        _cleared(stages[0], {}, {}, certain, direct_loop, table)
-        record(table, stages[0], certain)
+    # A body's own `then`/`do`/`case`: what wraps the definition wraps no call.
+    outer = len(kinds[first]) if first >= 0 else 0
+    kinds = [kind[outer:] for kind in kinds]
+
+    def walk(positions, sure):
+        for position in positions:
+            stages = stmts[position].stages
+            if (position in nested or scopes.get(position) != scopes.get(index)
+                    or len(stages) != 1):
+                continue
+            certain, direct_loop = _table_certainty(stmts, position, kinds)
+            certain = sure and certain and position not in forked
+            _cleared(stages[0], {}, {}, certain, direct_loop, table)
+            record(table, stages[0], certain)
+
+    walk(range(max(first, 0), min(index, len(stmts))), True)
+    loop = kinds[index] if index < len(stmts) else ()
+    if "do" in loop:
+        depth = loop.index("do") + 1        # the outermost loop: it re-enters the inner ones
+        after = index + 1
+        while after <= last and kinds[after][:depth] == loop[:depth]:
+            after += 1
+        walk(range(index + 1, after), False)
     return table
 
 
