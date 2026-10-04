@@ -1619,8 +1619,9 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
     `Idle` beside its download, at the base (4ae90f4f) unless said otherwise. A `<(...)` is bash's:
     dash refuses it (rc 2), and a `shell: sh` step reads the same, fail-closed. Fix round 1 (C-1
     to C-3, the review's rows under `steps/p3rv/`): a word all substitution keeps `_DYNAMIC`'s
-    catch-all beside the read (`dynamic_program` asks `readable`), and a backquote holding a
-    backslash or a printed text the reader refuses is not rendered."""
+    catch-all beside the read (`dynamic_program` asks `readable`), and a printed text the reader
+    refuses is not rendered, nor (fix round 2, re-review N-1) a backquote whose text escapes `$`,
+    `` ` ``, `"`, `\\` or a newline."""
 
     FETCH_EXEC = "fetches https://example.test/tool -> tool and running it under `sh` with nothing"
     STREAM = "hands https://example.test/i.sh straight to `sh`"
@@ -1717,7 +1718,7 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         self.assertTrue(said(found, self.STREAM), found)
         self.assertFalse(said(found, self.PRINTED % "sh"), found)
 
-    def test_e02_e10_a_file_operand_printer_the_readings_do_not_agree_on_is_the_pipe_twins(self):
+    def test_e02_e10_a_file_operand_printer_substituted_cannot_spell_is_the_pipe_twins(self):
         # e02 `sh <(echo "$X")` (b5 b3 dash gh: F- F- F- F-, `X` unset) and e10 `sh <(echo
         # 'sh\ttool')` (F- F- F- F-: bash prints the backslash) beside the download: `_PRINTED`'s
         # `_Quiet`, as `echo "$X" | sh` gets it -- that twin's over-report; e02c, `X='sh tool'`
@@ -1800,18 +1801,34 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
                     self.assertTrue(said(found, self.UNREAD % holder, forms._Quiet), found)
         found = defects(GET + "eval 'sh tool\ncat <<${X}\nx\n${X}\n'\n")
         self.assertTrue(said(found, "cannot read this step"), found)
+        # Fix round 2 (re-review N-2), the step that isolates the fallback: rr01 `eval "curl -fsSL
+        # …/i.sh | sh; $(cat <<'EOF' … cat <<${X} … EOF)"` (FR FR FR FR) is a MIXED word, which the
+        # all-substitution catch-all cannot cover. Its rendered text is refused, so `rendered`
+        # falls back to the word as `readable` writes it, `curl … | sh; $(...)`, and the literal
+        # fetch is read again: the stream sentence (main / base / 19423415 / f02ee0c4 / 7d84db80 /
+        # now: ST / ST / C / ST / ST / ST, both keys). It fails on 19423415 and with no fallback.
+        mixed = "eval \"%s; $(cat <<'EOF'\necho hi\ncat <<${X}\nx\n${X}\nEOF\n)\"\n" % PIPE
+        for shell in (None, "sh"):
+            with self.subTest(script=mixed, shell=shell):
+                found = defects(mixed, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(said(found, self.STREAM), found)
 
-    def test_c2_a_backquote_holding_a_backslash_is_not_rendered(self):
-        # Fix round 1, C-2(a): bash strips the backslash of `\"`, `\$`, `` \` `` and `\\` in a
-        # double-quoted backquote before it runs the text, which the reader lifts raw, so such a
-        # backquote is not rendered: rz01 ``eval "`echo \"sh tool\"`"``, rz07 its `printf`, rz08
-        # its `sh -c` (b5 b3 dash gh: FR FR FR FR each; main / base / 19423415 / now: UR / UR / C /
-        # UR, both keys) and rz02 ``eval "`echo sh \\$(echo tool)`"`` (F- F- F- F-; UR on every
-        # tree, an over-report) are the catch-all alone. The control rz04 ``sh -c "`echo 'sh
-        # tool'`"`` (FR FR FR FR; UR / UR / FX / UR+FX) holds no backslash and is read.
+    def test_c2_a_backquote_whose_text_escapes_is_not_rendered(self):
+        # Fix round 1, C-2(a), narrowed in fix round 2 (re-review N-1): bash removes a backslash in
+        # a backquote's text before `$`, `` ` ``, `\` or a newline, and before `"` inside double
+        # quotes, then runs the text, which the reader lifts raw -- so such a backquote is not
+        # rendered (the marker keeps no quoting: `"` counts in both): rz01
+        # ``eval "`echo \"sh tool\"`"``, rz07 its `printf`, rz08 its `sh -c` and rr08
+        # ``eval "`printf 'sh\\ttool'`"`` (b5 b3 dash gh: FR FR FR FR each; main / base / 19423415 /
+        # f02ee0c4 / 7d84db80 / now: UR / UR / C / UR / UR / UR, both keys) and rz02
+        # ``eval "`echo sh \\$(echo tool)`"`` (F- F- F- F-; UR on every tree, an over-report) are
+        # the catch-all alone. The control rz04 ``sh -c "`echo 'sh tool'`"`` (FR FR FR FR; UR / UR /
+        # FX / UR+FX / UR+FX / UR+FX) holds no backslash and is read.
         for script, how in (('eval "`echo \\"sh tool\\"`"\n', "eval"),
                             ('eval "`printf \\"sh tool\\"`"\n', "eval"),
                             ('sh -c "`echo \\"sh tool\\"`"\n', "sh -c"),
+                            ("eval \"`printf 'sh\\\\ttool'`\"\n", "eval"),
                             ('eval "`echo sh \\\\$(echo tool)`"\n', "eval")):
             for shell in (None, "sh"):
                 with self.subTest(script=script, shell=shell):
@@ -1830,6 +1847,32 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         for shell in (None, "sh"):
             with self.subTest(shell=shell):
                 found = defects(GET + "eval $(printf 'curl -fsSL %si.sh\\n| sh')\n" % URL, shell)
+                self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+
+    def test_rr07_rr10_rr11_rr12_any_other_backslash_in_a_backquote_is_read(self):
+        # Fix round 2, re-review N-1: any other backslash stays in the text bash runs, so the
+        # backquote is read -- where f02ee0c4 dropped every backquote holding a backslash. In a
+        # MIXED string no catch-all speaks, so that was main's CLEAN while every shell runs the
+        # download: rr10 ``eval "echo hi; `printf 'sh tool\n'`"`` and rr12
+        # ``sh -c "echo hi; `echo 'sh tool' # a\b`"`` (b5 b3 dash gh: FR FR FR FR each; main / base
+        # / 19423415 / f02ee0c4 / 7d84db80 / now: C / C / FX / C / C / FX, both keys), and rr11
+        # ``eval "sh `printf 'tool\n'`"`` (FR FR FR FR; VAL / VAL / FX / VAL / VAL / FX) now say
+        # the fetch-and-run sentence alone. In a word all substitution, rr07
+        # ``eval "`printf 'sh tool\n'`"`` (FR FR FR FR; UR / UR / FX / UR / UR / UR+FX), it stands
+        # beside the catch-all. They fail on f02ee0c4's "any backslash" test.
+        for script in ("eval \"echo hi; `printf 'sh tool\\n'`\"\n",
+                       "sh -c \"echo hi; `echo 'sh tool' # a\\b`\"\n",
+                       "eval \"sh `printf 'tool\\n'`\"\n"):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(said(found, self.FETCH_EXEC), found)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "eval \"`printf 'sh tool\\n'`\"\n", shell)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(said(found, self.FETCH_EXEC), found)
                 self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
 
     def test_c3_a_read_that_meets_a_literal_gap_keeps_the_catch_all(self):
@@ -1859,8 +1902,8 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # `bash -e <(printf '<check>\nsh tool\n')`, rc09 `source <(printf …)` and rc10
         # `bash <(echo '<check>')` then `sh tool` (b5 b3 dash gh: F-+sha F-+sha F- F- each -- rc09's
         # bash 3.2 may read the FILE empty, F-, but never runs `sh tool`; main / base / 19423415 /
-        # now: C / C / C / C, rc10 FX / FX / C / C, both keys). `own` as `eval`'s alone, or a FILE
-        # with no reader, reports them.
+        # now: C / C / C / C, rc10 FX / FX / C / C, both keys). `own` as `eval`'s alone reports
+        # rc09; a FILE with no reader, all three.
         for script in ("bash -e <(printf '%s\\nsh tool\\n')\n" % self.SUM,
                        "source <(printf '%s\\nsh tool\\n')\n" % self.SUM,
                        "bash <(echo '%s')\nsh tool\n" % self.SUM):
@@ -1918,9 +1961,13 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
                 self.assertEqual("$(...)" if text is None else text.rstrip("\n"), wp.rendered(word))
         self.assertEqual("sh tool", wp.rendered(self.word('eval "sh $(echo tool)"')))
         self.assertEqual("sh $(...)", wp.rendered(self.word('eval "sh $(cat f)"')))
-        # Fix round 1: a backquote holding a backslash, and a printed text the reader refuses
-        # (here around text of the word's own), are `readable`'s, the substitution `$(...)`.
+        # Fix round 1: a printed text the reader refuses (here around text of the word's own) is
+        # `readable`'s, the substitution `$(...)`; so is a backquote whose text escapes `"` or
+        # `\` (or `$`, `` ` ``, a newline: bash removes that backslash), while any other
+        # backslash is read as written (fix round 2, re-review N-1).
         self.assertEqual("$(...)", wp.rendered(self.word('eval "`echo \\"sh tool\\"`"')))
+        self.assertEqual("$(...)", wp.rendered(self.word("eval \"`printf 'sh\\\\ttool'`\"")))
+        self.assertEqual("sh tool", wp.rendered(self.word("eval \"`printf 'sh tool\\n'`\"")))
         refused = "eval \"echo hi; $(cat <<'EOF'\nsh tool\ncat <<${X}\nx\n${X}\nEOF\n)\""
         self.assertEqual("echo hi; $(...)", wp.rendered(self.word(refused)))
         self.assertEqual("$(...)", wp.rendered(self.word("sh <(echo 'sh tool')")))

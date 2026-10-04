@@ -25,12 +25,12 @@ a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as i
                  text, that text and the stage's words (I-1), or past `_DEPTH` a LOUD stand-in
                  (`_PAST_DEPTH`, fix round 1b)
     `substituted`  the text a substitution's script prints where it is ONE printer and every
-                 reading agrees on it (R-P3), or None; `rendered`, a word with each such
-                 `$(...)` replaced by that text -- no backquote holding a backslash, and none
-                 where the reader refuses the result -- beside which `dynamic_program` still
-                 reports a word all substitution (review C-1 to C-3); `file_operand`, the word a
-                 shell or `source` reads its program from as a FILE, and `operand`, the script
-                 of a `<(...)` there
+                 reading agrees on it (R-P3), or None; `rendered`, a word with each such `$(...)`
+                 replaced by that text -- no backquote whose text escapes `$`, `` ` ``, `"`, `\\` or
+                 a newline, and none where the reader refuses the result -- beside which
+                 `dynamic_program` still reports a word all substitution (review C-1 to C-3);
+                 `file_operand`, the word a shell or `source` reads its program from as a FILE, and
+                 `operand`, the script of a `<(...)` there
     `unsubstituted`  the `echo`/`printf` alone in such a script that `substituted` cannot spell,
                  as `unspelled` names one; `fed`, the heredoc a `cat` alone in it prints
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
@@ -441,13 +441,15 @@ def rendered(word):
     `substituted` spells replaced by that text, its trailing newlines dropped as a command
     substitution drops them, and every other substitution -- a `<(...)` or `>(...)` always, which
     hands a FILE, never its text -- rendered `$(...)`, as `shell_reader.readable` renders them all.
-    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. A backquote
-    holding a backslash is not replaced: bash strips the one before `$`, `` ` `` or `\\` (and
-    `"` in double quotes) and then runs the text, which the reader lifts raw (review C-2). Where
-    the reader refuses the text so written, the word is `readable`'s (C-1). The reader keeps no
-    quoting for a lifted substitution, so an unquoted one is rendered as a quoted one is, unsplit,
-    though bash splits its text into fields `eval` and `-c` join with spaces: a newline or tab in
-    it is read where bash reads a space (C-2(b), documented). No read here stands alone --
+    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. A backquote whose
+    text escapes `$`, `` ` ``, `"`, `\\` or a newline is not replaced: bash removes that backslash
+    (a newline with it) before it runs the text, which the reader lifts raw (review C-2) -- the one
+    before `"` only inside double quotes, but the marker keeps no quoting, so it counts in both. Any
+    other backslash stays, so `` `printf 'sh tool\\n'` `` is read (re-review N-1). Where the reader
+    refuses the text so written, the word is `readable`'s (C-1). The reader keeps no quoting for a
+    lifted substitution, so an unquoted one is rendered as a quoted one is, unsplit, though bash
+    splits its text into fields `eval` and `-c` join with spaces: a newline or tab in it is read
+    where bash reads a space (C-2(b), documented). No read here stands alone --
     `workflow_programs.dynamic_program` still reports a word all substitution beside it, the
     catch-all (C-1 to C-3), so the design's "no `Idle` row beside the read" is overruled."""
     text = word
@@ -455,7 +457,8 @@ def rendered(word):
         if kind == "subst":
             spelled = (substituted(value)
                        if shell_reader.yields_words(shell_reader.derived(key, word))
-                       and (isinstance(value, shell_text.Lifted) or "\\" not in value) else None)
+                       and (isinstance(value, shell_text.Lifted)
+                            or not re.search(r'\\[$`"\\\n]', value)) else None)
             text = text.replace(key, "$(...)" if spelled is None else spelled.rstrip("\n"))
     try:
         shell_reader.statements(text)

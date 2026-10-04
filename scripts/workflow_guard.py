@@ -73,10 +73,10 @@ live, so a change that catches one fails there and edits this list.
   while outer text is read (#2482), as a `$(…)` among a `-c`/`eval` string's text is (#2486) unless
   one printer prints it, read as that text (#2487, below): any other's output is unread, no check in
   the string counts, `eval "sh $(curl …)"` reports the inner `sh $(...)` beside `eval`'s stream, and
-  one the reader refuses so read is unread (`cat <<$(…)`). One alone, no printer, or a `Rewritten`
+  one the reader refuses so read is unread (`cat <<$(…)`). One alone or a `Rewritten`
   word stays unread beside a download. A `$` command's `${X:-sh}` default is read, as is a program
-  after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution, no
-  printer, are reported beside a download (#2483, #2486), though they may run none of it
+  after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution are
+  reported beside a download (#2483, #2486), though they may run none of it
   (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
   A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
@@ -170,12 +170,13 @@ live, so a change that catches one fails there and edits this list.
   (a `-c`/`eval` string, a heredoc body) or a substitution hands it to a shell (`x=$(sh -c '…')`)
   (#2728). A printer inside a `$(…)` or a `<(…)` is read as the text the shell runs where every
   reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the body,
-  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` whose text holds a newline or tab is
-  read unsplit, where bash joins its fields with spaces, a backquote holding a backslash and a text
-  the reader refuses are not rendered, and the catch-all row for a word all substitution stays
-  beside every such read (review C-1 to C-3); a `<(…)` printer the readings do not agree on is
-  weighed as a piped one (`sh <(echo "$X")`, `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken
-  for a `<(…)` FILE, the reader keeping no direction (`sh >(echo 'sh tool')` over-reports). Any
+  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` whose text holds a newline
+  or tab is read unsplit, where bash joins its fields with spaces, a backquote whose text
+  escapes `$`, `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not
+  rendered, and the catch-all row for a word all substitution stays beside every such read
+  (review C-1 to C-3); a `<(…)` printer `substituted` cannot spell is weighed as a piped
+  one (`sh <(echo "$X")`, `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken for a
+  `<(…)` FILE, the reader keeping no direction (`sh >(echo 'sh tool')` over-reports). Any
   other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
   program unread, reported where the stage's words or the printer's text fetch, or beside a reported
   download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open:

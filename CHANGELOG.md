@@ -42,10 +42,11 @@ evidence exposed.
   runs where every reading agrees on it (#2487, #2495): `eval "$(echo 'sh tool')"`,
   `sh <(echo 'sh tool')` and `bash <(cat <<'EOF' … EOF)` report the download they run, and the
   documented `eval "$(cat <<'EOF' … EOF)"` gap closes; an unquoted `$(…)` whose text holds a newline
-  or tab is read unsplit (bash joins its fields), a backquote holding a backslash and a text the
-  reader refuses are not rendered, and the catch-all row for a word all substitution stays beside
-  every such read. Named gaps: `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this
-  rule does not follow; a word the shell reads specially once unquoted (a quote, space, newline,
+  or tab is read unsplit (bash joins its fields), a backquote whose text escapes `$`,
+  `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and
+  the catch-all row for a word all substitution stays beside every such read. Named gaps:
+  `shopt -s xpg_echo` turns bash's `echo` into a decoder, which this rule does not
+  follow; a word the shell reads specially once unquoted (a quote, space, newline,
   `#`, `\`, `<`, `>`, an open `$(`) or a lifted `$(…)` word inside the unread stage's words still
   hides the fetch that follows; and a substitution's printer the readings disagree on
   (`sh -c "$(echo 'sh\ttool')"`) stays unread.
