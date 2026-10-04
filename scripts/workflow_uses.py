@@ -107,9 +107,10 @@ def _cleared(stage, named, positional, certain, direct_loop, table=None):
     literal values too (`emptied`): they go where `certain` -- the table's
     answer, `static_values`' -- and gain the "maybe unset" candidate where
     not; a `read` sets the name to a value the table cannot see, its
-    stand-in. An assignment's are left to `record`, which replaces them where
-    certain: dropping them here first would lose the value `T+=.run` appends
-    to and the one `T=$T.run` reads.
+    stand-in. Behind `builtin`, a `read` or `unset` is `record`'s, which reads
+    it for the table alone. An assignment's are left to `record`, which
+    replaces them where certain: dropping them here first would lose the
+    value `T+=.run` appends to and the one `T=$T.run` reads.
     """
     def drop(name, valueless=True, unknown=False):
         binding = named.get(name)
@@ -427,7 +428,9 @@ def static_values(stmts, index, working=None, scopes=None):
     its own control flow and from an empty table -- a call's values are its
     caller's at the call, which `_function_use` carries -- and a body is
     otherwise skipped, so a call's own assignments are not read (`f() { T=b;
-    }; T=a; f` holds `a`, a price).
+    }; T=a; f` holds `a`, a price). A function defined after `then` or `do`
+    on the same line is not found (`_function_ranges`' limit), and its body
+    is walked as the code around it.
     `working` is accepted and unused: a value resolves at the directory of
     its USE, bash's rule for a relative path.
     """

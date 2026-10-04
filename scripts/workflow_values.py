@@ -27,13 +27,16 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     unset gains the empty candidate, `""` or `[]`, over
                     which a default stands (beside `""` under `-` and `=`)
     unseen          a value the table cannot see -- `read`, `printf -v`,
-                    `getopts`, a `for` header's `"$@"` or `$(...)`, a
-                    subscripted literal, a declaration with `-l`, `-u`,
-                    `-i`, `-A` or `-n`, more than `_CANDIDATES` candidates --
-                    is the name's own reference `$NAME`, the STAND-IN: the
-                    reading the guard makes without the table, never a
-                    claim, beside which a default stands too; after `eval`,
-                    `source` or `.`, every held name gains its stand-in
+                    `getopts`, `mapfile` and `readarray`, bare or behind
+                    `builtin`, an element's assignment or unset (`a[1]=x`,
+                    `declare a[1]=x`, `unset 'a[1]'`), a `for` header's
+                    `"$@"` or `$(...)`, a subscripted literal, a declaration
+                    with `-l`, `-u`, `-i`, `-A` or `-n`, more than
+                    `_CANDIDATES` candidates -- is the name's own reference
+                    `$NAME`, the STAND-IN: the reading the guard makes
+                    without the table, never a claim, beside which a default
+                    stands too; after `eval`, `source` or `.`, every held
+                    name gains its stand-in
     resolved        in the words of the stage that USES a value
                     (`valued_argvs`), so a relative value is read from the
                     directory of its use, bash's rule, and a text bash globs
@@ -63,15 +66,16 @@ words on its token); a subshell's empty prefix assignment `( T= sh tool )`
 and its quoted value `( T='(x y)' )` read as the literal `T=(...)`, and both
 REPLACE the outer value; and a `NAME=text` word inside an open unfolded
 literal is read as a scalar the statement may assign as well, which
-over-reports where it was an element. Walks: after a loop that ran to its
-end bash holds its last word and the table every word; a literal's glob is
-matched at the use, not where bash matched it; a header that may not run
-keeps the old candidates beside its stand-in. Caps: a name with more than
-`_CANDIDATES` candidates holds its stand-in alone, a word resolves to the
-first `_CANDIDATES` of its product, and a text over `_LONGEST` is dropped,
-both of which can lose a candidate. Not read: `a[1]=x`, `mapfile` and
-`readarray`, the assignment `${T:=d}` makes, an attribute an earlier
-declaration set rewriting a later assignment, and a call's own assignments.
+over-reports where it was an element, and a `NAME[N]=text` one gives NAME
+its stand-in. Walks: after a loop that ran to its end bash holds its last
+word and the table every word; a literal's glob is matched at the use, not
+where bash matched it; a header that may not run keeps the old candidates
+beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
+holds its stand-in alone, a word resolves to the first `_CANDIDATES` of its
+product, and a text over `_LONGEST` is dropped, both of which can lose a
+candidate. Not read: the assignment `${T:=d}` makes, an attribute an
+earlier declaration set rewriting a later assignment, a name taken from a
+value (`read "$n"`, `export "$k=$v"`), and a call's own assignments.
 
 Stdlib only, like everything under it.
 """
@@ -88,15 +92,17 @@ from workflow_operands import _brace_patterns, live_pattern
 # `_LITERAL` is an assignment word (`NAME=text`, `NAME+=text`), `_ARRAY` one
 # holding a literal the reader folded in (`NAME=(words)`), `_OPENER` an empty
 # one, which an UNFOLDED literal's words follow, `_SUBSCRIPT` a literal's
-# `[key]=word`; `_VALUE` a reference -- `$T`, `${T}`, `${T:-d}`, `${T-d}`,
-# `${T:=d}`, `${T=d}`; `_ELEMENT` a whole `${a[0]}`, `${a[@]}` or `${a[*]}`;
-# `_SPLAT` a whole `$@` or `$*`, any number of words; `_REFERENCES` any
-# reference at all, `_TAIL` an unbraced one ending a text, `_NAME` a name;
-# `_GLOB` what bash globs a value by, an extglob group too.
+# `[key]=word`, `_SUBSCRIPTED` an element's assignment (`a[1]=x`, `a[$i]+=x`);
+# `_VALUE` a reference -- `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}`,
+# `${T=d}`; `_ELEMENT` a whole `${a[0]}`, `${a[@]}` or `${a[*]}`; `_SPLAT` a
+# whole `$@` or `$*`, any number of words; `_REFERENCES` any reference at all,
+# `_TAIL` an unbraced one ending a text, `_NAME` a name; `_GLOB` what bash
+# globs a value by, an extglob group too.
 _LITERAL = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.S)
 _ARRAY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=\((.*)\)$", re.S)
 _OPENER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=$")
 _SUBSCRIPT = re.compile(r"^\[[^]]*\]\+?=")
+_SUBSCRIPTED = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[.*\]\+?=", re.S)
 _VALUE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)"
                     r"|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^{}]*))?\})")
 _ELEMENT = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+|[@*])\]\}$")
@@ -109,6 +115,8 @@ _GLOB = re.compile(r"[*?\[]|[@+!]\(")
 # associative keys, and -- not behind `export`, where it un-exports -- a name
 # reference.
 _REWRITING = frozenset("luiA")
+# The options of `mapfile` and `readarray` that take an argument (`-u 3`).
+_MAPPING = frozenset("dnOsuCc")
 # A name holds at most `_CANDIDATES` candidates, and past them its stand-in
 # alone, the guard's reading without the table; a word resolves to the first
 # `_CANDIDATES` of its product; and no text built is longer than `_LONGEST`: a
@@ -155,13 +163,15 @@ def assigned(stage):
     "sh", "tool"]`, #2348): an empty `NAME=` and the words up to the next one
     while groups remain -- and its brace words are expanded, as bash expands
     them before it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
-    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), a
-    declaration with `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` --
-    and a scalar the statement only may assign are `record`'s. The prices: a
-    folded literal is re-split on blanks; a quoted brace word is expanded; a
-    subshell's empty prefix assignment `( T= sh tool )` and its quoted value
-    `( T='(x y)' )` read as literals; and a `NAME=text` element of an open
-    unfolded literal is read as a scalar too. A `for` header is `record`'s.
+    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), an
+    element's assignment (`a[1]=x`, `declare a[1]=x`), a declaration with
+    `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` -- and a scalar the
+    statement only may assign are `record`'s. The prices: a folded literal is
+    re-split on blanks; a quoted brace word is expanded; a subshell's empty
+    prefix assignment `( T= sh tool )` and its quoted value `( T='(x y)' )`
+    read as literals; and a `NAME=text` element of an open unfolded literal is
+    read as a scalar too, a `NAME[N]=text` one as an element's assignment. A
+    `for` header is `record`'s.
     """
     scalars, arrays = _assignments(stage)[:2]
     return scalars, arrays
@@ -203,6 +213,7 @@ def _assignments(stage):
         room = literals < stage.group_open
         folded = _ARRAY.match(str(word)) if room else None
         match = folded or _LITERAL.match(str(word))
+        element = _SUBSCRIPTED.match(str(word))
         if match and (folded or room and not match[3]):
             literals += 1
             parts = [shell_reader.derived(text, word) for part in match[3].split()
@@ -217,10 +228,12 @@ def _assignments(stage):
             unfolded.extend(shell_reader.derived(text, word) for text in _braced(str(word)))
             if match and match[3]:
                 maybe[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
+            elif element:
+                unseen.add(element[1])
         elif match:
             scalars[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
-        elif rewriting and _NAME.match(str(word)):
-            unseen.add(str(word))
+        elif element or rewriting and _NAME.match(str(word)):
+            unseen.add(element[1] if element else str(word))
     if rewriting:
         unseen.update(scalars, arrays)
     for name in unseen:
@@ -252,10 +265,11 @@ def record(table, stage, certain):
     words of each candidate, and `$@`, `$*`, a lone `$(...)` or an array the
     table does not hold the stand-in; without `in` it walks `"$@"`. Where no
     word is written out, the loop may not run, so the words join the old
-    candidates, as an uncertain assignment's do. `printf -v NAME` and
-    `getopts OPTSTRING NAME` are read as `read NAME`, and after `eval`,
-    `source` or `.` every held name gains its stand-in, kept beside its old
-    candidates even where the statement is certain.
+    candidates, as an uncertain assignment's do. `printf -v NAME`, `getopts
+    OPTSTRING NAME`, `mapfile` and `readarray` are read as `read NAME`, a
+    `read` or `unset` behind `builtin` as the bare one (`_unread`), and after
+    `eval`, `source` or `.` every held name gains its stand-in, kept beside
+    its old candidates even where the statement is certain.
     """
     scalars, arrays, _count, maybe, unseen = _assignments(stage)
     for name, (append, text) in scalars.items():
@@ -338,17 +352,50 @@ def _looped(words, table):
 
 def _unread(table, argv, certain):
     """The commands that set a name the reader never reads the value of:
-    `printf -v NAME` and `getopts OPTSTRING NAME`, as `read NAME` does, and
-    `eval`, `source` and `.`, which may set any name at all."""
-    argv = argv[1:] if argv[:1] == ["builtin"] else argv
+    `printf -v NAME`, `getopts OPTSTRING NAME`, `mapfile` and `readarray`, as
+    `read NAME` does; an element's assignment the reader takes for a command
+    (`a[${#a[@]}]=x`); `eval`, `source` and `.`, which may set any name at
+    all; and, behind `builtin`, the `read` and `unset` `_cleared` reads bare --
+    for the table alone, as the bindings stay `_cleared`'s."""
+    builtin = argv[:1] == ["builtin"]
+    argv = argv[1:] if builtin else argv
     head = os.path.basename(str(argv[0])) if argv else ""
+    names: list[str] = []
     if head in ("eval", "source", "."):
         for name in list(dict.fromkeys([*table.scalars, *table.arrays])):
             _update(table, name, ["$" + name], False)
     elif head == "printf" and argv[1:2] == ["-v"] and len(argv) > 2:
-        emptied(table, str(argv[2]).split("[", 1)[0], certain, True)
+        names = [str(argv[2])]
     elif head == "getopts" and len(argv) > 2:
-        emptied(table, str(argv[2]), certain, True)
+        names = [str(argv[2])]
+    elif head in ("mapfile", "readarray"):
+        names = _mapped(argv)
+    elif argv and (element := _SUBSCRIPTED.match(str(argv[0]))):
+        names = [element[1]]
+    elif builtin and (head == "read" or head == "unset" and "-f" not in argv):
+        for word in argv[1:]:
+            if not str(word).startswith("-"):
+                emptied(table, str(word), certain, head == "read")
+    for name in names:
+        emptied(table, name, certain, True)
+
+
+def _mapped(argv):
+    """The names a `mapfile` or `readarray` may set: each name among its words
+    after the options -- one of `_MAPPING` takes the next word unless it is
+    joined (`-u 3`, `-u3`) -- else `MAPFILE`, bash's default."""
+    words = [str(word) for word in argv[1:]]
+    at = 0
+    while at < len(words) and words[at].startswith("-") and words[at] != "-":
+        option, at = words[at][1:], at + 1
+        if option == "-":
+            break
+        for place, letter in enumerate(option, 1):
+            if letter in _MAPPING:
+                if place == len(option):
+                    at += 1                     # its argument is the next word
+                break
+    return [word for word in words[at:] if _NAME.match(word)] or ["MAPFILE"]
 
 
 def _update(table, name, new, certain, array=False):
@@ -379,7 +426,11 @@ def emptied(table, name, certain, unknown=False):
     `unknown`, sets it to a value the table cannot see -- `read`: where
     `certain` the name goes, or holds its stand-in alone; else, where held,
     it gains the "maybe unset" candidate, `""` or `[]`, or the stand-in, held
-    or not."""
+    or not. An element (`unset 'a[0]'`, `read 'a[1]'`) leaves its array's
+    value unseen."""
+    base, bracket, _key = name.partition("[")
+    if bracket:
+        name, unknown = base, True
     if not _NAME.match(name):
         return
     if unknown:

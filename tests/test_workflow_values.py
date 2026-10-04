@@ -147,13 +147,17 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
                          wv.valued_argvs(["sh", "${F-./install.sh}"], values))
 
     def test_a_certain_unset_or_bare_local_empties_the_name(self):
-        for script in ("T=a; unset T", "T=a; local T", "arr=(a b); unset arr"):
+        for script in ("T=a; unset T", "T=a; local T", "arr=(a b); unset arr",
+                       "T=a; builtin unset T"):
             with self.subTest(script=script):
                 values = table(script)
                 self.assertEqual(({}, {}), (values.scalars, values.arrays))
+        # `unset -f` unsets a function, bare or behind `builtin`.
+        self.assertEqual({"T": ["a"]}, table("T=a; builtin unset -f T").scalars)
 
     def test_an_uncertain_unset_marks_the_name_maybe_unset(self):
         rows = {"T=a; false && unset T": {"T": ["a", ""]},
+                "T=a; false && builtin unset T": {"T": ["a", ""]},
                 "U=b; false && unset T": {"U": ["b"]}}
         for script, expected in rows.items():
             with self.subTest(script=script):
@@ -230,6 +234,14 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
             "arr=(a b); read -ra arr": ({"arr": ["$arr"]}, {}),
             "T=x; printf -v T '%s' cuda_1.run": ({"T": ["$T"]}, {}),     # x08
             "T=x; getopts ab T": ({"T": ["$T"]}, {}),
+            "arr=(echo hi); mapfile -t arr < list": ({"arr": ["$arr"]}, {}),         # x22
+            "arr=(echo hi); arr[0]=sh; arr[1]=tool": ({"arr": ["$arr"]}, {}),        # x23
+            "arr=(a); readarray arr": ({"arr": ["$arr"]}, {}),
+            "arr=(a b); declare arr[1]=x": ({"arr": ["$arr"]}, {}),
+            # Behind `builtin` as bare, for the table alone.
+            "T=a; builtin read -r T": ({"T": ["$T"]}, {}),
+            "T=x; builtin printf -v T y": ({"T": ["$T"]}, {}),
+            "T=x; builtin getopts ab T": ({"T": ["$T"]}, {}),
             "arr=([1]=tool [0]=sh)": ({"arr": ["$arr"]}, {}),            # x10
             "declare -a arr=([0]=sh)": ({"arr": ["$arr"]}, {}),
             "declare -A m=([k]=tool)": ({"m": ["$m"]}, {}),              # y13
@@ -251,12 +263,61 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
         self.assertEqual(["${T}x"], wv.valued("${T}x", values))
         self.assertEqual({"T": ["ax", "${T}x"]},
                          table("T=a; false && read -r T; T+=x").scalars)
+        # x22, x23: bash runs `sh tool`; the use stays as written, main's reading.
+        for script in ("arr=(echo hi); mapfile -t arr < list",
+                       "arr=(echo hi); arr[0]=sh; arr[1]=tool"):
+            with self.subTest(script=script):
+                self.assertEqual([["${arr[@]}"]],
+                                 wv.valued_argvs(["${arr[@]}"], table(script)))
+
+    def test_mapfile_sets_the_name_after_its_options_or_mapfile(self):
+        rows = {"MAPFILE=(a); mapfile < list": {"MAPFILE": ["$MAPFILE"]},
+                "cb=x; mapfile -C cb -c 1 arr": {"cb": ["x"], "arr": ["$arr"]},
+                "readarray -tu 3 arr": {"arr": ["$arr"]},
+                "mapfile -u3 -- arr": {"arr": ["$arr"]},
+                # A word the table cannot read may be an option: each name after it.
+                "mapfile $opts arr": {"arr": ["$arr"]},
+                "arr=(a); builtin mapfile arr": {"arr": ["$arr"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                values = table(script)
+                self.assertEqual((expected, {}), (values.scalars, values.arrays))
+
+    def test_an_elements_assignment_or_unset_leaves_its_array_unseen(self):
+        # Bash changes the array each time, as the table cannot follow.
+        rows = {
+            "arr=(cuda_1 x); arr[0]+=.run": ({"arr": ["$arr"]}, {}),
+            "a=(p); a[0]=x b=y": ({"a": ["$a"], "b": ["y"]}, {}),
+            "local -a arr; arr[$i]=sh": ({"arr": ["$arr"]}, {}),
+            # The reader takes a subscript holding `]` for a command.
+            "arr=(echo hi); arr[${#arr[@]}]=x": ({"arr": ["$arr"]}, {}),
+            "arr=(echo sh tool); unset 'arr[0]'": ({"arr": ["$arr"]}, {}),
+            "arr=(echo hi); read -r 'arr[0]'": ({"arr": ["$arr"]}, {}),
+            "arr=(a); printf -v 'arr[1]' y": ({"arr": ["$arr"]}, {}),
+            # x13's twin: a word of an open unfolded literal may be an assignment.
+            "x=1; a=(p q) x[0]=y": ({"x": ["$x"]}, {"a": [["p", "q", "x[0]=y"]]}),
+        }
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                values = table(script)
+                self.assertEqual(expected, (values.scalars, values.arrays))
+        # Bash refuses an element's PREFIX assignment: "not a valid identifier".
+        values = table("a=(p); a[0]=x sh y")
+        self.assertEqual(({}, {"a": [["p"]]}), (values.scalars, values.arrays))
+
+    def test_a_name_taken_from_a_value_is_not_read(self):
+        # Bash sets `T` through `$n` and `$k`; the table cannot name it (a price).
+        self.assertEqual({"n": ["T"], "T": ["a"]}, table('n=T; T=a; read -r "$n"').scalars)
+        self.assertEqual({"T": ["a"]}, table('T=a; export "$k=$v"').scalars)
 
     def test_an_uncertain_one_adds_the_stand_in(self):
         rows = {"T=a; false && read -r T": ({"T": ["a", "$T"]}, {}),
                 "T=x; if true; then read -r T < list; fi": ({"T": ["x", "$T"]}, {}),   # y09
                 "T=x; false && declare -l T=Y": ({"T": ["x", "$T"]}, {}),
-                "arr=(a); false && read -ra arr": ({"arr": ["$arr"]}, {"arr": [["a"]]})}
+                "arr=(a); false && read -ra arr": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
+                "arr=(a); false && mapfile arr": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
+                "arr=(a); false && arr[0]=b": ({"arr": ["$arr"]}, {"arr": [["a"]]}),
+                "T=a; false && builtin read -r T": ({"T": ["a", "$T"]}, {})}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 values = table(script)
