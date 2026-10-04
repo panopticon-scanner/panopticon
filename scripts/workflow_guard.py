@@ -150,8 +150,10 @@ live, so a change that catches one fails there and edits this list.
   (one a `cat` prints into a `<(…)` the shell reads as its FILE too, #2495): values and `$(...)`
   output remain unseen. A foreign program is reported too. A `$` command
   hand-off is reported (#2473); since #2499, either is kept only beside a reported fetch. A value
-  word's body is read as shell with no check counted; an expanding one masks substitutions as values
-  (#2597). Inside a substitution, the body speaks before its hand-off (#2598); the price remains
+  word's body is read as shell with no check counted. Where a job fetch binds that command (#2607),
+  its run sentence owns stdin as data and both uncertain answers drop; unknown words stay
+  fail-closed. An expanding body masks substitutions as values (#2597). Inside a substitution, the
+  body speaks before its hand-off (#2598); the price remains
   shell-like non-shell text. A nearer literal shell remains consumer when a surrounding value word
   gets its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
   file redirected into it. `CMD=cat` is the fail-closed price. A value option before a file keeps
@@ -188,6 +190,9 @@ live, so a change that catches one fails there and edits this list.
   shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
   on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
   `$(…)` (`eval "$(cat <<EOF … EOF)"`).
+  A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
+  `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload there, so #2626 kept #2493's
+  refusal limited to `)` instead of reporting code only Bash 5.2 parses.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
@@ -213,7 +218,7 @@ import shell_reader
 from shell_reader import command, statements
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import compound_streamed_fetch
+from workflow_fetch import Fetch, compound_streamed_fetch
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -221,6 +226,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             working_directories)
 from workflow_printers import fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
+from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
                            UNPACKERS as UNPACKERS, uses as _uses)
 
@@ -317,11 +323,13 @@ def _unread_stdin(stage, before=None):
         here, kind = fed(operand(argv)), SHELL_PROGRAM
     if not here:
         return None
-    name = shell_reader.readable(stdin_command(argv)[0] if kind == VALUE_PROGRAM else argv[0])
+    stdin_argv = stdin_command(argv)
+    name = shell_reader.readable(stdin_argv[0] if kind == VALUE_PROGRAM else argv[0])
     if kind == VALUE_PROGRAM:
-        return Idle("hands a heredoc body or here-string to `%s`, a command word this guard does "
-                    "not follow -- its body is read as shell, which it may not be; name the "
-                    "interpreter (`bash -s`, `python3 -`), or exempt the step with a reason" % name)
+        return mark_reason(Idle(
+            "hands a heredoc body or here-string to `%s`, a command word this guard does not "
+            "follow -- its body is read as shell, which it may not be; name the interpreter "
+            "(`bash -s`, `python3 -`), or exempt the step with a reason" % name), stdin_argv[0])
     name = os.path.basename(name)
     if kind != SHELL_PROGRAM:
         return Idle("hands a heredoc body or here-string to `%s` as the program to run, which "
@@ -514,6 +522,7 @@ def job_defects(steps, strict=False):
     for sure in (False, True):              # the second fold leaves every `Unsure` statement out
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, working, entries, fetched, unread = [], {}, {}, {}, [], [], []
+        bound: list[Fetch] = []
         for number, item in enumerate(steps):
             step = item if isinstance(item, Step) else Step(*item)
             why = unparseable(step.shell)
@@ -522,11 +531,16 @@ def job_defects(steps, strict=False):
                     here = read(step.script, step.shell)
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
-                    branches, own = regions(here), step_credit(here, step.shell)
-                    directories = working_directories(here, branches, number, own)
-                    offset = len(stmts)
-                    walked = _walk(here, True, working=dict(enumerate(directories)),
-                                   scopes=range(offset, offset + len(here)), shell=step.shell)
+                    def walk_step(body):
+                        branches, own = regions(body), step_credit(body, step.shell)
+                        directories = working_directories(body, branches, number, own)
+                        offset = len(stmts)
+                        walked = _walk(body, True, working=dict(enumerate(directories)),
+                                       scopes=range(offset, offset + len(body)), shell=step.shell)
+                        return walked, (branches, own, directories)
+                    here, walked, bound, back, context = bind_stdin(
+                        here, bound, walk_step, Unsure, back)
+                    branches, own, directories = context
                 except (() if strict else shell_lex.Unreadable) as error:
                     why = "cannot read this step: %s; nothing in it is accepted" % error
             if why:

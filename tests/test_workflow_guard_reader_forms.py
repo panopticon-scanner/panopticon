@@ -1484,6 +1484,74 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # value-form command word, never a literal one.
         self.assertEqual([], reasons("python3 x.py\n"))
 
+    def test_2607_a_value_command_bound_to_the_download_owns_its_stdin(self):
+        # `$T` is not an unknown interpreter here: the job has already fetched
+        # the command it runs. Bash 3.2.57, 5.2.21 and dash run the payload
+        # with `chmod`; without it they return 1, 126 and 126, and none reads
+        # the heredoc as shell. The existing run sentence stands alone.
+        get = 'T="$PWD/tool"\ncurl -fsSLo "$T" %stool\n' % URL
+        body = "$T <<'EOF'\n%s\nEOF\n"
+
+        for prepare in ('chmod +x "$T"\n', ""):
+            with self.subTest(prepare=prepare, body="innocent"):
+                found = defects(get + prepare + body % "echo hi")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("fetches https://example.test/tool -> $T", found[0][1])
+                self.assertNotIn("hands a heredoc", found[0][1])
+            with self.subTest(prepare=prepare, body="stream"):
+                found = defects(get + prepare + body % PIPE)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("fetches https://example.test/tool -> $T", found[0][1])
+                self.assertNotIn("i.sh", found[0][1])
+
+        # A checksum naming that bound destination clears the only real use.
+        # Its unverified twin above is the must-trip control. The failed check
+        # stops all three shells before the payload runs (rc 1, marker curl).
+        check = 'echo "%s  $T" | sha256sum -c -\n' % ("a" * 64)
+        with self.subTest(case="bound checksum"):
+            self.assertEqual([], defects(get + check + 'chmod +x "$T"\n' + body % PIPE))
+        # The payload's text cannot change the outer shell's static cwd. Removing the synthetic
+        # body therefore recomputes #2427's directory state before the checksum and use are bound.
+        with self.subTest(case="bound checksum after payload cd"):
+            script = "mkdir -p d\ncd d\n" + get + check + 'chmod +x "$T"\n'
+            self.assertEqual([], defects(script + body % ("cd /\n" + PIPE)))
+
+        # The literal twin remains CLEAN with its check and FLAGGED without
+        # it; a mixed literal/value path keeps its one run finding. Neither
+        # body is shell input, so neither gains the body's stream sentence.
+        literal_use = "chmod +x tool\n./tool <<'EOF'\n%s\nEOF\n" % PIPE
+        literal = GET + CHECK + "\n" + literal_use
+        self.assertEqual([], defects(literal))
+        literal_control = GET + literal_use
+        self.assertEqual(1, len(defects(literal_control)), defects(literal_control))
+        mixed = ('curl -fsSLo "$PWD/tool" %stool\nchmod +x "$PWD/tool"\n'
+                 '"$PWD/tool" <<\'EOF\'\n%s\nEOF\n' % (URL, PIPE))
+        found = defects(mixed)
+        self.assertEqual(1, len(found), found)
+        self.assertNotIn("i.sh", found[0][1])
+
+        # A different fetch binds nothing to `$CMD`: its existing hand-off is
+        # retained, and a stream in the possible shell body is retained too.
+        unrelated = "curl -fsSLo other %sother\nCMD=sh\n" % URL
+        found = defects(unrelated + "$CMD <<'EOF'\necho hi\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("hands a heredoc", found[0][1])
+        found = defects(unrelated + "$CMD <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(any("hands a heredoc" in why for _step, why in found), found)
+        self.assertTrue(any("i.sh" in why for _step, why in found), found)
+
+        # Binding is job-wide, as fetch-and-execute credit already is. The
+        # repeated assignment models a job environment value in separate
+        # shell invocations; the defect remains attributed to the fetch step.
+        split = wg.job_defects([
+            ("fetch", get),
+            ("run", 'T="$PWD/tool"\n' + body % PIPE),
+        ])
+        self.assertEqual(1, len(split), split)
+        self.assertEqual("fetch", split[0][0])
+        self.assertNotIn("i.sh", split[0][1])
+
     def test_2473_a_check_inside_a_dollar_command_words_body_clears_no_download(self):
         # `$CMD` may run its body as shell, or not at all -- `true` ignores it,
         # `cat` prints it -- so a checksum written there clears nothing:

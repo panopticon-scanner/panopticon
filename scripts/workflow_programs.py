@@ -566,10 +566,9 @@ def _options(argv, depth):
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
-    # `<(...)`/`>(...)` are a `_value`-matching marker too (`readable` renders
-    # every substitution alike), but they never vanish -- a process
-    # substitution always substitutes a real path, never empty, never word-
-    # split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
+    # `<(...)`/`>(...)` are a `_value`-matching marker too (`readable` renders every substitution
+    # alike), but they never vanish -- a process substitution always substitutes a real path, never
+    # empty, never word-split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
     # `$(true)`). `yields_words` is the one already here that tells them apart.
     value = not shell and not foreign and _value(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
@@ -655,11 +654,11 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     unspelled one (R-F11), where no shell is sure to read it and nothing in it is the step's own
     (`workflow_forms.Unsure`). A FILE's `reader` is the shell or `source` reading it (#2487, #2495).
 
-    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
-    though the word may hold none: what they fetch or run is read as at the top level, and
-    `workflow_forms.flattened` counts no check there. Inside a `$(...)`,
-    `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted` weighs a
-    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331."""
+    Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are tagged and read
+    as shell, though the word may hold none; `workflow_forms.flattened` counts no check there.
+    `bound_stdin` drops that uncertain read when a job fetch binds the word (#2607). Inside a
+    `$(...)`, `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted`
+    weighs a shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331."""
     here = stage.stdin_heredoc or handed(stage, before)
     if (filed := substituted(operand(argv))) is not None or here is not None:   # `<(...)` FILE
         readings = texts = [here[0] if filed is None else filed]
@@ -681,6 +680,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     for spelled in texts:
         text = Stdin(spelled)
         text.reader = reader if len(readings) == 1 else None
+        setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
     return out
 
