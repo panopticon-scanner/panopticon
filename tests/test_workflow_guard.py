@@ -807,7 +807,7 @@ class TestAGlobMatchCarriedThroughAValue(unittest.TestCase):
                 with self.subTest(pattern=pattern, template=template):
                     found = self.job(template % pattern)
                     if pattern.startswith("'") and template.startswith("for"):
-                        # #2425's admitted over-report, the review's R3 quoting price, as
+                        # #2425's admitted over-report, the quoting price, as
                         # `p=./cuda_*.run; sh "$p"` is in test_workflow_values: bash walks
                         # the quoted header's one word and runs nothing (bash 5.2, bash 3.2,
                         # dash and a runner's bash each fetch only), but the reader drops

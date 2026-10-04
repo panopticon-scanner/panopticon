@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The step's own literal values, read as bounded value facts (#2425, #2489).
+r"""The step's own literal values, read as bounded value facts (#2425, #2489).
 
 The guard binds a download to its later uses by NAME, and a step that keeps
 that name in a variable it assigns itself hid the use: `T=cuda_1.run; sh
@@ -64,9 +64,12 @@ does not expand, as `"$T"`, the quoted twin `"" sh x` of an empty `$SUDO`
 dropped from `$SUDO sh x` as `sh x`, a literal's quoted word
 (`a=('./cuda_*.run')`) as live, a quoted brace word in a literal as expanded,
 and a quoted `"${a[*]}"`, one word to bash, as spliced; a literal `@(x)`
-value is live too. Null: the empty candidate cannot say whether the name was
-unset or set empty, so a `-` or `=` default stands beside it and the
-set-but-null twin (`X=; sh "${X-d}"`, where bash gives `""`) over-reports.
+value is live too. The shell's own settings are not read: the default `IFS`
+and globbing are assumed, so a step's `IFS=`, `IFS=$'\n'` or `set -f`
+over-reports a split or a pattern, and `IFS=:` misses one. Null: the empty
+candidate cannot say whether the name was unset or set empty, so a `-` or
+`=` default stands beside it and the set-but-null twin (`X=; sh "${X-d}"`,
+where bash gives `""`) over-reports.
 Literals: one folded behind a declaration is re-split on blanks, which
 shifts the words after a quoted blank too (`declare -a a=("my file" x)`
 reads `${a[1]}` as `file`; a reader-lane follow-up would keep a literal's
@@ -75,7 +78,10 @@ and its quoted value `( T='(x y)' )` read as the literal `T=(...)`, and both
 REPLACE the outer value; and a `NAME=text` word inside an open unfolded
 literal is read as a scalar the statement may assign as well, which
 over-reports where it was an element, and a `NAME[N]=text` one gives NAME
-its stand-in. Walks: after a loop that ran to its end bash holds its last
+its stand-in. A statement that only assigns an array literal is read as
+running its words, as main reads it, and the table resolves those words too:
+`X=_1; a=(cuda$X.run)` alone over-reports.
+Walks: after a loop that ran to its end bash holds its last
 word and the table every word; a literal's glob is matched at the use, not
 where bash matched it; a header that may not run keeps the old candidates
 beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
@@ -84,13 +90,16 @@ product, and a text over `_LONGEST` is dropped, both of which can lose a
 candidate; a brace word the table cannot expand -- past 64 words, or with a
 reference inside a group (`{a,$X}`) or a braced one beside it (`{a,b}${X}`)
 -- gives its name the stand-in, a limit, not a price. Not read: the
-assignment `${T:=d}` makes, an attribute an earlier declaration set
+assignment `${T:=d}` makes, an operator expansion's value (`NAME=${URL##*/}`
+holds its own text, a plain word), an attribute an earlier declaration set
 rewriting a later assignment, a call's own assignments, a name bash sets
 itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers of a redirection's `{fd}`,
 `wait -p` and `coproc`), held only where the step assigned it too, and
-arithmetic -- `let T=5` and `((T++))` are not read, and `((T=x+1))` is read
-as its text beside the old value -- whose values are numbers, so a download
-hides there only under a numeric filename.
+arithmetic -- `let T=5`, `((T++))` and an arithmetic `for`'s updates are not
+read, and `((T=x+1))` is read as its text beside the old value -- so a name
+built from a number the arithmetic changed holds the old number
+(`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a download named by the
+new number is missed, one named by the old over-reports.
 
 Stdlib only, like everything under it.
 """
@@ -575,8 +584,7 @@ def valued(word, table):
     (`valued_argvs` splices them), a scalar candidate as one word where the
     name holds an array. The texts carry the markers of the word and of its
     values, and are otherwise plain: the caller decides what kind of word
-    each is.
-    """
+    each is."""
     text = str(word)
     if element := _ELEMENT.match(text):
         return _element(element[1], element[2], table)
@@ -660,9 +668,9 @@ def valued_argvs(argv, table):
     itself), a whole `${a[@]}` or `${a[*]}` SPLICED as each word-list's words.
     An empty text is dropped, as bash drops an unquoted empty expansion, and
     an argv left empty is not made. A text with `*`, `?`, `[` or an extglob
-    group, or from a word bash expands as a pattern (`{$T,x}`), is a
-    `live_pattern`, as bash globs an unquoted `$p` and a literal's words.
-    """
+    group outside its references, or from a word bash expands as a pattern
+    (`{$T,x}`), is a `live_pattern`, as bash globs an unquoted `$p` and a
+    literal's words."""
     choices: list[list[list[str]]] = []
     resolved = False
     for word in argv:
@@ -684,7 +692,8 @@ def valued_argvs(argv, table):
 
 
 def _as_word(text, word):
-    """A substituted text as an argv word: a live pattern where bash globs it."""
-    if _GLOB.search(text) or getattr(word, "lead", None) is not None:
+    """A substituted text as an argv word: a live pattern where bash globs its
+    text outside its references (a held `${OTHER##*/}` is a plain word)."""
+    if _GLOB.search(_REFERENCES.sub("", text)) or getattr(word, "lead", None) is not None:
         return live_pattern(text)
     return text

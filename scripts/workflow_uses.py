@@ -113,8 +113,7 @@ def _cleared(stage, named, positional, certain, direct_loop, table=None):
     stand-in. Behind `builtin`, a `read` or `unset` is `record`'s, which reads
     it for the table alone. An assignment's are left to `record`, which
     replaces them where certain: dropping them here first would lose the
-    value `T+=.run` appends to and the one `T=$T.run` reads.
-    """
+    value `T+=.run` appends to and the one `T=$T.run` reads."""
     def drop(name, valueless=True, unknown=False):
         binding = named.get(name)
         if binding and (certain or direct_loop and binding.loop):
@@ -315,10 +314,10 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
 
 def _on_stdin(argv):
     """Whether a shell argv the table MADE may run its standard input (#2425: a `-c` string's own
-    program), as `_resolved` asks: not where that string is ONE simple command that only hands its
-    input on, `cat` or `tee` (`CMD=sh; $CMD -c 'cat' < f` adds no stdin row); any other may, failing
-    closed (`csh`, `sudo -s`, `echo sh`). The rule is the table's: the use as written keeps main's
-    reading, as a printer's stream is not followed: `sh -c 'cat' < f` over-reports (the price)."""
+    program), as `_resolved` asks: not where that string is ONE bare `cat` or `tee` (no operand but
+    `-`, no redirection) that only hands its input on (`CMD=sh; $CMD -c 'cat' < f`); any other may,
+    failing closed (`cat "$0"`, `tee x`, `csh`, `echo sh`). The rule is the table's: the use as
+    written keeps main's reading, a printer's stream unfollowed: `sh -c 'cat' < f` over-reports."""
     strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
     try:
         parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
@@ -326,16 +325,18 @@ def _on_stdin(argv):
         parsed = []
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return True
-    inner = command(parsed[0].stages[0].argv)
-    return bool(inner) and os.path.basename(str(inner[0])) not in ("cat", "tee")
+    stage, inner = parsed[0].stages[0], command(parsed[0].stages[0].argv)
+    return bool(inner) and (os.path.basename(str(inner[0])) not in ("cat", "tee") or bool(
+        stage.reads or stage.writes) or not set(map(str, inner[1:])) <= {"-"})
 
 
 def _resolved(argv, table):
-    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`' on the
-    terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
+    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`' argvs, on
+    the terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
     value's blanks, then `command()` re-reading the argv, one left empty or a shell whose `-c`
-    string only prints (`_on_stdin`) dropped -- and none where nothing resolves. A mark that never
-    resolves fences each word, so a made word's source is known."""
+    string is a bare printer (`_on_stdin`) dropped -- and none where nothing resolves. A first word
+    the table put there that is an assignment is the command, as bash runs it, so nothing is made of
+    that argv. A mark that never resolves fences each word, so a made word's source is known."""
     mark = object()
     fenced = [part for word in argv for part in (mark, word)]
     for words in valued_argvs(fenced, table):
@@ -350,6 +351,8 @@ def _resolved(argv, table):
                          for part in re.split("[ \t\n]+", word) if part]
             else:
                 kept.append(word)
+        if kept and kept[0] is not argv[0] and shell_reader._ASSIGNMENT.match(kept[0]):
+            continue                        # bash runs it as the command: never an assignment
         if (kept := command(kept)) and _on_stdin(kept):
             yield kept
 
@@ -557,8 +560,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     line is no definition to the reader (`( )` is an empty subshell), so
     that body is walked as sure code (a limit). `working` is accepted and
     unused: a value resolves at the directory of its USE, bash's rule for a
-    relative path.
-    """
+    relative path."""
     scopes = scopes or {}
     forked = _forked(stmts, index)
     bodies = [(head, *_body_end(stmts, head, close))
