@@ -636,7 +636,7 @@ class TestAnArrayLiteral(unittest.TestCase):
         self.assertEqual(["s"], wv.valued("$arr", table("arr=(a); arr=s")))
 
     def test_a_stand_in_has_no_word_past_zero(self):
-        # N3-6, a named limit: the stand-in a maybe `read -ra` gives stands for
+        # A named limit: the stand-in a maybe `read -ra` gives stands for
         # `${arr[0]}` but has no word 1, so `${arr[1]}` reads the literal's alone.
         values = at_use('arr=(x y)\nif c; then read -ra arr < f; fi\nsh "${arr[1]}"')
         self.assertEqual(({"arr": ["$arr"]}, {"arr": [["x", "y"]]}),
@@ -996,13 +996,17 @@ class TestTheCallersContract(unittest.TestCase):
         self.assertEqual([], self.resolved("E=", ["$E"]))
 
     def test_a_shells_dash_c_string_is_its_program(self):
-        # N2-2: ONE simple command no interpreter or `$` word heads reads no program
-        # off standard input; the rest still may, fail-closed.
+        # The `-c` stdin rule: ONE simple command with no interpreter among its words and
+        # no `$` head reads no program off standard input; the rest still may, fail-closed:
+        # an interpreter word past a wrapper `command()` keeps reads it (`builtin .`,
+        # `busybox sh`), and so does an operand that only names one (`echo sh`, the price).
         rows = {("sh", "-c", "cat"): False, ("bash", "-ec", "cat -"): False,
                 ("sh", "-c", "T=x"): False, ("sh", "-c", "sh"): True,
                 ("sh", "-c", "exec bash -s"): True, ("sh", "-c", "$CMD"): True,
                 ("sh", "-c", "cat | sh"): True, ("sh", "-c", "cat; sh"): True,
                 ("sh", "-c", "source /dev/stdin"): True, ("sh", "-c", "python3"): True,
+                ("sh", "-c", "builtin . /dev/stdin"): True, ("sh", "-c", "busybox sh"): True,
+                ("sh", "-c", "echo sh"): True, ("sh", "-c", "awk -f /dev/stdin"): False,
                 ("sh",): True, ("eval", "cat"): True, ("python3", "-c", "x"): True}
         for argv, expected in rows.items():
             with self.subTest(argv=argv):
@@ -1094,13 +1098,17 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
                     "T=cuda_1.run\nsh -c 'sh \"$T\"'\n"):
             with self.subTest(use=use):
                 self.assertReports(GET + use)
+        # n05o F- F- F- F-; main CLEAN; the -c child's own assignment is read as the
+        # step's (its twin n05 hides a run).
+        self.assertReports("curl -fsSLo x.run %sx.run\nT=cuda_1.run\nsh -c 'T=x.run'\n"
+                           'sh "$T" || :\n' % URL, dest="x.run")
 
     def test_a_value_the_table_cannot_see_reads_as_written(self):
         # The stand-in: main's answer, CLEAN, and no claim. y06, x16 and x14 are FR FR
         # FR FR (`"$@"` and `$(ls ...)` hold the download), which the guard misses as
         # main does; n05 and n08 FR FR FR FR are the limits a child's assignments
-        # make: a `-c` string's are read as the step's (`T=x` replaces `cuda_1.run`),
-        # and a `$(...)`'s are not read at all.
+        # make: a `-c` string's are read as the step's (`T=x` replaces `cuda_1.run`;
+        # its twin over-reports), and a `$(...)`'s are not read at all.
         for use in ('set -- cuda_1.run\nT=a; for T in "$@"; do :; done; sh "$T"\n',
                     'set -- cuda_1.run\nT=a; for T in "$@"; do sh "$T"; done\n',
                     'for T in $(ls ./*.run) x; do sh "$T"; done\n',
@@ -1110,8 +1118,9 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
                 self.assertEqual([], defects(GET + use))
 
     def test_the_use_as_written_is_weighed_first(self):
-        # N-1: the fetch wrote the NAME, which only the use as written spells; each is
-        # main's sentence, FR FR FR FR. p02, p04 (`chmod +x` first), p07, p08, p10.
+        # The use as written is weighed first: the fetch wrote the NAME, which only the
+        # use as written spells; each is main's sentence, FR FR FR FR. p02, p04
+        # (`chmod +x` first), p07, p08, p10.
         fetch = 'curl -fsSLo "%s" https://example.test/p\n'
         rows = (("T=cuda_1.run\n", "$T", 'sh "$T"\n', SH),
                 ("T=./install.sh\n", "$T", 'chmod +x "$T"\n"$T"\n', "making it executable"),
@@ -1129,7 +1138,8 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
     def test_a_brace_header_keeps_mains_answer(self):
         # Main's sentence on each, through the glob binding: the table hands the
         # header's name its stand-in. z01, z02, z03 and c1x FR FR F- FR; z03b FR FR F-
-        # FR, CLEAN on main and here: the array holds its stand-in, no claim (C-1).
+        # FR, CLEAN on main and here: the array holds its stand-in, no claim (a brace
+        # word is expanded at record time).
         fetch = "curl -fsSLo %s https://example.test/%s\n"
         rows = (("install.sh", "bash", "s in {install,setup}${SUFFIX}.sh", 'bash "$s"'),
                 ("install.sh", "bash", "s in {install,setup,$EXTRA}.sh", 'bash "$s" || :'),
@@ -1144,9 +1154,9 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
         self.assertEqual([], defects(fetch % ("1.run", "1.run") + use))
 
     def test_a_dash_c_string_is_the_program_of_a_redirected_shell(self):
-        # N2-2. c01, c04 F- F- F- F-: main reported "running it under `sh` from standard
-        # input"; `cat` prints it. c02 F- F- F- F-: main's one sentence, the value
-        # command word's (the resolved `sh -c cat` adds none). c03, n06 FR FR FR FR:
+        # The `-c` stdin rule. c01, c04 F- F- F- F-: main reported "running it under `sh`
+        # from standard input"; `cat` prints it. c02 F- F- F- F-: main's one sentence, the
+        # value command word's (the resolved `sh -c cat` adds none). c03, n06 FR FR FR FR:
         # main's report, kept -- `sh` reads it, and `cat | sh` is not ONE command.
         fetch = "curl -fsSLo i.sh %si.sh\n" % URL
         for use in ("sh -c 'cat' < i.sh\n", "bash -c 'cat' < i.sh\n"):
@@ -1159,6 +1169,9 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
             with self.subTest(use=use):
                 self.assertReports(fetch + use, "running it under `sh` from standard input",
                                    "i.sh")
+        # f02 FR FR FR FR; main reported: an interpreter word past `builtin` reads it.
+        self.assertReports(fetch + "bash -c 'builtin . /dev/stdin' < i.sh\n",
+                           "running it under `bash` from standard input", "i.sh")
 
 
 class TestADownloadNamedThroughAnArray(unittest.TestCase):

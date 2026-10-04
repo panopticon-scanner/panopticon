@@ -286,10 +286,10 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if (name in INTERPRETERS and _on_stdin(argv) or stdin_program(argv) == VALUE_PROGRAM) and any(
-            same_file(at_directory(read, directory), dest) or (
-                stage.stdin_heredoc is None and covers(at_directory(read, directory), dest)
-            ) for read in stage.reads):
+    if any(same_file(at_directory(read, directory), dest) or (
+            stage.stdin_heredoc is None and covers(at_directory(read, directory), dest)
+            ) for read in stage.reads) and (
+            name in INTERPRETERS and _on_stdin(argv) or stdin_program(argv) == VALUE_PROGRAM):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
         return "making it executable"
@@ -314,9 +314,10 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
 
 
 def _on_stdin(argv):
-    """Whether interpreter `argv` may run its standard input (#2425's N2-2): not under
-    a shell whose `-c` string is ONE simple command no interpreter or `$` word heads
-    (`sh -c 'cat'`), as `stdin_program` reads `$CMD -c`; `sh -c 'sh'` and `'cat | sh'` may."""
+    """Whether interpreter `argv` may run its standard input (#2425: a `-c` string's own program):
+    not where that string is ONE simple command with no `$` head (`sh -c 'cat'`, as `stdin_program`
+    reads `$CMD -c`); any word of the string an interpreter may: fail-closed through a wrapper that
+    `command()` keeps (`builtin . f`, `busybox sh`), at the price of `echo sh`'s operand."""
     strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
     try:
         parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
@@ -325,7 +326,7 @@ def _on_stdin(argv):
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return True
     inner = command(parsed[0].stages[0].argv)
-    return bool(inner) and (os.path.basename(inner[0]) in INTERPRETERS
+    return bool(inner) and (any(os.path.basename(str(word)) in INTERPRETERS for word in inner)
                             or stdin_program(inner) == VALUE_PROGRAM)
 
 
@@ -372,9 +373,10 @@ def _function_ranges(stmts):
 
 
 def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes):
-    """A use reached by one direct call carrying a matching glob argument, or by a
-    value of the caller's `table` (#2425, #2489), which the body's table starts from
-    (`static_values`' `start`); only a binding call weighs a stage as written, as before."""
+    """A use reached by one direct call carrying a matching glob argument, or by a value of the
+    caller's `table` (#2425, #2489), which the body's table starts from (`static_values`' `start`);
+    only a binding call weighs a stage as written, as before. A call made inside a body is not
+    followed (`f() { g; }` reads no table into `g`), as for a glob argument."""
     start, close = definition
     positional = {}
     for number, word in enumerate(args, 1):
@@ -675,10 +677,8 @@ def uses(stmts, dest, after, working=None, scopes=None):
                     how = next(filter(None, (use(inner, position, stage, made, name, here, bound)
                                              for made in _resolved(argv, table))), None)
                 if not how and call:
-                    how = _function_use(
-                        stmts, functions[argv[0]], argv[1:], name, here, named,
-                        {**named, **positional}, table, scopes
-                    )
+                    how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
+                                        {**named, **positional}, table, scopes)
                 if how:
                     if not same_file(name, dest):
                         shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
