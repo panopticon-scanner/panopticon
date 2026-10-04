@@ -335,9 +335,9 @@ def _resolved(argv, table):
     the terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
     value's blanks, then `command()` re-reading the argv, one left empty or a shell whose `-c`
     string is a bare printer (`_on_stdin`) dropped -- and none where nothing resolves. A first word
-    the table put there that is an assignment is the command, as bash runs it, so nothing is made of
-    that argv. A mark that never resolves fences each word, so a made word's source is known."""
-    mark = object()
+    the table put there that is an assignment is the command bash runs, so no argv is made of it --
+    behind a written `env`/`sudo` it is theirs, and main's dynamic-operand report stands."""
+    mark = object()     # never resolves: it fences each word, so a made word's source is known
     fenced = [part for word in argv for part in (mark, word)]
     for words in valued_argvs(fenced, table):
         if words is fenced:                 # `[argv]` itself: nothing resolved

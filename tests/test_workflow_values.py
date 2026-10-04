@@ -956,7 +956,8 @@ class TestTheCallersContract(unittest.TestCase):
     """`workflow_uses._resolved`: the argvs `use()` weighs after a stage as
     written, on the terms `valued_argvs` leaves its caller, and the made argvs it
     drops beyond them: one headed by an assignment the table put there, the
-    command bash runs, and a shell whose `-c` string is a bare printer."""
+    command bash runs (behind a written `env`, the wrapper's), and a shell whose
+    `-c` string is a bare printer."""
 
     def resolved(self, script, argv):
         return list(wu._resolved(argv, table(script)))
@@ -1121,6 +1122,13 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
                     'F=$U\nsh $F || :\n'):
             with self.subTest(use=use):
                 self.assertEqual([], defects(GET + use))
+
+    def test_a_made_assignment_behind_a_written_wrapper_is_the_wrappers(self):
+        # m2a FR FR FR FR; main the same: a written `env` takes the made `X=1` as its own and runs
+        # `sh`; the table makes no argv of it, and main's wrapper report stands (a precision price).
+        found = defects(GET + "A=X=1\nenv $A sh cuda_1.run\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("dynamic command operand behind a wrapper", found[0])
 
     def test_the_prices_over_report(self):
         # Main CLEAN on each, and bash runs nothing (F- F- F- F-): t08q, t09q and n02
