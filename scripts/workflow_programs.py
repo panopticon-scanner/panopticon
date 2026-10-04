@@ -55,8 +55,9 @@ import re
 import shell_lex
 import shell_reader
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
-                               handed as handed, printed as printed, producer as producer,
-                               spellings as spellings, unspelled as unspelled)
+                               file_operand as file_operand, handed as handed, operand, rendered,
+                               printed as printed, producer as producer, spellings as spellings,
+                               substituted, unspelled as unspelled, unsubstituted)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`. The text is shell and
@@ -68,10 +69,10 @@ _SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 
 class Opaque(str):
     """A script `scripts` hands on from a string holding a lifted `$(...)` or backquote among text
-    of its own, written as `shell_reader.readable` renders it (`sh $(...)`, #2486). Bash reads what
-    the substitution PRINTS as part of the script, and nothing here reads that, so
-    `workflow_forms.flattened` reads the rest in place and counts no check in it:
-    `bash -ec "$(echo 'true ||') <check>"` never runs the check."""
+    of its own, as `rendered` writes it: `sh $(...)` (#2486), or `sh tool` where one printer prints
+    `tool` (#2487). Bash reads what the substitution PRINTS as part of the script, word-split where
+    unquoted (the reader drops quotes), so `workflow_forms.flattened` reads it in place and counts
+    no check in it: `bash -ec "$(echo 'true ||') <check>"` never runs the check."""
 
 
 def scripts(argv):
@@ -79,18 +80,17 @@ def scripts(argv):
     shell: a double-quoted `\\$` or `` \\` `` without its backslash (`shell_reader._stage`'s
     `spelled`, #2342).
 
-    A word that is all expansion -- one lifted `$(...)` or backquote, or several beside `$` words
-    (`$P$(...)`) -- is never one: it spells no command, and `dynamic_program` reports it (#2483,
-    #2486). Nor is a word holding a heredoc, a `<(...)` or any other marker: each stands for text
-    held in the parse it came from, and the guard's `_walk` already credits what is inside it. A
-    `$(...)` or backquote among text of the word's own does not make it none (#2486):
-    `eval "sh $(echo tool)"` hands on `sh $(...)`, `Opaque`, whose `sh` is weighed as
-    `sh $(echo tool)`'s is -- the substitution's own text still read where `_walk` reads it, what it
-    prints read nowhere (#2487), and no marker of this parse left to reach another. A text so
-    rendered that the reader refuses is none, as before #2486: `eval "cat <<$(a b) …"` takes its
-    delimiter from what `a b` prints, and `cat <<$(...)` is no spelling to end the body at, so the
-    string is unread and the rest of the step read.
-    """
+    A word that is all expansion as `rendered` writes it -- one lifted `$(...)` or backquote, or
+    several beside `$` words (`$P$(...)`) -- is never one: it spells no command, and
+    `dynamic_program` reports it (#2483, #2486). Nor is a word holding a heredoc, a `<(...)` or any
+    other marker: each stands for text held in the parse it came from, and the guard's `_walk`
+    already credits what is inside it. A `$(...)` or backquote among text of the word's own does not
+    make it none (#2486): `eval "sh $(cat f)"` hands on `sh $(...)`, `Opaque`, whose `sh` is weighed
+    as `sh $(cat f)`'s is, and `eval "sh $(echo tool)"` `sh tool`, what its one printer prints
+    (#2487) -- the substitution's own text still read where `_walk` reads it, and no marker of this
+    parse left to reach another. A text so rendered that the reader refuses is none, as before
+    #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b` prints, and `cat <<$(...)` is
+    no spelling to end the body at, so the string is unread and the rest of the step read."""
     return [script for script in map(_script, _program_words(argv)) if script is not None]
 
 
@@ -107,7 +107,7 @@ def _script(word):
     keys = getattr(word, "markers", {})
     if not keys:
         return getattr(word, "spelled", word)
-    text = shell_reader.readable(word)
+    text = rendered(word)
     if _all_expansion(text) or not all(
             shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
         return None
@@ -376,18 +376,18 @@ def dynamic_program(argv):
     the program UNREAD wherever a literal shell took one while the `$CMD -c "$P"` twin `candidates`
     finds was reported: `unread_program` now says it of both. So is a word of lifted `$(...)` or
     backquote substitutions that hand on words, `$` words beside them or not (`sh -c "$(cat f)"`,
-    `eval sh "$(echo tool)"`, `sh -c "$P$(cat f)"`, #2486), asked here before `scripts` drops it:
-    bash runs what they print, and nothing here reads that (#2487). The price is #2483's: beside an
-    unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"` are reported though they run
-    none of it. A `<(...)` or `>(...)` hands a file, not words (`shell_reader.yields_words`), and is
-    not one; nor is a string that MIXES literal text with an expansion (`sh -c "echo $X"`), which is
-    read as written (`Opaque` where a `$(...)` is among its text). `set -- "$P"` IS one, and
-    `eval set -- "$OPTS"` runs nothing of the value as a command: an accepted over-report, because a
-    `;` in that value does run (r0 finding 4)."""
+    `eval sh "$(cat f)"`, `sh -c "$P$(cat f)"`, #2486), asked here before `scripts` drops it: bash
+    runs what they print, unread here unless one printer spells it (`rendered`, #2487). The price is
+    #2483's: beside an unverified download, `sh -c "$(date)"` and `eval "$(ssh-agent -s)"` are
+    reported though they run none of it. A `<(...)` or `>(...)` hands a file, not words
+    (`shell_reader.yields_words`), and is not one; nor is a string that MIXES literal text with an
+    expansion (`sh -c "echo $X"`), which is read as written (`Opaque` where a `$(...)` is among its
+    text). `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs nothing of the value as a command:
+    an accepted over-report, because a `;` in that value does run (r0 finding 4)."""
     name = os.path.basename(argv[0]) if argv else ""
     for word in _program_words(argv):
         keys = getattr(word, "markers", {})
-        text = shell_reader.readable(word) if keys else getattr(word, "spelled", word)
+        text = rendered(word) if keys else getattr(word, "spelled", word)
         if _all_expansion(text) and all(
                 shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
             return (name if name == "eval" else name + " -c"), (word if keys else text)
@@ -502,11 +502,11 @@ def stdin_command(argv):
 
 
 class Stdin(str):
-    """A script `stdin_scripts` read off standard input, and its `reader` (`_stdin`): the argv of
-    the shell the step itself runs to read it, under whose `-e` a check in it runs; `()` where
-    that shell's own options read stdin but its `-c` string names the shell that reads it
-    (`bash -s -c 'sh'`), whose statements are the step's own and no check in them counts; or None,
-    where no shell is sure to read it and nothing in it is the step's own."""
+    """A script `stdin_scripts` read off standard input or a `<(...)` FILE, and its `reader`
+    (`_stdin`): the argv of the shell the step itself runs to read it, under whose `-e` a check in
+    it runs; `()` where that shell's own options read stdin but its `-c` string names the shell that
+    reads it (`bash -s -c 'sh'`), whose statements are the step's own and no check in them counts;
+    or None, where no shell is sure to read it and nothing in it is the step's own."""
     reader: "list[str] | tuple[()] | None" = None
 
 
@@ -633,7 +633,7 @@ def runs_under(argv, reader, name):
 
 
 def stdin_scripts(argv, stage, before=None, shell=None):
-    """The heredoc script this stage hands an interpreter, if it does.
+    """The script this stage hands an interpreter on its stdin, if it does, or as a `<(...)` FILE.
 
     A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
     string; `curl … | sh` is the same defect, as is `sh <<< '…'` (#2293), and so is the quoted
@@ -643,7 +643,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     since the outer read owns them. Text an `echo` or `printf` in front (`before`) pipes in is read
     too, one text per distinct reading of the runner `shell` (`spellings`, #2476), where `printed`
     spells it (#2333): `echo 'sh tool' | sh`; else `unprinted` has it -- each through pass-through
-    stages too (`producer`, #2478).
+    stages too (`producer`, #2478). A FILE's text is its one printer's (`substituted`).
 
     Each comes as a `Stdin` naming its `reader` (`_stdin`), the shell under whose `-e`
     `workflow_forms.flattened` counts a check in it: a literal shell the step runs, whatever stands
@@ -653,25 +653,24 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     string that names the shell reading it (`eval 'bash -s'`, `bash -c 'sh'`), past a word that may
     vanish, under a `$` command word, or where the printer spells two readings (R-F8) or one and an
     unspelled one (R-F11), where no shell is sure to read it and nothing in it is the step's own
-    (`workflow_forms.Unsure`).
+    (`workflow_forms.Unsure`). A FILE's `reader` is the shell or `source` reading it (#2487, #2495).
 
     Behind a `$` command word (VALUE_PROGRAM, #2473) the body and printed text are read as shell,
     though the word may hold none: what they fetch or run is read as at the top level, and
     `workflow_forms.flattened` counts no check there. Inside a `$(...)`,
     `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted` weighs a
-    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331.
-    """
+    shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331."""
     here = stage.stdin_heredoc or handed(stage, before)
-    if here is not None:
-        readings = texts = [here[0]]
+    if (filed := substituted(operand(argv))) is not None or here is not None:   # `<(...)` FILE
+        readings = texts = [here[0] if filed is None else filed]
     else:
         source, intact = producer(stage, before)
         readings = spellings(shell_reader.command(source.argv), source, shell) if intact else []
         texts = [t for t in readings if t is not None]
     if not texts:
         return []
-    expands = here is not None and here[1]
-    kind, reader = _stdin(argv, 0)
+    expands = filed is None and here is not None and here[1]
+    kind, reader = (SHELL_PROGRAM, argv) if filed is not None else _stdin(argv, 0)
     if kind not in (SHELL_PROGRAM, VALUE_PROGRAM) or expands and kind != VALUE_PROGRAM:
         return []
     if expands:
@@ -689,12 +688,13 @@ def stdin_scripts(argv, stage, before=None, shell=None):
 def unprinted(argv, stage, before, shell=None):
     """The name and texts `unread_program` weighs (each text apart, review N-1) for the program this
     shell reads where no printer spells it out, or [] (`unspelled`, once `stdin_program` names a
-    shell reading stdin): the `echo` or `printf` `producer` finds in `before` (the stages in front)
-    where a reading `spellings` gives is unspelled (`echo "$X" | sh`, an escape outside `_decoded`'s
-    table, EITHER reading of a `Named`/`ANY` runner: #2333, #2476 R-F1); where one between rewrites
-    the text (`base64 -d`: #2478, R-P4), that text and the LAST stage in front's words, so a fetch
-    in either is weighed (review I-1); past `_DEPTH`, a LOUD answer (`_PAST_DEPTH`). Never a
-    heredoc-fed `cat` handing it on intact (`printed` or `_unread_stdin` has it, R-F13)."""
+    shell reading stdin; else a `<(...)` FILE's, `unsubstituted`, #2487): the `echo` or `printf`
+    `producer` finds in `before` (the stages in front) where a reading `spellings` gives is
+    unspelled (`echo "$X" | sh`, an escape outside `_decoded`'s table, EITHER reading of a
+    `Named`/`ANY` runner: #2333, #2476 R-F1); where one between rewrites the text (`base64 -d`:
+    #2478, R-P4), that text and the LAST stage in front's words, so a fetch in either is weighed
+    (review I-1); past `_DEPTH`, a LOUD answer (`_PAST_DEPTH`). Never a heredoc-fed `cat` handing it
+    on intact (`printed` or `_unread_stdin` has it, R-F13)."""
     if stage.stdin_heredoc is not None or stdin_program(argv) != SHELL_PROGRAM:
-        return []
+        return unsubstituted(operand(argv))
     return unspelled(stage, before, shell)

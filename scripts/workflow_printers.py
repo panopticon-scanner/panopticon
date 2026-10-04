@@ -7,8 +7,10 @@ move (PR #2699 -- `_piped`, `_PRINTERS` and `printed` byte for byte), then a `ca
 or here-string on its stdin (#2467) and an `echo`/`printf` read the way the shell that RUNS the
 printer prints it (`ANY`/`Named` where that is not one measured shell) (#2476), then fix round 1's
 `ANY` reading for a runner no row measures (#2467, #2476, review R-F1), then a pass-through stage
-between the printer and the shell (#2478). A printer reaching a shell through a substitution
-(#2487, #2495) is still owed. `workflow_programs` re-exports every name its callers use:
+between the printer and the shell (#2478), then a printer reaching a shell through a substitution:
+a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as its FILE (#2487,
+#2495). `workflow_programs` re-exports the names its callers use, bar `fed` and `operand`, which
+`workflow_guard` imports from here:
 
     `_piped`     whether a stage's descriptor 0 finally reads what the stage before it writes
     `_PRINTERS`  the commands whose output is the text of their words
@@ -22,6 +24,12 @@ between the printer and the shell (#2478). A printer reaching a shell through a 
                  (N-1) -- an unspelled printer's words, or, where a stage between rewrites the
                  text, that text and the stage's words (I-1), or past `_DEPTH` a LOUD stand-in
                  (`_PAST_DEPTH`, fix round 1b)
+    `substituted`  the text a substitution's script prints where it is ONE printer and every
+                 reading agrees on it (R-P3), or None; `rendered`, a word with each such
+                 `$(...)` replaced by that text; `file_operand`, the word a shell or `source`
+                 reads its program from as a FILE, and `operand`, the script of a `<(...)` there
+    `unsubstituted`  the `echo`/`printf` alone in such a script that `substituted` cannot spell,
+                 as `unspelled` names one; `fed`, the heredoc a `cat` alone in it prints
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
     `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
@@ -30,6 +38,7 @@ Stdlib only, like everything under it.
 import os
 import re
 
+import shell_lex
 import shell_reader
 
 
@@ -368,3 +377,113 @@ def unspelled(stage, before, shell=None):
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
     return front[:1] + texts + [" ".join(front[1:])]
+
+
+def _printer(value):
+    """`(argv, stage)` of the ONE printer the script `value` is -- one statement of one stage, an
+    `echo` or `printf` (`_PRINTERS`) or a `cat` reading a heredoc or here-string on its own stdin
+    (#2467), whose descriptor 1 still writes what the substitution hands on (`stdout_to_pipe`:
+    `echo x >&2` or `echo x > f` hands on nothing) -- or None. `value` is a lifted substitution's
+    text (`shell_text.Lifted` carries its heredocs back to the parse, #2336); a text the reader
+    refuses is no printer."""
+    try:
+        parsed = shell_reader.statements(value) if value is not None else []
+    except shell_lex.Unreadable:
+        return None
+    if len(parsed) != 1 or len(parsed[0].stages) != 1:
+        return None
+    stage = parsed[0].stages[0]
+    argv = shell_reader.command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    if name not in _PRINTERS and (stage.stdin_heredoc is None or not _cat_reads_stdin(argv)):
+        return None
+    return (argv, stage) if stage.stdout_to_pipe else None
+
+
+def substituted(value):
+    """The text the ONE printer a substitution's script `value` is writes (`_printer`, #2487,
+    #2495), or None: the same text under every reading `spellings` gives (R-P3), since what runs a
+    substitution's printer is not followed here -- the step's shell for `eval "$(…)"`, bash for a
+    `<(…)`. So `echo 'sh tool'`, a `printf` format (decoded in every shell) and a QUOTED heredoc on
+    a `cat` are spelled; `echo 'sh\\ttool'`, which bash prints as written and dash decodes, is not,
+    and neither is an EXPANDING heredoc (`fed` has it) nor anything `printed` cannot spell."""
+    found = _printer(value)
+    readings = spellings(found[0], found[1], ANY) if found else [None]
+    return readings[0] if len(readings) == 1 else None
+
+
+def unsubstituted(value):
+    """The name and text `workflow_programs.unprinted` hands `unread_program` for the `echo` or
+    `printf` alone in the script `value` where `substituted` cannot spell it, its words as ONE
+    text as `unspelled` weighs an unspelled printer's (`sh <(echo "$X")`), else []. Never a `cat`:
+    `substituted` spells its QUOTED heredoc, and `fed` hands the guard its EXPANDING one."""
+    found = _printer(value)
+    if not found or os.path.basename(found[0][0]) not in _PRINTERS:
+        return []
+    return [] if substituted(value) is not None else [found[0][0], " ".join(found[0][1:])]
+
+
+def fed(value):
+    """The `(body, expands)` of the heredoc or here-string a `cat` alone in the script `value`
+    prints (`_printer`, #2495), or None: `workflow_guard._unread_stdin` reports an EXPANDING one a
+    shell reads as its FILE (`bash <(cat <<EOF …)`) as it reports `cat <<EOF | sh`."""
+    found = _printer(value)
+    return (found[1].stdin_heredoc
+            if found and os.path.basename(found[0][0]) not in _PRINTERS else None)
+
+
+def rendered(word):
+    """`word`'s text with each lifted `$(...)` or backquote whose script is one printer
+    `substituted` spells replaced by that text, its trailing newlines dropped as a command
+    substitution drops them, and every other substitution -- a `<(...)` or `>(...)` always, which
+    hands a FILE, never its text -- rendered `$(...)`, as `shell_reader.readable` renders them all.
+    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. The reader keeps
+    no quoting for a lifted substitution, so an unquoted one is rendered as a quoted one is,
+    unsplit: bash splits its text into words."""
+    text = word
+    for key, (kind, value) in getattr(word, "markers", {}).items():
+        if kind == "subst":
+            spelled = (substituted(value)
+                       if shell_reader.yields_words(shell_reader.derived(key, word)) else None)
+            text = text.replace(key, "$(...)" if spelled is None else spelled.rstrip("\n"))
+    return text
+
+
+def file_operand(argv):
+    """The word this command reads its PROGRAM from as a FILE (#2487, #2495), or None: `source`'s
+    or `.`'s first word, or a literal shell's (`sh`, `bash`, `dash`, `ash`, `ksh`, `zsh`) first
+    operand past its option words and the value each `o` or `O` in one owes (`bash -o pipefail
+    f`) -- None where `-c` or `-s` among its letters, a `-` or `--`, or a word that is a value
+    (`$X`, a lifted `$(...)`) stands first, or no operand does."""
+    name = os.path.basename(argv[0]) if argv else ""
+    if name in ("source", "."):
+        return argv[1] if argv[1:] else None
+    owed = 0
+    for word in argv[1:] if name in shell_reader._SHELLS else []:
+        if owed:
+            owed -= 1
+        elif word in ("-", "--"):
+            return None
+        elif word[:1] in ("-", "+"):
+            letters = "" if word[:2] in ("--", "++") else word[1:]
+            if "c" in letters or "s" in letters:
+                return None
+            owed = sum(letter in "oO" for letter in letters)
+        else:
+            return None if _filed(word) is None and shell_reader.dynamic(
+                word, shell_reader.has_substitution) else word
+    return None
+
+
+def _filed(word):
+    """The script of `word` where it is ONE lifted `<(...)`, whole -- what bash runs to fill the
+    file it hands the command -- or None."""
+    entry = getattr(word, "markers", {}).get(word)
+    return (entry[1] if entry and entry[0] == "subst" and not shell_reader.yields_words(word)
+            else None)
+
+
+def operand(argv):
+    """The script of the `<(...)` that is `argv`'s whole FILE operand (`file_operand`, `_filed`):
+    what bash runs to fill the file a shell or `source` then reads its program from, or None."""
+    return _filed(file_operand(argv))

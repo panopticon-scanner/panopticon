@@ -405,20 +405,29 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # reader renders it and the script marked `Opaque`, so no marker of
         # this parse reaches the next -- two parses give one text. A word
         # that is one lone `$(...)` is still none: `dynamic_program` names it.
-        for script in ('sh -c "sh $(echo tool)" x', 'eval "sh $(echo tool)"'):
+        # Since #2487 a `$(...)` that is one printer is written as the text it
+        # prints (`workflow_printers.rendered`), the script still `Opaque`, and
+        # a lone one so written is a script, no dynamic program.
+        for script, text in (('sh -c "sh $(cat f)" x', "sh $(...)"),
+                             ('eval "sh $(cat f)"', "sh $(...)"),
+                             ('sh -c "sh $(echo tool)" x', "sh tool"),
+                             ('eval "sh $(echo tool)"', "sh tool"),
+                             ('sh -c "$(echo tool)" x', "tool")):
             with self.subTest(script=script):
                 found = self.program(script)
-                self.assertEqual(["sh $(...)"], found)
+                self.assertEqual([text], found)
                 self.assertIsInstance(found[0], workflow_programs.Opaque)
                 self.assertEqual(found, self.program(script))
-        self.assertEqual([], self.program('sh -c "$(echo tool)" x'))
+        self.assertEqual([], self.program('sh -c "$(cat f)" x'))
         # A text so rendered that the reader refuses is none, as before:
         # `cat <<$(...)` names no line to end the body at. Nothing reaches a
-        # re-parse that would refuse the whole step.
-        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(echo E)\nE\nsh x"'):
+        # re-parse that would refuse the whole step. A printer's `E` is a
+        # delimiter like any other (#2487).
+        for script in ('eval "cat <<$(a b)\nit\'s\n$(a b)\n"', 'sh -c "cat <<$(cat d)\nE\nsh x"'):
             with self.subTest(script=script):
                 self.assertEqual([], self.program(script))
                 self.assertEqual([], guard.fetch_exec_defects(script))
+        self.assertEqual(["cat <<E\nE\nsh x"], self.program('sh -c "cat <<$(echo E)\nE\nsh x"'))
 
     def test_a_word_that_is_all_substitution_is_the_dynamic_programs(self):
         # #2486: it spells no command, so `scripts` hands on no text for it
@@ -439,12 +448,13 @@ class TestTheProgramAfterDashC(unittest.TestCase):
     def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
         # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
         # string holding one beside a `$(...)` is no script at all, where its
-        # twin with the `$(...)` alone is read opaque (#2486) ...
+        # twin with the `$(...)` alone is read opaque (#2486), the one
+        # printer's text written in (#2487) ...
         for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
             with self.subTest(script=script):
                 self.assertEqual([], self.program(script))
         found = self.program('sh -c "sh $(echo tool)" x')
-        self.assertEqual(["sh $(...)"], found)
+        self.assertEqual(["sh tool"], found)
         self.assertIsInstance(found[0], workflow_programs.Opaque)
         # ... and a program word that is all `<(...)` is not `dynamic_program`'s,
         # where its `$(...)` twin is.
