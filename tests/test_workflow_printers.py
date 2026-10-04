@@ -1,7 +1,10 @@
 """#2331 batch P, task 1: two printers more, read per shell -- `cat <<'EOF' | sh` (#2467) and
-`echo`/`printf` escapes read under the step's shell (#2476). Each class pins one issue's shapes
-against `wg.job_defects`, the bash-truth row it rests on named in a comment, and the controls that
-must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers` directly.
+`echo`/`printf` escapes read under the step's shell (#2476); then a pass-through stage between the
+printer and the shell (#2478). Task 2: a printer reaching a shell through a substitution (#2487,
+#2495) and the `echo` inside a `$(...)` read under the shell that runs it (#2728). Each class pins
+one issue's shapes against `wg.job_defects`, the bash-truth row it rests on named in a comment, and
+the controls that must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers`
+directly, as the last tests of `TestAPrinterThroughASubstitution` do its substitution helpers.
 """
 import unittest
 
@@ -695,11 +698,11 @@ class TestFixRound4(unittest.TestCase):
         self.assertEqual(["echo \\x; sh\\ttool\n", None],
                          wp.spellings(shell_reader.command(stages[0].argv), stages[0],
                                       wp.Named("bash")))
-        texts = forms.stdin_scripts(argv, stages[1], stages[0], wp.Named("bash"))
+        texts = forms.stdin_scripts(argv, stages[1], stages[:1], wp.Named("bash"))
         self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
         self.assertIsNone(texts[0].reader)
         # One spelled reading alone keeps the real reader (bash's own table: `[spelled]`).
-        texts = forms.stdin_scripts(argv, stages[1], stages[0], "bash")
+        texts = forms.stdin_scripts(argv, stages[1], stages[:1], "bash")
         self.assertEqual(["echo \\x; sh\\ttool\n"], texts)
         self.assertIs(argv, texts[0].reader)
 
@@ -1054,7 +1057,7 @@ class TestFixRound5(unittest.TestCase):
             with self.subTest(script=script):
                 stages = shell_reader.statements(script)[0].stages
                 self.assertEqual([], forms.unprinted(shell_reader.command(stages[1].argv),
-                                                     stages[1], stages[0]))
+                                                     stages[1], stages[:1]))
 
 
 class TestTheXpgEchoGapTheGuardDocuments(unittest.TestCase):
@@ -1090,11 +1093,993 @@ class TestThePrintersUnitPins(unittest.TestCase):
 
     def test_handed_carries_the_heredoc_down_the_pipe(self):
         stages = shell_reader.statements("cat <<'EOF' | sh\nbody text\nEOF\n")[0].stages
-        self.assertEqual(("body text", False), wp.handed(stages[1], stages[0]))
+        self.assertEqual(("body text", False), wp.handed(stages[1], stages[:1]))
 
     def test_decoded_backslash_c_and_octal(self):
         self.assertEqual("a", wp._decoded("a\\cb"))
         self.assertEqual("A", wp._decoded("\\0101"))
+
+
+class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
+    """#2478: a PASS-THROUGH stage between a printer and the shell it feeds -- `tee` writing plain
+    files, a bare `cat` or `cat -` -- hands the printer's text on unchanged, so the printer behind
+    it is read as if it stood right before the shell (`workflow_printers.producer`). Any other
+    stage (`tr`, `base64 -d`, `cat -n`, `tee >(...)`, `xargs cat`, `tee /dev/stdout`) leaves the
+    program UNREAD: the `_PRINTED` sentence naming the stage the shell reads from, never read as
+    the printer's words (R-P4) -- LOUD where that stage's words or the printer's text fetch
+    (review I-1), `_Quiet`, kept beside a reported download, where neither does. Every step below
+    runs after GET unless it is named alone. Truth columns are b5, b3, dash and gh (GitHub's
+    pairing: the step under bash 5.2.21 with `sh` = dash), measured on the task's probe steps
+    (c01-c12, p2n01-p2n32) and the review's (its rv rows, fix round 1's fx rows, the re-review's
+    rr rows); each step read CLEAN at the base (d44879b7) and on main unless said otherwise."""
+
+    FETCH_EXEC = ("fetches https://example.test/tool -> tool and running it under `sh` with "
+                  "nothing verifying what arrived -- verify it first: ")
+    CHECKED = "fetches https://example.test/tool -> tool and running it under `sh`; the checksum "
+    STREAM = "hands https://example.test/i.sh straight to `sh`"
+    SUM = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
+
+    @staticmethod
+    def stages(script):
+        return shell_reader.statements(script)[0].stages
+
+    def assert_fetch_exec(self, script, shells=(None, "sh")):
+        """GET + `script` is the fetch-and-run sentence alone, never `_PRINTED`."""
+        for shell in shells:
+            with self.subTest(script=script, shell=shell):
+                found = defects(GET + script, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertNotIsInstance(found[0][1], forms.Idle)
+                self.assertTrue(found[0][1].startswith(self.FETCH_EXEC), found[0][1])
+
+    def assert_unread(self, script, stage, shells=(None, "sh")):
+        """GET + `script` is the unread answer alone, `_Quiet`, naming `stage`."""
+        for shell in shells:
+            with self.subTest(script=script, shell=shell):
+                found = defects(GET + script, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIsInstance(found[0][1], forms._Quiet)
+                self.assertTrue(found[0][1].startswith(
+                    "pipes `sh` its program from `%s`, whose words this guard does not spell out"
+                    % stage), found[0][1])
+
+    def assert_loud(self, script, stage, runner="sh", shells=(None, "sh")):
+        """`script` ALONE is the unread answer, LOUD, naming `stage` and the shell `runner`."""
+        for shell in shells:
+            with self.subTest(script=script, shell=shell):
+                found = defects(script, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertNotIsInstance(found[0][1], forms.Idle)
+                self.assertTrue(found[0][1].startswith(
+                    "pipes `%s` its program from `%s`, whose words this guard does not spell out"
+                    % (runner, stage)), found[0][1])
+
+    def test_c01_c04_c08_c11_c12_a_pass_through_hands_the_printer_on(self):
+        # c01 `tee /dev/null`, c02 `tee log.txt`, c03 `cat`, c04 `cat -`, c08 `tee -a f`, c11
+        # `tee /dev/null | cat` (two in a row), c12 `tee /dev/null 2>&1` (bash-truth b5/b3/dash/gh
+        # FR FR FR FR each: the shell runs `sh tool`): the fetch-and-run sentence, as `echo 'sh
+        # tool' | sh` gets it.
+        for middle in ("tee /dev/null", "tee log.txt", "cat", "cat -", "tee -a f",
+                       "tee /dev/null | cat", "tee /dev/null 2>&1"):
+            self.assert_fetch_exec("echo 'sh tool' | %s | sh\n" % middle)
+
+    def test_a_heredoc_cat_behind_a_pass_through(self):
+        # p2n02 `cat <<'EOF' | tee log.txt | sh`, body PIPE (FR FR FR FR): the body's own pipeline
+        # sentence, as `cat <<'EOF' | sh` (a01) gets it. p2n16 `cat <<'EOF' | cat | sh`, body
+        # `sh tool` (FR FR FR FR): the fetch-and-run sentence.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "cat <<'EOF' | tee log.txt | sh\n%s\nEOF\n" % PIPE, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found[0][1])
+        self.assert_fetch_exec("cat <<'EOF' | cat | sh\nsh tool\nEOF\n")
+
+    def test_an_expanding_heredoc_behind_a_pass_through_is_reported_loud(self):
+        # p2n03 `cat <<EOF | tee log | sh`, body PIPE (FR FR FR FR): `_unread_stdin`'s EXPANDING
+        # sentence, as `cat <<EOF | sh` (a02) gets it -- `handed` finds the body through the `tee`.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "cat <<EOF | tee log | sh\n%s\nEOF\n" % PIPE, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands an EXPANDING heredoc body"),
+                                found[0][1])
+
+    def test_the_controls_stay_clean(self):
+        # c05 `echo 'echo hi' | tee /dev/null | sh` (F- F- F- F-: it prints `hi`), c07 `echo 'sh
+        # tool' | tee x.sh` (F- x4: no shell), p2n01 `echo 'sh tool' | tee x.sh | cat > y` (F- x4:
+        # no shell either), p2n10 `echo 'sh tool' | sh 0</dev/null` (F- x4: the shell reads
+        # /dev/null, the pipe is broken, and `producer` finds no source).
+        for script in ("echo 'echo hi' | tee /dev/null | sh\n", "echo 'sh tool' | tee x.sh\n",
+                       "echo 'sh tool' | tee x.sh | cat > y\n",
+                       "echo 'sh tool' | sh 0</dev/null\n"):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    self.assertEqual([], defects(GET + script, shell))
+
+    def test_c06_c09_c10_a_stage_that_rewrites_the_stream_leaves_it_unread(self):
+        # c06 `base64 -d` and c09 `tr A-Z a-z` (FR FR FR FR: each turns its text into `sh tool`,
+        # which runs -- read as the printer's words, `c2ggdG9vbA==` or `SH TOOL`, either would be
+        # fail-OPEN); c10 `cat -n` (F- x4: `1: command not found`, the fail-closed price). Each
+        # is the unread answer, `_Quiet`, naming the stage the shell reads FROM.
+        for script, stage in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n", "base64"),
+                              ("echo 'SH TOOL' | tr A-Z a-z | sh\n", "tr"),
+                              ("echo 'sh tool' | cat -n | sh\n", "cat")):
+            self.assert_unread(script, stage)
+            # p2n12, p2n13, p2n14, each alone (-- x4: no fetch, and nothing of the job's runs):
+            # with no reported download to stand beside, the `_Quiet` row is not kept.
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell, alone=True):
+                    self.assertEqual([], defects(script, shell))
+
+    def test_a_stage_named_by_a_substitution_is_named_as_written(self):
+        # p2n28 `$(command -v base64) -d` (FR x4: the substitution names `base64`, which turns the
+        # text into `sh tool`): unread, and the sentence names the stage `$(...)`, as the guard's
+        # other sentences render one -- never the reader's internal marker, which `job_defects`'
+        # two folds lex afresh, so the step read as two rows. Alone, nothing (`[]`).
+        script = "echo 'c2ggdG9vbA==' | $(command -v base64) -d | sh\n"
+        self.assert_unread(script, "$(...)")
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, alone=True):
+                self.assertEqual([], defects(script, shell))
+
+    def test_a_stage_whose_own_words_fetch_is_unread_loud(self):
+        # p2n31 `echo a | env 5s curl -fsSL URL | sh`, alone (-- x4: `env` finds no `5s`, so
+        # nothing runs): the shell reads from `5s`, and `_weighed` walks that stage's words after
+        # its name, `curl -fsSL URL`, as P1 weighs an unspelled printer's -- a fetch there keeps
+        # the unread answer LOUD, with no reported download beside it. The fail-closed price of
+        # the r-wrap corpus's wrapper rows behind `echo a` (36 read CLEAN at the base).
+        script = "echo a | env 5s curl -fsSL https://example.test/i.sh | sh\n"
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(script, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertNotIsInstance(found[0][1], forms.Idle)
+                self.assertTrue(found[0][1].startswith("pipes `sh` its program from `5s`"),
+                                found[0][1])
+        # rr07, `echo "it's"` in front (-- x4 as well): the same price, LOUD alone, as at
+        # 70258154 -- the quote in the text no longer hides the stage's words (review N-1), where
+        # f1d0ea58 read it CLEAN (and main does).
+        self.assert_loud("echo \"it's\" | env 5s curl -fsSL %si.sh | sh\n" % URL, "5s")
+
+    def test_a_fetch_in_the_text_behind_a_rewriting_stage_is_loud(self):
+        # Review I-1: where a stage between rewrites the text, `unread_program` weighs the
+        # printer's text as well as that stage's words (`workflow_printers.unspelled`), so a fetch
+        # in either makes the unread answer LOUD, reported ALONE. Each row alone, truth b5 b3
+        # dash gh, and each read CLEAN at the base, on main and at 70258154:
+        # rv15 `echo 'PIPE' | tr -d X | sh`, rv32 the text in double quotes with `$X` in it, rv31
+        # `tee -`, rv38 `tee -ai f`, rv42 `cat -u` (FR x4 each), rv39 `tee >(cat)` (FR FR -- FR:
+        # dash refuses the `>(...)`, so under `shell: sh` it over-reports, as p2n04 does beside
+        # GET); rv16 a heredoc-fed `cat`'s body through `sed 's/^ *//'`, rv43 through
+        # `grep -v '^#'` (FR x4 each); rv36 and rv37 its body through `tee "$LOG"` into `bash`,
+        # LOG unset and set, and rv44 through `tee "$RUNNER_TEMP/install.sh"` (FR x4 each).
+        for middle, stage in (("tr -d X", "tr"), ("tee -", "tee"), ("tee -ai f", "tee"),
+                              ("tee >(cat)", "tee"), ("cat -u", "cat")):
+            self.assert_loud("echo '%s' | %s | sh\n" % (PIPE, middle), stage)
+        self.assert_loud('echo "%s $X" | tr -d X | sh\n' % PIPE, "tr")
+        self.assert_loud("cat <<'EOF' | sed 's/^ *//' | sh\n  %s\nEOF\n" % PIPE, "sed")
+        self.assert_loud("cat <<'EOF' | grep -v '^#' | sh\n# install\n%s\nEOF\n" % PIPE, "grep")
+        for into in ('tee "$LOG"', 'tee "$RUNNER_TEMP/install.sh"'):
+            self.assert_loud("cat <<'EOF' | %s | bash\n%s\nEOF\n" % (into, PIPE), "tee", "bash")
+        self.assert_loud("LOG=install.log\ncat <<'EOF' | tee \"$LOG\" | bash\n%s\nEOF\n" % PIPE,
+                         "tee", "bash")
+        # rv34 `cat -n` (-- x4: the numbers spoil every line, so nothing runs) is LOUD too --
+        # the over-report, p2n31's (F4's) price class: the guard does not model what `-n` does.
+        self.assert_loud("echo '%s' | cat -n | sh\n" % PIPE, "cat")
+        # fx02 `printf '%s\n' 'PIPE'` and fx03 `echo -n 'PIPE'` through `tr -d X` (FR x4 each):
+        # the text weighed is what the printer PRINTS under each reading `spellings` gives, not
+        # its words -- `%s\n` or `-n` in front would hide the fetch. fx01 `echo -e 'PIPE'` (FR FR
+        # -- FR): bash's `echo` prints `PIPE` (LOUD under the default key and GitHub's pairing);
+        # dash's prints `-e PIPE`, which runs nothing, so under `shell: sh` it is CLEAN.
+        self.assert_loud("printf '%%s\\n' '%s' | tr -d X | sh\n" % PIPE, "tr")
+        self.assert_loud("echo -n '%s' | tr -d X | sh\n" % PIPE, "tr")
+        self.assert_loud("echo -e '%s' | tr -d X | sh\n" % PIPE, "tr", shells=(None,))
+        self.assertEqual([], defects("echo -e '%s' | tr -d X | sh\n" % PIPE, "sh"))
+        # fx04 `tr "'" x`, fx05 `sed "s/'//g"`, fx07 `tr '"' x` and fx06 `grep -v '<<X'` (FR x4
+        # each: the text has no quote or `<<X` to touch, so it runs as printed): the stage's other
+        # words are a text of their own, weighed apart from the printer's (review N-1), so a quote
+        # or a heredoc operator among them cannot swallow the printer's text. fx08 `X=1` and fx09
+        # `tr -d X | X=1` in front of the shell (-- x4: a stage with no command word prints
+        # nothing) stay CLEAN, as at the base, on main and at 70258154.
+        for middle, stage in (("tr \"'\" x", "tr"), ("sed \"s/'//g\"", "sed"),
+                              ("tr '\"' x", "tr"), ("grep -v '<<X'", "grep")):
+            self.assert_loud("echo '%s' | %s | sh\n" % (PIPE, middle), stage)
+        for middle in ("X=1", "tr -d X | X=1"):
+            for shell in (None, "sh"):
+                with self.subTest(middle=middle, shell=shell):
+                    self.assertEqual([], defects("echo '%s' | %s | sh\n" % (PIPE, middle), shell))
+
+    def test_a_quote_in_one_text_cannot_hide_the_next(self):
+        # Review N-1: `unread_program` walks each text `unspelled` gives on its own, so a quote or
+        # an open `case` in the printer's text cannot swallow the stage's words after it. Each row
+        # alone, the printer's text piped into `w`, a function running its words (FR x4 each: `w`
+        # runs `curl`, `sh` runs the download, the text never reaches `sh`): rr09 `echo "it's"`,
+        # rr42 `echo 'say "hi'`, rr43 `echo 'case x in'`, rr44 `printf "it's"` and rr46 a
+        # heredoc-fed `cat`'s body `it's` -- CLEAN on main and at f1d0ea58 (one joined text, the
+        # stage's words inside the open quote or `case`), LOUD at 70258154 and LOUD again now.
+        fetch = "w curl -fsSL %si.sh | sh\n" % URL
+        for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"'):
+            self.assert_loud('w() { "$@"; }\n%s | %s' % (front, fetch), "w")
+        self.assert_loud("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch, "w")
+        # rr05 and rr06, an `eval` string piping `echo "it's \0047; curl -fsSL URL | sh"` through
+        # `sed "s/Q'//"` or `tr -d Q` into `sh` (b5 --, b3 --, dash FR, gh --: dash's `echo`
+        # decodes `\0047` and closes the quote, bash's prints it and `sh` meets an open quote).
+        # A runner an `eval` string names is read both ways (#2476 R-F1), and the dash reading, a
+        # text of its own now, fetches: LOUD under `shell: sh` and under the default key too,
+        # where bash's reading runs nothing -- the `ANY`-reading price, #2476 R-F1. CLEAN on main
+        # and at every round before (the bash reading's open quote hid the dash reading).
+        text = r'''eval "echo \"it's \\0047; curl -fsSL https://example.test/i.sh | sh\" | '''
+        for middle, stage in ((r'''sed \"s/Q'//\"''', "sed"), ("tr -d Q", "tr")):
+            self.assert_loud(text + middle + ' | sh"\n', stage)
+        # The gap the guard names: a quote or a space INSIDE one of the stage's words still hides
+        # the fetch after it, the words joined, quotes removed, into the one text the walk reads.
+        # fy01 `w env 'A=say "hi' curl -fsSL URL` and fy02 `w env "A=case x in" curl -fsSL URL`,
+        # each behind `echo hi` and alone (FR x4 each), read CLEAN on main and at every round:
+        # `[]` here is that gap, not a vacuous pin -- it fails if the gap ever closes.
+        for word in ("'A=say \"hi'", '"A=case x in"'):
+            for shell in (None, "sh"):
+                with self.subTest(word=word, shell=shell, gap=True):
+                    self.assertEqual([], defects('w() { "$@"; }\necho hi | w env %s curl -fsSL '
+                                                 '%si.sh | sh\n' % (word, URL), shell))
+
+    def test_xargs_or_the_pipe_itself_is_no_pass_through(self):
+        # Review I-2: rv46 `echo 'x tool' | xargs cat | sh` (FR x4: `xargs` hands `cat` the words
+        # `x` and `tool` as FILES, so `sh` runs the download's own text), CLEAN at the base, on
+        # main and at 70258154: the unread answer beside GET. rv29 `echo 'tool' | xargs cat | sh`
+        # (FR x4) stays reported: the unread answer and the sentence the base gave it, the
+        # download piped into `sh`. rv21 `command cat` (FR x4) is a pass-through (fix round 1b):
+        # `xargs` alone of the wrappers changes what the command reads, `command` only how it
+        # runs, so the fetch-and-run sentence stands, as at 70258154 (round 1 read it unread).
+        self.assert_unread("echo 'x tool' | xargs cat | sh\n", "cat")
+        self.assert_fetch_exec("echo 'sh tool' | command cat | sh\n")
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, row="rv29"):
+                whys = [why for _n, why in defects(GET + "echo 'tool' | xargs cat | sh\n", shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(isinstance(why, forms._Quiet) and why.startswith(
+                    "pipes `sh` its program from `cat`") for why in whys), whys)
+                self.assertTrue(any(why.startswith(
+                    "fetches https://example.test/tool -> tool and piping it into `sh`")
+                    for why in whys), whys)
+        # Review N-2: `env -S` SPLICES its string into words, so `xargs` can hide among as many
+        # words as the stage has. rr16 `env -S 'xargs cat - -'` and rr28 `env -S'xargs cat -'`
+        # (FR x4 each: `xargs` hands `cat` the files `x` and `tool`, the download among them),
+        # CLEAN on main and at every round before: the unread answer beside GET, the answer rr17
+        # `env -S 'xargs cat'` (FR x4, CLEAN on main and at 70258154) has had since fix round 1.
+        for middle in ("env -S 'xargs cat - -'", "env -S'xargs cat -'", "env -S 'xargs cat'"):
+            self.assert_unread("echo 'x tool' | %s | sh\n" % middle, "cat")
+        # Review I-3a: rv40 `printf 'ool\nsh t' | tee /dev/stdout | sh` (FR x4: the two copies
+        # meet as `ool\nsh tool\nsh t`), CLEAN at the base, on main and at 70258154: the unread
+        # answer beside GET. rv17 `echo 'sh tool' | tee /dev/stdout | sh` (FR x4) and rv18
+        # `printf 'tool\nsh ' | tee /dev/stdout | sh` (FR x4) were the fetch-and-run sentence at
+        # 70258154 and are now the unread answer -- still reported, beside GET. rv41, rv40 with
+        # `tee f` (F- x4: one copy, `ool` and `sh t` run nothing), stays CLEAN.
+        self.assert_unread("printf 'ool\\nsh t' | tee /dev/stdout | sh\n", "tee")
+        self.assert_unread("echo 'sh tool' | tee /dev/stdout | sh\n", "tee")
+        self.assert_unread("printf 'tool\\nsh ' | tee /dev/stdout | sh\n", "tee")
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, row="rv41"):
+                self.assertEqual([], defects(GET + "printf 'ool\\nsh t' | tee f | sh\n", shell))
+        # rv48, a heredoc-fed `cat`'s PIPE body through `tee /dev/stdout`, alone (FR x4): the
+        # body's stream sentence at 70258154, the LOUD unread answer now (the body fetches).
+        self.assert_loud("cat <<'EOF' | tee /dev/stdout | sh\n%s\nEOF\n" % PIPE, "tee")
+
+    def test_answers_the_pass_through_reaches_beyond_the_printer_rules(self):
+        # Review I-4 (a): `_unread_stdin`'s other answers reach through a pass-through as well,
+        # via `handed`: rv54 `cat <<EOF | tee f | $CMD` (F- x4) and rv28 `cat <<'EOF' | tee f |
+        # python3`, body `print(1)` (F- x4), CLEAN at the base and on main, are one `Idle` row
+        # each, the answer of the adjacent shape (rv55 `cat <<EOF | $CMD`, rv53 `cat <<'EOF' |
+        # python3`) -- read as if adjacent.
+        for script, twin, start in (
+                ("cat <<EOF | tee f | $CMD\necho hi\nEOF\n", "cat <<EOF | $CMD\necho hi\nEOF\n",
+                 "hands a heredoc body or here-string to `$CMD`, a command word"),
+                ("cat <<'EOF' | tee f | python3\nprint(1)\nEOF\n",
+                 "cat <<'EOF' | python3\nprint(1)\nEOF\n",
+                 "hands a heredoc body or here-string to `python3` as the program to run")):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertIsInstance(found[0][1], forms.Idle)
+                    self.assertTrue(found[0][1].startswith(start), found[0][1])
+                    self.assertEqual(defects(GET + twin, shell), found)
+        # (b) rv13 `T=cat; echo 'sh tool' | $T | sh` (FR x4): `$T` may be a shell, so the text
+        # it is handed is read (the fetch-and-run sentence, the base's one row), and the `sh`
+        # after it reads a program from a `$` command word no table places: a second row, the
+        # `_Quiet` unread answer from `$T` -- F5's price, a consumer feeding the shell. rv14, the
+        # same with PIPE as the text, alone (FR x4): the stream sentence (the base's one row) and
+        # the unread answer, LOUD now that the text it weighs fetches (I-1).
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, row="rv13"):
+                whys = [why for _n, why in defects(GET + "T=cat\necho 'sh tool' | $T | sh\n",
+                                                   shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(why.startswith(self.FETCH_EXEC) for why in whys), whys)
+                self.assertTrue(any(isinstance(why, forms._Quiet) and why.startswith(
+                    "pipes `sh` its program from `$T`") for why in whys), whys)
+            with self.subTest(shell=shell, row="rv14"):
+                whys = [why for _n, why in defects("T=cat\necho '%s' | $T | sh\n" % PIPE, shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(why.startswith(self.STREAM) for why in whys), whys)
+                self.assertTrue(any(not isinstance(why, forms.Idle) and why.startswith(
+                    "pipes `sh` its program from `$T`") for why in whys), whys)
+
+    def test_a_word_that_is_no_plain_file_or_listed_option_is_no_pass_through(self):
+        # p2n04 `tee >(cat)` (b5 FR, b3 FR, dash F- -- a syntax error after the fetch --, gh FR):
+        # the `>(...)` operand's process may write into the stream too, so it is no plain file:
+        # unread, from `tee`. p2n27 `tee "$LOG"` (FR x4, `LOG` unset: `tee` refuses the empty
+        # name and still hands the text on) is a value, no plain file either. p2n20 `tee -ai f`
+        # (FR x4): the options are read one to a word, as listed, so a cluster is unread too.
+        # Beside GET each is the `_Quiet` answer -- the fail-closed price where the text, which
+        # names no fetch, passes through; with a fetch in the text each is LOUD alone (rv31, rv38,
+        # rv39 in `test_a_fetch_in_the_text_behind_a_rewriting_stage_is_loud`).
+        self.assert_unread("echo 'sh tool' | tee >(cat) | sh\n", "tee")
+        self.assert_unread("echo 'sh tool' | tee \"$LOG\" | sh\n", "tee")
+        self.assert_unread("echo 'sh tool' | tee -ai f | sh\n", "tee")
+
+    def test_a_shell_feeding_a_shell_rewrites_the_stream(self):
+        # p2n26 `echo 'sh tool' | sh | sh` (FR x4): the first `sh` reads the printer's text and
+        # runs the download, the fetch-and-run sentence; the second reads what the first PRINTS
+        # -- what the download writes -- so its program is unread, from `sh` (R-P4). At the base
+        # the first sentence stood alone.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                whys = [why for _n, why in defects(GET + "echo 'sh tool' | sh | sh\n", shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(why.startswith(self.FETCH_EXEC) for why in whys), whys)
+                self.assertTrue(any(isinstance(why, forms._Quiet) and why.startswith(
+                    "pipes `sh` its program from `sh`") for why in whys), whys)
+
+    def test_an_unspelled_printer_behind_a_pass_through_is_unread_from_itself(self):
+        # p2n05 `echo "$X" | tee f | sh` (F- x4: `X` unset) and p2n06, `X='sh tool'` set in front
+        # (FR x4): the text arrives intact but is not spelled, so the unread answer names the
+        # printer, as `echo "$X" | sh` gets it. p2n07 `printf 'sh %s\n' tool | tee f | sh` (FR
+        # x4): a format past `%s` is unspelled -- from `printf`.
+        self.assert_unread('echo "$X" | tee f | sh\n', "echo")
+        self.assert_unread("X='sh tool'\necho \"$X\" | tee f | sh\n", "echo")
+        self.assert_unread("printf 'sh %s\\n' tool | tee f | sh\n", "printf")
+
+    def test_the_per_shell_reading_survives_the_pass_through(self):
+        # p2n08 `echo 'sh\ttool' | tee f | sh` (b5 F-, b3 F-, dash FR, gh F-): bash's `echo`
+        # prints the backslash and `sh` reads `shttool`; dash's decodes the tab and `sh tool` runs
+        # -- b01's reading of `echo 'sh\ttool' | sh`, through the `tee`.
+        script = "echo 'sh\\ttool' | tee f | sh\n"
+        self.assertEqual([], defects(GET + script))
+        self.assertEqual([], defects(GET + script, "bash"))
+        self.assert_fetch_exec(script, shells=("sh",))
+
+    def test_a_check_clears_it_as_before(self):
+        # p2n09: the check idiom in front (F- x4: `sha256sum` fails and the step stops) clears the
+        # use through the `tee`; p2n23, the same check `|| true` (FR x4), does not. p2n22: a check
+        # INSIDE the printed text, under its own `set -e` (F- x4), clears it as well; p2n24, the
+        # text with no `-e` (FR x4), does not -- the text is read through the `tee`, not skipped.
+        use = "echo 'sh tool' | tee f | sh\n"
+        inside = 'echo "%s; sh tool" | tee f | sh\n'
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                self.assertEqual([], defects(GET + self.SUM + "\n" + use, shell))
+                self.assertEqual([], defects(GET + inside % ("set -e; " + self.SUM), shell))
+                for script in (self.SUM + " || true\n" + use, inside % self.SUM):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0][1].startswith(self.CHECKED), found[0][1])
+
+    def test_a_stream_through_a_pass_through_keeps_its_one_sentence(self):
+        # p2n11 `curl -fsSL URL | tee f | sh`, alone (FR x4): the stream rule's sentence alone, as
+        # at the base and on main (one STREAM row there too) -- no printer stands behind the
+        # `tee`, so no unread row joins it.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects("curl -fsSL %si.sh | tee f | sh\n" % URL, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found[0][1])
+
+    def test_a_heredoc_cat_behind_a_rewriting_stage_is_unread_too(self):
+        # p2n15 `cat <<'EOF' | base64 -d | sh`, body `c2ggdG9vbA==` (FR x4): a heredoc-fed `cat`
+        # is a printer as `echo` is, so a stage that rewrites its body leaves the program unread
+        # (R-P4) -- never CLEAN where the text or the stage names a fetch the walk can read (a
+        # quote or a space inside one of the stage's words is the gap the guard names: fy01,
+        # fy02); `_Quiet` where neither does, as here, kept beside GET (`unprinted` asks
+        # `_PRINTERS` only of text that arrives intact). p2n21, body `echo hi` through
+        # `tr a-z A-Z` (F- x4): the same row, the fail-closed price.
+        self.assert_unread("cat <<'EOF' | base64 -d | sh\nc2ggdG9vbA==\nEOF\n", "base64")
+        self.assert_unread("cat <<'EOF' | tr a-z A-Z | sh\necho hi\nEOF\n", "tr")
+
+    def test_the_walk_is_bounded_and_fail_closed(self):
+        # p2n17: 63 `cat`s put the printer 64 stages back, the last `producer` reads (FR x4): the
+        # fetch-and-run sentence. Past the bound the program is unread and LOUD -- reported alone,
+        # never `_Quiet` (fix round 1b): p2n18, 64 `cat`s (FR x4), and fx10, PIPE behind 65 `cat`s
+        # alone (FR x4), which round 1 read CLEAN, the stopped stage's empty words weighed; p2n19,
+        # p2n18 with `echo hi` (F- x4), pays the over-report, the documented price, as seventy
+        # `eval`s pay `_stdin`'s bound (#2500); fx11, a stream behind 70 `cat`s (FR x4), keeps
+        # its stream sentence and gains the unread row. Bounded, a long pipeline costs linear time.
+        past = "a pipeline longer than the 64 stages this guard follows"
+        cats = " | ".join(["cat"] * 64)
+        self.assert_fetch_exec("echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 63))
+        self.assert_loud(GET + "echo 'sh tool' | %s | sh\n" % cats, past)
+        self.assert_loud(GET + "echo 'echo hi' | %s | sh\n" % cats, past)
+        self.assert_loud("echo '%s' | cat | %s | sh\n" % (PIPE, cats), past)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, row="fx11"):
+                whys = [why for _n, why in defects("curl -fsSL %si.sh | cat | cat | cat | cat | "
+                                                   "cat | cat | %s | sh\n" % (URL, cats), shell)]
+                self.assertEqual(2, len(whys), whys)
+                self.assertTrue(any(why.startswith(self.STREAM) for why in whys), whys)
+                self.assertTrue(any(not isinstance(why, forms.Idle) and why.startswith(
+                    "pipes `sh` its program from `%s`" % past) for why in whys), whys)
+        stages = self.stages("echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70))
+        source, intact = wp.producer(stages[-1], stages[:-1])
+        self.assertIs(stages[-1 - 65], source)          # the stage it stopped at, 65 back
+        self.assertIsNone(intact)                       # unknown: neither intact nor rewritten
+
+    def test_producer(self):
+        def walk(script):
+            stages = self.stages(script)
+            return stages, wp.producer(stages[-1], stages[:-1])
+        stages, (source, intact) = walk("echo 'sh tool' | tee f | sh\n")
+        self.assertIs(stages[0], source)
+        self.assertTrue(intact)
+        stages, (source, intact) = walk("echo 'c2ggdG9vbA==' | base64 -d | sh\n")
+        self.assertIs(stages[0], source)
+        self.assertFalse(intact)
+        stages, (source, intact) = walk("cat <<'EOF' | cat | sh\nsh tool\nEOF\n")
+        self.assertIs(stages[0], source)
+        self.assertTrue(intact)
+        stages = self.stages("sh\n")
+        self.assertEqual((None, False), wp.producer(stages[0], stages[:0]))
+        self.assertEqual((None, False), wp.producer(stages[0], None))
+        # `0</dev/null` takes the shell's descriptor 0 off the pipe (the reader's answer), so the
+        # pipe is broken and there is no source.
+        stages, answer = walk("echo x | sh 0</dev/null\n")
+        self.assertFalse(stages[1].stdin_from_pipe)
+        self.assertEqual((None, False), answer)
+
+    def test_handed_and_unprinted_take_the_stages_in_front(self):
+        stages = self.stages("cat <<'EOF' | tee log | sh\nbody\nEOF\n")
+        self.assertEqual(("body", False), wp.handed(stages[2], stages[:2]))
+        stages = self.stages("cat <<EOF | tee log | sh\nbody\nEOF\n")
+        self.assertEqual(("body", True), wp.handed(stages[2], stages[:2]))     # EXPANDING kept
+        stages = self.stages("cat <<'EOF' | tr a-z A-Z | sh\nbody\nEOF\n")
+        self.assertIsNone(wp.handed(stages[2], stages[:2]))
+        # `unprinted` gives a NAME, the one the sentence gives, then the TEXTS `unread_program`
+        # walks, each on its own (review N-1). Where a stage between rewrites the text: the stage
+        # the shell reads from, the text the printer put on the pipe, and LAST that stage's other
+        # words as one text, so a fetch in either is weighed (review I-1) and a quote or an open
+        # `case` in one cannot swallow the other: the base64 rows carry `echo`'s text, a
+        # heredoc-fed `cat` its body, an unspelled `echo` its words. An `echo` with no words gives
+        # the newline it prints, never an error; past `_DEPTH` the answer is `_PAST_DEPTH`, a
+        # reason and one LOUD text, whatever the stage stopped at (fix round 1b); a stage with no
+        # command word in front (`X=1`) prints nothing. An unspelled printer arriving intact gives
+        # its name and its words as ONE text, as P1 weighs one right before the shell.
+        deep = "echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70)
+        for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
+                              ["base64", "c2ggdG9vbA==\n", "-d"]),
+                             ("echo x | base64 -d | tee f | sh\n", ["tee", "x\n", "f"]),
+                             ("cat <<'EOF' | tr a-z A-Z | sh\nbody\nEOF\n",
+                              ["tr", "body", "a-z A-Z"]),
+                             ('echo "$X" | tr a b | sh\n', ["tr", "$X", "a b"]),
+                             ("echo | tr a b | sh\n", ["tr", "\n", "a b"]),
+                             (deep, list(wp._PAST_DEPTH)),
+                             ("echo x | tr a b | X=1 | sh\n", []),
+                             ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
+                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X"]),
+                             ("echo 'sh tool' | tee f | sh\n", []),
+                             ("cat <<EOF | tee f | sh\nbody\nEOF\n", [])):
+            with self.subTest(script=script):
+                stages = self.stages(script)
+                self.assertEqual(argv, forms.unprinted(shell_reader.command(stages[-1].argv),
+                                                       stages[-1], stages[:-1]))
+        # Under a runner read both ways, each reading `spellings` gives is a text of its own.
+        stages = self.stages("echo 'sh\\ttool' | tr a b | sh\n")
+        self.assertEqual(["tr", "sh\\ttool\n", "sh\ttool\n", "a b"],
+                         forms.unprinted(["sh"], stages[-1], stages[:-1], wp.ANY))
+
+    def test_what_passes_through(self):
+        # No stage behind `xargs` passes (review I-2), even where `env -S` splices it in and
+        # `shell_reader.command` hands back as many words as the stage has (review N-2): it hands
+        # `cat` or `tee` the piped words as operands, where every other wrapper the reader strips
+        # changes only how the command runs, so `sudo tee f`, `nice cat`, `command cat`,
+        # `time cat`, `stdbuf -oL tee f` and `env -S 'nice cat - -'` pass (fix round 1b; round 1
+        # refused them all). No `tee` operand is the pipe itself (I-3a): `tee /dev/stdout`
+        # doubles the text.
+        for text, passes in (("tee f", True), ("tee", True), ("tee -a f", True), ("tee -p f", True),
+                             ("tee -i f", True), ("tee --append f", True),
+                             ("tee --output-error f", True), ("tee --output-error=warn f", True),
+                             ("cat", True), ("cat -", True), ("cat -- -", True),
+                             ("A=1 cat", True), ("sudo tee f", True), ("nice cat", True),
+                             ("command cat", True), ("time cat", True), ("stdbuf -oL tee f", True),
+                             ("env -S 'nice cat - -'", True), ("env -S 'xargs cat - -'", False),
+                             ("xargs cat", False), ("xargs tee f", False),
+                             ("sudo xargs cat", False), ("/usr/bin/xargs -n1 cat", False),
+                             ("tee /dev/stdout", False), ("tee f /dev/fd/1", False),
+                             ("tee >(cat)", False), ('tee "$F"', False),
+                             ("tee -x f", False), ("tee -- f", False), ("tee -ai f", False),
+                             ("tee *.log", False), ("cat -n", False), ("cat f", False),
+                             ("cat - f", False), ("tr a b", False), ("base64 -d", False)):
+            with self.subTest(text=text):
+                stage = self.stages("echo x | %s | sh\n" % text)[1]
+                self.assertIs(passes, wp._passes_through(shell_reader.command(stage.argv), stage))
+
+
+def said(found, head, kind=None):
+    """Whether a defect among `found` begins with `head` (and is a `kind`, where one is named)."""
+    return any(why.startswith(head) and (kind is None or isinstance(why, kind))
+               for _step, why in found)
+
+
+class TestAPrinterThroughASubstitution(unittest.TestCase):
+    """#2487, #2495: a printer reaching a shell through a substitution -- an `eval` or `-c` string
+    holding a `$(...)` or backquote, a `<(...)` a shell or `source` reads as its FILE -- is read as
+    the text the shell runs, where the substitution's script is ONE statement of ONE stage, an
+    `echo`, a `printf` or a `cat` printing its quoted heredoc, every reading spells it alike
+    (`workflow_printers.substituted`, R-P3) and its output reaches the substitution. Truth columns
+    are b5 b3 dash gh (bash 5.2.21, bash 3.2.57 and dash under `-e`; gh = the step under bash
+    5.2.21 with `sh` = dash), FR = fetched and ran, F- = fetched only, -- = neither, measured on
+    the task's probe steps (d01-d16, and the e and u rows). Every step read CLEAN, or `Idle` beside
+    its download, at the base (4ae90f4f) unless said otherwise. A `<(...)` is bash's: dash refuses
+    it (rc 2), and a `shell: sh` step reads the same, fail-closed. Fix round 1 (C-1 to C-3, the
+    review's rx, ry, rz, rc and rv rows): a word all substitution keeps `_DYNAMIC`'s catch-all
+    beside the read (`dynamic_program` asks `readable`), and a printed text the reader refuses is
+    not rendered, nor (fix round 2, re-review N-1, its rr rows) a backquote whose text escapes `$`,
+    `` ` ``, `"`, `\\` or a newline."""
+
+    FETCH_EXEC = "fetches https://example.test/tool -> tool and running it under `sh` with nothing"
+    STREAM = "hands https://example.test/i.sh straight to `sh`"
+    EXPANDING = "hands an EXPANDING heredoc body or here-string to `%s` as the script to run"
+    UNREAD = "runs `%s` on `$(...)`, a program this guard does not follow"
+    PRINTED = "pipes `%s` its program from `echo`, whose words this guard does not spell out"
+    CHECKED = ("fetches https://example.test/tool -> tool and running it under `sh`; the checksum "
+               "that names tool is inside the script `%s` runs with what a `$(...)` prints")
+    SUM = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+    QUOTED = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
+
+    def test_d03_d04_d11_d12_a_printer_in_a_string_is_the_text_bash_runs(self):
+        # d03 `eval "$(echo 'sh tool')"`, d04 `sh -c "$(echo 'sh tool')"`, d11 the MIXED string
+        # `eval "echo hi; $(echo 'sh tool')"`, d12 `eval "sh $(echo tool)"` (b5 b3 dash gh: FR FR
+        # FR FR each; base: `_DYNAMIC`'s `Idle`, d12 the value's, d11 CLEAN), and the backquote
+        # e08, `printf`'s decoded tab e12 and the unquoted e15 (FR FR FR FR each): the fetch-and-run
+        # sentence, under the default shell and `shell: sh` alike. Since fix round 1 a word that
+        # is all substitution (all but d11 and d12) keeps the base's `_DYNAMIC` row beside it.
+        for script, how in (("eval \"$(echo 'sh tool')\"\n", "eval"),
+                            ("sh -c \"$(echo 'sh tool')\"\n", "sh -c"),
+                            ("eval \"echo hi; $(echo 'sh tool')\"\n", None),
+                            ('eval "sh $(echo tool)"\n', None),
+                            ("eval \"`echo 'sh tool'`\"\n", "eval"),
+                            ("sh -c \"$(printf 'sh\\ttool\\n')\"\n", "sh -c"),
+                            ("eval $(echo 'sh tool')\n", "eval")):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertTrue(said(found, self.FETCH_EXEC), found)
+                    if how:
+                        self.assertTrue(said(found, self.UNREAD % how, forms._Quiet), found)
+                    else:
+                        self.assertFalse(said(found, self.UNREAD % "eval"), found)
+
+    def test_d01_d02_d14_d16_a_printer_in_a_file_operand_is_the_program(self):
+        # d01 `sh <(echo 'sh tool')`, d02 `bash <(echo "sh tool")`, d16 `sh <(printf 'sh tool\n')`
+        # (b5 b3 dash gh: FR FR F- FR each -- dash refuses the `<(`), d14 `. <(echo 'sh tool')`
+        # (FR F- F- FR: bash 3.2's `. <(…)` races, FR in 5 of 10 runs), e09 `source <(…)` (FR F-
+        # F- FR: bash 3.2 reads it empty), e19 `bash -e <(…)` and e20 `bash -o pipefail <(…)` (FR
+        # FR F- FR): each base CLEAN, now the fetch-and-run sentence.
+        for script in ("sh <(echo 'sh tool')\n", 'bash <(echo "sh tool")\n',
+                       "sh <(printf 'sh tool\\n')\n", ". <(echo 'sh tool')\n",
+                       "source <(echo 'sh tool')\n", "bash -e <(echo 'sh tool')\n",
+                       "bash -o pipefail <(echo 'sh tool')\n"):
+            with self.subTest(script=script):
+                found = defects(GET + script)
+                self.assertTrue(said(found, self.FETCH_EXEC), found)
+
+    def test_d07_d08_d09_a_heredoc_fed_cat_in_a_substitution_is_the_same_printer(self):
+        # #2495. d07 `bash <(cat <<'EOF' … EOF)` (b5 b3 dash gh: FR FR -- FR), d08 `source <(cat
+        # <<'EOF' … EOF)` (FR -- -- FR: bash 3.2 reads it empty) and d09 `eval "$(cat <<'EOF' …
+        # EOF)"` (FR FR FR FR, R-P1: the gap the guard's list documented closes), the body
+        # `curl … | sh`: the body's own STREAM sentence, each CLEAN at the base.
+        for script in ("bash <(cat <<'EOF'\n%s\nEOF\n)\n" % PIPE,
+                       "source <(cat <<'EOF'\n%s\nEOF\n)\n" % PIPE,
+                       "eval \"$(cat <<'EOF'\n%s\nEOF\n)\"\n" % PIPE):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    self.assertTrue(said(defects(script, shell), self.STREAM), script)
+
+    def test_e04_an_expanding_heredoc_in_a_file_operand_is_the_expanding_answer(self):
+        # e04 `bash <(cat <<EOF … EOF)` (b5 b3 dash gh: FR FR -- FR) and e04b `source <(cat <<EOF
+        # … EOF)` (FR -- -- FR), each CLEAN at the base: the EXPANDING answer `bash <<EOF` gets,
+        # naming the shell. Its price is that answer's: e04c, a body `echo hi` (-- -- -- --), is
+        # reported as `bash <<EOF` with that body is, fetch or no fetch.
+        for script, runner in (("bash <(cat <<EOF\n%s\nEOF\n)\n" % PIPE, "bash"),
+                               ("source <(cat <<EOF\n%s\nEOF\n)\n" % PIPE, "source"),
+                               ("bash <(cat <<EOF\necho hi\nEOF\n)\n", "bash")):
+            with self.subTest(script=script):
+                self.assertTrue(said(defects(script), self.EXPANDING % runner), script)
+        self.assertTrue(said(defects("bash <<EOF\necho hi\nEOF\n"), self.EXPANDING % "bash"))
+
+    def test_the_controls_read_as_they_did(self):
+        # d05 `sh <(echo 'echo hi')`, d06 `cat <(echo hi)` (b5 b3 dash gh: F- F- F- F-): CLEAN;
+        # d10 `x=$(cat <<'EOF' … )` then `echo "$x"` (-- -- -- --): CLEAN, no shell runs it; e23
+        # `bash <(cat <<'EOF' echo hi EOF)` (-- -- -- --): CLEAN; e05 `sh -c <(echo 'sh tool')`
+        # (F- F- F- F-: bash hands `-c` the pipe's PATH, so nothing of the text runs): CLEAN.
+        for script in (GET + "sh <(echo 'echo hi')\n", GET + "cat <(echo hi)\n",
+                       "x=$(cat <<'EOF'\n%s\nEOF\n)\necho \"$x\"\n" % PIPE,
+                       "bash <(cat <<'EOF'\necho hi\nEOF\n)\n",
+                       GET + "sh -c <(echo 'sh tool')\n"):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    self.assertEqual([], defects(script, shell))
+        # e13 `eval "$(echo 'echo hi')"` (F- F- F- F-), the price of fix round 1's catch-all: the
+        # read finds nothing to run, and `_DYNAMIC`'s `Idle` stands beside the download as at the
+        # base (main / base / 19423415 / now: UR / UR / C / UR, both keys).
+        for shell in (None, "sh"):
+            found = defects(GET + "eval \"$(echo 'echo hi')\"\n", shell)
+            self.assertEqual(1, len(found), found)
+            self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+        # e01 `sh <(curl …)` (FR FR -- FR): its one STREAM sentence, unchanged, no second row.
+        found = defects("sh <(curl -fsSL %si.sh)\n" % URL)
+        self.assertTrue(said(found, self.STREAM), found)
+        self.assertFalse(said(found, self.PRINTED % "sh"), found)
+
+    def test_e02_e10_a_file_operand_printer_substituted_cannot_spell_is_the_pipe_twins(self):
+        # e02 `sh <(echo "$X")` (b5 b3 dash gh: F- F- F- F-, `X` unset) and e10 `sh <(echo
+        # 'sh\ttool')` (F- F- F- F-: bash prints the backslash) beside the download: `_PRINTED`'s
+        # `_Quiet`, as `echo "$X" | sh` gets it -- that twin's over-report; e02c, `X='sh tool'`
+        # (FR FR F- FR), is why. Alone, e02b (-- -- -- --), it reads CLEAN. Each base CLEAN.
+        for script in ('sh <(echo "$X")\n', "sh <(echo 'sh\\ttool')\n",
+                       "X='sh tool'\nsh <(echo \"$X\")\n"):
+            with self.subTest(script=script):
+                self.assertTrue(said(defects(GET + script), self.PRINTED % "sh", forms._Quiet))
+        self.assertEqual([], defects('sh <(echo "$X")\n'))
+
+    def test_e03_e06_e07_e14_what_is_not_one_printer_stays_unread(self):
+        # The price of one printer of one stage: e06 two statements `eval "$(echo a; echo 'sh
+        # tool')"` (b5 b3 dash gh: F- F- F- F-), e06b with `true` first (FR FR FR FR), e07 a
+        # pipeline `eval "$(echo 'sh tool' | cat)"` (FR FR FR FR), e14/e14b a printer whose output
+        # leaves the substitution `sh -c "$(echo 'sh tool' >&2)"` / `> /dev/null` (F- F- F- F-),
+        # and e03 an operand `eval "$(cat prog.sh)"` (F- F- F- F-): `_DYNAMIC`'s `Idle` beside the
+        # download, as at the base -- a fail-closed over-report where nothing runs it.
+        for script, how in (("eval \"$(echo a; echo 'sh tool')\"\n", "eval"),
+                            ("eval \"$(echo true; echo 'sh tool')\"\n", "eval"),
+                            ("eval \"$(echo 'sh tool' | cat)\"\n", "eval"),
+                            ("sh -c \"$(echo 'sh tool' >&2)\"\n", "sh -c"),
+                            ("sh -c \"$(echo 'sh tool' > /dev/null)\"\n", "sh -c"),
+                            ('eval "$(cat prog.sh)"\n', "eval")):
+            with self.subTest(script=script):
+                self.assertTrue(said(defects(GET + script), self.UNREAD % how, forms._Quiet))
+
+    def test_d13_e11_the_r_p3_corner_where_the_readings_disagree(self):
+        # d13 `sh -c "$(echo 'sh\ttool')"` and e11 `eval "$(echo 'sh\ttool')"` (b5 b3 dash gh: F-
+        # F- FR F-: bash prints the backslash, dash decodes it, and only a `shell: sh` step runs
+        # `sh tool`): no reading is chosen (R-P3), so the word stays all expansion -- `_DYNAMIC`'s
+        # `Idle` beside the download under either key, as at the base, and CLEAN alone. The
+        # fail-open corner the gap list names; d15 `sh -c "$(date)"` (F- F- F- F-), #2486's row.
+        for script, how in (("sh -c \"$(echo 'sh\\ttool')\"\n", "sh -c"),
+                            ("eval \"$(echo 'sh\\ttool')\"\n", "eval"),
+                            ('sh -c "$(date)"\n', "sh -c")):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertTrue(said(found, self.UNREAD % how, forms._Quiet), found)
+                    self.assertEqual([], defects(script, shell))
+
+    def test_u01_u04_e16_e21_no_check_in_a_rendered_string_counts(self):
+        # The string stays `Opaque` once its printer is read: the reader drops quotes, and bash
+        # splits an UNQUOTED substitution into words. u01 `sh -c $(echo "<check>")` runs `echo`
+        # alone and u03 `eval $(printf 'echo\nsha256sum -c f')` echoes the check, then `sh tool`
+        # (b5 b3 dash gh: FR FR FR FR each) -- a plain text would credit the check and read CLEAN.
+        # The price: their quoted twins u02 and u04, e16 `eval "$(echo "<check>")"` and e21
+        # `eval "$(cat <<'EOF' <check> … EOF)"` stop at the failing check (F- F- F- F-, the check
+        # run) and are reported all the same, as at the base (whose `Idle` row is back beside the
+        # read since fix round 1).
+        sums = 'echo "%s  tool" > tool.sha256\n' % ("a" * 64)
+        for script, holder in (('sh -c $(echo "%s")\nsh tool\n' % self.SUM, "sh"),
+                               ('sh -c "$(echo "%s")"\nsh tool\n' % self.SUM, "sh"),
+                               (sums + "eval $(printf 'echo\\nsha256sum -c tool.sha256')\n"
+                                "sh tool\n", "eval"),
+                               (sums + "eval \"$(printf 'echo\\nsha256sum -c tool.sha256')\"\n"
+                                "sh tool\n", "eval"),
+                               ('eval "$(echo "%s")"\nsh tool\n' % self.SUM, "eval"),
+                               ("eval \"$(cat <<'EOF'\n%s\nsh tool\nEOF\n)\"\n" % self.QUOTED,
+                                "eval")):
+            with self.subTest(script=script):
+                self.assertTrue(said(defects(GET + script), self.CHECKED % holder), script)
+
+    def test_c1_a_printed_text_the_reader_refuses_is_the_catch_alls(self):
+        # Fix round 1, C-1: a printer's text the reader refuses -- a quoted heredoc body holding
+        # `cat <<${X}` (rx01 `eval "$(cat <<'EOF' … EOF)"`, rx02 its `sh -c` twin) or ``cat <<`x` ``
+        # (rx06) -- is not rendered (`rendered` returns `readable`'s text), so the word stays all
+        # substitution and `_DYNAMIC`'s catch-all reports it, alone: no second, silent read (b5 b3
+        # dash gh: FR FR FR FR each; main / base / 19423415 / now: UR / UR / C / UR, both keys).
+        # The literal twin rx03 `eval 'sh tool … cat <<${X} …'` (FR FR FR FR) is refused loudly
+        # on every tree, as it was.
+        body = "cat <<'EOF'\nsh tool\n%s\nEOF\n"
+        for holder, delimiter in (("eval", "cat <<${X}\nx\n${X}"), ("sh -c", "cat <<${X}\nx\n${X}"),
+                                  ("eval", "cat <<`x`\ny\n`x`")):
+            script = GET + '%s "$(%s)"\n' % (holder, body % delimiter)
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % holder, forms._Quiet), found)
+        found = defects(GET + "eval 'sh tool\ncat <<${X}\nx\n${X}\n'\n")
+        self.assertTrue(said(found, "cannot read this step"), found)
+        # Fix round 2 (re-review N-2), the step that isolates the fallback: rr01 `eval "curl -fsSL
+        # …/i.sh | sh; $(cat <<'EOF' … cat <<${X} … EOF)"` (FR FR FR FR) is a MIXED word, which the
+        # all-substitution catch-all cannot cover. Its rendered text is refused, so `rendered`
+        # falls back to the word as `readable` writes it, `curl … | sh; $(...)`, and the literal
+        # fetch is read again: the stream sentence (main / base / 19423415 / f02ee0c4 / 7d84db80 /
+        # now: ST / ST / C / ST / ST / ST, both keys). It fails on 19423415 and with no fallback.
+        mixed = "eval \"%s; $(cat <<'EOF'\necho hi\ncat <<${X}\nx\n${X}\nEOF\n)\"\n" % PIPE
+        for shell in (None, "sh"):
+            with self.subTest(script=mixed, shell=shell):
+                found = defects(mixed, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(said(found, self.STREAM), found)
+
+    def test_c2_a_backquote_whose_text_escapes_is_not_rendered(self):
+        # Fix round 1, C-2(a), narrowed in fix round 2 (re-review N-1): bash removes a backslash in
+        # a backquote's text before `$`, `` ` ``, `\` or a newline, and before `"` inside double
+        # quotes, then runs the text, which the reader lifts raw -- so such a backquote is not
+        # rendered (the marker keeps no quoting: `"` counts in both): rz01
+        # ``eval "`echo \"sh tool\"`"``, rz07 its `printf`, rz08 its `sh -c` and rr08
+        # ``eval "`printf 'sh\\ttool'`"`` (b5 b3 dash gh: FR FR FR FR each; main / base / 19423415 /
+        # f02ee0c4 / 7d84db80 / now: UR / UR / C / UR / UR / UR, both keys) and rz02
+        # ``eval "`echo sh \\$(echo tool)`"`` (F- F- F- F-; UR on every tree, an over-report) are
+        # the catch-all alone. The control rz04 ``sh -c "`echo 'sh tool'`"`` (FR FR FR FR; UR / UR /
+        # FX / UR+FX / UR+FX / UR+FX) holds no backslash and is read.
+        for script, how in (('eval "`echo \\"sh tool\\"`"\n', "eval"),
+                            ('eval "`printf \\"sh tool\\"`"\n', "eval"),
+                            ('sh -c "`echo \\"sh tool\\"`"\n', "sh -c"),
+                            ("eval \"`printf 'sh\\\\ttool'`\"\n", "eval"),
+                            ('eval "`echo sh \\\\$(echo tool)`"\n', "eval")):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % how, forms._Quiet), found)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "sh -c \"`echo 'sh tool'`\"\n", shell)
+                self.assertTrue(said(found, self.FETCH_EXEC), found)
+                self.assertTrue(said(found, self.UNREAD % "sh -c", forms._Quiet), found)
+        # C-2(b), documented and not built: an UNQUOTED `$(...)`'s output is split into fields
+        # `eval` joins with spaces, while the reader keeps no quoting on the marker and `rendered`
+        # splices the text unsplit. rx21 `eval $(printf 'curl …\n| sh')` (FR FR FR FR; UR / UR / C
+        # / UR) is read as two statements, and the catch-all reports it.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "eval $(printf 'curl -fsSL %si.sh\\n| sh')\n" % URL, shell)
+                self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+
+    def test_xf01_xf02_an_unquoted_dash_c_substitution_is_read_whole_the_price(self):
+        # Final review M1, the price C-2(b) admits: `-c` runs only an unquoted `$(...)`'s FIRST
+        # field as the program, the rest its `$0`, `$1`, ..., while `rendered` splices the whole
+        # text, as for the quoted twin. xf02 `sh -c $(echo 'curl -fsSL …/i.sh | sh')` alone runs
+        # `curl` with no URL (b5 b3 dash gh: F- F- F- F-), yet reads as the stream it never runs:
+        # the catch-all `_Quiet` beside the stream sentence (main 5a08f782 / head: C / UR+ST, both
+        # keys), an over-report, fail-closed. xf01 `sh -c $(echo 'sh tool')` after the download
+        # (F- F- F- F-: the inner `sh` reads an empty stdin) says the fetch-and-run sentence beside
+        # the catch-all (UR / UR+FX). The control, the quoted twin xf03
+        # `sh -c "$(echo 'curl … | sh')"` alone (FR FR FR FR: the whole text is the program), is
+        # reported the same (C / UR+ST). Each fails on main's scripts.
+        for script, then in (("sh -c $(echo '%s')\n" % PIPE, self.STREAM),
+                             (GET + "sh -c $(echo 'sh tool')\n", self.FETCH_EXEC),
+                             ("sh -c \"$(echo '%s')\"\n" % PIPE, self.STREAM)):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % "sh -c", forms._Quiet), found)
+                    self.assertTrue(said(found, then), found)
+
+    def test_rr07_rr10_rr11_rr12_any_other_backslash_in_a_backquote_is_read(self):
+        # Fix round 2, re-review N-1: any other backslash stays in the text bash runs, so the
+        # backquote is read -- where f02ee0c4 dropped every backquote holding a backslash. In a
+        # MIXED string no catch-all speaks, so that was main's CLEAN while every shell runs the
+        # download: rr10 ``eval "echo hi; `printf 'sh tool\n'`"`` and rr12
+        # ``sh -c "echo hi; `echo 'sh tool' # a\b`"`` (b5 b3 dash gh: FR FR FR FR each; main / base
+        # / 19423415 / f02ee0c4 / 7d84db80 / now: C / C / FX / C / C / FX, both keys), and rr11
+        # ``eval "sh `printf 'tool\n'`"`` (FR FR FR FR; VAL / VAL / FX / VAL / VAL / FX) now say
+        # the fetch-and-run sentence alone. In a word all substitution, rr07
+        # ``eval "`printf 'sh tool\n'`"`` (FR FR FR FR; UR / UR / FX / UR / UR / UR+FX), it stands
+        # beside the catch-all. They fail on f02ee0c4's "any backslash" test.
+        for script in ("eval \"echo hi; `printf 'sh tool\\n'`\"\n",
+                       "sh -c \"echo hi; `echo 'sh tool' # a\\b`\"\n",
+                       "eval \"sh `printf 'tool\\n'`\"\n"):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(said(found, self.FETCH_EXEC), found)
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "eval \"`printf 'sh tool\\n'`\"\n", shell)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(said(found, self.FETCH_EXEC), found)
+                self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+
+    def test_c3_a_read_that_meets_a_literal_gap_keeps_the_catch_all(self):
+        # Fix round 1, C-3: the rendered text is right, but its reading meets a gap the literal
+        # text shares -- a pipe continued on the next line (rx10 `eval "$(printf 'curl … |\nsh')"`,
+        # rx13 a quoted heredoc body `curl … |` then `sh`, ry05 then `  sh`), a function that
+        # shadows the checker (ry01 `eval "$(echo 'sha256sum() { :; }')"` before the check) and
+        # `builtin eval` (ry03). b5 b3 dash gh: FR FR FR FR each, ry03 FR FR F- FR; main / base /
+        # 19423415 / now: UR / UR / C / UR, both keys -- the catch-all speaks. The literal twins
+        # rx11, rx12, ry02 and ry04 read CLEAN on every tree: pre-existing gaps, filed apart.
+        check = 'echo "%s  tool" | sha256sum -c -' % ("a" * 64)
+        for script in ("eval \"$(printf 'curl -fsSL %si.sh |\\nsh')\"\n" % URL,
+                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\nsh\nEOF\n)\"\n" % URL,
+                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\n  sh\nEOF\n)\"\n" % URL,
+                       "eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,
+                       "eval \"$(echo 'builtin eval sh tool')\"\n"):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+
+    def test_rc05_rc09_rc10_a_check_in_a_file_operand_counts(self):
+        # Fix round 1, m-2: a FILE a shell or `source` reads is read under that reader
+        # (`stdin_scripts`'s `reader = argv`), and a sourced text runs in this shell, with its `-e`
+        # (`flattened`'s `own`), so the check there clears the download: rc05
+        # `bash -e <(printf '<check>\nsh tool\n')`, rc09 `source <(printf …)` and rc10
+        # `bash <(echo '<check>')` then `sh tool` (b5 b3 dash gh: F-+sha F-+sha F- F- each -- rc09's
+        # bash 3.2 may read the FILE empty, F-, but never runs `sh tool`; main / base / 19423415 /
+        # now: C / C / C / C, rc10 FX / FX / C / C, both keys). `own` as `eval`'s alone reports
+        # rc09; a FILE with no reader, all three.
+        for script in ("bash -e <(printf '%s\\nsh tool\\n')\n" % self.SUM,
+                       "source <(printf '%s\\nsh tool\\n')\n" % self.SUM,
+                       "bash <(echo '%s')\nsh tool\n" % self.SUM):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    self.assertEqual([], defects(GET + script, shell))
+
+    def test_rc12_a_write_side_process_substitution_is_read_as_a_file_the_price(self):
+        # Fix round 1, m-3, a documented price: `sh >(echo 'sh tool')` hands `sh` a file to
+        # WRITE, and nothing of the text runs (rc12, b5 b3 dash gh: F- F- F- F-), but the reader
+        # keeps no direction on a lifted `<(...)`/`>(...)` (`shell_text.Process`), so the FILE is
+        # handed on: the fetch-and-run sentence, an over-report (main / base / 19423415 / now: C
+        # / C / FX / FX, both keys). Telling them apart is a reader change.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                self.assertTrue(said(defects(GET + "sh >(echo 'sh tool')\n", shell),
+                                     self.FETCH_EXEC))
+
+    def test_e17_e18_e22_e24_rv50_the_gaps_the_guard_documents(self):
+        # The gap list's Open entries, CLEAN as at the base; each fails here if its gap closes.
+        # Each runs the download unread: e17 two statements `sh <(echo a; echo 'sh tool')` (b5 b3
+        # dash gh: FR FR F- FR), e18 `bash -- <(…)`, e24 `bash < <(…)` and rv50 a long option
+        # owing a value, `bash --rcfile /dev/null <(…)` (FR FR F- FR each), e22 an EXPANDING
+        # heredoc a `cat` prints for `eval` (FR FR FR FR, its body `curl … | sh`).
+        for script in (GET + "sh <(echo a; echo 'sh tool')\n",
+                       GET + "bash -- <(echo 'sh tool')\n", GET + "bash < <(echo 'sh tool')\n",
+                       GET + "bash --rcfile /dev/null <(echo 'sh tool')\n",
+                       "eval \"$(cat <<EOF\n%s\nEOF\n)\"\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    @staticmethod
+    def word(script):
+        return shell_reader.statements(script)[0].stages[0].argv[1]
+
+    @staticmethod
+    def argv(script):
+        return shell_reader.command(shell_reader.statements(script)[0].stages[0].argv)
+
+    def test_substituted_and_rendered(self):
+        for script, text in (("eval \"$(echo 'sh tool')\"", "sh tool\n"),
+                             ("eval \"`echo 'sh tool'`\"", "sh tool\n"),
+                             ("eval \"$(printf 'sh\\ttool\\n')\"", "sh\ttool\n"),
+                             ("eval \"$(echo -n x)\"", "x"),
+                             ("eval \"$(cat <<'EOF'\nbody\nEOF\n)\"", "body"),
+                             ("eval \"$(echo 'sh\\ttool')\"", None),
+                             ("eval \"$(echo a; echo b)\"", None),
+                             ("eval \"$(echo x | cat)\"", None),
+                             ("eval \"$(echo x >&2)\"", None), ("eval \"$(cat f)\"", None),
+                             ("eval \"$(cat <<EOF\nbody\nEOF\n)\"", None)):
+            with self.subTest(script=script):
+                word = self.word(script)
+                value = next(v for kind, v in word.markers.values() if kind == "subst")
+                self.assertEqual(text, wp.substituted(value))
+                self.assertEqual("$(...)" if text is None else text.rstrip("\n"), wp.rendered(word))
+        self.assertEqual("sh tool", wp.rendered(self.word('eval "sh $(echo tool)"')))
+        self.assertEqual("sh $(...)", wp.rendered(self.word('eval "sh $(cat f)"')))
+        # Fix round 1: a printed text the reader refuses (here around text of the word's own) is
+        # `readable`'s, the substitution `$(...)`; so is a backquote whose text escapes `"` or
+        # `\` (or `$`, `` ` ``, a newline: bash removes that backslash), while any other
+        # backslash is read as written (fix round 2, re-review N-1).
+        self.assertEqual("$(...)", wp.rendered(self.word('eval "`echo \\"sh tool\\"`"')))
+        self.assertEqual("$(...)", wp.rendered(self.word("eval \"`printf 'sh\\\\ttool'`\"")))
+        self.assertEqual("$(...)", wp.rendered(self.word("eval \"`cat <<'E'\nsh \\$tool\nE\n`\"")))
+        self.assertEqual("sh tool", wp.rendered(self.word("eval \"`printf 'sh tool\\n'`\"")))
+        refused = "eval \"echo hi; $(cat <<'EOF'\nsh tool\ncat <<${X}\nx\n${X}\nEOF\n)\""
+        self.assertEqual("echo hi; $(...)", wp.rendered(self.word(refused)))
+        self.assertEqual("$(...)", wp.rendered(self.word("sh <(echo 'sh tool')")))
+        self.assertIsNone(wp.substituted(None))
+
+    def test_file_operand_and_operand(self):
+        for script, at in (("sh <(echo x)", 1), ("zsh <(echo x)", 1), ("bash -o pipefail f", 3),
+                           ("bash -oe pipefail f", 3), ("bash -O extglob f", 3), ("bash -ex f", 2),
+                           ("bash +x f", 2), ("bash --norc f", 2), ("source f", 1), (". f", 1)):
+            with self.subTest(script=script):
+                argv = self.argv(script)
+                self.assertIs(argv[at], wp.file_operand(argv))
+        for script in ("bash -c x", "bash -s f", "bash -- f", "bash - f", "sh $X", 'sh "$(cat f)"',
+                       "cat f", "sh", "source", "bash -c"):
+            with self.subTest(script=script):
+                self.assertIsNone(wp.file_operand(self.argv(script)))
+                self.assertIsNone(wp.operand(self.argv(script)))
+        self.assertEqual("echo x", wp.operand(self.argv("sh <(echo x)")))
+        self.assertIsNone(wp.operand(["bash", "f"]))
+
+    def test_unsubstituted_and_fed(self):
+        self.assertEqual(["echo", "$X"], wp.unsubstituted(wp.operand(self.argv('sh <(echo "$X")'))))
+        for script in ("sh <(echo 'sh tool')", "bash <(cat <<EOF\nbody\nEOF\n)"):
+            with self.subTest(script=script):
+                self.assertEqual([], wp.unsubstituted(wp.operand(self.argv(script))))
+        for script, fed in (("bash <(cat <<EOF\nbody $X\nEOF\n)", ("body $X", True)),
+                            ("bash <(cat <<'EOF'\nbody\nEOF\n)", ("body", False)),
+                            ("sh <(echo 'sh tool')", None)):
+            with self.subTest(script=script):
+                self.assertEqual(fed, wp.fed(wp.operand(self.argv(script))))
+
+
+class TestTheSubstitutionWalkReadsPerShell(unittest.TestCase):
+    """#2728: an `echo` piped to a shell INSIDE a `$(...)` is read under the shell that runs the
+    substitution -- the step's own where the step runs it, both readings (`ANY`) where a script
+    handed on holds it (`workflow_guard._walk`'s `under`) or a substitution hands it a shell
+    (`workflow_forms._weighed`'s `Named("bash")`). Each row pipes `echo "curl\\t…"` to `sh`: bash
+    prints the backslash, so `curl\\t-fsSL` is no command, and dash decodes it to a tab. Truth
+    columns b5 b3 dash gh as above (b3's `sh` is macOS's, bash 3.2 in POSIX mode, whose `echo`
+    decodes), on the re-review's rows (m01, m03 and m05-m12; x22 from P1's re-review). The base
+    (4ae90f4f) read each CLEAN under a bash step."""
+
+    HANDS = "hands a script to `%s` inside a command substitution"
+    ECHO = 'echo "curl\\t-fsSL %si.sh | sh" | sh' % URL
+
+    def assert_reported(self, script, runner="sh", shells=(None, "sh")):
+        for shell in shells:
+            with self.subTest(script=script, shell=shell):
+                found = defects(script, shell)
+                self.assertTrue(said(found, self.HANDS % runner), found)
+
+    def test_m01_m06_m07_x22_a_script_handed_on_reads_its_substitution_both_ways(self):
+        # m01 `sh -c 'x=$(echo "curl\t…" | sh)'`, m06 the same line in a `sh <<'EOF'` body, m07 in
+        # a `cat <<'EOF' | sh` body, x22 the URL tab-separated too (b5 b3 dash gh: -- FR FR FR
+        # each): the inner shell may be dash, so `_walk` reads the `$(...)` of a statement it
+        # inlined both ways.
+        line = "x=$(%s)" % self.ECHO
+        for script in ("sh -c '%s'\n" % line, "sh <<'EOF'\n%s\nEOF\n" % line,
+                       "cat <<'EOF' | sh\n%s\nEOF\n" % line,
+                       "sh -c 'x=$(echo \"curl\\t-fsSL\\thttps://example.test/i.sh|sh\" | sh)'\n"):
+            self.assert_reported(script)
+
+    def test_m05_m08_m10_a_script_a_substitution_hands_a_shell_reads_both_ways(self):
+        # m08 `x=$(sh -c 'echo "curl\t…" | sh')`, m10 a `sh <<'EOF'` body inside the `$(...)`,
+        # m05 m08's line inside a `sh -c` string (b5 b3 dash gh: -- FR FR FR each): `_weighed`
+        # flattens the handed script under `Named("bash")`, both readings.
+        for script in ("x=$(sh -c '%s')\n" % self.ECHO,
+                       "x=$(sh <<'EOF'\n%s\nEOF\n)\n" % self.ECHO,
+                       "sh -c 'x=$(sh -c \"echo \\\"curl\\\\t-fsSL %si.sh | sh\\\" | sh\")'\n"
+                       % URL):
+            self.assert_reported(script)
+        # m09 `x=$(eval 'echo "curl\t…" | sh')` (-- -- FR --): run by a `shell: sh` step, dash's
+        # `eval` decodes it.
+        self.assert_reported("x=$(eval '%s')\n" % self.ECHO, "eval", shells=("sh",))
+
+    def test_m03_m09_m11_the_price(self):
+        # Read both ways where only one shell runs it: m03 `eval 'x=$(echo "curl\t…" | sh)'` and
+        # m09 under a bash step (b5 b3 dash gh: -- -- FR --, bash's `eval` prints the backslash),
+        # m11 `x=$(bash -c 'echo "curl\t…" | sh')` (-- -- -- --): reported, fail-closed -- the
+        # `eval`/unmeasured-runner class of #2723 and #2724.
+        self.assert_reported("eval 'x=$(%s)'\n" % self.ECHO, shells=(None,))
+        self.assert_reported("x=$(eval '%s')\n" % self.ECHO, "eval", shells=(None,))
+        self.assert_reported("x=$(bash -c '%s')\n" % self.ECHO, "bash")
+
+    def test_m12_the_steps_own_substitution_reads_per_the_steps_shell(self):
+        # m12 `x=$(echo "curl\t…" | sh)` at the top (b5 b3 dash gh: -- -- FR --): the step's own
+        # shell runs it, so a bash step reads CLEAN and a `shell: sh` step is reported, as at the
+        # base.
+        script = "x=$(%s)\n" % self.ECHO
+        self.assertEqual([], defects(script))
+        self.assert_reported(script, shells=("sh",))
 
 
 if __name__ == "__main__":

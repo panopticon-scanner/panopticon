@@ -6,16 +6,33 @@ split out of `workflow_gating.py`, so the printer rules grow here and nowhere el
 move (PR #2699 -- `_piped`, `_PRINTERS` and `printed` byte for byte), then a `cat` with a heredoc
 or here-string on its stdin (#2467) and an `echo`/`printf` read the way the shell that RUNS the
 printer prints it (`ANY`/`Named` where that is not one measured shell) (#2476), then fix round 1's
-`ANY` reading for a runner no row measures (#2467, #2476, review R-F1).
-A pass-through stage between the printer and the shell (#2478) and a printer reaching a shell
-through a substitution (#2487, #2495) are still owed. `workflow_programs` re-exports every name its
-callers use:
+`ANY` reading for a runner no row measures (#2467, #2476, review R-F1), then a pass-through stage
+between the printer and the shell (#2478), then a printer reaching a shell through a substitution:
+a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as its FILE (#2487,
+#2495). `workflow_programs` re-exports the names its callers use, bar `fed` and `operand`, which
+`workflow_guard` imports from here:
 
     `_piped`     whether a stage's descriptor 0 finally reads what the stage before it writes
     `_PRINTERS`  the commands whose output is the text of their words
     `printed`    that text under ONE reading, where the words spell it out, or None
     `spellings`  the DISTINCT texts `printed` gives under the readings a runner may be (#2476 R-F1)
+    `producer`   the printer a stage's pipeline feeds it from, and whether every stage between is
+                 a pass-through (`_passes_through`: `tee` writing plain files, a bare `cat`)
+                 handing it on unchanged -- unknown (None) where the walk stops at `_DEPTH`
     `handed`     the heredoc or here-string a `cat` printer in front hands a stage down the pipe
+    `unspelled`  what `unprinted` hands `unread_program`: a name, then texts it weighs each apart
+                 (N-1) -- an unspelled printer's words, or, where a stage between rewrites the
+                 text, that text and the stage's words (I-1), or past `_DEPTH` a LOUD stand-in
+                 (`_PAST_DEPTH`, fix round 1b)
+    `substituted`  the text a substitution's script prints where it is ONE printer and every
+                 reading agrees on it (R-P3), or None; `rendered`, a word with each such `$(...)`
+                 replaced by that text -- no backquote whose text escapes `$`, `` ` ``, `"`, `\\` or
+                 a newline, and none where the reader refuses the result -- beside which
+                 `dynamic_program` still reports a word all substitution (review C-1 to C-3);
+                 `file_operand`, the word a shell or `source` reads its program from as a FILE, and
+                 `operand`, the script of a `<(...)` there
+    `unsubstituted`  the `echo`/`printf` alone in such a script that `substituted` cannot spell,
+                 as `unspelled` names one; `fed`, the heredoc a `cat` alone in it prints
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
     `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
@@ -24,7 +41,9 @@ Stdlib only, like everything under it.
 import os
 import re
 
+import shell_lex
 import shell_reader
+import shell_text
 
 
 def _piped(stage, before):
@@ -32,11 +51,12 @@ def _piped(stage, before):
     return before is not None and before.stdout_to_pipe and stage.stdin_from_pipe
 
 
-# The commands whose output is the text of their words (#2333). A heredoc-fed
-# `cat` is a producer too (#2467), but its text comes from the stage it reads,
-# not its words, so it is answered in `printed` and `handed` and never added
-# here: every caller that asks "is this a printer" by table membership alone
-# (`unprinted`) is right to leave it out.
+# The commands whose output is the text of their words (#2333). A heredoc-fed `cat` prints a text
+# too (#2467), but from its stdin, not its words, so it is never added here: `printed`, `handed`
+# and `producer` answer it beside this table. A caller asking "is this a printer" of the table
+# alone is right to leave it out -- `unspelled` (for `unprinted`) asks it of a source whose text
+# arrives intact, where only an `echo` or `printf` can be unspelled; where a stage between
+# rewrites the text, it returns that stage whatever the source, and weighs a `cat`'s body too.
 _PRINTERS = ("echo", "printf")
 
 # A runner this module has not measured `echo` under (review R-F1): `eval` (which runs in no shell
@@ -215,12 +235,275 @@ def spellings(argv, stage=None, shell=None):
     return [bash] if bash == decoding else [bash, decoding]
 
 
+# The options a `tee` takes that leave the text it hands on as it read it (#2478): append to the
+# files rather than truncate them, and what to do on a write error or an interrupt.
+_TEE_OPTIONS = ("-a", "-p", "-i", "--append")
+
+
+def _passes_through(argv, stage):
+    """Whether this stage hands what its stdin reads on to its stdout UNCHANGED (#2478): a `tee`
+    whose words are all plain -- no marker, no `$` value, no pattern (`shell_reader.dynamic`: a
+    `>(...)` operand may write into the stream too) -- each a FILE operand or one of
+    `_TEE_OPTIONS`, `--output-error` or `--output-error=…`, and no operand the pipe itself
+    (`shell_reader._STDOUT_ALIASES`: `tee /dev/stdout` hands the text on twice, review I-3a); or
+    a `cat` reading its own stdin (`_cat_reads_stdin`) with no heredoc or here-string there and no
+    OPTION word -- only `-` and the `--` that ends the options (R-P5): `cat -n` numbers the lines
+    it hands on. Neither behind `xargs` (`shell_reader.wrapper_words`, review I-2), which hands
+    `cat` the piped words as FILE operands: of the wrappers the reader strips it alone changes WHAT
+    the command reads, where `sudo tee f`, `nice cat` or `stdbuf -oL tee f` changes only how it
+    runs, and passes (fix round 1b). Any other stage that reads the pipe -- `tr`, `sed`,
+    `base64 -d`, `tee -x`, `tee >(...)`, `cat file` -- rewrites or adds to the text, and a shell
+    after it reads a program no printer's words spell out."""
+    name = os.path.basename(argv[0]) if argv else ""
+    # A `tee` or `cat` is no wrapper, so where `shell_reader.command` hands back the stage's own
+    # first word, nothing stood in front of it and there is no wrapper to ask `wrapper_words`
+    # about (asking at every stage made a long `cat` chain 1.5x slower). Not a length test:
+    # `command` can SPLICE as well as strip -- `env -S 'xargs cat - -'` (`--split-string=`) gives
+    # back as many words as the stage has, `xargs` among the wrappers (review N-2).
+    if name not in ("tee", "cat") or (argv[:1] != stage.argv[:1] and any(
+            os.path.basename(w) == "xargs" for w in shell_reader.wrapper_words(stage.argv))):
+        return False
+    if any(shell_reader.dynamic(w, shell_reader.has_substitution) or shell_reader.is_marker(w)
+           for w in argv[1:]):
+        return False
+    words = [getattr(w, "spelled", w) for w in argv[1:]]
+    if name == "tee":
+        return all((not w.startswith("-") and w not in shell_reader._STDOUT_ALIASES)
+                   or w in _TEE_OPTIONS or w == "--output-error"
+                   or w.startswith("--output-error=") for w in words)
+    if stage.stdin_heredoc is not None or not _cat_reads_stdin(argv):
+        return False
+    at = words.index("--") if "--" in words else len(words)
+    return all(w == "-" for w in words[:at] + words[at + 1:])
+
+
+# How many stages `producer` walks back before it stops looking (#2478), as `_stdin` reads 64
+# strings deep (final review F1): every stage of a pipeline asks, so an unbounded walk made a long
+# one quadratic -- 2 s for 800 `cat`s, which the guard read in 0.04 s before the walk.
+_DEPTH = 64
+
+# What `unspelled` hands `unread_program` where `producer` stopped at `_DEPTH` (fix round 1b): the
+# sentence names the reason, and the text weighed is a program named by a value and run behind a
+# wrapper -- one `workflow_guard._walk` "cannot read" -- so the answer is LOUD alone. The program
+# may come from any stage further back, a printer whose text fetches or none at all, so it is
+# never `_Quiet` there, and never CLEAN for want of a printer further back.
+_PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPTH,
+               'exec "$PROGRAM"')
+
+
+def producer(stage, before):
+    """`(source, intact)`: the printer whose text reaches `stage`'s stdin down its pipeline, and
+    whether every stage between hands that text on unchanged (#2478) -- or `(None, False)`.
+    `before` is the LIST of stages in front of `stage` in its pipeline, in order (None or `[]`:
+    nothing in front). The walk goes back from the last: each stage in front must pipe into the
+    one after it (`_piped`, pairwise), or the walk ends with no source. A PRINTER in front -- an
+    `echo` or `printf` (`_PRINTERS`), or a `cat` reading its own stdin with a heredoc or
+    here-string there (#2467) -- is the source. A PASS-THROUGH (`_passes_through`: `tee f`,
+    `tee -a f`, a bare `cat` or `cat -`) keeps `intact`, so `echo 'sh tool' | tee log | sh` reads
+    as `echo 'sh tool' | sh`; any other stage clears it, and the walk goes on through it, so a
+    printer behind `base64 -d` is still found: its program is UNREAD (`unprinted`), never read as
+    the printer's words (R-P4), though a fetch in them is weighed (`unspelled`, review I-1).
+    Running out of stages is no source. Past `_DEPTH` stages the walk stops, fail-closed: the
+    stage it reached stands as the source with `intact` None -- neither intact nor rewritten, but
+    unknown -- which `handed` and `stdin_scripts` read as not intact and `unspelled` answers LOUD
+    (`_PAST_DEPTH`): never read, and never CLEAN for want of a printer further back."""
+    intact, current = True, stage
+    for walked, front in enumerate(reversed(before or [])):
+        if not _piped(current, front):
+            return None, False
+        if walked == _DEPTH:
+            return front, None              # too far back to look: unknown, fail-closed
+        argv = shell_reader.command(front.argv)
+        if ((bool(argv) and os.path.basename(argv[0]) in _PRINTERS)
+                or (front.stdin_heredoc is not None and _cat_reads_stdin(argv))):
+            return front, intact
+        intact = intact and _passes_through(argv, front)
+        current = front
+    return None, False
+
+
 def handed(stage, before):
-    """The `(body, expands)` a `cat` printer in front hands `stage` down the pipe (#2467), or None:
-    `before` must pipe straight into `stage` (`_piped`), read a heredoc or here-string on ITS OWN
-    stdin, and read its own stdin, options or not (`_cat_reads_stdin`, R-P5, R-F5, R-F14). The
-    EXPANDING case is what `_unread_stdin` reports; `printed` answers only the QUOTED one."""
-    if not _piped(stage, before) or before.stdin_heredoc is None:
+    """The `(body, expands)` a `cat` printer hands `stage` down the pipe (#2467), or None: the
+    source `producer` finds behind `before` (the stages in front, through pass-throughs, #2478),
+    with `intact` True, must read a heredoc or here-string on ITS OWN stdin, and read its own
+    stdin, options or not (`_cat_reads_stdin`, R-P5, R-F5, R-F14). The EXPANDING case is what
+    `_unread_stdin` reports; `printed` answers only the QUOTED one."""
+    source, intact = producer(stage, before)
+    if not intact or source.stdin_heredoc is None:
         return None
-    return (before.stdin_heredoc if _cat_reads_stdin(shell_reader.command(before.argv))
+    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.command(source.argv))
             else None)
+
+
+def unspelled(stage, before, shell=None):
+    """What `workflow_forms.unread_program` weighs for the program `stage` (a shell's) reads down
+    its pipeline where no printer's words spell it out, or [] -- the answer of
+    `workflow_programs.unprinted` once it knows the stage is a shell reading stdin (#2478): the
+    NAME the sentence gives, then the TEXTS `unread_program` walks, each on its own, so a quote or
+    an open `case` in one cannot hide another (review N-1):
+
+    * the source `producer` finds behind `before` arrives INTACT: where it is an `echo` or
+      `printf` some reading `spellings` gives does not spell out (`echo "$X" | sh`, an escape
+      outside `_decoded`'s table, either reading of a `Named`/`ANY` runner: #2333, #2476 R-F1),
+      its name and its words as ONE text, else [] -- a heredoc-fed `cat` is never unspelled:
+      `printed` spells its QUOTED body whole and `_unread_stdin` reports its EXPANDING one (#2467,
+      R-F13);
+    * a stage between REWRITES it (`base64 -d`, R-P4): the name of the stage the shell reads from
+      -- the one the sentence names -- then what the source put on the pipe (#2478 fix round 1,
+      review I-1), each reading `spellings` gives of an `echo` or `printf` a text of its own (its
+      words where a reading spells none, as an unspelled printer's are weighed), or a `cat`'s
+      heredoc or here-string body; LAST, that stage's other words as one text. A fetch in either
+      makes the answer LOUD: `echo 'curl … | sh' | tr -d X | sh` is reported alone, and so is
+      `echo "it's" | w curl … | sh` behind a function `w` (rr09), where the `_Quiet` answer for
+      `echo 'sh tool' | tr a-z A-Z | sh` stands only beside a reported download. The gap: that
+      stage's words are joined as the reader hands them, quotes removed, so a quote or a space
+      inside one of them can hide a fetch after it (`w env 'A=say "hi' curl …`, fy01);
+    * the walk stopped at `_DEPTH` (`intact` None): `_PAST_DEPTH`, LOUD alone (fix round 1b) --
+      the price is a harmless printer that far back (`echo 'echo hi'` behind 64 `cat`s), and a
+      second row beside a stream's own sentence (a `curl … | sh` stream through 70 `cat`s).
+
+    A stage with no command word in front (`echo x | X=1 | sh`) prints nothing: []."""
+    source, intact = producer(stage, before)
+    if source is None:
+        return []
+    words = shell_reader.command(source.argv)
+    printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
+    if intact:
+        return ([words[0], " ".join(words[1:])]
+                if printer and None in spellings(words, source, shell) else [])
+    front = shell_reader.command(before[-1].argv)
+    if not front:
+        return []
+    if intact is None:
+        return list(_PAST_DEPTH)
+    if printer:
+        texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
+    else:
+        texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
+    return front[:1] + texts + [" ".join(front[1:])]
+
+
+def _printer(value):
+    """`(argv, stage)` of the ONE printer the script `value` is -- one statement of one stage, an
+    `echo` or `printf` (`_PRINTERS`) or a `cat` reading a heredoc or here-string on its own stdin
+    (#2467), whose descriptor 1 still writes what the substitution hands on (`stdout_to_pipe`:
+    `echo x >&2` or `echo x > f` hands on nothing) -- or None. `value` is a lifted substitution's
+    text (`shell_text.Lifted` carries its heredocs back to the parse, #2336); a text the reader
+    refuses is no printer."""
+    try:
+        parsed = shell_reader.statements(value) if value is not None else []
+    except shell_lex.Unreadable:
+        return None
+    if len(parsed) != 1 or len(parsed[0].stages) != 1:
+        return None
+    stage = parsed[0].stages[0]
+    argv = shell_reader.command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    if name not in _PRINTERS and (stage.stdin_heredoc is None or not _cat_reads_stdin(argv)):
+        return None
+    return (argv, stage) if stage.stdout_to_pipe else None
+
+
+def substituted(value):
+    """The text the ONE printer a substitution's script `value` is writes (`_printer`, #2487,
+    #2495), or None: the same text under every reading `spellings` gives (R-P3), since what runs a
+    substitution's printer is not followed here -- the step's shell for `eval "$(…)"`, bash for a
+    `<(…)`. So `echo 'sh tool'`, a `printf` format (decoded in every shell) and a QUOTED heredoc on
+    a `cat` are spelled; `echo 'sh\\ttool'`, which bash prints as written and dash decodes, is not,
+    and neither is an EXPANDING heredoc (`fed` has it) nor anything `printed` cannot spell."""
+    found = _printer(value)
+    readings = spellings(found[0], found[1], ANY) if found else [None]
+    return readings[0] if len(readings) == 1 else None
+
+
+def unsubstituted(value):
+    """The name and text `workflow_programs.unprinted` hands `unread_program` for the `echo` or
+    `printf` alone in the script `value` where `substituted` cannot spell it, its words as ONE
+    text as `unspelled` weighs an unspelled printer's (`sh <(echo "$X")`), else []. Never a `cat`:
+    `substituted` spells its QUOTED heredoc, and `fed` hands the guard its EXPANDING one."""
+    found = _printer(value)
+    if not found or os.path.basename(found[0][0]) not in _PRINTERS:
+        return []
+    return [] if substituted(value) is not None else [found[0][0], " ".join(found[0][1:])]
+
+
+def fed(value):
+    """The `(body, expands)` of the heredoc or here-string a `cat` alone in the script `value`
+    prints (`_printer`, #2495), or None: `workflow_guard._unread_stdin` reports an EXPANDING one a
+    shell reads as its FILE (`bash <(cat <<EOF …)`) as it reports `cat <<EOF | sh`."""
+    found = _printer(value)
+    return (found[1].stdin_heredoc
+            if found and os.path.basename(found[0][0]) not in _PRINTERS else None)
+
+
+def rendered(word):
+    """`word`'s text with each lifted `$(...)` or backquote whose script is one printer
+    `substituted` spells replaced by that text, its trailing newlines dropped as a command
+    substitution drops them, and every other substitution -- a `<(...)` or `>(...)` always, which
+    hands a FILE, never its text -- rendered `$(...)`, as `shell_reader.readable` renders them all.
+    `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. A backquote whose
+    text escapes `$`, `` ` ``, `"`, `\\` or a newline is not replaced: bash removes that backslash
+    (a newline with it) before it runs the text, which the reader lifts raw (review C-2) -- the one
+    before `"` only inside double quotes, but the marker keeps no quoting, so it counts in both. Any
+    other backslash stays, so `` `printf 'sh tool\\n'` `` is read (re-review N-1). Where the reader
+    refuses the text so written, the word is `readable`'s (C-1). The reader keeps no quoting for a
+    lifted substitution, so an unquoted one is rendered as a quoted one is, unsplit, though bash
+    splits its text into fields: `eval` joins them with spaces, so a newline or tab in it is read
+    where bash reads a space, and `-c` runs only the first, the rest its `$0`, `$1`, …, so
+    `sh -c $(echo 'curl … | sh')` over-reports (C-2(b), documented). No read here stands alone --
+    `workflow_programs.dynamic_program` still reports a word all substitution beside it, the
+    catch-all (C-1 to C-3), so the design's "no `Idle` row beside the read" is overruled."""
+    text = word
+    for key, (kind, value) in getattr(word, "markers", {}).items():
+        if kind == "subst":
+            spelled = (substituted(value)
+                       if shell_reader.yields_words(shell_reader.derived(key, word))
+                       and (isinstance(value, shell_text.Lifted)
+                            or not re.search(r'\\[$`"\\\n]', value)) else None)
+            text = text.replace(key, "$(...)" if spelled is None else spelled.rstrip("\n"))
+    try:
+        shell_reader.statements(text)
+    except shell_lex.Unreadable:
+        return shell_reader.readable(word)
+    return text
+
+
+def file_operand(argv):
+    """The word this command reads its PROGRAM from as a FILE (#2487, #2495), or None: `source`'s
+    or `.`'s first word, or a literal shell's (`sh`, `bash`, `dash`, `ash`, `ksh`, `zsh`) first
+    operand past its option words and the value each `o` or `O` in one owes (`bash -o pipefail
+    f`) -- None where `-c` or `-s` among its letters, a `-` or `--`, or a word that is a value
+    (`$X`, a lifted `$(...)`) stands first, or no operand does."""
+    name = os.path.basename(argv[0]) if argv else ""
+    if name in ("source", "."):
+        return argv[1] if argv[1:] else None
+    owed = 0
+    for word in argv[1:] if name in shell_reader._SHELLS else []:
+        if owed:
+            owed -= 1
+        elif word in ("-", "--"):
+            return None
+        elif word[:1] in ("-", "+"):
+            letters = "" if word[:2] in ("--", "++") else word[1:]
+            if "c" in letters or "s" in letters:
+                return None
+            owed = sum(letter in "oO" for letter in letters)
+        else:
+            return None if _filed(word) is None and shell_reader.dynamic(
+                word, shell_reader.has_substitution) else word
+    return None
+
+
+def _filed(word):
+    """The script of `word` where it is ONE lifted `<(...)`, whole -- what bash runs to fill the
+    file it hands the command -- or None. A `>(...)` is taken for one: the reader keeps no
+    direction (`shell_text.Process`), so `sh >(echo 'sh tool')` over-reports (review m-3)."""
+    entry = getattr(word, "markers", {}).get(word)
+    return (entry[1] if entry and entry[0] == "subst" and not shell_reader.yields_words(word)
+            else None)
+
+
+def operand(argv):
+    """The script of the `<(...)` that is `argv`'s whole FILE operand (`file_operand`, `_filed`):
+    what bash runs to fill the file a shell or `source` then reads its program from, or None."""
+    return _filed(file_operand(argv))
