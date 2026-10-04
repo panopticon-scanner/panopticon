@@ -7,15 +7,12 @@ keeps that bounded value fact long enough to recognize the later use, while
 quoted and nonmatching patterns remain ordinary strings.
 
 The step's own LITERAL values are a second kind of bounded value fact beside
-those glob bindings (#2425, #2489): `T=cuda_1.run`, `p=./cuda_*.run`, an array
-literal `a=(sh tool)`. `static_values` keeps a scalar's CANDIDATE texts per
-name, held wherever a statement assigns one and replaced or emptied only where
-the shell surely runs the statement, and an array literal's words; and
-`valued_argvs` substitutes both into a stage's words, so that what those
-words stand for can be asked of `use()`.
+those glob bindings (#2425, #2489), read by `scripts/workflow_values.py`;
+`static_values` here is that table live at one statement, and this module
+re-exports its `Values`, `assigned`, `record`, `valued` and `valued_argvs`, so
+a caller of this module reaches them where it reaches `uses`.
 """
-from dataclasses import dataclass, field
-import itertools
+from dataclasses import dataclass
 import os
 import re
 
@@ -26,8 +23,12 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
 from workflow_function_calls import _function_scope, _function_syntax
-from workflow_operands import live_pattern
 from workflow_programs import VALUE_PROGRAM
+# Compatibility bindings: the value table moved to `workflow_values` with its
+# names, and its callers keep reaching them here.
+from workflow_values import (Values as Values, _for_parts, _literals, assigned as assigned,
+                             emptied, record as record, valued as valued,
+                             valued_argvs as valued_argvs)
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -42,25 +43,6 @@ _REFERENCE = re.compile(
 )
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\+?=")
 _DECLARATIONS = ("declare", "export", "local", "readonly", "typeset")
-# The step's literal values (#2425, #2489): `_LITERAL` an assignment word
-# (`NAME=text`, `NAME+=text`), `_ARRAY` one holding a literal the reader folded
-# in (`NAME=(words)`), `_OPENER` an empty one, which an UNFOLDED literal's words
-# follow; `_VALUE` a reference -- `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}`,
-# `${T=d}`; `_ELEMENT` a whole `${a[0]}`, `${a[@]}` or `${a[*]}`; `_GLOB` what
-# bash globs a value by.
-_LITERAL = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.S)
-_ARRAY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=\((.*)\)$", re.S)
-_OPENER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=$")
-_VALUE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)"
-                    r"|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^{}]*))?\})")
-_ELEMENT = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+|[@*])\]\}$")
-_GLOB = re.compile(r"[*?\[]")
-# A name holds the LAST `_CANDIDATES` texts assigned, a word resolves to the
-# first as many, and none built is longer than `_LONGEST`: a value doubling
-# itself (`T=$T$T`, line after line) in a TARGET repo's `run:` block would grow
-# without bound.
-_CANDIDATES = 8
-_LONGEST = 4096
 
 
 @dataclass(frozen=True)
@@ -70,16 +52,6 @@ class Binding:
     directory: str
     absolute: bool = False
     loop: bool = False
-
-
-@dataclass
-class Values:
-    """The step's literal values at one statement (#2425 scalars, #2489 arrays):
-    a name's CANDIDATE texts -- the reader's words, quotes gone, a lifted
-    `$(...)` kept as its marker -- and the words of the literal a name holds."""
-
-    scalars: dict[str, list[str]] = field(default_factory=dict)
-    arrays: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _reference(word):
@@ -131,18 +103,19 @@ def _from_operand(word, dest, directory, bindings):
 def _cleared(stage, named, positional, certain, direct_loop, table=None):
     """Drop value facts a command overwrites; it does not create new ones.
 
-    With `table` (#2425, #2489), a certain `unset`, `read` or bare `local` drops
-    the name's literal values too. An assignment's are left to `record`, which
-    replaces them where the statement is certain: dropping them here first
-    would lose the value `T+=.run` appends to and the one `T=$T.run` reads.
+    With `table` (#2425, #2489), an `unset`, `read` or bare `local` empties the
+    name's literal values too (`emptied`): they go where `certain` -- the
+    table's, `_table_certainty`'s answer -- and gain the "maybe unset"
+    candidate where not. An assignment's are left to `record`, which replaces
+    them where certain: dropping them here first would lose the value `T+=.run`
+    appends to and the one `T=$T.run` reads.
     """
     def drop(name, valueless=True):
         binding = named.get(name)
         if binding and (certain or direct_loop and binding.loop):
             named.pop(name)
-        if table is not None and certain and valueless:
-            table.scalars.pop(name, None)
-            table.arrays.pop(name, None)
+        if table is not None and valueless:
+            emptied(table, name, certain)
 
     argv = command(stage.argv)
     raw = list(stage.argv)
@@ -185,18 +158,6 @@ def _shifted(positional, argv, certain):
     if certain and amount <= max(numbered):
         positional.clear()
     positional.update(shifted)
-
-
-def _for_parts(stage):
-    """A literal `for NAME in WORD...` header, or (None, [])."""
-    raw = list(stage.argv)
-    try:
-        start = raw.index("for")
-    except ValueError:
-        return None, []
-    if start + 2 >= len(raw) or raw[start + 2] != "in":
-        return None, []
-    return str(raw[start + 1]), raw[start + 3:]
 
 
 def _bound_after(stage, dest, directory, named, positional, writable=True):
@@ -259,6 +220,23 @@ def _certainty(stmts, index, kinds):
                           for stage in statement.stages))
     active = kinds[index]
     return serial and not active, serial and active == ("do",)
+
+
+def _table_certainty(stmts, index, kinds):
+    """`_certainty` as the value table asks it (#2489): the parentheses of a
+    stage's own array literals are the rest of their words, not a group, so
+    `arr=(a b)` alone is as sure as `T=a`; `uses()` still asks `_certainty`."""
+    statement = stmts[index]
+    counts = [_literals(stage) for stage in statement.stages]
+    if not any(counts):
+        return _certainty(stmts, index, kinds)
+    stages = [stage._replace(group_open=max(0, stage.group_open - count),
+                             group_close=max(0, stage.group_close - count))
+              for stage, count in zip(statement.stages, counts)]
+    view = {index: statement._replace(stages=stages)}
+    if index:
+        view[index - 1] = stmts[index - 1]
+    return _certainty(view, index, kinds)
 
 
 def _operands(argv):
@@ -409,186 +387,15 @@ def _functions_before(stmts, starts, kinds, scopes, after):
     return functions
 
 
-def assigned(stage):
-    """What this stage assigns in the step's shell (#2425, #2489): `({name:
-    (append, text)}, {name: (append, words)})`, `append` for a `+=`.
-
-    A statement that only assigns assigns, and so do a declaration's operands
-    (`export T=x`, `declare -a a=(sh tool)`); not a bare `export T`, nor a
-    PREFIX assignment (`T=x sh "$T"`: bash expands the command's words first,
-    and the value does not outlive the command), nor one behind a wrapper
-    other than `command` (`env T=x`). A text is `derived`: a lifted `$(...)`
-    stays its marker. A literal is read only where the stage opened a group,
-    as the reader counts its parentheses -- folded into its word behind a
-    declaration, else handed UNFOLDED (`["a=", "sh", "tool"]`, #2348): an
-    empty `NAME=` and the words up to the next one while groups remain. Two
-    prices: a folded literal is re-split on blanks, and a subshell's empty
-    prefix assignment `( T= sh tool )` reads as `T=(sh tool)`.
-    """
-    scalars: dict[str, tuple[bool, str]] = {}
-    arrays: dict[str, tuple[bool, list[str]]] = {}
-    argv = command(stage.argv)
-    if any(word != "command" for word in shell_reader.wrapper_words(stage.argv)):
-        return scalars, arrays
-    if argv and os.path.basename(argv[0]) in _DECLARATIONS:
-        words = list(argv[1:])
-    else:
-        lead = stage.argv[:len(stage.argv) - len(argv)]
-        if argv and not (stage.group_open and any(_OPENER.match(str(word)) for word in lead)):
-            return scalars, arrays          # a prefix assignment, or none at all
-        words = list(stage.argv)
-    literals, unfolded = 0, None
-    for word in words:
-        room = literals < stage.group_open
-        folded = _ARRAY.match(str(word)) if room else None
-        match = folded or _LITERAL.match(str(word))
-        if match and (folded or room and not match[3]):
-            literals += 1
-            parts = ([shell_reader.derived(part, word) for part in match[3].split()]
-                     if folded else [])
-            arrays[match[1]] = (bool(match[2]), parts)
-            unfolded = None if folded else parts
-        elif unfolded is not None:
-            unfolded.append(word)
-        elif match:
-            scalars[match[1]] = (bool(match[2]), shell_reader.derived(match[3], word))
-    return scalars, arrays
-
-
-def record(table, stage, certain):
-    """Write what this stage assigns into `table` (#2425, #2489).
-
-    A scalar's text resolves through the table as it is assigned (`valued`,
-    bash's rule for `T=$U`), else is held as written. A `certain` assignment
-    replaces the candidates and any other adds to them (`T=a; false && T=b`
-    holds both); the last `_CANDIDATES` are kept. `T+=x` appends to each; on
-    a name not held it holds `x` alone, the known suffix: a price. A
-    `certain` append that could only build a text over `_LONGEST` leaves the
-    name unread. A literal's words are held where the name holds none and
-    replaced where `certain`, and `+=` extends them; one list is kept per
-    name, so an uncertain literal over held words leaves them as they were.
-    """
-    scalars, arrays = assigned(stage)
-    for name, (append, text) in scalars.items():
-        new = valued(text, table) or [text]
-        if append:
-            new = [shell_reader.derived(head + tail, head, tail)
-                   for head in table.scalars.get(name) or [""] for tail in new
-                   if len(head) + len(tail) <= _LONGEST]
-        kept = new if certain else list(dict.fromkeys(table.scalars.get(name, []) + new))
-        if kept:
-            table.scalars[name] = kept[-_CANDIDATES:]
-        else:
-            table.scalars.pop(name, None)
-    for name, (append, words) in arrays.items():
-        held = table.arrays.get(name)
-        if append:
-            table.arrays[name] = (held or []) + words
-        elif certain or held is None:
-            table.arrays[name] = words
-
-
-def valued(word, table):
-    """The candidate texts ONE word resolves to through `table`, or [] where
-    nothing in it does (#2425, #2489; #2581's `./cuda_$X.run`, `${X:-*}`, `${a[0]}`).
-
-    Each `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}` or `${T=d}`, whole or
-    embedded, stands for a held name's candidates, left to right; the texts
-    are the first `_CANDIDATES` of their product, less any over `_LONGEST`.
-    A default stands where its name is not held, and for a held empty value
-    under `:-` or `:=`, as bash reads one. An unheld name, and every other
-    `${T...}` form (`${T:+d}`, `${T#x}`, `${T%x}`, `${T//a/b}`, `${T:0:3}`,
-    `${#T}`, `${!T}`), stays as written; a lifted `$(...)` holds no `$` to
-    match. A whole `${a[N]}` is the literal's word N or nothing, and `${a[@]}`
-    or `${a[*]}` its words joined by blanks (`valued_argvs` splices them).
-    The texts carry the markers of the word and of its values, and are
-    otherwise plain: the caller decides what kind of word each is.
-    """
-    text = str(word)
-    if element := _ELEMENT.match(text):
-        return _element(element, table)
-    factors: list[list[str]] = []
-    start = 0
-    for match in _VALUE.finditer(text):
-        if held := _held(match, table):
-            factors += [[text[start:match.start()]], held]
-            start = match.end()
-    if not factors:
-        return []
-    factors.append([text[start:]])
-    combinations = itertools.islice(itertools.product(*factors), _CANDIDATES)
-    return [shell_reader.derived("".join(parts), word, *parts) for parts in combinations
-            if sum(map(len, parts)) <= _LONGEST]
-
-
-def _held(match, table):
-    """What one `_VALUE` reference stands for, or [] where it stays as written."""
-    name, operator, default = match[1] or match[2], match[3], match[4]
-    held = table.scalars.get(name)
-    if held is None:
-        return [default] if operator else []
-    if operator in (":-", ":="):
-        return list(dict.fromkeys(text or default for text in held))
-    return held
-
-
-def _element(element, table):
-    """A whole `${a[N]}`, `${a[@]}` or `${a[*]}` read through `table`."""
-    words, key = table.arrays.get(element[1]), element[2]
-    if words is None:
-        return []
-    if key in ("@", "*"):
-        return [shell_reader.derived(" ".join(words), *words)]
-    # A subscript is arithmetic: a leading 0 is octal, so it, and a long one, stay unread.
-    if len(key) > 9 or key.startswith("0") and key != "0" or int(key) >= len(words):
-        return []
-    return [words[int(key)]]
-
-
-def valued_argvs(argv, table):
-    """The argvs `use()` must weigh for one stage's words (#2425, #2489, #2581):
-    `[argv]` where no word resolves, else the first `_CANDIDATES` of the
-    product of each word's `valued` texts (or the word itself), a whole
-    `${a[@]}` or `${a[*]}` SPLICED as the literal's words. A text with `*`,
-    `?` or `[`, or from a word bash expands as a pattern (`{$T,x}`), is a
-    `live_pattern`, as bash globs an unquoted `$p` and a literal's words.
-    The quotes are gone, and two prices follow: `sh "$p"` after
-    `p=./cuda_*.run` reads as the glob, and `'$T'`, which bash does not
-    expand, as `"$T"`.
-    """
-    choices: list[list[list[str]]] = []
-    resolved = False
-    for word in argv:
-        element = _ELEMENT.match(str(word))
-        if element and element[2] in ("@", "*") and element[1] in table.arrays:
-            choices.append([[_as_word(text, word) for text in table.arrays[element[1]]]])
-        elif texts := valued(word, table):
-            choices.append([[_as_word(text, word)] for text in texts])
-        else:
-            choices.append([[word]])
-            continue
-        resolved = True
-    if not resolved:
-        return [argv]
-    combinations = itertools.islice(itertools.product(*choices), _CANDIDATES)
-    return [[part for words in combination for part in words] for combination in combinations]
-
-
-def _as_word(text, word):
-    """A substituted text as an argv word: a live pattern where bash globs it."""
-    if _GLOB.search(text) or getattr(word, "lead", None) is not None:
-        return live_pattern(text)
-    return text
-
-
 def static_values(stmts, index, working=None, scopes=None):
     """The step's literal values live at statement `index` (#2425, #2489):
     `_cleared`, then `record`, over each one-stage statement before it in its
-    scope, walked as `_functions_before` walks and as sure as `_certainty`
-    says. A pipeline runs in subshells and records nothing; a function body
-    is skipped, so a call's own assignments are not read (`f() { T=b; };
-    T=a; f` holds `a`, a price). `working` is accepted and unused: a value
-    resolves at the directory of its USE, bash's rule for a relative path.
+    scope, walked as `_functions_before` walks and as sure as
+    `_table_certainty` says. A pipeline runs in subshells and records
+    nothing; a function body is skipped, so a call's own assignments are not
+    read (`f() { T=b; }; T=a; f` holds `a`, a price). `working` is accepted
+    and unused: a value resolves at the directory of its USE, bash's rule
+    for a relative path.
     """
     scopes = scopes or {}
     table = Values()
@@ -598,7 +405,7 @@ def static_values(stmts, index, working=None, scopes=None):
         stages = stmts[position].stages
         if position in occupied or scopes.get(position) != scopes.get(index) or len(stages) != 1:
             continue
-        certain, direct_loop = _certainty(stmts, position, kinds)
+        certain, direct_loop = _table_certainty(stmts, position, kinds)
         _cleared(stages[0], {}, {}, certain, direct_loop, table)
         record(table, stages[0], certain)
     return table

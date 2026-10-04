@@ -1,10 +1,11 @@
 """#2425, #2489: the step's literal assignments and array literals as bounded value facts.
 
-`workflow_uses.static_values` is the table a walk reads a `$T` or a
-`"${a[@]}"` through: per name, the candidate texts the step's own
-assignments leave (`T=cuda_1.run`, `p=./cuda_*.run`), and the words of an
-array literal (`declare -a a=(sh tool)`). These are its unit pins -- what a
-stage assigns, when a value is held and when it is emptied, how one word
+`workflow_values` is the table a walk reads a `$T` or a `"${a[@]}"` through:
+per name, the candidate texts the step's own assignments leave
+(`T=cuda_1.run`, `p=./cuda_*.run`), and the candidate word-lists of its
+array literals (`declare -a a=(sh tool)`); `workflow_uses.static_values` is
+that table live at one statement. These are its unit pins -- what a stage
+assigns, when a value is held and when it is emptied, how one word
 resolves, how an argv is spliced -- and no guard-level row: the guard does
 not read through the table yet.
 """
@@ -12,6 +13,7 @@ import unittest
 
 import shell_reader
 import workflow_uses as wu
+import workflow_values as wv
 from workflow_operands import _Reparsed
 
 
@@ -94,12 +96,12 @@ class TestWhatAStageAssigns(unittest.TestCase):
         }
         for script, expected in rows.items():
             with self.subTest(script=script):
-                self.assertEqual(expected, wu.assigned(only_stage(script)))
+                self.assertEqual(expected, wv.assigned(only_stage(script)))
 
 
 class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
     """#2425: a value is held wherever a statement assigns it, and replaced or
-    emptied only where `_certainty` says the step's shell surely runs it."""
+    emptied only where the step's shell surely runs the statement."""
 
     def test_a_certain_assignment_replaces_and_an_uncertain_one_adds(self):
         rows = {
@@ -115,6 +117,12 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual({"T": expected}, table(script).scalars)
 
+    def test_a_name_an_uncertain_statement_assigns_first_may_be_unset(self):
+        # The "maybe unset" candidate, which a `:-` default reads as null.
+        self.assertEqual({"F": ["x", ""]}, table("if x; then F=x; fi").scalars)
+        self.assertEqual(["x", "./install.sh"],
+                         wv.valued("${F:-./install.sh}", table("if x; then F=x; fi")))
+
     def test_a_certain_unset_read_or_bare_local_empties_the_name(self):
         for script in ("T=a; unset T", "T=a; read -r T", "T=a; local T",
                        "arr=(a b); unset arr", "arr=(a b); read -ra arr"):
@@ -122,16 +130,38 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
                 values = table(script)
                 self.assertEqual(({}, {}), (values.scalars, values.arrays))
 
-    def test_an_uncertain_unset_empties_nothing(self):
-        self.assertEqual({"T": ["a"]}, table("T=a; false && unset T").scalars)
+    def test_an_uncertain_unset_marks_the_name_maybe_unset(self):
+        rows = {"T=a; false && unset T": {"T": ["a", ""]},
+                "T=a; false && read -r T": {"T": ["a", ""]},
+                "U=b; false && unset T": {"U": ["b"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars)
+        self.assertEqual({"arr": [["a"], []]}, table("arr=(a); false && unset arr").arrays)
+        self.assertEqual(["a", ""], wv.valued("$T", table("T=a; false && unset T")))
 
-    def test_a_for_header_leaves_the_value_as_measured(self):
-        # Measured: `_cleared` drops a name for an assignment, a declaration,
-        # `read` and `unset`, never for a `for` header (`_bound_after` rebinds
-        # a glob there), so the table keeps `a` where bash ends the loop at `y`.
+    def test_a_for_header_assigns_its_words(self):
         stmts = statements("T=a; for T in x y; do :; done")
-        self.assertEqual({"T": ["a"]}, wu.static_values(stmts, 2).scalars)
-        self.assertEqual({"T": ["a"]}, wu.static_values(stmts, len(stmts)).scalars)
+        self.assertEqual({"T": ["x", "y"]}, wu.static_values(stmts, 2).scalars)
+        rows = {
+            "for T in cuda_1.run; do :; done": ["cuda_1.run"],
+            # A pattern word stays its text; `valued_argvs` makes it live.
+            "for T in ./cuda_*.run; do :; done": ["./cuda_*.run"],
+            'T=cuda_1.run; for T in "$T" x; do :; done': ["cuda_1.run", "x"],
+            # No word the table can hold: the loop may not run, so `a` stays.
+            'T=a; for T in "$@"; do :; done': ["a"],
+            "T=a; for T in $(ls); do :; done": ["a"],
+            "T=a; for T; do :; done": ["a"],
+            # Every word expands, perhaps to nothing: the words join `a`.
+            "T=a; for T in $X; do :; done": ["a", "$X"],
+            'arr=(p q); T=a; for T in "${arr[@]}"; do :; done': ["a", "p", "q"],
+            "if c; then for T in x; do :; done; fi": ["x", ""],
+            # `for` here is `echo`'s word, not a header.
+            "T=a; echo for T in other": ["a"],
+        }
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars["T"])
 
     def test_a_function_body_and_a_pipeline_record_nothing(self):
         # A call's own assignments are not read (a price); a pipeline's
@@ -153,66 +183,66 @@ class TestHowAWordResolves(unittest.TestCase):
                 "./cuda_$X.run": ["./cuda_*.run"]}
         for word, expected in rows.items():
             with self.subTest(word=word):
-                self.assertEqual(expected, wu.valued(word, values))
+                self.assertEqual(expected, wv.valued(word, values))
 
     def test_a_default_stands_where_the_name_is_unassigned(self):
-        unassigned, assigned = wu.Values(), table("X=1")
+        unassigned, assigned = wv.Values(), table("X=1")
         rows = {"${X:-*}": (["*"], ["1"]), "${X-*}": (["*"], ["1"]),
                 "${X:=*}": (["*"], ["1"]), "${X=*}": (["*"], ["1"]),
                 "./cuda_${X:-*}.run": (["./cuda_*.run"], ["./cuda_1.run"])}
         for word, (bare, held) in rows.items():
             with self.subTest(word=word):
-                self.assertEqual(bare, wu.valued(word, unassigned))
-                self.assertEqual(held, wu.valued(word, assigned))
+                self.assertEqual(bare, wv.valued(word, unassigned))
+                self.assertEqual(held, wv.valued(word, assigned))
 
     def test_a_null_value_takes_a_colon_default_only(self):
         values = table("X=")
         rows = {"${X:-d}": ["d"], "${X:=d}": ["d"], "${X-d}": [""], "${X=d}": [""]}
         for word, expected in rows.items():
             with self.subTest(word=word):
-                self.assertEqual(expected, wu.valued(word, values))
+                self.assertEqual(expected, wv.valued(word, values))
 
     def test_every_other_expansion_form_stays_as_written(self):
         values = table("T=x; X=1")
         for word in ("${X:+y}", "${T#x}", "${T%x}", "${T//a/b}", "${T:0:3}", "${#T}", "${!T}"):
             with self.subTest(word=word):
-                self.assertEqual([], wu.valued(word, values))
+                self.assertEqual([], wv.valued(word, values))
 
     def test_a_word_with_nothing_held_resolves_to_nothing(self):
         values = table("T=x")
         for word in ("cuda_1.run", "$UNSET", "${UNSET}", "$1", "$@"):
             with self.subTest(word=word):
-                self.assertEqual([], wu.valued(word, values))
+                self.assertEqual([], wv.valued(word, values))
 
     def test_the_product_of_candidates_is_ordered_and_capped(self):
         two = table("T=a; false && T=b")
-        self.assertEqual(["aa", "ab", "ba", "bb"], wu.valued("$T$T", two))
+        self.assertEqual(["aa", "ab", "ba", "bb"], wv.valued("$T$T", two))
         three = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name)
                                 for name in "ABC"))
         self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132"],
-                         wu.valued("$A$B$C", three))
+                         wv.valued("$A$B$C", three))
 
     def test_nothing_inside_a_lifted_substitution_is_matched(self):
         stmts = statements('T=cuda_1.run\nsh "$(printf %s "$T")"')
         word = stmts[1].stages[0].argv[1]
         self.assertTrue(shell_reader.is_marker(word))
         self.assertNotIn("$", word)
-        self.assertEqual([], wu.valued(word, wu.static_values(stmts, 1)))
+        self.assertEqual([], wv.valued(word, wu.static_values(stmts, 1)))
 
     def test_a_value_keeps_its_substitution_through_a_use(self):
-        (text,) = wu.valued("$T", table("T=$(pwd)/cuda_1.run"))
+        (text,) = wv.valued("$T", table("T=$(pwd)/cuda_1.run"))
         self.assertTrue(shell_reader.has_substitution(text))
         self.assertEqual("$(...)/cuda_1.run", shell_reader.readable(text))
 
     def test_a_value_that_doubles_itself_stays_bounded(self):
         values = table("T=12345678\n" + "T=$T$T\n" * 64)
         self.assertTrue(values.scalars["T"])
-        self.assertTrue(all(len(text) <= wu._LONGEST for text in values.scalars["T"]))
-        self.assertEqual([], wu.valued("$T" * 5000, table("T=x")))
+        self.assertTrue(all(len(text) <= wv._LONGEST for text in values.scalars["T"]))
+        self.assertEqual([], wv.valued("$T" * 5000, table("T=x")))
 
 
 class TestAnArrayLiteral(unittest.TestCase):
-    """#2489: an array literal's words, an element, and the splice of all of them."""
+    """#2489: an array literal's candidate word-lists, an element, and the splice."""
 
     def test_a_literal_records_its_words(self):
         rows = {"arr=(sh tool)": "arr", "declare -a arr=(sh tool)": "arr",
@@ -221,38 +251,54 @@ class TestAnArrayLiteral(unittest.TestCase):
         for script, name in rows.items():
             with self.subTest(script=script):
                 values = table(script)
-                self.assertEqual({name: ["sh", "tool"]}, values.arrays)
+                self.assertEqual({name: [["sh", "tool"]]}, values.arrays)
                 self.assertEqual({}, values.scalars)
 
     def test_a_literal_behind_a_function_header_is_read_unfolded(self):
         # The reader folds a literal into its word behind a declaration only,
         # and here a function header stands in front of the `local` (#2348).
         stage = statements('f() { local -a a=(sh tool); "${a[@]}"; }')[0].stages[0]
-        self.assertEqual(({}, {"a": (False, ["sh", "tool"])}), wu.assigned(stage))
+        self.assertEqual(({}, {"a": (False, ["sh", "tool"])}), wv.assigned(stage))
 
-    def test_an_append_extends_and_two_literals_are_two(self):
-        self.assertEqual({"arr": ["a", "b", "c"]}, table("arr=(a b); arr+=(c)").arrays)
-        self.assertEqual({"a": ["x", "y"], "b": ["z", "w"]}, table("a=(x y) b=(z w)").arrays)
+    def test_a_literal_is_as_sure_as_its_statement(self):
+        # The reader counts a literal's parentheses as a group; the table does
+        # not, so a literal alone replaces, and a real group or branch adds.
+        rows = {
+            "arr=(a b); arr=(c d)": [["c", "d"]],
+            "declare -a arr=(echo hi); declare -a arr=(sh tool)": [["sh", "tool"]],
+            "arr=(a b); unset arr; arr=(c d)": [["c", "d"]],
+            "arr=(a b); false && arr=(c d)": [["a", "b"], ["c", "d"]],
+            "arr=(a); if x; then arr=(b); fi": [["a"], ["b"]],
+            "arr=(a); arr=(b) &": [["a"], ["b"]],
+            "false && arr=(a)": [["a"], []],
+            "( arr=(a b) )": [["a", "b"], []],
+            "( declare -a arr=(a) )": [["a"], []],
+            "{ arr=(a); }": [["a"]],
+        }
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual({"arr": expected}, table(script).arrays)
+
+    def test_an_append_extends_each_candidate_and_two_literals_are_two(self):
+        rows = {"arr=(a b); arr+=(c)": {"arr": [["a", "b", "c"]]},
+                "arr=(a b); false && arr+=(c)": {"arr": [["a", "b"], ["a", "b", "c"]]},
+                "a=(x y) b=(z w)": {"a": [["x", "y"]], "b": [["z", "w"]]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).arrays)
         values = table("T=x arr=(a b)")
-        self.assertEqual(({"T": ["x"]}, {"arr": ["a", "b"]}), (values.scalars, values.arrays))
+        self.assertEqual(({"T": ["x"]}, {"arr": [["a", "b"]]}), (values.scalars, values.arrays))
 
     def test_a_quoted_parenthesis_is_a_scalar(self):
         values = table("T='(a b)'")
         self.assertEqual(({"T": ["(a b)"]}, {}), (values.scalars, values.arrays))
 
-    def test_a_reassigned_literal_keeps_its_first_words_as_measured(self):
-        # Measured: the reader counts a literal's parentheses as a group, so
-        # `_certainty` reads every literal's statement as uncertain, and a
-        # later literal over held words leaves them as they were.
-        self.assertEqual({"arr": ["a", "b"]}, table("arr=(a b); arr=(c d)").arrays)
-        self.assertEqual({"arr": ["c", "d"]}, table("arr=(a b); unset arr; arr=(c d)").arrays)
-
     def test_a_glob_inside_a_literal_is_a_plain_star(self):
         # The lexer escapes a literal's `*`, so the word holds it plain.
         values = table("a=(./cuda_*.run)")
-        self.assertEqual({"a": ["./cuda_*.run"]}, values.arrays)
-        self.assertEqual(["./cuda_*.run"], wu.valued("${a[0]}", values))
-        self.assertEqual([], wu.valued("${a[1]}", values))
+        self.assertEqual({"a": [["./cuda_*.run"]]}, values.arrays)
+        self.assertEqual(["./cuda_*.run"], wv.valued("${a[0]}", values))
+        self.assertEqual([], wv.valued("${a[1]}", values))
 
     def test_an_element_is_one_word_or_all_of_them(self):
         values = table("arr=(sh tool)")
@@ -261,41 +307,65 @@ class TestAnArrayLiteral(unittest.TestCase):
                 "${arr[01]}": [], "${arr[%s]}" % ("9" * 5000): []}
         for word, expected in rows.items():
             with self.subTest(word=word[:16]):
-                self.assertEqual(expected, wu.valued(word, values))
+                self.assertEqual(expected, wv.valued(word, values))
+
+    def test_an_element_reads_each_candidate_and_a_bare_name_is_element_zero(self):
+        # Bash reads `$a` and `${a}` as `${a[0]}`; an empty candidate has no word.
+        two = table("arr=(a b); false && arr=(c d)")
+        maybe = table("false && arr=(a)")
+        rows = {"${arr[0]}": (["a", "c"], ["a"]), "$arr": (["a", "c"], ["a"]),
+                "${arr}": (["a", "c"], ["a"]), "${arr[1]}": (["b", "d"], []),
+                "${arr[@]}": (["a b", "c d"], ["a", ""])}
+        for word, (both, unset) in rows.items():
+            with self.subTest(word=word):
+                self.assertEqual(both, wv.valued(word, two))
+                self.assertEqual(unset, wv.valued(word, maybe))
+        # A name that holds a scalar resolves through it.
+        self.assertEqual(["s"], wv.valued("$arr", table("arr=(a); arr=s")))
 
     def test_argvs_splice_an_array_and_substitute_a_value(self):
         values = table("arr=(sh tool); a=(./cuda_*.run); T=cuda_1.run")
-        self.assertEqual([["sh", "tool"]], wu.valued_argvs(["${arr[@]}"], values))
-        self.assertEqual([["sh", "tool", "x"]], wu.valued_argvs(["${arr[*]}", "x"], values))
-        (argv,) = wu.valued_argvs(["sh", "${a[0]}"], values)
+        self.assertEqual([["sh", "tool"]], wv.valued_argvs(["${arr[@]}"], values))
+        self.assertEqual([["sh", "tool", "x"]], wv.valued_argvs(["${arr[*]}", "x"], values))
+        (argv,) = wv.valued_argvs(["sh", "${a[0]}"], values)
         self.assertIsInstance(argv[1], _Reparsed)
-        self.assertEqual([["sh", "cuda_1.run"]], wu.valued_argvs(["sh", "$T"], values))
-        (argv,) = wu.valued_argvs(["sh", "$T"], values)
+        self.assertEqual([["sh", "cuda_1.run"]], wv.valued_argvs(["sh", "$T"], values))
+        (argv,) = wv.valued_argvs(["sh", "$T"], values)
         self.assertIs(str, type(argv[1]))
-        (argv,) = wu.valued_argvs(["sh", "$T"], table("T=./cuda_*.run"))
+        (argv,) = wv.valued_argvs(["sh", "$T"], table("T=./cuda_*.run"))
         self.assertIsInstance(argv[1], _Reparsed)
         argv = ["sh", "$INPUT"]
-        self.assertEqual([argv], wu.valued_argvs(argv, values))
+        self.assertEqual([argv], wv.valued_argvs(argv, values))
+
+    def test_argvs_splice_each_candidate_and_drop_an_empty_word(self):
+        two = table("arr=(a b); false && arr=(c d)")
+        self.assertEqual([["a", "b", "x"], ["c", "d", "x"]],
+                         wv.valued_argvs(["${arr[@]}", "x"], two))
+        self.assertEqual([["a", "x"], ["x"]],
+                         wv.valued_argvs(["${arr[@]}", "x"], table("false && arr=(a)")))
+        # Bash drops an unquoted empty expansion: `$SUDO sh x` runs `sh x`.
+        self.assertEqual([["sh", "x"]], wv.valued_argvs(["$SUDO", "sh", "x"], table("SUDO=")))
+        self.assertEqual([], wv.valued_argvs(["$E"], table("E=")))
 
     def test_a_word_bash_expands_as_a_pattern_stays_one(self):
         word = only_stage("sh {$T,x}").argv[1]
-        (argv,) = wu.valued_argvs(["sh", word], table("T=cuda_1.run"))
+        (argv,) = wv.valued_argvs(["sh", word], table("T=cuda_1.run"))
         self.assertIsInstance(argv[1], _Reparsed)
         self.assertEqual("{cuda_1.run,x}", argv[1])
 
     def test_argvs_are_capped(self):
         values = table("T=a; false && T=b; false && T=c")
-        argvs = wu.valued_argvs(["$T", "$T"], values)
+        argvs = wv.valued_argvs(["$T", "$T"], values)
         self.assertEqual(8, len(argvs))
         self.assertEqual(["a", "a"], argvs[0])
 
 
 class TestTheTableAtAStatement(unittest.TestCase):
-    """`static_values`: the values live at one statement of one step's shell."""
+    """`workflow_uses.static_values`: the values live at one statement of one step."""
 
     def test_the_table_holds_what_the_statements_before_the_index_assign(self):
         stmts = statements('T=a\nsh "$T"\nT=b\nU=c')
-        self.assertEqual(wu.Values(), wu.static_values(stmts, 0))
+        self.assertEqual(wv.Values(), wu.static_values(stmts, 0))
         self.assertEqual({"T": ["a"]}, wu.static_values(stmts, 1).scalars)
         self.assertEqual({"T": ["a"]}, wu.static_values(stmts, 2).scalars)
         self.assertEqual({"T": ["b"], "U": ["c"]}, wu.static_values(stmts, 4).scalars)
@@ -312,6 +382,11 @@ class TestTheTableAtAStatement(unittest.TestCase):
         values = wu.static_values(stmts, 2, working)
         self.assertEqual({"T": ["cuda_1.run"]}, values.scalars)
         self.assertEqual(wu.static_values(stmts, 2), values)
+
+    def test_workflow_uses_re_exports_the_table(self):
+        for name in ("Values", "assigned", "record", "valued", "valued_argvs"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(wv, name), getattr(wu, name))
 
 
 if __name__ == "__main__":
