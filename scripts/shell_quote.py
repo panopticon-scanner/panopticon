@@ -15,7 +15,7 @@ _QUOTED = re.compile(r"'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$?\"((?:[^\"\\]|\\.)*)\"
                      re.S)
 _DQ_ESCAPE = re.compile(r'\\([$`"\\])|\\\n')
 # What bash has to PARSE, not just unquote, to spell a delimiter: a `$(`,
-# `${`, `$[` or backquote in the word, or an escape `$'...'` decodes (`\x41`).
+# `${`, `$[` or backquote. `ansi_c` separately rejects unknown escape values.
 _PARSED = re.compile(r"`|\$[({\[]")
 _ANSI_SIMPLE = dict(zip("abefnrtv\\'\"?E", "\a\b\x1b\f\n\r\t\v\\'\"?\x1b"))
 _ANSI_ESCAPE = re.compile(
@@ -24,7 +24,7 @@ _ANSI_ESCAPE = re.compile(
 
 
 def ansi_c(body: str) -> str | None:
-    """Bash's ASCII text for `$'body'`; None for an unknown escape (#2470)."""
+    """Bash's ASCII text for `$'body'`; None for unknown or non-ASCII escapes."""
     stopped = unknown = False
 
     def decoded(match: re.Match[str]) -> str:
@@ -39,15 +39,17 @@ def ansi_c(body: str) -> str | None:
             return ""
         if control is not None:
             if not control.isascii():
-                raise Unreadable("an ANSI-C escape decodes outside ASCII")
+                unknown = True
+                return ""
             value = 127 if control == "?" else ord(control.upper()) & 31
         else:
             digits = octal or hexa or short or long
-            if digits is None:               # A backslash-newline is gone.
-                return ""
+            if digits is None:               # No line continuation inside `$'...'`.
+                return "\\\n"
             value = int(digits, 8 if octal is not None else 16)
         if value > 127:
-            raise Unreadable("an ANSI-C escape decodes outside ASCII")
+            unknown = True
+            return ""
         stopped = not value                # Bash truncates this quoted part at NUL.
         return chr(value)
     text = _ANSI_ESCAPE.sub(decoded, body).partition("\0")[0]

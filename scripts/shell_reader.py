@@ -124,6 +124,7 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # that shell, which bash runs wherever `X` leaves the word to it.
 _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+_NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
 _ESCAPED = "\ue002"
@@ -185,9 +186,12 @@ def _split(text, context):
         cond = 0
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
-            if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
-                cases.pop()
         del stages[:]
+
+    def close_case():
+        """Close a literal `esac` before an operator following it (#2610)."""
+        if cases and re.fullmatch(r"\s*esac\s*", "".join(buf)):
+            cases.pop()
 
     while i < n:
         ch = text[i]
@@ -265,6 +269,11 @@ def _split(text, context):
             if cases and cases[-1] == "pattern" and not case_end:
                 buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
                 cases[-1] = "body"
+                # Preserve the parent's arm region before its nested header.
+                # Otherwise the arm marker hides `case` from the three-word
+                # probe, and the inner pattern becomes the command (#2617).
+                if _NESTED_CASE.match(text, i + 1):
+                    end_statement(";")
             elif cond:
                 buf.append(ch)              # the `(` the test opened, closed
             else:
@@ -273,6 +282,8 @@ def _split(text, context):
             i += 1
             continue
         redirect = _REDIRECT.match(text, i)
+        if redirect or ch in ";\n&|":
+            close_case()
         # `[[ $a < $b ]]` compares two strings: no descriptor is redirected.
         if redirect and not cond and not (cases and cases[-1] == "pattern"):
             # Only unquoted, unescaped digits comprising the whole preceding

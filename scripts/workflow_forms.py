@@ -60,19 +60,22 @@ from shell_reader import command, statements
 # Compatibility bindings share the single fetch owner with existing callers,
 # the operand questions with theirs, and the gating ones with theirs.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
+                            compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
                              conditional_reach as reach, seed as seed, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
-                               chmod_executable as chmod_executable,
+                               at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
-                               described as described, may_run as may_run,
-                               names_file as names_file, same_file as same_file)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
-                               dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, unprinted as unprinted)
+                               described as described, located as located, may_run as may_run,
+                               names_file as names_file, same_file as same_file,
+                               working_directories as working_directories)
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Named, Opaque,
+                               candidates, dynamic_program, scripts, stdin_program as stdin_program,
+                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted)
+from workflow_stdin import BoundStdin, bound_stdin as bound_stdin, mark_stdin
 
 
 # The shell words that open a body which MAY NOT RUN, and the ones that close
@@ -156,7 +159,6 @@ def regions(stmts):
 
 
 # --- where a script hides ----------------------------------------------------
-
 # Why a checksum in a script handed to a shell clears nothing, as `flattened`
 # finds it for the `credit` of each `Inlined` statement.
 _RUNS_ON = ("is inside the script `%s` runs, where no `-e` holds and it is not "
@@ -187,16 +189,16 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     its list (#2334). A child shell has `-e` only from its options or a `set`, and `pipefail` so too
     (re-review N-D), read off the COMMAND LINE they are, where `-O shopt` takes a value (#2444) -- a
     stdin script's READER's (`workflow_programs.Stdin`), without which no check in it counts; the
-    step's own shell has what its `shell:` starts it with (`seed`, #2338) as a `set` moves it
-    (#2335), and `eval` keeps that, but not `-e` ahead of `||`/`&&`, where the shell suspends it.
-    `stops`: this script's failure reaches the step's own shell, None where no shell is sure to read
-    it (`Unsure`), never true for an `Opaque` one (None inside an `Unsure` one), whose statements,
-    nested ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this is the
-    step's own shell); `pipefail`: a pipeline there fails on any of its commands; `shell`: the
-    script's runner, and at the step's own top its `shell:` (None: the default); `outer`: the bodies
-    of the command running it, below the step's own, and `key` a name for the script, unique in the
-    step, for its own bodies.
-    """
+    step's own shell has what `shell:` starts it with (`seed`, #2338) as a `set` moves it (#2335),
+    and `eval`, `source` and `.` keep that, but not `-e` ahead of `||`/`&&`, where the shell
+    suspends it. `stops`: this script's failure reaches the step's own shell, None where no shell is
+    sure to read it (`Unsure`), never true for an `Opaque` one (None in an `Unsure` one), whose
+    statements, nested ones too, say why (`_OPAQUE`, #2486); `errexit`: `-e` at its top (None: this
+    is the step's own shell); `pipefail`: a pipeline there fails on any of its commands; `shell`:
+    the script's runner, and at the step's own top its `shell:` (None: the default) -- a `Named` one
+    where the holder's string names it (`runs_under`); `outer`: the bodies of the command running
+    it, below the step's own, and `key` a name for the script, unique in the step, for its own
+    bodies."""
     out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
@@ -205,27 +207,28 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[position - 1] if position else None
+            argv, before = command(stage.argv), statement.stages[:position]
             # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
             name = _runner(argv) if argv else ""
-            for text in scripts(argv) + stdin_scripts(argv, stage, before):
+            for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
                 gates = None if who is None or stops is None else not isinstance(text, Opaque) and (
                     bool(who) and stops and swallowed(stmts, index, statement, stage) is None
                     and (top or on[index] or index == last)
                     and (fails[index] or stage is statement.stages[-1]))
-                who = who or argv
-                own = name == "eval" and who is argv    # runs in this shell, with its `-e`
+                runner, who = runs_under(argv, who, name), who or argv
+                own = name in ("eval", "source", ".") and who is argv     # in this shell, its `-e`
                 read = flattened(
                     statements(text), gates,
                     on[index] and statement.separator not in ("&&", "||") if own
                     else _errexit(who[1:], invocation=True),
                     fails[index] if own else _errexit(who[1:], False, "pipefail", True),
-                    name if who is argv else os.path.basename(who[0]), region,
+                    runner, region,
                     key + ((index, ordinal),))
-                if isinstance(text, Opaque):    # what its `$(...)` prints is read nowhere
+                if isinstance(text, Opaque):    # a `$(...)` prints part of it: no check counts
                     read = [s._replace(credit=(_OPAQUE % name,) * 2) for s in read]
+                read = mark_stdin(read, getattr(text, "bound", None), Unsure)
                 out.extend(read)
         if top:
             out.append(statement)
@@ -351,17 +354,16 @@ def step_credit(flat, shell=None):
 
 
 class Idle(str):
-    """An unread reason `kept` keeps only where the job holds a fetch the
-    guard REPORTS (#2481): see `substitution_script`, `unread_program` and
+    """An unread reason `kept` keeps only where the job holds a fetch the guard REPORTS (#2481):
+    see `substitution_script`, `unread_program` and
     `workflow_guard._unread_stdin`'s foreign-language program (#2499)."""
 
 
 class _Quiet(Idle):
     """An `Idle` `kept` keeps only where no other reason reports its statement:
-    `unread_program`'s for a printer whose words it cannot spell out (#2333)
-    and for a dynamic program word (#2483, #2486), both of which `carried` says
-    louder where a variable carries the download -- `echo "$x" | sh` and
-    `sh -c "$x"` are its own."""
+    `unread_program`'s for a printer whose words it cannot spell out (#2333) and for a dynamic
+    program word (#2483, #2486), both of which `carried` says louder where a variable carries
+    the download -- `echo "$x" | sh` and `sh -c "$x"` are its own."""
 
 
 def _runner(argv):
@@ -370,19 +372,19 @@ def _runner(argv):
             else os.path.basename(argv[0]))
 
 
-def substitution_script(argv, stage, walk, before=None):
+def substitution_script(argv, stage, walk, before=None, shell=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
-    `walk` is the guard's own walk (`workflow_guard._walk`), over the script flattened as a step's
-    is -- which reads each script handed on inside it in place, once. A script it finds a fetch or
-    an unread form in is reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
-    `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but the guard follows no
-    download into a substitution, where a script may still run one the job fetched:
-    `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is the stage in front of this one, whose
-    `echo` or `printf` may pipe the shell its program (`stdin_scripts`, #2333).
-    """
-    handed = scripts(argv) + stdin_scripts(argv, stage, before)
+    `walk` is the guard's own walk (`workflow_guard._walk`), over the script flattened as a
+    `shell: bash` step's is, its `echo` read both ways (`Named`, #2728) -- which reads each script
+    handed on inside it in place, once. A script it finds a fetch or an unread form in is reported;
+    any other is `Idle` (re-review N-A of #1793's follow-ups). `VERSION=$(bash -c 'echo 1')` has
+    nothing a checksum must precede, but the guard follows no download into a substitution, where a
+    script may still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is
+    the stages in front of this one in its pipeline, whose printer may pipe it a program under
+    `shell` (`stdin_scripts`, #2476, #2478)."""
+    handed = scripts(argv) + stdin_scripts(argv, stage, before, shell)
     if not handed:
         return None
     return _weighed("hands a script to `%s` inside a command substitution, where this guard "
@@ -395,34 +397,34 @@ def _weighed(why, texts, walk, idle=Idle):
     """`why` where a script among `texts`, flattened and walked, fetches or holds an unread form,
     and `idle(why)` where none does. A foreign stdin program there is `Idle`, so it is not an unread
     form and the reason that hands the script is `Idle` too: #2499's predicate governs both (r0)."""
-    live = [walk(flattened(statements(text))) for text in texts]
-    return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
+    live = [walk(flattened(statements(text), shell=Named("bash"))) for text in texts]
+    return why if any(found or any(not isinstance(w, (Idle, BoundStdin)) for _i, w in unread)
                       for found, unread in live) else idle(why)
 
 
-def unread_program(argv, stage, walk, inside, before=None):
+def unread_program(argv, stage, walk, inside, before=None, shell=None):
     """Why a program this stage hands a shell goes unread, or None: a script handed to one `inside`
     a command substitution (`substitution_script`), the words a value where it reads its options may
-    make its program (`candidates`, #2344, #2337), or those of a printer that pipes it one they do
-    not spell out (`unprinted`, `before` being the stage in front of it, #2333), weighed alike -- so
-    `X=-c; sh $X 'echo hi'` and `echo "$X" | sh` are `Idle`, and `sh $X`, with no word after the
-    value, hands none. A candidate is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone
-    is `Idle` too, but not one `Rewritten`. A lifted `$(…)` stays opaque while the text around it is
-    read, and `_walk` reads its inner script separately (#2482). A command the guard reports
-    unresolved (`sudo $CMD -c …`) is not read again here.
-    The handed script or the printer speaks before the value's reason where a shell reads that stdin
-    (`Stdin.reader` the argv or `()`), where a `-c` or `eval` string is handed and the handed answer
-    is LOUD, or where that reason is absent or `Idle`; an answer resting only on a stdin no shell is
-    sure to read (`Stdin.reader` None, as past a value, #2485) never speaks before that reason where
-    it is LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'` runs the word whatever the stdin holds.
-    LAST, where none of those speaks, the same word with the SHELL spelled out (`dynamic_program`,
-    #2483, #2486): one rule for a dynamic program wherever a shell takes one, said where nothing
-    louder (`carried`'s, a stream's) reports its statement. Last because a value in the options
-    answers for the whole statement and `_weighed` makes that answer LOUD where a word after it
-    fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which this rule's droppable
-    `_Quiet` would have replaced."""
-    handed = inside and substitution_script(argv, stage, walk, before)
-    (value, words), printer = candidates(argv), unprinted(argv, stage, before)
+    make its program (`candidates`, #2344, #2337), or those of the stage piping it one no printer
+    spells out (`unprinted`, `before` the stages in front of this one in its pipeline, its text
+    spelled under `shell`, #2333, #2476, #2478), weighed alike -- so `X=-c; sh $X 'echo hi'` and
+    `echo "$X" | sh` are `Idle`, and `sh $X`, with no word after the value, hands none. A candidate
+    is read as `scripts` reads a `-c` string, so `sh $X "$Y"` alone is `Idle` too, but not one
+    `Rewritten`. A lifted `$(…)` stays opaque while the text around it is read, and `_walk` reads
+    its inner script separately (#2482). A command the guard reports unresolved (`sudo $CMD -c …`)
+    is not read again here. The handed script or the printer speaks before the value's reason where
+    a shell reads that stdin (`Stdin.reader` the argv or `()`), where a `-c` or `eval` string is
+    handed and the handed answer is LOUD, or where that reason is absent or `Idle`; an answer
+    resting only on a stdin no shell is sure to read (`Stdin.reader` None, as past a value, #2485)
+    never speaks before that reason where it is LOUD: `X=-c; echo "$Y" | sh $X -s 'curl … | sh'`
+    runs the word whatever the stdin holds. LAST, where none of those speaks, the same word with the
+    SHELL spelled out (`dynamic_program`, #2483, #2486): one rule for a dynamic program wherever a
+    shell takes one, said where nothing louder (`carried`'s, a stream's) reports its statement. Last
+    because a value in the options answers for the whole statement and `_weighed` makes that answer
+    LOUD where a word after it fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which
+    this rule's droppable `_Quiet` would have replaced."""
+    handed = inside and substitution_script(argv, stage, walk, before, shell)
+    (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell)
     how, bare = (None, None) if handed else dynamic_program(argv)
     if shell_reader.unresolved_wrapper(stage.argv) or not (handed or words or printer or bare):
         return handed or None           # an unresolved command is reported whole
@@ -440,8 +442,8 @@ def unread_program(argv, stage, walk, inside, before=None):
          and (not shell_reader.is_marker(w) or shell_reader.has_substitution(w))], walk)
     if (handed or printer) and (not said or isinstance(said, Idle) or stdin_reader(argv) is not None
                                 or handed and scripts(argv) and not isinstance(handed, Idle)):
-        return handed or _weighed(_PRINTED % tuple(map(os.path.basename, (argv[0], printer[0]))),
-                                  [" ".join(printer[1:])], walk, _Quiet)
+        return handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
+            shell_reader.readable(printer[0]))), list(printer[1:]), walk, _Quiet)
     return said or _Quiet(              # the LAST resort (r0 finding 1)
         _DYNAMIC % (how, shell_reader.readable(bare).strip()))
 
@@ -455,22 +457,21 @@ _PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not s
 INSIDE = " inside a command substitution"
 
 
-def within(statement, where=""):
-    """(statement, position, stage, where) for each stage of `statement` and,
-    under each, of the scripts it runs in a command substitution -- `$(...)`,
-    backquotes, `<(...)` -- read as scripts of their own (#2345), as the
-    guard's `_walk` reads them for what they fetch; `where` is `INSIDE` for
-    those. A script handed to a shell there as a string (`sh -c '...'`) is
-    not read: `substitution_script` reports it where the job holds a fetch the
-    guard reports (`kept`, #2481). Nor is a check (the guard's `_checks` walks
-    the outer stages only), so `x=$(echo "<sha>  t" | sha256sum -c - && sh t)`
-    reports its use though the check gates it: fail-closed. Each fetch's
-    `_uses` parses the later substitutions again."""
+def within(statement, where="", directory=".", scope=0):
+    """Each stage and cwd, recursively through command substitutions.
+
+    A substitution inherits and restores its caller's cwd. A shell string is
+    reported by `kept`, not read; checks inside stay unread and fail closed
+    (#2345)."""
     for position, stage in enumerate(statement.stages):
-        yield statement, position, stage, where
-        for text in stage.substitutions:
-            for inner in statements(text):
-                yield from within(inner, INSIDE)
+        yield statement, position, stage, where, directory
+        for nested, text in enumerate(stage.substitutions):
+            inner = list(statements(text))
+            child_scope = "%sS%d_%d" % (scope, position, nested)
+            working = working_directories(inner, regions(inner), child_scope,
+                                           step_credit(inner, "bash {0}"), directory)
+            for index, child in enumerate(inner):
+                yield from within(child, INSIDE, working[index], "%sI%d" % (child_scope, index))
 
 
 # A download a step keeps in a variable and hands a shell as its script
@@ -552,21 +553,20 @@ def carried(stmts, executors):
     `bash other.sh "$(curl ...)"` is); and a pipe into `eval "<string>"`, `sh -c '...'` or
     `sh file`, read as `curl ... | sh x.sh` is.
 
-    Not followed, beside the gap list's cut, command output and file (`echo "$x" > f; sh f`,
-    `| tee f; sh f`): a substitution holding more than the fetch (`x=$(curl ... || true)`,
-    `x=$(curl ... | tr ...)`) or not alone in its stage (`x=$(curl ...) y=$(date)`),
-    `x+=$(curl ...)`, a printer other than echo or printf (`cat <<< "$x" | sh`, a heredoc naming
-    `$x` piped to `sh`), a printer inside a `{ }` group or a multi-line subshell whose closing line
-    is piped (`{ echo "$x"; } | sh`), which the stream walk does not read for a fetch either, and
+    Not followed: output written to a file (`echo "$x" > f; sh f`, `| tee f; sh f`);
+    multi-command or multi-substitution assignments; `+=`; `cat` here-doc/string printers; and
     `$x` inside a longer word (`eval "echo $x"`)."""
     held: dict[str, Fetch | None] = {}
     out, branches, depth = [], regions(stmts), 0
     for index, statement in enumerate(stmts):
-        for inner, position, stage, where in within(statement):
+        for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
+            printed, piped = _prints(stage), stage.stdout_to_pipe
             to = (stream_consumer(inner.stages[position + 1:], executors)
-                  if _prints(stage) and stage.stdout_to_pipe else None)
-            words = scripts(argv) + (_prints(stage) if to else []) + (
+                  if printed and piped else None)
+            if printed and piped and not to and not where and position == len(inner.stages) - 1:
+                to = compound_stream_consumer(stmts, index, executors)
+            words = scripts(argv) + (printed if to else []) + (
                 [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])
             if argv and os.path.basename(argv[0]) in executors:
                 words += [w for text in stage.substitutions for inside in statements(text)
@@ -662,10 +662,10 @@ def kept(unread, found, unverified):
     the job holds a fetch this guard REPORTS -- a download no checksum clears, a stream handed to a
     shell, an unresolved transfer (#2481, #2499) -- and no loud reason of either reports its
     statement (`carried`'s, a stream's, a reported fetch's, #2490)."""
-    loud = {index for index, why in unread if not isinstance(why, Idle)}
+    loud = {index for index, why in unread if not isinstance(why, (Idle, BoundStdin))}
     loud |= {index for index, _why, _fetch in found}
     return [(index, why, why) for index, why in unread
-            if not isinstance(why, Idle) or unverified and index not in loud] + found
+            if not isinstance(why, (Idle, BoundStdin)) or unverified and index not in loud] + found
 
 
 # The container runners, and the subcommands of theirs that run a command. The

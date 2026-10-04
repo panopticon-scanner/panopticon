@@ -223,12 +223,22 @@ def _stops_the_job(stmts, index, errexit=True, pipefail=False):
     grouped = bool(first_stage and (first_stage.group_open or
                                     (first and first[0] in _GROUP_OPEN)))
     status: int | None = 1  # The rescue is entered only after the checksum fails.
-    # A rescue can close a subshell the check opened on the same statement:
-    # `( CHECK || exit 1 )`. Start inside that shell so its `)` is not read as
-    # an unmatched closer; the non-zero exit becomes the subshell's status.
-    inherited_subshells = max(0, sum(
+    # A rescue can close a subshell the check opened on the same statement or
+    # one whose bare `(` immediately precedes it. Start inside those shells so
+    # `)` is not read as unmatched; a command between `(` and the check keeps
+    # the older fail-closed answer until this bounded status walk models it.
+    inherited_subshells = sum(
         stage.group_open - stage.group_close for stage in stmts[index].stages
-    ))
+    )
+    for opener in reversed(stmts[:index]):
+        if (not opener.stages or
+                any(stage.argv or stage.group_close for stage in opener.stages)):
+            break
+        opened = sum(stage.group_open for stage in opener.stages)
+        if not opened:
+            break
+        inherited_subshells += opened
+    inherited_subshells = max(0, inherited_subshells)
     inherited_depth = (max(inherited_subshells, _nesting(stmts[index]))
                        if inherited_subshells else 0)
     depth, subshell_depth = inherited_depth, inherited_subshells
