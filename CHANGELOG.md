@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard follows a download through the step's own values (#2425, #2489, #2331).**
+  Where a use as written names no download, a name the step itself assigns a literal or an array
+  literal is read through that value (`T=cuda_1.run; sh "$T"`, `declare -a a=(sh tool); "${a[@]}"`,
+  a `for` header's words), a call hands the values it sees to the function body, and
+  `sh -c 'cat' < f` no longer reads `f` as the program. Quotes are gone to the reader, so a quoted
+  twin over-reports, as does a reassignment the shell may skip; a table kept statement by statement
+  was rejected because it cannot repeat the loop, condition and function-body walks of one asked
+  per use.
 - **Workflow guard now lets bound downloads own value-form stdin (#2607, #2331).**
   When `curl -o "$T"` is followed by `$T <<'EOF'`, the existing run finding now stands alone and
   the heredoc is treated as payload input, so its text cannot invent a shell stream finding or keep

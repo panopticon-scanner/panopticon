@@ -152,6 +152,13 @@ class Values:
     scalars: dict[str, list[str]] = field(default_factory=dict)
     arrays: dict[str, list[list[str]]] = field(default_factory=dict)
 
+    def copy(self):
+        """A copy whose lists are its own (`static_values`' `start`), made by hand, as
+        `copy.deepcopy` cannot rebuild a marked text (`shell_reader.derived`'s)."""
+        return Values({name: list(texts) for name, texts in self.scalars.items()},
+                      {name: [list(words) for words in lists]
+                       for name, lists in self.arrays.items()})
+
 
 def _for_parts(stage):
     """A literal `for NAME in WORD...` header, or (None, [])."""

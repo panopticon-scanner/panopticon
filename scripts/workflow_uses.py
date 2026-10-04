@@ -8,14 +8,15 @@ quoted and nonmatching patterns remain ordinary strings.
 
 The step's own LITERAL values are a second kind of bounded value fact beside
 those glob bindings (#2425, #2489), read by `scripts/workflow_values.py`;
-`static_values` here is that table live at one statement, and this module
-re-exports its `Values`, `assigned`, `record`, `valued` and `valued_argvs`, so
-a caller of this module reaches them where it reaches `uses`.
+`static_values` here is that table live at one statement, which `uses` reads
+a stage through, and this module re-exports its `Values`, `assigned`,
+`record`, `valued` and `valued_argvs`, so a caller reaches them with `uses`.
 """
 from dataclasses import dataclass
 import os
 import re
 
+import shell_lex
 import shell_reader
 from shell_reader import command
 from workflow_checks import inside
@@ -23,12 +24,12 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
 from workflow_function_calls import _FUNCTION_TOKEN, _function_scope, _function_syntax
-from workflow_programs import VALUE_PROGRAM
+from workflow_programs import _SHELL_STRING, VALUE_PROGRAM, scripts
 # Compatibility bindings: the value table moved to `workflow_values` with its
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import _for_parts, _literals, emptied
+from workflow_values import _as_word, _for_parts, _literals, emptied
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -43,6 +44,8 @@ _REFERENCE = re.compile(
 )
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\+?=")
 _DECLARATIONS = ("declare", "export", "local", "readonly", "typeset")
+# ONE whole reference (`$T`, `${T}`, `${T:-d}`, `${a[0]}`): bash splits its value unquoted.
+_WHOLE = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?:\[[0-9]+\]|:?[-=][^{}]*)?\})", re.A)
 
 
 @dataclass(frozen=True)
@@ -283,7 +286,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
         interpreter = in_container(argv, dest, INTERPRETERS)
         if interpreter:
             return "running it inside a container under `%s`" % interpreter
-    if (name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM) and any(
+    if (name in INTERPRETERS and _on_stdin(argv) or stdin_program(argv) == VALUE_PROGRAM) and any(
             same_file(at_directory(read, directory), dest) or (
                 stage.stdin_heredoc is None and covers(at_directory(read, directory), dest)
             ) for read in stage.reads):
@@ -310,6 +313,46 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
     return None
 
 
+def _on_stdin(argv):
+    """Whether interpreter `argv` may run its standard input (#2425's N2-2): not under
+    a shell whose `-c` string is ONE simple command no interpreter or `$` word heads
+    (`sh -c 'cat'`), as `stdin_program` reads `$CMD -c`; `sh -c 'sh'` and `'cat | sh'` may."""
+    strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
+    try:
+        parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
+    except shell_lex.Unreadable:
+        parsed = []
+    if len(parsed) != 1 or len(parsed[0].stages) != 1:
+        return True
+    inner = command(parsed[0].stages[0].argv)
+    return bool(inner) and (os.path.basename(inner[0]) in INTERPRETERS
+                            or stdin_program(inner) == VALUE_PROGRAM)
+
+
+def _resolved(argv, table):
+    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`'
+    on the terms it leaves its caller -- a word that was ONE whole reference
+    (`_WHOLE`) split on its value's blanks, then `command()` re-reading the argv, one
+    left empty dropped -- and none where nothing resolves. A mark that never resolves
+    fences each word, so a made word's source is known."""
+    mark = object()
+    fenced = [part for word in argv for part in (mark, word)]
+    for words in valued_argvs(fenced, table):
+        if words is fenced:                 # `[argv]` itself: nothing resolved
+            return
+        sources, source, kept = iter(argv), "", []
+        for word in words:
+            if word is mark:
+                source = next(sources)
+            elif word is not source and _WHOLE.fullmatch(source) and re.search("[ \t\n]", word):
+                kept += [_as_word(shell_reader.derived(part, word), source)
+                         for part in re.split("[ \t\n]+", word) if part]
+            else:
+                kept.append(word)
+        if kept := command(kept):
+            yield kept
+
+
 def _function_ranges(stmts):
     """Definition starts and the indices occupied by each function body."""
     starts: dict[int, list[tuple[str, int, int]]] = {}
@@ -328,25 +371,31 @@ def _function_ranges(stmts):
     return starts, occupied
 
 
-def _function_use(stmts, definition, args, dest, directory, named, inherited):
-    """A use reached by one direct call carrying a matching glob argument."""
+def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes):
+    """A use reached by one direct call carrying a matching glob argument, or by a
+    value of the caller's `table` (#2425, #2489), which the body's table starts from
+    (`static_values`' `start`); only a binding call weighs a stage as written, as before."""
     start, close = definition
     positional = {}
     for number, word in enumerate(args, 1):
         if binding := _from_operand(word, dest, directory, inherited):
             positional[str(number)] = binding
-    if not positional:
-        return None
+    called = bool(positional)
     local_named = dict(named)
     here = directory
     body = stmts[start:close + 1]
     kinds = _control_kinds(body)
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
-            bound = _live(local_named, positional, here)
+            bound = _live(local_named, positional, here) if called else frozenset()
             argv = command(stage.argv)
-            if answer := use(statement, position, stage, argv, dest, here, bound):
+            if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
                 return answer
+            if any("$" in word for word in argv):
+                values = static_values(stmts, start + index, scopes=scopes, start=table)
+                for made in _resolved(argv, values):
+                    if answer := use(statement, position, stage, made, dest, here, bound):
+                        return answer
             certain, direct_loop = _certainty(body, index, kinds)
             _cleared(stage, local_named, positional, certain, direct_loop)
             _bound_after(
@@ -471,7 +520,7 @@ def _openers(stage, header=False):
     return words, header and not argv and stage.group_open <= _own_parens(stage)
 
 
-def static_values(stmts, index, working=None, scopes=None):
+def static_values(stmts, index, working=None, scopes=None, start=None):
     """The step's literal values live at statement `index` (#2425, #2489):
     `_cleared`, then `record`, over each statement before it in its scope,
     walked as `_functions_before` walks, as sure as `_table_certainty` says
@@ -486,8 +535,8 @@ def static_values(stmts, index, working=None, scopes=None):
     `while`/`until` head's own command (`while ! sh "$T"; do`) -- a later
     command of the condition, or one on the lines after a bare `while`, is
     not found (a limit). At an index inside a function body only that body is
-    walked, under its own control flow and from an empty table -- a call's
-    values are its caller's at the call, which `_function_use` carries -- and
+    walked, under its own control flow and from a copy of `start`, the
+    caller's table at a call, which `_function_use` carries, or an empty one;
     a body is otherwise skipped, so a call's own assignments are not read
     (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
@@ -509,14 +558,14 @@ def static_values(stmts, index, working=None, scopes=None):
     relative path.
     """
     scopes = scopes or {}
-    table = Values()
     forked = _forked(stmts, index)
-    bodies = [(start, *_body_end(stmts, start, close))
-              for entries in _function_ranges(stmts)[0].values() for _name, start, close in entries]
-    first, last = max([(start, end) for start, end, found in bodies
-                       if found and start <= index <= end], default=(-1, len(stmts) - 1))
-    nested = {position for start, end, found in bodies if found and start > first
-              for position in range(start, end + 1)}
+    bodies = [(head, *_body_end(stmts, head, close))
+              for entries in _function_ranges(stmts)[0].values() for _name, head, close in entries]
+    first, last = max([(head, end) for head, end, found in bodies
+                       if found and head <= index <= end], default=(-1, len(stmts) - 1))
+    nested = {position for head, end, found in bodies if found and head > first
+              for position in range(head, end + 1)}
+    table = start.copy() if start is not None and first >= 0 else Values()
     kinds = _control_kinds(stmts)
     # A body's own `then`/`do`/`case`: what wraps the definition wraps no call.
     outer = len(kinds[first]) if first >= 0 else 0
@@ -589,7 +638,8 @@ def _opens(stage):
 
 
 def uses(stmts, dest, after, working=None, scopes=None):
-    """Names `dest` gains and its later uses, including bounded shell values."""
+    """Names `dest` gains and its later uses, including bounded shell values and, where a
+    stage as written names none, the step's own values at the use (`_resolved`, #2425)."""
     names, out = {dest}, []
     working, scopes = working or {}, scopes or {}
     starts, occupied = _function_ranges(stmts)
@@ -613,16 +663,21 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 functions[name] = (start, close)
         in_definition = index in occupied
         bound = set() if in_definition else _live(named, positional, directory)
-        how = None
+        how, table = None, None
         for point, inner, position, stage, where, here in inside(
                 statement, index, directory=directory, scope=index):
             argv = command(stage.argv)
+            call = not in_definition and argv and argv[0] in functions
             for name in sorted(names):
                 how = use(inner, position, stage, argv, name, here, bound)
-                if not how and not in_definition and argv and argv[0] in functions:
+                if not how and (call or any("$" in word for word in argv)):
+                    table = table or static_values(stmts, index, working, scopes)
+                    how = next(filter(None, (use(inner, position, stage, made, name, here, bound)
+                                             for made in _resolved(argv, table))), None)
+                if not how and call:
                     how = _function_use(
                         stmts, functions[argv[0]], argv[1:], name, here, named,
-                        {**named, **positional}
+                        {**named, **positional}, table, scopes
                     )
                 if how:
                     if not same_file(name, dest):

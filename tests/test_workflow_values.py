@@ -6,19 +6,34 @@ per name, the candidate texts the step's own assignments leave
 array literals (`declare -a a=(sh tool)`); `workflow_uses.static_values` is
 that table live at one statement. These are its unit pins -- what a stage
 assigns, when a value is held and when it is emptied, how one word
-resolves, how an argv is spliced -- and no guard-level row: the guard does
-not read through the table yet.
+resolves, how an argv is spliced -- then the caller's side of the contract
+(`workflow_uses._resolved`, a call's `start`, the `-c` stdin rule) and the
+guard's rows: `uses()` reads a stage through the table where the stage as
+written names no use. A guard row's comment carries its truth, b5 b3 dash gh
+(bash 5.2.21, bash 3.2.57, dash, a GitHub runner's bash with `sh` = dash;
+FR fetched and ran the download, F- fetched only), and main's answer.
 """
 import unittest
 
 import shell_reader
+import workflow_guard as wg
 import workflow_uses as wu
 import workflow_values as wv
 from workflow_operands import _Reparsed
 
+URL = "https://example.test/"
+GET = "curl -fsSLo cuda_1.run %scuda_1.run\n" % URL
+TOOL = "curl -fsSLo tool %stool\n" % URL
+SH = "running it under `sh`"
+
 
 def statements(script):
     return list(shell_reader.statements(script))
+
+
+def defects(script):
+    """The guard's sentences for a job of one step."""
+    return [why for _name, why in wg.job_defects([("step", script)])]
 
 
 def table(script, index=None):
@@ -914,6 +929,282 @@ class TestTheTableAtAStatement(unittest.TestCase):
         for name in ("Values", "assigned", "record", "valued", "valued_argvs"):
             with self.subTest(name=name):
                 self.assertIs(getattr(wv, name), getattr(wu, name))
+
+    def test_a_call_hands_the_body_its_table_as_start(self):
+        # `_function_use` passes the caller's table at the call: a body index starts
+        # from a copy of it, which the walk does not write back.
+        stmts = statements('f() {\n  sh "$T"\n  T=y\n  sh "$T"\n}\nf')
+        start = table("T=cuda_1.run")
+        self.assertEqual({"T": ["cuda_1.run"]}, wu.static_values(stmts, 1, start=start).scalars)
+        self.assertEqual({"T": ["y"]}, wu.static_values(stmts, 3, start=start).scalars)
+        self.assertEqual({"T": ["cuda_1.run"]}, start.scalars)
+        # y01: no call context is the empty table; outside a body `start` is not read.
+        self.assertEqual(wv.Values(), wu.static_values(stmts, 1))
+        self.assertEqual(wv.Values(), wu.static_values(stmts, 5, start=start))
+
+    def test_a_copy_keeps_a_lifted_substitution(self):
+        # `copy.deepcopy` cannot rebuild a marked text; `Values.copy` keeps the object.
+        values = table("T=$(pwd)/cuda_1.run; a=(x y)")
+        copied = values.copy()
+        self.assertEqual(values, copied)
+        self.assertIs(values.scalars["T"][0], copied.scalars["T"][0])
+        self.assertIsNot(values.arrays["a"], copied.arrays["a"])
+        self.assertIsNot(values.arrays["a"][0], copied.arrays["a"][0])
+
+
+class TestTheCallersContract(unittest.TestCase):
+    """`workflow_uses._resolved`: the argvs `use()` weighs after a stage as
+    written, on the terms `valued_argvs` leaves its caller, and the one place
+    `use()` changed with them, a shell's `-c` string on standard input."""
+
+    def resolved(self, script, argv):
+        return list(wu._resolved(argv, table(script)))
+
+    def test_nothing_is_made_where_nothing_resolves(self):
+        for argv in (["sh", "x"], ["sh", "$INPUT"], ["sh", "${T#x}"], []):
+            with self.subTest(argv=argv):
+                self.assertEqual([], self.resolved("T=cuda_1.run", argv))
+
+    def test_without_a_blank_the_argvs_are_valued_argvs(self):
+        script = "T=cuda_1.run; false && T=x; arr=(sh tool); E="
+        for argv in (["sh", "$T"], ["${arr[@]}", "$T"], ["$E", "sh", "${T}x"], ["sh", "x$T"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(wv.valued_argvs(argv, table(script)), self.resolved(script, argv))
+
+    def test_one_whole_reference_splits_on_its_values_blanks(self):
+        # Bash splits an unquoted `$CMD`; the quoted twin over-reports (a price).
+        rows = {"$CMD": ["sh", "cuda_1.run"], "${CMD}": ["sh", "cuda_1.run"],
+                "${CMD:-x}": ["sh", "cuda_1.run"], "${a[0]}": ["sh", "cuda_1.run"]}
+        for word, expected in rows.items():
+            with self.subTest(word=word):
+                script = "CMD='sh  cuda_1.run'; a=('sh cuda_1.run')"
+                self.assertEqual([expected], self.resolved(script, [word]))
+        # Text around a reference keeps its blanks, as a `-c` string's does.
+        self.assertEqual([["sh", "-c", 'sh "cuda_1.run x"']],
+                         self.resolved("T='cuda_1.run x'", ["sh", "-c", 'sh "$T"']))
+        self.assertEqual([["sh", "./cuda_1.run x"]],
+                         self.resolved("T='cuda_1.run x'", ["sh", "./$T"]))
+        # A part bash globs is a live pattern, the rest plain.
+        (argv,) = self.resolved("p='./cuda_*.run x'", ["sh", "$p"])
+        self.assertEqual(["sh", "./cuda_*.run", "x"], argv)
+        self.assertEqual([_Reparsed, str], [type(word) for word in argv[1:]])
+
+    def test_a_made_argv_is_read_again_and_one_left_empty_is_dropped(self):
+        # A resolved first word may be a wrapper or an assignment, and `$E` may vanish.
+        self.assertEqual([["sh", "x"]], self.resolved("W=env", ["$W", "sh", "x"]))
+        self.assertEqual([["sh", "x"]], self.resolved("A=T=y", ["$A", "sh", "x"]))
+        self.assertEqual([], self.resolved("E=", ["$E"]))
+
+    def test_a_shells_dash_c_string_is_its_program(self):
+        # N2-2: ONE simple command no interpreter or `$` word heads reads no program
+        # off standard input; the rest still may, fail-closed.
+        rows = {("sh", "-c", "cat"): False, ("bash", "-ec", "cat -"): False,
+                ("sh", "-c", "T=x"): False, ("sh", "-c", "sh"): True,
+                ("sh", "-c", "exec bash -s"): True, ("sh", "-c", "$CMD"): True,
+                ("sh", "-c", "cat | sh"): True, ("sh", "-c", "cat; sh"): True,
+                ("sh", "-c", "source /dev/stdin"): True, ("sh", "-c", "python3"): True,
+                ("sh",): True, ("eval", "cat"): True, ("python3", "-c", "x"): True}
+        for argv, expected in rows.items():
+            with self.subTest(argv=argv):
+                self.assertIs(expected, wu._on_stdin(list(argv)))
+
+
+class TestADownloadNamedThroughAValue(unittest.TestCase):
+    """#2425 and the #2581 rows: `uses()` reads a stage through the step's own
+    values where the stage as written names no use."""
+
+    def assertReports(self, script, how=SH, dest="cuda_1.run"):
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("-> %s and %s with nothing verifying" % (dest, how), found[0])
+
+    def test_a_value_the_step_assigns_names_the_download(self):
+        # Main CLEAN on every row.
+        rows = ('T=cuda_1.run\nsh "$T"\n',                              # t01   FR FR FR FR
+                'export T=cuda_1.run\nsh "$T"\n',                       # t05a  FR FR FR FR
+                'declare T=cuda_1.run\nsh "$T"\n',                      # t05b  FR FR F- FR
+                'readonly T=cuda_1.run\nsh "$T"\n',                     # t05c  FR FR FR FR
+                'f() { local T=cuda_1.run; sh "$T"; }\nf\n',            # t05d  FR FR FR FR
+                'T="$PWD/cuda_1.run"\nsh "$T"\n',                       # t07   FR FR FR FR
+                "p=./cuda_*.run\nsh $p\n",                              # t08   FR FR FR FR
+                "X='*'\nsh ./cuda_$X.run\n",                            # t09   FR FR FR FR
+                "sh ./cuda_${X:-*}.run\n",                              # t10   FR FR FR FR
+                'T=cuda_1.run\nfalse && T=other.run\nsh "$T"\n',        # t11   FR FR FR FR
+                'T=cuda_1\nT+=.run\nsh "$T"\n',                         # t17   FR FR F- FR
+                "export T=cuda_1.run\nsh -c 'sh \"$T\"'\n",             # t29b  FR FR FR FR
+                'T=cuda_1.run\nsh -c "sh $T"\n',                        # t29c  FR FR FR FR
+                'U=cuda_1.run\nT=$U\nsh "$T"\n',                        # t30   FR FR FR FR
+                'T=cuda_1.run\n( T=other.run )\nsh "$T"\n',             # t31   FR FR FR FR
+                'for T in cuda_1.run; do sh "$T"; done\n',              # tf1   FR FR FR FR
+                'if false; then F=x; fi\nsh "${F:-./cuda_1.run}"\n')    # td1   FR FR FR FR
+        for use in rows:
+            with self.subTest(use=use):
+                self.assertReports(GET + use)
+        # t06 FR FR FR FR: the first use is the `chmod`.
+        self.assertReports(GET + 'T=./cuda_1.run\nchmod +x "$T"\n"$T"\n', "making it executable")
+
+    def test_a_whole_reference_splits_and_a_made_argv_is_read_again(self):
+        # Main CLEAN on each. n01, n04 FR FR FR FR: bash splits the unquoted value;
+        # n03 FR FR FR FR: `env` is a wrapper the made argv is read through.
+        for use in ("CMD='sh cuda_1.run'\n$CMD\n", "T='cuda_1.run x'\nsh $T\n",
+                    "W=env\n$W sh cuda_1.run\n"):
+            with self.subTest(use=use):
+                self.assertReports(GET + use)
+
+    def test_a_call_carries_its_table_into_the_body(self):
+        # Main CLEAN on each, the value at CALL time: fu1, fu2, n09 (a lifted `$(...)`
+        # in the value) and n10 (a body defined before the fetch) FR FR FR FR.
+        for script in (GET + 'T=cuda_1.run\nf() { sh "$T"; }\nf\n',
+                       GET + 'f() { sh "$T"; }\nT=cuda_1.run\nf\n',
+                       GET + 'T="$(pwd)/cuda_1.run"\nf() { sh "$T"; }\nf\n',
+                       'T=cuda_1.run\nf() { sh "$T"; }\n' + GET + "f\n"):
+            with self.subTest(script=script):
+                self.assertReports(script)
+        # fu3 F- F- F- F-: `T=x` before the call; gx F- F- F- F-: the table closes
+        # the `( )` body that main's `_function_ranges` reads to the step's end.
+        for use in ('T=cuda_1.run\nf() { sh "$T"; }\nT=x\nf\n',
+                    'T=cuda_1.run; g() ( : ); T=x; sh "$T"\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], defects(GET + use))
+
+    def test_a_value_that_names_no_download_stays_clean(self):
+        # Main CLEAN on each, F- F- F- F- on each but t16's F-+sha F-+sha F-+sha F-.
+        check = 'echo "%s  cuda_1.run" | sha256sum -c -\n' % ("a" * 64)
+        for use in ('T=other.run\nsh "$T"\n',                           # t02
+                    'T=cuda_1.run\nT=x\nsh "$T"\n',                      # t03
+                    'sh "$INPUT"\n',                                     # t04
+                    'T=cuda_1.run\nmkdir -p sub\ncd sub\nsh "$T"\n',     # t13
+                    'T=cuda_1.run sh "$T"\n',                            # t14: a prefix
+                    'T=cuda_1.run true\nsh "$T"\n',                      # n07: never a value
+                    'T=cuda_1.run\nunset T\nsh "$T"\n',                  # t15a
+                    'T=cuda_1.run\nread -r T < /dev/null || true\nsh "$T"\n',    # t15b
+                    'T=cuda_1.run\n' + check + 'sh "$T"\n',              # t16: binds by name
+                    'sh "$GITHUB_WORKSPACE/scripts/x.sh"\n',             # t28
+                    "T='cuda_{1,2}.run'\nsh $T\n"):                      # t32: no brace in a value
+            with self.subTest(use=use):
+                self.assertEqual([], defects(GET + use))
+
+    def test_the_prices_over_report(self):
+        # Main CLEAN on each, and bash runs nothing (F- F- F- F-): t08q, t09q and n02
+        # lost their quotes to the reader (R3), t12's `false &&` value stays a candidate
+        # (R4), and t29a's child sees no `T`, unexported, which the table does not ask.
+        for use in ('p=./cuda_*.run\nsh "$p"\n', "X='*'\nsh \"./cuda_$X.run\"\n",
+                    "CMD='sh cuda_1.run'\n\"$CMD\"\n",
+                    'T=other.run\nfalse && T=cuda_1.run\nsh "$T"\n',
+                    "T=cuda_1.run\nsh -c 'sh \"$T\"'\n"):
+            with self.subTest(use=use):
+                self.assertReports(GET + use)
+
+    def test_a_value_the_table_cannot_see_reads_as_written(self):
+        # The stand-in: main's answer, CLEAN, and no claim. y06, x16 and x14 are FR FR
+        # FR FR (`"$@"` and `$(ls ...)` hold the download), which the guard misses as
+        # main does; n05 and n08 FR FR FR FR are the limits a child's assignments
+        # make: a `-c` string's are read as the step's (`T=x` replaces `cuda_1.run`),
+        # and a `$(...)`'s are not read at all.
+        for use in ('set -- cuda_1.run\nT=a; for T in "$@"; do :; done; sh "$T"\n',
+                    'set -- cuda_1.run\nT=a; for T in "$@"; do sh "$T"; done\n',
+                    'for T in $(ls ./*.run) x; do sh "$T"; done\n',
+                    "T=cuda_1.run\nsh -c 'T=x'\nsh \"$T\"\n",
+                    'x=$(T=cuda_1.run; sh "$T")\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], defects(GET + use))
+
+    def test_the_use_as_written_is_weighed_first(self):
+        # N-1: the fetch wrote the NAME, which only the use as written spells; each is
+        # main's sentence, FR FR FR FR. p02, p04 (`chmod +x` first), p07, p08, p10.
+        fetch = 'curl -fsSLo "%s" https://example.test/p\n'
+        rows = (("T=cuda_1.run\n", "$T", 'sh "$T"\n', SH),
+                ("T=./install.sh\n", "$T", 'chmod +x "$T"\n"$T"\n', "making it executable"),
+                ("T=a.sh\nif c; then T=b.sh; fi\n", "$T", 'sh "$T"\n', SH),
+                ("p=./cuda_1.run\n", "$p", "sh $p\n", SH),
+                ("printf 'x.sh\\n' > f\nread -r T < f\n", "${T}", 'sh "${T}"\n', SH))
+        for before, dest, use, how in rows:
+            with self.subTest(before=before, dest=dest, use=use):
+                found = defects(before + fetch % dest + use)
+                self.assertEqual(["fetches https://example.test/p -> %s and %s with nothing "
+                                  "verifying what arrived -- verify it first: `echo \"<sha256>"
+                                  "  %s\" | sha256sum -c -` between the download and that use"
+                                  % (dest, how, dest)], found)
+
+    def test_a_brace_header_keeps_mains_answer(self):
+        # Main's sentence on each, through the glob binding: the table hands the
+        # header's name its stand-in. z01, z02, z03 and c1x FR FR F- FR; z03b FR FR F-
+        # FR, CLEAN on main and here: the array holds its stand-in, no claim (C-1).
+        fetch = "curl -fsSLo %s https://example.test/%s\n"
+        rows = (("install.sh", "bash", "s in {install,setup}${SUFFIX}.sh", 'bash "$s"'),
+                ("install.sh", "bash", "s in {install,setup,$EXTRA}.sh", 'bash "$s" || :'),
+                ("install.sh", "bash", "s in {install,setup}.sh", 'bash "$s"'),
+                ("5.run", "sh", "T in {1..100}.run", 'sh "$T" 2>/dev/null || :'))
+        for dest, shell, header, body in rows:
+            with self.subTest(header=header):
+                use = "for %s; do %s; done\n" % (header, body)
+                self.assertReports(fetch % (dest, dest) + use, "running it under `%s`" % shell,
+                                   dest)
+        use = 'a=({1..100}.run); sh "${a[0]}"\n'
+        self.assertEqual([], defects(fetch % ("1.run", "1.run") + use))
+
+    def test_a_dash_c_string_is_the_program_of_a_redirected_shell(self):
+        # N2-2. c01, c04 F- F- F- F-: main reported "running it under `sh` from standard
+        # input"; `cat` prints it. c02 F- F- F- F-: main's one sentence, the value
+        # command word's (the resolved `sh -c cat` adds none). c03, n06 FR FR FR FR:
+        # main's report, kept -- `sh` reads it, and `cat | sh` is not ONE command.
+        fetch = "curl -fsSLo i.sh %si.sh\n" % URL
+        for use in ("sh -c 'cat' < i.sh\n", "bash -c 'cat' < i.sh\n"):
+            with self.subTest(use=use):
+                self.assertEqual([], defects(fetch + use))
+        found = defects(fetch + "CMD=sh\n$CMD -c 'cat' < i.sh\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
+        for use in ("sh -c 'sh' < i.sh\n", "sh -c 'cat | sh' < i.sh\n"):
+            with self.subTest(use=use):
+                self.assertReports(fetch + use, "running it under `sh` from standard input",
+                                   "i.sh")
+
+
+class TestADownloadNamedThroughAnArray(unittest.TestCase):
+    """#2489 and the `${a[0]}` row: an array literal the step assigns, spliced
+    or read by its element at the use."""
+
+    def assertReports(self, script, dest="tool"):
+        found = defects(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("-> %s and %s with nothing verifying" % (dest, SH), found[0])
+
+    def test_an_array_the_step_assigns_names_the_download(self):
+        # Main CLEAN on each, FR FR F- FR (dash has no arrays): t20, t21, t22, ta1 and
+        # ta2d -- `declare -a` stops main's literal-as-command read -- and t26.
+        for use in ('declare -a arr=(sh tool)\n"${arr[@]}"\n',
+                    'export arr=(sh tool)\n"${arr[@]}"\n',
+                    'f() { local -a a=(sh tool); "${a[@]}"; }\nf\n',
+                    'declare -a arr=(echo hi)\ndeclare -a arr=(sh tool)\n"${arr[@]}"\n',
+                    'declare -a arr=(echo hi)\nif true; then declare -a arr=(sh tool); fi\n'
+                    '"${arr[@]}"\n'):
+            with self.subTest(use=use):
+                self.assertReports(TOOL + use)
+        self.assertReports(GET + 'a=(./cuda_*.run)\nsh "${a[0]}"\n', "cuda_1.run")
+
+    def test_a_literal_main_reads_as_its_command_makes_one_row(self):
+        # t24, ta2 FR FR F- FR: main reports each through the literal read as its
+        # command; the splice adds no second row.
+        for use in ('arr=(sh tool)\n"${arr[@]}"\n',
+                    'arr=(echo hi)\nif true; then arr=(sh tool); fi\n"${arr[@]}"\n'):
+            with self.subTest(use=use):
+                self.assertReports(TOOL + use)
+        # t27 FR FR -- FR, posthog's: main's sentence, the transfer it cannot parse.
+        found = defects('fetch=(curl --fail --location)\n"${fetch[@]}" %stool --output tool\n'
+                        "chmod +x tool\n./tool\n" % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("runs `curl` with unresolved transfers"), found)
+
+    def test_an_array_that_runs_no_download_stays_clean(self):
+        # Main CLEAN, F- F- F- F-: t23 assigns and never runs; t25 runs `echo hi`.
+        for use in ("declare -a arr=(sh tool)\n", 'declare -a arr=(echo hi)\n"${arr[@]}"\n'):
+            with self.subTest(use=use):
+                self.assertEqual([], defects(TOOL + use))
+
+    def test_a_quoted_literal_word_over_reports(self):
+        # t33, main CLEAN, F- F- F- F-: bash globs no quoted word; the reader lost the quotes.
+        self.assertReports(GET + "a=('./cuda_*.run')\nsh \"${a[0]}\"\n", "cuda_1.run")
 
 
 if __name__ == "__main__":
