@@ -769,9 +769,15 @@ class TestTheTableAtAStatement(unittest.TestCase):
         self.assertEqual(["a", "cuda_1.run"], at_use(t06).scalars["T"])
         for script in ('T=cuda_1.run; { T=x; }; sh "$T"', 'T=cuda_1.run; { T=x; } && :; sh "$T"',
                        'T=cuda_1.run; if T=x; then :; fi\nsh "$T"',
+                       # A `{` word in a group's command opens no function body.
+                       'T=cuda_1.run; { echo {; T=x; }; sh "$T"',
                        # A list is not followed past a compound command (a limit).
                        'T=cuda_1.run; T=x && if c; then :; fi &\nwait; sh "$T"',
-                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"'):
+                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"',
+                       # v02: a block nested in a one-line function's body inside a
+                       # forked group is taken to close that body (a limit: bash
+                       # runs `cuda_1.run`).
+                       'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["x"]}, at_use(script).scalars)
         self.assertEqual({"T": ["a", "b", "c"], "U": ["d"]},
@@ -829,10 +835,12 @@ class TestTheTableAtAStatement(unittest.TestCase):
     def test_a_function_body_holds_what_the_body_assigns_alone(self):
         # y01-y03: a call's values are its caller's at the call, which the table
         # at the body cannot know, so it claims none of them -- in a `( )` body
-        # opened on the next line too.
+        # opened on the next line too, and k8's `{ }` after `function g()`: the
+        # use reads as written, the stand-in.
         for script in ('T=x; f() { sh "$T"; }; T=cuda_1.run; f',
                        'T=x\ng()\n(\n  sh "$T"\n)\nT=cuda_1.run\ng',
-                       'T=x\nfunction g\n(\n  sh "$T"\n)\nT=cuda_1.run\ng'):
+                       'T=x\nfunction g\n(\n  sh "$T"\n)\nT=cuda_1.run\ng',
+                       'T=a\nfunction g()\n{\n  sh "$T"\n}\nT=cuda_1.run\ng'):
             with self.subTest(script=script):
                 self.assertEqual(wv.Values(), at_use(script))
         for script in ('T=x; f() { T=cuda_1.run; sh "$T"; }; f',
@@ -871,7 +879,21 @@ class TestTheTableAtAStatement(unittest.TestCase):
                      'T=cuda_1.run\ng()\nif T=x; then :; fi\nsh "$T"': ["cuda_1.run", "x"],
                      'T=cuda_1.run\nfunction g\nwhile T=x; false; do :; done\nsh "$T"':
                          ["cuda_1.run", "x"],
-                     'T=cuda_1.run\ng()\n(\n  T=y\n)\nif T=x; then :; fi\nsh "$T"': ["x"]})
+                     'T=cuda_1.run\ng()\n(\n  T=y\n)\nif T=x; then :; fi\nsh "$T"': ["x"],
+                     # h6: a `g ()` header marks its body too.
+                     'T=cuda_1.run\ng () for T in x; do :; done\nsh "$T"': ["cuda_1.run", "x"]})
+        # k1, k2, w2: a `function g()` header's own `()` opens no `( )` body;
+        # k7: a call's own assignments are not read (a price: bash runs `x`).
+        rows.update({'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
+                     'T=cuda_1.run\nfunction g ()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
+                     'T=cuda_1.run\nfunction g()\nwhile T=x; false; do :; done\nsh "$T"':
+                         ["cuda_1.run", "x"],
+                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run"]})
+        # Limits: b2p, a one-line `function f {` after a `{`, is read to the group's
+        # `}` (bash runs `x`); k3, a `g ( )` header, is no definition (bash runs
+        # `cuda_1.run`).
+        rows.update({'T=cuda_1.run; { function f { :; }; T=x; }\nsh "$T"': ["cuda_1.run"],
+                     'T=cuda_1.run\ng ( )\n{\n  T=x\n}\nsh "$T"': ["x"]})
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars["T"])

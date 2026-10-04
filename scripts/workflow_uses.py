@@ -449,12 +449,12 @@ def _openers(stage, header=False):
     """The words `_forked` reads in `stage` for a compound's head or close,
     each with whether the compound surely runs apart from the step's shell,
     and whether a function header ends the stage with its body to come
-    (`header`: `g()` alone on its line). They are the lead words -- the
-    compound right after a function header is its body -- and what the
-    reader leaves in the command: the `select`, the compound after `coproc`
-    (and its NAME), which runs in a child, and the body `{` of a function
-    defined after a keyword on its line, which the reader splits into its
-    name, a group of its own `()` and the `{`."""
+    (`header`: `g()` or `function g()` alone on its line). They are the lead
+    words -- the compound right after a function header is its body -- and
+    what the reader leaves in the command: the `select`, the compound after
+    `coproc` (and its NAME), which runs in a child, and the body `{` of a
+    function defined after a keyword on its line, which the reader splits
+    into its name, a group of its own `()` and the `{`."""
     argv = command(stage.argv)
     lead = stage.argv[:len(stage.argv) - len(argv)]
     words = []
@@ -468,7 +468,7 @@ def _openers(stage, header=False):
         words += [(word, True) for word in argv[1:3] if str(word) in _COMPOUNDS][:1]
     elif argv[1:2] == ["{"] and min(stage.group_open, stage.group_close) > _literals(stage):
         words.append((argv[1], True))
-    return words, header and not argv and not stage.group_open
+    return words, header and not argv and stage.group_open <= _own_parens(stage)
 
 
 def static_values(stmts, index, working=None, scopes=None):
@@ -495,9 +495,18 @@ def static_values(stmts, index, working=None, scopes=None):
     (`_function_ranges`' limit), nor is the end of a body that is neither
     `{ }` nor `( )` (`g() if c; then T=y; fi`): such a body is walked as the
     code around it, never sure outside it (`_forked`), and a use inside it
-    reads the code before it, not its caller's values (a limit). `working`
-    is accepted and unused: a value resolves at the directory of its USE,
-    bash's rule for a relative path.
+    reads the code before it, not its caller's values (a limit). A one-line
+    `function NAME { ... }` (or `function NAME() {`) after a `{` on its line
+    is read to that group's `}` (`_function_ranges`' limit), so the group's
+    own later assignments are not read (`{ function f { :; }; T=x; }`). A
+    block or a function nested in the body of a one-line function inside a
+    forked group is taken to close that body at its own `}`, so the group's
+    later assignments read sure (`{ f() { { :; }; }; T=x; } &`, a limit). A
+    `g ( )` header, a blank inside its parentheses, with its body on the next
+    line is no definition to the reader (`( )` is an empty subshell), so
+    that body is walked as sure code (a limit). `working` is accepted and
+    unused: a value resolves at the directory of its USE, bash's rule for a
+    relative path.
     """
     scopes = scopes or {}
     table = Values()
@@ -549,20 +558,29 @@ def _body_end(stmts, start, close):
     """The last statement of the body defined at `start`, and whether its end
     was found: `close`, where `_function_ranges` found the `}`, or where a
     subshell body's parentheses close, opened on the definition's line
-    (`g() ( ... )`) or the next -- searched for to the step's end, past a
-    `}` inside the body that `_function_ranges` takes for its close."""
+    (`g() ( ... )`, past a `function NAME()` header's own `()`: `_own_parens`)
+    or the next -- searched for to the step's end, past a `}` inside the body
+    that `_function_ranges` takes for its close."""
     following = stmts[start + 1].stages[:1] if start + 1 < len(stmts) else []
     for stage in stmts[start].stages:
         name, braces = _function_syntax(stage.argv)
-        if name and "{" not in braces and (_opens(stage) or any(map(_opens, following))):
+        opens = stage.group_open - _own_parens(stage) > _literals(stage)
+        if name and "{" not in braces and (opens or any(map(_opens, following))):
             depth = 0
-            for end in range(start if _opens(stage) else start + 1, len(stmts)):
+            for end in range(start if opens else start + 1, len(stmts)):
                 depth += sum(item.group_open - item.group_close for item in stmts[end].stages)
                 if depth <= 0:
                     return end, True
             return close, False
     return close, close < len(stmts) - 1 or any("}" in _function_syntax(stage.argv)[1]
                                                 for stage in stmts[close].stages)
+
+
+def _own_parens(stage):
+    """1 where the reader reads a `function NAME()` header's own `()` as a group."""
+    return int(stage.argv[:1] == ["function"] and stage.group_close > _literals(stage)
+               and not any(_FUNCTION_TOKEN.fullmatch(str(word)) or word == "()"
+                           for word in stage.argv))
 
 
 def _opens(stage):
