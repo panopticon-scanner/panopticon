@@ -448,8 +448,9 @@ def rendered(word):
     other backslash stays, so `` `printf 'sh tool\\n'` `` is read (re-review N-1). Where the reader
     refuses the text so written, the word is `readable`'s (C-1). The reader keeps no quoting for a
     lifted substitution, so an unquoted one is rendered as a quoted one is, unsplit, though bash
-    splits its text into fields `eval` and `-c` join with spaces: a newline or tab in it is read
-    where bash reads a space (C-2(b), documented). No read here stands alone --
+    splits its text into fields: `eval` joins them with spaces, so a newline or tab in it is read
+    where bash reads a space, and `-c` runs only the first, the rest its `$0`, `$1`, …, so
+    `sh -c $(echo 'curl … | sh')` over-reports (C-2(b), documented). No read here stands alone --
     `workflow_programs.dynamic_program` still reports a word all substitution beside it, the
     catch-all (C-1 to C-3), so the design's "no `Idle` row beside the read" is overruled."""
     text = word

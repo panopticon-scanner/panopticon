@@ -1109,10 +1109,9 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
     the printer's words (R-P4) -- LOUD where that stage's words or the printer's text fetch
     (review I-1), `_Quiet`, kept beside a reported download, where neither does. Every step below
     runs after GET unless it is named alone. Truth columns are b5, b3, dash and gh (GitHub's
-    pairing: the step under bash 5.2.21 with `sh` = dash), measured on `t36-p-probes/steps/p2/`
-    (c01-c12, p2n01-p2n32) and `steps/p2rv/` (the review's rv rows, fix round 1's fx rows, the
-    re-review's rr rows); each step read CLEAN at the base (d44879b7) and on main unless said
-    otherwise."""
+    pairing: the step under bash 5.2.21 with `sh` = dash), measured on the task's probe steps
+    (c01-c12, p2n01-p2n32) and the review's (its rv rows, fix round 1's fx rows, the re-review's
+    rr rows); each step read CLEAN at the base (d44879b7) and on main unless said otherwise."""
 
     FETCH_EXEC = ("fetches https://example.test/tool -> tool and running it under `sh` with "
                   "nothing verifying what arrived -- verify it first: ")
@@ -1615,12 +1614,12 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
     (`workflow_printers.substituted`, R-P3) and its output reaches the substitution. Truth columns
     are b5 b3 dash gh (bash 5.2.21, bash 3.2.57 and dash under `-e`; gh = the step under bash
     5.2.21 with `sh` = dash), FR = fetched and ran, F- = fetched only, -- = neither, measured on
-    `t36-p-probes/steps/p3/` (d01-d16) and `steps/p3b/` (e, u rows). Every step read CLEAN, or
-    `Idle` beside its download, at the base (4ae90f4f) unless said otherwise. A `<(...)` is bash's:
-    dash refuses it (rc 2), and a `shell: sh` step reads the same, fail-closed. Fix round 1 (C-1
-    to C-3, the review's rows under `steps/p3rv/`): a word all substitution keeps `_DYNAMIC`'s
-    catch-all beside the read (`dynamic_program` asks `readable`), and a printed text the reader
-    refuses is not rendered, nor (fix round 2, re-review N-1) a backquote whose text escapes `$`,
+    the task's probe steps (d01-d16, and the e and u rows). Every step read CLEAN, or `Idle` beside
+    its download, at the base (4ae90f4f) unless said otherwise. A `<(...)` is bash's: dash refuses
+    it (rc 2), and a `shell: sh` step reads the same, fail-closed. Fix round 1 (C-1 to C-3, the
+    review's rx, ry, rz, rc and rv rows): a word all substitution keeps `_DYNAMIC`'s catch-all
+    beside the read (`dynamic_program` asks `readable`), and a printed text the reader refuses is
+    not rendered, nor (fix round 2, re-review N-1, its rr rows) a backquote whose text escapes `$`,
     `` ` ``, `"`, `\\` or a newline."""
 
     FETCH_EXEC = "fetches https://example.test/tool -> tool and running it under `sh` with nothing"
@@ -1849,6 +1848,27 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
                 found = defects(GET + "eval $(printf 'curl -fsSL %si.sh\\n| sh')\n" % URL, shell)
                 self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
 
+    def test_xf01_xf02_an_unquoted_dash_c_substitution_is_read_whole_the_price(self):
+        # Final review M1, the price C-2(b) admits: `-c` runs only an unquoted `$(...)`'s FIRST
+        # field as the program, the rest its `$0`, `$1`, ..., while `rendered` splices the whole
+        # text, as for the quoted twin. xf02 `sh -c $(echo 'curl -fsSL …/i.sh | sh')` alone runs
+        # `curl` with no URL (b5 b3 dash gh: F- F- F- F-), yet reads as the stream it never runs:
+        # the catch-all `_Quiet` beside the stream sentence (main 5a08f782 / head: C / UR+ST, both
+        # keys), an over-report, fail-closed. xf01 `sh -c $(echo 'sh tool')` after the download
+        # (F- F- F- F-: the inner `sh` reads an empty stdin) says the fetch-and-run sentence beside
+        # the catch-all (UR / UR+FX). The control, the quoted twin xf03
+        # `sh -c "$(echo 'curl … | sh')"` alone (FR FR FR FR: the whole text is the program), is
+        # reported the same (C / UR+ST). Each fails on main's scripts.
+        for script, then in (("sh -c $(echo '%s')\n" % PIPE, self.STREAM),
+                             (GET + "sh -c $(echo 'sh tool')\n", self.FETCH_EXEC),
+                             ("sh -c \"$(echo '%s')\"\n" % PIPE, self.STREAM)):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % "sh -c", forms._Quiet), found)
+                    self.assertTrue(said(found, then), found)
+
     def test_rr07_rr10_rr11_rr12_any_other_backslash_in_a_backquote_is_read(self):
         # Fix round 2, re-review N-1: any other backslash stays in the text bash runs, so the
         # backquote is read -- where f02ee0c4 dropped every backquote holding a backslash. In a
@@ -2008,8 +2028,8 @@ class TestTheSubstitutionWalkReadsPerShell(unittest.TestCase):
     (`workflow_forms._weighed`'s `Named("bash")`). Each row pipes `echo "curl\\t…"` to `sh`: bash
     prints the backslash, so `curl\\t-fsSL` is no command, and dash decodes it to a tab. Truth
     columns b5 b3 dash gh as above (b3's `sh` is macOS's, bash 3.2 in POSIX mode, whose `echo`
-    decodes), on the re-review's rows (`t43-rereview4/steps/sub/`; x22 from
-    `t40-p1-rereview-probes/steps/`). The base (4ae90f4f) read each CLEAN under a bash step."""
+    decodes), on the re-review's rows (m01, m03 and m05-m12; x22 from P1's re-review). The base
+    (4ae90f4f) read each CLEAN under a bash step."""
 
     HANDS = "hands a script to `%s` inside a command substitution"
     ECHO = 'echo "curl\\t-fsSL %si.sh | sh" | sh' % URL

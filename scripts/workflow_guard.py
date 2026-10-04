@@ -170,13 +170,17 @@ live, so a change that catches one fails there and edits this list.
   (a `-c`/`eval` string, a heredoc body) or a substitution hands it to a shell (`x=$(sh -c '…')`)
   (#2728). A printer inside a `$(…)` or a `<(…)` is read as the text the shell runs where every
   reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the body,
-  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` whose text holds a newline
-  or tab is read unsplit, where bash joins its fields with spaces, a backquote whose text
-  escapes `$`, `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not
-  rendered, and the catch-all row for a word all substitution stays beside every such read
-  (review C-1 to C-3); a `<(…)` printer `substituted` cannot spell is weighed as a piped
-  one (`sh <(echo "$X")`, `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken for a
-  `<(…)` FILE, the reader keeping no direction (`sh >(echo 'sh tool')` over-reports). Any
+  `sh <(echo 'sh tool')` as `sh tool` -- but an unquoted `$(…)` is read unsplit, where `eval`
+  joins bash's fields with spaces (a newline or tab read as a space) and `-c` runs only the
+  first (`sh -c $(echo 'curl … | sh')` over-reports), a backquote whose text escapes `$`,
+  `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and the
+  catch-all row for a word all substitution stays beside every such read (review C-1 to C-3);
+  a `<(…)` printer `substituted` cannot spell is weighed as a piped one (`sh <(echo "$X")`,
+  `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE, the reader
+  keeping no direction (`sh >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)`
+  reads as bash runs it, though dash refuses the syntax and runs nothing (over-reports); and
+  bash 3.2.57 races a sourced `<(…)`, often reading it empty, so a check `source <(…)` prints
+  is credited where 3.2 may skip it (a 3.2-only gap; 5.2 wins). Any
   other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
   program unread, reported where the stage's words or the printer's text fetch, or beside a reported
   download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open:
