@@ -1,10 +1,10 @@
 """#2331 batch P, task 1: two printers more, read per shell -- `cat <<'EOF' | sh` (#2467) and
 `echo`/`printf` escapes read under the step's shell (#2476); then a pass-through stage between the
 printer and the shell (#2478). Task 2: a printer reaching a shell through a substitution (#2487,
-#2495). Each class pins one issue's shapes against `wg.job_defects`, the bash-truth row it rests on
-named in a comment, and the controls that must still read as they did. `TestThePrintersUnitPins`
-pins `workflow_printers` directly, as the last tests of `TestAPrinterThroughASubstitution` do its
-substitution helpers.
+#2495) and the `echo` inside a `$(...)` read under the shell that runs it (#2728). Each class pins
+one issue's shapes against `wg.job_defects`, the bash-truth row it rests on named in a comment, and
+the controls that must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers`
+directly, as the last tests of `TestAPrinterThroughASubstitution` do its substitution helpers.
 """
 import unittest
 
@@ -1829,6 +1829,67 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
                             ("sh <(echo 'sh tool')", None)):
             with self.subTest(script=script):
                 self.assertEqual(fed, wp.fed(wp.operand(self.argv(script))))
+
+
+class TestTheSubstitutionWalkReadsPerShell(unittest.TestCase):
+    """#2728: an `echo` piped to a shell INSIDE a `$(...)` is read under the shell that runs the
+    substitution -- the step's own where the step runs it, both readings (`ANY`) where a script
+    handed on holds it (`workflow_guard._walk`'s `under`) or a substitution hands it a shell
+    (`workflow_forms._weighed`'s `Named("bash")`). Each row pipes `echo "curl\\t…"` to `sh`: bash
+    prints the backslash, so `curl\\t-fsSL` is no command, and dash decodes it to a tab. Truth
+    columns b5 b3 dash gh as above (b3's `sh` is macOS's, bash 3.2 in POSIX mode, whose `echo`
+    decodes), on the re-review's rows (`t43-rereview4/steps/sub/`; x22 from
+    `t40-p1-rereview-probes/steps/`). The base (4ae90f4f) read each CLEAN under a bash step."""
+
+    HANDS = "hands a script to `%s` inside a command substitution"
+    ECHO = 'echo "curl\\t-fsSL %si.sh | sh" | sh' % URL
+
+    def assert_reported(self, script, runner="sh", shells=(None, "sh")):
+        for shell in shells:
+            with self.subTest(script=script, shell=shell):
+                found = defects(script, shell)
+                self.assertTrue(said(found, self.HANDS % runner), found)
+
+    def test_m01_m06_m07_x22_a_script_handed_on_reads_its_substitution_both_ways(self):
+        # m01 `sh -c 'x=$(echo "curl\t…" | sh)'`, m06 the same line in a `sh <<'EOF'` body, m07 in
+        # a `cat <<'EOF' | sh` body, x22 the URL tab-separated too (b5 b3 dash gh: -- FR FR FR
+        # each): the inner shell may be dash, so `_walk` reads the `$(...)` of a statement it
+        # inlined both ways.
+        line = "x=$(%s)" % self.ECHO
+        for script in ("sh -c '%s'\n" % line, "sh <<'EOF'\n%s\nEOF\n" % line,
+                       "cat <<'EOF' | sh\n%s\nEOF\n" % line,
+                       "sh -c 'x=$(echo \"curl\\t-fsSL\\thttps://example.test/i.sh|sh\" | sh)'\n"):
+            self.assert_reported(script)
+
+    def test_m05_m08_m10_a_script_a_substitution_hands_a_shell_reads_both_ways(self):
+        # m08 `x=$(sh -c 'echo "curl\t…" | sh')`, m10 a `sh <<'EOF'` body inside the `$(...)`,
+        # m05 m08's line inside a `sh -c` string (b5 b3 dash gh: -- FR FR FR each): `_weighed`
+        # flattens the handed script under `Named("bash")`, both readings.
+        for script in ("x=$(sh -c '%s')\n" % self.ECHO,
+                       "x=$(sh <<'EOF'\n%s\nEOF\n)\n" % self.ECHO,
+                       "sh -c 'x=$(sh -c \"echo \\\"curl\\\\t-fsSL %si.sh | sh\\\" | sh\")'\n"
+                       % URL):
+            self.assert_reported(script)
+        # m09 `x=$(eval 'echo "curl\t…" | sh')` (-- -- FR --): run by a `shell: sh` step, dash's
+        # `eval` decodes it.
+        self.assert_reported("x=$(eval '%s')\n" % self.ECHO, "eval", shells=("sh",))
+
+    def test_m03_m09_m11_the_price(self):
+        # Read both ways where only one shell runs it: m03 `eval 'x=$(echo "curl\t…" | sh)'` and
+        # m09 under a bash step (b5 b3 dash gh: -- -- FR --, bash's `eval` prints the backslash),
+        # m11 `x=$(bash -c 'echo "curl\t…" | sh')` (-- -- -- --): reported, fail-closed -- the
+        # `eval`/unmeasured-runner class of #2723 and #2724.
+        self.assert_reported("eval 'x=$(%s)'\n" % self.ECHO, shells=(None,))
+        self.assert_reported("x=$(eval '%s')\n" % self.ECHO, "eval", shells=(None,))
+        self.assert_reported("x=$(bash -c '%s')\n" % self.ECHO, "bash")
+
+    def test_m12_the_steps_own_substitution_reads_per_the_steps_shell(self):
+        # m12 `x=$(echo "curl\t…" | sh)` at the top (b5 b3 dash gh: -- -- FR --): the step's own
+        # shell runs it, so a bash step reads CLEAN and a `shell: sh` step is reported, as at the
+        # base.
+        script = "x=$(%s)\n" % self.ECHO
+        self.assertEqual([], defects(script))
+        self.assert_reported(script, shells=("sh",))
 
 
 if __name__ == "__main__":

@@ -163,13 +163,16 @@ live, so a change that catches one fails there and edits this list.
   #2478) -- reads per shell (bash literal unless `-e`; zsh/`sh`/dash decode; `printf` always; any
   other, or one a `-c`/`eval` string names (`bash -c 'sh'`), both ways); unspelled text is reported
   where words fetch as written (`echo "$X" | sh`, a `printf` format past `%s`) or beside a reported
-  fetch (#2333, #2481, #2467, #2476). A printer inside a `$(…)` or a `<(…)` is read as the text the
-  shell runs where every reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the
-  body, `sh <(echo 'sh tool')` as `sh tool`; a `<(…)` printer no reading spells is weighed as a
-  piped one (`sh <(echo "$X")`). Any other `tee`/`cat` spelling, or a stage that rewrites the stream
-  (`tr`, `base64 -d`), leaves the program unread, reported where the stage's words or the printer's
-  text fetch, or beside a reported download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is
-  the `sed -i` ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are
+  fetch (#2333, #2481, #2467, #2476). Inside a `$(…)`, such a printer reads per the step's shell
+  where the step itself runs the substitution, and both ways where it stands in a script handed on
+  (a `-c`/`eval` string, a heredoc body) or a substitution hands it to a shell (`x=$(sh -c '…')`)
+  (#2728). A printer inside a `$(…)` or a `<(…)` is read as the text the shell runs where every
+  reading agrees on it (#2487, #2495): `eval "$(cat <<'EOF' … EOF)"` as the body,
+  `sh <(echo 'sh tool')` as `sh tool`; a `<(…)` printer no reading spells is weighed as a piped one
+  (`sh <(echo "$X")`). Any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`,
+  `base64 -d`), leaves the program unread, reported where the stage's words or the printer's text
+  fetch, or beside a reported download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the
+  `sed -i` ruling. Open: `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are
   read as printing its body (`-n` over-reports); beside `-`, a file's text is unread; `tee f 2>&1`
   stays a pass-through though its diagnostic, which BSD `tee` writes with the file name unquoted,
   joins the stream; a word the shell reads specially once unquoted (a quote, space, newline, `#`,
@@ -229,7 +232,7 @@ UNNAMED = "<unnamed step>"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory=".",
-          shell=ANY):   # read under the step's shell; `ANY` for an `Inlined` one (#2476)
+          shell=ANY):   # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
     """Fetches and unread forms under `shell`; nested cwd kept, attributed to the outer line."""
     stmts = list(stmts)
     if working is None:
@@ -240,6 +243,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
     found, unread = [], []
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
+        under = ANY if isinstance(statement, Inlined) else shell
         for position, stage in enumerate(statement.stages):
             argv, before = command(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
@@ -263,8 +267,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            program = unread_program(argv, stage, _walk, inside, before,
-                                     ANY if isinstance(statement, Inlined) else shell)
+            program = unread_program(argv, stage, _walk, inside, before, under)
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
@@ -277,7 +280,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                            step_credit(inner, "bash {0}"), here)
                 fetched, nested = _walk(
                     inner, stream_exec, True, dict(enumerate(dirs)),
-                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, shell)
+                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=consumer)
                               if executes or fetch.piped_to is None else fetch)

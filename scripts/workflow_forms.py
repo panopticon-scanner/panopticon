@@ -72,8 +72,8 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                described as described, located as located, may_run as may_run,
                                names_file as names_file, same_file as same_file,
                                working_directories as working_directories)
-from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Opaque, candidates,
-                               dynamic_program, scripts, stdin_program as stdin_program,
+from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Named, Opaque,
+                               candidates, dynamic_program, scripts, stdin_program as stdin_program,
                                stdin_reader, stdin_scripts, runs_under, unprinted as unprinted)
 
 
@@ -376,14 +376,14 @@ def substitution_script(argv, stage, walk, before=None, shell=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
-    `walk` is the guard's own walk (`workflow_guard._walk`), over the script flattened as a step's
-    is -- which reads each script handed on inside it in place, once. A script it finds a fetch or
-    an unread form in is reported; any other is `Idle` (re-review N-A of #1793's follow-ups).
-    `VERSION=$(bash -c 'echo 1')` has nothing a checksum must precede, but the guard follows no
-    download into a substitution, where a script may still run one the job fetched:
-    `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is the stages in front of this one in its
-    pipeline, whose printer may pipe it a program under `shell` (`stdin_scripts`, #2476, #2478).
-    """
+    `walk` is the guard's own walk (`workflow_guard._walk`), over the script flattened as a
+    `shell: bash` step's is, its `echo` read both ways (`Named`, #2728) -- which reads each script
+    handed on inside it in place, once. A script it finds a fetch or an unread form in is reported;
+    any other is `Idle` (re-review N-A of #1793's follow-ups). `VERSION=$(bash -c 'echo 1')` has
+    nothing a checksum must precede, but the guard follows no download into a substitution, where a
+    script may still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is
+    the stages in front of this one in its pipeline, whose printer may pipe it a program under
+    `shell` (`stdin_scripts`, #2476, #2478)."""
     handed = scripts(argv) + stdin_scripts(argv, stage, before, shell)
     if not handed:
         return None
@@ -397,7 +397,7 @@ def _weighed(why, texts, walk, idle=Idle):
     """`why` where a script among `texts`, flattened and walked, fetches or holds an unread form,
     and `idle(why)` where none does. A foreign stdin program there is `Idle`, so it is not an unread
     form and the reason that hands the script is `Idle` too: #2499's predicate governs both (r0)."""
-    live = [walk(flattened(statements(text))) for text in texts]
+    live = [walk(flattened(statements(text), shell=Named("bash"))) for text in texts]
     return why if any(found or any(not isinstance(w, Idle) for _i, w in unread)  # an inner Idle is not unread
                       for found, unread in live) else idle(why)
 
