@@ -305,10 +305,28 @@ class TestAValueTheTableCannotSee(unittest.TestCase):
         values = table("a=(p); a[0]=x sh y")
         self.assertEqual(({}, {"a": [["p"]]}), (values.scalars, values.arrays))
 
-    def test_a_name_taken_from_a_value_is_not_read(self):
-        # Bash sets `T` through `$n` and `$k`; the table cannot name it (a price).
-        self.assertEqual({"n": ["T"], "T": ["a"]}, table('n=T; T=a; read -r "$n"').scalars)
-        self.assertEqual({"T": ["a"]}, table('T=a; export "$k=$v"').scalars)
+    def test_a_name_taken_from_a_value_gives_every_held_name_its_stand_in(self):
+        # Bash sets whatever `$n` or `$k` names: `eval`'s rule, the old kept.
+        self.assertEqual({"T": ["a", "$T"], "n": ["T", "$n"]},
+                         table('T=a; n=T; read -r "$n" < list').scalars)
+        for script in ('T=a; export "$k=$v"', "T=a; export $(cat .env | xargs)",
+                       'T=a; export "${p}_HOME=/x"', 'T=a; unset "$n"', 'T=a; local "$n"',
+                       'T=a; declare "$n=x"', 'T=a; readonly "$n"', 'T=a; printf -v "$n" x',
+                       'T=a; getopts ab "$n"', 'T=a; read -ra "$n"', 'T=a; builtin read "$n"',
+                       'T=a; false && read -r "$n"'):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["a", "$T"]}, table(script).scalars)
+        # A name-less `mapfile` sets `MAPFILE`; one naming `"$n"` does not.
+        values = table('arr=(a); mapfile -t "$n"')
+        self.assertEqual(({"arr": ["$arr"]}, {"arr": [["a"]]}), (values.scalars, values.arrays))
+        # A `$` in an option's argument, a subscript or a value names nothing.
+        rows = {'T=a; U=b; read -p "$prompt" T': {"T": ["$T"], "U": ["b"]},
+                "arr=(a); U=b; read -r 'arr[$i]'": {"U": ["b"], "arr": ["$arr"]},
+                'U=b; export "T=$v"': {"U": ["b"], "T": ["$v"]},
+                'T=a; unset -f "$fn"': {"T": ["a"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars)
 
     def test_an_uncertain_one_adds_the_stand_in(self):
         rows = {"T=a; false && read -r T": ({"T": ["a", "$T"]}, {}),
@@ -378,6 +396,13 @@ class TestHowAWordResolves(unittest.TestCase):
         self.assertEqual({"T": [""]}, table('T=; : "${T:=cuda_1.run}"').scalars)
         self.assertEqual({"T": ["x", ""]},
                          table('if false; then T=x; fi; : "${T:=cuda_1.run}"').scalars)
+
+    def test_arithmetic_is_not_read_as_bash_computes_it(self):
+        # Bash holds 5, 6 and 1: numbers, a price.
+        rows = {"T=a; let T=5": ["a"], "T=5; ((T++))": ["5"], "T=a; ((T=x+1))": ["a", "x+1"]}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, table(script).scalars["T"])
 
     def test_every_other_expansion_form_stays_as_written(self):
         values = table("T=x; X=1")

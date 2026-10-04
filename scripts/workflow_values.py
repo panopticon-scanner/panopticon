@@ -35,8 +35,10 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     `_CANDIDATES` candidates -- is the name's own reference
                     `$NAME`, the STAND-IN: the reading the guard makes
                     without the table, never a claim, beside which a default
-                    stands too; after `eval`, `source` or `.`, every held
-                    name gains its stand-in
+                    stands too; after `eval`, `source` or `.`, or a name
+                    taken from a value (`read "$n"`, `export "$k=$v"`,
+                    `export $(cat .env)`), every held name gains its
+                    stand-in
     resolved        in the words of the stage that USES a value
                     (`valued_argvs`), so a relative value is read from the
                     directory of its use, bash's rule, and a text bash globs
@@ -74,8 +76,10 @@ beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
 holds its stand-in alone, a word resolves to the first `_CANDIDATES` of its
 product, and a text over `_LONGEST` is dropped, both of which can lose a
 candidate. Not read: the assignment `${T:=d}` makes, an attribute an
-earlier declaration set rewriting a later assignment, a name taken from a
-value (`read "$n"`, `export "$k=$v"`), and a call's own assignments.
+earlier declaration set rewriting a later assignment, a call's own
+assignments, and arithmetic -- `let T=5` and `((T++))` are not read, and
+`((T=x+1))` is read as its text beside the old value -- whose values are
+numbers, so a download hides there only under a numeric filename.
 
 Stdlib only, like everything under it.
 """
@@ -115,7 +119,9 @@ _GLOB = re.compile(r"[*?\[]|[@+!]\(")
 # associative keys, and -- not behind `export`, where it un-exports -- a name
 # reference.
 _REWRITING = frozenset("luiA")
-# The options of `mapfile` and `readarray` that take an argument (`-u 3`).
+# The options that take an argument: `read`'s (`-p prompt`; `-a` names an
+# array), and `mapfile`'s and `readarray`'s (`-u 3`).
+_READING = frozenset("adinNptu")
 _MAPPING = frozenset("dnOsuCc")
 # A name holds at most `_CANDIDATES` candidates, and past them its stand-in
 # alone, the guard's reading without the table; a word resolves to the first
@@ -268,8 +274,9 @@ def record(table, stage, certain):
     candidates, as an uncertain assignment's do. `printf -v NAME`, `getopts
     OPTSTRING NAME`, `mapfile` and `readarray` are read as `read NAME`, a
     `read` or `unset` behind `builtin` as the bare one (`_unread`), and after
-    `eval`, `source` or `.` every held name gains its stand-in, kept beside
-    its old candidates even where the statement is certain.
+    `eval`, `source` or `.`, or a name taken from a value (`read "$n"`,
+    `export "$k=$v"`), every held name gains its stand-in, kept beside its
+    old candidates even where the statement is certain.
     """
     scalars, arrays, _count, maybe, unseen = _assignments(stage)
     for name, (append, text) in scalars.items():
@@ -352,24 +359,25 @@ def _looped(words, table):
 
 def _unread(table, argv, certain):
     """The commands that set a name the reader never reads the value of:
-    `printf -v NAME`, `getopts OPTSTRING NAME`, `mapfile` and `readarray`, as
-    `read NAME` does; an element's assignment the reader takes for a command
-    (`a[${#a[@]}]=x`); `eval`, `source` and `.`, which may set any name at
-    all; and, behind `builtin`, the `read` and `unset` `_cleared` reads bare --
-    for the table alone, as the bindings stay `_cleared`'s."""
+    `printf -v NAME`, `getopts OPTSTRING NAME`, `mapfile` and `readarray` --
+    `MAPFILE` without a name -- as `read NAME` does; an element's assignment
+    the reader takes for a command (`a[${#a[@]}]=x`); `eval`, `source` and
+    `.`, and a command taking a name it sets from a value (`_dynamic`), which
+    may set any name at all; and, behind `builtin`, the `read` and `unset`
+    `_cleared` reads bare -- for the table alone, as the bindings stay
+    `_cleared`'s."""
     builtin = argv[:1] == ["builtin"]
     argv = argv[1:] if builtin else argv
     head = os.path.basename(str(argv[0])) if argv else ""
-    names: list[str] = []
-    if head in ("eval", "source", "."):
+    named = _naming(head, argv)
+    if head in ("eval", "source", ".") or any(_dynamic(word) for word in named):
         for name in list(dict.fromkeys([*table.scalars, *table.arrays])):
             _update(table, name, ["$" + name], False)
-    elif head == "printf" and argv[1:2] == ["-v"] and len(argv) > 2:
-        names = [str(argv[2])]
-    elif head == "getopts" and len(argv) > 2:
-        names = [str(argv[2])]
+    names: list[str] = []
+    if head in ("printf", "getopts"):
+        names = [str(word) for word in named]
     elif head in ("mapfile", "readarray"):
-        names = _mapped(argv)
+        names = [str(word) for word in named] or ["MAPFILE"]
     elif argv and (element := _SUBSCRIPTED.match(str(argv[0]))):
         names = [element[1]]
     elif builtin and (head == "read" or head == "unset" and "-f" not in argv):
@@ -380,22 +388,51 @@ def _unread(table, argv, certain):
         emptied(table, name, certain, True)
 
 
-def _mapped(argv):
-    """The names a `mapfile` or `readarray` may set: each name among its words
-    after the options -- one of `_MAPPING` takes the next word unless it is
-    joined (`-u 3`, `-u3`) -- else `MAPFILE`, bash's default."""
-    words = [str(word) for word in argv[1:]]
+def _naming(head, argv):
+    """The words of command `head` that name what it sets, or []: `read`'s
+    and `mapfile`'s (`_operands`), `unset`'s but not `unset -f`'s, a
+    declaration's operands, `printf -v NAME` and `getopts OPTSTRING NAME`."""
+    if head == "read":
+        return _operands(argv, _READING, "a")
+    if head in ("mapfile", "readarray"):
+        return _operands(argv, _MAPPING)
+    if head == "printf":
+        return argv[2:3] if argv[1:2] == ["-v"] else []
+    if head == "getopts":
+        return argv[2:3]
+    if head in _DECLARATIONS or head == "unset" and "-f" not in argv:
+        return [word for word in argv[1:] if not str(word).startswith(("-", "+"))]
+    return []
+
+
+def _operands(argv, takes, naming=""):
+    """The words after a command's options -- an option of `takes` takes the
+    next word unless joined (`-u 3`, `-u3`) -- and the argument of an option
+    of `naming`, which names what it sets (`read -a NAME`)."""
+    words = list(argv[1:])
     at = 0
-    while at < len(words) and words[at].startswith("-") and words[at] != "-":
-        option, at = words[at][1:], at + 1
+    named: list[str] = []
+    while at < len(words) and str(words[at]).startswith("-") and words[at] != "-":
+        option, at = str(words[at])[1:], at + 1
         if option == "-":
             break
         for place, letter in enumerate(option, 1):
-            if letter in _MAPPING:
-                if place == len(option):
-                    at += 1                     # its argument is the next word
+            if letter in takes:
+                if place < len(option):         # joined to its option
+                    argument = [shell_reader.derived(option[place:], words[at - 1])]
+                else:
+                    argument, at = words[at:at + 1], at + 1
+                named += argument if letter in naming else []
                 break
-    return [word for word in words[at:] if _NAME.match(word)] or ["MAPFILE"]
+    return named + words[at:]
+
+
+def _dynamic(word):
+    """Whether a word naming what a command sets takes the name from a value:
+    a `$` or a lifted `$(...)` before its `=` or subscript (`"$n"`,
+    `"$k=$v"`, `$(cat .env)`), which may name any variable at all."""
+    head = re.split(r"[=\[]", str(word), maxsplit=1)[0]
+    return "$" in head or any(key in head for key in getattr(word, "markers", {}))
 
 
 def _update(table, name, new, certain, array=False):
