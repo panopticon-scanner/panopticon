@@ -146,6 +146,16 @@ evidence exposed.
   `shell: sh` postures now report them, while `shell: bash` (`-eo pipefail`) still clears them.
   The nested-paren spelling #2627 fixed, the `set -o pipefail` form and the no-pipe rescue keep
   their verdicts. 0 occurrences in the 11 corpora and the calibration pool.
+- **Bare-subshell rescues piped onward clear only when pipefail stops the step (#2631, #2608).**
+  The `( CHECK || exit 1 ) | cat` family -- the bare-`( )` sibling of the `{ ... }` forms #2582 and
+  #2630 handle -- now reads CLEAN under `shell: bash` (`-eo pipefail`), where the failed group stops
+  the step and no shell runs the payload, matching its brace twin; 19 such spellings (a trailer after
+  the rescue, a `|| return 1`, a subshell stage, a called function body, `if`/`while` conditions) are
+  covered. Where the failure is swallowed (`|| true`) or the exit masked by a command on an `&&`
+  list's errexit-suspended left side, the payload still runs on bash 3.2.57/5.2.21 and the guard
+  keeps reporting it -- the subshell's abort is resolved before the concurrent-stage break, and a
+  `return` does not leave its subshell. The 10 named clears, the `( CHECK || exit 1 ) | cat` posture
+  split, and the `{ ... } | cat` must-stays are unchanged. 0 occurrences in the corpora and the pool.
 - **A use step that runs after a failed step is no longer cleared by an earlier step's check
   (#2632, #2608).** A plain `CHECK` or `CHECK || exit 1` in step a stops step a, but a later step
   whose `if:` runs after a failure -- `always()`, `failure()` or `!cancelled()` -- still runs the
