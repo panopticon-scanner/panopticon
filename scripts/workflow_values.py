@@ -16,10 +16,12 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
 
     who assigns     a statement that only assigns, a declaration's operands
                     (`export T=x`, `declare -a a=(sh tool)`), either behind
-                    `command`, `builtin` or `time`, and a literal `for NAME`
-                    header -- never a PREFIX assignment (`T=x sh "$T"`),
-                    which bash makes after it expands the command's words
-                    and which does not outlive the command
+                    `command`, `builtin` or `time`, the words a `coproc`'s
+                    `{ }` or `( )` opens with (`coproc { T=x; }`, which the
+                    coprocess assigns), and a literal `for NAME` header --
+                    never a PREFIX assignment (`T=x sh "$T"`), which bash
+                    makes after it expands the command's words and which
+                    does not outlive the command
     held, emptied   a value is held wherever a statement assigns it, and
                     replaced or emptied only where the caller says the shell
                     surely runs the statement; one it may not run adds its
@@ -169,15 +171,18 @@ def assigned(stage):
 
     A statement that only assigns assigns, and so do a declaration's operands
     (`export T=x`, `declare -a a=(sh tool)`), behind `command`, `builtin` or
-    `time` as without; not a bare `export T`, nor a PREFIX assignment (`T=x sh
-    "$T"`: bash expands the command's words first, and the value does not
-    outlive the command), nor one behind any other wrapper (`env T=x`). A text
-    is `derived`: a lifted `$(...)` stays its marker. A literal is read only
-    where the stage opened a group, as the reader counts its parentheses --
-    folded into its word behind a declaration, else handed UNFOLDED (`["a=",
-    "sh", "tool"]`, #2348): an empty `NAME=` and the words up to the next one
-    while groups remain -- and its brace words are expanded, as bash expands
-    them before it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
+    `time` as without, and the words after `coproc [NAME] {` or `(`, read as
+    a lead `{`'s (the coprocess is a child: the caller weighs that, and a
+    NAME before `(` may be a command, whose words then over-report); not a
+    bare `export T`, nor a PREFIX assignment (`T=x sh "$T"`: bash expands the
+    command's words first, and the value does not outlive the command), nor
+    one behind any other wrapper (`env T=x`). A text is `derived`: a lifted
+    `$(...)` stays its marker. A literal is read only where the stage opened
+    a group, as the reader counts its parentheses -- folded into its word
+    behind a declaration, else handed UNFOLDED (`["a=", "sh", "tool"]`,
+    #2348): an empty `NAME=` and the words up to the next one while groups
+    remain -- and its brace words are expanded, as bash expands them before
+    it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
     a value the table cannot see -- a subscripted literal (`a=([1]=x)`), a
     literal still open where the stage ends (its later lines' words are not
     gathered), an element's assignment (`a[1]=x`, `declare a[1]=x`), a
@@ -210,6 +215,13 @@ def _assignments(stage):
     if any(word not in ("command", "time") for word in shell_reader.wrapper_words(stage.argv)):
         return scalars, arrays, 0, maybe, unseen
     argv = command(stage.argv)
+    # A coprocess's `{ }` or `( )` (a `(` is a group no literal opened): its words
+    # read as a lead `{`'s, past `coproc` and a NAME (`coproc W {`, `coproc W (`).
+    if argv[:1] == ["coproc"] and ("{" in argv[1:3] or stage.group_open > sum(
+            1 for word in argv if _OPENER.match(str(word)))):
+        named = argv[2:3] == ["{"] or argv[1:2] != ["{"] and argv[2:] and _NAME.match(argv[1])
+        stage = stage._replace(argv=argv[2 if named else 1:])
+        argv = command(stage.argv)
     if argv[:1] == ["builtin"] and argv[1:2] and os.path.basename(argv[1]) in _DECLARATIONS:
         argv = argv[1:]
     builtin = os.path.basename(argv[0]) if argv else ""
@@ -618,7 +630,11 @@ def _unknown(text):
 def _element(name, key, table):
     """A whole `${name[key]}` through `table`, where `name` holds an array: word
     `key` of each word-list that has one, or for `@` and `*` each word-list
-    joined by blanks."""
+    joined by blanks. A candidate that cannot say its words past the first --
+    the stand-in a maybe `read -ra`, `mapfile`, `arr[1]=$(...)` or `eval`
+    gives, or a literal's lone `$(...)` -- has no word past 0, so beside
+    `arr=(x y)` a `${arr[1]}` reads `y` alone, without the stand-in (a limit:
+    the caller weighs the use as written first)."""
     if name not in table.arrays:
         return []
     candidates = _lists(table, name)

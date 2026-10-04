@@ -22,7 +22,7 @@ from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
-from workflow_function_calls import _function_scope, _function_syntax
+from workflow_function_calls import _FUNCTION_TOKEN, _function_scope, _function_syntax
 from workflow_programs import VALUE_PROGRAM
 # Compatibility bindings: the value table moved to `workflow_values` with its
 # names, and its callers keep reaching them here.
@@ -403,17 +403,22 @@ def _forked(stmts, index):
     is piped into, piped on, run by `coproc`, or sent to the background by
     its own `&` or the one ending its list (`if T=x; then :; fi &`) -- a
     list is not followed past a compound command, so `T=x && if c; then :;
-    fi &` reads `T=x` as sure (a limit). Their assignments end with the
-    child, as `working_directories` keeps a subshell's `cd`; a use in the
-    same child sees them as its own. A keyword is one only where the stage's
-    command would stand (`_openers`); an array literal's parentheses count
-    as a group's, which marks a multi-line literal's word lines unsure."""
+    fi &` reads `T=x` as sure (a limit) -- and, never sure outside it, a
+    compound that is a function's body (`g() for T in x; do :; done`, `{ f()
+    { :; }; }`, `_openers`), which runs only where it is called. Their
+    assignments end with the child, as `working_directories` keeps a
+    subshell's `cd`; a use in the same child sees them as its own; a use in
+    a later stage of the statement that closes it is outside it (`{ T=x; } |
+    sh "$T"`). A keyword is one only where the stage's command would stand
+    (`_openers`); an array literal's parentheses count as a group's, which
+    marks a multi-line literal's word lines unsure."""
     forked: set[int] = set()
     opened: list[tuple[int, bool, str]] = []
     subshells: list[int] = []
+    header = False                          # a function header's body is still to come
 
-    def fork(start, end):
-        if not start <= index <= end:
+    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
+        if not (start <= index < end or index == end and not onward):
             forked.update(range(start, end + 1))
 
     for position, statement in enumerate(stmts):
@@ -426,31 +431,44 @@ def _forked(stmts, index):
         for number, stage in enumerate(statement.stages):
             subshells += [position + 1] * stage.group_open
             for _ in range(min(stage.group_close, len(subshells))):
-                fork(subshells.pop(), position)
-            for word, child in _openers(stage):
+                fork(subshells.pop(), position, number < last)
+            words, header = _openers(stage, header)
+            for word, child in words:
                 if str(word) in _COMPOUNDS:
                     opened.append((position, child or number > 0, _COMPOUNDS[str(word)]))
                 elif opened and word == opened[-1][2]:
                     start, piped, _close = opened.pop()
                     if piped or number < last or stmts[end].separator == "&":
-                        fork(start, position)
+                        fork(start, position, number < last)
     for start in subshells:                 # a group the step leaves open
         fork(start, len(stmts) - 1)
     return forked
 
 
-def _openers(stage):
+def _openers(stage, header=False):
     """The words `_forked` reads in `stage` for a compound's head or close,
-    each with whether the compound surely runs in a child: the lead words,
-    and the `select` or the compound after `coproc` (and its NAME) that the
-    reader leaves in the command -- a coprocess runs in a child."""
+    each with whether the compound surely runs apart from the step's shell,
+    and whether a function header ends the stage with its body to come
+    (`header`: `g()` alone on its line). They are the lead words -- the
+    compound right after a function header is its body -- and what the
+    reader leaves in the command: the `select`, the compound after `coproc`
+    (and its NAME), which runs in a child, and the body `{` of a function
+    defined after a keyword on its line, which the reader splits into its
+    name, a group of its own `()` and the `{`."""
     argv = command(stage.argv)
-    words = [(word, False) for word in stage.argv[:len(stage.argv) - len(argv)]]
+    lead = stage.argv[:len(stage.argv) - len(argv)]
+    words = []
+    for number, word in enumerate(lead):
+        words.append((word, header))
+        header = (bool(_FUNCTION_TOKEN.fullmatch(str(word))) or word == "()"
+                  or lead[number - 1:number] == ["function"])
     if argv[:1] == ["select"]:
-        return words + [(argv[0], False)]
-    if argv[:1] == ["coproc"]:
-        return words + [(word, True) for word in argv[1:3] if str(word) in _COMPOUNDS][:1]
-    return words
+        words.append((argv[0], header))
+    elif argv[:1] == ["coproc"]:
+        words += [(word, True) for word in argv[1:3] if str(word) in _COMPOUNDS][:1]
+    elif argv[1:2] == ["{"] and min(stage.group_open, stage.group_close) > _literals(stage):
+        words.append((argv[1], True))
+    return words, header and not argv and not stage.group_open
 
 
 def static_values(stmts, index, working=None, scopes=None):
@@ -473,10 +491,13 @@ def static_values(stmts, index, working=None, scopes=None):
     a body is otherwise skipped, so a call's own assignments are not read
     (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
-    function defined after `then` or `do` on the same line is not found
-    (`_function_ranges`' limit), and its body is walked as the code around
-    it. `working` is accepted and unused: a value resolves at the directory
-    of its USE, bash's rule for a relative path.
+    function defined after `{`, `then` or `do` on the same line is not found
+    (`_function_ranges`' limit), nor is the end of a body that is neither
+    `{ }` nor `( )` (`g() if c; then T=y; fi`): such a body is walked as the
+    code around it, never sure outside it (`_forked`), and a use inside it
+    reads the code before it, not its caller's values (a limit). `working`
+    is accepted and unused: a value resolves at the directory of its USE,
+    bash's rule for a relative path.
     """
     scopes = scopes or {}
     table = Values()
@@ -485,7 +506,7 @@ def static_values(stmts, index, working=None, scopes=None):
               for entries in _function_ranges(stmts)[0].values() for _name, start, close in entries]
     first, last = max([(start, end) for start, end, found in bodies
                        if found and start <= index <= end], default=(-1, len(stmts) - 1))
-    nested = {position for start, end, _found in bodies if start > first
+    nested = {position for start, end, found in bodies if found and start > first
               for position in range(start, end + 1)}
     kinds = _control_kinds(stmts)
     # A body's own `then`/`do`/`case`: what wraps the definition wraps no call.

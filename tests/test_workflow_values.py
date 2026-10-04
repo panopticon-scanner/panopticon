@@ -118,6 +118,22 @@ class TestWhatAStageAssigns(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, wv.assigned(only_stage(script)))
 
+    def test_a_coprocess_assigns_the_words_its_compound_opens_with(self):
+        # s08: the words after `coproc [NAME] {` or `(` are read as a lead `{`'s;
+        # a prefix assignment stays one, and `coproc a=(x)`, a simple command,
+        # opens no compound.
+        rows = {"coproc { T=x; }": ({"T": (False, "x")}, {}),
+                "coproc W { T=x; }": ({"T": (False, "x")}, {}),
+                "coproc ( T=x )": ({"T": (False, "x")}, {}),
+                "coproc W ( T=x )": ({"T": (False, "x")}, {}),
+                "{ coproc { T=x; }; }": ({"T": (False, "x")}, {}),
+                "coproc { a=(x y); }": ({}, {"a": (False, ["x", "y"])}),
+                "coproc { T=x sh foo; }": ({}, {}), "coproc a=(x)": ({}, {}),
+                "coproc T=x": ({}, {})}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, wv.assigned(statements(script)[0].stages[0]))
+
 
 class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
     """#2425: a value is held wherever a statement assigns it, and replaced or
@@ -604,6 +620,16 @@ class TestAnArrayLiteral(unittest.TestCase):
         # `arr=s` is `arr[0]=s`.
         self.assertEqual(["s"], wv.valued("$arr", table("arr=(a); arr=s")))
 
+    def test_a_stand_in_has_no_word_past_zero(self):
+        # N3-6, a named limit: the stand-in a maybe `read -ra` gives stands for
+        # `${arr[0]}` but has no word 1, so `${arr[1]}` reads the literal's alone.
+        values = at_use('arr=(x y)\nif c; then read -ra arr < f; fi\nsh "${arr[1]}"')
+        self.assertEqual(({"arr": ["$arr"]}, {"arr": [["x", "y"]]}),
+                         (values.scalars, values.arrays))
+        self.assertEqual([["sh", "y"]], wv.valued_argvs(["sh", "${arr[1]}"], values))
+        self.assertEqual([["sh", "x"], ["sh", "$arr"]],
+                         wv.valued_argvs(["sh", "${arr[0]}"], values))
+
     def test_a_name_is_one_variable_however_it_is_assigned(self):
         # r19b, x05, x06, y10: bash keeps one variable per name.
         rows = {
@@ -689,7 +715,9 @@ class TestTheTableAtAStatement(unittest.TestCase):
         # x01-x04: bash keeps `cuda_1.run`, as the group runs in a child; z04 with
         # a literal's lines inside, z05 and its twins an `&&` list sent off whole,
         # f02, f03, f09 and theirs a compound sent off or piped whole from its head,
-        # and a coprocess's, whose close, or a `select`'s, closes no outer compound.
+        # t05 and its twin one piped into, and a coprocess's (s08), whose close, or
+        # a `select`'s or a function's (s09), closes no outer compound; a function
+        # body defined after a keyword on its line runs only where it is called.
         z04 = 'T=cuda_1.run\n(\n  arr=(\n    a\n  )\n  T=x\n)\nsh "$T"'
         for script in ('T=cuda_1.run; ( :; T=x; : ); sh "$T"',
                        'T=cuda_1.run\n(\n  T=x\n)\nsh "$T"',
@@ -707,15 +735,38 @@ class TestTheTableAtAStatement(unittest.TestCase):
                        'T=cuda_1.run; coproc W { :; T=x; }\nwait; sh "$T"',
                        'T=cuda_1.run; { T=x; coproc { :; }; } &\nwait; sh "$T"',
                        'T=cuda_1.run; while T=x; false; do select v in a; do break; done; done &'
-                       '\nwait; sh "$T"'):
+                       '\nwait; sh "$T"',
+                       'T=cuda_1.run; echo | { :; T=x; }; sh "$T"',
+                       'T=cuda_1.run; echo | if :; T=x; then :; fi; sh "$T"',
+                       'T=cuda_1.run; coproc { T=x; sh "$T"; }\nwait; sh "$T"',
+                       'T=cuda_1.run; coproc W { T=x; }\nwait; sh "$T"',
+                       'T=cuda_1.run; { f() { :; }; T=x; } &\nwait; sh "$T"',
+                       'T=cuda_1.run; {\n  f() {\n    :\n  }\n  T=x\n} &\nwait; sh "$T"',
+                       'T=cuda_1.run; { f() { :; T=x; }; }; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual(["cuda_1.run", "x"], at_use(script).scalars["T"])
         self.assertEqual(["$arr", ""], at_use(z04).scalars["arr"])
         # A use in the same child sees what the child assigned before it as its own.
         for script in ('T=a; { T=x; sh "$T"; } &', 'T=a\n(\n  T=x\n  sh "$T"\n)',
-                       'T=a; T=x && sh "$T" &', 'T=a; if T=x; then sh "$T"; fi &'):
+                       'T=a; T=x && sh "$T" &', 'T=a; if T=x; then sh "$T"; fi &',
+                       'T=a; coproc { T=x; sh "$T"; }\nwait', 'T=a; coproc W { T=x; sh "$T"; }'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["x"]}, at_use(script).scalars)
+        # A `( )` opener's own stage is unsure, a coprocess's too.
+        self.assertEqual(["a", "x"], at_use('T=a; coproc ( T=x; sh "$T" )').scalars["T"])
+        # s01, s03-s06: a use in a later stage of the statement that closes the child
+        # is outside it; t06, a use inside a `( )` whose closing line pipes on, gains
+        # the old value too (a price).
+        later = {'T=cuda_1.run; { T=x; } | sh "$T"': 2,
+                 'T=cuda_1.run\n(\n  T=x\n) | sh "$T"': 3,
+                 'T=cuda_1.run; { T=x; } | { sh "$T"; }': 2,
+                 'T=cuda_1.run; if T=x; then :; fi | sh "$T"': 3,
+                 'T=cuda_1.run; for T in x; do :; done | sh "$T"': 3}
+        for script, index in later.items():
+            with self.subTest(script=script):
+                self.assertEqual(["cuda_1.run", "x"], table(script, index).scalars["T"])
+        t06 = 'T=a; ( :; T=cuda_1.run; sh "$T" ) | cat'
+        self.assertEqual(["a", "cuda_1.run"], at_use(t06).scalars["T"])
         for script in ('T=cuda_1.run; { T=x; }; sh "$T"', 'T=cuda_1.run; { T=x; } && :; sh "$T"',
                        'T=cuda_1.run; if T=x; then :; fi\nsh "$T"',
                        # A list is not followed past a compound command (a limit).
@@ -777,8 +828,13 @@ class TestTheTableAtAStatement(unittest.TestCase):
 
     def test_a_function_body_holds_what_the_body_assigns_alone(self):
         # y01-y03: a call's values are its caller's at the call, which the table
-        # at the body cannot know, so it claims none of them.
-        self.assertEqual(wv.Values(), at_use('T=x; f() { sh "$T"; }; T=cuda_1.run; f'))
+        # at the body cannot know, so it claims none of them -- in a `( )` body
+        # opened on the next line too.
+        for script in ('T=x; f() { sh "$T"; }; T=cuda_1.run; f',
+                       'T=x\ng()\n(\n  sh "$T"\n)\nT=cuda_1.run\ng',
+                       'T=x\nfunction g\n(\n  sh "$T"\n)\nT=cuda_1.run\ng'):
+            with self.subTest(script=script):
+                self.assertEqual(wv.Values(), at_use(script))
         for script in ('T=x; f() { T=cuda_1.run; sh "$T"; }; f',
                        'f() { local T=cuda_1.run; sh "$T"; }; f'):
             with self.subTest(script=script):
@@ -801,6 +857,21 @@ class TestTheTableAtAStatement(unittest.TestCase):
                 'T=x\ng() (\n  { T=cuda_1.run; }\n  sh "$T"\n)\ng': ["cuda_1.run"],
                 'T=x\ng() (\n  { T=cuda_1.run; }\n  sh "$T"\n)\ng\nsh "$T"': ["x"],
                 'function g\n(\n  T=y\n)\nT=b\nsh "$T"': ["b"]}
+        # u1-u6: a body that is neither `{ }` nor `( )` is walked as the code around
+        # it, never sure outside it; u5's use inside reads the code before it too.
+        body = 'T=cuda_1.run\nsh "$T"'
+        rows.update({'T=a\ng()\nif c; then T=y; fi\n' + body: ["cuda_1.run"],
+                     'T=a\ng() if c; then T=y; fi\n' + body: ["cuda_1.run"],
+                     'T=a\ng() for i in 1; do :; done\n' + body: ["cuda_1.run"],
+                     'T=a\ng() [[ -n x ]]\n' + body: ["cuda_1.run"],
+                     'T=a\ng() while false\ndo\n  :\ndone\n' + body: ["cuda_1.run"],
+                     'T=a\ng()\nif arr=(a b); then\n  T=cuda_1.run\n  sh "$T"\nfi\ng':
+                         ["a", "cuda_1.run"],
+                     'T=cuda_1.run\ng() for T in x; do :; done\nsh "$T"': ["cuda_1.run", "x"],
+                     'T=cuda_1.run\ng()\nif T=x; then :; fi\nsh "$T"': ["cuda_1.run", "x"],
+                     'T=cuda_1.run\nfunction g\nwhile T=x; false; do :; done\nsh "$T"':
+                         ["cuda_1.run", "x"],
+                     'T=cuda_1.run\ng()\n(\n  T=y\n)\nif T=x; then :; fi\nsh "$T"': ["x"]})
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars["T"])
