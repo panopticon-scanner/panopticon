@@ -234,6 +234,7 @@ import sys
 import shell_lex
 import shell_reader
 from shell_reader import command, statements
+from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
 from workflow_fetch import Fetch, compound_streamed_fetch
@@ -366,8 +367,10 @@ def _unread_stdin(stage, before=None):
 
 
 def read(script, shell=None):
-    """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded."""
-    return flattened(statements(script), shell=shell)
+    """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded; a
+    `$CMD` command word and a printer's `"$X"` the step assigns one literal read as that text
+    (`workflow_annotate`, #2468), a mark no `$(...)` child or handed script inherits."""
+    return flattened(annotate(statements(script)), shell=shell)
 
 
 def fetches(script):

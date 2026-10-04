@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard reads a printer's `$X` and a `$CMD` through the step's values (#2468, #2600,
+  #2601, #2331).** Where the step assigns a name one literal no shell expands, `echo "$X" | sh`
+  weighs that text as its program (`X='curl … | sh'` reports as its literal twin), and a `$CMD`
+  command word reads as the name it holds: `CMD=sh; $CMD <<'EOF'` credits its check under `sh`'s
+  `-e`, `CMD=true`, `cat` or `PYTHON=python3` read as theirs. The step is marked once before
+  `flattened`, the one place a value body's credit is not yet fixed; any other value -- one with a
+  `$`, a backquote or a `<(` in it too -- reads as before, a quoted `'$X'` over-reports, and a
+  `$(...)` or handed script inherits no mark yet.
 - **Workflow guard follows a download through the step's own values (#2425, #2489, #2331).**
   Where a use as written names no download, a name the step itself assigns a literal or an array
   literal is read through that value (`T=cuda_1.run; sh "$T"`, `declare -a a=(sh tool); "${a[@]}"`,
