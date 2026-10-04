@@ -322,6 +322,14 @@ class _Reparsed(str):
         return reparsed
 
 
+def live_pattern(text):
+    """`text` read as a pattern bash expands whether or not it was quoted -- a value the step
+    assigned (`p=./cuda_*.run`) or an array literal's word (`a=(./cuda_*.run)`), whose quoting the
+    reader no longer knows (#2425, #2489): `_Reparsed`'s posture, the `eval` precedent, so the
+    quoted twin over-reports rather than reading clean."""
+    return _Reparsed(text)
+
+
 # In a word bash expands as a pattern, a brace or extglob group, a `$...` and
 # a `$(...)` stand for any text where a glob is matched, and a leading `./`
 # names what the name after it names: so `sh ./cuda_*.run` runs a download

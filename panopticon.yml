@@ -659,6 +659,7 @@ groups:
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
+      - tests/test_workflow_values.py
       panels:
       - SEC
     Workflows:
