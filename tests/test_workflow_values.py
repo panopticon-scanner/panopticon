@@ -1236,15 +1236,15 @@ class TestADownloadNamedThroughAValue(unittest.TestCase):
         # table's, for an argv it made. c01, c04 F- F- F- F-, main's over-report and the
         # price: the guard does not follow where a `-c` printer's stream goes, so main's
         # blanket report stays for the literal -- the table's resolved twin adds none.
-        # c02 F- F- F- F-: main's one sentence, the value command word's.
+        # c02 F- F- F- F-: main's one sentence was the value command word's. Since #2468 `$CMD`
+        # reads as the `sh` it holds, so the row takes c01's sentence and pays c01's price.
         fetch = "curl -fsSLo i.sh %si.sh\n" % URL
         for use, shell in (("sh -c 'cat' < i.sh\n", "sh"), ("bash -c 'cat' < i.sh\n", "bash")):
             with self.subTest(use=use):
                 self.assertReports(fetch + use, "running it under `%s` from standard input"
                                    % shell, "i.sh")
-        found = defects(fetch + "CMD=sh\n$CMD -c 'cat' < i.sh\n")
-        self.assertEqual(1, len(found), found)
-        self.assertTrue(found[0].startswith("runs `$CMD` with `-c`"), found)
+        self.assertReports(fetch + "CMD=sh\n$CMD -c 'cat' < i.sh\n",
+                           "running it under `sh` from standard input", "i.sh")
         # c03, n06 (`sh` reads it; `cat | sh` is not ONE command), then k01, k07, where the
         # printed stream is run: each FR FR FR FR, main's report, kept.
         for use in ("sh -c 'sh' < i.sh\n", "sh -c 'cat | sh' < i.sh\n",
