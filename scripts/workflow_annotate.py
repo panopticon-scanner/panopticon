@@ -100,13 +100,13 @@ The prices -- where a mark reads otherwise than bash:
    and a `${X:-sh}` command word is #2337's default, read before any value.
  - The step's own: a name the guard reads written into a directory on the runner's PATH by an
    earlier step, by a text that names no such path (`cd ~/.local/bin; cp /usr/bin/true sh`), or
-   by one that spells the name through an expansion (`tools/$N`, `tools/{sh,x}`), is not seen; a
-   `histchars` set outside the step (`histchars='@^#'` through `$GITHUB_ENV`, an `env:` or an
-   action, then `@-2`) reruns a recorded line the step cannot see, and, with history turned on there
-   or by a `shell:`, so does an event outside the command word (`echo !-2` recalling `:; CMD=true`)
-   or under the step's own `histchars` (`@-2`); and a `shell:` whose options `_quiet` does not read
-   (`-i`, `-l`, `-o history -H`, `+B`, `-O …`) is not seen -- the hook hands `annotate` no shell
-   yet (#2733, filed with this PR).
+   by one that spells the name through an expansion (`tools/$N`, `tools/{sh,x}`), is not seen
+   (#2733, filed with this PR); a `histchars` set outside the step (`histchars='@^#'` through
+   `$GITHUB_ENV`, an `env:` or an action, then `@-2`) reruns a recorded line the step cannot see
+   (#2828), and, with history turned on there, so does an event outside the command word
+   (`echo !-2` recalling `:; CMD=true`) or under the step's own `histchars` (`@-2`).
+   Under a `shell:` whose options `_quiet` does not read (`-i`, `-l`, `-o history -H`, `+B`,
+   `-O …`) nothing is marked.
 
 A refused mark keeps the base's answer, an over-report where the program was sound (`set -e`,
 `X=1` or `cd` in a body, a check behind `|| exit 1`, a trap `rm -f "$T"`, `$CAT <<'EOF' > i.sh`,

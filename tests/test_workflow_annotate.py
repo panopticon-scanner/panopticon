@@ -375,7 +375,7 @@ class TestACommandWord(unittest.TestCase):
         # `annotate`'s `shell`, a `shell:` template: history turned on (`-o history -H`), an
         # interactive or a login shell (`-i`, `-l`, `--login`: a profile an earlier step wrote),
         # `+B` or `-O` mark nothing; GitHub's own templates, `bash`, `sh` and no template keep
-        # the mark. The guard's hook hands no `shell` yet: the module's price (#2733).
+        # the mark. The guard's `read()` hands the step's `shell:` (#2468).
         script = "CMD=sh\n" + body("$CMD", CHECK)
         for shell, count in (("bash -o history -H {0}", 0), ("bash -ie {0}", 0), ("bash -l {0}", 0),
                              ("bash --login -e {0}", 0), ("bash -e +B {0}", 0),
@@ -1083,6 +1083,26 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
             with self.subTest(script=script, shell=shell):
                 found = wg.job_defects([wg.Step("step", script, shell)])
                 self.assertSaid([HANDED % "$CMD", INSIDE], [why for _name, why in found])
+
+    def test_an_event_under_a_shell_turning_history_on_reads_as_the_base(self):
+        # `echo !-2` recalling `:; CMD=true`, and `@-2` after the step's own `histchars='@^#'`.
+        # Under `bash --noprofile --norc -e -o history -H {0}` and under
+        # `bash --noprofile --norc -ie {0}` bash 5.2 reruns `CMD=true` and runs the download, on
+        # each template: the first bash 5.2 FR, bash 3.2 F-+sha; the second
+        # bash 5.2 FR, bash 3.2 F-. The guard's `read()` hands `annotate` the step's `shell:`, and
+        # no mark stands under a template whose options `_quiet` does not read: the base's
+        # hand-off and the check inside return. Under `bash --noprofile --norc -eo pipefail {0}`
+        # no event expands -- the first bash 5.2 F-+sha, bash 3.2 F-+sha; the second
+        # bash 5.2 F-, bash 3.2 F- -- so the mark stands, CLEAN as the twin reads.
+        base = [HANDED % "$CMD", INSIDE]
+        for lines in (":; CMD=true\nCMD=sh\necho !-2", "histchars='@^#'\nCMD=true\nCMD=sh\n@-2"):
+            script = GET + lines + "\n" + body("$CMD", CHECK, USE)
+            for shell, said in (("bash --noprofile --norc -e -o history -H {0}", base),
+                                ("bash --noprofile --norc -ie {0}", base),
+                                ("bash --noprofile --norc -eo pipefail {0}", [])):
+                with self.subTest(script=script, shell=shell):
+                    found = wg.job_defects([wg.Step("step", script, shell)])
+                    self.assertSaid(said, [why for _name, why in found])
 
     def test_a_set_that_turns_no_history_on_reads_as_the_twin(self):
         # Each stops at the check: F-+sha F-+sha F- F- on `set -euo pipefail` and on
