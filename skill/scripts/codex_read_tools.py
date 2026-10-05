@@ -97,6 +97,23 @@ SKIPPED_MORE_NOTE = "[skipped %d more hard-linked files inside this directory gr
 # folds into the count, which is itself one constant-size line.
 MAX_SKIP_NOTE_BYTES = 2048
 SKIP_PATH_WINDOW = 48
+# #2839: how `_open` opens the directories it only PASSES THROUGH -- every
+# component above the one a call lists or reads. Opening a directory O_RDONLY
+# needs READ permission on it, and passing through one needs only SEARCH, so a
+# read-only walk from `/` refused a review root under a directory that grants
+# `--x` and not `r` (`drwx--x--x`, the shape of a per-tenant parent) although
+# the kernel let the path be traversed -- every tool, and `load_reader` before
+# any of them, answered `Permission denied: '<that component>'`. O_PATH (Linux)
+# and O_SEARCH (macOS, BSD; CPython exposes it on macOS from 3.13) open a
+# directory for traversal alone. O_DIRECTORY and O_NOFOLLOW stay on every step,
+# so a symlink component still fails (ENOTDIR), and the FINAL component is still
+# opened O_RDONLY: `os.scandir(fd)` needs a readable descriptor and so does
+# `os.read`. Where neither flag exists the walk stays read-only, as before, and
+# such a root fails closed. Read at call time so a test can stand in the
+# flagless branch on every platform.
+TRAVERSAL_FLAG = getattr(os, "O_PATH", None)
+if TRAVERSAL_FLAG is None:
+    TRAVERSAL_FLAG = getattr(os, "O_SEARCH", None)
 
 
 def _tool(name, description, properties, required=()):
@@ -175,17 +192,26 @@ def _open(path, *, directory=False, grant=DIR_GRANT):
     widen it. Directories are not the subject -- a directory's link count is its
     subdirectory count, and `list_files` enumerates NAMES, which is not reading
     the content a grant confines.
+
+    #2839: the components above the last are opened with TRAVERSAL_FLAG where
+    the platform has one, so a directory this walk only passes through needs
+    search permission and not read; the last component is opened to read.
     """
     if (os.name != "posix" or not hasattr(os, "O_NOFOLLOW")
             or os.open not in os.supports_dir_fd or os.scandir not in os.supports_fd):
         raise ValueError("secure read scope opens unavailable on this platform")
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(os.sep, flags | os.O_DIRECTORY)
+    common = os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    read_flags = os.O_RDONLY | common
+    walk_flags = read_flags if TRAVERSAL_FLAG is None else TRAVERSAL_FLAG | common
+    parts = [part for part in path.split(os.sep) if part]
+    # `/` itself is the last component of the root path and is then read.
+    fd = os.open(os.sep, (walk_flags if parts else read_flags) | os.O_DIRECTORY)
     try:
-        parts = [part for part in path.split(os.sep) if part]
         for index, part in enumerate(parts):
-            want_dir = directory or index < len(parts) - 1
-            child = os.open(part, flags | (os.O_DIRECTORY if want_dir else 0), dir_fd=fd)
+            last = index == len(parts) - 1
+            flags = (read_flags if last else walk_flags) | (
+                os.O_DIRECTORY if directory or not last else 0)
+            child = os.open(part, flags, dir_fd=fd)
             os.close(fd)
             fd = child
         info = os.fstat(fd)
