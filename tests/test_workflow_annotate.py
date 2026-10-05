@@ -329,8 +329,9 @@ class TestACommandWord(unittest.TestCase):
         # A name may be spelled as a whole word in the step only in plain references, option
         # words and assignment words: any other spelling -- a bare word, a reference that
         # assigns, a value or a dotted word holding it, a word of `let` or `[[`, whose arithmetic
-        # assigns, in any text of the step -- may change what bash holds, so no mark of that name
-        # stands; nor where the table reads its assignment as no literal (`declare -u`).
+        # assigns, or of a declaration bash may refuse or alter (`local`, `readonly`, `declare`,
+        # `typeset`, an `export` with an option word), in any text of the step -- may change
+        # what bash holds, so no mark of that name stands.
         for form in ("read CMD <<< x", "wait -n -p CMD || :", "unset CMD", "export CMD",
                      "for CMD in sh; do :; done", "getopts t CMD -t || :", "mapfile -t CMD < f",
                      "R=CMD", "exec {CMD}>/dev/null", ': "${CMD:=x}"', ': "${CMD=x}"',
@@ -340,17 +341,19 @@ class TestACommandWord(unittest.TestCase):
                      "echo x-CMD", "echo --x=CMD", "export CMD=sh X=CMD=1",
                      "export CMD=sh <<'X'\nCMD=x\nX",
                      "let CMD=1 || :", "command let CMD+=1", "[[ CMD=1 -eq 1 ]]",
-                     "[[ 1 -eq CMD=1 ]]"):
+                     "[[ 1 -eq CMD=1 ]]", "local CMD=sh", "readonly CMD=sh", "declare CMD=sh",
+                     "typeset CMD=sh", "declare -x CMD=sh", "export -n CMD=sh",
+                     "export -- CMD=sh", "export +x CMD=sh", "command readonly CMD=sh"):
             with self.subTest(form=form):
                 self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
-        # A reference that only reads, an assignment word (the table's, a prefix or an argument),
-        # an option word, a longer run that spells another name, and a reader's marker
+        # A reference that only reads, an assignment word (a plain `export`'s, a prefix or an
+        # argument), an option word, a longer run that spells another name, and a reader's marker
         # (`x=$(...)` holds one, which spells `shell`) keep the mark.
         for form in ('echo "$CMD"', 'echo "${CMD}"', 'echo "${CMD:-x}"', 'echo "${CMD-x}"',
                      'echo "${CMD:+x}"', 'echo "${CMD+x}"', 'echo "${CMD:?x}"', 'echo "${CMD?x}"',
                      'echo "${CMD#s}"', 'echo "${CMD%h}"', 'echo "${CMD/s/t}"', 'echo "${CMD^^}"',
                      'echo "${CMD,,}"', 'echo "${CMD@Q}"', 'echo "${CMD[0]}"', 'echo "${CMD:0:1}"',
-                     "export CMD=sh", "readonly CMD=sh", "CMD+=''", 'echo hi > "$CMD".log',
+                     "export CMD=sh", "export OTHER=1 CMD=sh", "CMD+=''", 'echo hi > "$CMD".log',
                      "read OTHER <<< x", "CMD=x true", 'echo "CMD=$CMD"', "env CMD=x true",
                      "curl -d CMD=1 x", "curl --CMD x", "XCMD=1", "CMD2=1", "echo $CMDX"):
             with self.subTest(form=form):
@@ -902,7 +905,7 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # check and stops at `[[`). The base: the hand-off and the check inside `$CMD`'s script;
         # and so here, an over-report where the literal twin reads CLEAN -- every whole-word
         # spelling of a name but a plain reference, an option word and an assignment word outside
-        # `let` and `[[` is read as one that may change it.
+        # `let`, `[[` and a declaration bash may refuse or alter is read as one that may change it.
         for pre in ("echo CMD", "let CMD=1 || :", "[[ CMD=1 -eq 1 ]]"):
             script = GET + "CMD=sh\n" + pre + "\n" + body("$CMD", CHECK, USE)
             with self.subTest(script=script):
@@ -918,6 +921,49 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
             script = GET + "CMD=sh\n" + pre + body("$CMD", CHECK, USE)
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_a_declaration_bash_may_refuse_or_alter_keeps_the_hand_off(self):
+        # Bash runs the body's download past each, where the table holds `true`: `local` fails
+        # outside a function, `declare -p` prints and `export -f` names a function, each assigning
+        # nothing (FR FR -- FR, FR FR FR FR, FR FR -- FR: dash stops at `local` and `export -f`);
+        # bash 3.2 has no `declare -g`, and dash no `declare` (-- FR FR --, -- -- FR --); and
+        # under `set +e` bash refuses the assignment after `readonly`, through `command` too, and
+        # runs on (FR FR -- FR each: dash stops there). The base: the hand-off and the stream;
+        # and so here, where a mark took the table's `true` and read CLEAN.
+        for pre in ("CMD=sh\nlocal CMD=true || :", "CMD=sh\ndeclare -p CMD=true || :",
+                    "CMD=sh\nexport -f CMD=true || :", "CMD=sh\ndeclare -g CMD=true || :",
+                    "CMD=sh\ndeclare CMD=true || :", "set +e\nreadonly CMD=sh\nCMD=true",
+                    "set +e\ncommand readonly CMD=sh\nCMD=true"):
+            script = pre + "\n" + body("$CMD")
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
+
+    def test_a_declaration_whose_value_the_shell_keeps_reads_as_the_base_over_report(self):
+        # -- -- -- -- on each: bash keeps `true` from `declare` and `readonly` (dash stops at
+        # `declare`), and drops `CMD=true || :` after `readonly CMD=sh` with its `|| :` list,
+        # where `-e` stops the step. The base: the hand-off and the stream; and so here, an
+        # over-report where the twin reads CLEAN -- each declaration is read as one bash may
+        # refuse or alter.
+        for pre in ("CMD=sh\ndeclare CMD=true", "readonly CMD=true",
+                    "readonly CMD=sh\nCMD=true || :"):
+            script = pre + "\n" + body("$CMD")
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
+
+    def test_a_plain_export_keeps_the_mark_and_a_glued_printf_v_or_env_word_reads_as_bash(self):
+        # F- F- F- F-: `export CMD=true` assigns in every shell, so the mark stands and the twin
+        # `true <<'EOF'` reads CLEAN. FR FR -- FR: `printf -vCMD sh` sets `CMD` (dash has no
+        # `-v`), which the table reads as no literal -- the base's hand-off and stream.
+        # FR FR FR FR on both: `env CMD=true true` assigns nothing in the step's shell, so the
+        # mark takes `sh` and the twin reads the stream; `builtin declare -p` is refused as a
+        # builtin that may rebind a command (rule 7) -- the base's hand-off and stream.
+        self.assertEqual([], defects(GET + "export CMD=true\n" + body("$CMD")))
+        for pre, said in (("CMD=true\nprintf -vCMD sh", [HANDED % "$CMD", STREAM]),
+                          ("CMD=sh\nenv CMD=true true", [STREAM]),
+                          ("CMD=sh\nbuiltin declare -p CMD=true || :", [HANDED % "$CMD", STREAM])):
+            script = pre + "\n" + body("$CMD")
+            with self.subTest(script=script):
+                self.assertSaid(said, defects(script))
 
     def test_an_option_word_or_a_longer_name_keeps_the_printed_fetch(self):
         # FR FR FR FR on each: `curl -X` and `X10` spell other names than `X` and `X1`, so the

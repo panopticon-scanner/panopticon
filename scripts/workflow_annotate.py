@@ -47,11 +47,14 @@ rule below holds, and is taken back where one fails: the word then reads as the 
     `wait -p` (bash 5.1 unsets the name first) or a word `NAME[` (`CMD[ 0 ]=true` is one
     assignment to bash). No mark stands for a name spelled as a whole word anywhere in the step
     (`_spelled`: `XCMD`, `CMD2` are other names) but in a plain reference, an option word (`-X`,
-    `--CMD`) or an assignment word outside `let` and `[[`, whose arithmetic assigns -- `NAME=` or
-    `NAME+=` starting a command's word, a prefix or an argument (`CMD=true $CMD`, `env CMD=x`),
-    which assigns in the step's shell only where the table reads it or a rule above refuses the
-    step. Any other spelling (`read NAME`, `wait -p NAME`, `NAME[0]=`, `printf -v NAME`,
-    `R=NAME`, `${NAME:=x}`, `let NAME=1`) may change what bash holds.
+    `--CMD`) or an assignment word -- `NAME=` or `NAME+=` starting a command's word, a prefix or
+    an argument (`CMD=true $CMD`, `env CMD=x`), which assigns in the step's shell only where the
+    table reads it or a rule above refuses the step -- outside `let` and `[[`, whose arithmetic
+    assigns, and outside a declaration bash may refuse or alter (`_DECLARES`): `local` (no
+    function stands in a marked step), `readonly` (a later assignment fails while the table reads
+    it), `declare`/`typeset` (absent under `sh`; their options print, fail on bash 3.2 or alter
+    the value), `export` with an option word. Any other spelling (`read NAME`, `wait -p NAME`,
+    `NAME[0]=`, `printf -v NAME`, `R=NAME`, `${NAME:=x}`, `let NAME=1`) may change what bash holds.
  8. No trap (`_rebinds`, `_LATER`): nor in one that traps `DEBUG`, `RETURN` or `ERR`, or traps
     an action not empty, `-` or a literal `rm` (`_TRAP_SAFE`), or sets a `mapfile -C` callback, or
     names `trap`, `mapfile` or `readarray` in any other text: each runs a text later, which may
@@ -103,7 +106,9 @@ A refused mark keeps the base's answer, an over-report where the program was sou
 a `( true )` or `X=1 a=(x) true` the reader cannot tell from a header `g ( )`, a header inside a
 quoted or printed text, a builtin a value names (`G=getopts; $G t CMD -t`),
 `CMD=true command :`, whose assignment no shell keeps, `let CMD=1`, whose integer names no
-command, or a bare mention of the name in another word, `echo CMD`).
+command, a prefix to `let` or `[[` (`CMD=true let X=1`), `declare CMD=true` or `readonly CMD=true`
+with no later assignment, whose value bash keeps, an option word in a body or a redirect (a
+heredoc's `curl -X` spells `X`), or a bare mention of the name in another word, `echo CMD`).
 A step in which no word is marked reads byte for byte as before.
 
 Stdlib only, like everything under it.
@@ -201,10 +206,12 @@ _TRAP_SAFE = re.compile(r"(?:rm(?: -[rf]+)*(?: [\w./-]+)+)?|-", re.A)
 _TRAPPED = frozenset(("DEBUG", "RETURN", "ERR"))
 _LATER = re.compile(r"(?<![\w./-])(?:trap|mapfile|readarray)(?![\w./-])", re.A)
 # A name's spellings (`_spelled`): a run of name characters; what may follow `${NAME` in a
-# reference that only reads (`=` and `:=` assign); what follows a name in a word assigning it.
+# reference that only reads (`=` and `:=` assign); what follows a name in a word assigning it;
+# and the commands whose assignment words bash may refuse, alter or read as arithmetic.
 _RUN = re.compile(r"\w+", re.A)
 _READS = re.compile(r"\}|:?[-+?]|[#%/^,@\[]|:\d", re.A)
 _OWN = re.compile(r"\+?=", re.A)
+_DECLARES = ("let", "[[", "local", "readonly", "declare", "typeset")
 _ON_PATH = re.compile(r"(?<![^\s\"'=:;|&<>(){}!])([^\s\"'=:;|&<>(){}!]*)/(?:%s)(?![\w.+/-])"
                       % "|".join(_NAMES), re.A)
 _DEPTH = 8
@@ -321,13 +328,16 @@ def _spelled(stmts):
     statements' texts -- each word, redirect target or source, heredoc body and substitution, the
     reader's markers taken out -- that is no plain reference (`$NAME`, or `${NAME` and an operator
     that reads, `_READS`) and, in a command's word, neither follows its leading `-` or `--` (`-X`,
-    `--CMD`) nor starts it before `=` or `+=` (`CMD=true $CMD`, `env CMD=x`), but not in `let`
-    or `[[`, whose arithmetic assigns (`let CMD=1`). A run is the name only where it equals it:
-    `XCMD`, `CMD2` and `$CMDX` spell other names."""
+    `--CMD`) nor starts it before `=` or `+=` (`CMD=true $CMD`, `env CMD=x`) where the command
+    keeps that assignment as written: not one of `_DECLARES` (`let CMD=1`, `local CMD=x`) nor an
+    `export` with an option word (`export -n CMD=x`, `export -- CMD=x`). A run is the name only
+    where it equals it: `XCMD`, `CMD2` and `$CMDX` spell other names."""
     out = set()
     for statement in stmts:
         for stage in statement.stages:
-            arithmetic = command(stage.argv)[:1] in (["let"], ["[["])
+            kept = [str(word) for word in command(stage.argv)]
+            declares = bool(kept) and (kept[0] in _DECLARES or kept[0] == "export" and any(
+                word[:1] in ("-", "+") for word in kept[1:]))
             bodies = [body[0] for body in (stage.stdin_heredoc,) if body]
             texts = [*stage.writes, *stage.reads, stage.heredoc or "", *bodies,
                      *stage.substitutions]
@@ -341,7 +351,7 @@ def _spelled(stmts):
                     before = text[max(0, start - 2):start]
                     if before.endswith("$") or before == "${" and _READS.match(text, end):
                         continue                                    # a reference that reads
-                    if own and (text[:start] in ("-", "--") or not start and not arithmetic
+                    if own and (text[:start] in ("-", "--") or not start and not declares
                                 and _OWN.match(text, end)):
                         continue                                    # an option or assignment
                     out.add(run[0])
