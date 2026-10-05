@@ -347,6 +347,46 @@ class TestACommandWord(unittest.TestCase):
             with self.subTest(form=form):
                 self.assertEqual(1, len(marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK))))
 
+    def test_no_mark_stands_where_bash_may_rerun_a_line(self):
+        # `jobs -x` runs its words as a command in the step's own shell, `fc` reruns a line of the
+        # history list and `history` writes one, and a `set` or `shopt` that may turn history on
+        # lets `!-2` rerun one: each after the table's last value, through a value or `command`
+        # too. A `set` word counts with its quotes gone (`hi''story`) and where an expansion, a
+        # brace, a glob or a `$(...)` may spell `history`. A command word led by `!` or `^` is a
+        # history event, which reruns a line wherever history is on, by a `set` of the step's or
+        # from outside it. Bare `jobs` or `history`, run for their output, keep no mark either:
+        # an over-report.
+        for form in ("jobs -x read CMD", "fc -s", "history -r h.txt", "set -o history",
+                     "shopt -so history", "set -o $H", "set -o ${O}ory", "set -o hi''story",
+                     "set -o h?story", "set -o {history,}", "set -o $(echo hist)ory",
+                     "set -o `echo history`", "J=jobs\n$J -x eval CMD=true", "command fc -s",
+                     "!-2 || :", "^sh^true", "!!", "jobs", "history"):
+            with self.subTest(form=form):
+                self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
+        # A `set` or `shopt` that turns no history on keeps the mark: `set -H` alone expands no
+        # event while history is off. So do the negation `!`, whose command the reader keeps as
+        # `grep`, and a `!` operand.
+        for form in ("set -euo pipefail", "set -x", "set -H", "shopt -s extglob", "! grep -q x f",
+                     "[ ! -f x ]"):
+            with self.subTest(form=form):
+                self.assertEqual(1, len(marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK))))
+
+    def test_no_mark_stands_under_a_shell_whose_options_quiet_does_not_read(self):
+        # `annotate`'s `shell`, a `shell:` template: history turned on (`-o history -H`), an
+        # interactive or a login shell (`-i`, `-l`, `--login`: a profile an earlier step wrote),
+        # `+B` or `-O` mark nothing; GitHub's own templates, `bash`, `sh` and no template keep
+        # the mark. The guard's hook hands no `shell` yet: the module's price (#2733).
+        script = "CMD=sh\n" + body("$CMD", CHECK)
+        for shell, count in (("bash -o history -H {0}", 0), ("bash -ie {0}", 0), ("bash -l {0}", 0),
+                             ("bash --login -e {0}", 0), ("bash -e +B {0}", 0),
+                             ("bash -O extglob {0}", 0),
+                             ("bash --noprofile --norc -eo pipefail {0}", 1), ("bash -e {0}", 1),
+                             ("sh -e {0}", 1), ("bash", 1), ("sh", 1), (None, 1)):
+            with self.subTest(shell=shell):
+                stmts = wa.annotate(shell_reader.statements(script), shell=shell)
+                self.assertEqual(count, sum(isinstance(word, Defaulted) for statement in stmts
+                                            for stage in statement.stages for word in stage.argv))
+
     def test_no_mark_stands_for_a_name_spelled_otherwise_than_it_reads_or_is_assigned(self):
         # A name may be spelled as a whole word in the step only in plain references, option
         # words and assignment words: any other spelling -- a bare word, a reference that
@@ -985,6 +1025,74 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
 
+    def test_a_line_bash_reruns_keeps_the_hand_off(self):
+        # `jobs -x` runs its words in the step's own shell -- a brace command word, an `eval`, a
+        # `declare`, a quoted `'jobs'` -- after `CMD=sh` (FR FR F- FR each; dash refuses
+        # `jobs -x`). A history line reruns after the table's last value: `fc -s` of a
+        # `history -s 'CMD=true'` line; `fc -s sh=true` once `set -o history`, `shopt -so history`
+        # or `set -o ${O}ory` turns history on; `!-2` and `^sh^true` once `set -o history -H` has,
+        # and `@-2` under `histchars='@^#'`, which its `set` closes; `!-2` once a `$(...)` or a
+        # backquote spells `history` (FR FR F- FR each; dash has no `set -o history`). The base:
+        # the hand-off and the check inside `$CMD`'s script; and so here, where a mark took the
+        # table's `sh` and read CLEAN.
+        for lines in ("CMD=sh\njobs -x {read,} {C,}MD <<< true", "CMD=sh\njobs -x eval CMD=true",
+                      "CMD=sh\njobs -x declare CMD=true", "CMD=sh\n'jobs' -x eval CMD=true",
+                      "CMD=sh\nset -o history\nhistory -s 'CMD=true'\nfc -s",
+                      "set -o history\nCMD=true\nCMD=sh\nfc -s sh=true",
+                      "shopt -so history\nCMD=true\nCMD=sh\nfc -s sh=true",
+                      "O=hist\nset -o ${O}ory\nCMD=true\nCMD=sh\nfc -s sh=true",
+                      "set -o history -H\nCMD=true\nCMD=sh\n!-2",
+                      "set -o history -H\nCMD=true\nCMD=sh\n^sh^true",
+                      "set -o history -H\nhistchars='@^#'\nCMD=true\nCMD=sh\n@-2",
+                      "set -o $(echo history) -H\nCMD=true\nCMD=sh\n!-2",
+                      "set -o `echo history` -H\nCMD=true\nCMD=sh\n!-2"):
+            script = GET + lines + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+        # FR FR -- FR: `jobs -x eval CMD=sh` after `CMD=true` runs the fed body (dash stops at
+        # `jobs -x`). The base: the hand-off and the stream; and so here.
+        script = "CMD=true\njobs -x eval CMD=sh\n" + body("$CMD")
+        self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
+
+    def test_a_word_led_by_a_history_character_keeps_the_hand_off(self):
+        # `CMD=true`, `CMD=sh`, `!-2`: bash reruns `CMD=true` and runs the download under a
+        # `shell:` that turns history on, `bash --noprofile --norc -e -o history -H {0}` or
+        # `bash --noprofile --norc -ie {0}` (bash 5.2 FR, bash 3.2 F-), and after an earlier step
+        # writes `SHELLOPTS=history:histexpand` to `$GITHUB_ENV` (bash 5.2 FR, bash 3.2 FR). The
+        # base: the hand-off and the check inside `$CMD`'s script; and so here, where a mark took
+        # the table's `sh` and read CLEAN: a command word led by `!` is a history event.
+        script = GET + "CMD=true\nCMD=sh\n!-2\n" + body("$CMD", CHECK, USE)
+        first = 'echo "SHELLOPTS=history:histexpand" >> "$GITHUB_ENV"\n'
+        for steps in ([wg.Step("step", script, "bash --noprofile --norc -e -o history -H {0}")],
+                      [wg.Step("step", script, "bash --noprofile --norc -ie {0}")],
+                      [("first", first), ("step", script)]):
+            with self.subTest(steps=steps):
+                found = wg.job_defects(steps)
+                self.assertSaid([HANDED % "$CMD", INSIDE], [why for _name, why in found])
+
+    def test_a_word_led_by_a_history_character_with_history_off_keeps_the_base_over_report(self):
+        # F-+sha F-+sha F- F- on `set -H` alone, where `!-2 || :` finds no history; F- F- F- F-
+        # on `!-2` with no `shell:`, and bash 5.2 F-, bash 3.2 F- under
+        # `bash --noprofile --norc -eo pipefail {0}`, where `!-2` is no command and `-e` stops
+        # the step. The base: the hand-off and the check inside, its over-report; and so here: a
+        # `!`-led word with history off runs nothing -- a cost.
+        for lines, shell in (("set -H\nCMD=true\nCMD=sh\n!-2 || :", None),
+                             ("CMD=true\nCMD=sh\n!-2", None),
+                             ("CMD=true\nCMD=sh\n!-2", "bash --noprofile --norc -eo pipefail {0}")):
+            script = GET + lines + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script, shell=shell):
+                found = wg.job_defects([wg.Step("step", script, shell)])
+                self.assertSaid([HANDED % "$CMD", INSIDE], [why for _name, why in found])
+
+    def test_a_set_that_turns_no_history_on_reads_as_the_twin(self):
+        # Each stops at the check: F-+sha F-+sha F- F- on `set -euo pipefail` and on
+        # `shopt -s extglob`; F-+sha F-+sha F-+sha F- on `set -x`. The base reports the hand-off
+        # and the check inside, its over-report; here CLEAN, as the twin reads.
+        for lines in ("CMD=sh\nset -euo pipefail", "CMD=sh\nshopt -s extglob", "CMD=sh\nset -x"):
+            script = GET + lines + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
     def test_a_declaration_whose_value_the_shell_keeps_reads_as_the_base_over_report(self):
         # -- -- -- -- on each: bash keeps `true` from `declare` and `readonly` (dash stops at
         # `declare`), and drops `CMD=true || :` after `readonly CMD=sh` with its `|| :` list,
@@ -1147,6 +1255,23 @@ class TestThePricesAndLimits(unittest.TestCase):
         # FR FR FR FR (the empty `$CMD` vanishes and `sh` reads the body), the base CLEAN, and so
         # here: the rule reads no empty value -- the base's gap (a FILE `sh` to the reader, #2472).
         self.assertEqual([], defects("CMD=\n" + body("$CMD sh")))
+
+    def test_an_event_under_history_turned_on_outside_the_step_reads_as_the_twin(self):
+        # An earlier step writes `SHELLOPTS=history:histexpand` to `$GITHUB_ENV`, and with it
+        # `histchars=@^#` for the first row: bash reruns `CMD=true` and runs the download
+        # (bash 5.2 FR, bash 3.2 FR) by `@-2`, by `echo !-2` recalling `:; CMD=true`, and by
+        # `@-2` under the step's own `histchars`, where the base reports the hand-off and the
+        # check inside; here CLEAN, as the twin reads: the step cannot see the first, and no
+        # command word of the others is led by `!` or `^` (the module's price, #2733, filed with
+        # this PR).
+        first = 'echo "SHELLOPTS=history:histexpand" >> "$GITHUB_ENV"\n'
+        for env, lines in (('echo "histchars=@^#" >> "$GITHUB_ENV"\n', "CMD=true\nCMD=sh\n@-2"),
+                           ("", ":; CMD=true\nCMD=sh\necho !-2"),
+                           ("", "histchars='@^#'\nCMD=true\nCMD=sh\n@-2")):
+            script = GET + lines + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                found = wg.job_defects([("first", first + env), ("step", script)])
+                self.assertEqual([], [why for _name, why in found])
 
     def test_a_child_or_a_handed_script_inherits_no_mark(self):
         # FR FR FR FR on each, the base CLEAN on each, and so here: a `$(...)` child `_walk`
