@@ -332,7 +332,7 @@ ARG RUSTUP_VERSION=1.29.1
 ARG RUSTUP_INIT_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
 ARG RUSTUP_INIT_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
 # The bootstrapper and compiler have separate release cycles; pin each explicitly.
-ARG RUST_TOOLCHAIN_VERSION=1.98.1
+ARG RUST_TOOLCHAIN_VERSION=1.99.0
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) ru="x86_64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_AMD64}" ;; arm64) ru="aarch64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ru}/rustup-init" \
