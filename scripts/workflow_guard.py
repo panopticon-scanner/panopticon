@@ -368,8 +368,9 @@ def _unread_stdin(stage, before=None):
 
 def read(script, shell=None):
     """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded; a
-    `$CMD` command word and a printer's `"$X"` the step assigns one literal read as that text
-    (`workflow_annotate`, #2468), a mark no `$(...)` child or handed script inherits."""
+    `$CMD` command word the step surely runs, and a printer's `"$X"` whose text fetches, the step
+    assigns one literal read as that text (`workflow_annotate`, #2468), a mark no `$(...)` child
+    or handed script inherits."""
     return flattened(annotate(statements(script)), shell=shell)
 
 
