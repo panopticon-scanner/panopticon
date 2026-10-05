@@ -163,14 +163,17 @@ live, so a change that catches one fails there and edits this list.
   (one a `cat` prints into a `<(…)` the shell reads as its FILE too, #2495): values and `$(...)`
   output remain unseen. A foreign program is reported too. A `$` command
   hand-off is reported (#2473); since #2499, either is kept only beside a reported fetch. A value
-  word's body is read as shell with no check counted. Where a job fetch binds that command (#2607),
+  word `workflow_annotate` leaves as written (#2468) has its body read as shell with no check
+  counted. Where a job fetch binds that command (#2607),
   its run sentence owns stdin as data and both uncertain answers drop; unknown words stay
   fail-closed. An expanding body masks substitutions as values (#2597). Inside a substitution, the
   body speaks before its hand-off (#2598); the price remains
   shell-like non-shell text. A nearer literal shell remains consumer when a surrounding value word
   gets its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
-  file redirected into it. `CMD=cat` is the fail-closed price. A value option before a file keeps
-  stdin possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
+  file redirected into it. A value word left as written -- no table places it (`CMD=$(…)`), or the
+  annotation leaves its literal unmarked (in a group, a list, a compound, a test, or before a
+  program not plain) -- is the fail-closed price. A value option before a file keeps stdin
+  possible (#2605); `X=-e` is its price. Still unread: untabled literal options or stdin
   aliases, a shell behind a TRANSPORT (`ssh`, `docker run`, `docker exec`), or an unknown basename
   such as `python3.11` or `busybox sh`. An `echo`, `printf` or heredoc-fed `cat` PIPING into a
   shell, directly or through a pass-through -- `tee` writing plain files with `-a`/`-p`/`-i`,
