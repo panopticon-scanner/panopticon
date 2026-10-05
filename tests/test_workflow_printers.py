@@ -1436,13 +1436,12 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                     "pipes `sh` its program from `sh`") for why in whys), whys)
 
     def test_an_unspelled_printer_behind_a_pass_through_is_unread_from_itself(self):
-        # p2n05 `echo "$X" | tee f | sh` (F- x4: `X` unset) and p2n06, `X="$(echo sh) tool"` set
-        # in front (FR x4): the text arrives intact but is not spelled, so the unread answer names
-        # the printer, as `echo "$X" | sh` gets it. p2n07 `printf 'sh %s\n' tool | tee f | sh` (FR
+        # p2n05 `echo "$X" | tee f | sh` (F- x4: `X` unset) and p2n06, `X='sh tool'` set in front
+        # (FR x4): the text arrives intact but is not spelled, so the unread answer names the
+        # printer, as `echo "$X" | sh` gets it. p2n07 `printf 'sh %s\n' tool | tee f | sh` (FR
         # x4): a format past `%s` is unspelled -- from `printf`.
-        # The value is a `$(...)` no table sees: since #2468 a literal one is spelled as its text.
         self.assert_unread('echo "$X" | tee f | sh\n', "echo")
-        self.assert_unread('X="$(echo sh) tool"\necho "$X" | tee f | sh\n', "echo")
+        self.assert_unread("X='sh tool'\necho \"$X\" | tee f | sh\n", "echo")
         self.assert_unread("printf 'sh %s\\n' tool | tee f | sh\n", "printf")
 
     def test_the_per_shell_reading_survives_the_pass_through(self):

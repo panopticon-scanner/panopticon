@@ -344,8 +344,7 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # A `$` command word keeps #2344's own sentence: a letter table for a
         # command this guard does not follow cannot overrule it, and `X=zsh`
         # fetches and runs. A `${X:-sh}` reads as its default here too.
-        # `X` is a `$(...)` no table sees: since #2468 a literal one reads as its command.
-        for script in (f"X=$(echo sh)\n$X -cK '{pipe}'\n", f"X=$(echo sh)\n$X -c -K '{pipe}'\n"):
+        for script in (f"X=sh\n$X -cK '{pipe}'\n", f"X=sh\n$X -c -K '{pipe}'\n"):
             with self.subTest(script=script):
                 self.assertIn("a command word this guard does not follow",
                               guard.fetch_exec_defect(script))
