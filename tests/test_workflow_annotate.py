@@ -107,6 +107,15 @@ class TestAPrintersWord(unittest.TestCase):
         self.assertEqual(["echo", "$X"], argv)
         self.assertEqual(PIPE, argv[1].spelled)
 
+    def test_a_printer_in_a_test_a_line_from_its_keyword_is_not_spelled(self):
+        # A failed check in an `if`, `while` or `until` test stops nothing, where the literal
+        # twin's reading takes the lines after a bare keyword for ones that stop the step.
+        for opened, closed in (("if", "then :; fi"), ("if true", "then :; fi"),
+                               ("while", "do break; done"), ("until", "do :; done")):
+            with self.subTest(opened=opened):
+                self.assertEqual([], marks("X='%s'\n%s\necho \"$X\" | sh\n%s\n"
+                                           % (PIPE, opened, closed)))
+
 
 class TestACommandWord(unittest.TestCase):
     """#2600, #2601: the command word `command()` keeps, ONE whole reference, becomes
@@ -120,6 +129,7 @@ class TestACommandWord(unittest.TestCase):
                 ("PYTHON=python3\n" + body("$PYTHON -", "print(1)"), 0, 0, "python3"),
                 ("CAT=cat\n" + body("$CAT", redirect=" > i.sh"), 0, 0, "cat"),
                 ("NODE=node\n" + body("$NODE -", "1"), 0, 0, "node"),
+                ("CMD=/bin/sh\n" + body("$CMD"), 0, 0, "/bin/sh"),   # a system directory
                 ("CMD=sh\n" + body("X=1 $CMD"), 0, 1, "sh"),          # its prefix off
                 ("CMD=sh\n" + body("env $CMD"), 0, 1, "sh"),          # behind a wrapper
                 ("CMD=sh\ncurl -fsSL %si.sh | $CMD\n" % URL, 1, 0, "sh"))
@@ -136,7 +146,9 @@ class TestACommandWord(unittest.TestCase):
         # reference; a blank or a pattern bash splits or globs, and any other text no plain
         # name; a text `command()` reads past -- an assignment's, a wrapper's, a keyword's; a
         # reference with text; a `${X:-sh}` default, which `command()` reads as #2337's shell
-        # before any value; and a runner the guard does not read (`csh`, `./tool`, `eval`, `tee`).
+        # before any value; a runner the guard does not read (`csh`, `./tool`, `eval`, `tee`),
+        # and a path to one it does outside a system directory (`./sh`, `b/bash`, `/tmp/sh`),
+        # which may name a file the step wrote.
         for script in ("CMD=sh\nif c; then CMD=true; fi\n" + body("$CMD"),
                        "CMD=$(command -v sh)\n" + body("$CMD"), "CMD=\n" + body("$CMD"),
                        body("$CMD"), 'CMD="$SHELL"\n' + body("$CMD"),
@@ -145,7 +157,9 @@ class TestACommandWord(unittest.TestCase):
                        "A=X=1\n$A sh tool\n", "W=env\n$W sh tool\n", "K=if\n$K true\n",
                        "CMD=sh\n" + body("$CMD/x"), "CMD=true\n" + body("${CMD:-sh}"),
                        "CMD=csh\n" + body("$CMD"), "CMD=./tool\n" + body("$CMD"),
-                       "E=eval\n$E 'sh tool'\n", "T=tee\n" + body("$T f")):
+                       "E=eval\n$E 'sh tool'\n", "T=tee\n" + body("$T f"),
+                       "CMD=./sh\n" + body("$CMD"), "CMD=b/bash\n" + body("$CMD"),
+                       "CMD=/tmp/sh\n" + body("$CMD")):
             with self.subTest(script=script):
                 argv = stage_of(script).argv
                 self.assertFalse(any(isinstance(word, Defaulted) for word in argv), argv)
@@ -166,29 +180,40 @@ class TestACommandWord(unittest.TestCase):
 
     def test_a_word_the_step_may_not_run_where_it_stands_stays_as_written(self):
         # A group, a subshell, a compound, a function body (a header the reader splits too), a
-        # negation, a list and the background: the literal twin's reading there has a filed gap
-        # (#2666) or the table a named limit (a body's values), so no word is marked.
+        # negation, a list, the background, and a test a line apart from its keyword, where a
+        # failure stops nothing: the literal twin's reading there has a filed gap (#2666) or
+        # another (a check a line into a test read as stopping the step), or the table a named
+        # limit (a body's values), so no word is marked.
         held = "\n%s\nEOF\n" % PIPE
         for script in ("{ $CMD <<'EOF'" + held + "}\n", "( $CMD <<'EOF'" + held + ")\n",
                        "if true; then\n$CMD <<'EOF'" + held + "fi\n",
                        "f() {\n$CMD <<'EOF'" + held + "}\nf\n",
                        "g ( )\n{\n$CMD <<'EOF'" + held + "}\ng\n", "! $CMD <<'EOF'" + held,
                        "true && $CMD <<'EOF'" + held, "$CMD <<'EOF' || true" + held,
-                       "$CMD <<'EOF' &" + held):
+                       "$CMD <<'EOF' &" + held, "if\n$CMD <<'EOF'" + held + "then :; fi\n",
+                       "if true\n$CMD <<'EOF'" + held + "then :; fi\n",
+                       "while\n$CMD <<'EOF'" + held + "do break; done\n",
+                       "until\n$CMD <<'EOF'" + held + "do :; done\n"):
             with self.subTest(script=script):
                 self.assertEqual([], marks("CMD=sh\n" + script))
 
     def test_a_mark_is_taken_back_where_a_program_is_not_plain(self):
         # A shell runs each otherwise than the guard reads it in place, as the step's own: a
-        # builtin that ends, sources or changes the shell, an assignment, a function, a group,
-        # a compound, a list, an expansion, a first `cat` that swallows the rest, a call to a
-        # function the step defines; an option that runs none of it or one command, or a word the
-        # shell may run as a FILE instead; a shell the step redefines; and the same in what a
-        # `cat` or a printer pipes a shell, or a string.
+        # builtin that ends, sources or changes the shell, an assignment (`printf -v` too), a
+        # function, a group, a compound, a list, an expansion, a first command that reads the
+        # rest -- `cat`, a fetcher under an option or a URL that reads a file (`-d @in`, `-K cfg`,
+        # `file:///tmp/in`: a file that may link to descriptor 0 under a name no text of the step
+        # spells), or a path (`./true` may be a file the step wrote) -- a call to a function the
+        # step defines; an option that runs none of it or one command, or a word the shell may
+        # run as a FILE instead; a shell the step redefines, or one the guard has not measured
+        # (zsh's `bye`, ksh's `newgrp`); and the same in what a `cat` or a printer pipes a shell,
+        # or a string.
         for text in ("exit 0", "exec true", "return 0", "trap 'exit 0' EXIT", "set -e",
                      "cd sub", "read -r line", "alias sha256sum=true", "eval 'exit 0'",
                      "T=other", "f() { :; }", "{ true; }", "if true; then :; fi",
-                     "true && true", "true &", "echo $HOME", "cat >/dev/null", "verify"):
+                     "true && true", "true &", "echo $HOME", "cat >/dev/null", "verify",
+                     "printf -v T other", "curl -fsS -d @in %sp" % URL,
+                     "curl -fsS -K cfg %sp" % URL, "curl -fsS file:///tmp/in", "./true"):
             with self.subTest(text=text):
                 self.assertEqual([], marks("verify() { :; }\nCMD=sh\n" + body(
                     "$CMD", text + "\n" + CHECK)))
@@ -199,18 +224,61 @@ class TestACommandWord(unittest.TestCase):
         for script in ("sh() { :; }\nCMD=sh\n" + body("$CMD", CHECK),
                        "CMD=cat\n" + body("$CMD", "exit 0\n" + CHECK, redirect=" | sh"),
                        "P=echo\n$P 'exit 0' | sh\n", "CMD=sh\n$CMD -c 'exit 0'\n",
-                       "X='%s; exit 0'\necho \"$X\" | sh\n" % PIPE):
+                       "X='%s; exit 0'\necho \"$X\" | sh\n" % PIPE,
+                       "CMD=zsh\n" + body("$CMD", CHECK), 'CMD=ksh\n$CMD -c "%s"\n' % CHECK):
             with self.subTest(script=script):
                 self.assertEqual([], marks(script))
 
+    def test_no_mark_stands_where_the_step_may_define_a_name_no_text_spells(self):
+        # A sourced file, an eval'd text, an imported function or a rebound command -- through
+        # `builtin`, a value word (`S=.`), or a `trap` or `mapfile -C` text run later: each may
+        # make `sh` run another program than the twin's reading names.
+        for pre in (". ./defs.sh", "source ./defs.sh", 'eval "$(cat defs)"',
+                    "builtin . ./defs.sh", "S=.\n$S ./defs.sh", "E=eval\n$E \"$(cat defs)\"",
+                    "$(echo .) ./defs.sh", "env 'BASH_FUNC_sh%%=() { :; }' true",
+                    "hash -p ./x sh", "enable -f ./x.so sh", "BASH_CMDS[sh]=./x",
+                    "trap '. ./defs.sh' DEBUG", 'trap "$(echo .) ./defs.sh" DEBUG',
+                    "mapfile -C '. ./defs.sh' -c 1 L < f"):
+            with self.subTest(pre=pre):
+                self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+
+    def test_no_mark_stands_where_a_shell_or_a_fetcher_may_start_otherwise(self):
+        # A variable or a file that traces a shell through a program (`PS4` under `-x`), loads
+        # code into it, or has a body's `curl` or `wget` read a file (`~/.curlrc` with
+        # `data = "@/dev/stdin"` reads the rest of the program): each runs another program than
+        # the twin's reading names.
+        for pre in ("export PS4='+ '", "printf 'data = \"@/dev/stdin\"\\n' > ~/.curlrc",
+                    "export CURL_HOME=.", "export WGETRC=./w", "HOME=.",
+                    "export LD_PRELOAD=./x.so"):
+            with self.subTest(pre=pre):
+                self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+
+    def test_no_mark_stands_where_a_path_names_a_descriptor(self):
+        # On Linux a fetcher's output or a redirect to `/dev/stdin`, `/dev/fd/0` or
+        # `/proc/self/fd/0` -- or to a link the step made to one, or to the file `-O` names in
+        # `/dev` -- lands in the program the shell reads on descriptor 0, which then runs the
+        # download.
+        for pre, text in (("", "curl -fsS -o /dev/stdin %sp" % URL),
+                          ("", "curl -fsS --output=/dev/fd/0 %sp" % URL),
+                          ("", "wget -qO /proc/self/fd/0 %sp" % URL),
+                          ("", "curl -fsS %sp > /dev/stdin" % URL),
+                          ("ln -s /dev/stdin out\n", "curl -fsS -o out %sp" % URL),
+                          ("cd /dev\n", "curl -fsSO %sstdin" % URL)):
+            with self.subTest(pre=pre, text=text):
+                self.assertEqual([], marks(pre + "CMD=sh\n" + body("$CMD", text + "\n" + CHECK)))
+
     def test_a_plain_program_under_quiet_options_keeps_the_mark(self):
         # `-e`, `-u`, `-o pipefail`, `-s --`, `--norc`, a `-c` string, printers, tests and
-        # fetchers.
+        # fetchers -- a first one under options and a URL that read no file, its output a file or
+        # `/dev/null` -- and a step whose `trap` runs nothing that defines a name.
         for script in ("CMD=bash\n" + body("$CMD -euo pipefail", CHECK + "\ntrue"),
                        "CMD=sh\n" + body("$CMD -s --", "true\n" + CHECK),
                        "CMD=bash\n" + body("$CMD --norc", CHECK),
                        "CMD=sh\n$CMD -c '%s'\n" % PIPE,
-                       "CMD=sh\n" + body("$CMD -x", "[ -f tool ]\n" + CHECK)):
+                       "CMD=sh\n" + body("$CMD -x", "[ -f tool ]\n" + CHECK),
+                       "CMD=sh\n" + body("$CMD", "curl -fsSLo t2 %st2\n" % URL + CHECK),
+                       "CMD=sh\n" + body("$CMD", "curl -fsS -o /dev/null %sp\n" % URL + CHECK),
+                       "trap 'rm -f t2' EXIT\nCMD=sh\n" + body("$CMD", CHECK)):
             with self.subTest(script=script):
                 self.assertEqual(1, len(marks(script)), script)
 
@@ -347,9 +415,11 @@ class TestAForeignOrWritingCommandWord(unittest.TestCase):
 
 class TestWhereTheBaseReadingStands(unittest.TestCase):
     """Where the literal twin's reading is no sure one -- a program a child shell runs otherwise
-    than in place, a runner the guard does not read, a word the step may not run where it
-    stands, a printed text that fetches nothing -- the word stays as written and the step reads
-    as the base read it, each row below byte for byte. The twins read CLEAN on most."""
+    than in place, a shell the guard has not measured, a definition no text of the step spells,
+    a runner the guard does not read, a word the step may not run where it stands (in a test a
+    line from its keyword too), a printed text that fetches nothing -- the word stays as written
+    and the step reads as the base read it, each row below byte for byte. The twins read CLEAN
+    on most."""
 
     def assertSaid(self, starts, found):
         self.assertEqual(len(starts), len(found), found)
@@ -395,6 +465,99 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # FR FR FR FR: `csh` runs the body's `curl … | sh`. The base: the hand-off and the
         # stream, and so here; the literal twin `csh <<'EOF'` reads CLEAN (#2792).
         self.assertSaid([HANDED % "$CMD", STREAM], defects("CMD=csh\n" + body("$CMD")))
+
+    def test_a_check_in_a_test_a_line_from_its_keyword_keeps_the_base_reading(self):
+        # FR+sha FR+sha FR+sha FR on each: the check fails in an `if` test, which stops nothing,
+        # and `./tool` runs. The base: the hand-off and the check inside `$CMD`'s script, or the
+        # unspelled printer and the unverified run; and so here, where the literal twins read
+        # CLEAN (the lines after a bare `if` read as stopping the step).
+        value = "curl -fsS %sping; echo %s  tool | sha256sum -c -" % (URL, "a" * 64)
+        for script, starts in (
+                (GET + "CMD=sh\nif\n" + body("$CMD", CHECK, "then :; fi\n" + USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + "CMD=sh\nif true\n" + body("$CMD", CHECK, "then :; fi\n" + USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + "X='%s'\nif\necho \"$X\" | sh\nthen :; fi\n" % value + USE,
+                 [UNSPELLED % "sh", UNVERIFIED])):
+            with self.subTest(script=script):
+                self.assertSaid(starts, defects(script))
+
+    def test_a_shell_the_guard_has_not_measured_keeps_the_hand_off(self):
+        # FR FR FR FR on each: zsh's `bye` and ksh's `newgrp` end the shell before the check,
+        # zsh runs `~/.zshenv` (an `exit 0`) before the body, and `./sh` is the step's own file,
+        # which runs `true`. The base: the `-c` hand-off and the unverified run, or the hand-off
+        # and the check inside `$CMD`'s script; and so here, where the literal twins read CLEAN.
+        check = "echo %s  tool | sha256sum -c -" % ("a" * 64)
+        for script, starts in (
+                (GET + 'CMD=zsh\n$CMD -c "bye; %s"\n' % check + USE, [DASH_C % "$CMD", UNVERIFIED]),
+                (GET + 'CMD=ksh\n$CMD -c "newgrp; %s"\n' % check + USE,
+                 [DASH_C % "$CMD", UNVERIFIED]),
+                (GET + "echo 'exit 0' > ~/.zshenv\nCMD=zsh\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + "printf 'true\\n' > sh; chmod +x sh\nCMD=./sh\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE])):
+            with self.subTest(script=script):
+                self.assertSaid(starts, defects(script))
+
+    def test_a_definition_no_text_of_the_step_spells_keeps_the_hand_off(self):
+        # A function `sh` the step sources from a file it wrote (FR FR FR FR), evals from a
+        # `$(...)` (FR FR FR FR), sources through `builtin` (FR FR -- FR: dash has no `builtin`)
+        # or through `S=.` (FR FR FR FR), and a `sha256sum` bash imports from `BASH_FUNC_`
+        # (FR FR FR FR). The base: the hand-off, after the `eval` of a `$(...)` it does not
+        # follow, or `env`'s operand it cannot read in its place, and the check inside `$CMD`'s
+        # script; and so here, where the literal twins read CLEAN.
+        defs = "printf '%s() { :; }\\n' sh > defs.sh\n"
+        run = "CMD=sh\n" + body("$CMD", CHECK, USE)
+        evals = "runs `eval` on `$(...)`, a program this guard does not follow"
+        wrapped = "cannot read command behind wrapper: has a dynamic command operand"
+        for script, starts in (
+                (defs + ". ./defs.sh\n" + GET + run, [HANDED % "$CMD", INSIDE]),
+                ("eval \"$(printf '%s() { :; }' sh)\"\n" + GET + run,
+                 [evals, HANDED % "$CMD", INSIDE]),
+                (defs + "builtin . ./defs.sh\n" + GET + run, [HANDED % "$CMD", INSIDE]),
+                (defs + "S=.\n$S ./defs.sh\n" + GET + run, [HANDED % "$CMD", INSIDE]),
+                (GET + "CMD=bash\n" + body("env 'BASH_FUNC_sha256sum%%=() { :; }' $CMD", CHECK,
+                                           USE), [wrapped, INSIDE])):
+            with self.subTest(script=script):
+                self.assertSaid(starts, defects(script))
+
+    def test_a_fetcher_that_reads_the_rest_of_its_program_keeps_the_hand_off(self):
+        # The body's `curl` reads descriptor 0, the rest of the program, so the check never runs
+        # where bash reads the program as it runs it: through `-d @/dev/stdin` (FR FR F-+sha
+        # F-+sha: dash has read the whole body ahead), through `-d @in`, `in` a link the step made
+        # to it, through a `file:` URL, and through a `data` line of `~/.curlrc` (FR FR FR FR on
+        # each, `CMD=bash`). Measured with a curl stub that reads the named file as curl does
+        # (the `file:` URL and `~/.curlrc` as curl 8.7.1 reads them, checked offline). The base:
+        # the hand-off and the check inside `$CMD`'s script; and so here, where the literal twins
+        # read CLEAN.
+        for pre, shell, first in (
+                ("", "sh", "curl -fsS -d @/dev/stdin %sp" % URL),
+                ("ln -s /dev/stdin in\n", "bash", "curl -fsS -d @in %sp" % URL),
+                ("", "bash", "curl -fsS file:///dev/stdin -o /dev/null"),
+                ("printf 'data = \"@/dev/stdin\"\\n' > ~/.curlrc\n", "bash",
+                 "curl -fsS %sp" % URL)):
+            script = GET + pre + "CMD=%s\n" % shell + body("$CMD", first + "\n" + CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_a_fetcher_that_writes_into_its_program_keeps_the_hand_off(self):
+        # `curl -o /dev/stdin` opens the program bash reads on descriptor 0 for writing. On Linux
+        # (by reading: there `/dev/stdin` reopens the heredoc's own pipe or file) the download
+        # lands after the rest of the program, or over it, and bash runs it; the body then ends 0
+        # and the step runs `./tool` unverified (FR, the check failed first or cut off). Measured
+        # on macOS, which refuses that open: F-+sha F-+sha F-+sha F-+sha. The base: the hand-off
+        # and the check inside `$CMD`'s script; and so here, where the literal twin reads CLEAN.
+        script = GET + "CMD=bash\n" + body("$CMD", "curl -fsS -o /dev/stdin %sp\n" % URL + CHECK,
+                                           USE)
+        self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_printf_v_in_the_childs_program_keeps_the_hand_off(self):
+        # FR FR FR FR: `printf -v T other` assigns in the child, so the step runs `./tool`. The
+        # base: the hand-off and the unverified run; and so here, where the literal twin reads
+        # the child's write as the step's own (#2666's write) and runs `./other`, CLEAN.
+        script = GET + "T=tool\nCMD=bash\n" + body("$CMD", "printf -v T other",
+                                                    'chmod +x "$T"; "./$T"\n')
+        self.assertSaid([HANDED % "$CMD", UNVERIFIED], defects(script))
 
     def test_a_word_the_step_may_not_run_where_it_stands_keeps_the_base_reading(self):
         # A body's `}` read as closing the group around it (FR+sha FR+sha FR+sha FR), `exit 1`
