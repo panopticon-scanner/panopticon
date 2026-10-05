@@ -325,6 +325,28 @@ class TestACommandWord(unittest.TestCase):
             with self.subTest(form=form):
                 self.assertEqual(count, len(marks(script)))
 
+    def test_no_mark_stands_where_a_naming_builtin_takes_a_word_bash_expands(self):
+        # Bash expands a brace or a glob before a builtin reads the names it sets, unsets or
+        # declares (`{C,}MD` is `CMD MD`, `{-f,}` is `-f`, `C?D` a file `CMD`), and no text of the
+        # step spells the name: a builtin of `_NAMING` handed a word that holds a brace or a glob
+        # before its `=` and outside a `${...}` keeps no mark -- through `command` too, and where
+        # the word sets nothing (`getopts t {C,}MD`, `printf -v CM{D,%b} ...`: over-reports).
+        for form in ("read {C,}MD <<< true", "unset {C,}MD", "declare {C,}MD=true",
+                     "declare {-n,} {R=C,}MD\nR=true", "touch {C,}MD\nunset C?D",
+                     "export {-f,} CMD=true || :", "wait {-p,} {C,}MD || :",
+                     "printf -v {C,%b}MD 'sh\\c'", "mapfile -t {C,}MD <<< true",
+                     "getopts t {C,}MD", "printf -v CM{D,%b} 'true\\c'", "typeset {C,}MD=sh",
+                     "readonly {C,}MD=sh", "local {C,}MD=sh", "readarray -t {C,}MD",
+                     "select {C,}MD in x", "command read {C,}MD <<< true"):
+            with self.subTest(form=form):
+                self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
+        # A reference's own brackets, a value's glob or brace, a here-string's braces, and a glob
+        # handed to a command that names nothing keep the mark.
+        for form in ("printf '%s\\n' \"${A[@]}\"", "export GLOB='*.txt'",
+                     "declare -a ARR=({x,y}.run)", "read X <<< '{a,b}'", "rm -rf *.tmp"):
+            with self.subTest(form=form):
+                self.assertEqual(1, len(marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK))))
+
     def test_no_mark_stands_for_a_name_spelled_otherwise_than_it_reads_or_is_assigned(self):
         # A name may be spelled as a whole word in the step only in plain references, option
         # words and assignment words: any other spelling -- a bare word, a reference that
@@ -934,6 +956,31 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
                     "CMD=sh\nexport -f CMD=true || :", "CMD=sh\ndeclare -g CMD=true || :",
                     "CMD=sh\ndeclare CMD=true || :", "set +e\nreadonly CMD=sh\nCMD=true",
                     "set +e\ncommand readonly CMD=sh\nCMD=true"):
+            script = pre + "\n" + body("$CMD")
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
+
+    def test_a_word_bash_expands_for_a_naming_builtin_keeps_the_hand_off(self):
+        # Bash expands each brace or glob into a name the builtin then sets, unsets or declares,
+        # and runs the download past the skipped body: `read`, `unset`, `declare`, `command read`
+        # and `unset C?D` after `touch {C,}MD` (FR FR F- FR each), `declare {-n,}` a nameref and
+        # `mapfile` (FR F- F- FR each), `wait {-p,}` (FR F-+sha F-+sha FR); dash expands no brace
+        # and stops at the word or at the check. The base: the hand-off and the check inside
+        # `$CMD`'s script; and so here, where a mark took the table's `sh` and read CLEAN.
+        # `read $(printf CMD)` (FR FR F- FR) was refused before: the table reads a name a
+        # substitution forms as any name.
+        for form in ("read {C,}MD <<< true", "unset {C,}MD", "declare {C,}MD=true",
+                     "declare {-n,} {R=C,}MD\nR=true", "touch {C,}MD\nunset C?D",
+                     "wait {-p,} {C,}MD || :", "mapfile -t {C,}MD <<< true",
+                     "command read {C,}MD <<< true", "read $(printf CMD) <<< true"):
+            script = GET + "CMD=sh\n" + form + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+        # FR FR -- FR on both: `export {-f,}` names a function and keeps `sh`, and
+        # `printf -v {C,%b}MD 'sh\c'` sets `CMD` to `sh` (dash stops at either). The base: the
+        # hand-off and the stream; and so here, where a mark took the table's `true` and read
+        # CLEAN.
+        for pre in ("CMD=sh\nexport {-f,} CMD=true || :", "CMD=true\nprintf -v {C,%b}MD 'sh\\c'"):
             script = pre + "\n" + body("$CMD")
             with self.subTest(script=script):
                 self.assertSaid([HANDED % "$CMD", STREAM], defects(script))

@@ -45,7 +45,9 @@ rule below holds, and is taken back where one fails: the word then reads as the 
     command word only), glues an array name to `read -a` (`read -aCMD`), or assigns before a
     special builtin (`CMD=true :`), which dash and bash's POSIX mode keep; nor one that runs
     `wait -p` (bash 5.1 unsets the name first) or a word `NAME[` (`CMD[ 0 ]=true` is one
-    assignment to bash). No mark stands for a name spelled as a whole word anywhere in the step
+    assignment to bash), or hands a builtin that names what it sets (`_NAMING`) a word bash
+    expands by a brace or a glob first (`read {C,}MD`, `export {-f,} CMD=x`, `unset C?D`). No mark
+    stands for a name spelled as a whole word anywhere in the step
     (`_spelled`: `XCMD`, `CMD2` are other names) but in a plain reference, an option word (`-X`,
     `--CMD`) or an assignment word -- `NAME=` or `NAME+=` starting a command's word, a prefix or
     an argument (`CMD=true $CMD`, `env CMD=x`), which assigns in the step's shell only where the
@@ -107,8 +109,10 @@ a `( true )` or `X=1 a=(x) true` the reader cannot tell from a header `g ( )`, a
 quoted or printed text, a builtin a value names (`G=getopts; $G t CMD -t`),
 `CMD=true command :`, whose assignment no shell keeps, `let CMD=1`, whose integer names no
 command, a prefix to `let` or `[[` (`CMD=true let X=1`), `declare CMD=true` or `readonly CMD=true`
-with no later assignment, whose value bash keeps, an option word in a body or a redirect (a
-heredoc's `curl -X` spells `X`), or a bare mention of the name in another word, `echo CMD`).
+with no later assignment, whose value bash keeps, `export -n`, `--` or `+x` before `CMD=true`,
+whose assignment bash keeps too, a later `CMD=true` to a `readonly CMD=sh`, which stops the step,
+an option word in a body or a redirect (a heredoc's `curl -X` spells `X`), or a bare mention of
+the name in another word, `echo CMD`).
 A step in which no word is marked reads byte for byte as before.
 
 Stdlib only, like everything under it.
@@ -202,6 +206,11 @@ _SOURCES = (".", "source", "eval", "builtin", "enable", "hash")
 _SPECIAL = (":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly", "return",
             "set", "shift", "times", "trap", "unset")
 _ASSIGNS = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=", re.A)
+# The builtins whose words name what they set, unset or declare, and what bash expands a word by
+# into words no text spells (`read {C,}MD`, `unset C?D`, `printf -v {C,%b}MD 'sh\c'`).
+_NAMING = ("read", "unset", "wait", "getopts", "select", "mapfile", "readarray", "printf",
+           "local", "readonly", "declare", "typeset", "export")
+_EXPANDED = re.compile(r"[{}*?[]")
 _TRAP_SAFE = re.compile(r"(?:rm(?: -[rf]+)*(?: [\w./-]+)+)?|-", re.A)
 _TRAPPED = frozenset(("DEBUG", "RETURN", "ERR"))
 _LATER = re.compile(r"(?<![\w./-])(?:trap|mapfile|readarray)(?![\w./-])", re.A)
@@ -611,7 +620,8 @@ def _vetoed(stmts, fold):
     """Whether no mark stands in the step (rules 7 to 11): where a stage's command, as `_resolved`
     reads it through `fold`, may change what a later word holds or runs (`_rebinds`), is reached
     through a value and is no name in `_NAMES` or is `printf -v`, or is one of `_SPECIAL` behind
-    a prefix assignment (`_ASSIGNS`); or where a text a stage holds -- its words, a redirect's
+    a prefix assignment (`_ASSIGNS`) or one of `_NAMING` with a word holding a brace or a glob
+    (`_EXPANDED`); or where a text a stage holds -- its words, a redirect's
     target, a heredoc, a substitution -- names an environment word (`_ENVIRON`), a descriptor
     path (`_DESCRIPTOR`), a function header (`_HEADER`), or a name the guard reads by a path
     outside `_SYSTEM`'s directories (`_ON_PATH`), or redirects into a file by such a name, or --
@@ -631,6 +641,10 @@ def _vetoed(stmts, fold):
             # a prefix assignment that dash and bash's POSIX mode keep before a special builtin
             lead = [str(word) for word in stage.argv[:len(stage.argv) - len(kept)]]
             if kept and name in _SPECIAL and any(_ASSIGNS.match(word) for word in lead):
+                return True
+            # a name bash expands by a brace or a glob first (before `=`, outside a `${...}`)
+            if name in _NAMING and any(_EXPANDED.search(re.sub(r"\$\{[^{}]*\}", "", str(word))
+                                                        .split("=", 1)[0]) for word in kept[1:]):
                 return True
             bodies = [body[0] for body in (stage.stdin_heredoc,) if body]
             words = " ".join(map(str, stage.argv))
