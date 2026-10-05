@@ -374,7 +374,7 @@ def read(script, shell=None):
     `$CMD` command word the step surely runs, and a printer's `"$X"` whose text fetches, the step
     assigns one literal read as that text (`workflow_annotate`, #2468), a mark no `$(...)` child
     or handed script inherits."""
-    return flattened(annotate(statements(script)), shell=shell)
+    return flattened(annotate(statements(script), shell), shell=shell)
 
 
 def fetches(script):
