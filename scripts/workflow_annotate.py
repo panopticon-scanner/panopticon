@@ -2,112 +2,97 @@
 r"""A step's own literal values read into the two words its readers key on (#2468, #2600, #2601).
 
 `workflow_uses.static_values` reads a USE through the values the step itself assigns (#2425,
-#2489). Two readers sit where no use is asked and see only a stage or its pipeline: the printer
-rules (`workflow_printers.printed`), which weigh the text `echo "$X" | sh` hands the shell, and
-the stdin-program rules (`workflow_programs.stdin_program`, `workflow_forms.flattened`), which
-read `$CMD <<'EOF'` as a hand-off to a word no table places, its body read as shell with no
-check credited. `annotate` runs ONCE over a step's raw statements, before `flattened` reads them
-(`workflow_guard.read`), and marks two kinds of word IN PLACE through the table live at each
-statement, so no reader below it changes. A marked word is ONE whole reference
-(`workflow_uses._WHOLE`: `$X`, `${X}`, `"$X"`, as the reader drops quotes, and `${X:-d}`,
-`${X=d}` or `${a[0]}`, which `workflow_values.valued` reads too):
+#2489). Two readers see only a stage or its pipeline: the printer rules
+(`workflow_printers.printed`) weigh the text `echo "$X" | sh` hands a shell, and the stdin-program
+rules (`workflow_programs.stdin_program`, `workflow_forms.flattened`) read `$CMD <<'EOF'` as a
+hand-off to a word no table places, its body read as shell with no check credited. `annotate`
+runs once over a step's raw statements, before `flattened` reads them (`workflow_guard.read`),
+and marks a word in place where the step's table holds one literal for it, so the statement reads
+as its literal twin and no reader below changes. A command word becomes
+`shell_wrappers.Defaulted`, #2337's marker of a word read as the name it holds (`CMD=sh; $CMD
+<<'EOF'` reads as `sh <<'EOF'`, gated under its `-e`; `CMD=cat` or `PYTHON=python3` as their
+twins); a printer's word gets the reader's `spelled` text, the word kept as written
+(`X='curl … | sh'; echo "$X" | sh` reads as the literal printer). A mark stands only where every
+rule below holds, and is taken back where one fails: the word then reads as the base read it.
 
-    a command word  the first word `shell_reader.command` keeps (prefix assignments and wrappers
-                    off) becomes `shell_wrappers.Defaulted`, #2337's marker of a command word
-                    read as the NAME it holds: `CMD=sh; $CMD <<'EOF'` reads as `sh <<'EOF'`,
-                    gated under its `-e`, and `CMD=true`, `CMD=cat`, `PYTHON=python3` or
-                    `NODE=node` as their literal twins (#2600, #2601), behind a wrapper too
-                    (`env $CMD`) -- where the name is one the guard reads (`_NAMES`: a shell, a
-                    foreign interpreter, a printer, `cat`, `true`), bare or in a system
-                    directory (`_bare`: another path, `./sh`, may name a file the step wrote),
-                    and the step's own shell surely runs the word where it stands (`_surely_run`)
-    a printer word  a word of an `echo` or `printf` stage (`workflow_printers._PRINTERS`, read
-                    after the command word above) gets the reader's `spelled` attribute with the
-                    value's text, as `shell_reader._stage` gives a `\$` word one, the word itself
-                    kept as written so every other reader sees what it saw: `X='curl … | sh';
-                    echo "$X" | sh` reads as the literal `echo 'curl … | sh' | sh` does (#2468)
-                    -- where the text the stage prints, its words and these values, fetches (a
-                    `curl` or `wget` word, `_FETCH_WORD`) and the stage stands in no `if` or
-                    `while` test (`_in_tests`)
+ 1. One literal (`_literal`): the word is ONE whole reference (`workflow_uses._WHOLE`: `$X`,
+    `${X}`, `"$X"`, `${X:-d}`, `${a[0]}`) whose name holds one candidate, not empty, and which
+    resolves (`valued`) to one text with no `$`, backquote, `<(` or `>(` (`_EXPANDS`).
+ 2. Surely run (`_surely_run`, `_references`): a command word stands at the top level -- in no
+    group, compound, function body, negation, `&&` or `||` list or background -- and is no `case`
+    subject or word of an array literal, where the twin's reading has a filed gap (#2666).
+ 3. In no test (`_in_tests`): neither word stands in an `if`, `elif`, `while` or `until` test, a
+    line apart from its keyword too, where a failed check stops nothing.
+ 4. A name the guard reads (`_commands`): a command word's text is a plain name (`_PLAIN`: bash
+    splits and globs a value) in `_NAMES` -- a shell, a foreign interpreter, a printer, `cat`,
+    `true` -- that `command()` still keeps as the command (not `X=1`, `env`, `if`).
+ 5. A measured shell, a system path (`_bare`): a name counts bare or in a directory of `_SYSTEM`
+    (`./sh` may be a file the step wrote), and a shell that reads a program is one of
+    `_MEASURED_SHELLS` (zsh's `bye` or `~/.zshenv` and ksh's `newgrp` end one unseen).
+ 6. A plain program (`_complete`, `_quiet`, `_plain`, `_silent`): each program the statement
+    hands a shell -- a `-c` string, a heredoc or here-string body, a `<(...)`, what a printer or a
+    `cat` pipes in -- runs in place as the step's own, where a child shell runs otherwise (#2666):
+    its shell under `_quiet` options, with no output redirect; each statement a pipeline of simple
+    commands with literal names, none `_HELD` (a builtin that ends, sources or changes the shell)
+    nor `printf -v`; a first command reading none of a program fed on descriptor 0 (`_SILENT`, or
+    a fetcher whose options are `_FETCH_QUIET` and whose operands are `_FETCH_OPERAND`).
+ 7. No definition (`_vetoed`, `_rebinds`): no mark stands in a step that defines a function or an
+    alias anywhere (`f() {`, `function f`, `g ( )`, `alias f=…` behind `command` too, `_HEADER`
+    in any text), declares a nameref (`declare -n`), or sources, evals or rebinds a command
+    (`_SOURCES`, through a value too: `S=.; $S x`) or runs a command word no table resolves
+    (`_resolved`): a call, an alias or a reference may change a value the table holds.
+ 8. No trap (`_rebinds`, `_LATER`): nor in one that traps `DEBUG`, `RETURN` or `ERR`, or traps
+    an action not empty, `-` or a literal `rm` (`_TRAP_SAFE`), or sets a `mapfile -C` callback, or
+    names `trap`, `mapfile` or `readarray` in any other text: each runs a text later, which may
+    change a value or run the download after the check the twin credits has stopped the step.
+ 9. No environment word (`_ENVIRON`): nor in one any text of which names a variable or a file
+    that starts, traces or loads code into a shell or a fetcher, or rebinds its names (`PATH`,
+    `BASH_ENV`, `PS4`, `BASH_FUNC_`, `BASH_ALIASES`, `HOME`, `~/.curlrc`).
+10. No descriptor path (`_DESCRIPTOR`): nor in one any text of which names a path to a descriptor
+    (`/dev/stdin`, `/proc/self/fd/0`, `cd /dev`), through which a fetch lands in a fed program.
+11. No shell of the step's own (`_ON_PATH`): nor in one any text of which names a path whose
+    basename is in `_NAMES` outside `_SYSTEM`'s directories (`~/.dotnet/tools/sh`, `./bin/cat`),
+    or which redirects into a file by such a name: it may put its own `sh` first on the PATH.
+12. No output a runner reads unseen (`_spills`): a resolved non-shell (`cat`, a printer, `true`)
+    writes no file but `/dev/null`, feeds no `>(...)`, and pipes only into a measured shell,
+    spelled as its stage's first word, that reads the stream as its program.
+13. A value bash still holds (`_literal`): no name bash sets itself (`_BASH_SETS`: `$_`,
+    `BASH_REMATCH`, `REPLY`, `PWD`, ..., and `COMP_*`, `READLINE_*`), and no unbraced `$NAME` a
+    shorter held name prefixes (`"$C"h` reaches the reader as `$Ch`).
+14. A printed fetch, read once (`_spell`, `_Step`, `_Fold`): a printer's words are spelled only
+    where its stage pipes into another (`printed`'s only reader) and the text it prints, its
+    words and these values, fetches (`_FETCH_WORD`: a `curl` or `wget` word). What the rules ask
+    of a step is worked out once, on the first ask, and the table read forward once: a statement
+    `static_values` reads past -- in a loop body, a forked child, a `while` head -- holds no
+    value, so no word there is spelled and no command word there resolved.
 
-Either mark stands only where every program the statement then hands a shell is plain
-(`_complete`), and is taken back otherwise.
+The prices -- where a mark reads otherwise than bash:
 
-Each only where the name holds EXACTLY ONE candidate, not empty, and the word resolves to ONE
-literal text (`valued`): no lifted `$(...)`, no `$` (a reference, `$Y` or the stand-in `$X`, an
-operator expansion `${Y//a/b}`, a `$(...)`, a GitHub `${{ … }}` the runner fills in), no
-backquote, no `<(` or `>(`. The shell a printer feeds runs those where the reader, its quotes
-gone, reads text: `X='$(echo sh) tool'` after a download keeps the base's unspelled-printer
-answer, where its spelled program names no command and reads CLEAN. A glob, a brace, a `~` or a
-`$'…'` the assignment decoded is spelled as written, and weighed as the literal twin's is. A
-command word's text is a plain name (`_PLAIN`: bash splits and globs an unquoted value, so
-`CMD='sh -e'` and `CMD='s*'` are no one command) that `command()` still keeps as the command: an
-assignment, keyword or wrapper text (`CMD=X=1`, `W=env`) is left to `workflow_uses` at the use.
-Nor is a word marked that the reader keeps as a command where bash runs none: a `case` subject,
-or a word of an array literal the reader left unfolded (`a=("$X")` in a `case` arm, #2348).
-Anywhere else -- two candidates, the stand-in, `""`, a name the step never assigns, a value that
-expands, a runner the guard does not read (`csh`, `./tool`) or a path to one it does (`./sh`), a
-command word in a group, a compound, a function body, a negation, a list or the background,
-either word in a test (`if` or `while`, a line apart from its keyword too), a printed text that
-fetches nothing, a program no plain one -- the word stays AS WRITTEN and reads as it did: `Idle`,
-the `$CMD` hand-off, the gates-off body, the unspelled printer, fail-closed.
+ - The twin's: a resolved word reads as its literal twin, the twin's named prices and filed gaps
+   with it -- `CMD=sh; $CMD -c 'cat' < i.sh` takes #2793's over-report, a fetch into a runner the
+   guard does not list (`X='curl … | csh'; echo "$X" | sh`) is #2792's gap, and a foreign
+   interpreter's program is not read (#2601: `PERL=perl; $PERL <<'EOF'` around a backquoted
+   `curl … | sh` reads CLEAN as `perl` does; beside a reported fetch its `Idle` report stands).
+ - The table's: a value that expands (`X='echo $(curl … | sh)'`) reads as the base, `Idle` and
+   CLEAN (#2815); a value the shell may not assign is a second candidate, so the word stays as
+   written (`if c; then X=other; fi`, #2816); a single-quoted printer word (`echo '$X' | sh`) is
+   spelled as the value and over-reports, and `T+=x` on a name the step never assigned holds the
+   suffix alone (#2733, filed with this PR).
+ - Not read: a `$(...)` child `workflow_guard._walk` parses, and a `-c`, `eval` or heredoc script
+   `flattened` parses, are read after `annotate` and inherit no mark (#2814); an empty value,
+   which bash drops so the next word runs (`CMD=; $CMD sh <<'EOF'`), stays as written (#2472);
+   and a `${X:-sh}` command word is #2337's default, read before any value.
+ - The step's own: a name the guard reads written into a directory on the runner's PATH by an
+   earlier step, or by a text that names no such path (`cd ~/.local/bin; cp /usr/bin/true sh`),
+   is not seen (#2733, filed with this PR).
 
-The prices. A resolved word reads as its literal twin, the twin's named prices and filed gaps
-with it (`CMD=sh; $CMD -c 'cat' < i.sh` takes #2793's over-report) -- so a mark is made only
-where the step's own shell surely runs the word as it stands, only for a name the guard reads,
-and only where each program the statement hands a shell is one the twin's reading gets right;
-and a printer's value only where its text fetches, in no test (a failed check a line into an `if`
-or `while` test stops nothing, and the twin reads it as stopping the step). That reading takes a
-program's statements for the step's own, which a shell running it in a child of its own does not:
-an `exit 0`, an `exec` or a `trap 'exit 0' EXIT` before a check ends the child alone, a `T=other`,
-a `printf -v T other` or a `cd` stays in it, a call to the step's `verify` finds no function
-there, a first `cat` or `curl -d @/dev/stdin` swallows the rest of a program it reads on
-descriptor 0, a `curl -o /dev/stdin` adds to it on Linux, and `sh -n` runs none of it -- each
-CLEAN in the literal twin where bash runs the download (#2666 files the `exit`, the call and the
-write, under #2608). A program is plain (`_plain`) where none of that is known to happen: a
-measured shell reads it, by a name `_bare` reads (`sh`, `bash` or `dash`, `_MEASURED_SHELLS`:
-zsh's `bye` or `~/.zshenv` and ksh's `newgrp` end one unseen, and `./sh` may be a file the step
-wrote), under no option but `-e`, `-u`, `-x`, `-v`, `-s`, `-c`, `--norc`, `--noprofile` and an
-`-o` of `_QUIET_SET` (`_quiet`); each statement is a pipeline of simple commands, with no group,
-compound, function, list, background, assignment, wrapper, keyword or expansion, no command word
-`_HELD` (a builtin that ends, sources or changes the shell), `printf -v` (which assigns) or named
-as a function the step may define; a first command reads no program on descriptor 0 -- a fetcher
-only under options that read no file and URLs that read nothing local (`_FETCH_QUIET`,
-`_FETCH_OPERAND`), and nothing by a path the step may have written (`./true`); its own programs
-are plain. No mark stands in a step that sources a file, evals a text, imports a function
-(`BASH_FUNC_`) or rebinds a command (`hash -p`), any of which may define a name no text of the
-step spells, nor in one that names a variable or a file that starts the shell or a fetcher
-otherwise (`PATH`, `BASH_ENV`, `PS4`, `~/.curlrc`: `_ENVIRON`) or a path to a descriptor
-(`/dev/stdin`, `/proc/self/fd/0`, `cd /dev`: `_DESCRIPTOR`). Elsewhere the base's hand-off stands,
-an over-report too where the program was sound (`set -e`, `X=1` or `cd` in a body, a check behind
-`|| exit 1`, `curl -V`). The spelled program reads as the literal does: a fetch into a
-runner the guard does not list (`X='curl … | csh'; echo "$X" | sh`) is #2792's gap here as at
-the top level. A foreign interpreter's program is not read: `PERL=perl; $PERL <<'EOF'` with a
-backquoted `curl … | sh`, or `PYTHON=python3; $PYTHON -c "os.system('sh tool')"`, which run it,
-read CLEAN as `perl` and `python3 -c` do (#2601's price; the base reported them through its
-gates-off shell reading); beside a reported fetch the foreign `Idle` report stands. Quotes are
-gone to the reader: a single-quoted printer word `echo '$X' | sh`, which bash prints as `$X` for
-a child that holds no `X`, is spelled as the value and over-reports (the table's quoting price);
-and a value that expands reads as the base, so `X='echo $(curl … | sh)'` before `echo "$X" |
-sh`, which bash runs, stays `Idle` and CLEAN, the base's gap (its literal twin is reported,
-unspelled). A value is spelled wherever a printer prints it, the stream going nowhere too (`echo
-"$X" > f`); `printed` is asked only where a shell reads a program, so no answer moves there. A
-command word read through a value is #2337's `Defaulted`, whose rules come with it -- no option
-letter is read as its refusal, and a printer in its body reads both ways -- as far as the
-plain-program rule leaves them anything to read: `X=sh; $X -cK '…'` (`-K` is no quiet option)
-and `CMD=bash; $CMD <<'EOF'` around `echo 'sh\ttool' | sh` (bash's text is no plain name) keep
-the base's over-report, where their literal twins read CLEAN. The table's own prices carry over:
-a value the shell may not assign stays a second candidate, so the word stays as written (`if c;
-then X=other; fi`), and `T+=x` on a name the step never assigned holds the known suffix alone;
-and a word inside a function body reads the body's own values, not its caller's (`f() { echo
-"$X" | sh; }; f` stays CLEAN). Not read: a `$(...)` child `workflow_guard._walk` parses, and a
-`-c`, `eval` or heredoc script `flattened` parses, are read after `annotate` and inherit no mark
--- a first cut, a follow-up; an empty value, which bash drops so the next word runs (`CMD=; $CMD
-sh <<'EOF'`); a `${X:-sh}` command word, #2337's default, which `command()` reads before any
-value; and a whole `"${a[@]}"`, no one word.
+A refused mark keeps the base's answer, an over-report where the program was sound (`set -e`,
+`X=1` or `cd` in a body, a check behind `|| exit 1`, a trap `rm -f "$T"`, `$CAT <<'EOF' > i.sh`).
+A step in which no word is marked reads byte for byte as before.
 
 Stdlib only, like everything under it.
 """
+import functools
 import os
 import re
 
@@ -119,8 +104,8 @@ from workflow_fetch import FETCHERS
 from workflow_function_calls import _function_syntax
 from workflow_printers import ANY, _PRINTERS
 from workflow_programs import _FOREIGN, _MEASURED_SHELLS, scripts, stdin_scripts
-from workflow_uses import _WHOLE, _control_kinds, static_values
-from workflow_values import _OPENER, Values, _literals, valued
+from workflow_uses import _WHOLE, _cleared, _control_kinds, _forked, _table_certainty
+from workflow_values import _OPENER, Values, _literals, record, valued
 
 # The name a whole reference reads; what makes a value no literal -- a `$`, a backquote or a
 # process substitution, each expanded by the shell that reads it or by the runner; the plain
@@ -133,6 +118,15 @@ _PLAIN = re.compile(r"[\w./+-]+", re.A)
 _NAMES = (*shell_reader._SHELLS, *_FOREIGN, *_PRINTERS, "cat", "true")
 _SYSTEM = ("/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin")
 _FETCH_WORD = re.compile(r"(?<![\w./-])(?:%s)(?![\w.-])" % "|".join(FETCHERS), re.A)
+# The names bash sets itself, and the prefixes of its completion and `bind -x` ones: a step's
+# assignment to one is not what a later word reads (`$_` is the last command's last word).
+_BASH_SETS = frozenset((
+    "_", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_COMMAND", "BASH_EXECUTION_STRING",
+    "BASH_LINENO", "BASH_REMATCH", "BASH_SOURCE", "BASH_SUBSHELL", "BASH_VERSINFO", "BASHPID",
+    "COLUMNS", "COPROC", "DIRSTACK", "EPOCHREALTIME", "EPOCHSECONDS", "EUID", "FUNCNAME",
+    "GROUPS", "HISTCMD", "HOSTNAME", "LINENO", "LINES", "MAPFILE", "OLDPWD", "OPTARG", "OPTIND",
+    "PIPESTATUS", "PPID", "PWD", "RANDOM", "REPLY", "SECONDS", "SHLVL", "SRANDOM", "UID"))
+_BASH_PREFIXES = ("COMP_", "READLINE_")
 
 # What a program a mark hands a shell may not run (`_plain`): every builtin and keyword of bash
 # and dash, the shells that may read it (`_MEASURED_SHELLS`), that ends, sources, waits on or
@@ -166,76 +160,125 @@ _QUIET = re.compile(r"-[ceusvx]*|--norc|--noprofile")
 _QUIET_O = re.compile(r"-[ceusvx]*o")
 _QUIET_SET = ("errexit", "nounset", "pipefail", "xtrace", "verbose")
 # A function header in any text of the step; the variables that choose, start or trace a shell,
-# load code into it or rebind its commands, the prefix of a function bash imports from the
-# environment, and the files and variables a fetcher starts from (`~/.curlrc` with `data =
+# load code into it or rebind its commands or aliases, the prefix of a function bash imports from
+# the environment, and the files and variables a fetcher starts from (`~/.curlrc` with `data =
 # @/dev/stdin` reads the rest of a fed program); the paths that name a descriptor (`/dev/stdin`,
 # `/dev/fd/0`, `/proc/self/fd/0`, or `/dev` itself for a `cd`), through which a fetcher's output
 # or a redirect lands in a fed program on Linux, where its shell runs it (`curl -o /dev/stdin`);
-# the commands that may define or rebind a name no text of the step spells, and a word of a `trap`
-# action or a `mapfile -C` callback that runs one (`_sources`); and how deep a program's own
-# programs are read.
+# the commands that may define or rebind a name no text of the step spells; a trap action that
+# runs nothing (empty, `-`, or `rm` of literal paths) and the conditions whose traps run between
+# the step's own commands; the words that set a text to run later; a path to a name the guard
+# reads, its directory the group; and how deep a program's own programs are read.
 _HEADER = re.compile(r"\b([A-Za-z_][\w-]*)\s*\(\s*\)|\bfunction\s+([A-Za-z_][\w-]*)", re.A)
 _ENVIRON = re.compile(r"(?<![\w${])(?:(?:PATH|SHELLOPTS|BASHOPTS|BASH_ENV|ENV|IFS|POSIXLY_CORRECT"
-                      r"|PS4|BASH_CMDS|LD_PRELOAD|LD_LIBRARY_PATH|HOME|CURL_HOME|XDG_CONFIG_HOME"
-                      r"|WGETRC|CURL_CA_BUNDLE|SSL_CERT_FILE)(?!\w)|BASH_FUNC_)|curlrc|wgetrc",
-                      re.A)
+                      r"|PS4|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|HOME|CURL_HOME"
+                      r"|XDG_CONFIG_HOME|WGETRC|CURL_CA_BUNDLE|SSL_CERT_FILE)(?!\w)|BASH_FUNC_)"
+                      r"|curlrc|wgetrc", re.A)
 _DESCRIPTOR = re.compile(r"dev/(?:stdin|fd)(?![\w.-])|(?<![\w.-])/(?:dev|proc)/?(?![\w./-])|proc/",
                          re.A)
 _SOURCES = (".", "source", "eval", "builtin", "enable", "hash")
-_SOURCING = re.compile(r"(?<![^\s;&|(){}])(?:\.|source|eval|builtin|enable|hash)(?![^\s;&|(){}])"
-                       r"|[$`]")
+_TRAP_SAFE = re.compile(r"(?:rm(?: -[rf]+)*(?: [\w./-]+)+)?|-", re.A)
+_TRAPPED = frozenset(("DEBUG", "RETURN", "ERR"))
+_LATER = re.compile(r"(?<![\w./-])(?:trap|mapfile|readarray)(?![\w./-])", re.A)
+_ON_PATH = re.compile(r"(?<![^\s\"'=:;|&<>(){}!])([^\s\"'=:;|&<>(){}!]*)/(?:%s)(?![\w.+/-])"
+                      % "|".join(_NAMES), re.A)
 _DEPTH = 8
 
 
 def annotate(stmts):
     """Mark `stmts` in place, in order, through the step's own values, and return them: a command
-    word that is one whole reference the table resolves to one literal becomes `Defaulted(text)`
-    where the step surely runs it, and a printer's whole-reference words get `spelled` where the
-    text it prints fetches, in no test -- each kept only where every program the statement then
-    hands a shell is `_plain` (the module docstring has the rule). The table at a statement is
-    built only where one of its stages holds such a word, `_surely_run` read only once a command
-    word is one, and `_in_tests` once a printed text fetches."""
-    sure: list[list[bool]] = []              # `_surely_run`'s answer, once a command word asks
-    reach: list[set[str] | None] = []        # `_defined`'s answer, once a mark asks for it
-    tested: list[list[bool]] = []            # `_in_tests`' answer, once a printed text fetches
+    word that is one whole reference the table resolves to one literal becomes `Defaulted(text)`,
+    and a printer's whole-reference words get `spelled` -- each kept only where the module
+    docstring's rules hold, and taken back, the statement read as written, where one fails. What
+    a rule asks of the step is worked out on its first ask (`_Step`): a step with no whole
+    reference builds nothing, and one with no mark reads no veto."""
+    step = _Step(stmts)
     for index, statement in enumerate(stmts):
-        table: Values | None = None     # the table at this statement, once a word asks
         written = [list(stage.argv) for stage in statement.stages]
-        for stage in statement.stages:
+        for position, stage in enumerate(statement.stages):
             argv = command(stage.argv)
             if argv and not _printer(argv):
                 for at, word in _references(stage, argv[:1]):
-                    sure = sure or [_surely_run(stmts)]
-                    if not sure[0][index]:
-                        continue
-                    table = table or static_values(stmts, index)
-                    text = _literal(word, table)
+                    text = _literal(word, step.fold.at(index)) if step.sure[index] else None
                     if text is not None and _commands(stage, at, text):
                         stage.argv[at] = Defaulted(text)
                 argv = command(stage.argv)
-            if argv and _printer(argv):
-                spelled = []
-                for at, word in _references(stage, argv[1:]):
-                    table = table or static_values(stmts, index)
-                    text = _literal(word, table)
-                    if text is not None:
-                        spelled.append((at, word, text))
-                printed = " ".join([*map(str, argv[1:]), *(text for _at, _w, text in spelled)])
-                fetches = bool(spelled and _FETCH_WORD.search(printed))
-                if fetches:
-                    tested = tested or [_in_tests(stmts)]
-                    fetches = not tested[0][index]
-                for at, word, text in spelled if fetches else ():
-                    # the word as written, its markers kept
-                    stage.argv[at] = shell_reader._Token(str(word), shell_reader._markers(word))
-                    setattr(stage.argv[at], "spelled", text)
+            if argv and _printer(argv) and position + 1 < len(statement.stages):
+                _spell(stage, argv, step, index)
         if any(new is not old for stage, was in zip(statement.stages, written)
                for new, old in zip(stage.argv, was)):
-            reach = reach or [_defined(stmts)]
-            if reach[0] is None or not _complete(statement, reach[0]):     # read as written
+            vetoed = step.vetoed
+            if vetoed or not _complete(statement):         # read as written
                 for stage, was in zip(statement.stages, written):
                     stage.argv[:] = was
+            if vetoed:                                      # and so every later statement
+                break
     return stmts
+
+
+class _Step:
+    """What the rules ask of a step's statements, each worked out once, on its first ask: the
+    statements in a test (`_in_tests`), the ones the step surely runs (`_surely_run`), the table
+    at each (`_Fold`), and whether no mark stands in it (`_vetoed`, with a table of its own)."""
+
+    def __init__(self, stmts):
+        self.stmts = stmts
+
+    @functools.cached_property
+    def tests(self):
+        return _in_tests(self.stmts)
+
+    @functools.cached_property
+    def sure(self):
+        return _surely_run(self.stmts, self.tests)
+
+    @functools.cached_property
+    def fold(self):
+        return _Fold(self.stmts)
+
+    @functools.cached_property
+    def vetoed(self):
+        return _vetoed(self.stmts, _Fold(self.stmts))
+
+
+class _Fold:
+    """The step's table at each statement asked, in order, read forward once (rule 14). Where
+    `workflow_uses.static_values` reads a statement by walking only the ones before it -- in a
+    step that defines no function, at a statement in no forked child, loop body or `while` or
+    `until` head (`_folds`) -- it reads each of them as sure as `_table_certainty` says and
+    outside every child the shell forks (`_forked`): the same walk for each such statement, which
+    one table read forward serves. Elsewhere, where it would read past the statement or a
+    child's own values, and in a step that defines a function (rule 7), the fold holds no value
+    and the word stays as written."""
+
+    def __init__(self, stmts):
+        self.stmts, self.table, self.read = stmts, Values(), 0
+        self.kinds, self.forked = _control_kinds(stmts), _forked(stmts, len(stmts))
+        self.defines = any(_function_syntax(stage.argv)[0] for statement in stmts
+                           for stage in statement.stages)
+
+    def at(self, index):
+        """The table live at statement `index`."""
+        if self.defines or index < self.read or not self._folds(index):
+            return Values()
+        for position in range(self.read, index):
+            stages = self.stmts[position].stages
+            if stages:
+                certain, direct_loop = _table_certainty(self.stmts, position, self.kinds)
+                certain = certain and position not in self.forked and len(stages) == 1
+                _cleared(stages[-1], {}, {}, certain, direct_loop, self.table)
+                record(self.table, stages[-1], certain)
+        self.read = index
+        return self.table
+
+    def _folds(self, index):
+        """Whether `static_values` reads statement `index` as the fold does: in no forked child,
+        so its `_forked` set is the step's own; in no loop body, which it reads past `index` too
+        (an earlier pass ran it); and in no `while` or `until` head, whose body it reads."""
+        head = self.stmts[index].stages[0].argv if self.stmts[index].stages else []
+        lead = head[:len(head) - len(command(head))]
+        return index not in self.forked and "do" not in self.kinds[index] and not (
+            {"while", "until"} & set(map(str, lead)))
 
 
 def _printer(argv):
@@ -258,11 +301,17 @@ def _references(stage, words):
 
 
 def _literal(word, table):
-    """The ONE literal text whole reference `word` stands for through `table`, or None: its name
-    holds one candidate, not empty, and the word resolves to one text with no lifted `$(...)`, no
+    """The ONE literal text whole reference `word` stands for through `table`, or None (rules 1
+    and 13): its name holds one candidate, not empty, and is no name bash sets itself
+    (`_BASH_SETS`, `_BASH_PREFIXES`) nor, unbraced, one a shorter held name prefixes (a quote
+    joined `"$C"h` into `$Ch`); and the word resolves to one text with no lifted `$(...)`, no
     `$`, no backquote and no process substitution (`_EXPANDS`)."""
     named = _NAMED.match(str(word))
     name = named[1] if named else ""
+    if name in _BASH_SETS or name.startswith(_BASH_PREFIXES) or not str(word).startswith(
+            "${") and any(name[:cut] in table.scalars or name[:cut] in table.arrays
+                          for cut in range(1, len(name))):
+        return None
     held = [*table.scalars.get(name, []), *table.arrays.get(name, [])]
     if len(held) != 1 or not held[0]:
         return None
@@ -273,6 +322,25 @@ def _literal(word, table):
     if not text or shell_reader.is_marker(text) or _EXPANDS.search(text):
         return None
     return str(text)
+
+
+def _spell(stage, argv, step, index):
+    """Give each whole-reference word of printer `argv`, a stage piped into another, its value's
+    `spelled` text, the word itself kept as written so every other reader sees what it saw, as
+    `shell_reader._stage` gives a `\\$` word one -- where it stands in no test and the text it
+    prints, its words and these values, fetches (rule 14)."""
+    words = list(_references(stage, argv[1:]))
+    if not words or step.tests[index]:
+        return
+    spelled = []
+    for at, word in words:
+        text = _literal(word, step.fold.at(index))
+        if text is not None:
+            spelled.append((at, word, text))
+    printed = " ".join([*map(str, argv[1:]), *(text for _at, _word, text in spelled)])
+    for at, word, text in spelled if _FETCH_WORD.search(printed) else ():
+        stage.argv[at] = shell_reader._Token(str(word), shell_reader._markers(word))
+        setattr(stage.argv[at], "spelled", text)
 
 
 def _commands(stage, at, text):
@@ -299,17 +367,16 @@ def _bare(word):
     return name if head in ("", *_SYSTEM) else None
 
 
-def _surely_run(stmts):
+def _surely_run(stmts, tests):
     """Per statement: whether the step's own shell surely runs its command where it stands -- at
     the top level, outside every `{ }` and `( )` (a `{` after a function header the reader split
     into a name and a `( )`, `g ( ) {`, opens one too), in no compound (`_control_kinds`), with no
-    keyword, function header or `case` arm in front of it (no `!`, no `if` or `while` test, a line
-    apart from its keyword too (`_in_tests`), no body run later), in no `&&` or `||` list and not
-    in the background. Elsewhere a resolved word would take its literal twin's reading where that
-    reading has a filed gap (#2666: a `}` or an `exit` in a body read as the step's own) or
-    another (a failed check a line into a test read as stopping the step), or the table a named
-    limit (a body's values)."""
-    kinds, tests = _control_kinds(stmts), _in_tests(stmts)
+    keyword, function header or `case` arm in front of it (no `!`, no body run later), in no `&&`
+    or `||` list, not in the background, and in no test (`tests`, `_in_tests`' answer). Elsewhere
+    a resolved word would take its literal twin's reading where that reading has a filed gap
+    (#2666: a `}` or an `exit` in a body read as the step's own) or another (a failed check a
+    line into a test read as stopping the step), or the table a named limit (a body's values)."""
+    kinds = _control_kinds(stmts)
     depth, out = 0, []
     for index, statement in enumerate(stmts):
         before, plain = depth, True
@@ -349,17 +416,16 @@ def _in_tests(stmts):
     return out
 
 
-def _complete(statement, defined, depth=0):
-    """Whether every program a stage of `statement` hands a shell is `_plain`: a `-c` or `eval`
-    string, and -- descriptor 0 the program -- a heredoc or here-string body, a `<(...)` FILE, or
-    what a printer or a heredoc-fed `cat` pipes in, each reading of an `echo` (`ANY`): the texts
-    `workflow_forms.flattened` reads in place (`scripts`, `stdin_scripts`); the shell reading one
-    a measured one, by a name `_bare` reads (`sh`, `bash`, `dash`: `_MEASURED_SHELLS` -- zsh's
-    `bye` and `~/.zshenv`, or ksh's `newgrp`, end a program no reading here sees end, and `./sh`
-    may be a file the step wrote), and `_quiet`, with no `-s` beside a `-c` string (`bash -s -c
-    true` runs `true`, not the body) and no output redirect (the reader takes `<>` for one, and
-    bash's `&>` for one where a dash step backgrounds the command); and no stage's command a name
-    the step may define as a function (`sh() { :; }`)."""
+def _complete(statement, depth=0):
+    """Whether every program a stage of `statement` hands a shell is `_plain` (rule 6): a `-c` or
+    `eval` string, and -- descriptor 0 the program -- a heredoc or here-string body, a `<(...)`
+    FILE, or what a printer or a heredoc-fed `cat` pipes in, each reading of an `echo` (`ANY`):
+    the texts `workflow_forms.flattened` reads in place (`scripts`, `stdin_scripts`); the shell
+    reading one a measured one, by a name `_bare` reads, and `_quiet`, with no `-s` beside a `-c`
+    string (`bash -s -c true` runs `true`, not the body) and no output redirect (the reader takes
+    `<>` for one, and bash's `&>` for one where a dash step backgrounds the command); and no
+    resolved non-shell's output reaching a runner the twin's reading does not weigh (`_spills`,
+    rule 12)."""
     for at, stage in enumerate(statement.stages):
         argv = command(stage.argv)
         if not argv:
@@ -368,13 +434,32 @@ def _complete(statement, defined, depth=0):
         texts = stdin_scripts(argv, stage, statement.stages[:at], ANY)
         shell = bool(strings or texts) and name in shell_reader._SHELLS
         letters = _quiet(argv) if shell else ""
-        if name in defined or shell and (_bare(argv[0]) not in _MEASURED_SHELLS or letters is None
-                                         or stage.writes or strings and texts and "s" in letters):
+        if shell and (_bare(argv[0]) not in _MEASURED_SHELLS or letters is None
+                      or stage.writes or strings and texts and "s" in letters):
             return False
-        if not all(_plain(text, defined, depth, False) for text in strings) or not all(
-                _plain(text, defined, depth, True) for text in texts):
+        if isinstance(argv[0], Defaulted) and not shell and _spills(statement, at):
+            return False
+        if not all(_plain(text, depth, False) for text in strings) or not all(
+                _plain(text, depth, True) for text in texts):
             return False
     return True
+
+
+def _spills(statement, at):
+    """Whether what stage `at` of `statement` writes may reach a runner the twin's reading does
+    not weigh (rule 12): a file but `/dev/null` (`$CAT <<'EOF' > i.sh`, then `sh i.sh`), a
+    `>(...)`, or a next stage other than a measured shell spelled as its own first word that
+    reads the stream as its program -- not `tee i.sh`, `xargs sh -c`, `env sh`, `sh -c 'cat >
+    i.sh'` or `sh i.sh`."""
+    stage, stages = statement.stages[at], statement.stages
+    if any(str(word) != "/dev/null" for word in stage.writes) or stage.substitutions:
+        return True
+    if at + 1 == len(stages):
+        return False
+    after = stages[at + 1]
+    argv = command(after.argv)
+    return not (argv and len(argv) == len(after.argv) and _bare(argv[0]) in _MEASURED_SHELLS
+                and stdin_scripts(argv, after, stages[:at + 1], ANY))
 
 
 def _quiet(argv):
@@ -395,17 +480,16 @@ def _quiet(argv):
     return letters if not words or "c" in letters or "s" in letters else None
 
 
-def _plain(text, defined, depth, fed):
+def _plain(text, depth, fed):
     """Whether a shell runs program `text` as the guard reads it in place, the step's own: every
     statement a pipeline of simple commands run in order -- no group, compound, function, list or
     background, no assignment, wrapper or keyword in front, no expansion -- whose command words are
-    literal names, none `_HELD` (`exit`, `exec`, `set`, `cd`, `read`, `trap`, `eval`, `alias`, ...),
-    `printf -v` (which assigns) nor a function the step may define (`defined`), whose first command
-    reads none of the program where descriptor 0 is the program (`fed`: `_silent`; a `cat` there
-    swallows the rest, and so may a `./true` the step wrote), and whose own programs are plain
-    too. A shell running anything else in a child of its own runs it otherwise than in place:
-    `exit 0` before a check ends the child, not the step; `T=other`, `printf -v T other`, `cd`
-    and `alias` stay in it; `verify` is no function there."""
+    literal names, none `_HELD` (`exit`, `exec`, `set`, `cd`, `read`, `trap`, `eval`, `alias`, ...)
+    nor `printf -v` (which assigns), whose first command reads none of the program where
+    descriptor 0 is the program (`fed`: `_silent`; a `cat` there swallows the rest, and so may a
+    `./true` the step wrote), and whose own programs are plain too. A shell running anything else
+    in a child of its own runs it otherwise than in place: `exit 0` before a check ends the child,
+    not the step; `T=other`, `printf -v T other`, `cd` and `alias` stay in it."""
     if depth > _DEPTH or _EXPANDS.search(text):
         return False
     try:
@@ -420,11 +504,11 @@ def _plain(text, defined, depth, fed):
             name = os.path.basename(str(argv[0])) if argv else ""
             if (not argv or len(argv) != len(stage.argv) or stage.group_open or stage.group_close
                     or not (_PLAIN.fullmatch(str(argv[0])) or argv[0] in ("[", ":"))
-                    or name in _HELD or name in defined
+                    or name in _HELD
                     or name == "printf" and len(argv) > 1 and str(argv[1]).startswith("-v")
                     or fed and not at and stage.stdin_from_pipe and not _silent(argv)):
                 return False
-        if not _complete(statement, defined, depth + 1):
+        if not _complete(statement, depth + 1):
             return False
     return True
 
@@ -437,58 +521,70 @@ def _silent(argv):
     `-d @/dev/stdin`, `-T F` where `F` links to it, `-K F`, `wget -i -`) -- and every other word
     of which is an `http`, `https`, `ftp` or `ftps` URL with no glob or a word with no scheme, the
     file `-o` writes (`_FETCH_OPERAND`; `file:///dev/stdin` reads it, and a step that names a
-    descriptor, `-o /dev/stdin`, is `_defined`'s), or an option word no shell finds a command by
-    (`-e`, which dash's `echo -e` prints), not the bare `-` (zsh's precommand modifier)."""
+    descriptor, `-o /dev/stdin`, is `_vetoed`'s), or an option word, by which sh, bash and dash
+    find no command (`-e`, which dash's `echo -e` prints)."""
     name = _bare(argv[0])
     if name in FETCHERS:
         return all((_FETCH_QUIET if word.startswith("-") else _FETCH_OPERAND).fullmatch(word)
                    for word in map(str, argv[1:]))
-    return name in _SILENT or name is not None and name.startswith("-") and name != "-"
+    return name in _SILENT or name is not None and name.startswith("-")
 
 
-def _defined(stmts):
-    """Every name the step may define as a function that a text of the step spells: a header
-    `_function_syntax` reads, one the reader split (`g ( )`, `g ( ) {`), and one in any text a
-    stage holds -- a heredoc, a string, a substitution (`_HEADER`) -- where a shell reading it in
-    place would define it. Or None where the step sources a file, evals a text, imports a function
-    or rebinds a command (`_sources`; a `BASH_FUNC_` variable), any of which may define a name no
-    text spells (`. ./defs.sh`, `eval "$(printf '%s() { :; }' sh)"`), or where any text, a
-    redirect's target too, names the variables that choose, start or trace the shell a mark names
-    (`PATH`, `SHELLOPTS`, `BASH_ENV`, `ENV`, `IFS`, `PS4`, ... `_ENVIRON`), the files and
-    variables a fetcher starts from (`.curlrc`, `CURL_HOME`, `HOME`, `WGETRC`), or a path to a
-    descriptor (`/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/0`, a link to one, a `cd /dev`:
-    `_DESCRIPTOR`): a fake `sh` first on `PATH`, `SHELLOPTS=noexec`, which runs none of a body, a
-    `.curlrc` that has `curl` read the rest of a fed program, and a `curl -o /dev/stdin` that adds
-    the download to it on Linux reach it, and no mark stands in the step."""
-    names = set()
+def _vetoed(stmts, fold):
+    """Whether no mark stands in the step (rules 7 to 11): where a stage's command, as `_resolved`
+    reads it through `fold`, may change what a later word holds or runs (`_rebinds`), or where a
+    text a stage holds -- its words, a redirect's target, a heredoc, a substitution -- names an
+    environment word (`_ENVIRON`), a descriptor path (`_DESCRIPTOR`), a function header
+    (`_HEADER`), or a name the guard reads by a path outside `_SYSTEM`'s directories
+    (`_ON_PATH`), or redirects into a file by such a name, or -- past the words of a `trap` or a
+    `mapfile` `_rebinds` reads -- names `trap`, `mapfile` or `readarray` (`_LATER`: a child's
+    trap runs at its exit, the download too)."""
     for index, statement in enumerate(stmts):
         for stage in statement.stages:
-            argv, kept = [str(word) for word in stage.argv], command(stage.argv)
-            if kept and _sources(kept, stmts, index):
-                return None
-            kept = [str(word) for word in kept]
-            names.add(_function_syntax(argv)[0])
-            if stage.group_open == stage.group_close == 1 and kept[1:] in ([], ["{"]):
-                names.add(kept[0] if kept else None)
+            kept = command(stage.argv)
+            name = _resolved(kept[0], fold, index) if kept else ""
+            if name is None or _rebinds(stage, name, [str(word) for word in kept[1:]]):
+                return True
             bodies = [body[0] for body in (stage.stdin_heredoc,) if body]
-            for text in (" ".join(argv), *stage.writes, stage.heredoc or "", *bodies,
-                         *stage.substitutions):
-                if _ENVIRON.search(str(text)) or _DESCRIPTOR.search(str(text)):
-                    return None
-                names.update(a or b for a, b in _HEADER.findall(str(text)))
-    return names - {None}
+            words = " ".join(map(str, stage.argv))
+            texts = [*map(str, stage.writes), stage.heredoc or "", *bodies,
+                     *map(str, stage.substitutions)]
+            if any(os.path.basename(str(target)) in _NAMES for target in stage.writes) or any(
+                    _ENVIRON.search(text) or _DESCRIPTOR.search(text) or _HEADER.search(text)
+                    or any(found[1] not in _SYSTEM for found in _ON_PATH.finditer(text))
+                    for text in (words, *texts)):
+                return True
+            later = texts if name in ("trap", "mapfile", "readarray") else [words, *texts]
+            if any(_LATER.search(text) for text in later):
+                return True
+    return False
 
 
-def _sources(kept, stmts, index):
-    """Whether command `kept` (as `command()` keeps it, at statement `index`) may define or rebind
-    a name no text of the step spells: a command word one of `_SOURCES` -- `.`, `source`, `eval`,
-    `builtin` (`builtin . ./defs.sh`), `enable` (a loaded builtin) or `hash` (`hash -p ./x sh`) --
-    or one no table resolves to another literal (`S=.; $S ./defs.sh`, `$(echo .) ./defs.sh`), or a
-    `trap` or `mapfile` whose text to run later runs one or expands (`_SOURCING`: a `DEBUG` trap
-    runs before the next command, a `mapfile -C` callback per line read)."""
-    word = kept[0]
-    text: str | None = str(word)
-    if _EXPANDS.search(str(word)) or shell_reader.is_marker(word):
-        text = _literal(word, static_values(stmts, index)) if _WHOLE.fullmatch(str(word)) else None
-    return text is None or text in _SOURCES or text in ("trap", "mapfile", "readarray") and any(
-        shell_reader.is_marker(item) or _SOURCING.search(str(item)) for item in kept[1:])
+def _resolved(word, fold, index):
+    """The name command word `word`, at statement `index`, runs by: the word as written, or the
+    ONE literal a whole reference holds through `fold`'s table (`S=.; $S ./defs.sh` runs `.`);
+    None where neither is known (`$(echo .) ./defs.sh`)."""
+    if not (_EXPANDS.search(str(word)) or shell_reader.is_marker(word)):
+        return str(word)
+    return _literal(word, fold.at(index)) if _WHOLE.fullmatch(str(word)) else None
+
+
+def _rebinds(stage, name, words):
+    """Whether command `name`, with `words` after it, may change what a later word holds or runs
+    (rules 7 and 8): one of `_SOURCES` -- `.`, `source`, `eval`, `builtin` (`builtin . ./x`),
+    `enable` (a loaded builtin) or `hash` (`hash -p ./x sh`) -- an `alias`, a function header the
+    reader split (`g ( )`, `g ( ) {`: any other a text holds is `_HEADER`'s), a `declare`,
+    `typeset` or `local` whose option word holds `n` (a nameref: `declare -n CMD=y; y=true`), a
+    `trap` that runs a text (not `_TRAP_SAFE`) or traps one of `_TRAPPED` (bash runs a `DEBUG`
+    trap before each command), or a `mapfile -C` callback, run per line read."""
+    literals = _literals(stage)        # an array literal's `( )`: no header
+    if name in _SOURCES or name == "alias" or name and words in ([], ["{"]) and (
+            stage.group_open - literals == stage.group_close - literals == 1):
+        return True
+    if name in ("declare", "typeset", "local"):
+        return any(word[:1] in ("-", "+") and "n" in word for word in words)
+    if name == "trap":
+        return bool(words) and not (_TRAP_SAFE.fullmatch(words[0])
+                                    and not _TRAPPED & {word.upper() for word in words[1:]})
+    return name in ("mapfile", "readarray") and any(
+        word[:1] == "-" and "C" in word for word in words)

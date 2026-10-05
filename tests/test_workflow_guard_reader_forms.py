@@ -5,6 +5,11 @@ download -- bash 3.2.57 and GNU bash 5.2.21, every checksum failing -- that
 the guard read clean, pinned as a live step, beside the controls that must
 read as they did. The reader's own halves are in `tests/test_shell_reader.py`
 and `tests/test_workflow_forms_regressions.py`.
+
+A row whose command word holds `$(echo sh)` or another `$(...)` keeps a value
+no table sees: since #2468 a literal value reads as its command (`CMD=sh;
+$CMD` as `sh`), so a row that tests a dynamic command word -- or a holder,
+`CMD=$(echo true)` -- spells it that way.
 """
 import unittest
 
@@ -388,7 +393,6 @@ class TestADynamicCommandWord(unittest.TestCase):
     def test_each_is_read(self):
         # A default that spells a shell is that shell; another dynamic word
         # handed `-c` makes the program after it a candidate (`candidates`).
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for script in ("${X:-sh} -c '%s'\n" % PIPE, '"${X:-bash}" -c \'%s\'\n' % PIPE,
                        "$CMD -c '%s'\n" % PIPE, "${X:-[s]h} -c '%s'\n" % PIPE,
                        GET + "${X:-sh} tool\n", GET + "CMD=$(echo sh)\n$CMD -c 'sh tool'\n"):
@@ -411,7 +415,6 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
 
     def test_each_stream_shape_is_reported(self):
         # Bash 3.2.57, 5.2.21 and dash execute the payload in every row.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         rows = (("CMD=$(echo sh)\ncurl -fsSL %si.sh | $CMD\n" % URL, "$CMD"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | \"$CMD\"\n" % URL, "$CMD"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | ${CMD}\n" % URL, "${CMD}"),
@@ -429,7 +432,6 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
                 ), found)
 
     def test_a_carried_download_reaches_the_value_consumer(self):
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         found = defects("CMD=$(echo sh)\nx=$(curl -fsSL %si.sh)\necho \"$x\" | $CMD\n" % URL)
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith(
@@ -438,7 +440,6 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
     def test_the_stream_price_and_controls_are_explicit(self):
         # `CMD=$(echo cat)` executes no payload, but an unknown command gets the same
         # fail-closed stream answer. A named file and the literal shell stay unchanged.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         found = defects("CMD=$(echo cat)\ncurl -fsSL %si.sh | $CMD\n" % URL)
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("pipes a download into `$CMD`"), found)
@@ -448,7 +449,6 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
         self.assertIn("straight to `sh`", found[0][1])
 
     def test_a_redirected_download_is_run_by_a_value_command_word(self):
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for command in ("CMD=$(echo sh)\n$CMD", "CMD=$(echo cat)\n$CMD"):
             with self.subTest(command=command):
                 found = defects("curl -fsSLo i.sh %si.sh\n%s < i.sh\n" % (URL, command))
@@ -781,7 +781,6 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # rc 0; bash 3.2.57 refuses `${X,}`, rc 1; dash too, rc 2); and a `$` command word's `-c`,
         # at the step's own level and inside `$(...)`, whose stdin no shell reads (every shell runs
         # the word, rc 0).
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for script, said in (("X=-c\nx=$(bash ${X,} -c '%s')\n" % PIPE,
                               "hands a script to `bash` inside a command substitution"),
                              ("CMD=$(echo sh)\n$CMD -c '%s' <<'EOF'\necho hi\nEOF\n" % PIPE,
@@ -1348,7 +1347,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # download there is the defect it is at the top level -- and the
         # hand-off is `Idle`, under its own sentence, which `kept` stands only
         # beside a fetch the guard reports (#2499).
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
                     "does not follow -- its body is read as shell" % word)
@@ -1546,7 +1544,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
 
         # A different fetch binds nothing to `$CMD`: its existing hand-off is
         # retained, and a stream in the possible shell body is retained too.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         unrelated = "curl -fsSLo other %sother\nCMD=$(echo sh)\n" % URL
         found = defects(unrelated + "$CMD <<'EOF'\necho hi\nEOF\n")
         self.assertEqual(1, len(found), found)
@@ -1574,7 +1571,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # 5.2.21 run each download below unverified (dash too, bar the
         # here-string it refuses); a body read with its gates on cleared all
         # four.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         check = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
         use = "chmod +x tool\n./tool\n"
         ungated = "inside the script `%s` runs, and the step does not stop when that script fails"
@@ -1720,7 +1716,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # The word may be a shell, so its walk takes a shell's `-c`, `-s` and
         # vanishing-operand rules: the stream and the hand-off, as `$CMD
         # <<'EOF'` reads.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
                     "does not follow -- its body is read as shell" % word)
@@ -1814,7 +1809,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # value for each `o` or `O`, as a shell's does (#2344): the stream and
         # the hand-off. `-o pipefail` and `-O extglob`, which end in their
         # letter, read as they did.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         def to(word):
             return ("hands a heredoc body or here-string to `%s`, a command word this guard "
                     "does not follow -- its body is read as shell" % word)
@@ -2181,7 +2175,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2473_a_dollar_word_and_builtin_eval_read_as_before(self):
         # A `$` word credits nothing (`CMD=$(echo sh)` stops at the check, rc 1; `CMD=$(echo true)`
         # runs the download); `builtin eval`'s body is unread, as on `main` (bash: rc 1; dash: 127).
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for command in ("sh", "true"):
             script = stdin_step("$CMD", pre="CMD=$(echo %s)\n" % command)
             with self.subTest(script=script):
@@ -2308,7 +2301,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     # is reported. Its table is the three holders, heredoc form, then `$CMD` with a here-string and
     # a printed pipe, each with `main`'s sentence; its must-trip control is the statement at the
     # step's own level, alone and beside such a body; its literal twin is the body under `bash -s`.
-    # `$CMD` holds a `$(...)` no table sees: since #2468 `CMD=true` reads as `true`, no holder.
     HOLDERS = (("eval 'bash -s'", ""), ("sh $X", "X=/dev/null\n"), ("$CMD", "CMD=$(echo true)\n"))
     UNSURE = "eval 'bash -s' <<'EOF'\necho hi\nEOF\n"
     HANDED = ("hands a heredoc body or here-string to `$CMD`, a command word this guard does not"
@@ -2428,7 +2420,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # The holder's own options read stdin, so `main` reads the body as the holder's program,
         # statement for statement, and so do both readings here (the reader `()`); only the credit
         # of a check in it goes.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         sums = 'echo "%s  tool" > sums' % ("a" * 64)
         rescue = "CMD=$(echo true)\n%s || $CMD <<'EOF'\nexit 1\nEOF\n" % CHECK
         for holder in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):

