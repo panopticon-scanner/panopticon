@@ -188,9 +188,9 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/gitleaks.tar.gz
 
 # Trivy release archive: pin both supported architectures and verify before extraction.
-ARG TRIVY_VERSION=0.74.0
-ARG TRIVY_SHA256_AMD64=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
-ARG TRIVY_SHA256_ARM64=b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5
+ARG TRIVY_VERSION=0.75.0
+ARG TRIVY_SHA256_AMD64=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+ARG TRIVY_SHA256_ARM64=a1ee9f6ffb7d112b64ff726a2a0717c21175c1114361391f4a132956751a13b3
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) trivy_arch="64bit"; sha256="${TRIVY_SHA256_AMD64}" ;; arm64) trivy_arch="ARM64"; sha256="${TRIVY_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${trivy_arch}.tar.gz" \
