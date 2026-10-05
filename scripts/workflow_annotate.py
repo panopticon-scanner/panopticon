@@ -40,7 +40,18 @@ rule below holds, and is taken back where one fails: the word then reads as the 
     alias anywhere (`f() {`, `function f`, `g ( )`, `alias f=…` behind `command` too, `_HEADER`
     in any text), declares a nameref (`declare -n`), or sources, evals or rebinds a command
     (`_SOURCES`, through a value too: `S=.; $S x`) or runs a command word no table resolves
-    (`_resolved`): a call, an alias or a reference may change a value the table holds.
+    (`_resolved`): a call, an alias or a reference may change a value the table holds. Nor one
+    that reaches an assigning builtin through a value (`R=read; $R CMD`: the table reads a literal
+    command word only), glues an array name to `read -a` (`read -aCMD`), or assigns before a
+    special builtin (`CMD=true :`), which dash and bash's POSIX mode keep; nor one that runs
+    `wait -p` (bash 5.1 unsets the name first) or a word `NAME[` (`CMD[ 0 ]=true` is one
+    assignment to bash). No mark stands for a name spelled as a whole word anywhere in the step
+    (`_spelled`: `XCMD`, `CMD2` are other names) but in a plain reference, an option word (`-X`,
+    `--CMD`) or an assignment word outside `let` and `[[`, whose arithmetic assigns -- `NAME=` or
+    `NAME+=` starting a command's word, a prefix or an argument (`CMD=true $CMD`, `env CMD=x`),
+    which assigns in the step's shell only where the table reads it or a rule above refuses the
+    step. Any other spelling (`read NAME`, `wait -p NAME`, `NAME[0]=`, `printf -v NAME`,
+    `R=NAME`, `${NAME:=x}`, `let NAME=1`) may change what bash holds.
  8. No trap (`_rebinds`, `_LATER`): nor in one that traps `DEBUG`, `RETURN` or `ERR`, or traps
     an action not empty, `-` or a literal `rm` (`_TRAP_SAFE`), or sets a `mapfile -C` callback, or
     names `trap`, `mapfile` or `readarray` in any other text: each runs a text later, which may
@@ -83,11 +94,16 @@ The prices -- where a mark reads otherwise than bash:
    which bash drops so the next word runs (`CMD=; $CMD sh <<'EOF'`), stays as written (#2472);
    and a `${X:-sh}` command word is #2337's default, read before any value.
  - The step's own: a name the guard reads written into a directory on the runner's PATH by an
-   earlier step, or by a text that names no such path (`cd ~/.local/bin; cp /usr/bin/true sh`),
-   is not seen (#2733, filed with this PR).
+   earlier step, by a text that names no such path (`cd ~/.local/bin; cp /usr/bin/true sh`), or
+   by one that spells the name through an expansion (`tools/$N`, `tools/{sh,x}`), is not seen
+   (#2733, filed with this PR).
 
 A refused mark keeps the base's answer, an over-report where the program was sound (`set -e`,
-`X=1` or `cd` in a body, a check behind `|| exit 1`, a trap `rm -f "$T"`, `$CAT <<'EOF' > i.sh`).
+`X=1` or `cd` in a body, a check behind `|| exit 1`, a trap `rm -f "$T"`, `$CAT <<'EOF' > i.sh`,
+a `( true )` or `X=1 a=(x) true` the reader cannot tell from a header `g ( )`, a header inside a
+quoted or printed text, a builtin a value names (`G=getopts; $G t CMD -t`),
+`CMD=true command :`, whose assignment no shell keeps, `let CMD=1`, whose integer names no
+command, or a bare mention of the name in another word, `echo CMD`).
 A step in which no word is marked reads byte for byte as before.
 
 Stdlib only, like everything under it.
@@ -177,9 +193,18 @@ _ENVIRON = re.compile(r"(?<![\w${])(?:(?:PATH|SHELLOPTS|BASHOPTS|BASH_ENV|ENV|IF
 _DESCRIPTOR = re.compile(r"dev/(?:stdin|fd)(?![\w.-])|(?<![\w.-])/(?:dev|proc)/?(?![\w./-])|proc/",
                          re.A)
 _SOURCES = (".", "source", "eval", "builtin", "enable", "hash")
+# The POSIX special builtins, before which dash and bash's POSIX mode keep a prefix assignment.
+_SPECIAL = (":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly", "return",
+            "set", "shift", "times", "trap", "unset")
+_ASSIGNS = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=", re.A)
 _TRAP_SAFE = re.compile(r"(?:rm(?: -[rf]+)*(?: [\w./-]+)+)?|-", re.A)
 _TRAPPED = frozenset(("DEBUG", "RETURN", "ERR"))
 _LATER = re.compile(r"(?<![\w./-])(?:trap|mapfile|readarray)(?![\w./-])", re.A)
+# A name's spellings (`_spelled`): a run of name characters; what may follow `${NAME` in a
+# reference that only reads (`=` and `:=` assign); what follows a name in a word assigning it.
+_RUN = re.compile(r"\w+", re.A)
+_READS = re.compile(r"\}|:?[-+?]|[#%/^,@\[]|:\d", re.A)
+_OWN = re.compile(r"\+?=", re.A)
 _ON_PATH = re.compile(r"(?<![^\s\"'=:;|&<>(){}!])([^\s\"'=:;|&<>(){}!]*)/(?:%s)(?![\w.+/-])"
                       % "|".join(_NAMES), re.A)
 _DEPTH = 8
@@ -200,7 +225,7 @@ def annotate(stmts):
             if argv and not _printer(argv):
                 for at, word in _references(stage, argv[:1]):
                     text = _literal(word, step.fold.at(index)) if step.sure[index] else None
-                    if text is not None and _commands(stage, at, text):
+                    if text is not None and _commands(stage, at, text) and step.plain(word):
                         stage.argv[at] = Defaulted(text)
                 argv = command(stage.argv)
             if argv and _printer(argv) and position + 1 < len(statement.stages):
@@ -239,6 +264,16 @@ class _Step:
     @functools.cached_property
     def vetoed(self):
         return _vetoed(self.stmts, _Fold(self.stmts))
+
+    @functools.cached_property
+    def spelled(self):
+        return _spelled(self.stmts)
+
+    def plain(self, word):
+        """Whether whole reference `word`'s name is spelled in the step only as rule 7 allows (no
+        name `_spelled` returns), read as the step stood before any mark: each mark asks first."""
+        named = _NAMED.match(str(word))
+        return named is not None and named[1] not in self.spelled
 
 
 class _Fold:
@@ -279,6 +314,38 @@ class _Fold:
         lead = head[:len(head) - len(command(head))]
         return index not in self.forked and "do" not in self.kinds[index] and not (
             {"while", "until"} & set(map(str, lead)))
+
+
+def _spelled(stmts):
+    """The names the step spells otherwise than rule 7 allows: each run of name characters in its
+    statements' texts -- each word, redirect target or source, heredoc body and substitution, the
+    reader's markers taken out -- that is no plain reference (`$NAME`, or `${NAME` and an operator
+    that reads, `_READS`) and, in a command's word, neither follows its leading `-` or `--` (`-X`,
+    `--CMD`) nor starts it before `=` or `+=` (`CMD=true $CMD`, `env CMD=x`), but not in `let`
+    or `[[`, whose arithmetic assigns (`let CMD=1`). A run is the name only where it equals it:
+    `XCMD`, `CMD2` and `$CMDX` spell other names."""
+    out = set()
+    for statement in stmts:
+        for stage in statement.stages:
+            arithmetic = command(stage.argv)[:1] in (["let"], ["[["])
+            bodies = [body[0] for body in (stage.stdin_heredoc,) if body]
+            texts = [*stage.writes, *stage.reads, stage.heredoc or "", *bodies,
+                     *stage.substitutions]
+            for word, own in [*((word, True) for word in stage.argv),
+                              *((text, False) for text in texts)]:
+                text = str(word)
+                for marker in shell_reader._markers(word):
+                    text = text.replace(marker, "\0")
+                for run in _RUN.finditer(text):
+                    start, end = run.span()
+                    before = text[max(0, start - 2):start]
+                    if before.endswith("$") or before == "${" and _READS.match(text, end):
+                        continue                                    # a reference that reads
+                    if own and (text[:start] in ("-", "--") or not start and not arithmetic
+                                and _OWN.match(text, end)):
+                        continue                                    # an option or assignment
+                    out.add(run[0])
+    return out
 
 
 def _printer(argv):
@@ -327,15 +394,15 @@ def _literal(word, table):
 def _spell(stage, argv, step, index):
     """Give each whole-reference word of printer `argv`, a stage piped into another, its value's
     `spelled` text, the word itself kept as written so every other reader sees what it saw, as
-    `shell_reader._stage` gives a `\\$` word one -- where it stands in no test and the text it
-    prints, its words and these values, fetches (rule 14)."""
+    `shell_reader._stage` gives a `\\$` word one -- where it stands in no test, its name is spelled
+    only as rule 7 allows, and the text it prints, its words and these values, fetches (rule 14)."""
     words = list(_references(stage, argv[1:]))
     if not words or step.tests[index]:
         return
     spelled = []
     for at, word in words:
         text = _literal(word, step.fold.at(index))
-        if text is not None:
+        if text is not None and step.plain(word):
             spelled.append((at, word, text))
     printed = " ".join([*map(str, argv[1:]), *(text for _at, _word, text in spelled)])
     for at, word, text in spelled if _FETCH_WORD.search(printed) else ():
@@ -532,18 +599,28 @@ def _silent(argv):
 
 def _vetoed(stmts, fold):
     """Whether no mark stands in the step (rules 7 to 11): where a stage's command, as `_resolved`
-    reads it through `fold`, may change what a later word holds or runs (`_rebinds`), or where a
-    text a stage holds -- its words, a redirect's target, a heredoc, a substitution -- names an
-    environment word (`_ENVIRON`), a descriptor path (`_DESCRIPTOR`), a function header
-    (`_HEADER`), or a name the guard reads by a path outside `_SYSTEM`'s directories
-    (`_ON_PATH`), or redirects into a file by such a name, or -- past the words of a `trap` or a
-    `mapfile` `_rebinds` reads -- names `trap`, `mapfile` or `readarray` (`_LATER`: a child's
-    trap runs at its exit, the download too)."""
+    reads it through `fold`, may change what a later word holds or runs (`_rebinds`), is reached
+    through a value and is no name in `_NAMES` or is `printf -v`, or is one of `_SPECIAL` behind
+    a prefix assignment (`_ASSIGNS`); or where a text a stage holds -- its words, a redirect's
+    target, a heredoc, a substitution -- names an environment word (`_ENVIRON`), a descriptor
+    path (`_DESCRIPTOR`), a function header (`_HEADER`), or a name the guard reads by a path
+    outside `_SYSTEM`'s directories (`_ON_PATH`), or redirects into a file by such a name, or --
+    past the words of a `trap` or a `mapfile` `_rebinds` reads -- names `trap`, `mapfile` or
+    `readarray` (`_LATER`: a child's trap runs at its exit, the download too)."""
     for index, statement in enumerate(stmts):
         for stage in statement.stages:
             kept = command(stage.argv)
             name = _resolved(kept[0], fold, index) if kept else ""
             if name is None or _rebinds(stage, name, [str(word) for word in kept[1:]]):
+                return True
+            # a command word reached through a value: the table reads only a literal one
+            if kept and (_EXPANDS.search(str(kept[0])) or shell_reader.is_marker(kept[0])) and (
+                    name not in _NAMES or name == "printf" and any(
+                        str(word).startswith("-v") for word in kept[1:])):
+                return True
+            # a prefix assignment that dash and bash's POSIX mode keep before a special builtin
+            lead = [str(word) for word in stage.argv[:len(stage.argv) - len(kept)]]
+            if kept and name in _SPECIAL and any(_ASSIGNS.match(word) for word in lead):
                 return True
             bodies = [body[0] for body in (stage.stdin_heredoc,) if body]
             words = " ".join(map(str, stage.argv))
@@ -575,14 +652,22 @@ def _rebinds(stage, name, words):
     `enable` (a loaded builtin) or `hash` (`hash -p ./x sh`) -- an `alias`, a function header the
     reader split (`g ( )`, `g ( ) {`: any other a text holds is `_HEADER`'s), a `declare`,
     `typeset` or `local` whose option word holds `n` (a nameref: `declare -n CMD=y; y=true`), a
-    `trap` that runs a text (not `_TRAP_SAFE`) or traps one of `_TRAPPED` (bash runs a `DEBUG`
-    trap before each command), or a `mapfile -C` callback, run per line read."""
+    `read` that glues an array name to `-a` (`read -aCMD`), a `wait -p`, a command word `NAME[`
+    (bash reads `CMD[ 0 ]=true` as one assignment, the reader as `CMD[`), a `trap` that runs a
+    text (not `_TRAP_SAFE`) or traps one of `_TRAPPED` (bash runs a `DEBUG` trap before each
+    command), or a `mapfile -C` callback, run per line read."""
     literals = _literals(stage)        # an array literal's `( )`: no header
     if name in _SOURCES or name == "alias" or name and words in ([], ["{"]) and (
             stage.group_open - literals == stage.group_close - literals == 1):
         return True
     if name in ("declare", "typeset", "local"):
         return any(word[:1] in ("-", "+") and "n" in word for word in words)
+    if name == "read":                  # an array name glued to `-a` (`read -aCMD`)
+        return any(word[:1] == "-" and "a" in word[1:-1] for word in words)
+    if name == "wait":                  # `wait -p NAME` unsets NAME first (bash 5.1)
+        return any(word[:1] == "-" and "p" in word for word in words)
+    if re.fullmatch(r"[A-Za-z_]\w*\[", name):    # `CMD[ 0 ]=true`, one assignment to bash
+        return True
     if name == "trap":
         return bool(words) and not (_TRAP_SAFE.fullmatch(words[0])
                                     and not _TRAPPED & {word.upper() for word in words[1:]})

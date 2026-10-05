@@ -287,6 +287,86 @@ class TestACommandWord(unittest.TestCase):
             with self.subTest(pre=pre):
                 self.assertEqual(1, len(marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK))))
 
+    def test_no_mark_stands_where_a_builtin_a_value_names_or_a_kept_prefix_may_assign(self):
+        # The table reads a literal command word only, so a builtin a value names may assign
+        # unseen (`R=read; $R CMD <<< true`, `declare`, `export`, `unset`, `command read`, and
+        # `printf -v` in a list the step does not mark); so may `read` with an array name glued to
+        # `-a`; and dash, and bash in POSIX mode, keep a prefix assignment before a special
+        # builtin (`CMD=true :`). `$G` running `getopts` and `CMD=true command :` are refused too,
+        # where bash runs nothing: over-reports.
+        for form in ("R=read\n$R CMD <<< true", "D=declare\n$D CMD=true", "X=export\n$X CMD=true",
+                     "U=unset\n$U CMD", "K=command\n$K read -r CMD <<< true",
+                     "Y=read\n{ $Y CMD; } <<< true", "PV=printf\ntrue && $PV -v CMD true",
+                     "G=getopts\n$G t CMD -t || true", "read -aCMD <<< true",
+                     "read -raCMD <<< true", "P=printf\ntrue && $P -vCMD x", "CMD=true :",
+                     "set -o posix\nCMD=true :",
+                     "CMD=true export X", "CMD=true set -e", "CMD=true trap - EXIT",
+                     "CMD=true readonly X", "CMD=true times > /dev/null", "CMD=true shift 0",
+                     "CMD=true unset X", "CMD=true break 2>/dev/null || :", "CMD[0]=true :",
+                     "CMD+=x :", "CMD=true command :"):
+            with self.subTest(form=form):
+                self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
+        # Where the name is put together (`${P}MD`) no spelling shows it, and these rules refuse
+        # it still; a prefix before a special builtin, a split subscript, a glued `read -a` and a
+        # `printf -v` a value names refuse the step whatever name they write.
+        for form in ('P=C\ndeclare -n R="${P}MD"\nR=true', 'R=read\nP=C\n$R "${P}MD" <<< true',
+                     'PV=printf\nP=C\ntrue && $PV -v "${P}MD" true',
+                     'P=C\nread -a"${P}MD" <<< true', 'P=C\nwait -n -p "${P}MD" || :',
+                     "OTHER=true :", "OTHER=true export Y", "OTHER[0]=true :", "OTHER+=x :",
+                     "OTHER[ 0 ]=true || :", "read -aOTHER <<< x",
+                     "PV=printf\ntrue && $PV -v OTHER true"):
+            with self.subTest(form=form):
+                self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
+        # A literal `read` whose array name stands apart, which the table clears, a prefix before
+        # a builtin that keeps it in no shell, and a value that names a printer keep the marks.
+        for form, count in (("read -ra L <<< x", 1), ("read -a L <<< x", 1), ("X=1 true", 1),
+                            ("X=1 command true", 1), ("P=printf\n$P x", 2)):
+            script = "CMD=sh\n" + form + "\n" + body("$CMD", CHECK)
+            with self.subTest(form=form):
+                self.assertEqual(count, len(marks(script)))
+
+    def test_no_mark_stands_for_a_name_spelled_otherwise_than_it_reads_or_is_assigned(self):
+        # A name may be spelled as a whole word in the step only in plain references, option
+        # words and assignment words: any other spelling -- a bare word, a reference that
+        # assigns, a value or a dotted word holding it, a word of `let` or `[[`, whose arithmetic
+        # assigns, in any text of the step -- may change what bash holds, so no mark of that name
+        # stands; nor where the table reads its assignment as no literal (`declare -u`).
+        for form in ("read CMD <<< x", "wait -n -p CMD || :", "unset CMD", "export CMD",
+                     "for CMD in sh; do :; done", "getopts t CMD -t || :", "mapfile -t CMD < f",
+                     "R=CMD", "exec {CMD}>/dev/null", ': "${CMD:=x}"', ': "${CMD=x}"',
+                     'echo "${#CMD}"', 'echo "${!CMD}"', "declare -u CMD=sh", "CMD[0]=sh",
+                     "echo hi > CMD.log", "cat < CMD.txt", "cat <<'X'\nCMD\nX",
+                     "cat 3<<'X'\nCMD\nX", "x=$(echo CMD)", "test -v CMD", "echo x.CMD",
+                     "echo x-CMD", "echo --x=CMD", "export CMD=sh X=CMD=1",
+                     "export CMD=sh <<'X'\nCMD=x\nX",
+                     "let CMD=1 || :", "command let CMD+=1", "[[ CMD=1 -eq 1 ]]",
+                     "[[ 1 -eq CMD=1 ]]"):
+            with self.subTest(form=form):
+                self.assertEqual([], marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK)))
+        # A reference that only reads, an assignment word (the table's, a prefix or an argument),
+        # an option word, a longer run that spells another name, and a reader's marker
+        # (`x=$(...)` holds one, which spells `shell`) keep the mark.
+        for form in ('echo "$CMD"', 'echo "${CMD}"', 'echo "${CMD:-x}"', 'echo "${CMD-x}"',
+                     'echo "${CMD:+x}"', 'echo "${CMD+x}"', 'echo "${CMD:?x}"', 'echo "${CMD?x}"',
+                     'echo "${CMD#s}"', 'echo "${CMD%h}"', 'echo "${CMD/s/t}"', 'echo "${CMD^^}"',
+                     'echo "${CMD,,}"', 'echo "${CMD@Q}"', 'echo "${CMD[0]}"', 'echo "${CMD:0:1}"',
+                     "export CMD=sh", "readonly CMD=sh", "CMD+=''", 'echo hi > "$CMD".log',
+                     "read OTHER <<< x", "CMD=x true", 'echo "CMD=$CMD"', "env CMD=x true",
+                     "curl -d CMD=1 x", "curl --CMD x", "XCMD=1", "CMD2=1", "echo $CMDX"):
+            with self.subTest(form=form):
+                self.assertEqual(1, len(marks("CMD=sh\n" + form + "\n" + body("$CMD", CHECK))))
+        self.assertEqual(1, len(marks("shell=sh\nx=$(echo hi)\n" + body("$shell", CHECK))))
+        # A printer's name too: after `echo X`, `$X` stays unspelled; an option word `-X`, a word
+        # `EXIT` or `X10`, or a printed `example` that holds `a`, spells another name.
+        printed = "X='%s'\necho \"$X\" | sh\n" % PIPE
+        self.assertEqual(1, len(marks(printed)))
+        self.assertEqual([], marks("echo X\n" + printed))
+        for script in ("curl -X POST %s\n" % URL + printed, "trap - EXIT\n" + printed,
+                       "X1='%s'\nX10=2\necho \"$X1\" | sh\n" % PIPE,
+                       "a=('%s')\necho \"${a[0]}\" | sh\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(marks(script)))
+
     def test_no_mark_stands_where_the_step_may_put_its_own_shell_on_the_path(self):
         # A home tool directory comes before `/usr/bin` on a GitHub runner's PATH: a step that
         # names a path to one of the guard's names outside a system directory, or writes a file
@@ -779,6 +859,85 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
                  [UNSPELLED % "sh", UNVERIFIED])):
             with self.subTest(script=script):
                 self.assertSaid(starts, defects(script))
+
+    def test_a_builtin_a_value_names_or_a_glued_array_name_keeps_the_hand_off(self):
+        # Bash runs the download past each, the body skipped (FR FR F- FR; dash stops at the `<<<`
+        # or at its `printf`, which has no `-v`): `$R` runs `read`, which sets `CMD` to `true`;
+        # `$PV -v`, in a list the step does not mark, sets it the same way; `read -aCMD` sets it as
+        # an array. The base: the hand-off and the check inside `$CMD`'s script; and so here,
+        # where a mark took the table's `sh` and read CLEAN.
+        for form in ("R=read\n$R CMD <<< true", "PV=printf\ntrue && $PV -v CMD true",
+                     "read -aCMD <<< true"):
+            script = GET + "CMD=sh\n" + form + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_a_value_assigned_before_a_special_builtin_keeps_the_hand_off(self):
+        # `CMD=true :` (F-+sha F-+sha FR F-): bash drops the assignment after `:` and stops at the
+        # check, but dash, which runs `shell: sh`, keeps it and runs the download past the skipped
+        # body; after `set -o posix` bash keeps it too (FR FR F- FR; dash stops at the `set`). The
+        # base: the hand-off and the check inside `$CMD`'s script; and so here, where a mark took
+        # the table's `sh` and read CLEAN.
+        for pre in ("", "set -o posix\n"):
+            script = GET + "CMD=sh\n" + pre + "CMD=true :\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_a_value_wait_or_a_split_subscript_rewrites_keeps_the_hand_off(self):
+        # `wait -n -p CMD` unsets `CMD` before it waits (bash 5.1), so `$CMD <<'EOF'` runs no
+        # command, its body skipped, and the step runs `./tool` (FR F-+sha F-+sha FR: bash 3.2
+        # and dash have no `-p`, and stop at the check); `CMD[ 0 ]=true` is one assignment to
+        # bash, which the reader splits (FR FR F-+sha FR: dash runs no `CMD[`). The base: the
+        # hand-off and the check inside `$CMD`'s script; and so here, where a mark took the
+        # table's `sh` and read CLEAN.
+        for form in ("wait -n -p CMD || :", "CMD[ 0 ]=true 2>/dev/null || :"):
+            script = GET + "CMD=sh\n" + form + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_a_name_spelled_in_another_word_keeps_the_base_over_report(self):
+        # F-+sha F-+sha F-+sha F-: `echo CMD` prints a word, and the check stops the step under
+        # `sh`; F- F- F-+sha F- and F- F- F- F-: `let` and `[[` set `CMD` to `1`, which runs no
+        # command, and the step stops there (dash has neither: it runs past `let … || :` into the
+        # check and stops at `[[`). The base: the hand-off and the check inside `$CMD`'s script;
+        # and so here, an over-report where the literal twin reads CLEAN -- every whole-word
+        # spelling of a name but a plain reference, an option word and an assignment word outside
+        # `let` and `[[` is read as one that may change it.
+        for pre in ("echo CMD", "let CMD=1 || :", "[[ CMD=1 -eq 1 ]]"):
+            script = GET + "CMD=sh\n" + pre + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
+
+    def test_an_assignment_word_keeps_the_mark_and_the_twins_reading(self):
+        # F-+sha F-+sha F-+sha F- on each: the check stops the step under `sh`. Bash expands
+        # `$CMD` before its prefix `CMD=true` takes effect, and neither `echo "CMD=$CMD"` nor
+        # `env CMD=true true` assigns in the step's shell, so the mark stands and the literal twin
+        # (`CMD=true sh <<'EOF'`) reads CLEAN. The base: the hand-off and the check inside
+        # `$CMD`'s script.
+        for pre in ("CMD=true ", 'echo "CMD=$CMD"\n', "env CMD=true true\n"):
+            script = GET + "CMD=sh\n" + pre + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_an_option_word_or_a_longer_name_keeps_the_printed_fetch(self):
+        # FR FR FR FR on each: `curl -X` and `X10` spell other names than `X` and `X1`, so the
+        # value is spelled and the twin `echo 'curl … | sh' | sh` reported. The base CLEAN.
+        for script in ("curl -X POST %s || :\nX='%s'\necho \"$X\" | sh\n" % (URL, PIPE),
+                       "X1='%s'\nX10=2\necho \"$X1\" | sh\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([STREAM], defects(script))
+
+    def test_a_plain_reference_keeps_the_mark_and_an_assigning_one_takes_it(self):
+        # F-+sha F-+sha F-+sha F- on each: the check stops the step under `sh`. `echo "$CMD"` and
+        # `${CMD:-x}` only read the name, so the mark stands and the literal twin reads CLEAN;
+        # `${CMD:=x}` may assign it (not here, where `CMD` is set: the price of reading it as a
+        # write), so the base's hand-off and the check inside `$CMD`'s script stand.
+        for use in ('echo "$CMD"', 'echo "${CMD:-x}"'):
+            script = GET + "CMD=sh\n" + use + "\n" + body("$CMD", CHECK, USE)
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        script = GET + 'CMD=sh\n: "${CMD:=x}"\n' + body("$CMD", CHECK, USE)
+        self.assertSaid([HANDED % "$CMD", INSIDE], defects(script))
 
     def test_a_name_bash_sets_or_a_reference_a_quote_joined_keeps_the_hand_off(self):
         # Bash runs the body's download through each: `$_` is `sh`, the last word of `echo sh`,
