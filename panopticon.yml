@@ -625,6 +625,7 @@ groups:
       # #2521: keep the parser, lexer and their focused tests in one review.
       match:
       - scripts/shell_reader.py
+      - scripts/shell_command.py
       - scripts/shell_tokens.py
       - scripts/shell_lex.py
       - scripts/shell_quote.py
@@ -634,6 +635,7 @@ groups:
       - scripts/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
+      - tests/test_shell_command.py
       - tests/test_shell_reader_conditionals.py
       - tests/test_shell_wrappers.py
       - tests/test_workflow_guard_lexer_heredocs.py
