@@ -50,7 +50,7 @@ class TestTheFailureContextSplit(unittest.TestCase):
         for name in ("_structural_groups", "conditional_contexts", "_negation_count",
                      "_known_failure", "_skippable_or", "_function_body",
                      "_failure_context", "_inside_unmarked_case", "_is_negated_context",
-                     "_enclosing_failure_contexts"):
+                     "_enclosing_failure_contexts", "statement_analysis"):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_gating, name),
                               getattr(workflow_failure_contexts, name))
@@ -69,6 +69,21 @@ class TestTheFailureContextSplit(unittest.TestCase):
                 self.assertFalse(workflow_failure_contexts._inside_unmarked_case(
                     statements, len(statements) - 1
                 ))
+
+    def test_statement_analysis_is_a_fresh_snapshot_of_mutable_reader_stages(self):
+        # PR #2849 must not retain structural answers after another pass edits
+        # and restores the reader's mutable argv lists.
+        statements = list(shell_reader.statements("(\nCHECK\n)"))
+        before = workflow_failure_contexts.statement_analysis(statements)
+        self.assertEqual([[]], [list(context) for context in
+                               workflow_failure_contexts._enclosing_failure_contexts(
+                                   statements, 1, before)])
+        statements[0].stages[0].argv.insert(0, "!")
+        after = workflow_failure_contexts.statement_analysis(statements)
+        self.assertIsNot(before, after)
+        self.assertEqual([["!"]], [list(context) for context in
+                                    workflow_failure_contexts._enclosing_failure_contexts(
+                                        statements, 1, after)])
 
 
 class TestFetchParsing(unittest.TestCase):
@@ -3029,6 +3044,67 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         script = "! ( ! echo pre; %s ) && " + self.INLINE_USE + "; echo more"
         found = self.round_five_job(script, "step")
         self.assertEqual(1, len(found), found)
+
+    def test_round_five_known_failure_inside_group_keeps_its_enclosing_negation(self):
+        # PR #2849: a later known failure suppresses an enclosing inversion only
+        # when it is outside that group; inside, the inversion makes USE run.
+        body = "set +e\n! { ! :; %s && false; } && " + self.INLINE_USE + "\n"
+        found = self.job(body, use="")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("is negated", found[0][1])
+        outside = ("set +e\n! ( ! :; %s ) && false && "
+                   + self.INLINE_USE + "\n")
+        self.assertEqual([], self.job(outside, use=""))
+
+    def test_round_five_structural_case_arm_closes_keep_command_negation(self):
+        # PR #2849: the `)` closing the subshell is structural, not another
+        # unmarked case pattern that can consume the following `!`.
+        body = ("f() { case x in x) ( :; ! %s ) && "
+                + self.INLINE_USE + ";; esac; }; f\n")
+        found = self.job(body, use="")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("is negated", found[0][1])
+
+    def test_round_five_paren_close_open_transitions_use_the_new_prefix(self):
+        # PR #2849: `else ! (` closes the then-group before opening a distinct,
+        # negated else-group even though both parenthesis markers share a stage.
+        body = ("set +e\nif false; then (\n :\n) else ! (\n :\n %s\n) && "
+                + self.INLINE_USE + "\nfi\n")
+        found = self.job(body, use="")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("is negated", found[0][1])
+        even = body.replace("else ! (", "else ! ! (")
+        self.assertEqual([], self.job(even, use=""))
+
+    def test_round_five_time_and_coproc_groups_keep_their_failure_context(self):
+        # PR #2849: these Bash reserved words precede explicit groups without
+        # turning `{` into an ordinary argument. A coprocess refusal is bounded
+        # at its group close, so a use inside CHECK's own && list still clears.
+        cases = (
+            ("time", "if time { :; %s; }; then :; fi\n" + self.INLINE_USE + "\n",
+             "is an `if`/`while` test"),
+            ("coproc", "coproc worker { :; %s; }\n" + self.INLINE_USE + "\nwait\n",
+             "runs asynchronously under `coproc`"),
+        )
+        for label, body, reason in cases:
+            with self.subTest(label=label):
+                found = self.job(body, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn(reason, found[0][1])
+        self.assertEqual([], self.job("set +e\ntime %s && " + self.INLINE_USE + "\n",
+                                      use=""))
+        self.assertEqual([], self.job("coproc worker { %s && " + self.INLINE_USE
+                                      + "; }\nwait\n", use=""))
+
+    def test_round_five_child_case_analysis_is_independent_of_parent_posture(self):
+        # PR #2849: the same inlined stage appears in parent and child lists;
+        # either evaluation order must retain the child's command negation.
+        child = "case x in\nx) bash -ec '( :; ! %s ) && " + self.INLINE_USE + "';;\nesac\n"
+        for bodies in ((child, "set +e\n" + child), ("set +e\n" + child, child)):
+            for body in bodies:
+                found = self.job(body, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
 
     def test_round_five_nonrunning_payload_controls_stay_clean(self):
         # Each check fails, but a later success, an even negation, or a known

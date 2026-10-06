@@ -57,7 +57,6 @@ from typing import cast
 import shell_reader
 from shell_reader import command, statements
 
-
 # Compatibility bindings share the fetch, operand and gating owners with existing callers.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             compound_stream_consumer as compound_stream_consumer,
@@ -65,7 +64,7 @@ from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fet
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
-                             conditional_reach as reach, inlined_reaches, inlined_stops, seed as seed, swallowed as swallowed)
+                             conditional_reach as reach, inlined_reaches, inlined_stops, seed as seed, statement_analysis, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -199,7 +198,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     where the holder's string names it (`runs_under`); `outer`: the bodies of the command running
     it, below the step's own, and `key` a name for the script, unique in the step, for its own
     bodies."""
-    out, last, where, top, indexes = [], len(stmts) - 1, regions(stmts), errexit is None, []
+    out, last, where, top, indexes, analysis = [], len(stmts) - 1, regions(stmts), errexit is None, [], statement_analysis(stmts)
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
     on = _errexit_states(stmts, errexit, where, shell=shell)
@@ -214,7 +213,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
                 gates = None if who is None or stops is None else not isinstance(text, Opaque) and (
-                    bool(who) and stops and swallowed(stmts, index, statement, stage) is None
+                    bool(who) and stops and swallowed(stmts, index, statement, stage, analysis=analysis) is None
                     and (top or on[index] or index == last)
                     and (fails[index] or stage is statement.stages[-1]))
                 runner, who = runs_under(argv, who, name), who or argv
@@ -340,12 +339,13 @@ def step_credit(flat, shell=None):
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
         stops, body = _stops_step(stmts, position, on, fails), flat[start:index]
+        body_analysis = statement_analysis(body)
         for inner in range(start, index + 1):
             why = (Reach(index - inner, _LOST) if stops is _LOST
                    else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
-            why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(body, 0, len(body), inner - start) else why
+            why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(body, 0, len(body), inner - start, analysis=body_analysis) else why
             why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:

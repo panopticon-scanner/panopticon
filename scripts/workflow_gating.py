@@ -45,7 +45,8 @@ from workflow_failure_contexts import (_enclosing_failure_contexts as _enclosing
                                        _negation_count as _negation_count,
                                        _skippable_or as _skippable_or,
                                        _structural_groups as _structural_groups,
-                                       conditional_contexts as conditional_contexts)
+                                       conditional_contexts as conditional_contexts,
+                                       statement_analysis as statement_analysis)
 from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach, _CLOSES,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
@@ -299,7 +300,7 @@ def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
     return why
 
 
-def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
+def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=None):
     """Whether this handed-script statement's failure reaches its carrier.
 
     Without recorded option states, the child proof being tested already
@@ -311,6 +312,7 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
     posture is exactly what is being bounded.
     """
     body = stmts if start == 0 and carrier == len(stmts) else stmts[start:carrier]
+    analysis = statement_analysis(body) if analysis is None else analysis
     position = index - start
     if not 0 <= position < len(body) or not body[position].stages:
         return False
@@ -320,7 +322,8 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
     enabled = [True] * len(body) if on is None else on[start:carrier]
     piped = [False] * len(body) if fails is None else fails[start:carrier]
     return (_stops_step(body, position, enabled, piped) is None
-            and swallowed(body, position, statement, statement.stages[-1]) is None)
+            and swallowed(body, position, statement, statement.stages[-1],
+                          analysis=analysis) is None)
 
 
 def inlined_reaches(flat, stmts, indexes, on, fails):
@@ -403,7 +406,7 @@ def _function_status(stmts, index, answer, errexit):
     )
 
 
-def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
+def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
@@ -422,17 +425,26 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     if credit is _UNMEASURED:
         credit = None
     inherited_child_reach, local = False, None
-    plain_arm = _inside_unmarked_case(stmts, index)
-    contexts = [(_failure_context(item.argv, plain_arm, item), item)
+    analysis = statement_analysis(stmts) if analysis is None else analysis
+    plain_arm = _inside_unmarked_case(stmts, index, analysis)
+    contexts = [(_failure_context(item.argv, plain_arm, item,
+                                  analysis.leading_arm(item)), item)
                 for item in statement.stages]
     if not contexts:
-        contexts = [(_failure_context(stage.argv, plain_arm, stage), stage)]
-    enclosing = _enclosing_failure_contexts(stmts, index)
+        contexts = [(_failure_context(stage.argv, plain_arm, stage,
+                                      analysis.leading_arm(stage)), stage)]
+    enclosing = _enclosing_failure_contexts(stmts, index, analysis)
     is_negated = (any(_is_negated_context(context, item)
                       for context, item in contexts)
                   or any(_is_negated_context(context) for context in enclosing))
     is_conditional = (any(conditional(context) for context, _item in contexts)
                       or any(conditional(context) for context in enclosing))
+    opened = (context for _local, item in contexts for context in analysis.opened_contexts(item))
+    async_spans = [max(0, (context.through if context.through is not None else index) - index)
+                   for context in (*enclosing, *opened)
+                   if getattr(context, "asynchronous", False)]
+    if async_spans:
+        local = Reach(min(async_spans), "runs asynchronously under `coproc`")
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
@@ -446,7 +458,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         if own and not inherited_child_reach:
             if type(own) is Reach and own.span is not None:
                 local = None if _skippable_or(stmts, index) else own
-            elif not (is_negated or is_conditional):
+            elif not (is_negated or is_conditional or local):
                 return own
     if statement.separator == "&":
         return _DETACHED

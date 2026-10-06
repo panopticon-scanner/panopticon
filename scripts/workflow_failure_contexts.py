@@ -13,11 +13,25 @@ from workflow_function_calls import _function_syntax, _known_status
 def _structural_groups(stage):
     """Leading brace and subshell opens/closes carried by this stage."""
     braces = []
-    for token in stage.argv:
+    words, at = stage.argv, 0
+    while at < len(words):
+        token = words[at]
+        if token == "time":
+            at += 1
+            while at < len(words) and words[at].startswith("-"):
+                at += 1
+            continue
+        if token == "coproc":
+            at += 1
+            if (at + 1 < len(words) and words[at + 1] in ("{", "(")
+                    and _function_syntax([words[at], "()"])[0] == words[at]):
+                at += 1
+            continue
         if token not in shell_reader.KEYWORDS:
             break
         if token in ("{", "}"):
             braces.append(token)
+        at += 1
     return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
 
 
@@ -167,8 +181,6 @@ def _failure_context(argv, plain_arm=False, structure=None, leading_arm=None):
         # as `!`.  A case opened later in this same stage owns that close; its
         # leading `!` still belongs to the command around the case.
         if leading_arm is None:
-            leading_arm = _recorded_leading_arm(structure)
-        if leading_arm is None:
             # Direct helper callers have no statement analysis.  Retain the
             # conservative structural fallback for those isolated stages.
             leading_arm = (structure is not None and structure.group_close
@@ -221,9 +233,11 @@ def _failure_context(argv, plain_arm=False, structure=None, leading_arm=None):
 class _EnclosingContext(list):
     """A list-compatible prefix retaining the stage that opened its group."""
 
-    def __init__(self, words=(), structure=None):
+    def __init__(self, words=(), structure=None, asynchronous=False):
         super().__init__(words)
         self.structure = structure
+        self.asynchronous = asynchronous
+        self.through = None
 
 
 class _GroupFrame:
@@ -251,6 +265,28 @@ class _StageShape:
         self.plain_arm = plain_arm
         self.leading_arm = leading_arm
         self.has_command = has_command
+
+
+class _CaseState:
+    """Whether an unmarked arm is active and its structural group depth."""
+
+    __slots__ = ("depth", "plain")
+
+    def __init__(self, plain=False):
+        self.depth = 0
+        self.plain = plain
+
+
+def _move_case_depth(cases, change, count=1):
+    """Apply structural events to every case arm they occur inside."""
+    for _event in range(count):
+        for case in cases:
+            case.depth = max(0, case.depth + change)
+
+
+def _coproc_prefix(words):
+    """Whether the command-position prefix starts an asynchronous coprocess."""
+    return next((word for word in words if word not in shell_reader.KEYWORDS), None) == "coproc"
 
 
 def _body_words(stage):
@@ -293,19 +329,28 @@ def _stage_shape(stage, cases):
     head = True
     at = 0
     prefix = 0
+    arm_closes = 0
+
+    # A close for a group opened in the active arm precedes this stage's words;
+    # it cannot also be the lifted `)` of a following unmarked pattern.
+    structural_leading = (min(cases[-1].depth, remaining_closes) if cases else 0)
+    _move_case_depth(cases, -1, structural_leading)
 
     # A later unmarked arm starts with PATTERN and carries its lifted `)` as a
     # close.  That marker, rather than the spelling of PATTERN, identifies it.
     while at < len(words) and shell_reader.is_arm(words[at]):
         if cases:
-            cases[-1] = True
+            cases[-1].plain = False
+            cases[-1].depth = 0
         at += 1
-    if (cases and not cases[-1] and remaining_closes and at < len(words)
+    if (cases and remaining_closes > structural_leading and at < len(words)
             and words[at] != "esac"
             and not (at + 2 < len(words) and words[at] == "case"
                      and words[at + 2] == "in")):
         at += 1
-        remaining_closes -= 1
+        arm_closes += 1
+        cases[-1].plain = True
+        cases[-1].depth = 0
         leading_arm = True
         plain_arm = True
 
@@ -313,7 +358,8 @@ def _stage_shape(stage, cases):
         word = words[at]
         if shell_reader.is_arm(word):
             if cases:
-                cases[-1] = True
+                cases[-1].plain = False
+                cases[-1].depth = 0
             head = True
             at += 1
             continue
@@ -325,23 +371,25 @@ def _stage_shape(stage, cases):
             continue
         if word == "{":
             braces.append(("open", words[prefix:]))
+            _move_case_depth(cases, 1)
             at += 1
             continue
         if word == "}":
             braces.append(("close", None))
+            _move_case_depth(cases, -1)
             prefix = at + 1
             at += 1
             continue
         if word == "case" and at + 2 < len(words) and words[at + 2] == "in":
-            cases.append(False)
+            cases.append(_CaseState())
             at += 3
             if at < len(words) and shell_reader.is_arm(words[at]):
-                cases[-1] = True
                 at += 1
-            elif at < len(words) and remaining_closes:
+            elif at < len(words) and remaining_closes > structural_leading + arm_closes:
                 # The first pattern belongs to this case, including `!`.
                 at += 1
-                remaining_closes -= 1
+                arm_closes += 1
+                cases[-1].plain = True
                 plain_arm = True
             head = True
             continue
@@ -353,17 +401,34 @@ def _stage_shape(stage, cases):
         if word in shell_reader.KEYWORDS:
             at += 1
             continue
+        if word == "time":
+            at += 1
+            while at < len(words) and words[at].startswith("-"):
+                at += 1
+            continue
+        if word == "coproc":
+            at += 1
+            if (at + 1 < len(words) and words[at + 1] in ("{", "(")
+                    and _function_syntax([words[at], "()"])[0] == words[at]):
+                at += 1
+            continue
         has_command = True
         head = False
         at += 1
 
+    remaining_closes -= arm_closes
+    _move_case_depth(cases, -1, remaining_closes - structural_leading)
     hidden_opens = stage.group_open
-    paired = min(hidden_opens, remaining_closes)
+    transition = (hidden_opens and remaining_closes
+                  and any(word in _COMMAND_RESTARTS for word in words))
+    paired = 0 if transition else min(hidden_opens, remaining_closes)
     hidden_opens -= paired
     remaining_closes -= paired
+    _move_case_depth(cases, 1, hidden_opens)
+    hidden_prefix = words[prefix:] if transition or prefix else stage.argv
     events = ([("close", None)] * remaining_closes
-              + [("open", stage.argv)] * hidden_opens + braces)
-    return _StageShape(events, plain_arm or bool(cases and not cases[-1]),
+              + [("open", hidden_prefix)] * hidden_opens + braces)
+    return _StageShape(events, plain_arm or any(case.plain for case in cases),
                        leading_arm, has_command)
 
 
@@ -372,6 +437,7 @@ class _StatementAnalysis:
 
     def __init__(self, stmts):
         self.leading_arms = {}
+        self.opened = {}
         self.plain_arms = []
         self.enclosing = []
         cases = []
@@ -391,6 +457,7 @@ class _StatementAnalysis:
                         if top is not None:
                             closed, top = top, top.previous
                             closed.closed = True
+                            closed.context.through = closed.carrier
                             if top is not None and closed.carrier is not None:
                                 self._carry(top, closed.carrier_start,
                                             index, stmts, closed.carrier)
@@ -400,15 +467,27 @@ class _StatementAnalysis:
                     if not stage_depth:
                         context = _EnclosingContext(
                             _failure_context(prefix, shape.plain_arm, stage,
-                                             shape.leading_arm), stage
+                                             shape.leading_arm), stage,
+                            _coproc_prefix(prefix)
                         )
                     else:
                         context = _EnclosingContext(structure=stage)
+                    self.opened.setdefault(id(stage), []).append((stage, context))
                     top = _GroupFrame(context, top)
                     stage_depth += 1
                 if shape.has_command and top is not None:
                     self._carry(top, index, index, stmts)
             self.plain_arms.append(plain_arm)
+
+    def leading_arm(self, stage):
+        """Whether this list's source walk placed an arm at ``stage``."""
+        found = self.leading_arms.get(id(stage))
+        return found[1] if found is not None and found[0] is stage else None
+
+    def opened_contexts(self, stage):
+        """Contexts for groups this stage opens in this statement list."""
+        return tuple(context for found, context in self.opened.get(id(stage), ())
+                     if found is stage)
 
     @staticmethod
     def _carry(frame, start, statement, stmts, carrier=None):
@@ -422,52 +501,33 @@ class _StatementAnalysis:
         frame.last_statement = statement
 
 
-_ANALYSIS_CACHE = []
+def statement_analysis(stmts):
+    """Build one structural analysis for callers to share over this list."""
+    return _StatementAnalysis(stmts)
 
 
-def _recorded_leading_arm(stage):
-    """Whether the cached source walk placed a lifted arm at this stage head."""
-    if stage is None:
-        return None
-    for _stmts, analysis in _ANALYSIS_CACHE:
-        found = analysis.leading_arms.get(id(stage))
-        if found is not None and found[0] is stage:
-            return found[1]
-    return None
-
-
-def _statement_analysis(stmts):
-    """Return the bounded identity cache entry for this immutable parse list."""
-    for cached, analysis in _ANALYSIS_CACHE:
-        if cached is stmts:
-            return analysis
-    analysis = _StatementAnalysis(stmts)
-    if len(_ANALYSIS_CACHE) == 8:
-        del _ANALYSIS_CACHE[0]
-    _ANALYSIS_CACHE.append((stmts, analysis))
-    return analysis
-
-
-def _inside_unmarked_case(stmts, index):
+def _inside_unmarked_case(stmts, index, analysis=None):
     """Whether this statement is in an arm whose marker the reader lost."""
-    analysis = _statement_analysis(stmts)
+    analysis = statement_analysis(stmts) if analysis is None else analysis
     return index < len(analysis.plain_arms) and analysis.plain_arms[index]
 
 
-def _enclosing_failure_contexts(stmts, index):
+def _enclosing_failure_contexts(stmts, index, analysis=None):
     """Failure prefixes on structural groups enclosing this statement."""
     # A proved failure immediately after this command stops the same `&&`
-    # chain before any following payload.  Its enclosing inversion therefore
-    # cannot make that payload reachable.
-    if (index + 1 < len(stmts) and stmts[index].separator == "&&"
-            and _known_failure(stmts[index + 1])):
-        return []
-    analysis = _statement_analysis(stmts)
+    # chain before any following payload.  Keep only an enclosing group that
+    # also carries that failure: its inversion can still make an outer use run.
+    known_after = (index + 1 < len(stmts) and stmts[index].separator == "&&"
+                   and _known_failure(stmts[index + 1]))
+    analysis = statement_analysis(stmts) if analysis is None else analysis
     top = analysis.enclosing[index] if index < len(analysis.enclosing) else None
     contexts = []
     while top is not None:
-        if (not top.closed or top.carrier_start is not None
-                and top.carrier_start <= index <= top.carrier):
+        carries = (top.carrier_start is not None
+                   and top.carrier_start <= index <= top.carrier)
+        if ((not top.closed or carries)
+                and (not known_after or top.carrier is not None
+                     and top.carrier >= index + 1)):
             contexts.append(top.context)
         top = top.previous
     contexts.reverse()
