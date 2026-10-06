@@ -375,21 +375,46 @@ def inlined_reaches(flat, stmts, indexes, on, fails):
     return flat
 
 
+def _negation_count(words):
+    """Leading status inversions; assignments end the reserved-word prefix."""
+    count = 0
+    for word in words:
+        if word == "!":
+            count += 1
+        elif word not in shell_reader.KEYWORDS:
+            break
+    return count
+
+
 def _known_failure(statement):
     """Whether this one command certainly leaves a failing list status."""
     if len(statement.stages) != 1:
         return False
     stage = statement.stages[0]
+    # Defining a function succeeds without running its body.  In particular,
+    # `false || f() ( false ) || CHECK` skips CHECK; the body's known status
+    # says nothing about the definition command that the `||` list sees.
+    if _function_syntax(stage.argv)[0] is not None:
+        return False
     status = _known_status(command(stage.argv), None)
     if status is None:
         return False
-    return status == 0 if negated(stage.argv) else status != 0
+    return (status != 0) != bool(_negation_count(_failure_context(stage.argv)) % 2)
 
 
 def _skippable_or(stmts, index):
     """Whether an earlier successful `||` path may skip this statement."""
-    return any(stmts[source].separator == "||" and not _known_failure(stmts[source])
-               for source, _carrier in conditional_contexts(stmts).get(index, ()))
+    contexts = conditional_contexts(stmts)
+
+    def skipped(position, seen=()):
+        if position in seen:
+            return False
+        return any(stmts[source].separator == "||" and
+                   (not _known_failure(stmts[source])
+                    or skipped(source, seen + (position,)))
+                   for source, _carrier in contexts.get(position, ()))
+
+    return skipped(index)
 
 
 def _rescue_bounds(stmts, branch):
@@ -426,15 +451,22 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
-def _function_body(words):
+def _function_body(words, bare=0):
     """Words after a function header, whatever compound opens its body."""
     name = _function_syntax(words)[0]
-    if name is None:
-        return None
     start = 0
     while (start < len(words) and words[start] in shell_reader.KEYWORDS
            and words[start] != "function"):
         start += 1
+    # Inside another function, or after `then` / a group opener, shell_reader
+    # can retain only the bare name from `name() compound-command`.
+    explicit = (start + 1 < len(words)
+                and words[start + 1] in ("{", "(", "if", "while", "until", "for", "case"))
+    if (name is None and start + 1 < len(words) and (explicit or bare)
+            and (_function_syntax([words[start], "()"])[0] == words[start])):
+        return words[start + 1:], not explicit
+    if name is None:
+        return None
     if words[start] == "function":
         end = start + 2
     elif words[start] == name + "()":
@@ -443,11 +475,15 @@ def _function_body(words):
         end = start + 2
     if end < len(words) and words[end] == "()":
         end += 1
-    return words[end:]
+    return words[end:], False
 
 
-def _failure_context(argv, plain_arm=False):
+def _failure_context(argv, plain_arm=False, structure=None):
     """Words around a status after its structural headers, to a fixed point."""
+    # Parentheses lost from `name()` and a subshell body remain in stage counts.
+    bare = (min(structure.group_close, max(structure.group_open - structure.group_close, 0))
+            if structure is not None else 0)
+    compound = bool(structure and structure.group_open > structure.group_close)
     words = argv
     while words:
         if shell_reader.is_arm(words[0]):
@@ -458,16 +494,34 @@ def _failure_context(argv, plain_arm=False):
                  or _function_syntax(words[1:])[0] is not None)):
             words, plain_arm = words[1:], False
             continue
-        body = _function_body(words)
+        body = _function_body(words, bare)
         if body is not None:
-            words = body
+            words, consumed = body
+            bare -= consumed
+            continue
+        lead = next((at for at, word in enumerate(words)
+                     if word not in shell_reader.KEYWORDS), len(words))
+        if lead < len(words) and words[lead] in ("time", "coproc"):
+            end = lead + 1
+            if words[lead] == "time":
+                while end < len(words) and words[end].startswith("-"):
+                    end += 1
+            elif (end < len(words) and (compound or
+                  end + 1 < len(words) and words[end + 1] in ("{", "("))
+                  and (_function_syntax([words[end], "()"])[0] == words[end])):
+                end += 1
+            # Bash 3.2 runs external `time` here, whose rejected `!` a leading
+            # negation turns successful; Bash 5 instead reads both as reserved words.
+            bash3_time = (words[lead] == "time" and _negation_count(words[:lead]) % 2
+                          and _negation_count(words[end:]) % 2)
+            words = words[:lead] + ["!"] * bool(bash3_time) + words[end:]
             continue
         if words[0] in ("{", "("):
             words = words[1:]
             continue
         # A function header before `case` makes shell_reader retain the arm as
         # plain words rather than an arm token: `case WORD in PATTERN command`.
-        if len(words) > 4 and words[0] == "case" and words[2] == "in":
+        if len(words) >= 4 and words[0] == "case" and words[2] == "in":
             words = words[4:]
             continue
         return words
@@ -477,7 +531,7 @@ def _failure_context(argv, plain_arm=False):
 def _inside_unmarked_case(stmts, index):
     """Whether a prior statement opened a case whose arm markers were lost."""
     cases = []
-    for statement in stmts[:index]:
+    for statement in stmts[:index + 1]:
         for stage in statement.stages:
             for token in stage.argv:
                 if token == "case":
@@ -487,6 +541,20 @@ def _inside_unmarked_case(stmts, index):
                 elif token == "esac" and cases:
                     cases.pop()
     return bool(cases and not cases[-1])
+
+
+def _enclosing_failure_contexts(stmts, index):
+    """Failure prefixes on structural groups enclosing this statement."""
+    stack: list[list[str]] = []
+    for statement in stmts[:index]:
+        for stage in statement.stages:
+            opens, closes = _structural_groups(stage)
+            for _close in range(min(closes, len(stack))):
+                stack.pop()
+            if opens:
+                context = _failure_context(stage.argv, structure=stage)
+                stack.extend([context] + [[]] * (opens - 1))
+    return stack
 
 
 def _function_status(stmts, index, answer, errexit):
@@ -536,10 +604,14 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         credit = None
     inherited_child_reach, local = False, None
     plain_arm = _inside_unmarked_case(stmts, index)
-    head = _failure_context(
-        statement.stages[0].argv if statement.stages else stage.argv, plain_arm
-    )
-    stage_context = _failure_context(stage.argv, plain_arm)
+    contexts = [_failure_context(item.argv, plain_arm, item)
+                for item in statement.stages]
+    if not contexts:
+        contexts = [_failure_context(stage.argv, plain_arm, stage)]
+    enclosing = _enclosing_failure_contexts(stmts, index)
+    is_negated = bool(sum(_negation_count(context)
+                          for context in contexts + enclosing) % 2)
+    is_conditional = any(conditional(context) for context in contexts)
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
@@ -553,8 +625,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         if own and not inherited_child_reach:
             if type(own) is Reach and own.span is not None:
                 local = None if outer and _skippable_or(stmts, index) else own
-            elif not (negated(head) or negated(stage_context)
-                      or conditional(head) or conditional(stage_context)):
+            elif not (is_negated or is_conditional):
                 return own
     if statement.separator == "&":
         return _DETACHED
@@ -595,9 +666,9 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     # module's own remedy text recommends -- the checksum is the second stage
     # and its own argv says nothing about the test wrapped around it. Ask the
     # head as well as the stage, because a one-stage statement is both.
-    if negated(head) or negated(stage_context):
+    if is_negated:
         return "is negated, so the failing path is the THEN branch"
-    if conditional(head) or conditional(stage_context):
+    if is_conditional:
         return "is an `if`/`while` test, which errexit does not apply to"
     why = local or (credit[stage is not statement.stages[-1]] if credit else None)
     piped_end = (_piped_group_end(stmts, index)

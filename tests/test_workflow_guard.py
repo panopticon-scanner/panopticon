@@ -2639,6 +2639,90 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                 with self.subTest(shell=shell, runner=runner):
                     self.assertEqual([], self.job(body, shell, use=""))
 
+    def carry_on_reports(self, scripts):
+        """Pin child-string and stdin forms under both carry-on postures."""
+        for script in scripts:
+            for body in ("bash -ec '" + script + "'\n",
+                         "bash -e -s <<'EOF'\n" + script + "\nEOF\n"):
+                for prefix, shell in (("set +e\n", None), ("", "bash {0}")):
+                    with self.subTest(script=script, body=body, shell=shell):
+                        found = self.job(prefix + body + "echo parent\n", shell, use="")
+                        self.assertEqual(1, len(found), found)
+
+    def test_nested_and_nonleading_function_headers_keep_failure_context(self):
+        self.carry_on_reports((
+            "f() { g() if ! %s && " + self.INLINE_USE + "; then :; fi; g; }; f",
+            "if true; then f() { ! %s && " + self.INLINE_USE + "; }; fi; f",
+            "if true; then f() ( ! %s && " + self.INLINE_USE + " ); fi; f",
+            "f() ( g() ( ! %s && " + self.INLINE_USE + " ); g ); f",
+            "{ f() { ! %s && " + self.INLINE_USE + "; }; }; f",
+        ))
+
+    def test_a_pipe_in_an_unmarked_case_pattern_is_not_a_pipeline(self):
+        self.carry_on_reports((
+            "f() { case x in x|y) ! %s && " + self.INLINE_USE + ";; esac; }; f",
+            "f() { case x in y) :;; x|z) ! %s && " + self.INLINE_USE
+            + ";; esac; }; f",
+        ))
+
+    def test_compound_negation_reaches_a_nonleading_check(self):
+        self.carry_on_reports((
+            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
+            "! ( echo pre; %s ) && " + self.INLINE_USE + "; echo more",
+            "if ! { echo pre; %s; } && " + self.INLINE_USE + "; then :; fi",
+            "while ! ( echo pre; %s ) && " + self.INLINE_USE + "; do break; done",
+        ))
+        body = ("set +e\neval '! { echo pre; %s; } && " + self.INLINE_USE
+                + "; echo more'\necho parent\n")
+        found = self.job(body, use="")
+        self.assertEqual(1, len(found), found)
+
+    def test_bash_reserved_words_preserve_negation(self):
+        self.carry_on_reports((
+            "time ! %s && " + self.INLINE_USE + "; echo more",
+            "! time ! %s && " + self.INLINE_USE + "; echo more",
+            "coproc { ! %s && " + self.INLINE_USE + "; }; wait",
+            "coproc worker ( ! %s && " + self.INLINE_USE + " ); wait",
+        ))
+
+    def test_step_level_compound_and_reserved_negations_are_reported(self):
+        # The B7/B8 repair also closes these step-level twins from the review
+        # note; keep their newly-visible failure context pinned outside a child.
+        for body in (
+            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
+            "! ( echo pre; %s ) && " + self.INLINE_USE + "; echo more",
+            "time ! %s && " + self.INLINE_USE + "; echo more",
+            "time -p ! %s && " + self.INLINE_USE + "; echo more",
+            "coproc { ! %s && " + self.INLINE_USE + "; }; wait",
+            "coproc worker { ! %s && " + self.INLINE_USE + "; }; wait",
+            "coproc worker ( ! %s && " + self.INLINE_USE + " ); wait",
+        ):
+            with self.subTest(body=body):
+                found = self.job("set +e\n" + body + "\n", use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_a_skipped_failure_in_an_or_chain_certifies_nothing(self):
+        self.carry_on_reports((
+            "true || false || %s && " + self.INLINE_USE + "; echo more",
+            "true || ! true || %s && " + self.INLINE_USE + "; echo more",
+            "true || ! ! true || %s && " + self.INLINE_USE + "; echo more",
+            "true || exit 1 || %s && " + self.INLINE_USE + "; echo more",
+            "true || ( false ) || %s && " + self.INLINE_USE + "; echo more",
+            "true || false 2>/dev/null || %s && " + self.INLINE_USE + "; echo more",
+            "true || false || false || %s && " + self.INLINE_USE + "; echo more",
+            "true || test -f /etc/passwd || false || %s && "
+            + self.INLINE_USE + "; echo more",
+            "false || f() ( false ) || %s && " + self.INLINE_USE + "; echo more",
+            "true || false || %s && echo ok && " + self.INLINE_USE + "; echo more",
+            "true || false || %s && eval \"echo a\" && "
+            + self.INLINE_USE + "; echo more",
+            "true || false || { %s; } && " + self.INLINE_USE + "; echo more",
+            "true || false || ( %s ) && " + self.INLINE_USE + "; echo more",
+            "if true || false || %s && " + self.INLINE_USE + "; then :; fi",
+            "while true || false || %s && " + self.INLINE_USE + "; do break; done",
+        ))
+
 
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     """#2338: a pipeline's status is its LAST command's unless `pipefail`

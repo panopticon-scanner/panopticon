@@ -44,11 +44,14 @@ evidence exposed.
 - **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
   `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
   A use in the skipped suffix of that ordinary list remains gated, including one in a nested
-  script. A negation or an `if`/`while` condition that prevents the check's failure from gating the
-  child remains reported, including after a case arm or function header. A check that an earlier
-  successful `||` branch may skip cannot certify the `&&` suffix either. The same bound turns 315
-  former reports into honest clears, such as `C && echo ok && U; echo more` under `set +e`, where no
-  supported shell runs `U`.
+  script. Where `set +e` or a shell template already lets the parent carry on, that refusal now
+  survives a child's local reach through nested function headers, alternated case patterns,
+  compound negations, and `time`/`coproc` prefixes. Its skipped-`||` walk follows the whole chain,
+  so a known failure that an earlier successful arm never ran certifies nothing in those carry-on
+  postures. The same bound turns 315 former reports into honest clears, such as
+  `C && echo ok && U; echo more` under `set +e`, where no supported shell runs `U`; skipped-side
+  cases under an errexit parent remain
+  tracked separately.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
