@@ -47,39 +47,49 @@ evidence exposed.
   of a one-line `case` is stepped past first; a function named like a wrapper, `sudo() { … };
   sudo x`, is the call bash makes of it, where `env f` with no `env` function runs none; a
   body's call in a list it backgrounds, `g() { f & wait; }`, carries nothing, as at the top
-  level) -- at a price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; };
-  T=P; g; sh "$T"`, are reported though no shell runs `P`, as is a never-run decoy in a called
-  body (`if false; then T=P; fi`), and `eval -p f` or `eval -- -- f` reads as a call of `f`
-  (the guard's `eval` reader keeps the words not led by `-` as the program) though bash rejects
-  `-p` and dash runs `--` as a command; the sure carry is #2785's own PR. The value table's
-  candidate cap moves with it, in the values lane, on the coordinator's ruling (#2871): every
-  truncation -- a name's past eight candidates (`workflow_values._update`), a word's product
-  (`valued`), an argv's (`valued_argvs`) -- keeps the first eight beside the cap's stand-in,
-  which a use reads as every download the step holds there, so it reports wherever an
-  unverified download can reach it; a sure write or a sure `unset` ends it, an array keeps its
-  word-lists beside it, and the order kept carries no safety. `main` held the stand-in alone,
-  which a use reads as nothing, so a payload anywhere among nine or more candidates now reports
-  -- the round-4 seat's 7-arm `uname` and `$RUNNER_OS` dispatchers with an OVERRIDE line after
-  them, `main`'s own x20 rows, the ninth candidate of #2871 (`for T in a b c d e f g h P`;
-  seven conditional reassignments, then `[ -z "$NOPE" ] && T=P`): true reports, every shell
-  running the payload. The price, measured on the round-6 seat's 1,823 rows: a use of a name
-  with nine or more candidates reports where no shell runs a download, 28 cells in 7 rows
-  (`for T in a b c d e f g h i; do :; done; sh "$T"`). Against the round-5 seat's 1,697 rows
-  the head closes 1,804 cells `main` leaves CLEAN and adds 537 fail-closed ones (172 since the
-  round-4 head, 63 since the round-5 head, 20 since the round-6 head); against the round-6
-  seat's 1,823, 2,055 and 591; none goes CLEAN where `main` reports. A text the table would
-  build past 4,096 characters is still dropped, as on `main` (a limit, kept for a follow-up).
-  Still CLEAN while a shell runs the payload, each as on `main`: a body that assigns its
-  payload after eight of the caller's candidates and its own loses it inside the body; a
-  `case` whose header shares a one-line body's line (`g() { case x in x) f;; esac; }`) is not
-  read as one; nor is a call made through a value (`F=f; $F`), one in a `case` behind `time`,
-  one a loop's body makes before its own definition (`for …; do f; f() { … }; done`), one to a
-  function the step names `eval` or `time`, or one a function makes of its own arguments
-  (`sudo() { "$@"; }; sudo f`); a body's `T=$1` holds no argument of its call, its `T=$(…)` and
-  `printf -v T` no value, and a body that sets `T=P` before its `local T` is read as leaving
-  `T` alone; and a check whose failure a subshell, a pipe, an `if` condition, `time` or `!`
-  keeps from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still
-  clears the download. And the header
+  level; and a call site's carry from one table is made once per step, so a body of K
+  statements called K times reads in `main`'s order of time, not K times its cube) -- at a
+  price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; }; T=P; g; sh "$T"`,
+  are reported though no shell runs `P`, as are a never-run decoy in a called body (`if false;
+  then T=P; fi`), a `( T=P )` inside one, read as the step's own `( T=P )` is (5 cells), a call
+  in a `{ …; } &` group the body backgrounds, and under `sh` a call behind `&>`, `>&`, `&>>`,
+  `;&` or `;;&` (dash reads `&>` as `&` then `>`); and `eval -p f` or `eval -- -- f` reads as a
+  call of `f` (the guard's `eval` reader keeps the words not led by `-` as the program) though
+  bash rejects `-p` and dash runs `--` as a command. The sure carry is #2785's own PR. The value
+  table's candidate cap moves with it, in the values lane, on the coordinator's rulings
+  (#2871): every truncation keeps what it can beside the cap's stand-in -- a name its first
+  eight candidates (`workflow_values._update`), a word's or an argv's product its first 64
+  (`valued`, `valued_argvs`), so an installer's honest OS-by-arch product (`unzip
+  "tool-$V-$ARCH.zip"`, 3 x 3) reads CLEAN as on `main` -- and a use holding the stand-in reads
+  as every download the step holds there, so it reports wherever an unverified download can
+  reach it. A write of the whole value or a sure `unset` ends it; a write of word 0 (`T=y`,
+  which bash makes `T[0]=y`) keeps it at the other keys; an array keeps its word-lists beside
+  it; and the order kept carries no safety. `main` held the stand-in alone, which a use reads as
+  nothing, so a payload anywhere among nine or more candidates now reports -- the round-4
+  seat's 7-arm `uname` and `$RUNNER_OS` dispatchers with an OVERRIDE line after them, `main`'s
+  own x20 rows, the ninth candidate of #2871 (`for T in a b c d e f g h P`; seven conditional
+  reassignments, then `[ -z "$NOPE" ] && T=P`): true reports, every shell running the payload;
+  the array rows report under `sh` too, where dash has no arrays and runs nothing. The price,
+  measured: a use of a name with nine or more candidates, or of a product past 64, reports
+  where no shell runs a download -- 26 cells in 6 rows of the round-6 seat's 1,823,
+  211 in 56 of the round-7 seat's 2,136 (`for T in a b c d e f g h i; do :; done; sh
+  "$T"`) -- and a step that spells the reserved name `${__panopticon_past_the_cap}` itself reads
+  it as the stand-in (15 cells). Against the round-5 seat's 1,697 rows the head closes 1,804
+  cells `main` leaves CLEAN and adds 542 fail-closed ones (177 since the round-4 head, 68 since
+  the round-5 head, 25 since the round-6 head); against the round-6 seat's 1,823, 2,055 and 596;
+  against the round-7 seat's 2,136, 2,479 and 757 (35 since the round-7 head, which this one
+  clears of 82: the products within 64); none goes CLEAN where `main` reports. A text the table
+  would build past 4,096 characters is still dropped, as on `main` (a limit, kept for a
+  follow-up). Still CLEAN while a shell runs the payload, each as on `main`: a `case` whose
+  header shares a one-line body's line (`g() { case x in x) f;; esac; }`) is not read as one;
+  nor is a call made through a value (`F=f; $F`), one in a `case` behind `time`, one a loop's
+  body makes before its own definition (`for …; do f; f() { … }; done`), one to a function the
+  step names `eval` or `time` with an argument (`eval() { … }; eval f`; a bare `time` is read
+  as the call), or one a function makes of its own arguments (`sudo() { "$@"; }; sudo f`); a
+  body's `T=$1` holds no argument of its call, its `T=$(…)` and `printf -v T` no value, and a
+  body that sets `T=P` before its `local T` is read as leaving `T` alone; and a check whose
+  failure a subshell, a pipe, an `if` condition, `time` or `!` keeps from stopping the step
+  (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still clears the download. And the header
   test at every `(` had joined and split the whole buffer before the match, about x4 per
   doubling of one `(( … ))` statement, now computed only behind a match.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
