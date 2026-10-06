@@ -1652,3 +1652,22 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
         for script in ("bash -s <>/dev/null <<'EOF'\nx\nEOF\n", "bash -s <<'EOF' 1<>/dev/null\nx\nEOF\n"):
             with self.subTest(script=script):
                 self.assertEqual(("x", False), shell_reader.statements(script)[0].stages[0].stdin_heredoc)
+
+
+class TestAQuotedAssignmentLookingWord(unittest.TestCase):
+    """#2480: the word is marked where a quote opened or a backslash stood before its operator,
+    and `shell_command.assigns` reads such a word as the command it is to bash."""
+
+    def test_the_command_is_the_word_bash_runs(self):
+        for script, argv in (('"X=1" sh tool', ["X=1", "sh", "tool"]),
+                             ('"A+=x" sh tool', ["A+=x", "sh", "tool"]),
+                             ("A\\+=x sh tool", ["A+=x", "sh", "tool"]),
+                             ('"X"=1 sh tool', ["X=1", "sh", "tool"]),
+                             ("X=1 sh tool", ["sh", "tool"]), ('X="1" sh tool', ["sh", "tool"]),
+                             ("X=a\\ b sh tool", ["sh", "tool"]), ("a[1]=x sh tool", ["sh", "tool"])):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual(argv, [str(w) for w in shell_reader.command(stage.argv)])
+        word = shell_reader.statements('"X=1" sh tool')[0].stages[0].argv[0]
+        self.assertTrue(getattr(word, "quoted", False))
+        self.assertFalse(getattr(shell_reader.statements('X="1" sh tool')[0].stages[0].argv[0], "quoted", False))

@@ -38,3 +38,27 @@ class TestTheReaderBindsEveryMovedName(unittest.TestCase):
         self.assertTrue(shell_command.conditional(argv))
         self.assertEqual(["sudo", "env"], [os.path.basename(w) for w in shell_command.wrapper_words(argv)])
         self.assertIsNone(shell_command.unresolved_wrapper(argv))
+
+
+class TestTheCommandLayersOwnReadings(unittest.TestCase):
+
+    def test_disables_names_the_noexec_prefix_alone(self):
+        # #2648
+        self.assertTrue(shell_command.disables("SHELLOPTS=noexec"))
+        self.assertTrue(shell_command.disables("SHELLOPTS=errexit:noexec:xtrace"))
+        for word in ("SHELLOPTS=errexit", "BASH_ENV=/dev/null", "X=noexec", "SHELLOPTS=noexecx"):
+            with self.subTest(word=word):
+                self.assertFalse(shell_command.disables(word))
+        argv = shell_reader.statements("env SHELLOPTS=noexec bash -s")[0].stages[0].argv
+        self.assertIn("SHELLOPTS=noexec", shell_command.unresolved_wrapper(argv))
+        argv = shell_reader.statements("env X=1 bash -s")[0].stages[0].argv
+        self.assertIsNone(shell_command.unresolved_wrapper(argv))
+
+    def test_assigns_reads_the_spelling_and_the_quoting(self):
+        # #2480
+        self.assertTrue(shell_command.assigns("X=1"))
+        self.assertTrue(shell_command.assigns("a[1]+=x"))
+        self.assertFalse(shell_command.assigns("a[1]+=x", environment=True))
+        self.assertFalse(shell_command.assigns("sh"))
+        quoted = shell_reader.statements('"X=1" sh tool')[0].stages[0].argv[0]
+        self.assertFalse(shell_command.assigns(quoted))

@@ -120,6 +120,9 @@ _ESCAPED = "\ue002"
 # Put in place of each blank inside an unquoted `${...}` (`_split`), which bash keeps as one
 # expansion before it splits the result, where shlex would split the braces apart (#2731).
 _BLANK = "\ue004"
+# Put where a quote opens or a backslash escapes, outside quotes (`_split`): a word is an
+# assignment only where nothing before its operator was quoted so (`_stage`'s `quoted`, #2480).
+_QUOTED_AT = "\ue005"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -201,11 +204,13 @@ def _split(text, context):
             i += 1
             continue
         if ch in "'\"" or text.startswith("$'", i):
+            buf.append(_QUOTED_AT)
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
             i += len(quote)
             continue
         if ch == "\\" and i + 1 < n:
+            buf.append(_QUOTED_AT)
             buf.append(ch)
             buf.append(text[i + 1])
             i += 2
@@ -395,6 +400,21 @@ def input_alias_fd(word):
     return None
 
 
+def _quoted_assignment(head):
+    """Whether `head`, a token with `_QUOTED_AT` where its quotes opened and its backslashes
+    stood, spells an assignment whose name or operator was quoted or escaped (#2480): bash
+    then runs a command of that name. A quoted VALUE (`X="1"`) is an assignment still."""
+    match = _ASSIGNMENT.match(head.replace(_QUOTED_AT, ""))
+    seen = 0                                    # characters of the name and operator passed
+    for ch in head if match else "":
+        if ch == _QUOTED_AT:
+            return True
+        seen += 1
+        if seen >= match.end():                 # a quote opening the VALUE is not one
+            break
+    return False
+
+
 def _assigns(words):
     """Whether bash reads the word after `words` as an assignment: behind
     keywords and assignments only, or among a declaration's words. After any
@@ -450,9 +470,13 @@ def _stage(text, context):
 
     for raw in tokens:
         raw = raw.replace(_BLANK, " ")          # the blanks of one `${…}` word (#2731)
-        plain = context.restore_arithmetic(
-            raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+        head = raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, "")
+        raw, quoted = raw.replace(_QUOTED_AT, ""), _quoted_assignment(head)
+        plain = context.restore_arithmetic(head.replace(_QUOTED_AT, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
+        if quoted:                              # `"X=1"`, `"X"=1`, `A\+=x`: no assignment (#2480)
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "quoted", True)
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
             setattr(word, "lead", leads(context.pattern.sub("${}", raw).replace(QUOTED_DOLLAR, "")))
