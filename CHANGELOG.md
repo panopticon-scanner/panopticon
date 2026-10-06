@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader knows standard output in any spelling (#2744, reader half; #2733).**
+  `tee //dev/stdout`, `tee /dev//fd/1` and `tee /proc/self/fd/1` after a download doubled the piped
+  text into `sh tool` and read as plain-file pass-throughs, CLEAN: the alias table matched
+  literal spellings only. It now answers `in` with repeated slashes collapsed and knows
+  `/proc/self/fd/1`, so every reader that asks it -- the stage's own sinks, the printers'
+  pass-through test -- follows, and those three refuse as `/dev/stdout` does. `tee /dev/stderr
+  2>&1` is the printers' half: the stage now says whether descriptor 2 finally feeds the next
+  stage (`stderr_to_pipe`), for `workflow_printers._passes_through` to ask.
 - **Workflow reader: a wrapper that execs cannot run a builtin, and `jobs -x` runs its words
   (#2670, #2836; #2608, #2733).** `env eval '…'`, `sudo eval '…'`, `nice`/`nohup`/`exec`/`setsid`
   and their kin in front of `eval` (a heredoc or pipe on it too) were reported though every shell
