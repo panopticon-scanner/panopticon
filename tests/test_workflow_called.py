@@ -70,11 +70,16 @@ class TestWhatACallMayLeave(unittest.TestCase):
                 self.assertEqual({"T": ["old"]}, called(script))
         # A function named like a wrapper is the call bash makes of it (the round-4 seat's F5).
         self.assertEqual({"T": ["old", "x"]}, called("sudo() { T=x; }\nsudo y\n"))
-        # `time` (with `-p`, `--`) and `eval`, then a group, `!` or an assignment: a call.
-        for line in ("time -p f", "time -- f", "time { f; }", "time X=1 f", "time ! f", "time eval f",
-                     "eval time f", "eval -- f"):
+        # `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, `!` or an
+        # assignment: a call. A second `-p`, or a `-p` past the `--`, is the command, as
+        # bash 5.2.21 reads it (round 6: the round-5 head stepped over any number).
+        for line in ("time -p f", "time -- f", "time -p -- f", "time { f; }", "time X=1 f", "time ! f",
+                     "time eval f", "eval time f", "eval -- f"):
             with self.subTest(line=line):
                 self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\n%s\n" % line, at=2))
+        for line in ("time -p -p f", "time -- -p f", "time -- -- f", "eval -p f"):
+            with self.subTest(line=line):
+                self.assertEqual({"T": ["old"]}, called("f() { T=x; }\n%s\n" % line, at=2))
         # A keyword, a prefix assignment or a `case` arm in front is not a wrapper: the
         # function runs (the arm: the round-3 seat's C91).
         self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\ncase y in y) f;; esac\n", at=3))

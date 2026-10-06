@@ -35,14 +35,13 @@ module's size, it imports nothing from it, and `workflow_uses` re-exports
                     (`a[1]=x`, `declare a[1]=x`, `unset 'a[1]'`), a `for`
                     header's `"$@"` or `$(...)`, a subscripted literal, a
                     literal left open at its line's end (`a=(`), a
-                    declaration with `-l`, `-u`, `-i`, `-A` or `-n`, more
-                    than `_CANDIDATES` candidates -- is the name's own
-                    reference `$NAME`, the STAND-IN: the reading the guard
-                    makes without the table, never a claim, beside which a
-                    default stands too; after `eval`, `source` or `.`, or a
-                    name taken from a value (`read "$n"`, `export "$k=$v"`,
-                    `export $(cat .env)`), every held name gains its
-                    stand-in
+                    declaration with `-l`, `-u`, `-i`, `-A` or `-n` -- is
+                    the name's own reference `$NAME`, the STAND-IN: the
+                    reading the guard makes without the table, never a
+                    claim, beside which a default stands too; after `eval`,
+                    `source` or `.`, or a name taken from a value (`read
+                    "$n"`, `export "$k=$v"`, `export $(cat .env)`), every
+                    held name gains its stand-in
     resolved        in the words of the stage that USES a value
                     (`valued_argvs`), so a relative value is read from the
                     directory of its use, bash's rule, and a text bash globs
@@ -81,25 +80,23 @@ over-reports where it was an element, and a `NAME[N]=text` one gives NAME
 its stand-in. A statement that only assigns an array literal is read as
 running its words, as main reads it, and the table resolves those words too:
 `X=_1; a=(cuda$X.run)` alone over-reports.
-Walks: after a loop that ran to its end bash holds its last
-word and the table every word; a literal's glob is matched at the use, not
-where bash matched it; a header that may not run keeps the old candidates
-beside its stand-in. Caps: a name with more than `_CANDIDATES` candidates
-holds its stand-in alone, a word resolves to the first `_CANDIDATES` of its
-product, and a text over `_LONGEST` is dropped, both of which can lose a
-candidate; a brace word the table cannot expand -- past 64 words, or with a
-reference inside a group (`{a,$X}`) or a braced one beside it (`{a,b}${X}`)
--- gives its name the stand-in, a limit, not a price. Not read: the
-assignment `${T:=d}` makes, an operator expansion's value (`NAME=${URL##*/}`
-holds its own text, a plain word), an attribute an earlier declaration set
-rewriting a later assignment, a called body's SURE effect (#2785), a name bash sets
-itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers of a redirection's `{fd}`,
-`wait -p` and `coproc`), held only where the step assigned it too, and
-arithmetic -- `let T=5`, `((T++))` and an arithmetic `for`'s updates are not
-read, and `((T=x+1))` is read as its text beside the old value -- so a name
-built from a number the arithmetic changed holds the old number
-(`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a download named by the
-new number is missed, one named by the old over-reports.
+Walks: after a loop that ran to its end bash holds its last word and the
+table every word; a literal's glob is matched at the use, not where bash
+matched it; a header that may not run keeps the old candidates beside its
+stand-in. Caps: see `_CANDIDATES`; a brace word the table cannot expand --
+past 64 words, or with a reference inside a group (`{a,$X}`) or a braced one
+beside it (`{a,b}${X}`) -- gives its name the stand-in, a limit, not a
+price. Not read: the assignment `${T:=d}` makes, an operator expansion's
+value (`NAME=${URL##*/}` holds its own text, a plain word), an attribute an
+earlier declaration set rewriting a later assignment, a called body's SURE
+effect (#2785), a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the
+numbers of a redirection's `{fd}`, `wait -p` and `coproc`), held only where
+the step assigned it too, and arithmetic -- `let T=5`, `((T++))` and an
+arithmetic `for`'s updates are not read, and `((T=x+1))` is read as its text
+beside the old value -- so a name built from a number the arithmetic changed
+holds the old number (`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a
+download named by the new number is missed, one named by the old
+over-reports.
 
 Stdlib only, like everything under it.
 """
@@ -143,11 +140,8 @@ _REWRITING = frozenset("luiA")
 # array), and `mapfile`'s and `readarray`'s (`-u 3`).
 _READING = frozenset("adinNptu")
 _MAPPING = frozenset("dnOsuCc")
-# A name holds at most `_CANDIDATES` candidates, and past them its stand-in
-# alone, the guard's reading without the table; a word resolves to the first
-# `_CANDIDATES` of its product; and no text built is longer than `_LONGEST`: a
-# value doubling itself (`T=$T$T`, line after line) in a TARGET repo's `run:`
-# block would grow without bound. Each bound can lose a candidate: a price.
+# Caps, a price each: past `_CANDIDATES` a name keeps that many beside its stand-in (`_update`), a
+# word resolves to the first `_CANDIDATES` of its product, no text grows past `_LONGEST` (`T=$T$T`).
 _CANDIDATES = 8
 _LONGEST = 4096
 
@@ -493,23 +487,27 @@ def _update(table, name, new, certain, array=False):
     """`name`'s scalar candidates -- or, `array`, its word-lists -- after it is
     assigned `new`: replaced where `certain`; else added to, with the "maybe
     unset" candidate, `""` or `[]`, where the name was not held at all. With
-    none the name holds its stand-in; past `_CANDIDATES`, a scalar holds it
-    beside its first candidate, never alone (#2664's carry: PR #2855)."""
+    none the name holds its stand-in; past `_CANDIDATES` it keeps the first of
+    its own, then of what a call carried (`table.carried`), beside it (#2855)."""
     candidates = table.arrays if array else table.scalars
     if not certain:
         held = name in table.scalars or name in table.arrays
         new = candidates.get(name, []) + new + ([] if held else [[] if array else ""])
     kept = _deduped(new)
-    if 0 < len(kept) <= _CANDIDATES:
-        candidates[name] = kept
+    if not kept:
+        _unseen(table, name)
+    elif len(kept) > _CANDIDATES:           # the cap drops only what a call carried in, first
+        carried = getattr(table, "carried", {}).get(name, [])
+        candidates[name] = sorted(kept, key=lambda c: c in carried)[:_CANDIDATES]
+        table.scalars[name] = _deduped(table.scalars.get(name, []) + ["$" + name])
     else:
-        _unseen(table, name, kept[:1] if not array else [])
+        candidates[name] = kept
 
 
-def _unseen(table, name, first=()):
+def _unseen(table, name):
     """`name` set to a value the table cannot see: it holds its own reference,
-    `$NAME` -- the reading the guard makes without the table -- after `first`."""
-    table.scalars[name] = [*first, "$" + name]
+    `$NAME`, alone -- the reading the guard makes without the table."""
+    table.scalars[name] = ["$" + name]
     table.arrays.pop(name, None)
 
 

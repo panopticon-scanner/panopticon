@@ -10,9 +10,13 @@ later redefinition, a stand-in, a `declare -g` the shell lacks), so the carry is
 a call to a function whose body assigns NAME -- any definition of it before the call, and any
 function the body calls, to a bounded depth -- adds what the body may assign as UNSURE
 candidates at every later use and keeps the caller's own, so a use reads both and the guard
-reports where either is the download (`record_called`). Not read as a call: a word behind a wrapper (`env f`, `sudo f`,
-`timeout 5 f`, `command f`: none runs a shell function). Not carried: a name the body makes
-`local` (it dies with the call in bash and dash alike) and a subshell body (`f() ( T=x )`).
+reports where either is the download (`record_called`). What a call adds is marked carried,
+so the value table's cap drops it before any candidate the caller's own walk holds, for a
+scalar and an array alike (round 6). Not read as a call: a word behind a wrapper (`env f`,
+`timeout 5 f`, `command f`: none runs a shell function), unless the step defines a function
+of that name (`sudo() { … }; sudo x`). Not carried: a name the body makes `local` (it dies
+with the call in bash and dash alike), a subshell body (`f() ( T=x )`), and a call the step
+runs in a child the use is not in (`f &`; a one-line `( f )` is still carried, fail-closed).
 The one price, named in the CHANGELOG: `T=P; f() { T=/dev/null; }; f; sh "$T"` is reported
 though no shell runs `P`. The sure carry is #2785's own PR.
 
@@ -22,7 +26,7 @@ import os
 
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
-from workflow_values import _deduped, emptied, record
+from workflow_values import emptied, record
 
 _DEPTH = 8          # calls followed inside a body, in all
 
@@ -40,8 +44,12 @@ def _head(argv):
         rest = rest[len(list(_heads(rest))):]
         if not rest or str(rest[0]) not in ("time", "eval"):
             break
-        rest = rest[1:]
-        while rest and str(rest[0]) in ("-p", "--"):
+        word, rest = str(rest[0]), rest[1:]
+        # One `-p` after `time`, then one `--` after either, as bash 5.2.21 reads them: a
+        # second `-p`, or a `-p` past the `--`, is the command (`time -- -p f` runs `-p`).
+        if word == "time" and rest and str(rest[0]) == "-p":
+            rest = rest[1:]
+        if rest and str(rest[0]) == "--":
             rest = rest[1:]
     return str(rest[0]) if rest else None
 
@@ -82,18 +90,18 @@ def _carry(table, stmts, head, close):
             for w in words:
                 emptied(inner, w, False, name == "read")
         record(inner, stage, False)
+    # What the body adds goes after the caller's own candidates, never in place of one (a name
+    # the body overflows keeps the caller's in `after` too), and is marked carried, so the cap
+    # drops it before any of the caller's (`workflow_values._update`, PR #2855 round 6).
+    carried = vars(table).setdefault("carried", {})
     for kind in ("scalars", "arrays"):
         before, after = getattr(table, kind), getattr(inner, kind)
-        for name in set(before) | set(after):
-            if name in local:
-                continue
-            if name in after:
-                # The carry never drops the caller's own candidates: past the candidate cap
-                # the table holds the stand-in alone (or the stand-in and what came after),
-                # which a use reads as nothing (the r3 seat's B1).
-                before[name] = _deduped(before.get(name, []) + after[name])
-            else:
-                before.pop(name, None)
+        for name in set(after) - local:
+            own = before.get(name, [])
+            added = [c for c in after[name] if c not in own]
+            marks = carried.setdefault(name, [])
+            marks.extend(c for c in added if c not in marks)
+            before[name] = own + added
 
 
 def record_called(table, stmts, position, starts):

@@ -582,7 +582,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             certain = sure and (certain or looped) and position not in forked and len(stages) == 1
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
-            if len(stages) == 1:
+            if len(stages) == 1 and position not in forked:
                 record_called(table, stmts, position, starts)
 
     walk(range(max(first, 0), min(index, len(stmts))), True)

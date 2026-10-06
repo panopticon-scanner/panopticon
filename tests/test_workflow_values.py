@@ -289,18 +289,20 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars)
 
-    def test_a_name_past_eight_candidates_holds_its_first_beside_the_stand_in(self):
-        # x20: past the cap the guard's reading without the table -- and, since PR #2855's
-        # round 5, the first candidate beside it (the last sure assignment's value): the
-        # stand-in alone read as nothing, so a carried name pushed past the cap by one later
-        # update went CLEAN while every shell ran the payload (the round-4 seat's B1). Each
-        # of these moved from the stand-in alone; all four report now where they did not.
+    def test_a_name_past_eight_candidates_keeps_eight_beside_the_stand_in(self):
+        # x20: past the cap the guard's reading without the table -- and, since PR #2855, the
+        # name's candidates beside it: its own first, then what a call carried in (round 6;
+        # round 5 kept only the first, which dropped a payload that was not first). Each moved
+        # from the stand-in alone; own candidates past eight are still dropped from the end.
         nine = "T=cuda_1.run" + "".join("; false && T=%d" % number for number in range(1, 9))
-        self.assertEqual({"T": ["cuda_1.run", "$T"]}, table(nine).scalars)
-        self.assertEqual({"T": ["cuda_1.run", "$T", "9"]}, table(nine + "; false && T=9").scalars)
-        self.assertEqual({"T": ["1", "$T"]}, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars)
+        seven = ["cuda_1.run", "1", "2", "3", "4", "5", "6", "7", "$T"]
+        self.assertEqual({"T": seven}, table(nine).scalars)
+        self.assertEqual({"T": seven}, table(nine + "; false && T=9").scalars)
+        # A `for` past the cap: the stand-in stands (every shell holds `9` after the loop,
+        # which the first eight words miss -- the own-candidate price named above).
+        self.assertEqual("$T", table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars["T"][-1])
         append = "A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; A+=$B"
-        self.assertEqual(["1x", "$A"], table(append).scalars["A"])
+        self.assertEqual(["1x", "1y", "1z", "2x", "2y", "2z", "3x", "3y", "$A"], table(append).scalars["A"])
 
 
 class TestAValueTheTableCannotSee(unittest.TestCase):

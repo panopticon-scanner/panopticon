@@ -255,11 +255,12 @@ class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
     so the NEXT unsure update of the name after the call pushed the table past the cap, and the
     stand-in alone read as nothing: `T=P; f() { if false; then T=a; … T=g; fi; }; f; false &&
     T=x; sh "$T"` went CLEAN while every parent runs `P`, as did the 7-arm `uname` dispatcher
-    with an OVERRIDE line after it. Past the cap a scalar now holds its first candidate beside
-    the stand-in (`workflow_values._update`), never the stand-in alone, so each reports; `main`'s
-    own x20 rows report with it (fail-closed). F1: `time` with `-p` or `--`, and a group, an
-    assignment, a `!` or an `if` behind `time` or `eval`, reach the call; and a function named
-    like a wrapper (`sudo() { … }; sudo x`) is the call bash makes of it."""
+    with an OVERRIDE line after it. Past the cap a name now keeps eight candidates beside the
+    stand-in -- the caller's own first, what a call carried in after them (round 6;
+    `workflow_values._update`) -- so each reports, as do `main`'s own x20 rows where a shell
+    runs the payload. F1: `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, an
+    assignment, a `!` or an `if`, reach the call; and a function named like a wrapper (`sudo() {
+    … }; sudo x`) is the call bash makes of it."""
 
     SEVEN = SEVEN_CARRIED
     LATER = ("false && T=x", "if false; then T=x; fi", "eval :", "false && unset T", "false && read T",
@@ -285,7 +286,7 @@ class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
         'f() { if false; then T=a; T=b; T=c; fi; g; }; f; sh "$T"',
         'T=@P@; ' + "; ".join("false && T=%s" % c for c in "abcdefg") + '; f() { if false; then T=h; fi; }; f; '
         'false && T=i; sh "$T"',
-        # The body's own payload among eight: its first candidate is the payload.
+        # The body's own payload among eight, assigned first in the body.
         'f() { T=@P@; if false; then %s; fi; }; f; sh "$T"' % SEVEN)
     F1 = ("T=/dev/null; f() { T=@P@; }; time -p f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time -- f; sh \"$T\"",
           "T=/dev/null; f() { T=@P@; }; time -p -- f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time { f; }; sh \"$T\"",
@@ -311,10 +312,88 @@ class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(filled(row), shell))
 
-    def test_past_the_cap_the_first_candidate_stands_beside_the_stand_in(self):
+    def test_past_the_cap_the_callers_own_stand_first(self):
+        # Round 6 (round 5 kept only the first candidate): the caller's `P` and `x`, then what
+        # the call carried in, eight in all, beside the stand-in.
         stmts = wg.shell_reader.statements(
             'T=P; f() { if false; then %s; fi; }; f; false && T=x; sh "$T"\n' % self.SEVEN)
-        self.assertEqual(["P", "$T"], workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
+        self.assertEqual(["P", "x", "a", "b", "c", "d", "e", "f", "$T"],
+                         workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
+
+
+class TestTheCapDropsOnlyWhatACallCarried(unittest.TestCase):
+    """PR #2855 round 5 (B1 and B2) and the ruling on it: past the cap a name kept only its first
+    candidate, so a payload anywhere else among the caller's own was dropped (`T=x; [ -z "$NOPE" ]
+    && T=P; f() { … six … }; f; false && T=y; sh "$T"` CLEAN while every shell runs `P`), and an
+    array past the cap kept nothing -- `_carry` even popped the caller's word-lists. Now the cap
+    drops only what a call carried in: the caller's own candidates come first, eight are kept
+    beside the stand-in, and an array keeps its word-lists. The rows are the round-5 seat's,
+    each with its ground truth (8 parents: every one runs the payload, or for an array both
+    bashes do; the honest clears run nothing)."""
+
+    ALL_RUN = (  # Y06, Y20, L01, L04, L18, F02, F13, F24, E06
+        'T=x; [ -z "$NOPE" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; case x in x) T=@P@;; esac; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        'T=/dev/null\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\nNetBSD) T=d;;\n'
+        'SunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n[ "$(uname -s)" = Linux ] && T=@P@\nsh "$T"',
+        'TOOL=/dev/null\nselect_tool() {\ncase "$RUNNER_OS" in\nmacOS) TOOL=a;;\nWindows) TOOL=b;;\nFreeBSD) TOOL=c;;\n'
+        'OpenBSD) TOOL=d;;\nNetBSD) TOOL=e;;\nSunOS) TOOL=f;;\nAIX) TOOL=g;;\nesac\n}\nselect_tool\n'
+        'if [ "$(uname -s)" = Linux ]; then\nTOOL=@P@\nfi\nsh "$TOOL"',
+        'T=${OVERRIDE:-}; [ -z "$T" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\ndetect_arch() {\n'
+        '  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n    ppc64le) INSTALLER=c;;\n'
+        '    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n  esac\n}\ndetect_arch\n'
+        '[ -n "${INSTALLER_OVERRIDE:-}" ] && INSTALLER=$INSTALLER_OVERRIDE\nsh "$INSTALLER"',
+        'T=@P@; command -v sh > /dev/null || T=/dev/null; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+        'false && T=y; sh "$T"',
+        # A payload the call itself carried in, then a later update past the cap (kept: the
+        # carried candidates are dropped last-in-order, not all at once).
+        'T=/dev/null; f() { T=@P@; if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
+    BASH_RUN = (  # B03-B08, B10, B11: arrays (dash has none)
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[0]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); fi; }; f; false && T=(y); '
+        'sh "${T[0]}"',
+        'declare -a T=(x); [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); '
+        'T=(f); fi; }; f; false && T=(y); sh "${T[0]}"',
+        'declare -a T=(@P@ x); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[@]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "$T"',
+        'declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; T=h; fi; }; f; sh "${T[0]}"',
+        'declare -a CMD=(sh @P@)\nf() {\n  if [ -n "${NOPE:-}" ]; then CMD=(a); CMD=(b); CMD=(c); CMD=(d); CMD=(e); CMD=(f); '
+        'CMD=(g); CMD=(h); fi\n}\nf\n"${CMD[@]}"',
+        'declare -a T=(@P@); ' + "; ".join("false && T=(%s)" % c for c in "abcdefgh") + '; sh "${T[0]}"')
+    NONE_RUN = (  # E01, E02, E05, and a call the step backgrounds: honest clears past the cap
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; sh "$T"',
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_callers_own_come_first_and_an_array_keeps_its_lists(self):
+        def table(script):
+            stmts = wg.shell_reader.statements(script + "\n")
+            return workflow_uses.static_values(stmts, len(stmts) - 1)
+        scalars = table('T=x; [ -z "$NOPE" ] && T=P; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+                        'false && T=y; sh "$T"').scalars["T"]
+        self.assertEqual(["x", "P", "y"], scalars[:3])
+        self.assertEqual("$T", scalars[-1])
+        values = table('declare -a T=(P); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); '
+                       'fi; }; f; sh "${T[0]}"')
+        self.assertEqual(["P"], values.arrays["T"][0])
+        self.assertIn("$T", values.scalars["T"])
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
