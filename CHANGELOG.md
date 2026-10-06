@@ -16,15 +16,17 @@ evidence exposed.
   reading); and `<>` redirects standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no
   longer credits a check no shell reads. `&&` at a line's end, `${X:-bash} -s`, and `<>` before
   the heredoc or on another descriptor read as they did.
-- **Workflow guard reads a function header in every spelling bash accepts (#2664, #2608).**
-  `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after `then`, `do` or an opened `{`
-  ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN: the reader knew a header only
-  as `f()` at a statement's start, so `f(){` was one command word, `f ( )` a subshell, and
-  `then f() {` the command `f` -- the body's first command on the header's line became that
-  command's arguments and its download went unseen. The splitter now reads the parentheses as a
-  header wherever the words before them are keywords, and parts a `{` glued to it, so the
-  body's first command is a command of its own; `f() {`, `f () {`, `function f {`, `f() ( … )`
-  and a header alone on its line read as they did.
+  The fix round closed what the seat found at the edges of the new `${…}` word: `$${` was
+  read as `${`, so the PID's brace took a pipe or a use to the next `}` as one word -- `$$` is
+  now read as the pair before anything the second `$` could open; a download destination
+  spelled as a default (`-o ${D:-tool }`, `${D:=tool}`, `--output`, `> ${D:-tool }`) was
+  never resolved to its file, so the use was not matched -- a fetcher's unquoted default
+  operand is now read as its command word is, the first literal word naming the file (#2867
+  closed with it; a quoted one keeps its blanks and its name as written); and a `${` nested in
+  a blank-free expansion was scanned to the same end again, about x4 per doubling, now once.
+  New fail-closed over-reports (no shell runs the payload): a CRLF after `|`; `sha256sum ${F:-
+  -c } sums`, whose check is lost; `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'`, which inherits
+  the `<` reads-list reading; and `|&` and `source … <> tool` under `sh` alone.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
