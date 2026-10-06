@@ -125,6 +125,12 @@ _BLANK = "\ue004"
 # Put where a quote opens or a backslash escapes, outside quotes (`_split`): a word is an
 # assignment only where nothing before its operator was quoted so (`_stage`'s `quoted`, #2480).
 _QUOTED_AT = "\ue005"
+# Put where that quote CLOSES, and where a backslash escapes one character outside quotes, so
+# `_stage` can say which of a word's characters stood quoted (`quoted_spans`, the quoting half
+# of #2593, #2747 and #2769): bash splits, globs or drops only what stood bare.
+_QUOTE_END = "\ue006"
+_ESCAPE_AT = "\ue007"
+_MARKS = (_QUOTED_AT, _QUOTE_END, _ESCAPE_AT)
 class _StdoutAliases(tuple):
     """The spellings of this process's standard output, asked with `in`: the listed ones as
     written, and any spelling of them with repeated slashes collapsed (`//dev/stdout`,
@@ -213,6 +219,7 @@ def _split(text, context):
                 body = ansi_c("".join(buf[opened + 1:-1])) if quote == "$'" else None
                 if body is not None:        # bash's text for a `$'...'`, quoted (#2344)
                     buf[opened:] = ["'%s'" % body.replace("'", "'\"'\"'")]
+                buf.append(_QUOTE_END)
                 quote = None
             i += 1
             continue
@@ -223,7 +230,7 @@ def _split(text, context):
             i += len(quote)
             continue
         if ch == "\\" and i + 1 < n:
-            buf.append(_QUOTED_AT)
+            buf.append(_ESCAPE_AT)
             buf.append(ch)
             buf.append(text[i + 1])
             i += 2
@@ -413,19 +420,61 @@ def input_alias_fd(word):
     return None
 
 
+def _unmarked(head):
+    """`head` with the quoting marks gone: the text shlex handed on."""
+    for mark in _MARKS:
+        head = head.replace(mark, "")
+    return head
+
+
 def _quoted_assignment(head):
-    """Whether `head`, a token with `_QUOTED_AT` where its quotes opened and its backslashes
-    stood, spells an assignment whose name or operator was quoted or escaped (#2480): bash
-    then runs a command of that name. A quoted VALUE (`X="1"`) is an assignment still."""
-    match = _ASSIGNMENT.match(head.replace(_QUOTED_AT, ""))
+    """Whether `head`, a token with `_QUOTED_AT` where its quotes opened and `_ESCAPE_AT` where
+    its backslashes stood, spells an assignment whose name or operator was quoted or escaped
+    (#2480): bash then runs a command of that name. A quoted VALUE (`X="1"`) is one still."""
+    match = _ASSIGNMENT.match(_unmarked(head))
     seen = 0                                    # characters of the name and operator passed
     for ch in head if match else "":
-        if ch == _QUOTED_AT:
+        if ch in (_QUOTED_AT, _ESCAPE_AT):
             return True
+        if ch == _QUOTE_END:
+            continue
         seen += 1
         if seen >= match.end():                 # a quote opening the VALUE is not one
             break
     return False
+
+
+def _quoted_spans(head):
+    """The (start, end) ranges of the word's text, as shlex handed it on, that stood inside
+    quotes or behind a backslash: what bash neither splits, globs nor drops."""
+    spans, pos, start = [], 0, None
+    for ch in head:
+        if ch == _QUOTED_AT:
+            start = pos
+        elif ch == _QUOTE_END:
+            spans.append((start if start is not None else pos, pos))
+            start = None
+        elif ch == _ESCAPE_AT:
+            spans.append((pos, pos + 1))
+        else:
+            pos += 1
+    return spans
+
+
+def bare(word):
+    """Whether `word` was written with no quote and no backslash anywhere that mattered: bash
+    may split it, glob it, or drop it where it expands to nothing (`sh $X` with `X` unset
+    vanishes, `sh "$X"` does not, #2593; `sh $p` globs, `sh "$p"` does not, #2769). A plainly
+    quoted literal name (`"sh"`) carries no spans and reads bare, as its quotes change nothing."""
+    return not getattr(word, "quoted_spans", None)
+
+
+def quoted_marker(word, key):
+    """Whether the lifted substitution `key` of `word` stood inside quotes, so its output is one
+    field (`sh -c "$(…)"` hands the text on whole; `sh -c $(…)` takes its first field, #2747)."""
+    at = str(word).find(key)
+    return at >= 0 and any(start <= at and at + len(key) <= end
+                           for start, end in getattr(word, "quoted_spans", ()))
 
 
 def _assigns(words):
@@ -485,12 +534,9 @@ def _stage(text, context):
     for raw in tokens:
         raw = raw.replace(_BLANK, " ")          # the blanks of one `${…}` word (#2731)
         head = raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, "")
-        raw, quoted = raw.replace(_QUOTED_AT, ""), _quoted_assignment(head)
-        plain = context.restore_arithmetic(head.replace(_QUOTED_AT, ""))
+        raw, quoted, spans = _unmarked(raw), _quoted_assignment(head), _quoted_spans(head)
+        plain = context.restore_arithmetic(_unmarked(head))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
-        if quoted:                              # `"X=1"`, `"X"=1`, `A\+=x`: no assignment (#2480)
-            word = word if _markers(word) else _Token(word, {})
-            setattr(word, "quoted", True)
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
             setattr(word, "lead", leads(context.pattern.sub("${}", raw).replace(QUOTED_DOLLAR, "")))
@@ -499,6 +545,14 @@ def _stage(text, context):
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
         elif raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
             word = kept(word)               # every `$` of it quoted: bash keeps the word (#2472)
+        if quoted:                              # `"X=1"`, `"X"=1`, `A\+=x`: no assignment (#2480)
+            word = word if isinstance(word, _Token) else _Token(word, {})
+            setattr(word, "quoted", True)
+        if spans and (_markers(word) or any(c in plain for c in "$ *?[{}")):
+            # Quoting that changes bash's reading of the word travels with it (`quoted_spans`);
+            # a plainly quoted literal name stays the `str` it always was.
+            word = word if isinstance(word, _Token) else _Token(word, {})
+            setattr(word, "quoted_spans", spans)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":

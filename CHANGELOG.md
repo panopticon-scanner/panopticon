@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: a word keeps what stood quoted (the quoting half of #2593, #2747, #2769;
+  #2331, #2733).** The splitter now marks where a quote closes and where a backslash stands,
+  and a word whose quoting changes bash's reading of it -- a `$`, a lifted substitution, a blank,
+  a glob or brace character inside quotes or behind a backslash -- carries `quoted_spans`;
+  `shell_reader.bare(word)` says whether bash may split, glob or drop it, and
+  `shell_reader.quoted_marker(word, key)` whether a lifted substitution's output is one field.
+  Additive: a plainly quoted literal name stays what it was and no verdict moves; the program
+  and value readers opt in for `sh "$X"` with `X` unset (an operand, not a vanishing word),
+  `sh -c "$(…)"` (one program, so its check may count) and `sh "$p"` (no glob) after.
 - **Workflow reader knows standard output in any spelling (#2744, reader half; #2733).**
   `tee //dev/stdout`, `tee /dev//fd/1` and `tee /proc/self/fd/1` after a download doubled the piped
   text into `sh tool` and read as plain-file pass-throughs, CLEAN: the alias table matched
