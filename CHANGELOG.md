@@ -17,24 +17,32 @@ evidence exposed.
   group's `{` before a header on its line as its own statement, and keeps `function NAME ()`
   to the name. Three readings move with it, each to bash's: a block nested in a one-line
   function's body inside a forked group no longer closes that body, a group's `{` before a
-  header is the group's, and `function f ( )` defines `f`. 54 cells go CLEAN -> REPORT with no
+  header is the group's, and `function f ( )` defines `f`. 60 cells go CLEAN -> REPORT with no
   shell running the payload -- a function defined in one of the new spellings and never
   called, defined in a branch that does not run, backgrounded, after `unset -f` or redefined
   to `:` -- each as `main` already reports the `f() {` spelling, fail-closed. Still CLEAN while
   the shells run them (limits, named in the PR): a body that is a `case`, a function defined
   inside a function body or a `case` arm or a `( … )` subshell, `time f() {`, `function g {
-  f() {`, and the names `a.b`, `a:b` and `1f`. The fix round closed what the seat found: a
+  f() {`, and the names `a.b`, `a:b` and `1f`. Two fix rounds closed what the seats found. A
   negated group holding a header (`! { f() { CHECK; }; f; }` ⏎ USE) had its `!` stranded on
-  the `{`, so the check read as gated -- the `!` is now carried onto every statement the group
-  holds, as bash runs a negated compound with errexit off, which also closes the own-line `!
-  {` ⏎ `CHECK` ⏎ `}` form `main` missed; a called function's assignment (`T=/dev/null; f(){ :;
-  T=tool; }; f; sh "$T"`) never reached the use, `main` reporting it only because the misread
-  header made it the step's own statement -- a call now carries its body's assignments into
-  the value table (`scripts/workflow_called.py`, #2785 closed: `local` dies with the call,
-  `declare -g` and `export` assign globally, sure only where the call and the body statement
-  are, a subshell body carries nothing); and the header test at every `(` had joined and
-  split the whole buffer before the match, about x4 per doubling of one `(( … ))` statement,
-  now computed only behind a match.
+  the `{`, so the check read as gated: the `!` is now carried onto every statement the group
+  holds, as bash runs a negated compound with errexit off, placed past the keywords that open
+  the statement so `then`, `do`, `case` and an arm are still read first -- which also closes
+  the own-line `! {` ⏎ `CHECK` ⏎ `}` form `main` missed; `! !` is read as one negation (bash
+  XORs: fail-closed), and a short-circuit inside a negated group, a call in a branch that does
+  not run or in a child, a call after `unset -f` and a prefix assignment are read under the `!`
+  too (185 hunt cells and 36 harness cells, fail-closed). A called function's assignment
+  (`T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`) never reached the use, `main` reporting it only
+  because the misread header made it the step's own statement; carrying the body's value out
+  surely read past what the shells do (a `return` the body takes, a wrapper that runs no
+  function, a later redefinition, a stand-in, a `declare -g` bash 3.2 and dash lack), so a call
+  now adds what the body may assign as UNSURE candidates and keeps the caller's own
+  (`scripts/workflow_called.py`; every definition before the call, and the functions the body
+  calls, eight deep; `local` dies with the call, a subshell body reaches nothing) -- at one
+  price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; }; T=P; g; sh "$T"`,
+  are reported though no shell runs `P`; the sure carry is #2785's own PR. And the header test
+  at every `(` had joined and split the whole buffer before the match, about x4 per doubling
+  of one `(( … ))` statement, now computed only behind a match.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
