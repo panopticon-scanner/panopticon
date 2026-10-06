@@ -61,9 +61,11 @@ from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
-                              _before_operand, _dash_c_operand, _in_every_reading, _may_spell_option,
+                              _before_operand as _before_operand, _dash_c_operand, _in_every_reading,
+                              _may_spell_option,
                               _past_options, _long_word, _refused as _refused, _refused_long,
-                              _refused_name as _refused_name, _sure_string, _value, _void)
+                              _refused_name as _refused_name, _sure_string, _value, _void,
+                              _after_value, _value_after_dash_c, _literal, _one_word)
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -105,11 +107,9 @@ def scripts(argv):
     out = []
     for word in _program_words(argv):
         script = _script(word)
-        if script is not None and shell and not _sure_string(argv, word):
-            if isinstance(script, Opaque):      # read for what it runs: no check in it counts
-                setattr(script, "reader", None)
-            else:
-                script = Handed(script)
+        if (script is not None and shell and not isinstance(script, Opaque)   # an Opaque is never credited
+                and not _all_expansion(script) and not _sure_string(argv, word)):
+            script = Handed(script)
         if script is not None:
             out.append(script)
     return out
@@ -225,19 +225,18 @@ def candidates(argv):
         if owed:
             owed -= 1
         elif _value(word):
-            rest = argv[at + 1:]
-            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
-            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
-            return word, rest[:end] + rest[more + 1:] or (
-                [word] if shell_reader.yields_words(word) else [])
+            return _after_value(argv, at)
         elif word in ("-", "--") or word[:1] not in ("-", "+"):
             break                               # the options end: a program, or `-`/`--`
         elif (long := long_option(argv, at)) or word[:2] == "--":
             if _refused_long(argv, at):         # `bash --bogus $X '…'` runs nothing (#2616)
                 break
             owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
-        elif "c" in word:
-            break                               # a `-c` cluster, whose string `scripts` reads
+        elif "c" in word:                       # a `-c` cluster, whose string `scripts` reads --
+            k = _value_after_dash_c(argv, at)   # unless it is a `$Y` (`Y=-c; bash -c $Y P`, round 7)
+            if k is not None:
+                return _after_value(argv, k)
+            break
         else:
             owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return None, []
@@ -340,8 +339,8 @@ def stdin_program(argv):
     #2606) or a long option outside its table (`bash --bogus`, #2616) -- runs nothing, as
     `_past_options` reads one after a `-c` (#2475); behind a string an inner shell's is read ON,
     fail-closed (#2500). A `--rcfile FILE` is skipped whole (#2616); a lone `-` with a word after
-    it is bash's end of options, and that word the script FILE (`bash - /dev/null`, #2654) -- unless
-    a word before it may expand, as `-s` (`X=-s; bash $X - x.sh`, #2858 round 6); after
+    it is bash's end of options, and that word, literal or one word, the script FILE (`bash - x.sh`,
+    #2654) -- unless a word before it may expand (`X=-s; bash $X - x.sh`, #2858 r6); after
     `-s` the options are still read, and a `c` among them puts the program in the string (`bash -s
     -c true`, #2647), where `--`, `-` or an operand leaves it on stdin. A stdin operand after an
     option owed a value ends the walk there for another interpreter: python's `-O` takes no value,
@@ -525,9 +524,14 @@ def _options(argv, depth):
         if token in _STDIN_OPERANDS:
             # A lone `-` ends a shell's options as `--` does, and the word after it, if any, is
             # the script FILE: `bash - /dev/null` runs the file and stdin is its data (#2654).
-            # After a word that may expand, which may be `-s`, it keeps stdin (#2858 round 6).
+            # After a word that may expand, which may be `-s`, it keeps stdin (#2858 round 6), and the
+            # word after it is the FILE only where it is literal or one word: one that may vanish
+            # (`X=; bash - $X`, `bash - "$@"`) ends the options as `--` does (round 7).
             if token == "-" and shell and options and not parameters and at < len(argv) and _run(argv)[1] > at - 1:
-                return None, None
+                if _literal(argv[at]) or _one_word(argv[at]) or _hands_file(argv[at]):
+                    return None, None
+                options = False
+                continue
             return answer, reader
         if token == "--":
             options = False

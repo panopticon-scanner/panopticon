@@ -491,14 +491,17 @@ class TestADashCStringTheShellIsNotSureToRun(unittest.TestCase):
                 found = defects(GET + '%s "%s"\n' % (runner, CHECK) + USE)
                 self.assertTrue(any("tool" in why and ("inside the script" in why or UNVERIFIED in why)
                                     for why in found), found)
-        self.assertTrue(any(self.UNGATED in why for why in defects(GET + 'bash /dev/null -c "%s"\n' % CHECK + USE)))
-        # +chk x4 (rc 1, q28; forge for the others): the shell surely runs it, and the step stops.
-        for runner in ("bash -c", "bash -e -c", "bash -n +n -c", "bash --norc -c"):
+        with self.subTest(row="bash /dev/null -c, the sentence"):
+            self.assertTrue(any(self.UNGATED in why for why in defects(GET + 'bash /dev/null -c "%s"\n' % CHECK + USE)))
+        # +chk x4 (rc 1, q28; the round-6 seat for `-c --`, its S5; forge for the others): the shell
+        # surely runs it, and the step stops.
+        for runner in ("bash -c", "bash -e -c", "bash -n +n -c", "bash --norc -c", "bash -c --"):
             with self.subTest(runner=runner):
                 self.assertEqual([], defects(GET + '%s "%s"\n' % (runner, CHECK) + USE))
         # The price (q29, +chk x4): a FILE that runs its last parameter runs the check, but the
         # guard cannot see the FILE, so the use is reported.
-        self.assertTrue(defects(GET + self.EVAL_LAST + 'bash w.sh -- -c "%s"\n' % CHECK + USE))
+        with self.subTest(row="q29, the price"):
+            self.assertTrue(defects(GET + self.EVAL_LAST + 'bash w.sh -- -c "%s"\n' % CHECK + USE))
 
     def test_after_an_expansion_a_lone_dash_keeps_stdin_the_program(self):
         # P x4 on each (q40-q43, q46-q48, q49d-h): `X` may be `-s`, and the words after the `-` are
@@ -539,6 +542,106 @@ class TestADashCStringTheShellIsNotSureToRun(unittest.TestCase):
                 self.assertEqual([], defects(script))
         # P x4 (forge): the string after it runs.
         self.assertTrue(any(STREAM in why for why in defects("X=\nbash --rcfile \"$X\" -c '%s'\n" % PIPE)))
+
+
+class TestWhatMainReportsStaysReported(unittest.TestCase):
+    """#2858 round 7, the coordinator's corrected bar: a row main REPORTS while a shell runs the
+    payload or the unverified use stays reported, named or not. Two classes the earlier rounds
+    named close, each by a general rule. Truth from the round-5 seat's matrix (row ids: bash 5.2.21
+    and 3.2.57 with `sh` as dash and as each bash) or the forge (`gt2.sh`, both child bashes)."""
+
+    PRETTY = ("-norc -pretty-print", "-rcfile /dev/null -pretty-print", "--rcfile /dev/null -pretty-print",
+              "-rcfile -e -pretty-print", "-rcfile -- -pretty-print", "-rcfile -login -pretty-print",
+              "-init-file /dev/null -pretty-print", "-restricted -pretty-print")
+
+    def test_pretty_print_runs_none_of_the_stdin_program_but_a_dash_c_string_still_runs(self):
+        # 5.2's `--pretty-print` prints the heredoc and runs none of it, and 3.2 refuses it (rc 1):
+        # the use after runs past a check never run where the step's bash is 5.2 (T, rc 0; matrix
+        # 07031-07967 and the `sh` twins 10415-11351, 21646 and 28126) -- reported, as on main.
+        # The round-6 seat's hunt adds a quoted FILE before it (112956, 113056, 115068, 115708,
+        # 116348, 113788: T under 5.2): one word (`"$X"`, `"$*"`, `"${A[*]}"`) or an `@` form.
+        for runner in ["%s %s" % (shell, words) for shell in ("bash", "sh") for words in self.PRETTY] + [
+                'X=\nbash --rcfile "$X" -pretty-print', 'X=\nsh --rcfile "$X" -pretty-print',
+                'X=\nbash -rcfile "$X" -pretty-print', 'X=\nbash --init-file "$X" -pretty-print',
+                'set --\nbash --rcfile "$*" -pretty-print', 'A=()\nbash --rcfile "${A[*]}" -pretty-print',
+                'set -- /dev/null\nbash --rcfile "$@" -pretty-print',
+                'A=(/dev/null)\nbash --rcfile "${A[@]}" -pretty-print']:
+            with self.subTest(runner=runner):
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any("tool" in why for why in found), found)
+        # -- x4 with bash 5.2.21 and 3.2.57 each as the child (forge, `gt2.sh`): a download in the
+        # heredoc never runs -- the stdin program is uncredited and runs nothing.
+        for script in (body("bash --pretty-print", PIPE), body("bash -norc -pretty-print", PIPE)):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # A `-c` string after it runs: FR x4 with bash 5.2.21 as the child, -- (rc 2) with 3.2.57
+        # (forge) -- so no string reader refuses it, and a check in it keeps its credit: +chk, rc 1,
+        # with either child bash.
+        for script in ("bash --pretty-print -c '%s'\n" % PIPE, "bash -pretty-print -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        self.assertEqual([], defects(GET + 'bash --pretty-print -c "%s"\n' % CHECK + USE))
+
+    def test_a_parameter_expansion_right_after_dash_c_stands_where_the_shell_reads_options(self):
+        # P x4 (matrix 04570, 04574, 04910, 04914, which main reports; the forge for the rest):
+        # `Y=-c` makes it an option word, as `Y=` (it vanishes) and `Y=-e` do, so the word after it
+        # is the string. `Y=x` runs `x` (rc 127) and the download is `$0`: the price, fail-closed.
+        for script in ("Y=-c\nbash -login -c $Y '%s'\n", "Y=-c\nbash -posix -c $Y '%s'\n",
+                       "Y=-c\nsh -login -c $Y '%s'\n", "Y=-c\nsh -posix -c $Y '%s'\n", "Y=-c\nbash -c $Y '%s'\n",
+                       "Y=-c\nbash -c \"$Y\" '%s'\n", "Y=\nbash -c $Y '%s'\n", "Y=-e\nbash -c $Y '%s'\n",
+                       "Y=x\nbash -c $Y '%s'\n"):
+            with self.subTest(script=script):
+                found = defects(script % PIPE)
+                self.assertTrue(any("`$Y` where it reads its options" in why for why in found), found)
+        # -- (forge): in every reading the string is `echo hi`, and the download a parameter.
+        self.assertEqual([], defects("Y=-c\nbash -c $Y 'echo hi' '%s'\n" % PIPE))
+
+
+class TestAQuotedExpansionThatMayBeNoWordOrMany(unittest.TestCase):
+    """#2858 round 7, the round-6 seat's B2 and B3: only a quoted expansion that is always ONE word --
+    `"$X"`, `"$*"`, `"${A[*]}"` -- is a long option's FILE as written and never vanishes; an `@` form
+    (`"$@"`, `"${A[@]}"`) may be no word or several, an expansion like `$X`. And the word after a lone
+    `-` is the script FILE only where it is literal or one word. Truth from the round-6 seat's
+    direct probes (r-, k- and q-numbers: touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and
+    as each bash)."""
+
+    def test_an_at_form_as_a_long_options_file_may_be_no_word(self):
+        # P x4 (r01-r05, r11; r08 where `sh` is bash): with no words, the next word is the rc FILE
+        # and the shell runs on -- `-nor` then `-c P`, or past `-K`/`--version`/`-n` the heredoc.
+        for script in ("bash --rcfile \"$@\" -nor -c '%s'\n" % PIPE, body('bash --rcfile "$@" -K', PIPE),
+                       body('bash --rcfile "$@" --version', PIPE), "A=()\n" + body('bash --rcfile "${A[@]}" -K', PIPE),
+                       body('bash --rcfile "$@" -n -s', PIPE), body('sh --rcfile "$@" -K', PIPE),
+                       body('bash -rcfile "$@" -version', PIPE),
+                       # Beside a `$X` (k02373, k02374): the "gone" reading holds for the `@` form too.
+                       "X=\n" + body('bash --rcfile "$@" -K $X', PIPE),
+                       "X=\nbash --rcfile \"$@\" --version $X -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # T x4 (r06, r07): `-n` lands in the option run, the check never runs, the use does.
+        for script in ("set -- /dev/null -n\n" + GET + 'bash --rcfile "$@" -c "%s"\n' % CHECK + USE,
+                       "A=(/dev/null -n)\n" + GET + body('bash --rcfile "${A[@]}"', CHECK) + USE):
+            with self.subTest(script=script):
+                self.assertTrue(any("tool" in why for why in defects(script)), script)
+        # -- x4 (r09, r10: rc 2; k02412, k02616: rc 0): a one-word form is the FILE, and nothing runs.
+        for script in ("X=\n" + body('bash --rcfile "$X" -K', PIPE), "A=()\n" + body('bash --rcfile "${A[*]}" -K', PIPE),
+                       "X=\nY=\nbash --rcfile \"$Y\" --version $X -c '%s'\n" % PIPE,
+                       "X=\nY=\nbash -rcfile \"$Y\" --version $X -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # The price, accepted (r12: rc 127 for every value the seat ran; main reports it too): after
+        # an `@` form nothing is sure, so a refusal there no longer clears.
+        self.assertTrue(any(STREAM in why for why in defects("bash --rcfile \"$@\" -o pipefial -c '%s'\n" % PIPE)))
+
+    def test_a_word_after_a_lone_dash_that_may_vanish_leaves_stdin_the_program(self):
+        # P x4 (r20-r23, r26, r27): with no word there, the shell reads the heredoc.
+        for script in ("X=\n" + body("bash - $X", PIPE), body('bash - "$@"', PIPE), "X=\n" + body("sh - $X", PIPE),
+                       "X=\n" + body("dash - $X", PIPE), "X=\n" + body("bash -e - $X", PIPE), body("bash - $(true)", PIPE),
+                       # The control (r24): `--` keeps stdin, as before.
+                       "X=\n" + body("bash -- $X", PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # -- x4 (r28, rc 127): a one-word `"$X"` is the FILE, and nothing runs.
+        self.assertEqual([], defects("X=x.sh\n" + body('bash - "$X"', PIPE)))
 
 
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):

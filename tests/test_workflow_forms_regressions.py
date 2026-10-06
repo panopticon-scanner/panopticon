@@ -528,10 +528,15 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
         # the value only begins (`$X/x.sh` is no option), or a value an `-o`
         # takes; and a pattern is `leads`'s to read (#2294).
-        for script in ("sh $X", "sh x.sh $X P", "sh -c $X P", "sh -- $X P", "bash $X/x.sh P",
+        for script in ("sh $X", "sh x.sh $X P", "sh -- $X P", "bash $X/x.sh P",
                        "bash -o $X P", "bash [-]c P", "python3 $X P", "sh -e P"):
             with self.subTest(script=script):
                 self.assertEqual([], forms.candidates(self.argv(script))[1])
+        # Moved by #2858 round 7: a `$X` right after `-c` may be an option word or nothing -- with
+        # `X=-c`, `X=-e` or `X=` bash 5.2.21 and 3.2.57 run `P` (forge, both child bashes), with
+        # `X=x` nothing (rc 127) -- so it stands where the shell reads its options; was [].
+        self.assertEqual(["P"], forms.candidates(self.argv("sh -c $X P"))[1])
+        self.assertEqual([], forms.candidates(self.argv("sh -c -- $X P"))[1])   # after `--`, the string
 
     def test_every_o_before_a_stdin_program_takes_a_value(self):
         # `bash -oe pipefail <<'EOF'` reads its program from the heredoc.

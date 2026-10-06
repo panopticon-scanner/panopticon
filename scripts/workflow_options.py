@@ -75,6 +75,11 @@ SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
 # cluster, as bash reads it (`-bogus` is `-b -o gus`, refused at `g`).
 LONG_VALUE_OPTIONS = ("--rcfile", "--init-file")
 LONG_EXITS = ("--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp")
+# `--pretty-print` (5.2) prints the program bash reads from stdin or a FILE and runs none of it, and
+# 3.2 refuses it, so the stdin walk reads it as running nothing; a `-c` string after it still runs
+# under 5.2 (`bash --pretty-print -c P` runs `P`, both measured, #2858 round 7), so no string reader
+# refuses it.
+LONG_PRINTED = ("--pretty-print",)
 LONG_OPTIONS = ("--debug", "--debugger", "--login", "--noediting", "--noprofile", "--norc",
                 "--posix", "--pretty-print", "--protected", "--restricted", "--verbose") + LONG_EXITS
 _LONG = re.compile(r"-{1,2}([a-z][a-z-]*)")
@@ -126,9 +131,9 @@ def _run(argv):
         if string and not owed and word[:1] not in ("-", "+"):
             end = i                             # the `-c` string itself: the options end at it
             break
-        if not _literal(word) and expansion == len(argv) and not (filed and getattr(word, "kept", False)):
+        if not _literal(word) and expansion == len(argv) and not (filed and _one_word(word)):
             expansion = i                       # may vanish, or spell any word: nothing after is sure
-        filed = False                           # a quoted `"$X"` FILE is one word, the FILE (round 6)
+        filed = False                           # a quoted one-word FILE is the FILE (rounds 6-7)
         if owed:                                # a long option's FILE or an `o`'s name
             owed -= 1
             if in_run:
@@ -187,7 +192,7 @@ def _long_word(argv, at):
     word = argv[at]
     if name is None and not (type(word) is str and word[:2] in ("--", "++")):
         return None
-    if at < _run(argv)[1] and _refused_long(argv, at):    # after an expansion nothing is sure
+    if at < _run(argv)[1] and (_refused_long(argv, at) or name in LONG_PRINTED):  # sure before `$X`
         return "void"
     return "file" if name in LONG_VALUE_OPTIONS else "on"
 
@@ -278,7 +283,7 @@ def _in_every_reading(argv, walk):
     for reading in _READINGS:                   # the words the options end at stay as written
         words = [argv[0]] + [part for at, word in enumerate(argv[1:], start=1) for part in (
             (word,) if reading is None or at >= end or _literal(word)
-            or not reading and getattr(word, "kept", False) else reading)]   # `"$X"` never vanishes
+            or not reading and _one_word(word) else reading)]    # `"$X"` never vanishes; `"$@"` may
         for word in walk(words):
             if any(word is mine for mine in argv) and not any(word is seen for seen in found):
                 found.append(word)
@@ -334,6 +339,37 @@ def _sure_string(argv, word):
         return False
     at = end + (argv[end:end + 1] in (["-"], ["--"]))
     return at < len(argv) and argv[at] is word
+
+
+def _after_value(argv, at):
+    """`workflow_programs.candidates`' answer for the value `argv[at]`: the words after it up to the
+    first operand, and any after a later word that may spell an option -- or the value itself,
+    where its output is words (`sh $(echo tool)`)."""
+    rest = argv[at + 1:]
+    end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
+    more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
+    return argv[at], rest[:end] + rest[more + 1:] or (
+        [argv[at]] if shell_reader.yields_words(argv[at]) else [])
+
+
+def _value_after_dash_c(argv, at):
+    """The index of the operand after the `-c` cluster `argv[at]` where that operand is a parameter
+    expansion (`$Y`, `"$Y"`, `${Y:-}`; a `$(...)` is the dynamic program's), or None: it may be an
+    option word or nothing, so the string may be a later word (`Y=-c; bash -c $Y P`, `Y=` and
+    `Y=-e` run `P`, measured; #2858 round 7), and it stands where the shell reads its options."""
+    found = _past_options(argv, at)
+    k = next((i for i in range(at + 1, len(argv)) if found and argv[i] is found[0]), None)
+    if k is None or argv[k - 1] in ("-", "--") or not _value(argv[k]):
+        return None
+    return None if shell_reader.has_substitution(argv[k]) else k
+
+
+def _one_word(word):
+    """Whether `word` is a quoted expansion that is always exactly ONE word (#2858 round 7): every `$`
+    of it quoted (`shell_reader.kept`) and no `@` in it -- `"$X"`, `"$*"`, `"${A[*]}"`, `"${X:-a}"`.
+    `"$@"`, `"${A[@]}"`, `"${@:1}"`, `"${!A[@]}"` and `"${A[@]:-}"` may be no word or several, so
+    they are expansions like `$X`: `bash --rcfile "$@" -nor -c P` runs `P` with no parameters."""
+    return bool(getattr(word, "kept", False)) and "@" not in str(word)
 
 
 def _literal(word):
