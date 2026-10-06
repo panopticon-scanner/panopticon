@@ -42,6 +42,24 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 _ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+
+def assigns(word, environment=False):
+    """Whether bash reads `word` as an assignment in front of a command (#2348), or, behind a
+    wrapper, as one `env` takes (`environment`): the spelling matches and nothing before its
+    operator was quoted or escaped (`shell_reader._stage`'s `quoted`, #2480) -- `"X=1" sh tool`
+    and `A\\+=x sh tool` run a command named `X=1` / `A+=x`, and `"X"=1` one named `X=1`."""
+    return bool((_ENVIRONMENT if environment else _ASSIGNMENT).match(word)) and not getattr(
+        word, "quoted", False)
+
+
+def disables(word):
+    """Whether this assignment in front of a shell starts it so that it runs nothing of its
+    program (#2648): `SHELLOPTS=noexec` -- bash takes the variable from its environment and
+    turns `noexec` on before it reads a line. The check the program holds then never runs,
+    so `_command_result` refuses the command rather than credit it."""
+    name, _, value = word.partition("=")
+    return name == "SHELLOPTS" and "noexec" in value.split(":")
+
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 
@@ -99,13 +117,18 @@ def _command_result(argv, optional=True):
     # an argv that is not the one that runs (#2227).
     appended, behind = False, None
     while argv:
-        if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]):
+        if assigns(argv[0], environment=bool(heads)):
+            if disables(argv[0]):
+                return argv, "is started under `%s`, which runs nothing of what it reads" % argv[0], heads
             argv.pop(0)
             continue
         if argv[0] in KEYWORDS:
             keyword = argv.pop(0)
             if keyword == "function" and argv and _NAME.match(argv[0]):
                 argv.pop(0)                     # `function f { ... }`
+            continue
+        if argv[0] == "builtin" and len(argv) > 1 and not heads and _NAME.match(argv[1]):
+            argv.pop(0)                         # `builtin eval …` runs the builtin (#2665), as `command` does
             continue
         # A function header is not a command: `f() { curl ... ; }` and its
         # `f () {` spelling both put a name where the command was expected,
@@ -133,6 +156,8 @@ def _command_result(argv, optional=True):
                 argv[0]), heads
         if head not in WRAPPERS:
             break
+        if head == "env" and any(disables(w) for w in argv[1:] if assigns(w, environment=True)):
+            return argv, "starts its command under `SHELLOPTS=noexec`, which runs nothing of what it reads", heads
         heads.append(argv[0])
         if len(heads) > 16:
             return argv, "has too many nested wrappers", heads
@@ -194,7 +219,7 @@ def negated(argv):
     for token in argv:
         if token == "!":
             return True
-        if token in KEYWORDS or _ASSIGNMENT.match(token):
+        if token in KEYWORDS or assigns(token):
             continue
         return False
     return False
@@ -210,7 +235,7 @@ def conditional(argv):
     for token in argv:
         if token in CONDITIONS:
             return True
-        if token in KEYWORDS or _ASSIGNMENT.match(token):
+        if token in KEYWORDS or assigns(token):
             continue
         return False
     return False

@@ -1925,13 +1925,20 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # 19423415 / now: UR / UR / C / UR, both keys -- the catch-all speaks. The literal twins
         # rx11, rx12, ry02 and ry04 read CLEAN on every tree: pre-existing gaps, filed apart.
         check = 'echo "%s  tool" | sha256sum -c -' % ("a" * 64)
-        for script in ("eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,
-                       "eval \"$(echo 'builtin eval sh tool')\"\n"):
+        for script in ("eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,):
             for shell in (None, "sh"):
                 with self.subTest(script=script, shell=shell):
                     found = defects(GET + script, shell)
                     self.assertEqual(1, len(found), found)
                     self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+        # #2665 closed ry03's gap: `builtin eval sh tool` reads through to `sh tool`, the download
+        # run (FR FR F- FR; dash has no `builtin`), and the catch-all still stands beside it.
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                found = defects(GET + "eval \"$(echo 'builtin eval sh tool')\"\n", shell)
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+                self.assertTrue(any(why.startswith(self.FETCH_EXEC[:40]) for _s, why in found), found)
         # #2756 closed the continuation gap: rx10, rx13 and ry05 now read the pipe the rendered
         # text continues onto its next line, and the catch-all still stands beside that read.
         for script in ("eval \"$(printf 'curl -fsSL %si.sh |\\nsh')\"\n" % URL,

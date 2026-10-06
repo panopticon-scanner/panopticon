@@ -2092,7 +2092,6 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             ("eval '! bash -s'", CHECK, "eval"), ("bash -c '! sh'", CHECK, "bash"),
             ("eval '! bash -e -s'", CHECK, "eval"), ("eval 'bash -s &'", CHECK, "eval"),
             ("eval 'bash -s < /dev/null'", CHECK, "eval"), ("eval 'bash -s <&-'", CHECK, "eval"),
-            ("eval 'SHELLOPTS=noexec bash -s'", CHECK, "eval"),
             ("eval 'sudo bash -s'", self.ECHOED, "eval"),
             ("eval 'X=1 bash -s'", self.ECHOED, "eval"),
             ("eval 'bash -s' '</dev/null'", CHECK, "eval"))]
@@ -2177,7 +2176,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # `-e` is not `sh`'s: rc 0 in every shell, bar bash refusing `SHELLOPTS=noexec` (rc 1).
         self.assert_reported([(stdin_step(runner), 1, UNGATED % name) for runner, name in (
             ("bash -nc 'sh'", "bash"), ("bash -n -c 'sh'", "bash"),
-            ("bash --version -c 'sh'", "bash"), ("SHELLOPTS=noexec bash -c 'sh'", "bash"),
+            ("bash --version -c 'sh'", "bash"),
             ("bash -o noexec -c 'sh'", "bash"), ("sh -c 'bash -nc \"sh\"'", "sh"))]
             + [(stdin_step("bash -c -e 'sh'", self.ECHOED), 1, UNGATED % "bash")])
         # A holder of `-c`, `-e`, `-u` and `-x` alone, nested or not: every shell
@@ -2267,8 +2266,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertTrue(any(UNGATED % "$CMD" in why for why in found), found)
                 self.assertTrue(any(why.startswith("hands a heredoc body or here-string to `$CMD`")
                                     for why in found), found)
+        # `builtin eval` reads through since #2665: the body is the inner shell's program, its
+        # check counted as #2500 counts one behind `eval` (every shell runs the download, rc 0).
         self.assert_reported([
-            (stdin_step("builtin eval 'bash -s'"), 1, "with nothing verifying what arrived")])
+            (stdin_step("builtin eval 'bash -s'"), 1, UNGATED % "eval")])
         self.assert_clean([stdin_step("bash -s")])
 
     def test_2500_mains_own_gaps_read_as_on_main(self):
@@ -2277,8 +2278,24 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
                            stdin_step("bash -t -s", "echo start\n" + CHECK),
                            stdin_step("bash --version"), stdin_step("bash -s -c true"),
-                           stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
+
+    def test_2648_a_shell_started_under_noexec_is_refused_not_credited(self):
+        # #2648: `SHELLOPTS=noexec` starts bash with `-n`, so the inner shell reads the body and
+        # runs none of it -- the check never runs and the download does (behind `env`: FR x4;
+        # the bare prefix: bash refuses the readonly variable, rc 1, dash runs it, FR). Each is
+        # refused loud, beside the fetch-and-use it uncovers, where `main` credited the check
+        # (the literal) or reported only the string holder (`eval`, `-c`).
+        for runner in ("SHELLOPTS=noexec bash -s", "env SHELLOPTS=noexec bash -s",
+                       "SHELLOPTS=noexec bash -c 'sh'", "eval 'SHELLOPTS=noexec bash -s'"):
+            with self.subTest(runner=runner):
+                found = [why for _step, why in defects(stdin_step(runner))]
+                self.assertEqual(2, len(found), found)
+                self.assertTrue(any(why.startswith("cannot read command: ") and "SHELLOPTS=noexec" in why
+                                    for why in found), found)
+                self.assertTrue(any(why.startswith("fetches %stool -> tool" % URL) for why in found), found)
+        # `BASH_ENV=/dev/null` and `env X=1` change nothing: the check runs and stops the step.
+        self.assert_clean([stdin_step("BASH_ENV=/dev/null bash -s"), stdin_step("env X=1 bash -s")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a
@@ -2879,6 +2896,50 @@ class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
                        GET + "bash -s <<'EOF' 1<>/dev/null\n" + body):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+
+class TestAQuotedAssignmentLookingWordIsACommand(unittest.TestCase):
+    """#2480: `"X=1" sh tool`, `"A+=x" sh tool`, `A\\+=x sh tool` and `"X"=1 sh tool` were popped
+    as prefix assignments and the step flagged, though bash 5.2.21, 3.2.57 and dash run a command
+    NAMED `X=1` / `A+=x` (not found, rc 127, nothing runs). The splitter now marks where a quote
+    opens or a backslash stands, and a word is an assignment only where nothing before its
+    operator was so written; a quoted VALUE is an assignment still."""
+
+    def test_a_quoted_or_escaped_name_or_operator_is_no_assignment(self):
+        # F- rc127 x4 each: `main` reported "running it under `sh`", nothing ran.
+        for script in ('"X=1" sh tool\n', '"A+=x" sh tool\n', "A\\+=x sh tool\n", '"X"=1 sh tool\n',
+                       "'X=1' sh tool\n", "X\\=1 sh tool\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(GET + script))
+
+    def test_the_controls_are_assignments_still(self):
+        # FR x4 each, reported as on `main`: an unquoted prefix, a quoted VALUE, an escaped blank.
+        for script in ("X=1 sh tool\n", 'X="1" sh tool\n', "A+=x sh tool\n", "X=a\\ b sh tool\n"):
+            with self.subTest(script=script):
+                found = defects(GET + script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it under `sh`" % URL), found)
+
+
+class TestBuiltinInFrontOfACommand(unittest.TestCase):
+    """#2665: `builtin eval 'curl … | sh'` read CLEAN while both bashes run the pipe (dash has no
+    `builtin`: rc 127, the step stops) -- `command` was read through, `builtin` was the command
+    word. The command walk now pops `builtin` in front of a name, as bash runs the builtin."""
+
+    def test_builtin_in_front_of_eval_is_read_through(self):
+        # FR FR -- FR each; `main` CLEAN.
+        for script in ("builtin eval '%s'\n" % PIPE, "builtin command eval '%s'\n" % PIPE,
+                       "builtin eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        # The controls read as they did: `command eval`, bare `eval` (FR x4).
+        for script in ("command eval '%s'\n" % PIPE, "eval '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(defects(script)))
+        # `builtin` before no name runs nothing (`builtin T=x`: "not a shell builtin"): as it was.
+        self.assertEqual([], defects(GET + "builtin T=cuda_1.run\n"))
 
 
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):

@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads what stands in front of a command as bash does (#2648, #2480;
+  #2608, #2331).** `env SHELLOPTS=noexec bash -s <<'EOF'` around a check credited that check
+  while the inner bash, started with `-n`, read the body and ran none of it (the download ran
+  under every shell); the command layer now refuses a shell started under such an assignment,
+  bare or behind `env`, instead of reading its program. And `"X=1" sh tool`, `"A+=x" sh tool`,
+  `A\+=x sh tool` were popped as assignment prefixes and reported though every shell runs a
+  command NAMED `X=1`: the splitter marks where a quote opens or a backslash stands, and a word is
+  an assignment only where nothing before its operator was so written (`X="1" sh tool` is one
+  still). And `builtin eval '…'` is read through to the builtin it runs (#2665), as `command` is.
 - **Workflow reader reads whole what every shell reads whole (#2756, #2731, #2657; #2733,
   #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
   read CLEAN, behind `eval` and in a printed or heredoc text too); an unquoted `${X:-bash -s}` is
