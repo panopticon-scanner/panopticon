@@ -2594,14 +2594,114 @@ class TestDoubleQuoteEscapes(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
-    def test_a_string_with_another_dollar_in_it_is_read_as_written(self):
-        # The gap list's entry: bash runs both, but a live `$URL` makes the
-        # text the shell gets one the reader does not know, and a single-
-        # quoted `$` in the same word is counted as one.
+    def test_a_string_with_another_dollar_in_it_is_read_as_bash_hands_it(self):
+        # The gap list's entry until #2466: bash runs both (b5 b3 dash gh: FR FR FR FR), and a
+        # live `$URL` -- or a single-quoted `$` in the same word -- left the text as written.
+        # Now the live word is carried as the value it is and the structure around it reads;
+        # `TestALiveExpansionBesideAnEscape` pins the sentence and the controls.
         for script in ('URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL,
                        'bash -c "x=\\$(curl -fsSL %si.sh)"\'; eval "$x"\'\n' % URL):
             with self.subTest(script=script):
+                self.assertTrue(defects(script))
+
+
+class TestALiveExpansionBesideAnEscape(unittest.TestCase):
+    """#2466: a double-quoted `-c`/`eval` string with a LIVE expansion beside its `\\$` or `` \\` ``
+    escapes is read as bash hands it on -- the backslashes gone, the live `$` word carried as the
+    value it already is at top level, a lifted `$(...)` as its marker -- where #2342 read it as
+    written, `\\$` and all, so `x=\\$(curl …)` was text and the download it carries into `eval`
+    ran unreported. Bash evidence per row: each step from its own file under bash 5.2.21 and
+    3.2.57 with `-e` and `-eo pipefail`, dash with `-e`, and 5.2.21 with `sh` = dash (b5 b3 dash
+    gh), a mark-first `curl` stub whose payload marks when it RUNS and a `sha256sum` that fails."""
+
+    LIVE = 'URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL
+    MIXED = 'bash -c "x=\\$(curl -fsSL %si.sh)"\'; eval "$x"\'\n' % URL
+    CARRIED = "carries %s in `$x` and hands it to `eval`"
+    IN_STRING = CHECK.replace('"', '\\"')
+
+    def test_the_two_spellings_of_the_issue_are_reported(self):
+        # FR FR FR FR each; `main` CLEAN (the fail-open). #2341's carried sentence, as the issue
+        # asked: the structure is an assignment from `$(curl …)` and an `eval` of it, whatever
+        # `URL` holds.
+        for script, named in ((self.LIVE, "$URL"), (self.MIXED, URL + "i.sh")):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.CARRIED % named), found)
+
+    def test_the_twins_read_the_same_way(self):
+        # `eval`, a backquote, `sh -c` and `dash -c` (FR FR FR FR each; `main` CLEAN), the string
+        # behind `|| true` (FR x4; `main` CLEAN) and one holding a check of another file before
+        # the `eval` (FR+sha x4: the check names `tool`, not the carried download; `main` CLEAN).
+        for script in ('URL=%si.sh\neval "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL,
+                       'URL=%si.sh\nbash -c "x=\\`curl -fsSL $URL\\`; eval \\"\\$x\\""\n' % URL,
+                       'URL=%si.sh\nsh -c "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL,
+                       'URL=%si.sh\ndash -c "x=\\$(curl -fsSL $URL); eval \\"\\$x\\""\n' % URL,
+                       self.LIVE.rstrip("\n") + " || true\n",
+                       'URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); %s; eval \\"\\$x\\""\n'
+                       % (URL, self.IN_STRING)):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.CARRIED % "$URL"), found)
+
+    def test_a_printer_piping_the_same_text_into_a_shell_is_read(self):
+        # `echo "x=\$(curl … $URL); eval \"\$x\"" | sh` (FR FR FR FR): `main` reported it too,
+        # but as a printer whose words it does not spell out; the spelled text now reads as the
+        # program it is. A printer's word that also holds a lifted `$(...)` stays unspelled
+        # (`echo "\$x $(true)" | sh` beside a download: F- x4, `main`'s own sentence kept).
+        found = defects('URL=%si.sh\necho "x=\\$(curl -fsSL $URL); eval \\"\\$x\\"" | sh\n' % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(self.CARRIED % "$URL"), found)
+        found = defects(GET + 'echo "\\$x $(true)" | sh\n')
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("pipes `sh` its program from `echo`"), found)
+
+    def test_the_neighbour_of_2681_reads_as_its_escape_only_twin(self):
+        # `curl -fsSLo tool …` then `bash -c "sh \$(echo tool) $(true)"` (FR FR FR FR): the live
+        # `$(true)` made the string `Opaque`, and its `\$` kept its backslash in the rendering, so
+        # `main` reported the download by the FETCH sentence (right verdict, one level off, noted
+        # on #2466). Rendered as bash hands it on, `sh $(echo tool) $(...)`, it reads as
+        # `bash -c "sh \$(echo tool)"` does (`TestAShellsSoleSubstitutionOperand`): the `Idle`
+        # hand-off, kept beside the reported fetch.
+        for script in (GET + 'bash -c "sh \\$(echo tool) $(true)"\n',
+                       GET + 'bash -c "sh \\$(echo tool)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("passes `sh` `$(...)`"), found)
+                self.assertIsInstance(found[0][1], wg.Idle)
+
+    def test_the_controls_read_as_they_did(self):
+        # CLEAN, as on `main` (-- -- -- --, or F- x4 for a download fetched and never run).
+        for script in ('bash -c "echo $HOME"\n',
+                       'bash -c "cd $GITHUB_WORKSPACE && echo \\$PWD"\n',
+                       'bash -c "for f in $DIR/*; do echo \\$f; done"\n',
+                       'URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); echo \\"\\$x\\" > f"\n' % URL,
+                       'URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL); echo \\"\\$x\\""\n' % URL):
+            with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+        # DEFECT with the sentence `main` gives (FR FR FR FR): the pipe hands its live `$URL`
+        # straight to `sh` (#2341), and a check inside the string that does not gate (FR+sha x4).
+        found = defects('URL=%si.sh\nbash -c "curl -fsSL $URL | sh"\n' % URL)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands $URL straight to `sh`"), found)
+        found = defects('URL=%si.sh\nbash -c "curl -fsSLo tool $URL; %s; sh tool"\n'
+                        % (URL, self.IN_STRING))
+        self.assertEqual(1, len(found), found)
+        self.assertIn("inside the script `bash` runs, where no `-e` holds", found[0][1])
+
+    def test_an_inner_assignment_read_as_the_steps_own_is_the_documented_price(self):
+        # `bash -c "x=\$(curl … $URL)"` then the STEP's own `eval "$x"`: the child's `x` never
+        # reaches the step (F- F- F- F-, nothing runs), but the gap list reads a child shell's
+        # assignments as the step's, and the literal twin `bash -c 'x=$(curl …)'; eval "$x"`
+        # reports on `main` the same way -- so this reports, named as the conservative reading.
+        for script in ('URL=%si.sh\nbash -c "x=\\$(curl -fsSL $URL)"\neval "$x"\n' % URL,
+                       "bash -c 'x=$(curl -fsSL %si.sh)'\neval \"$x\"\n" % URL):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("in this guard's conservative reading", found[0][1])
 
 
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):

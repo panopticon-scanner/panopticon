@@ -383,9 +383,10 @@ def _assigns(words):
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
     and an array literal as part of the word that assigns it (#2348). A word
-    with a double-quoted `\\$` or `` \\` `` and no other `$` or backtick in it
-    carries the text bash makes of it, `spelled`, which is the program a
-    shell handed it runs (#2342); it reads as before."""
+    with a double-quoted `\\$` or `` \\` `` in it carries the text bash makes
+    of it, `spelled`, which is the program a shell handed it runs (#2342): the
+    backslash of each gone, a live `$` word beside them kept as the value word
+    it is (#2466), a lifted substitution as its marker; it reads as before."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
@@ -430,9 +431,9 @@ def _stage(text, context):
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
             setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
-        elif plain.count(_ESCAPED) == plain.count("$") + plain.count("`") > 0 and not _markers(word):
-            word = _Token(word, {})
-            setattr(word, "spelled", plain.replace(_ESCAPED, ""))
+        elif _ESCAPED in plain:
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":

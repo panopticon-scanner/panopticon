@@ -1099,6 +1099,22 @@ class TestThePrintersUnitPins(unittest.TestCase):
         stages = shell_reader.statements("cat <<'EOF' | sh\nbody text\nEOF\n")[0].stages
         self.assertEqual(("body text", False), wp.handed(stages[1], stages[:1]))
 
+    def test_printed_spells_a_live_dollar_beside_an_escape_but_never_a_substitution(self):
+        # #2466: the word's `spelled` text is bash's, the live `$URL` carried as it is; a word
+        # holding a lifted `$(...)` beside an escape is never spelled out here.
+        argv = shell_reader.statements('echo "x=\\$(curl $URL); eval \\"\\$x\\""')[0].stages[0].argv
+        self.assertEqual('x=$(curl $URL); eval "$x"\n', wp.printed(argv))
+        argv = shell_reader.statements('echo "\\$x $(true)"')[0].stages[0].argv
+        self.assertIsNone(wp.printed(argv))
+
+    def test_rendered_starts_from_the_text_bash_hands_on(self):
+        # #2466: the `Opaque` rendering of `bash -c "sh \$(echo tool) $(true)"` loses the `\$`
+        # as bash does, so the inner shell's own substitution is read as one (the #2681
+        # neighbour noted on #2466); a `$(...)` of the outer parse still renders `$(...)`.
+        argv = shell_reader.statements('bash -c "sh \\$(echo tool) $(true)"')[0].stages[0].argv
+        self.assertEqual("sh $(echo tool) $(...)", wp.rendered(argv[2]))
+        self.assertEqual("sh \\$(echo tool) $(...)", shell_reader.readable(argv[2]))
+
     def test_decoded_backslash_c_and_octal(self):
         self.assertEqual("a", wp._decoded("a\\cb"))
         self.assertEqual("A", wp._decoded("\\0101"))

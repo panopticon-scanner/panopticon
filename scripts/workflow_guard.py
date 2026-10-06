@@ -91,7 +91,9 @@ live, so a change that catches one fails there and edits this list.
   after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution are
   reported beside a download (#2483, #2486), though they may run none of it
   (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
-  A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
+  A `-c`/`eval` string loses its double-quoted `\$` escapes as bash drops them, a live `$` word
+  beside them carried as the value it is (#2342, #2466); one in a COMMAND-word position (`bash -c
+  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
   runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
