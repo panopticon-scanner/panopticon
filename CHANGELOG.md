@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: the shell option grammar moves to `scripts/workflow_options.py` (#2331).** A
+  pure move out of `scripts/workflow_programs.py`, which stood at the 700-line ceiling: the option
+  letter and name tables, the refusal readers (`_refused`, `_refused_name`), `_past_options` and the
+  three option-slot word readers (`_value`, `_before_operand`, `_may_spell_option`), byte for byte,
+  with every name re-exported from `workflow_programs` so no importer changed. Guard answers are
+  identical before and after over the 6,803 inputs the guard test families feed `job_defects` and
+  `fetch_exec_defects`; no expectation moved. Sizes: 700 -> 559, and 166 for the new module.
 - **`scripts/shell_reader.py` splits its command layer into `scripts/shell_command.py` (reader
   lane).** A pure move at the reader's size (699 of 700 lines): the keywords, assignment and
   function-header spellings a statement may open with, the shells and the default or optional `$`
