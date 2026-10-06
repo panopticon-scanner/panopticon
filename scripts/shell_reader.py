@@ -455,7 +455,7 @@ def _assigns(words):
 # in any spelling, `printf -v`, `mapfile`, `readarray`, `getopts` (and its `OPTARG`,
 # `OPTIND`), a declaration -- read to the statement's end: over-collecting withholds a
 # resolution, which is the fail-closed side.
-_ASSIGNED = re.compile(r"(?:^|[^\w$])([A-Za-z_][A-Za-z0-9_]*)\+?\\?=|\$\{([A-Za-z_]\w*):?="
+_ASSIGNED = re.compile(r"(?:^|[^\w$])\$?['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\+?\\?=|\$\{([A-Za-z_]\w*):?="
                        r"|\bfor[ \t]+([A-Za-z_]\w*)\b")
 _SETTERS = re.compile(r"\b(?:read|mapfile|readarray|getopts|printf[ \t]+-v|declare|typeset|local"
                       r"|export|readonly)\b([^\n;|&)]*)")

