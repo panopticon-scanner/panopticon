@@ -93,44 +93,102 @@ def long_option(argv, at):
     found = _LONG.fullmatch(word) if type(word) is str else None
     if not found:
         return None
-    if word[1] != "-" and (os.path.basename(argv[0]) not in ("bash", "sh") or not _leading(argv, at)):
+    if word[1] != "-" and (os.path.basename(argv[0]) not in ("bash", "sh") or at >= _run(argv)[0]):
         return None
     name = "--" + found[1]
     return name if name in LONG_OPTIONS or name in LONG_VALUE_OPTIONS else None
 
 
-def _leading(argv, at):
-    """Whether every word before `argv[at]` is a long option, in either spelling, or the FILE
-    one takes -- the leading run in which bash reads one-dash long names."""
-    owed = 0
-    for i in range(1, at):
-        if owed:
-            owed -= 1
-            continue
+_RUNS: dict[int, tuple[list, int, tuple[int, int, bool]]] = {}
+
+
+def _run(argv):
+    """One left-to-right pass over a command's option words, kept per argv (#2858 round 3): the
+    index past the LEADING run of long options, a run that holds through a word that may expand to
+    nothing or to a long option (`X=; bash $X -login` runs: the shell takes `-login` as leading);
+    the index past the SURE run, every word a literal long option, where alone a one-dash exit or
+    refusal may clear (after `$X` the word may be the letters, which may run); and whether the shell
+    runs NONE of its program when its options end -- the last of `-n`/`+n` and `-o noexec`/`+o
+    noexec` wins (a cluster's `o` takes the next word: `-eo noexec`), and `-D`/`+D` print strings
+    and run nothing. Computed once per argv: a run of ten thousand words costs what the walk does."""
+    hit = _RUNS.get(id(argv))
+    if hit is not None and hit[0] is argv and hit[1] == len(argv):
+        return hit[2]
+    bash = type(argv[0]) is str and os.path.basename(argv[0]) in ("bash", "sh")
+    leading = sure = 1
+    in_run, expanded, noexec, dumps, owed = True, False, False, False, 0
+    for i in range(1, len(argv)):
         word = argv[i]
-        name = long_option(argv, i)
-        if name is None and not (type(word) is str and word[:2] == "--" and word != "--"):
-            return False
-        owed = name in LONG_VALUE_OPTIONS
-    return True
+        if owed:                                # a long option's FILE or an `o`'s name
+            owed -= 1
+            if in_run:
+                leading, sure = i + 1, (sure if expanded else i + 1)
+            continue
+        if not _literal(word):                  # possibly empty, possibly an option word
+            if in_run:
+                expanded, leading = True, i + 1
+            continue
+        if word in ("-", "--") or word[:1] not in ("-", "+"):
+            break                               # the options end
+        found = _LONG.fullmatch(word)
+        name = "--" + found[1] if found and (word[1] == "-" or bash and in_run) else None
+        if name not in LONG_OPTIONS and name not in LONG_VALUE_OPTIONS:
+            name = None
+        if name or word[:2] in ("--", "++"):
+            if in_run:
+                leading, sure = i + 1, (sure if expanded else i + 1)
+            owed = name in LONG_VALUE_OPTIONS
+            continue
+        in_run = False
+        letters = word[1:]
+        if not letters.isalpha():
+            continue
+        owed = sum(letter in VALUE_OPTIONS for letter in letters)
+        if "n" in letters:
+            noexec = word[0] == "-"
+        if "noexec" in argv[i + 1:i + 1 + letters.count("o")]:   # each `o` takes a word (`-oo e noexec`)
+            noexec = word[0] == "-"
+        if "D" in letters:                      # strings printed, nothing run, whatever `+n` says
+            dumps = True
+    if len(_RUNS) > 256:
+        _RUNS.clear()
+    _RUNS[id(argv)] = (argv, len(argv), (leading, sure, noexec or dumps))
+    return leading, sure, noexec or dumps
+
+
+def _long_word(argv, at):
+    """What the stdin walk does with the long option word `argv[at]` at the step's own level:
+    None where it is no long word; "void" where the shell refuses it or prints and exits, running
+    nothing (`_refused_long`), or where, after a word that may expand to nothing, it is an exit
+    whose letters hold `n`/`D` -- under either reading nothing runs; "text" where after such a word
+    it spells an exit, or letters holding `n`/`D` -- it may be the letters, which may run, or the
+    exit, which credits nothing, so the body is the step's own text with no check counting; "file"
+    where the next word is its FILE; "on" otherwise."""
+    name = long_option(argv, at)
+    word = argv[at]
+    if name is None and not (type(word) is str and word[:2] in ("--", "++")):
+        return None
+    if _refused_long(argv, at):
+        return "void"
+    if name and word[1] != "-" and at >= _run(argv)[1]:
+        if name in LONG_EXITS and ("n" in word or "D" in word):
+            return "void"                       # `$X -version`: letters or exit, nothing runs
+        if name in LONG_EXITS or "n" in word or "D" in word:
+            return "text"
+    return "file" if name in LONG_VALUE_OPTIONS else "on"
 
 
 def _runs_nothing(argv, at):
-    """Whether the option word `argv[at]` keeps a measured shell from running ANY of its program
-    though it reads it, exiting 0 (#2858 round 3): a cluster of letters holding `n` (noexec: `bash
-    -n -s <<'EOF'`, and `-version` after a short option, the letters `v e r s i o n`) or `D`
-    (`--dump-strings` by letter), or `-o noexec`. The stdin walk answers as for a refusal -- the
-    body is not the shell's program and no check in it counts -- so a use after is reported and
-    a download in the body is not: nothing runs. `-t` runs ONE command and is read on."""
+    """Whether a measured shell, its option word `argv[at]` among them, runs NONE of its program
+    though it reads it, exiting 0 (#2858 round 3): the whole run's last state (`_run`) -- `-n`
+    (noexec: `bash -n -s <<'EOF'`, and `-version` after a short option, the letters `v e r s i o
+    n`) or `-o noexec`, each undone by a later `+n` / `+o noexec` (`bash -n +n -s` runs), or `-D`
+    (strings printed). The stdin walk answers as for a refusal -- the body is not the shell's
+    program and no check in it counts -- so a use after is reported and a download in the body is
+    not: nothing runs. `-t` runs ONE command and is read on."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
-    word = argv[at]
-    if type(word) is not str or long_option(argv, at):
-        return False
-    if word == "-o" and at + 1 < len(argv) and argv[at + 1] == "noexec":
-        return True
-    letters = word[1:]
-    return letters.isalpha() and (word[:1] == "-" and "n" in letters or word[:1] in "-+" and "D" in letters)
+    return type(argv[at]) is str and _run(argv)[2]   # the whole run's last state (`-n +n` runs)
 
 
 def _void(argv, at):
@@ -206,6 +264,8 @@ def _refused_long(argv, at):
     word, name = argv[at], long_option(argv, at)
     if os.path.basename(argv[0]) == "dash":
         return word[:2] == "--" and word != "--"
+    if name and word[1] != "-" and at >= _run(argv)[1]:
+        return False                            # after `$X` the word may be letters: read on
     if name:                                    # `bash -rcfile` with no FILE after it: rc 2
         return name in LONG_EXITS or name in LONG_VALUE_OPTIONS and at + 1 >= len(argv)
     glued = _LONG.fullmatch(word.split("=", 1)[0]) if "=" in word else None
@@ -252,8 +312,8 @@ def _past_options(argv, at):
         if _refused(argv, at) or _refused_name(argv, at):
             return []                           # the shell exits before the program
         at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
-        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
-            return []                           # a two-dash word after `-c`: refused (`-help` is letters)
+        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--" or long_option(argv, at):
+            return []                           # a long option after `-c`: refused
         if argv[at] in ("-", "--"):
             return argv[at + 1:at + 2]
         if not argv[at].startswith(("-", "+")):

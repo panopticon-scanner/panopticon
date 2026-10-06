@@ -62,7 +62,7 @@ from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
                               _before_operand, _may_spell_option, _past_options,
-                              _refused, _refused_long, _refused_name, _value, _void)
+                              _long_word, _refused, _refused_long, _refused_name, _value, _void)
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -546,14 +546,14 @@ def _options(argv, depth):
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
             return (answer, reader) if value_option else (None, None)
-        long = long_option(argv, at - 1)
-        if long or token[:2] in ("--", "++"):
-            # A long option, in either spelling (#2616): bash refuses one outside its table, or
-            # one that prints and exits, before it reads stdin; `--rcfile FILE` takes the next
-            # word, which is no script.
-            if shell and not depth and _refused_long(argv, at - 1):
+        if word := _long_word(argv, at - 1):
+            # A long option, in either spelling (#2616): refused or printing and exiting, nothing
+            # runs; after a `$X` it may be letters that run (#2858 r3); `--rcfile FILE` skips its FILE.
+            if shell and not depth and word == "void":
                 return None, None
-            at += long in LONG_VALUE_OPTIONS
+            if shell and not depth and word == "text":
+                return answer, ()
+            at += word == "file"
             continue
         letters = token[1:]
         if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):

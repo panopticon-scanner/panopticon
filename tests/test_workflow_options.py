@@ -206,7 +206,7 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertTrue(defects(script), script)
         # -- -- -- --: `-help` alone prints and exits; a two-dash word off the leading run is an
-        # error (rc 1); `-login` after `-c` is `-l -o gin`, refused (rc 2); a value glued on (rc 2).
+        # error (rc 1); `-login` after `-c` is letters bash refuses (rc 2); a value glued on (rc 2).
         for script in (body("bash -help", PIPE), body("bash -e --help", PIPE), "bash -c -login '%s'\n" % PIPE,
                        body("bash --rcfile=/dev/null -e", PIPE)):
             with self.subTest(script=script):
@@ -214,6 +214,66 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         # Fail-closed, reported though nothing runs: `bash -e -login` (`-o gin`, rc 1), `bash -e
         # -norc` (rc 1), `bash -e -noediting` (rc 1) -- the letters' own refusals are not all in
         # the table, and a check behind them is never credited.
+
+    def test_the_last_noexec_state_wins_and_a_cluster_o_takes_the_next_word(self):
+        # #2858 round 3 (B1): bash, sh and dash keep reading options, so a later `+n` / `+o
+        # noexec` turns noexec back off and the body runs: FR FR FR FR (forge, gt2.sh, both
+        # bashes and dash) on each -- `-n -s +n` too (`+n` after `-s` is still an option).
+        for runner in ("bash -n +n -s", "bash -o noexec +o noexec -s", "bash -n -s +n", "bash -n +o noexec -s",
+                       "sh -n +n -s", "dash -n +n -s", "dash -n -s +n"):
+            with self.subTest(runner=runner):
+                self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
+        # -- -- -- --: noexec on at the end (`+n -n`), `-D` undone by nothing (`-D +D`), and a
+        # cluster's `o` takes the next word as its name (`-eo noexec`, `-oe noexec`: finding 1).
+        for runner in ("bash +n -n -s", "bash -D +D -s", "bash -eo noexec -s", "bash -oe noexec -s"):
+            with self.subTest(runner=runner):
+                self.assertEqual([], defects(body(runner, PIPE)), runner)
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+        # `-n +n -s` with a check in the body: the body is the program again, the check counts.
+        self.assertEqual([], defects(GET + body("bash -n +n -s", CHECK) + USE))
+        # Each `o` takes a word (`-oo errexit noexec`: the second is `noexec`), and `D` runs
+        # nothing whatever `+n` says (`+nD`): -T rc 0, the use after unverified (the seat's matrix).
+        for runner in ("bash -oo errexit noexec", "sh -oo errexit noexec", "dash -oo errexit noexec", "bash +nD"):
+            with self.subTest(runner=runner):
+                self.assertEqual([], defects(body(runner, PIPE)), runner)
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+
+    def test_a_word_that_may_expand_to_nothing_holds_the_leading_run(self):
+        # #2858 round 3 (B2): `$X`, `${X:-}`, `$(true)` may expand to nothing or to a long
+        # option, and bash then takes the one-dash word after as leading: FR FR FR FR with `X=`,
+        # `X=--norc`, `X=-norc` (forge, both bashes). The word is never read as a short option.
+        for pre, runner in (("X=\n", "bash $X -login"), ("X=--norc\n", "bash $X -login"), ("X=-norc\n", "bash $X -login"),
+                            ("X=\n", "bash ${X:-} -noprofile"), ("", "bash $(true) -login"), ("X=\n", "bash $X $X -login")):
+            with self.subTest(runner=pre + runner):
+                self.assertTrue(any(STREAM in why for why in defects(pre + body(runner, PIPE))), runner)
+        self.assertTrue(defects("X=\nbash $X -norc -c '%s'\n" % PIPE))
+        # Where `$X` may spell a short option instead, the one-dash word after may be LETTERS
+        # that run (`X=-e; bash $X -help`: FR): an exit after such a word is read as the step's
+        # own text with no check credited, reported either way (`X=` alone: nothing runs, -- --,
+        # the fail-closed price); an exit whose letters hold `n`/`D` runs nothing under either
+        # reading (`$X -version`: CLEAN with a download, reported with a check and a use after).
+        self.assertTrue(any(STREAM in why for why in defects("X=-e\n" + body("bash $X -help", PIPE))))
+        self.assertTrue(any(STREAM in why for why in defects("X=\n" + body("bash $X -help", PIPE))))
+        self.assertEqual([], defects("X=\n" + body("bash $X -version", PIPE)))
+        found = defects("X=\n" + GET + body("bash $X -version", CHECK) + USE)
+        self.assertTrue(any(UNVERIFIED in why for why in found), found)
+        # After a literal short option the run is over, `$X` or not: `-login` is letters, refused.
+        self.assertEqual([], defects("X=\n" + body("bash -e $X -login", PIPE)))
+
+    def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
+        # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and ten
+        # thousand one-dash words cost within 2x of the same run of two-dash words (the seat
+        # measured 7.7 s at sixteen and a timeout at twenty on the round-3 head).
+        import time
+        for n in (20, 2000):
+            runs = {}
+            for opt in ("--norc", "-norc"):
+                t0 = time.perf_counter()
+                self.assertTrue(defects(body("bash " + " ".join([opt] * n), PIPE)))
+                runs[opt] = time.perf_counter() - t0
+            self.assertLess(runs["-norc"], max(2 * runs["--norc"], 0.5), (n, runs))
 
     def test_a_shell_that_reads_its_program_and_runs_none_of_it(self):
         # #2858 round 3: `-n` (noexec) and `-o noexec` read the heredoc and run nothing of it,

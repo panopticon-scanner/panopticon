@@ -31,10 +31,14 @@ evidence exposed.
   (noexec) runs nothing of it and the use after ran unverified -- main's own gap, listed in the
   reader-forms docstring; and after a short option `-version` and `-noprofile` are the letters
   bash reads (a mid-cluster `o` takes the next word as its name, and with none is accepted
-  silently), `n` among them. A measured shell's `n` letter, `-o noexec` and `-D`/`+D` (strings
-  printed, nothing run) at the step's own level now read as "the program never runs": the body is
-  not the shell's program, no check in it counts, a use after is reported, and a download in the
-  body stays CLEAN (nothing runs). `-t` runs one command and is read on; `SHELLOPTS=noexec` is unchanged.
+  silently), `n` among them. A measured shell's `n` letter, `-o noexec` (a cluster's `o` takes the
+  next word: `-eo noexec`) and `-D`/`+D` (strings printed, nothing run) at the step's own level now
+  read as "the program never runs" -- the LAST state of the option run, since a later `+n` or `+o
+  noexec` turns it back off and `bash -n +n -s` runs: the body is not the shell's program, no check
+  in it counts, a use after is reported, and a download in the body stays CLEAN (nothing runs).
+  `-t` runs one command and is read on; `SHELLOPTS=noexec` is unchanged. A word that may expand to
+  nothing (`X=; bash $X -login`) holds the leading run of long options, as bash does, and an exit
+  after it may be letters that run, so it is read as the step's own text with no check credited.
 - **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,
   `--help`, `--dump-strings` and `--dump-po-strings`, in either spelling, print and exit before bash
   reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check
