@@ -356,6 +356,25 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
             and swallowed(body, position, statement, statement.stages[-1]) is None)
 
 
+def inlined_reaches(flat, stmts, indexes, on, fails):
+    """Give a handed script's bounded failures their reach in flat indices.
+
+    `_stops_step` measures an `&&` list in the child statement list, while
+    `clears` compares positions after nested scripts have been flattened.
+    `indexes` maps between them. Keep an existing refusal in either credit
+    slot: parent posture and a pipeline without pipefail remain stronger.
+    """
+    for position, index in enumerate(indexes):
+        stops = _stops_step(stmts, position, on, fails)
+        why = (Reach(0, _LOST) if stops is _LOST
+               else Reach(indexes[stops] - index)
+               if isinstance(stops, int) and stops >= position else None)
+        statement = flat[index]
+        if why is not None and statement.credit[0] is None:
+            flat[index] = statement._replace(credit=(why, statement.credit[1] or why))
+    return flat
+
+
 def _rescue_bounds(stmts, branch):
     """Inclusive statement bounds for the rescue after an `||` separator."""
     start = branch + 1

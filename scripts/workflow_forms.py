@@ -58,15 +58,14 @@ import shell_reader
 from shell_reader import command, statements
 
 
-# Compatibility bindings share the single fetch owner with existing callers,
-# the operand questions with theirs, and the gating ones with theirs.
+# Compatibility bindings share the fetch, operand and gating owners with existing callers.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
-                             conditional_reach as reach, inlined_stops, seed as seed, swallowed as swallowed)
+                             conditional_reach as reach, inlined_reaches, inlined_stops, seed as seed, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -200,7 +199,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     where the holder's string names it (`runs_under`); `outer`: the bodies of the command running
     it, below the step's own, and `key` a name for the script, unique in the step, for its own
     bodies."""
-    out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
+    out, last, where, top, indexes = [], len(stmts) - 1, regions(stmts), errexit is None, []
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
     on = _errexit_states(stmts, errexit, where, shell=shell)
@@ -238,10 +237,11 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                else _UNGATED % shell if not stops
                else _RUNS_ON % shell if not (on[index] or index == last)
                else None)
+        indexes.append(len(out))
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
             (why, why if fails[index] or type(why) is str or len(statement.stages) == 1 and why is not None else _PIPED % shell)))
-    return out
+    return out if top else inlined_reaches(out, stmts, indexes, on, fails)
 
 
 # The words a `set` this module reads may stand behind: `builtin` and `eval`

@@ -2460,6 +2460,46 @@ class TestAParentRefusalKeepsAChildScriptsReach(unittest.TestCase):
                 self.assertIn("inside the script `sh` runs", found[0][1])
 
 
+class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
+    """#2416: a child's suspended `-e` skips only its `&&` list."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    INLINE_USE = USE.replace("\n", "; ").rstrip("; ")
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def reported(self, body, use=USE):
+        found = self.job(body, use=use)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs ahead of `&&`, where the shell suspends `-e`", found[0][1])
+
+    def test_a_use_after_the_childs_and_list_is_reported(self):
+        for body in ("sh -ec '%s && echo checked; echo more'\n",
+                     "eval '%s && echo checked; true'\n",
+                     "bash -e -s <<'EOF'\n%s && echo checked\necho more\nEOF\n"):
+            with self.subTest(body=body):
+                self.reported(body)
+
+    def test_a_use_inside_the_child_after_its_and_list_is_reported(self):
+        for body in ("sh -ec '%s && echo checked; echo more; " + self.INLINE_USE + "'\n",
+                     "eval '%s && echo checked; true; " + self.INLINE_USE + "'\n",
+                     "bash -e -s <<'EOF'\n%s && echo checked\necho more\n" + self.USE + "EOF\n"):
+            with self.subTest(body=body):
+                self.reported(body, use="")
+
+    def test_a_use_inside_the_same_and_list_stays_gated(self):
+        for body in ("sh -ec '%s && " + self.INLINE_USE + "'\n",
+                     "eval '%s && " + self.INLINE_USE + "'\n",
+                     "bash -e -s <<'EOF'\n%s && " + self.INLINE_USE + "\nEOF\n"):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body, use=""))
+
+    def test_a_nested_script_in_the_list_is_inside_its_flat_reach(self):
+        body = "sh -ec '%s && eval \"echo before; " + self.INLINE_USE + "\"; echo more'\n"
+        self.assertEqual([], self.job(body, use=""))
+
+
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     """#2338: a pipeline's status is its LAST command's unless `pipefail`
     holds, so a check piped into another command (`CHECK | tee log`) stops

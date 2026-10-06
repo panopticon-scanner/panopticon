@@ -14,6 +14,9 @@ evidence exposed.
   so a use after it is still reported; a child without its own `-e` remains reported too. Checks
   whose `-e` is suspended by an `&&`/`||` list or condition, or whose status is hidden by a later
   pipeline stage without child pipefail, also remain reported when execution reaches a later use.
+- **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
+  `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
+  A use inside the same list remains gated, including one in a nested script.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
