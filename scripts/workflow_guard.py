@@ -98,7 +98,9 @@ live, so a change that catches one fails there and edits this list.
   `bash -c "\$x sh tool"`, `$SUDO curl … | sh`). A value the step assigns that is no wrapper keeps
   the word (`A=X=1; $A sh x` runs `X=1`; `workflow_annotate._mark`), as does a quoted `"$SUDO"`;
   one set outside the step that runs nothing of what follows (`SUDO=echo` in `env:`) over-reports.
-  A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
+  A `-c`/`eval` string loses its double-quoted `\$` escapes as bash drops them, a live `$` word
+  beside them carried as the value it is (#2342, #2466); one in a COMMAND-word position (`bash -c
+  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
   runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
