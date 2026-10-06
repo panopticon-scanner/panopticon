@@ -51,7 +51,9 @@ evidence exposed.
   a `--` ends anything (`bash -rcfile -- -login -c P` runs `P`, `--` the rc file), and a `-c`
   after an operand is still read, as on main, since the FILE may hand its parameters to a shell
   (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`) -- so `bash /dev/null -c 'sh'` and
-  `bash x.sh -ec 'sh -e'` with a heredoc keep their readings and their pins. The price, fail-closed: where nothing runs in any reading measured (`X=;
+  `bash x.sh -ec 'sh -e'` with a heredoc keep their readings and their pins; past that operand
+  every word is the FILE's parameter, and nothing bash would refuse or exit on clears (`echo 'eval
+  "$4"' > w.sh; bash w.sh -o pipefial -c P` runs `P`, as do `--version`, `--help` and `--`). The price, fail-closed: where nothing runs in any reading measured (`X=;
   bash -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`) the step is reported, and so
   is a use after a check in `bash -s "$X" <<'EOF'`.
 - **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,

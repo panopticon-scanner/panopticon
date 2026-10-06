@@ -293,19 +293,23 @@ def _dash_c_operand(argv):
     after the options past a cluster carrying `c` (`_past_options`), or none where an option word
     before the cluster is one the shell refuses (#2606, #2616: `bash -o pipefial -c P`) or a `--`
     ends the options first. An option's value is skipped before anything else is asked of it, a
-    `--` too (`bash -rcfile -- -c P` runs `P`: the `--` is the rc file). A cluster after an operand
-    is still read: bash hands it to the FILE as a parameter, and a FILE may hand its parameters to a
-    shell (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`)."""
-    owed = 0
+    `--` too (`bash -rcfile -- -c P` runs `P`: the `--` is the rc file). Past an operand -- the
+    FILE -- every later word is the FILE's parameter, and a FILE may hand its parameters to a shell
+    (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`, and `eval "$4"` runs `P` after `-o
+    pipefial`): there no word refuses, exits, owes a value or ends the search, and every cluster
+    carrying `c` hands on its operand as `main` reads it (#2858 round 5)."""
+    owed, past = 0, False
     for position, token in enumerate(argv[1:], start=1):
-        if owed:                                # an option's value, not an option word
+        if owed and not past:                   # an option's value, not an option word
             owed -= 1
             continue
-        if token == "--":
+        if token == "--" and not past:
             break
         long = long_option(argv, position)
         if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
             return _past_options(argv, position)
+        if past:
+            continue                            # the FILE's parameter: nothing bash refuses
         if long or token[:2] == "--":
             if _refused_long(argv, position):
                 return []
@@ -314,6 +318,8 @@ def _dash_c_operand(argv):
             if _refused(argv, position) or _refused_name(argv, position):
                 return []
             owed = sum(letter in VALUE_OPTIONS for letter in token[1:])
+        else:
+            past = True                         # an operand: the FILE, its parameters after it
     return []
 
 

@@ -112,8 +112,9 @@ live, so a change that catches one fails there and edits this list.
   expand nothing is sure (#2858): no refusal, exit, noexec or `-c` there clears, the `-c` string is
   looked for in every reading of it, and no check in the body counts. Still open: `--pretty-print`
   (bash 5.2 prints and runs nothing), a value right after `-c` (`Y=-c; bash -login -c $Y P` and `X=-c;
-  bash -e -rcfile $X P` run `P`), `set -n` inside the body, and `$*` before a one-dash option (read
-  as a pattern, so taken for the script FILE). Behind a string an inner
+  bash -e -rcfile $X P` run `P`), a value after the FILE that a FILE hands on (`X=-c; bash w.sh $X P`
+  with `eval "$2"` in `w.sh`), `set -n` inside the body, and `$*` before a one-dash option (read as
+  a pattern, so taken for the script FILE). Behind a string an inner
   shell's refusal is read on, `-O`'s shopt names have no table, and no refusal is read as stopping
   the step: a use after `bash -oo pipefail -c P` or `bash -K <<'EOF'` is reported though the step
   stops. Because zsh runs twenty of bash's refused letters and ksh

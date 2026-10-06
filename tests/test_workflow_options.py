@@ -340,6 +340,20 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 script = "printf '%s\\n' > w.sh\nbash w.sh -c '%s'\n" % (body_text, PIPE)
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
         self.assertTrue(any(STREAM in why for why in defects("bash ./deploy.sh -c '%s'\n" % PIPE)))
+        # Past the FILE every word is its parameter, so nothing bash would refuse or exit on clears
+        # (the coordinator's pre-check of 3f19a0a1): with the FILE handing on the word after `-c`,
+        # each runs `P` (FR on both bashes, forge) -- a bad `-o`/`+o`/`-O` name, `--version`,
+        # `--help`, `--dump-strings`, `--rcfile` (no value owed), and `--`, which `main` read as
+        # the end of the options. `exec bash "$@"` with `--version` runs nothing (-- --), but the
+        # FILE is not the guard's to know: reported, fail-closed, as `main` reports it.
+        for body_text, words in (('eval "$4"', "-o pipefial"), ('eval "$4"', "+o pipefial"),
+                                 ('eval "$4"', "-O nosuchopt"), ('eval "$3"', "--version"),
+                                 ('eval "$3"', "--help"), ('eval "$3"', "--dump-strings"),
+                                 ('eval "$3"', "--rcfile"), ('eval "$3"', "--"),
+                                 ('exec bash "$@"', "--version")):
+            with self.subTest(file=body_text, words=words):
+                script = "echo '%s' > w.sh\nbash w.sh %s -c '%s'\n" % (body_text, words, PIPE)
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
 
     def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
         # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and ten
