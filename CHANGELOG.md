@@ -16,8 +16,11 @@ evidence exposed.
   pipeline stage without child pipefail, also remain reported when execution reaches a later use.
 - **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
   `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
-  A use inside the same ordinary list remains gated, including one in a nested script; a negated
-  or conditional check remains reported, including in a case arm or function body.
+  A use in the skipped suffix of that ordinary list remains gated, including one in a nested
+  script. A negation or an `if`/`while` condition that prevents the check's failure from gating the
+  child remains reported, including after a case arm or function header. The same bound turns 315
+  former reports into honest clears, such as `C && echo ok && U; echo more` under `set +e`, where
+  no supported shell runs `U`.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash

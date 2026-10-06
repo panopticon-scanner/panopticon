@@ -2523,6 +2523,46 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                     self.assertTrue("is negated" in found[0][1]
                                     or "is an `if`/`while` test" in found[0][1], found)
 
+    def test_a_bare_function_body_keeps_its_failure_context(self):
+        bodies = (
+            "bash -ec 'f() if ! %s && " + self.INLINE_USE + "; then :; fi; f'\n",
+            "bash -e -s <<'EOF'\nf() if ! %s && " + self.INLINE_USE
+            + "; then :; fi\nf\nEOF\n",
+            "eval 'f() if ! %s && " + self.INLINE_USE + "; then :; fi; f'\n",
+            "bash -ec 'f() ( ! %s && " + self.INLINE_USE + " ); f'\n",
+            "eval 'f() ( ! %s && " + self.INLINE_USE + " ); f'\n",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                found = self.job(body, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_a_case_in_a_function_keeps_its_failure_context(self):
+        child = ("bash -ec 'f() { case x in x) ! %s && " + self.INLINE_USE
+                 + ";; esac; }; f'\n")
+        for prefix, shell in (("set +e\n", None), ("", "bash {0}"), ("", "sh {0}")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_an_ordinary_negation_overrides_outer_failure_credit(self):
+        child = "bash -ec '! %s && " + self.INLINE_USE + "; echo more'\n"
+        for prefix, shell in (("set +e\n", None), ("", "bash {0}")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_an_unbounded_child_reach_does_not_override_a_piped_group(self):
+        body = ("{\nbash -ec '%s && eval \"echo a; echo b\" && echo done'\n} | cat\n"
+                + self.USE)
+        found = self.job(body)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("the checksum that names /tmp/payload", found[0][1])
+        self.assertIn("the step does not stop when that script fails", found[0][1])
+
     def test_a_brace_group_ahead_of_and_has_the_childs_local_reach(self):
         body = "bash -ec '{ %s; } && echo checked; " + self.INLINE_USE + "'\n"
         for shell in (None, "bash", "sh"):

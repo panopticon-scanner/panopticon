@@ -409,11 +409,46 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
+def _function_body(words):
+    """Words after a function header, whatever compound opens its body."""
+    name = _function_syntax(words)[0]
+    if name is None:
+        return None
+    start = 0
+    while (start < len(words) and words[start] in shell_reader.KEYWORDS
+           and words[start] != "function"):
+        start += 1
+    if words[start] == "function":
+        end = start + 2
+    elif words[start] == name + "()":
+        end = start + 1
+    else:                                           # `name () compound-command`
+        end = start + 2
+    if end < len(words) and words[end] == "()":
+        end += 1
+    return words[end:]
+
+
 def _failure_context(argv):
-    """Words around a command's status after a case arm or function header."""
-    words = argv[1:] if argv and shell_reader.is_arm(argv[0]) else argv
-    if _function_syntax(words)[0] is not None and "{" in words:
-        words = words[words.index("{") + 1:]
+    """Words around a status after its structural headers, to a fixed point."""
+    words = argv
+    while words:
+        if shell_reader.is_arm(words[0]):
+            words = words[1:]
+            continue
+        body = _function_body(words)
+        if body is not None:
+            words = body
+            continue
+        if words[0] in ("{", "("):
+            words = words[1:]
+            continue
+        # A function header before `case` makes shell_reader retain the arm as
+        # plain words rather than an arm token: `case WORD in PATTERN command`.
+        if len(words) > 4 and words[0] == "case" and words[2] == "in":
+            words = words[4:]
+            continue
+        return words
     return words
 
 
@@ -476,7 +511,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         inherited_child_reach = (type(own) is Reach and own.span is None
                                  and isinstance(outer, Reach))
         if own and not inherited_child_reach:
-            if type(own) is Reach:
+            if type(own) is Reach and own.span is not None:
                 local = own
             elif not (negated(head) or negated(stage_context)
                       or conditional(head) or conditional(stage_context)):
