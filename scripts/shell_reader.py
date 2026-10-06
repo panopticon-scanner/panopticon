@@ -156,6 +156,10 @@ def _bare_blanks(segment):
             continue
         if quote:
             quote = "" if ch == quote[-1] else quote
+        elif segment.startswith("$$", i):
+            out.append("$$")                    # the PID, as `_split` pairs it: no `$'` opens
+            i += 2
+            continue
         elif segment.startswith("$'", i):
             # `$'…'` as `_split` reads it: bash's text for it, single-quoted (#2344).
             end = i + 2
@@ -171,7 +175,7 @@ def _bare_blanks(segment):
             continue
         elif ch in "'\"":
             quote = ch
-        out.append(_BLANK if ch.isspace() and not quote else ch)
+        out.append(_BLANK if ch in " \t\n" and not quote else ch)     # what the shells split on
         i += 1
     return "".join(out) if _BLANK in out else None
 
@@ -488,16 +492,30 @@ def _split_default(word, context):
     word whole -- `-o ${D:-tool }` is the operand `${D:-tool` and a stray `}`, which the fetch
     reader refuses as an unresolved transfer. No default is resolved to its literal: the name
     may be set where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`, the runner),
-    and reading `${D:-x }` as the file `x` could only clear a step `main` reports (#2756)."""
+    and reading `${D:-x }` as the file `x` could only clear a step `main` reports (#2756). The
+    first piece keeps the whole word (`readings`), so a use that reads it whole still meets it."""
     pieces = getattr(word, "pieces", None)
-    return None if getattr(word, "kept", False) or not pieces else list(pieces)
+    if getattr(word, "kept", False) or not pieces:
+        return None
+    first = pieces[0] if _markers(pieces[0]) else _Token(pieces[0], {})
+    setattr(first, "whole", word)
+    return [first, *pieces[1:]]
+
+
+def readings(word):
+    """The spelling a word holding a bare blank has besides its own (#2856 round 6): the whole
+    `${…}` word a destination read as `main` read it was split from, or `main`'s first piece of
+    a word read whole -- so a destination and a use meet whichever way each was read."""
+    pieces = getattr(word, "pieces", None)
+    other = getattr(word, "whole", None) or (pieces[0] if pieces else None)
+    return {other} if other is not None else set()
 
 
 def _defaulted(argv, context):
-    """A fetcher's unquoted `${…}` operands holding a blank, split as `main` read them
-    (`_split_default`), in place."""
+    """A fetcher's or `tee`'s unquoted `${…}` operands holding a blank -- the destinations a
+    command names -- split as `main` read them (`_split_default`), in place."""
     head = command(argv)
-    if not head or os.path.basename(str(head[0])) not in _FETCHERS:
+    if not head or os.path.basename(str(head[0])) not in (*_FETCHERS, "tee"):
         return
     for at in range(len(argv) - 1, 0, -1):
         words = _split_default(argv[at], context)
@@ -607,7 +625,9 @@ def _stage(text, context):
                 op = "&>"                     # unnumbered >&file
             if pieces and len(pieces) > 1 and not getattr(word, "kept", False):
                 # `> ${D:-tool }`: the target `main` read, the stray words the command's.
-                word, *extra = pieces
+                word = word if _markers(word) else _Token(word, {})
+                setattr(word, "pieces", pieces)
+                word, *extra = _split_default(word, context)
                 argv.extend(extra)
             if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"

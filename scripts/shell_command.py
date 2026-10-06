@@ -85,6 +85,20 @@ def _optional(argv):
     return count if count and os.path.basename(argv[count]) in OPTIONAL_NEXT else 0
 
 
+def _shell_default(word):
+    """The words a command word that is a shell's default runs as (`${X:-bash -s}`: `bash`,
+    `-s`), or None. bash splits an unquoted default at its blanks (#2731), so a default whose
+    first word names a shell is that shell -- but only at a blank no quote or backslash covers
+    (the reader's `pieces`): `${X:-"bash -s"}` and `${X:-bash\\ -s}` are one word, `main`'s
+    reading, which names no shell."""
+    default = None if getattr(word, "kept", False) else _DEFAULTS.fullmatch(word)
+    words = default[1].split() if default else []
+    if words and os.path.basename(words[0]) in _SHELLS and (
+            len(words) == 1 or getattr(word, "pieces", None)):
+        return words
+    return None
+
+
 def _command_result(argv, optional=True):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
@@ -121,10 +135,8 @@ def _command_result(argv, optional=True):
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
             continue
-        default = None if heads or getattr(argv[0], "kept", False) else _DEFAULTS.fullmatch(argv[0])
-        if default and default[1].split() and os.path.basename(default[1].split()[0]) in _SHELLS:
-            name, *rest = default[1].split()    # bash splits an unquoted default (#2731)
-            argv[0:1] = [Defaulted(name), *rest]    # the NAME, marked as unwritten
+        if words := None if heads else _shell_default(argv[0]):
+            argv[0:1] = [Defaulted(words[0]), *words[1:]]   # the NAME, marked as unwritten
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads

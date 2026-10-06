@@ -1702,6 +1702,28 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
         argv = shell_reader.statements("\"${X:-bash -s}\" x")[0].stages[0].argv
         self.assertEqual(["${X:-bash -s}", "x"], [str(w) for w in shell_reader.command(argv)])
 
+    def test_a_bare_blank_is_one_the_shells_split_on_and_dollar_dollar_is_a_pair(self):
+        # PR #2856 round 6: F1 (c) a space, a tab or a newline -- no `\v`, `\f`, U+00A0 or U+2003;
+        # F2 `$$` is the PID pair, as `_split` reads it, so no `$'` opens behind it.
+        for blank in (" ", "\t", "\n"):
+            with self.subTest(blank=blank):
+                self.assertIsNotNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
+        for blank in ("\v", "\f", "\u00a0", "\u2003"):
+            with self.subTest(blank=blank):
+                self.assertIsNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
+        self.assertEqual("${D:-$$'\\'" + shell_reader._BLANK + "tool" + shell_reader._BLANK + "'x y'}",
+                         shell_reader._bare_blanks("${D:-$$'\\' tool 'x y'}"))
+
+    def test_a_shells_default_splits_only_at_a_bare_blank(self):
+        # PR #2856 round 6, F1 (a): `${X:-"sh -c"}` and `${X:-sh\ -c}` are one word, `main`'s
+        # reading, naming no shell; `${X:-sh -c}` is `sh`, `-c`.
+        argv = shell_reader.statements("${X:-sh -c} 'x'\n")[0].stages[0].argv
+        self.assertEqual(["sh", "-c", "x"], [str(w) for w in shell_reader.command(argv)])
+        for script in ('${X:-"sh -c"} \'x\'\n', "${X:-sh\\ -c} 'x'\n"):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertNotIsInstance(shell_reader.command(argv)[0], shell_reader.Defaulted)
+
     def test_diamond_redirects_standard_input(self):
         stage = shell_reader.statements("bash -s <<'EOF' <>/dev/null\nx\nEOF\n")[0].stages[0]
         self.assertEqual(["bash", "-s"], [str(w) for w in stage.argv])

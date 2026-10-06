@@ -642,7 +642,7 @@ def _opens(stage):
 def uses(stmts, dest, after, working=None, scopes=None):
     """Names `dest` gains and its later uses, including bounded shell values and, where a
     stage as written names none, the step's own values at the use (`_resolved`, #2425)."""
-    names, out = {dest}, []
+    names, out = {dest} | shell_reader.readings(dest), []
     working, scopes = working or {}, scopes or {}
     starts, occupied = _function_ranges(stmts)
     kinds = _control_kinds(stmts)
@@ -680,7 +680,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
                                         {**named, **positional}, table, scopes)
                 if how:
-                    if not same_file(name, dest):
+                    if not same_file(name, dest) and name not in shell_reader.readings(dest):
                         shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
                         how += " (as `%s`, copied from it earlier)" % shown
                     break

@@ -56,10 +56,18 @@ def kept(word):
 
 
 def derived(text, *sources):
-    """Carry provenance through an explicit substring/path transformation."""
+    """Carry provenance through an explicit substring/path transformation -- and a destination's
+    whole `${…}` word (`shell_reader.readings`) through a value cut from the end of its glued
+    option (`--output-document=${D:-tool`) or a directory joined in front of it."""
     markers = {key: value for source in sources
                for key, value in _markers(source).items() if key in text}
-    return _Token(text, markers) if markers else text
+    made = _Token(text, markers) if markers else text
+    for source in sources:
+        whole, cut = getattr(source, "whole", None), len(str(source)) - len(text)
+        if whole is not None and (str(source).endswith(text) or text.endswith(str(source))):
+            made = made if isinstance(made, _Token) else _Token(made, {})
+            setattr(made, "whole", whole[cut:] if cut >= 0 else text[:-cut] + whole)
+    return made
 
 
 class _Parse:
