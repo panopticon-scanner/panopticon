@@ -646,7 +646,10 @@ class TestMainsReadingStaysAtEveryComparison(unittest.TestCase):
 
         def counting(name):
             def helper(*args):
-                asked[(name, sys._getframe(1).f_code.co_name, first(args[0]))] += 1
+                frame = sys._getframe(1)
+                while frame.f_code.co_name.startswith("<"):      # a comprehension's own frame (3.11)
+                    frame = frame.f_back
+                asked[(name, frame.f_code.co_name, first(args[0]))] += 1
                 return originals[name](*args)
             return helper
         try:
