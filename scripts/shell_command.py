@@ -127,6 +127,9 @@ def _command_result(argv, optional=True):
             if keyword == "function" and argv and _NAME.match(argv[0]):
                 argv.pop(0)                     # `function f { ... }`
             continue
+        if argv[0] == "builtin" and len(argv) > 1 and not heads and _NAME.match(argv[1]):
+            argv.pop(0)                         # `builtin eval …` runs the builtin (#2665), as `command` does
+            continue
         # A function header is not a command: `f() { curl ... ; }` and its
         # `f () {` spelling both put a name where the command was expected,
         # which is where a long step keeps its download. A `case` arm pattern

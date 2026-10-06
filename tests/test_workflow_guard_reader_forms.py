@@ -2266,8 +2266,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertTrue(any(UNGATED % "$CMD" in why for why in found), found)
                 self.assertTrue(any(why.startswith("hands a heredoc body or here-string to `$CMD`")
                                     for why in found), found)
+        # `builtin eval` reads through since #2665: the body is the inner shell's program, its
+        # check counted as #2500 counts one behind `eval` (every shell runs the download, rc 0).
         self.assert_reported([
-            (stdin_step("builtin eval 'bash -s'"), 1, "with nothing verifying what arrived")])
+            (stdin_step("builtin eval 'bash -s'"), 1, UNGATED % "eval")])
         self.assert_clean([stdin_step("bash -s")])
 
     def test_2500_mains_own_gaps_read_as_on_main(self):
@@ -2917,6 +2919,27 @@ class TestAQuotedAssignmentLookingWordIsACommand(unittest.TestCase):
                 found = defects(GET + script)
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it under `sh`" % URL), found)
+
+
+class TestBuiltinInFrontOfACommand(unittest.TestCase):
+    """#2665: `builtin eval 'curl … | sh'` read CLEAN while both bashes run the pipe (dash has no
+    `builtin`: rc 127, the step stops) -- `command` was read through, `builtin` was the command
+    word. The command walk now pops `builtin` in front of a name, as bash runs the builtin."""
+
+    def test_builtin_in_front_of_eval_is_read_through(self):
+        # FR FR -- FR each; `main` CLEAN.
+        for script in ("builtin eval '%s'\n" % PIPE, "builtin command eval '%s'\n" % PIPE,
+                       "builtin eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        # The controls read as they did: `command eval`, bare `eval` (FR x4).
+        for script in ("command eval '%s'\n" % PIPE, "eval '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(defects(script)))
+        # `builtin` before no name runs nothing (`builtin T=x`: "not a shell builtin"): as it was.
+        self.assertEqual([], defects(GET + "builtin T=cuda_1.run\n"))
 
 
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):

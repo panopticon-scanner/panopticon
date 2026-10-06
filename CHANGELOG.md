@@ -15,7 +15,7 @@ evidence exposed.
   `A\+=x sh tool` were popped as assignment prefixes and reported though every shell runs a
   command NAMED `X=1`: the splitter marks where a quote opens or a backslash stands, and a word is
   an assignment only where nothing before its operator was so written (`X="1" sh tool` is one
-  still).
+  still). And `builtin eval '…'` is read through to the builtin it runs (#2665), as `command` is.
 - **Workflow reader reads whole what every shell reads whole (#2756, #2731, #2657; #2733,
   #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
   read CLEAN, behind `eval` and in a printed or heredoc text too); an unquoted `${X:-bash -s}` is

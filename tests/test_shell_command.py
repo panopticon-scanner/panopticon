@@ -62,3 +62,12 @@ class TestTheCommandLayersOwnReadings(unittest.TestCase):
         self.assertFalse(shell_command.assigns("sh"))
         quoted = shell_reader.statements('"X=1" sh tool')[0].stages[0].argv[0]
         self.assertFalse(shell_command.assigns(quoted))
+
+    def test_builtin_pops_in_front_of_a_name_only(self):
+        # #2665
+        for script, argv in (("builtin eval 'x'", ["eval", "x"]), ("builtin command eval 'x'", ["eval", "x"]),
+                             ("builtin export T=1", ["export", "T=1"]), ("builtin T=1", ["builtin", "T=1"]),
+                             ("sudo builtin eval 'x'", ["builtin", "eval", "x"])):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual(argv, [str(w) for w in shell_command.command(stage.argv)])
