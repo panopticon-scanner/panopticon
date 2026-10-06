@@ -2641,7 +2641,13 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
                 found = self.job(body)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("runs after a `set +e`", found[0][1])
-        self.assertIn("carries on past its failure",
+        # ... and the child shell one value short, `bash -oo pipefail -c P`: since #2606 the `-c`
+        # is read as the second `-o`'s value, no option name, which both bashes exit 2 at
+        # (`-c: invalid option name`) and run nothing -- so the string is no longer read and the
+        # check inside it is not weighed; the use after it is still reported, the same fail-closed
+        # answer a refused letter cluster gets (`bash -c -K P`, #2475), since no refusal is read
+        # as stopping the step.
+        self.assertIn("with nothing verifying what arrived",
                       self.job("bash -oo pipefail -c '%s; echo ok'\n")[0][1])
 
     def test_a_value_that_is_no_option_name_turns_nothing_on(self):

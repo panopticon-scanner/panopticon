@@ -2111,9 +2111,12 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # string, `--version` no program: every shell runs the download (rc 0).
         rows = [(stdin_step(runner, body), 1, UNGATED % name) for runner, body, name in (
             ("eval 'bash -n -s'", CHECK, "eval"), ("bash -c 'sh -n'", CHECK, "bash"),
-            ("eval 'bash -s -c true'", CHECK, "eval"), ("eval 'bash --version'", CHECK, "eval"),
+            ("eval 'bash --version'", CHECK, "eval"),
             ("eval 'bash -o noexec -s'", CHECK, "eval"), ("eval bash -n -s", CHECK, "eval"),
             ("eval 'bash -t -s'", "echo start\n" + CHECK, "eval"))]
+        # `-s -c true`: the `-c` after `-s` wins, the string is the program and the heredoc its
+        # DATA, so the check is never read at all (#2647: FR FR FR FR, nothing verifying).
+        rows.append((stdin_step("eval 'bash -s -c true'"), 1, "with nothing verifying what arrived"))
         # With no option, `-x` or `-e`, every shell stops at the check that ends
         # the body or runs under that `-e` (rc 1): reported all the same.
         self.assert_reported(rows + [(stdin_step(runner, body), 1, UNGATED % name)
@@ -2276,9 +2279,12 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
         self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
                            stdin_step("bash -t -s", "echo start\n" + CHECK),
-                           stdin_step("bash --version"), stdin_step("bash -s -c true"),
+                           stdin_step("bash --version"),
                            stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
+        # No longer a gap (#2647): after `-s` bash keeps reading options, and the `-c` puts the
+        # program in the string -- the heredoc is data, its check never read; FR FR FR FR.
+        self.assert_reported([(stdin_step("bash -s -c true"), 1, "with nothing verifying what arrived")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a
@@ -2333,9 +2339,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("bash /dev/null -c 'sh'"), 1, UNGATED % "bash"),
             (stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"), 1,
              UNGATED % "bash"),
-            (stdin_step("eval 'bash - /dev/null'"), 1, UNGATED % "eval")])
-        # `main`'s gap, filed under #2331: the literal `bash - /dev/null` reads CLEAN.
-        self.assert_clean([stdin_step("bash - /dev/null")])
+            (stdin_step("eval 'bash - /dev/null'"), 1, "with nothing verifying what arrived")])
+        # No longer a gap (#2654): the word after a lone `-` is the script FILE, and the heredoc
+        # its data -- the check is never read, behind `eval` or not; FR FR FR FR on each.
+        self.assert_reported([(stdin_step("bash - /dev/null"), 1, "with nothing verifying what arrived")])
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
     def test_2500_mains_literal_shell_gaps_are_reported_behind_a_string(self):

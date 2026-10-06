@@ -666,6 +666,7 @@ groups:
       - tests/test_workflow_printers.py
       - tests/test_workflow_values.py
       - tests/test_workflow_annotate.py
+      - tests/test_workflow_options.py
       panels:
       - SEC
     Workflows:

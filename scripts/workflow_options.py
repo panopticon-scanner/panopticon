@@ -58,6 +58,17 @@ SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", 
                     "nounset", "onecmd", "physical", "pipefail", "posix", "privileged",
                     "verbose", "vi", "xtrace")
 SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
+# A shell's LONG options, where bash reads them (#2616): the two that take a FILE (`--rcfile f`,
+# `--init-file f`), measured to run the program after it on bash 5.2.21 and 3.2.57, and the flags
+# -- the UNION of the two versions' lists (5.2's `--pretty-print`, 3.2's `--protected` and
+# `--wordexp`), `--help` and `--version` among them, read ON as the letters are. A word outside
+# both, or one spelled `--name=value`, is one bash refuses -- `bash: --bogus: invalid option`, rc
+# 2, no stdin read -- and dash refuses every long option (`Illegal option --`), so for a shell in
+# `_MEASURED_SHELLS` such a word is a refusal (`_refused_long`); zsh and ksh read on.
+LONG_VALUE_OPTIONS = ("--rcfile", "--init-file")
+LONG_OPTIONS = ("--debug", "--debugger", "--dump-po-strings", "--dump-strings", "--help", "--login",
+                "--noediting", "--noprofile", "--norc", "--posix", "--pretty-print", "--protected",
+                "--restricted", "--verbose", "--version", "--wordexp")
 
 
 def _refused_name(argv, at):
@@ -67,19 +78,43 @@ def _refused_name(argv, at):
     P`, `+o foo`; `_MEASURED_SHELLS`, as `_refused` reads a letter).
 
     One value per `o` or `O` letter, as `_past_options` counts them, and only an `o`'s is a `set -o`
-    name: `-O` takes a shopt name, and a table of those is not kept here. A value that is not all
-    letters -- bar the hyphen of `interactive-comments` -- is read ON and fail-closed, as an option
-    word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X` holds a name the shell
-    takes, and `${X:-pipefail}` is one spelling of that."""
+    name: `-O` takes a shopt name, and a table of those is not kept here. A value holding an
+    expansion is read ON and fail-closed, as an option word that is not all letters is: `sh -c -o
+    $X P` runs `P` wherever `X` holds a name the shell takes, and `${X:-pipefail}` is one spelling
+    of that; a value written as itself that is no name (`-`, `/dev/stdin`) is a refusal (#2606)."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     value = at
     for letter in argv[at][1:]:
         value += letter in VALUE_OPTIONS
-        if letter == "o" and value < len(argv) and argv[value].replace("-", "").isalpha():
+        if letter == "o" and value < len(argv) and _literal(argv[value]):
             if argv[value] not in SHELL_OPTION_NAMES:
                 return True
     return False
+
+
+def _literal(word):
+    """Whether `word` is written as itself, with no expansion in it: a plain `str` -- no
+    `Defaulted`, `Rewritten` or lifted-text token -- holding no `$`. Such a `-o` value outside
+    the name table is a refusal whether it is a misspelt name or no name at all (`-`,
+    `/dev/stdin`: both bashes answer `invalid option name` and exit 2, #2606)."""
+    return type(word) is str and "$" not in word
+
+
+def _refused_long(argv, at):
+    """Whether the shell `argv[0]` refuses the long option word `argv[at]` outright, running
+    nothing (#2616): for `bash`, and for `sh`, which may be bash (the fail-closed reading), a
+    word outside `LONG_OPTIONS` and `LONG_VALUE_OPTIONS` or spelled `--name=value`; for `dash`
+    any long option at all. `--` is no option. False for a name not written as itself, as
+    `_refused` answers, and for every shell outside `_MEASURED_SHELLS`."""
+    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+        return False
+    word = argv[at]
+    if word[:2] != "--" or word == "--":
+        return False
+    if os.path.basename(argv[0]) == "dash":
+        return True
+    return word not in LONG_OPTIONS and word not in LONG_VALUE_OPTIONS
 
 
 def _refused(argv, at):

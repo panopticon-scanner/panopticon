@@ -1016,8 +1016,9 @@ class TestFixRound5(unittest.TestCase):
         # option word and `-$X` as `-c sh`, so `sh` reads the body and decodes the tab) is CLEAN
         # with that line, where bc6f04c7 gave D and main `_Quiet`. Where the string's object recurs
         # in the argv, the scan reads on to `--`: j06 is D, and j01 (`$X` in place of `-$X`, the
-        # same truth) keeps the value's `Idle` and its D. j03 `bash -s -c x "$X" x` is that
-        # fallback's price (F- x4: bash runs `x` and never reads the body): D, as at bc6f04c7.
+        # same truth) keeps the value's `Idle` and its D. j03 `bash -s -c x "$X" x` was that
+        # fallback's price (F- x4: bash runs `x` and never reads the body) until #2647 read the
+        # `-c` after `-s` as the program: CLEAN now, the body its data.
         steps = {"j06": "X='c sh'\nbash -s + -$X -c - + " + self.TAB,
                  "j01": "X='-c sh'\nbash -s + $X -c - + " + self.TAB,
                  "j03": "X='-c sh'\nbash -s -c x \"$X\" x " + self.TAB}
@@ -1025,8 +1026,9 @@ class TestFixRound5(unittest.TestCase):
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
                     found = defects(self.GET + holder, shell)
-                    self.assertEqual(2 if step == "j01" else 1, len(found), found)
-                    self.assertIn(self.FETCH_EXEC, found[-1][1])
+                    self.assertEqual({"j01": 2, "j03": 0}.get(step, 1), len(found), found)
+                    if found:
+                        self.assertIn(self.FETCH_EXEC, found[-1][1])
         argv = self.command("bash -s + -$X -c - +")
         self.assertIs(argv[2], argv[6])
         self.assertIsInstance(forms.runs_under(argv, argv, "bash"), wp.Named)
