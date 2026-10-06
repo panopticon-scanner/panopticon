@@ -24,9 +24,22 @@ evidence exposed.
   operand is now read as its command word is, the first literal word naming the file (#2867
   closed with it; a quoted one keeps its blanks and its name as written); and a `${` nested in
   a blank-free expansion was scanned to the same end again, about x4 per doubling, now once.
-  New fail-closed over-reports (no shell runs the payload): a CRLF after `|`; `sha256sum ${F:-
-  -c } sums`, whose check is lost; `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'`, which inherits
-  the `<` reads-list reading; and `|&` and `source … <> tool` under `sh` alone.
+  The second round closed one edge past each: `$${` inside a `${…}` still nested in the
+  expansion scanner, so `${a:-$${b} x; sh tool; echo }` fused to the last `}` where dash ends
+  it at the first (the pair opens nothing there either); a default holding a lifted
+  substitution resolved to the marker's text (`-o ${D:-$(echo tool) }`), and a default the
+  reader cannot resolve to one literal word -- a `$` in it, a glued `-o${D:-tool }`, the name
+  assigned in the step (`D=tool` then `-o ${D:-x }`), `:=` or `:+` -- lost `main`'s fail-closed
+  "unresolved transfers": such a word is now handed on split at its blanks, as `main` read it,
+  so the fetch reader refuses the command, and only a clean `:-` default of a name the step
+  never assigns resolves (`${D:-tool }` and `${D:-tool}` alike). New fail-closed over-reports:
+  a CRLF after `|`; `sha256sum ${F:- -c } sums`, whose check is lost (under the `{0}`
+  templates the shells do run it); `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'`, which
+  inherits the `<` reads-list reading; `|&` and `source … <> tool` under `sh` alone; and from
+  the second round, 48 cells in 14 rows -- `${D:-"tool x"}`, `D=other` with `${D:-tool}`,
+  `${D:+tool}` with `D` unset, `sh < ${F:-tool }` under `sh`, and `|` ⏎ `$$ sh` -- none of
+  which a shell runs. (`-o ${D:-tool } --output other` is a correct report: curl pairs
+  outputs with URLs in order and writes `tool`.)
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
