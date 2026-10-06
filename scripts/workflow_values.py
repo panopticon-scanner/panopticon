@@ -492,8 +492,9 @@ def _dynamic(word):
 def _update(table, name, new, certain, array=False):
     """`name`'s scalar candidates -- or, `array`, its word-lists -- after it is
     assigned `new`: replaced where `certain`; else added to, with the "maybe
-    unset" candidate, `""` or `[]`, where the name was not held at all. Past
-    `_CANDIDATES` candidates, or with none, the name holds its stand-in."""
+    unset" candidate, `""` or `[]`, where the name was not held at all. With
+    none the name holds its stand-in; past `_CANDIDATES`, a scalar holds it
+    beside its first candidate, never alone (#2664's carry: PR #2855)."""
     candidates = table.arrays if array else table.scalars
     if not certain:
         held = name in table.scalars or name in table.arrays
@@ -502,13 +503,13 @@ def _update(table, name, new, certain, array=False):
     if 0 < len(kept) <= _CANDIDATES:
         candidates[name] = kept
     else:
-        _unseen(table, name)
+        _unseen(table, name, kept[:1] if not array else [])
 
 
-def _unseen(table, name):
+def _unseen(table, name, first=()):
     """`name` set to a value the table cannot see: it holds its own reference,
-    `$NAME`, alone -- the reading the guard makes without the table."""
-    table.scalars[name] = ["$" + name]
+    `$NAME` -- the reading the guard makes without the table -- after `first`."""
+    table.scalars[name] = [*first, "$" + name]
     table.arrays.pop(name, None)
 
 

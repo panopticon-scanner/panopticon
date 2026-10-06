@@ -22,23 +22,28 @@ import os
 
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
-from shell_wrappers import WRAPPERS
 from workflow_values import _deduped, emptied, record
 
 _DEPTH = 8          # calls followed inside a body, in all
 
 
 def _head(argv):
-    """The word a statement's command starts with, past the keywords, assignments, function
-    header (`_heads`) and `case` arm in front of it, or None where a wrapper stands there:
-    `env f` runs no shell function."""
-    if argv and is_arm(argv[0]):
-        argv = argv[1:]                 # `x) f;;`, `x) { f; };;`: the arm stands before all
-    rest = argv[len(list(_heads(argv))):]
-    while rest and str(rest[0]) in ("time", "eval"):
-        rest = rest[1:]                 # `time f`, `eval f`: bash runs the function (r3 seat)
-    word = str(rest[0]) if rest else ""
-    return None if not word or os.path.basename(word) in WRAPPERS else word
+    """The word a statement's command starts with, past the `case` arm, keywords, assignments
+    and function header in front of it (`_heads`), and past `time` (with `-p`, `--`) and
+    `eval`, each read again after (`time { f; }`, `time X=1 f`, `x) time ! f`, `eval time f`):
+    bash runs the function behind them (rounds 3 and 4). A wrapper there is the word itself:
+    `env f` calls no function unless the step defines one named `env` (`sudo() {…}; sudo x`)."""
+    rest = list(argv)
+    while True:
+        if rest and is_arm(rest[0]):
+            rest = rest[1:]             # `x) f;;`, `x) { f; };;`: the arm stands before all
+        rest = rest[len(list(_heads(rest))):]
+        if not rest or str(rest[0]) not in ("time", "eval"):
+            break
+        rest = rest[1:]
+        while rest and str(rest[0]) in ("-p", "--"):
+            rest = rest[1:]
+    return str(rest[0]) if rest else None
 
 
 def _calls(stmts, head, close):

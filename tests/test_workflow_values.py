@@ -289,14 +289,18 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars)
 
-    def test_a_name_past_eight_candidates_holds_its_stand_in_alone(self):
-        # x20: the guard's reading without the table, rather than the last eight.
+    def test_a_name_past_eight_candidates_holds_its_first_beside_the_stand_in(self):
+        # x20: past the cap the guard's reading without the table -- and, since PR #2855's
+        # round 5, the first candidate beside it (the last sure assignment's value): the
+        # stand-in alone read as nothing, so a carried name pushed past the cap by one later
+        # update went CLEAN while every shell ran the payload (the round-4 seat's B1). Each
+        # of these moved from the stand-in alone; all four report now where they did not.
         nine = "T=cuda_1.run" + "".join("; false && T=%d" % number for number in range(1, 9))
-        self.assertEqual({"T": ["$T"]}, table(nine).scalars)
-        self.assertEqual({"T": ["$T", "9"]}, table(nine + "; false && T=9").scalars)
-        self.assertEqual({"T": ["$T"]}, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars)
+        self.assertEqual({"T": ["cuda_1.run", "$T"]}, table(nine).scalars)
+        self.assertEqual({"T": ["cuda_1.run", "$T", "9"]}, table(nine + "; false && T=9").scalars)
+        self.assertEqual({"T": ["1", "$T"]}, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars)
         append = "A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; A+=$B"
-        self.assertEqual(["$A"], table(append).scalars["A"])
+        self.assertEqual(["1x", "$A"], table(append).scalars["A"])
 
 
 class TestAValueTheTableCannotSee(unittest.TestCase):

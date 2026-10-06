@@ -223,7 +223,7 @@ class TestTheCarryPastTheCandidateCap(unittest.TestCase):
     ROWS = ('T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % SEVEN,
             'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % EIGHT,
             'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % NINE,
-            'T=@P@; f() { if false; then unset T; %s; fi; }; f; sh "$T"' % SEVEN[5:],
+            'T=@P@; f() { if false; then unset T; %s; fi; }; f; sh "$T"' % EIGHT,
             'T=@P@; g() { if false; then %s; fi; }; f() { g; }; f; sh "$T"' % EIGHT,
             'T=@P@; f() { if false; then %s; fi; }; f; bash "$T"' % EIGHT,
             'T=@P@; f() { if false; then %s; fi; }; f; U=$T; sh "$U"' % EIGHT,
@@ -245,6 +245,76 @@ class TestTheCarryPastTheCandidateCap(unittest.TestCase):
         table = workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"]
         self.assertEqual("P", table[0])
         self.assertIn("$T", table)
+
+
+SEVEN_CARRIED = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+
+
+class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
+    """PR #2855 round 4 (B1 and F1). The carried candidates count against the caller's budget,
+    so the NEXT unsure update of the name after the call pushed the table past the cap, and the
+    stand-in alone read as nothing: `T=P; f() { if false; then T=a; … T=g; fi; }; f; false &&
+    T=x; sh "$T"` went CLEAN while every parent runs `P`, as did the 7-arm `uname` dispatcher
+    with an OVERRIDE line after it. Past the cap a scalar now holds its first candidate beside
+    the stand-in (`workflow_values._update`), never the stand-in alone, so each reports; `main`'s
+    own x20 rows report with it (fail-closed). F1: `time` with `-p` or `--`, and a group, an
+    assignment, a `!` or an `if` behind `time` or `eval`, reach the call; and a function named
+    like a wrapper (`sudo() { … }; sudo x`) is the call bash makes of it."""
+
+    SEVEN = SEVEN_CARRIED
+    LATER = ("false && T=x", "if false; then T=x; fi", "eval :", "false && unset T", "false && read T",
+             "for T in $(echo @P@); do :; done", ". /dev/null", "case x in y) T=x;; esac",
+             '[ -n "$NOPE" ] && T=x', "while false; do T=x; done", 'K=X; export "$K=1"',
+             'N=X; read "$N" < /dev/null || :', "false && T=x; false && T=y", "false && T=x; f",
+             "false && T+=x", "false && T=x; g() { if false; then T=y; fi; }; g")
+    ROWS = tuple('T=@P@; f() { if false; then %s; fi; }; f; %s; sh "$T"' % (SEVEN_CARRIED, later)
+                 for later in LATER) + (
+        'T=@P@; f() { if false; then T=a; fi; }; f; ' + "; ".join("false && T=%s" % c for c in "bcdefgh") + '; sh "$T"',
+        'g() { if false; then %s; fi; }; T=@P@; g; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; if true; then f; fi; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f || true; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; bash "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; U=$T; sh "$U"' % SEVEN,
+        'T=@P@\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\n'
+        'NetBSD) T=d;;\nSunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n'
+        '[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # The merge-path controls: two bodies of eight, a chain adding 3 + 3 + 2, a full caller.
+        'T=@P@; f() { if false; then %s; T=h; fi; }; g() { if false; then T=i; T=j; T=k; T=l; T=m; T=n; '
+        'T=o; T=p; fi; }; f; g; sh "$T"' % SEVEN,
+        'T=@P@; h() { if false; then T=g; T=h; fi; }; g() { if false; then T=d; T=e; T=f; fi; h; }; '
+        'f() { if false; then T=a; T=b; T=c; fi; g; }; f; sh "$T"',
+        'T=@P@; ' + "; ".join("false && T=%s" % c for c in "abcdefg") + '; f() { if false; then T=h; fi; }; f; '
+        'false && T=i; sh "$T"',
+        # The body's own payload among eight: its first candidate is the payload.
+        'f() { T=@P@; if false; then %s; fi; }; f; sh "$T"' % SEVEN)
+    F1 = ("T=/dev/null; f() { T=@P@; }; time -p f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time -- f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time -p -- f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time { f; }; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time X=1 f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time ! f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time if f; then :; fi;; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time -p { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time eval f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; eval time f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; eval -- f; sh \"$T\"", "T=/dev/null; sudo() { T=@P@; }; sudo x; sh \"$T\"")
+    # Honest clears that stay clear: a wrapper with no function of its name runs none.
+    CONTROLS = tuple("T=/dev/null; f() { T=@P@; }; %s f; sh \"$T\"" % w for w in ("env", "command", "builtin", "nohup",
+                                                                                  "timeout 5", "nice", "sudo"))
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS + self.F1:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_wrapper_with_no_function_of_its_name_calls_none(self):
+        for row in self.CONTROLS:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_past_the_cap_the_first_candidate_stands_beside_the_stand_in(self):
+        stmts = wg.shell_reader.statements(
+            'T=P; f() { if false; then %s; fi; }; f; false && T=x; sh "$T"\n' % self.SEVEN)
+        self.assertEqual(["P", "$T"], workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
