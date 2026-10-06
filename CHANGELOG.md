@@ -11,31 +11,48 @@ evidence exposed.
   #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
   read CLEAN, behind `eval` and in a printed or heredoc text too); an unquoted `${X:-bash -s}` is
   one expansion to the reader as to bash, which splits its words only after expanding it, so the
-  command layer reads a shell default's words as bash does (`${X:-bash -s} <<'EOF'` and
-  `${X:-sh -c} '…'` ran the download and read CLEAN; a quoted default keeps its fail-closed
-  reading); and `<>` redirects standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no
+  command layer reads a shell default's words as bash does, split at a blank no quote or
+  backslash covers (`${X:-bash -s} <<'EOF'` and `${X:-sh -c} '…'` ran the download and read
+  CLEAN; a quoted default keeps its fail-closed reading, and `${X:-"sh -c"}` or `${X:-sh\ -c}`
+  stays one word, `main`'s reading, naming no shell); and `<>` redirects standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no
   longer credits a check no shell reads. `&&` at a line's end, `${X:-bash} -s`, and `<>` before
   the heredoc or on another descriptor read as they did. The fix rounds closed what the seats
   found at the edges of the new `${…}` word: `$$` is bash's PID, read as the pair before
-  anything the second `$` could open, in the splitter and in the expansion scanner alike, so
+  anything the second `$` could open, in the splitter, the expansion scanner and the blank
+  marker alike, so
   `$${ | sh` and `${a:-$${b} x; sh tool; echo }` keep their pipe and their use; a `${` nested
   in a blank-free expansion is scanned once, not to the same end again (about x4 per doubling
-  before); and only a blank no quote or backslash covers makes the word whole, so a quoted
-  `${D:-"tool x"}` stays the one word it always was. A download destination spelled as a
-  default is read as `main` reads it -- a blank-holding `-o ${D:-tool }` split at its blanks,
-  an unresolved transfer, reported; a blank-free `-o ${D:-tool}` as written -- because the
-  name may be set where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`), and
-  reading a default as its literal file could only clear a step `main` reports; #2867 (the
-  blank-free twin, CLEAN on `main`) stays open, its own PR. A `${…}` destination that spans a
-  line (`-o ${D:-tool` ⏎ `}`) is one word now, as every shell reads it, and reports where
-  `main`'s statement break left it CLEAN while the shells ran the payload. New fail-closed
-  over-reports against `main` (35 cells in 10 rows, none run by a shell): a CRLF after `|`;
-  `|&` ⏎ `sh` and `source /dev/stdin <> tool` under `sh` alone; `sha256sum ${F:- -c } sums`,
-  whose check is lost (under the `{0}` templates the shells do run the payload); `| ${V:-cat |
-  sh}`; `bash -s <>tool <<'EOF'` and `bash -s <<'EOF' <>${N:-/dev/null }` under `sh`, which
-  inherit the `<` reads-list reading; and `|` ⏎ `$$ sh`. (`-o ${D:-tool } --output other` is a
-  correct report: curl pairs outputs with URLs in order and writes `tool`.) The unterminated
-  `${x` line stays quadratic on both trees (`patterned`'s, pre-existing).
+  before); and only a blank no quote or backslash covers makes the word whole -- a space, a
+  tab or a newline, what the shells split on, not `\v`, `\f` or a Unicode space -- so a
+  quoted `${D:-"tool x"}` stays the one word it always was. A download destination spelled as
+  a default is read as `main` reads it -- a blank-holding `-o ${D:-tool }` split at its
+  blanks (curl refuses the stray `}` as an unresolved transfer, reported; wget has no such
+  check, as on `main`), a blank-free `-o ${D:-tool}` as written -- because the name may be set
+  where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`), and reading a default
+  as its literal file could only clear a step `main` reports; #2867 (the blank-free twin,
+  CLEAN on `main`) stays open, its own PR. And a use that spells the same default meets that
+  destination as it did on `main`: the destination is filed under both readings, `main`'s
+  first piece and the whole word (`shell_reader.readings`), and `tee`'s operand is read as a
+  fetcher's, so `wget -q -O ${D:-tool } URL` ⏎ `sh ${D:-tool }`, the glued `-O${D:-tool }`
+  and `--output-document=`, `> ${D:-tool }`, `tee ${D:-tool }` ⏎ `sh < ${D:-tool }`, a `mv`
+  of it and the same inside `eval` or `bash -c` report again -- nothing resolved. A `${…}`
+  destination that spans a line (`-o ${D:-tool` ⏎ `}`) is one word now, as bash reads it, and
+  reports where `main`'s statement break left it CLEAN while the shells ran the payload. A
+  statement that is only a redirection is no stage, as `main` reads `> ${D:-tool}`: `main`
+  read `> ${D:-tool }` only because shlex left its `}` as a command word. New fail-closed
+  over-reports against `main` (64 cells in 20 of the round-5 seat's 2,693 rows, none run by a shell):
+  a CRLF after `|`; `|&` ⏎ `sh` and `source /dev/stdin <> tool` under `sh` alone; `sha256sum
+  ${F:- -c } sums`, whose check is lost (under the `{0}` templates the shells do run the
+  payload); `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'` in every setting and `bash -s
+  <<'EOF' <>${N:-/dev/null }` under `sh`, which inherit the `<` reads-list reading; `|` ⏎ `$$
+  sh`; an `IFS` the step sets, which the reader does not read (`IFS=:` before `-o ${D:-tool` ⏎
+  `}`, 17 cells); `$'…'` in a default under dash, which keeps its `$` (4); and a line-spanning
+  redirect target under dash, which does not split it (8). (`-o ${D:-tool } --output other` is
+  a correct report: curl pairs outputs with URLs in order and writes `tool`.) The unterminated
+  `${x` line stays quadratic on both trees, 2.6x slower here (`patterned`'s, pre-existing); and
+  one `${…}` word holding tens of thousands of blank-separated groups costs 2-2.5x base at
+  384 KB and 7-9x at 1.5 MB, shlex building it as one token -- what `main` pays for a
+  double-quoted word of the same length.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
