@@ -49,8 +49,12 @@ evidence exposed.
   on the line of `read` in any spelling, `printf -v`, `mapfile`, `readarray`, `getopts` (with
   `OPTARG`, `OPTIND`) or a declaration is assigned. With it, the blank-free `${D:=tool}` and a
   `D=` before `${D:-tool}` read as `main` does (CLEAN, #2867's class), where the second
-  round's head had reported them. The unterminated `${x` line stays quadratic on both trees
-  (`patterned`'s, pre-existing), 2.6x slower here.
+  round's head had reported them. The register of programs a parse hands on is bounded: past
+  20,000 distinct `$`-holding words in one process it latches, for the rest of the process,
+  and the destination reading falls back to `main`'s (a blank-free default reads as written,
+  a blank-holding one as an unresolved transfer) -- fail-closed, never a clear. The
+  unterminated `${x` line stays quadratic on both trees (`patterned`'s, pre-existing), 2.6x
+  slower here.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
