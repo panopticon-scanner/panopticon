@@ -334,33 +334,35 @@ class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
 
 
 class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
-    """PR #2856 fix round. B1: `$$` is bash's PID, read as the pair before anything the second
+    """PR #2856 fix rounds. B1: `$$` is bash's PID, read as the pair before anything the second
     `$` could open -- `$${` had been read as `${`, taking a pipe or a use to the next `}` as
-    one word. B2: a download destination spelled as an unquoted default (`-o ${D:-tool }`,
-    `${D:=tool}`, `--output`, `> ${D:-tool }`) is read as the command word is (#2337): bash
-    expands the default where `D` is unset and splits it, so the first literal word names the
-    file (#2867 closed with it); a quoted default keeps its blanks and its name as written, and a
-    printer's default is not read. Every shell runs each closed row."""
+    one word. B2: a download destination spelled as an unquoted `${…}` holding a blank
+    (`-o ${D:-tool }`, `${D:=tool }`, `--output`, `> ${D:-tool }`) lost `main`'s report once
+    #2731 read the word whole. Since round 5 no destination default is resolved to its
+    literal -- the name may be set where no shell text shows it, the workflow's `env:` or
+    `$GITHUB_ENV` -- and such a word is handed on split at its blanks exactly as `main` read
+    it: an unresolved transfer, reported. A blank-free `${D:-tool}` stays as written, `main`'s
+    reading (#2867 stays open, its own PR)."""
 
     PID_ROWS = ("curl -fsSL %si.sh$${ | sh; echo }" % URL,
                 GET + "echo $${ x; sh tool; echo }",
                 'echo "a"$${ x; curl -fsSL %si.sh | sh; echo }' % URL)
-    DEST = ("-o ${D:-tool }", "-o ${D:- tool}", "-o ${D:-tool}", "-o ${D:=tool }", "-o ${D:+tool }",
+    DEST = ("-o ${D:-tool }", "-o ${D:- tool}", "-o ${D:=tool }", "-o ${D:+tool }",
             "--output ${D:-tool }", "-o ${D:-tool\t}", "> ${D:-tool }")
+    # Round 5: `-o ${D:-other }` and `-o ${D:-x }` with `D` never set report again, as `main`
+    # reads them (each was an honest clear only if no `env:` sets `D`); `wget -O ${D:-tool }`
+    # and the blank-free `-o ${D:-tool}` read as `main`, CLEAN (#2867, not this PR's).
     DEST_ROWS = tuple("curl -fsSL %stool %s\nsh tool" % (URL, dest) for dest in DEST) + (
-        "curl -fsSLo ${D:-tool } %stool\nsh tool" % URL, "wget -O ${D:-tool } %stool\nsh tool" % URL,
+        "curl -fsSLo ${D:-tool } %stool\nsh tool" % URL,
         "curl -fsSL %stool -o ${D:-tool }\nchmod +x tool; ./tool" % URL,
-        "curl -fsSL %stool -o ${D:-tool } && sh tool" % URL)
+        "curl -fsSL %stool -o ${D:-tool } && sh tool" % URL,
+        "curl -fsSL %stool -o ${D:-other }\nsh tool" % URL, "curl -fsSL %stool -o ${D:-x }\nsh tool" % URL)
     DEST_CONTROLS = ('curl -fsSL %stool -o "${D:-tool }"\nsh tool' % URL,
-                     "curl -fsSL %stool -o ${D:-other }\nsh tool" % URL,
                      "curl -fsSL %stool -o ${D:-tool}\nsh other" % URL,
                      "curl -fsSL %stool -o ${D}\nsh tool" % URL, "echo ${X:-a b} | sh")
     # Round 2: a `$${` INSIDE a `${…}` nested in `_expansion_end` as `${` (dash runs the use);
-    # a default holding a lifted substitution resolved to the MARKER's text; and a default the
-    # reader cannot resolve to ONE literal word -- a `$` in it, a glued option, the name
-    # assigned in the step, `:=` / `:+` -- lost `main`'s fail-closed "unresolved transfers".
-    # Such a word is now handed on split at its blanks, as `main` read it, and the fetch
-    # reader refuses the command; `${D:-tool}` and `${D:-tool }` still resolve (#2867).
+    # and a default holding a lifted substitution, or one no literal names, kept `main`'s
+    # "unresolved transfers" only where it was handed on split -- since round 5, every one is.
     PID_INSIDE = (GET + "echo ${a:-$${b} x; sh tool; echo }", GET + "echo ${a:-$$} x; sh tool",
                   GET + "echo ${a:-$$${b}}; sh tool")
     UNRESOLVED = tuple("curl -fsSL %stool %s" % (URL, tail) for tail in (
@@ -393,7 +395,7 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
         found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-$HOME/tool }\nsh $HOME/tool\n" % URL)])
         self.assertIn("unresolved transfers", str(found[0][1]))
 
-    def test_a_destination_default_names_its_file(self):
+    def test_a_destination_default_reads_as_main_reads_it(self):
         for row in self.DEST_ROWS:
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
@@ -404,93 +406,54 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
 
-class TestTheStepsContextReachesEveryDefault(unittest.TestCase):
-    """PR #2856 round 3. The context a destination default resolves against was one parse: an
-    inner program (`eval '…'`, `$(…)`, `bash -c`, `sh -c`, a heredoc, `D=tool bash -c`) parsed
-    on its own saw no `D=tool` and resolved `${D:-x }` to `x` while every shell writes `tool`
-    and runs it (B1); a `${D:=tool}` on an earlier line was no assignment (B2); `read` with
-    options or two names, `printf -v`, `mapfile`, `readarray`, `getopts` and `eval D\\=tool`
-    set names the context missed (B3). A program a parse hands on now inherits the step's
-    assigned names, all of them; `:=` anywhere and every name on a setter's line are assigned.
-    Each row reports; `D` never set resolves honestly to `x` (CLEAN); `D=other` reports
-    fail-closed as named."""
+class TestADefaultDestinationIsNeverResolved(unittest.TestCase):
+    """PR #2856 round 5 (after rounds 3 and 4). A destination default resolved to its literal
+    can only clear a step `main` reports, and the names that decide it are not all in the step:
+    an inner program (`eval '…'`, `$(…)`, `bash -c`, a heredoc) parsed on its own, an indirect
+    or arithmetic setter, the workflow's `env:` or `$GITHUB_ENV` -- every shell writes `tool`
+    where `D` holds it. So no default resolves: each row reads as `main` reads it, an unresolved
+    transfer, whatever sets `D` and wherever; and nothing depends on what a parse saw before."""
 
     ROWS = ("D=tool\neval 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            "D=tool\neval 'curl -fsSL %stool -o ${D:-x };' 'sh tool'" % URL,
             "D=tool\nx=$(curl -fsSL %stool -o ${D:-x })\nsh tool" % URL,
             "export D=tool\nbash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
-            "export D=tool\nsh -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            'export D=tool\nbash -c "cd .; curl -fsSL %stool -o \\${D:-x }; sh tool"' % URL,
             "export D=tool\nbash <<'EOF'\ncurl -fsSL %stool -o ${D:-x }; sh tool\nEOF" % URL,
             "D=tool bash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
             ": ${D:=tool}\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "echo ${D:=tool}\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "read -r D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "read D E <<'EOF'\ntool tool\nEOF\ncurl -fsSL %stool -o ${E:-x }\nsh tool" % URL,
-            "read -p prompt -t 5 D\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "printf -v D tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "eval D\\=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            'eval "D=tool"\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
-            # A quoted name (the r4 seat's c38f): no shell takes `D'='tool` or `$'D'=tool` as an
-            # assignment directly, but through `eval` both bashes take both and dash the first,
-            # and `read 'D'` / `printf -v 'D'` assign -- so each is read as assigning.
+            'n=D; eval "$n=tool"\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
+            "n=D; read -r $n <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "(( D = 1 ))\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval D''=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "eval 'D'='tool'\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            'eval "D"=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
-            "eval D'='tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "eval $'D'=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "read 'D' <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "printf -v 'D' tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "mapfile -t D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
-            "readarray D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "while getopts o: O; do :; done\ncurl -fsSL %stool -o ${OPTARG:-x }\nsh tool" % URL,
             "D=other\ncurl -fsSL %stool -o ${D:-tool }\nsh tool" % URL,
-            "bash -c 'curl -fsSL %stool -o ${D:-tool}; sh tool'" % URL,
+            "curl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
             "eval 'curl -fsSL %stool -o ${D:-tool }; sh tool'" % URL)
 
-    def test_each_row_is_reported_under_every_shell_setting(self):
+    def test_each_row_is_reported_as_an_unresolved_transfer(self):
         for row in self.ROWS:
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
-                    self.assertTrue(reported(row.replace("\\n", "\n") + "\necho done\n", shell))
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-x }\nsh tool\n" % URL)])
+        self.assertIn("unresolved transfers", str(found[0][1]))
 
-    def test_a_name_never_set_resolves_to_its_default(self):
-        for shell in SHELLS:
-            with self.subTest(shell=shell):
-                self.assertFalse(reported("curl -fsSL %stool -o ${D:-x }\nsh tool\necho done\n" % URL, shell))
+    def test_a_reading_does_not_depend_on_an_earlier_step(self):
+        # The round-4 seat's B3: the same text read alone and after a step that set `D` in it.
+        text = "eval 'curl -fsSL %stool -o ${D:-x }; sh tool'\necho done\n" % URL
+        alone = reported(text)
+        reported("D=tool\n" + text)
+        self.assertEqual(alone, reported(text))
+        self.assertTrue(alone)
 
-    def test_past_the_registrys_bound_no_default_resolves(self):
-        # Entry one past `_ENCLOSING_LIMIT` latches the reader: nothing more is filed and no
-        # default resolves in any parse after it, so a program filed nowhere can resolve
-        # nothing -- main's reading of every `${…}` destination (fail-closed), never a clear.
-        reader = wg.shell_reader
-        saved = reader._ENCLOSING_LIMIT, dict(reader._ENCLOSING), reader._LATCHED[0]
-        try:
-            reader._ENCLOSING.clear()
-            reader._LATCHED[0] = False
-            reader._ENCLOSING_LIMIT = 2
-            filler = "echo $a; echo $b; echo $c\n"                 # three texts: past the bound
-            self.assertTrue(reported(filler + "D=tool\neval 'curl -fsSL %stool -o ${D:-x }; sh tool'\n" % URL))
-            self.assertTrue(reader._LATCHED[0])
-            self.assertEqual(2, len(reader._ENCLOSING))
-            # Latched: the blank-free default reads as main (CLEAN), the blank-holding one as
-            # main's unresolved report -- nothing clears that main reports.
-            self.assertFalse(reported("curl -fsSL %stool -o ${D:-tool}\nsh tool\n" % URL))
-            self.assertTrue(reported("curl -fsSL %stool -o ${D:-tool }\nsh tool\n" % URL))
-        finally:
-            reader._ENCLOSING_LIMIT, reader._LATCHED[0] = saved[0], saved[2]
-            reader._ENCLOSING.clear()
-            reader._ENCLOSING.update(saved[1])
-
-    def test_the_names_a_step_assigns(self):
-        text = ("read -r D E <<'EOF'\nx\nEOF\nprintf -v Q tool; getopts o: G; : ${Z:=1}; eval W\\=2\n"
-                "for I in a; do :; done\nexport X=1 Y\nmapfile -t M\n")
-        names = wg.shell_reader._assigned(text)
-        for name in ("D", "E", "Q", "G", "OPTARG", "OPTIND", "Z", "W", "I", "X", "Y", "M"):
+    def test_no_registry_or_latch_is_left(self):
+        for name in ("_ENCLOSING", "_LATCHED", "_ASSIGNED", "_SETTERS", "_assigned", "_register"):
             with self.subTest(name=name):
-                self.assertIn(name, names)
-        self.assertNotIn("curl", wg.shell_reader._assigned("curl -o ${D:-x } u\n"))
-        for text in ("eval 'D'='tool'\n", "eval D'='tool\n", "eval $'D'=tool\n", "read 'D'\n",
-                     "printf -v 'D' x\n", 'eval D"="tool\n'):             # the r4 seat's c38f
-            with self.subTest(text=text):
-                self.assertIn("D", wg.shell_reader._assigned(text))
+                self.assertFalse(hasattr(wg.shell_reader, name))
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):

@@ -144,6 +144,27 @@ def _negated(text, context):
     return text
 
 
+def _bare_blanks(segment):
+    """`segment`, one `${…}`, with each blank no quote or backslash covers marked `_BLANK`, or
+    None where it has none: a quoted or escaped blank is the word's own, as shlex keeps it."""
+    out, quote, i = [], "", 0
+    while i < len(segment):
+        ch = segment[i]
+        if ch == "\\" and quote != "'" and i + 1 < len(segment):
+            out.append(segment[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = "" if ch == quote[-1] else quote
+        elif segment.startswith("$'", i):
+            quote = "$'"
+        elif ch in "'\"":
+            quote = ch
+        out.append(_BLANK if ch.isspace() and not quote else ch)
+        i += 1
+    return "".join(out) if _BLANK in out else None
+
+
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
@@ -258,11 +279,12 @@ def _split(text, context):
             # it is not scanned to the same end again (#2756 fix round, B3): once the outer
             # one is known to hold no blank, so is every one inside it.
             scanned = end or scanned
-            if end and any(c.isspace() for c in text[i:end]):
+            marked = _bare_blanks(text[i:end]) if end else None
+            if marked is not None:
                 # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
-                # expands it whole and only then splits the words (#2731): its blanks are
+                # expands it whole and only then splits the words (#2731): its bare blanks are
                 # marked past shlex, and `_command_result` splits a shell default as bash does.
-                buf.extend(_BLANK if c.isspace() else c for c in text[i:end])
+                buf.extend(marked)
                 i = end
                 continue
         # A case header ends at its `in`, even when its first arm shares
@@ -449,80 +471,25 @@ def _assigns(words):
     return not words or words[0] in _DECLARATIONS
 
 
-# The names a step may assign anywhere in its text (`_assigned`, for `_defaulted`): an
-# assignment word (`D=`, `D+=`, an `eval`'s `D\=`), a `${D:=…}` or `${D=…}` wherever it
-# stands, a `for` variable, and every name on a line of a builtin that sets names -- `read`
-# in any spelling, `printf -v`, `mapfile`, `readarray`, `getopts` (and its `OPTARG`,
-# `OPTIND`), a declaration -- read to the statement's end: over-collecting withholds a
-# resolution, which is the fail-closed side.
-_ASSIGNED = re.compile(r"(?:^|[^\w$])\$?['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\+?\\?=|\$\{([A-Za-z_]\w*):?="
-                       r"|\bfor[ \t]+([A-Za-z_]\w*)\b")
-_SETTERS = re.compile(r"\b(?:read|mapfile|readarray|getopts|printf[ \t]+-v|declare|typeset|local"
-                      r"|export|readonly)\b([^\n;|&)]*)")
-_NAME_WORDS = re.compile(r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)\b")
-_RESOLVING = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-")
-# The texts a parse hands on as programs of their own (a lifted `$(…)`, a heredoc body, a word
-# a shell may be handed: `bash -c '…'`, `eval '…'`), each with the names the step around it
-# assigns (`_register`); a parse of such a text inherits them all (`statements`), so `${D:-x }`
-# inside `eval` is not resolved where `D=tool` stands outside (#2756 round 3). Keyed by text,
-# joined where a text recurs, never emptied (fail-closed). At `_ENCLOSING_LIMIT` entries it
-# latches (`_LATCHED`): nothing more is filed and no default resolves in any parse after.
-_ENCLOSING: dict[str, frozenset[str]] = {}
-_ENCLOSING_LIMIT = 20000
-_LATCHED = [False]
-
-
-def _assigned(text):
-    """The names `text` may assign anywhere (see `_ASSIGNED`)."""
-    names = {name for found in _ASSIGNED.findall(text) for name in found if name}
-    for line in _SETTERS.findall(text):
-        names.update(_NAME_WORDS.findall(line))
-    if "getopts" in text:
-        names.update(("OPTARG", "OPTIND"))
-    return frozenset(names)
-
-
-def _register(text, context):
-    """File `text`, a program a parse of this step may hand on, with the step's assigned
-    names, joined with any filed already."""
-    text = str(text)
-    if "$" not in text:
-        return
-    assigned: frozenset[str] = getattr(context, "assigned", frozenset())
-    if text not in _ENCLOSING and len(_ENCLOSING) >= _ENCLOSING_LIMIT:
-        _LATCHED[0] = True      # past the bound nothing more is filed, and nothing resolves
-        return
-    _ENCLOSING[text] = _ENCLOSING.get(text, frozenset()) | assigned
-
-
-def _default_words(word, context):
-    """The words bash makes of `word`, an unquoted `${…}`, or None where it is no such word
-    or reads as written: `${D:-tool }` and `${D:-tool}` are the file `tool` (`Defaulted`) where
-    the default is literal (no `$`, no lifted substitution), the operator `-` or `:-`, and
-    the step assigns `D` nowhere -- else, where the reader cannot say what bash makes of it,
-    the text split at its blanks, as it was read before #2731 read the word whole: a glued
-    `-o${D:-tool }`, `${D:-$HOME/tool }`, `${D:-$(echo tool) }`, `${D:=tool }`, or `${D:-x }`
-    with `D=tool` in the step, so the fetch reader refuses the command as unresolved, as
-    `main` did (#2756 fix rounds, B2 and B3; #2867)."""
-    if getattr(word, "kept", False) or "${" not in word:
-        return None
-    default = None if _LATCHED[0] else _DEFAULTS.fullmatch(word)
-    resolving = _RESOLVING.match(word)
-    if (default and default[1].split() and resolving and not context.pattern.search(word)
-            and resolving.group(1) not in getattr(context, "assigned", ())):
-        name, *rest = default[1].split()
-        return [Defaulted(name), *rest]
-    return [context.token(piece) for piece in str(word).split()] if " " in word else None
+def _split_default(word, context):
+    """`word` split at its blanks where it is an unquoted `${…}` holding one, else None: a
+    fetcher's operand or a redirection's target read as `main` read it before #2731 read the
+    word whole -- `-o ${D:-tool }` is the operand `${D:-tool` and a stray `}`, which the fetch
+    reader refuses as an unresolved transfer. No default is resolved to its literal: the name
+    may be set where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`, the runner),
+    and reading `${D:-x }` as the file `x` could only clear a step `main` reports (#2756)."""
+    pieces = getattr(word, "pieces", None)
+    return None if getattr(word, "kept", False) or not pieces else list(pieces)
 
 
 def _defaulted(argv, context):
-    """Read a fetcher's unquoted `${…}` operands holding a blank as bash does (`_default_words`),
-    in place: `curl … -o ${D:-tool }` names `tool`."""
+    """A fetcher's unquoted `${…}` operands holding a blank, split as `main` read them
+    (`_split_default`), in place."""
     head = command(argv)
     if not head or os.path.basename(str(head[0])) not in _FETCHERS:
         return
     for at in range(len(argv) - 1, 0, -1):
-        words = _default_words(argv[at], context)
+        words = _split_default(argv[at], context)
         if words is not None:
             argv[at:at + 1] = words
 
@@ -573,6 +540,10 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
+        # The words `main` read where one `${…}` holds a bare blank (#2731 reads it whole).
+        pieces = [context.token(context.restore_arithmetic(piece.replace(MARK, "").replace(
+            QUOTED, "").replace(QUOTED_DOLLAR, "")).replace(_ESCAPED, "\\"))
+            for piece in raw.split(_BLANK) if piece] if _BLANK in raw else None
         raw = raw.replace(_BLANK, " ")          # the blanks of one `${…}` word (#2731)
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
@@ -623,12 +594,9 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            resolved = _default_words(word, context)
-            if resolved is not None:
-                # `> ${D:-tool }`: the file an unquoted default names, as `_defaulted` reads a
-                # fetcher's `-o ${D:-tool }` (#2756 fix rounds, B2; #2867); what does not resolve
-                # is handed on split at its blanks, the extra words the command's (as before).
-                word, *extra = resolved
+            if pieces and len(pieces) > 1 and not getattr(word, "kept", False):
+                # `> ${D:-tool }`: the target `main` read, the stray words the command's.
+                word, *extra = pieces
                 argv.extend(extra)
             if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
@@ -662,16 +630,15 @@ def _stage(text, context):
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
+        if pieces and len(pieces) > 1:
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "pieces", pieces)
         take(word)
         argv.append(word)
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
     _defaulted(argv, context)
-    for program in (*argv, *substitutions, *(body[0] for body in bodies.values() if body)):
-        _register(program, context)
-    if heredoc is not None:
-        _register(heredoc, context)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -685,9 +652,6 @@ def statements(script):
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
-    # The names the step may assign anywhere (`D=tool`, `export D=…`, `for D in`, `read D`):
-    # a default of such a name is not resolved to its literal (`_defaulted`), fail-closed.
-    setattr(context, "assigned", _assigned(text) | _ENCLOSING.get(str(script), frozenset()))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
