@@ -404,6 +404,59 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
 
+class TestTheStepsContextReachesEveryDefault(unittest.TestCase):
+    """PR #2856 round 3. The context a destination default resolves against was one parse: an
+    inner program (`eval '…'`, `$(…)`, `bash -c`, `sh -c`, a heredoc, `D=tool bash -c`) parsed
+    on its own saw no `D=tool` and resolved `${D:-x }` to `x` while every shell writes `tool`
+    and runs it (B1); a `${D:=tool}` on an earlier line was no assignment (B2); `read` with
+    options or two names, `printf -v`, `mapfile`, `readarray`, `getopts` and `eval D\\=tool`
+    set names the context missed (B3). A program a parse hands on now inherits the step's
+    assigned names, all of them; `:=` anywhere and every name on a setter's line are assigned.
+    Each row reports; `D` never set resolves honestly to `x` (CLEAN); `D=other` reports
+    fail-closed as named."""
+
+    ROWS = ("D=tool\neval 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            "D=tool\nx=$(curl -fsSL %stool -o ${D:-x })\nsh tool" % URL,
+            "export D=tool\nbash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            "export D=tool\nsh -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            "export D=tool\nbash <<'EOF'\ncurl -fsSL %stool -o ${D:-x }; sh tool\nEOF" % URL,
+            "D=tool bash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            ": ${D:=tool}\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "echo ${D:=tool}\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "read -r D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "read D E <<'EOF'\ntool tool\nEOF\ncurl -fsSL %stool -o ${E:-x }\nsh tool" % URL,
+            "read -p prompt -t 5 D\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "printf -v D tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval D\\=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            'eval "D=tool"\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
+            "mapfile -t D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "readarray D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "while getopts o: O; do :; done\ncurl -fsSL %stool -o ${OPTARG:-x }\nsh tool" % URL,
+            "D=other\ncurl -fsSL %stool -o ${D:-tool }\nsh tool" % URL,
+            "bash -c 'curl -fsSL %stool -o ${D:-tool}; sh tool'" % URL,
+            "eval 'curl -fsSL %stool -o ${D:-tool }; sh tool'" % URL)
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row.replace("\\n", "\n") + "\necho done\n", shell))
+
+    def test_a_name_never_set_resolves_to_its_default(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertFalse(reported("curl -fsSL %stool -o ${D:-x }\nsh tool\necho done\n" % URL, shell))
+
+    def test_the_names_a_step_assigns(self):
+        text = ("read -r D E <<'EOF'\nx\nEOF\nprintf -v Q tool; getopts o: G; : ${Z:=1}; eval W\\=2\n"
+                "for I in a; do :; done\nexport X=1 Y\nmapfile -t M\n")
+        names = wg.shell_reader._assigned(text)
+        for name in ("D", "E", "Q", "G", "OPTARG", "OPTIND", "Z", "W", "I", "X", "Y", "M"):
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+        self.assertNotIn("curl", wg.shell_reader._assigned("curl -o ${D:-x } u\n"))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,

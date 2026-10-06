@@ -449,11 +449,47 @@ def _assigns(words):
     return not words or words[0] in _DECLARATIONS
 
 
-# The names a step may assign anywhere in its text (`_defaulted`): an assignment word, a
-# `for` variable, a `read` target.
-_ASSIGNED = re.compile(r"(?:^|[^\w$])([A-Za-z_][A-Za-z0-9_]*)\+?=|\bfor[ \t]+([A-Za-z_]\w*)\b"
-                       r"|\bread(?:[ \t]+-\S+)*[ \t]+([A-Za-z_]\w*)\b")
+# The names a step may assign anywhere in its text (`_assigned`, for `_defaulted`): an
+# assignment word (`D=`, `D+=`, an `eval`'s `D\=`), a `${D:=…}` or `${D=…}` wherever it
+# stands, a `for` variable, and every name on a line of a builtin that sets names -- `read`
+# in any spelling, `printf -v`, `mapfile`, `readarray`, `getopts` (and its `OPTARG`,
+# `OPTIND`), a declaration -- read to the statement's end: over-collecting withholds a
+# resolution, which is the fail-closed side.
+_ASSIGNED = re.compile(r"(?:^|[^\w$])([A-Za-z_][A-Za-z0-9_]*)\+?\\?=|\$\{([A-Za-z_]\w*):?="
+                       r"|\bfor[ \t]+([A-Za-z_]\w*)\b")
+_SETTERS = re.compile(r"\b(?:read|mapfile|readarray|getopts|printf[ \t]+-v|declare|typeset|local"
+                      r"|export|readonly)\b([^\n;|&)]*)")
+_NAME_WORDS = re.compile(r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)\b")
 _RESOLVING = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-")
+# The texts a parse hands on as programs of their own -- a lifted `$(…)`, a heredoc body, a
+# word a shell may be handed (`bash -c '…'`, `eval '…'`) -- each with the names the step
+# around it assigns (`_register`): a parse of such a text inherits them (`statements`), all
+# of them, so a `${D:-x }` inside `eval` or `bash -c` is not resolved where `D=tool` stands
+# outside (the round-3 seat's B1). Keyed by the text, joined where one text recurs.
+_ENCLOSING: dict[str, frozenset[str]] = {}
+_ENCLOSING_LIMIT = 20000
+
+
+def _assigned(text):
+    """The names `text` may assign anywhere (see `_ASSIGNED`)."""
+    names = {name for found in _ASSIGNED.findall(text) for name in found if name}
+    for line in _SETTERS.findall(text):
+        names.update(_NAME_WORDS.findall(line))
+    if "getopts" in text:
+        names.update(("OPTARG", "OPTIND"))
+    return frozenset(names)
+
+
+def _register(text, context):
+    """File `text`, a program a parse of this step may hand on, with the step's assigned
+    names, joined with any filed already."""
+    text = str(text)
+    if "$" not in text:
+        return
+    assigned: frozenset[str] = getattr(context, "assigned", frozenset())
+    if len(_ENCLOSING) >= _ENCLOSING_LIMIT and text not in _ENCLOSING:
+        _ENCLOSING.clear()      # a bound, not a cache: the next step registers afresh
+    _ENCLOSING[text] = _ENCLOSING.get(text, frozenset()) | assigned
 
 
 def _default_words(word, context):
@@ -629,6 +665,10 @@ def _stage(text, context):
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
     _defaulted(argv, context)
+    for program in (*argv, *substitutions, *(body[0] for body in bodies.values() if body)):
+        _register(program, context)
+    if heredoc is not None:
+        _register(heredoc, context)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -644,8 +684,7 @@ def statements(script):
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     # The names the step may assign anywhere (`D=tool`, `export D=…`, `for D in`, `read D`):
     # a default of such a name is not resolved to its literal (`_defaulted`), fail-closed.
-    setattr(context, "assigned", frozenset(name for found in _ASSIGNED.findall(text)
-                                           for name in found if name))
+    setattr(context, "assigned", _assigned(text) | _ENCLOSING.get(str(script), frozenset()))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
