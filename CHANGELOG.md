@@ -7,15 +7,34 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow guard reads a function header in every spelling bash accepts (#2664, #2608).**
-  `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after `then`, `do` or an opened `{`
-  ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN: the reader knew a header only
-  as `f()` at a statement's start, so `f(){` was one command word, `f ( )` a subshell, and
-  `then f() {` the command `f` -- the body's first command on the header's line became that
-  command's arguments and its download went unseen. The splitter now reads the parentheses as a
-  header wherever the words before them are keywords, and parts a `{` glued to it, so the
-  body's first command is a command of its own; `f() {`, `f () {`, `function f {`, `f() ( … )`
-  and a header alone on its line read as they did.
+- **Workflow guard reads a function header in the spellings bash takes at a statement's head
+  (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
+  `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
+  the reader knew a header only as `f()` at a statement's start, so `f(){` was one command
+  word, `f ( )` a subshell, and `then f() {` the command `f` -- the body's first command on the
+  header's line became that header's argument, and the call ran a function the guard had no
+  body for. The splitter now reads `()` and `( )` after a name wherever bash does, ends a
+  group's `{` before a header on its line as its own statement, and keeps `function NAME ()`
+  to the name. Three readings move with it, each to bash's: a block nested in a one-line
+  function's body inside a forked group no longer closes that body, a group's `{` before a
+  header is the group's, and `function f ( )` defines `f`. 54 cells go CLEAN -> REPORT with no
+  shell running the payload -- a function defined in one of the new spellings and never
+  called, defined in a branch that does not run, backgrounded, after `unset -f` or redefined
+  to `:` -- each as `main` already reports the `f() {` spelling, fail-closed. Still CLEAN while
+  the shells run them (limits, named in the PR): a body that is a `case`, a function defined
+  inside a function body or a `case` arm or a `( … )` subshell, `time f() {`, `function g {
+  f() {`, and the names `a.b`, `a:b` and `1f`. The fix round closed what the seat found: a
+  negated group holding a header (`! { f() { CHECK; }; f; }` ⏎ USE) had its `!` stranded on
+  the `{`, so the check read as gated -- the `!` is now carried onto every statement the group
+  holds, as bash runs a negated compound with errexit off, which also closes the own-line `!
+  {` ⏎ `CHECK` ⏎ `}` form `main` missed; a called function's assignment (`T=/dev/null; f(){ :;
+  T=tool; }; f; sh "$T"`) never reached the use, `main` reporting it only because the misread
+  header made it the step's own statement -- a call now carries its body's assignments into
+  the value table (`scripts/workflow_called.py`, #2785 closed: `local` dies with the call,
+  `declare -g` and `export` assign globally, sure only where the call and the body statement
+  are, a subshell body carries nothing); and the header test at every `(` had joined and
+  split the whole buffer before the match, about x4 per doubling of one `(( … ))` statement,
+  now computed only behind a match.
 - **Workflow guard: the shell option grammar moves to `scripts/workflow_options.py` (#2331).** A
   pure move out of `scripts/workflow_programs.py`, which stood at the 700-line ceiling: the option
   letter and name tables, the refusal readers (`_refused`, `_refused_name`), `_past_options` and the
