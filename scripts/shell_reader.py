@@ -157,7 +157,18 @@ def _bare_blanks(segment):
         if quote:
             quote = "" if ch == quote[-1] else quote
         elif segment.startswith("$'", i):
-            quote = "$'"
+            # `$'…'` as `_split` reads it: bash's text for it, single-quoted (#2344).
+            end = i + 2
+            while end < len(segment) and segment[end] != "'":
+                end += 2 if segment[end] == "\\" else 1
+            body = ansi_c(segment[i + 2:end]) if end < len(segment) else None
+            if body is not None:
+                out.append("'%s'" % body.replace("'", "'\"'\"'"))
+                i = end + 1
+                continue
+            out.append("$'")
+            quote, i = "$'", i + 2
+            continue
         elif ch in "'\"":
             quote = ch
         out.append(_BLANK if ch.isspace() and not quote else ch)

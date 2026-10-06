@@ -395,6 +395,40 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
         found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-$HOME/tool }\nsh $HOME/tool\n" % URL)])
         self.assertIn("unresolved transfers", str(found[0][1]))
 
+    # Round 5, the coordinator's edge list: a blank no quote or backslash covers splits the
+    # word where `main` split it; a covered one stays in it. Each spelling is a destination
+    # `-o <spelling>`; the words are what bash 5.2.21, 3.2.57 and dash make of `${D:-…}` with
+    # `D` unset (dash keeps a literal `$` before `$'…'` and `$"…"`, the blank still covered),
+    # and the reader's words are `main`'s, byte for byte. A split one is an unresolved
+    # transfer, reported; a covered one names one file (`tool x`), which `sh tool` never runs.
+    EDGES = (('${D:-"tool" x}', ["${D:-tool", "x}"]),           # [tool][x] x3
+             ("${D:-tool\\\\ x}", ["${D:-tool\\", "x}"]),        # [tool\][x] x3: an escaped backslash
+             ("${D:-'a'\"b\" c}", ["${D:-ab", "c}"]),           # [ab][c] x3
+             ('${D:-"a}b" c}', ["${D:-a}b", "c}"]),             # [a}b][c] x3
+             ('${D:-a"b c"d e}', ["${D:-ab cd", "e}"]),         # [ab cd][e] x3
+             ("${D:-$'tool' x}", ["${D:-tool", "x}"]),          # [tool][x]; dash [$tool][x]
+             ('${D:-"$E" x}', ["${D:-$E", "x}"]),               # [][x], b3 [x]
+             ("${D:-'tool x' y}", ["${D:-tool x", "y}"]),       # [tool x][y] x3
+             ('${D:-"tool} x" y}', ["${D:-tool} x", "y}"]),     # [tool} x][y] x3
+             ("${D:-'x }' y}", ["${D:-x }", "y}"]),             # [x }][y] x3
+             ('${D:-a "b}" c}', ["${D:-a", "b}", "c}"]),        # [a][b}][c] x3
+             ('${D:-"tool x"}', ["${D:-tool x}"]),               # [tool x] x3
+             ("${D:-tool\\ x}", ["${D:-tool x}"]),               # [tool x] x3
+             ('${D:-$"tool x"}', ["${D:-$tool x}"]),             # [tool x]; dash [$tool x]
+             ("${D:-$'tool x'}", ["${D:-tool x}"]),              # [tool x]; dash [$tool x]
+             ("${D:-tool\\\nx}", ["${D:-toolx}"]),               # [toolx] x3: a line joined
+             ('${D:-"a b"}" c"', ["${D:-a b} c"]))               # [a b c] x3
+
+    def test_a_blank_a_quote_covers_stays_in_the_word(self):
+        for spelling, words in self.EDGES:
+            with self.subTest(spelling=spelling):
+                stage = wg.shell_reader.statements("curl -fsSL %stool -o %s\n" % (URL, spelling))[0].stages[0]
+                argv = [str(word) for word in stage.argv]
+                self.assertEqual(words, argv[argv.index("-o") + 1:])
+                for shell in SHELLS:
+                    self.assertEqual(len(words) > 1, reported(
+                        "curl -fsSL %stool -o %s\nsh tool\necho done\n" % (URL, spelling), shell))
+
     def test_a_destination_default_reads_as_main_reads_it(self):
         for row in self.DEST_ROWS:
             for shell in SHELLS:
