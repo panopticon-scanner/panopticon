@@ -44,14 +44,17 @@ evidence exposed.
 - **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
   `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
   A use in the skipped suffix of that ordinary list remains gated, including one in a nested
-  script. Where `set +e` or a shell template already lets the parent carry on, that refusal now
-  survives a child's local reach through nested function headers, alternated case patterns,
-  compound negations, and `time`/`coproc` prefixes. Its skipped-`||` walk follows the whole chain,
-  so a known failure that an earlier successful arm never ran certifies nothing in those carry-on
-  postures. The same bound turns 315 former reports into honest clears, such as
-  `C && echo ok && U; echo more` under `set +e`, where no supported shell runs `U`; skipped-side
-  cases under an errexit parent remain
-  tracked separately.
+  script. The parent refusal now survives that local reach through nested and non-leading function
+  headers, alternated case patterns, compound and subshell negations, and `time`/`coproc` prefixes
+  in both carry-on and errexit postures. Negation parity is counted per pipeline, groups opened and
+  closed by one stage cancel there, and a skipped-`||` walk follows the whole chain iteratively, so
+  a known failure that an earlier successful arm never ran certifies nothing. The required
+  194,291-row shell matrix has no main-REPORT to new-CLEAN cell where any measured parent runs the
+  payload; it records 1,683 former reports becoming clean only where no measured shell runs it.
+  The bounded fail-closed prices are named and pinned: a check inside an enclosing negated group;
+  adjacent `!` runs around a parenthesized group whose exact boundary the reader does not retain;
+  `time`/`coproc` forms handed to dialects that parse them differently; and syntax errors such as
+  `true | ! CHECK && USE`. Skipped-side cases under an errexit parent remain tracked separately.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
