@@ -91,6 +91,13 @@ live, so a change that catches one fails there and edits this list.
   after its `-c` (#2337); `$CMD --flag` is not, while `sh -c "$P"` and a word all substitution are
   reported beside a download (#2483, #2486), though they may run none of it
   (`eval "$(ssh-agent -s)"`); `carried` follows a download to a `$X` or `$CMD` candidate (#2479).
+  An unquoted `$` word that is one reference, with no default or a wrapper's, in front of a name
+  the reader knows -- a shell, an interpreter, a wrapper, a fetcher -- is an optional wrapper
+  (#2472, `shell_reader._optional`): empty or unset, bash drops it, and `sudo` hands on, so the
+  rest is read as the command (`$SUDO sh -c '…'`, `${SUDO:-} sh tool`, `CMD=; $CMD sh <<'EOF'`,
+  `bash -c "\$x sh tool"`, `$SUDO curl … | sh`). A value the step assigns that is no wrapper keeps
+  the word (`A=X=1; $A sh x` runs `X=1`; `workflow_annotate._mark`), as does a quoted `"$SUDO"`;
+  one set outside the step that runs nothing of what follows (`SUDO=echo` in `env:`) over-reports.
   A `-c`/`eval` string loses `\$` escapes only with no other `$` (#2342). An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
   `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
