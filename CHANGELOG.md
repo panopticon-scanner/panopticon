@@ -11,7 +11,9 @@ evidence exposed.
   #2331).** A check inside `sh -ec 'CHECK; USE'` now clears that child's later use even when the
   step has run `set +e`, starts from a no-errexit `shell:` template, or pipes the child's enclosing
   group without pipefail. The parent's refusal remains bounded to the command that runs the child,
-  so a use after it is still reported; a child without its own `-e` remains reported too.
+  so a use after it is still reported; a child without its own `-e` remains reported too. Checks
+  whose `-e` is suspended by an `&&`/`||` list or condition also remain reported when execution
+  reaches a later use.
 - **Codex read broker passes through a search-only directory (#2839).** `_open` opened every
   component from `/` read-only, so a review root under a directory that grants `--x` and not `r`
   (`drwx--x--x`, a per-tenant parent) refused every `read_file`, `search` and `list_files` -- and

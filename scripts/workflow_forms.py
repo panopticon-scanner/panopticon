@@ -66,7 +66,7 @@ from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fet
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _LOST, _NO_E, _NO_PIPEFAIL, _SET_E,
                              _errexit, _stops_step, clears as clears, conditional_contexts as paths,
-                             conditional_reach as reach, seed as seed, swallowed as swallowed)
+                             conditional_reach as reach, inlined_stops, seed as seed, swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                at_directory as at_directory, chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
@@ -234,7 +234,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         if top:
             out.append(statement)
             continue
-        why = (Reach(None, _UNGATED % shell) if stops is False and (on[index] or index == last)
+        why = (Reach(None, _UNGATED % shell) if stops is False and inlined_stops(stmts, 0, len(stmts), index, on, fails)
                else _UNGATED % shell if not stops
                else _RUNS_ON % shell if not (on[index] or index == last)
                else None)
@@ -345,7 +345,7 @@ def step_credit(flat, shell=None):
                    else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
-            why = Reach(index - inner, why) if inner < index and type(why) is str else why
+            why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(flat, start, index, inner) else why
             why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:
