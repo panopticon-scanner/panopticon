@@ -112,8 +112,9 @@ class _Lines:
             if last.get(word, -1) <= n:
                 if not self.folded and not sub:
                     raise Unreadable("a quoted heredoc has no exact terminator line: "
-                                     "bash treats every later line as its body and runs "
-                                     "no command from it")
+                                     "no supported shell runs its remaining body as "
+                                     "commands, so this guard refuses to read those lines "
+                                     "as code")
                 return None
             end = keys.index(word, n + 1)
         lines = [text[offset:]] + self.texts[n + 1:end] if end > n else []
