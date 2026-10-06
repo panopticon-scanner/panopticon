@@ -11,15 +11,21 @@ evidence exposed.
   #2654, #2616, #2606, #2603, #2592, #2331).** After `-s` bash keeps reading options, so a `-c`
   among them puts the program in the string and the heredoc is its data (`bash -s -c true` ran the
   download past a check bash never read); the word after a lone `-` is the script FILE
-  (`bash - /dev/null`); a shell's long options have a table -- `--rcfile FILE` and `--init-file
-  FILE` are skipped whole, and a word outside the table or spelled `--name=value` is a refusal, as
-  every long option is to dash (`bash --rcfile /dev/null <<'EOF'` ran the heredoc and read CLEAN;
+  (`bash - /dev/null`); a shell's long options have a table, in both spellings bash takes
+  (`--login`, `-login`: #2864) -- `--rcfile FILE` and `--init-file FILE` are skipped whole, and a
+  word outside the table or with a value glued on is a refusal, as every two-dash word is to dash
+  (`bash --rcfile /dev/null <<'EOF'` and `bash -norc <<'EOF'` ran the heredoc and read CLEAN;
   `bash --bogus` ran nothing and was reported); at the step's own level a measured shell's refused
   letter (`bash -K`), refused `-o` name (`bash -o pipefial`) or `-o` value that is no name (`sh -o
   -`, `bash -o /dev/stdin`) runs nothing, in the stdin walk and in the option words before a `-c`
   cluster; and a word holding a `<(...)` never vanishes (`bash $(true)<(...)`). Behind a string an
   inner shell's refusal is still read on, `-O`'s shopt names still have no table, and no refusal is
   read as stopping the step: a use after `bash -oo pipefail -c P` is still reported.
+- **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,
+  `--help`, `--dump-strings` and `--dump-po-strings`, in either spelling, print and exit before bash
+  reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check
+  bash never read and was credited with the check (CLEAN). The four are a refusal of the walk now,
+  so the use after is reported as unverified; a download in the heredoc or the string stays CLEAN.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

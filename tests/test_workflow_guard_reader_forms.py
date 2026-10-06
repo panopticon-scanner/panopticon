@@ -1178,7 +1178,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
       each filed under #2331 too and reported behind a string: options that
       keep it from running its program (`bash -n -s`, `bash -t -s`,
-      `bash -s -c true`, `bash --version`, `bash -o $X -s` with `X=noexec`,
+      `bash -s -c true` and `bash --version` until #2647, `bash -o $X -s` with `X=noexec`,
       and `SHELLOPTS=noexec bash -s` under a dash step); a subshell's
       `|| true`; a check in a function called under `|| true` or never called,
       or ahead of `&&` in a `-e` body; a body that reads the rest of itself
@@ -2178,11 +2178,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2500_the_holders_own_command_line_voids_its_check(self):
         # A holder given `-n`, `--version` or `-o noexec` runs nothing of its string, and `-c -e`'s
         # `-e` is not `sh`'s: rc 0 in every shell, bar bash refusing `SHELLOPTS=noexec` (rc 1).
+        # `--version` prints and exits before the string is read (#2647): nothing reads the body.
         self.assert_reported([(stdin_step(runner), 1, UNGATED % name) for runner, name in (
             ("bash -nc 'sh'", "bash"), ("bash -n -c 'sh'", "bash"),
-            ("bash --version -c 'sh'", "bash"), ("SHELLOPTS=noexec bash -c 'sh'", "bash"),
+            ("SHELLOPTS=noexec bash -c 'sh'", "bash"),
             ("bash -o noexec -c 'sh'", "bash"), ("sh -c 'bash -nc \"sh\"'", "sh"))]
-            + [(stdin_step("bash -c -e 'sh'", self.ECHOED), 1, UNGATED % "bash")])
+            + [(stdin_step("bash -c -e 'sh'", self.ECHOED), 1, UNGATED % "bash"),
+               (stdin_step("bash --version -c 'sh'"), 1, "with nothing verifying what arrived")])
         # A holder of `-c`, `-e`, `-u` and `-x` alone, nested or not: every shell
         # stops at the check that is the whole body (rc 1), reported all the same.
         self.assert_reported([(stdin_step(runner), 1, UNGATED % name) for runner, name in (
@@ -2279,12 +2281,13 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
         self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
                            stdin_step("bash -t -s", "echo start\n" + CHECK),
-                           stdin_step("bash --version"),
                            stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
-        # No longer a gap (#2647): after `-s` bash keeps reading options, and the `-c` puts the
-        # program in the string -- the heredoc is data, its check never read; FR FR FR FR.
-        self.assert_reported([(stdin_step("bash -s -c true"), 1, "with nothing verifying what arrived")])
+        # No longer gaps (#2647): after `-s` bash keeps reading options, and the `-c` puts the
+        # program in the string -- the heredoc is data, its check never read; and `--version`
+        # prints and exits, reading no stdin (`-version` too); FR FR FR FR on each.
+        self.assert_reported([(stdin_step(runner), 1, "with nothing verifying what arrived")
+                              for runner in ("bash -s -c true", "bash --version", "bash -version")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a

@@ -120,16 +120,79 @@ class TestALongOptionOfTheShell(unittest.TestCase):
 
     def test_the_tables_are_the_union_bash_5_2_21_and_3_2_57_print(self):
         # `bash --help` on each: 5.2 adds `--pretty-print`, 3.2 `--protected` and `--wordexp`.
+        # The four that print and exit run nothing (`bash --version <<'EOF'` reads no stdin).
         self.assertEqual(("--rcfile", "--init-file"), wo.LONG_VALUE_OPTIONS)
         self.assertEqual(set(wo.LONG_OPTIONS), {
             "--debug", "--debugger", "--dump-po-strings", "--dump-strings", "--help", "--login",
             "--noediting", "--noprofile", "--norc", "--posix", "--pretty-print", "--protected",
             "--restricted", "--verbose", "--version", "--wordexp"})
+        self.assertEqual({"--help", "--version", "--dump-strings", "--dump-po-strings"}, set(wo.LONG_EXITS))
         self.assertTrue(wo._refused_long(["bash", "--bogus"], 1))
+        self.assertTrue(wo._refused_long(["bash", "--version"], 1))
+        self.assertTrue(wo._refused_long(["bash", "-rcfile=/dev/null"], 1))
         self.assertTrue(wo._refused_long(["dash", "--norc"], 1))
         self.assertFalse(wo._refused_long(["bash", "--norc"], 1))
+        self.assertFalse(wo._refused_long(["bash", "-norc"], 1))
         self.assertFalse(wo._refused_long(["zsh", "--bogus"], 1))
         self.assertFalse(wo._refused_long(["bash", "--"], 1))
+        # Both spellings bash takes; the one-dash one only for `bash` and `sh`.
+        self.assertEqual("--login", wo.long_option("--login", "bash"))
+        self.assertEqual("--login", wo.long_option("-login", "bash"))
+        self.assertEqual("--login", wo.long_option("-login", "/bin/sh"))
+        self.assertIsNone(wo.long_option("-login", "dash"))
+        self.assertIsNone(wo.long_option("-login", "zsh"))
+        self.assertEqual("--login", wo.long_option("--login", "dash"))
+        for word in ("-bogus", "-e", "-rcfile=/dev/null", "-", "--", "--rcfile=f"):
+            self.assertIsNone(wo.long_option(word, "bash"), word)
+        self.assertFalse(wo._refused(["bash", "-login"], 1))
+        self.assertFalse(wo._refused_name(["bash", "-noediting"], 1))
+
+    def test_bash_takes_its_long_options_with_one_dash_too(self):
+        # #2864 and the round-1 pre-check of PR #2858: bash reads `-login` as `--login`, and the
+        # refusal reading took it for a letter cluster with a letter outside the table. FR FR FR
+        # FR on each row below (the login-shell rows measured on the forge, where a login shell
+        # keeps its PATH; on a Mac `/etc/profile` resets it), reported now; six of them (#2864:
+        # `-norc`, `-restricted`, `-rcfile FILE`, `-init-file FILE`, and the two `-c` forms) read
+        # CLEAN on main before this batch too.
+        for script in (body("bash -login", PIPE), body("bash -noediting", PIPE), body("bash -debugger", PIPE),
+                       body("sh -login", PIPE),                       # FR where `sh` is bash; dash refuses
+                       "bash -login -c '%s'\n" % PIPE, "bash -posix -c '%s'\n" % PIPE,
+                       body("bash -norc", PIPE), body("bash -restricted", PIPE),
+                       body("bash -rcfile /dev/null", PIPE), body("bash -init-file /dev/null", PIPE),
+                       "bash -norc -c '%s'\n" % PIPE, "bash -rcfile /dev/null -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        found = defects("X=-c\nbash -rcfile /dev/null $X '%s'\n" % PIPE)
+        self.assertTrue(any("where it reads its options" in why for why in found), found)
+        # -- -- -- -- (rc 2) on each: a one-dash word that spells no long option is a letter
+        # cluster (`-bogus` fails at `g`), dash reads every one-dash word so (`dash -login` fails
+        # at `-g`), a value glued on is refused (rc 1), and a long option after a `-c` cluster is
+        # refused by both bashes (`- : invalid option`).
+        for script in (body("bash -bogus", PIPE), body("dash -login", PIPE), body("bash -rcfile=/dev/null", PIPE),
+                       "bash -c -login '%s'\n" % PIPE, "bash -c --login '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_a_long_option_that_prints_and_exits_reads_no_stdin_and_runs_no_string(self):
+        # `--version`, `--help`, `--dump-strings` and `--dump-po-strings` (`LONG_EXITS`) print
+        # and exit before bash reads stdin or a `-c` string, in either spelling: with a check in
+        # the heredoc and a use after, FR FR FR FR and rc 0 -- the use runs, the check never read
+        # -- where `bash --norc <<'EOF'` reads the check and stops (F-+chk, rc 1). main read the
+        # heredoc as the shell's program and credited the check: its own gap, closed with the
+        # table. `sh --version` is read the same, fail-closed: FR where `sh` is bash, F- and rc 2
+        # where it is dash.
+        for runner in ("bash --version", "bash -version", "bash --help", "bash -help",
+                       "bash --dump-strings", "bash --dump-po-strings", "bash --version -c 'sh'",
+                       "bash -version -c 'sh'", "sh --version"):
+            with self.subTest(runner=runner):
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+        # -- -- -- -- (rc 0): a download in the heredoc or the string is never run.
+        for script in (body("bash --version", PIPE), body("bash -version", PIPE), body("bash -help", PIPE),
+                       "bash --help -c '%s'\n" % PIPE, "bash --dump-strings -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        self.assertEqual([], defects(GET + body("bash --norc", CHECK) + USE))     # the check counts
 
 
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):

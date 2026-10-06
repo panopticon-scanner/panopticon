@@ -56,7 +56,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_text import Process
-from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES,
+from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES, long_option,
                               SET_OPTIONS as SET_OPTIONS,
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
@@ -180,15 +180,16 @@ def _after_dash_c(argv):
         if owed:                                # an option's value, not an option word
             owed -= 1
             continue
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
+        long = long_option(token, argv[0])
+        if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
             return _past_options(argv, position)
         # An option word the shell in hand refuses BEFORE the cluster exits before the string
         # is read, as one after it does (#2606, #2616): `bash -o pipefial -c P`, `bash --bogus
-        # -c P`; a `--rcfile FILE` is skipped whole.
-        if token[:2] == "--":
+        # -c P`; a `--rcfile FILE`, in either spelling (`-rcfile`), is skipped whole.
+        if long or token[:2] == "--":
             if _refused_long(argv, position):
                 return []
-            owed = token in LONG_VALUE_OPTIONS
+            owed = long in LONG_VALUE_OPTIONS
         elif token[:1] in ("-", "+"):
             if _refused(argv, position) or _refused_name(argv, position):
                 return []
@@ -235,14 +236,16 @@ def candidates(argv):
             more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
             return word, rest[:end] + rest[more + 1:] or (
                 [word] if shell_reader.yields_words(word) else [])
-        elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
-            break
-        elif word[:2] != "--":
-            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
-        elif _refused_long(argv, at):           # `bash --bogus $X '…'` runs nothing (#2616)
-            break
+        elif word in ("-", "--") or word[:1] not in ("-", "+"):
+            break                               # the options end: a program, or `-`/`--`
+        elif (long := long_option(word, argv[0])) or word[:2] == "--":
+            if _refused_long(argv, at):         # `bash --bogus $X '…'` runs nothing (#2616)
+                break
+            owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
+        elif "c" in word:
+            break                               # a `-c` cluster, whose string `scripts` reads
         else:
-            owed = word in LONG_VALUE_OPTIONS    # `bash --rcfile FILE $X '…'`: the FILE is its value
+            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return None, []
 
 
@@ -546,12 +549,14 @@ def _options(argv, depth):
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
             return (answer, reader) if value_option else (None, None)
-        if token[:2] in ("--", "++"):
-            # A long option (#2616): bash refuses one outside its table and exits before it
-            # reads stdin, and `--rcfile FILE` takes the next word, which is no script.
+        long = long_option(token, argv[0])
+        if long or token[:2] in ("--", "++"):
+            # A long option, in either spelling (#2616): bash refuses one outside its table, or
+            # one that prints and exits, before it reads stdin; `--rcfile FILE` takes the next
+            # word, which is no script.
             if shell and not depth and _refused_long(argv, at - 1):
                 return None, None
-            at += token in LONG_VALUE_OPTIONS
+            at += long in LONG_VALUE_OPTIONS
             continue
         letters = token[1:]
         if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):
