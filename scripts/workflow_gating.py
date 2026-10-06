@@ -332,6 +332,30 @@ def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
     return why
 
 
+def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
+    """Whether this handed-script statement's failure reaches its carrier.
+
+    Without recorded option states, the child proof being tested already
+    requires its own `-e`; read that as on, but pipefail as off so an uncertain
+    pipeline stays fail-closed. Reuse `_stops_step` for `&&`/compound-list
+    bounds and `swallowed` for `||` rescues and conditional tests before
+    narrowing a parent refusal to the carrier. Ignore this statement's
+    precomputed credit: it was derived while flattening the parent, whose
+    posture is exactly what is being bounded.
+    """
+    body = stmts[start:carrier]
+    position = index - start
+    if not 0 <= position < len(body) or not body[position].stages:
+        return False
+    statement = body[position]
+    if isinstance(statement, Inlined):
+        statement = statement._replace(credit=(None, None))
+    enabled = [True] * len(body) if on is None else on[start:carrier]
+    piped = [False] * len(body) if fails is None else fails[start:carrier]
+    return (_stops_step(body, position, enabled, piped) is None
+            and swallowed(body, position, statement, statement.stages[-1]) is None)
+
+
 def _rescue_bounds(stmts, branch):
     """Inclusive statement bounds for the rescue after an `||` separator."""
     start = branch + 1
@@ -410,8 +434,18 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     measuring_uses = credit is not _UNMEASURED
     if credit is _UNMEASURED:
         credit = None
-    if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
-        return statement.credit[stage is not statement.stages[-1]]
+    inherited_child_reach = False
+    if isinstance(statement, Inlined):
+        own = statement.credit[stage is not statement.stages[-1]]
+        outer = credit[stage is not statement.stages[-1]] if credit else None
+        # `flattened` uses an unbounded base Reach when the child gates its own
+        # remainder but its parent does not stop on the child's status. A later
+        # step-level Reach supplies the carrier boundary; every other local
+        # refusal remains stronger and is returned unchanged.
+        inherited_child_reach = (type(own) is Reach and own.span is None
+                                 and isinstance(outer, Reach))
+        if own and not inherited_child_reach:
+            return own
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
@@ -457,7 +491,9 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     if conditional(head) or conditional(stage.argv):
         return "is an `if`/`while` test, which errexit does not apply to"
     why = credit[stage is not statement.stages[-1]] if credit else None
-    piped_end = _piped_group_end(stmts, index) if why is None or isinstance(why, Reach) else None
+    piped_end = (_piped_group_end(stmts, index)
+                 if not inherited_child_reach
+                 and (why is None or isinstance(why, Reach)) else None)
     function_end = _piped_function_end(stmts, index) if piped_end is None else None
     if function_end is not None:
         # The definition is not itself piped. `step_credit`'s pipeline slot
