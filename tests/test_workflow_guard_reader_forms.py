@@ -2409,7 +2409,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 ("eval 'bash -o $X -s'", "bash -o $X -s", CHECK, "X=noexec\n", "", False)):
             reported.append((stdin_step(string, body, pre=pre, end=end), 1, UNGATED % "eval"))
             literal_step = stdin_step(literal, body, pre=pre, end=end)
-            if literal == "( bash -s":
+            # #2653 strengthens this literal child-ahead-of-&& pin to reported.
+            if literal == "bash -e -s" and body == CHECK + " && echo ok\necho done":
+                reported.append((literal_step, 1, TestAChildCheckAheadOfAnd.AHEAD))
+            elif literal == "( bash -s":
                 group_handoffs.append(literal_step)
             else:
                 (fixed if function_gap else gaps).append(literal_step)

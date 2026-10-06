@@ -58,8 +58,7 @@ import shell_reader
 from shell_reader import command, statements
 
 
-# Compatibility bindings share the single fetch owner with existing callers,
-# the operand questions with theirs, and the gating ones with theirs.
+# Compatibility bindings share the fetch, operand and gating owners with existing callers.
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
@@ -234,7 +233,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         if top:
             out.append(statement)
             continue
-        why = (Reach(None, _UNGATED % shell) if stops is False and inlined_stops(stmts, 0, len(stmts), index, on, fails)
+        local = _stops_step(stmts, index, on, fails) if stops is True and statement.separator == "&&" else None
+        why = (Reach(local - index) if type(local) is int and local >= index
+               else Reach(None, _UNGATED % shell) if stops is False and inlined_stops(stmts, 0, len(stmts), index, on, fails)
                else _UNGATED % shell if not stops
                else _RUNS_ON % shell if not (on[index] or index == last)
                else None)
@@ -244,8 +245,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     return out
 
 
-# The words a `set` this module reads may stand behind: `builtin` and `eval`
-# run it in this shell, as `command` does, in either order.
+# A `set` this module reads may stand behind `builtin`, `eval` or `command`.
 _SETTERS = ("builtin", "command", "eval", "set", "shopt")
 
 
