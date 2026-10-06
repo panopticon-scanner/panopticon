@@ -60,8 +60,9 @@ class Unreadable(Exception):
     """A script `lex` does not read: it nests `((` so deep that deciding each
     one, as bash does, would read it more than `_REREAD` times over, a
     substitution closes over a heredoc or queues one after an `EOF)`, a case
-    arm cannot be attributed, or a heredoc delimiter needs a shell parse.
-    `workflow_guard.job_defects` reports its step."""
+    arm cannot be attributed, a quoted heredoc has no exact terminator, or a
+    heredoc delimiter needs a shell parse. `workflow_guard.job_defects`
+    reports its step."""
 
 
 def _word(text: str, i: int) -> tuple[str, bool, int] | int | None:
