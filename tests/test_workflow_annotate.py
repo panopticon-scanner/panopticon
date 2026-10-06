@@ -1271,10 +1271,18 @@ class TestThePricesAndLimits(unittest.TestCase):
         # read before any value, so it over-reports as before.
         self.assertEqual([STREAM], defects("CMD=true\n" + body("${CMD:-sh}")))
 
-    def test_an_empty_value_stays_as_written(self):
-        # FR FR FR FR (the empty `$CMD` vanishes and `sh` reads the body), the base CLEAN, and so
-        # here: the rule reads no empty value -- the base's gap (a FILE `sh` to the reader, #2472).
-        self.assertEqual([], defects("CMD=\n" + body("$CMD sh")))
+    def test_an_empty_value_is_the_readers_to_drop(self):
+        # FR FR FR FR (the empty `$CMD` vanishes and `sh` reads the body), the base CLEAN before
+        # #2472: the rule reads no empty value, and `shell_reader._optional` now drops the word in
+        # front of `sh` as bash does, so the stream is reported. The quoted twin keeps its word --
+        # F- F- F- F-, rc 127: bash runs `''` -- and reads CLEAN, as does one whose value bash runs
+        # as the command (`A=X=1; $A sh` runs `X=1`, -- -- -- --): `kept`, not dropped.
+        self.assertEqual([STREAM], defects("CMD=\n" + body("$CMD sh")))
+        self.assertEqual([], defects("CMD=\n" + body('"$CMD" sh')))
+        self.assertEqual([], defects("A=X=1\n" + body("$A sh")))
+        kept = [word for statement in annotated("A=X=1\n" + body("$A sh"))
+                for word in statement.stages[0].argv if getattr(word, "kept", False)]
+        self.assertEqual(["$A"], kept)
 
     def test_an_event_under_history_turned_on_outside_the_step_reads_as_the_twin(self):
         # An earlier step writes `SHELLOPTS=history:histexpand` to `$GITHUB_ENV`, and with it

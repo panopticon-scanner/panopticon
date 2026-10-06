@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard reads a `$` word in front of a shell as an optional wrapper (#2472, #2331).**
+  `$SUDO sh -c 'curl … | sh'` ran its pipeline with `SUDO` unset or empty -- bash 5.2.21, bash
+  3.2.57 and dash all drop the empty unquoted word, and `sudo` hands on -- and read CLEAN, as did
+  `${SUDO:-} sh tool`, `CMD=; $CMD sh <<'EOF'`, `bash -c "\$x sh tool"` and `$SUDO curl … | sh`.
+  The reader now drops an unquoted `$` word that is one reference, with no default or a wrapper's,
+  in front of a name it knows (a shell, an interpreter, a wrapper, a fetcher) and reads the rest as
+  the command, fail-closed. A quoted `"$SUDO"` keeps its word (bash runs `''` and stops), and so
+  does a word the step's own table resolves to a literal that is no wrapper (`SUDO=echo` prints,
+  `A=X=1` runs `X=1`): `workflow_annotate` marks it `kept`, and its rule-7 veto now fires for a
+  value-reached builtin that may assign (`R=read; $R CMD`) rather than for any name outside the
+  ones it reads. The price: a value set outside the step that runs nothing of what follows
+  over-reports, and a checksum behind such a word is still not credited.
 - **Codex read broker passes through a search-only directory (#2839).** `_open` opened every
   component from `/` read-only, so a review root under a directory that grants `--x` and not `r`
   (`drwx--x--x`, a per-tenant parent) refused every `read_file`, `search` and `list_files` -- and

@@ -32,6 +32,7 @@ class _Token(str):
         return token
 
     markers: dict[str, tuple[str, object]]
+    kept: bool                  # set by `kept`; read with a default by `shell_reader._optional`
 
 
 class _Expanded(_Token, Rewritten):
@@ -41,6 +42,17 @@ class _Expanded(_Token, Rewritten):
 
 def _markers(text):
     return text.markers if isinstance(text, _Token) else {}
+
+
+def kept(word):
+    """`word` as a token bash keeps as its command (#2472): every `$` of it
+    quoted (`shell_reader._stage`), or the step's own table resolving it to a
+    literal that is no wrapper (`workflow_annotate._mark`) -- so the reader does
+    not drop it in front of a known name as it drops an empty or unset `$SUDO`
+    (`shell_reader._optional`)."""
+    token = _Token(str(word), _markers(word))
+    token.kept = True
+    return token
 
 
 def derived(text, *sources):

@@ -414,15 +414,16 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
     """#2602: a download piped or redirected into a `$` command word."""
 
     def test_each_stream_shape_is_reported(self):
-        # Bash 3.2.57, 5.2.21 and dash execute the payload in every row.
+        # Bash 3.2.57, 5.2.21 and dash execute the payload in every row. The
+        # `SUDO=` NL `curl … | $SUDO sh` row that stood here reads as `sh` since
+        # #2472 and is pinned with its family (TestAnOptionalWrapperSpelledByVariable).
         rows = (("CMD=$(echo sh)\ncurl -fsSL %si.sh | $CMD\n" % URL, "$CMD"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | \"$CMD\"\n" % URL, "$CMD"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | ${CMD}\n" % URL, "${CMD}"),
                 ("curl -fsSL %si.sh | $(echo sh)\n" % URL, "$(...)"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | $CMD -s\n" % URL, "$CMD"),
                 ("CMD=$(echo sh)\ncurl -fsSL %si.sh | tee f | $CMD\n" % URL, "$CMD"),
-                ("CMD=$(echo eval)\n$CMD \"$(curl -fsSL %si.sh)\"\n" % URL, "$CMD"),
-                ("SUDO=\ncurl -fsSL %si.sh | $SUDO sh\n" % URL, "$SUDO"))
+                ("CMD=$(echo eval)\n$CMD \"$(curl -fsSL %si.sh)\"\n" % URL, "$CMD"))
         for script, word in rows:
             with self.subTest(script=script):
                 found = defects(script)
@@ -462,6 +463,89 @@ class TestAValueCommandWordConsumesAStream(unittest.TestCase):
         found = defects("curl -fsSLo i.sh %si.sh\nCMD=$(echo sh)\n$CMD -c 'cat' < i.sh\n" % URL)
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0][1].startswith("runs `$CMD` with `-c`"), found)
+
+
+class TestAnOptionalWrapperSpelledByVariable(unittest.TestCase):
+    """#2472: an unquoted `$` word in front of a name the reader knows -- a shell,
+    an interpreter, a wrapper, a fetcher -- is an optional wrapper spelled by
+    variable. Empty or unset, bash drops the word and the next one is the
+    command; set to `sudo`, the next one runs too; so `shell_reader._optional`
+    reads the rest of the statement as the command (fail-closed where the value
+    runs nothing of it), and a quoted `"$SUDO"` keeps its word. Each row's
+    comment carries its truth, b5 b3 dash gh (bash 5.2.21, bash 3.2.57, dash, a
+    GitHub runner's bash with `sh` = dash), measured with `SUDO`, `CMD`, `X` and
+    `x` unset, a recording `curl` and a `sudo` that runs its arguments: FR
+    fetched and ran, F- fetched only, -- neither.
+    """
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+    USE = "fetches %stool -> tool and running it under `sh`" % URL
+
+    def test_the_pipeline_behind_the_word_is_reported(self):
+        # FR FR FR FR on every row; main CLEAN on every row but the `${X:-sudo}
+        # sh tool` one, which main's value table already read.
+        for script in ("$SUDO sh -c '%s'\n" % PIPE,                      # the issue's step
+                       "${SUDO:-} sh -c '%s'\n" % PIPE,                  # an empty default
+                       "$SUDO $SHELLX sh -c '%s'\n" % PIPE,              # two words drop
+                       "$SUDO env sh -c '%s'\n" % PIPE,                  # a wrapper after it
+                       "${X:-sudo} sh -c '%s'\n" % PIPE,                 # a default that hands on
+                       "SUDO=sudo\n$SUDO sh -c '%s'\n" % PIPE,           # the must-trip control
+                       "$SUDO %s\n" % PIPE,                              # in front of the fetcher
+                       "SUDO=\ncurl -fsSL %si.sh | $SUDO sh\n" % URL,    # the stream's consumer
+                       "CMD=\n$CMD sh <<'EOF'\n%s\nEOF\n" % PIPE):      # a certain empty value
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self.STREAM, found[0][1])
+        for script in (GET + "${X:-sudo} sh tool\n", GET + 'bash -c "\\$x sh tool"\n',
+                       "$SUDO " + GET + "sh tool\n"):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self.USE, found[0][1])
+
+    def test_a_kept_word_and_a_value_that_runs_nothing_read_as_before(self):
+        # -- -- -- -- on every row (rc 127 where bash finds no command): the quoted word is
+        # the command bash runs (`''`, `$SUDO` literally), a literal value the step assigns
+        # that is no wrapper is `kept` by `workflow_annotate._mark` (`echo` prints, `true`
+        # runs nothing, `apt-get` takes `sh` as its word), a default no wrapper is #2337's
+        # word, and a `-c 'echo hi'` fetches nothing. Main CLEAN on every row, and so here.
+        for script in ('"$SUDO" sh -c \'%s\'\n' % PIPE, "'$SUDO' sh -c '%s'\n" % PIPE,
+                       "\\$SUDO sh -c '%s'\n" % PIPE, "CMD=\n\"$CMD\" sh <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "SUDO=echo\n$SUDO sh -c '%s'\n" % PIPE, "SUDO=true\n$SUDO sh -c '%s'\n" % PIPE,
+                       "SUDO=apt-get\n$SUDO sh -c '%s'\n" % PIPE, "${X:-echo} sh -c '%s'\n" % PIPE,
+                       "$SUDO sh -c 'echo hi'\n", "$SUDO apt-get install -y x\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_the_fail_closed_readings_around_it_are_unchanged(self):
+        # A `$` word BEHIND a wrapper stays the unread wrapper report (#2227); a checksum
+        # behind one is still not credited (FR FR FR FR with the check passing: the
+        # over-report main gave, fail-closed, since the value may run nothing); and a
+        # value naming a runner the guard does not list keeps the hand-off (#2792).
+        found = defects("sudo $X sh -c '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("cannot read command behind wrapper"), found)
+        found = defects(GET + "echo 'x  tool' > sums\n$SUDO sha256sum -c sums\nsh tool\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn(self.USE, found[0][1])
+        found = defects("SUDO=csh\n$SUDO <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertTrue(any("`$SUDO`, a command word this guard does not" in why
+                            for _name, why in found), found)
+
+    def test_the_known_names_cover_the_tables_they_mirror(self):
+        # `shell_reader` sits under the modules that own these tables, so it spells its own
+        # copies; this pin keeps them equal.
+        import shell_reader
+        import shell_wrappers
+        import workflow_fetch
+        import workflow_programs
+        known = set(shell_reader.OPTIONAL_NEXT)
+        self.assertEqual(set(shell_reader._FETCHERS), set(workflow_fetch.FETCHERS))
+        self.assertEqual(set(shell_reader._INTERPRETERS), set(workflow_programs._FOREIGN))
+        for table in (shell_reader._SHELLS, shell_wrappers.WRAPPERS,
+                      workflow_fetch.FETCHERS, workflow_programs._FOREIGN):
+            self.assertTrue(set(table) <= known, table)
 
 
 class TestADynamicWordWhereTheProgramMayBe(unittest.TestCase):
