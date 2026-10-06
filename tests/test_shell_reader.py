@@ -1714,3 +1714,29 @@ class TestAnArrayLiteralCarriesItsElements(unittest.TestCase):
             with self.subTest(script=script):
                 for stage in shell_reader.statements(script)[0].stages:
                     self.assertTrue(all(self.elements(w) is None for w in stage.argv), stage.argv)
+
+
+class TestTheStdoutAliasTable(unittest.TestCase):
+    """#2744: the table answers `in` for any spelling of standard output, and the stage says
+    whether descriptor 2 finally feeds the next stage."""
+
+    def test_membership_collapses_slashes_and_knows_proc(self):
+        for word in ("/dev/stdout", "//dev/stdout", "/dev//fd/1", "/proc/self/fd/1", "/proc//self/fd/1"):
+            with self.subTest(word=word):
+                self.assertIn(word, shell_reader._STDOUT_ALIASES)
+        for word in ("/dev/stderr", "/dev/fd/2", "/proc/self/fd/2", "-", "out.txt", "/dev/stdout2"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, shell_reader._STDOUT_ALIASES)
+        self.assertEqual(("/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"), tuple(shell_reader._STDOUT_ALIASES))
+
+    def test_a_write_to_a_slashed_alias_keeps_the_pipe(self):
+        stage = shell_reader.statements("echo hi >//dev/stdout | sh")[0].stages[0]
+        self.assertTrue(stage.stdout_to_pipe)
+        self.assertEqual([], stage.stdout_writes)
+
+    def test_stderr_to_pipe_says_where_descriptor_2_ends(self):
+        for script, expected in (("tee /dev/stderr 2>&1 | sh", True), ("tee /dev/stderr | sh", False),
+                                 ("echo hi 2>&1 >/dev/null | sh", True), ("echo hi >/dev/null 2>&1 | sh", False),
+                                 ("echo hi 2>&1", True)):  # fd 1 feeds a next stage by default, as `stdout_to_pipe` says
+            with self.subTest(script=script):
+                self.assertEqual(expected, shell_reader.statements(script)[0].stages[0].stderr_to_pipe)
