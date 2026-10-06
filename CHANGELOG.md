@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: the stdin operand walk reads a shell's options as the shell does (#2647,
+  #2654, #2616, #2606, #2603, #2592, #2331).** After `-s` bash keeps reading options, so a `-c`
+  among them puts the program in the string and the heredoc is its data (`bash -s -c true` ran the
+  download past a check bash never read); the word after a lone `-` is the script FILE
+  (`bash - /dev/null`); a shell's long options have a table -- `--rcfile FILE` and `--init-file
+  FILE` are skipped whole, and a word outside the table or spelled `--name=value` is a refusal, as
+  every long option is to dash (`bash --rcfile /dev/null <<'EOF'` ran the heredoc and read CLEAN;
+  `bash --bogus` ran nothing and was reported); at the step's own level a measured shell's refused
+  letter (`bash -K`), refused `-o` name (`bash -o pipefial`) or `-o` value that is no name (`sh -o
+  -`, `bash -o /dev/stdin`) runs nothing, in the stdin walk and in the option words before a `-c`
+  cluster; and a word holding a `<(...)` never vanishes (`bash $(true)<(...)`). Behind a string an
+  inner shell's refusal is still read on, `-O`'s shopt names still have no table, and no refusal is
+  read as stopping the step: a use after `bash -oo pipefail -c P` is still reported.
 - **Workflow guard: the shell option grammar moves to `scripts/workflow_options.py` (#2331).** A
   pure move out of `scripts/workflow_programs.py`, which stood at the 700-line ceiling: the option
   letter and name tables, the refusal readers (`_refused`, `_refused_name`), `_past_options` and the
