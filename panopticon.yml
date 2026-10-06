@@ -658,6 +658,7 @@ groups:
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_values.py
+      - scripts/workflow_valued.py
       - scripts/workflow_called.py
       - scripts/workflow_annotate.py
       tests:
@@ -667,6 +668,7 @@ groups:
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
       - tests/test_workflow_values.py
+      - tests/test_workflow_valued.py
       - tests/test_workflow_annotate.py
       panels:
       - SEC
