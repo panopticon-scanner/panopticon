@@ -2404,6 +2404,15 @@ class TestAParentRefusalKeepsAChildScriptsReach(unittest.TestCase):
                     self.assertEqual(1, len(found), found)
                     self.assertIn("the checksum that names /tmp/payload", found[0][1])
 
+    def test_an_and_list_still_gates_a_use_inside_it(self):
+        child = "sh -ec '%s && " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                self.assertEqual([], self.job(prefix + child + suffix, shell, use=""))
+
     def test_a_compound_and_list_suspends_the_childs_errexit(self):
         child = "sh -ec '{ %s; } && echo checked; " + self.INLINE_USE + "'"
         for prefix, suffix, shell in (
