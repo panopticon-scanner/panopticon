@@ -353,7 +353,23 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
         "curl -fsSL %stool -o ${D:-tool } && sh tool" % URL)
     DEST_CONTROLS = ('curl -fsSL %stool -o "${D:-tool }"\nsh tool' % URL,
                      "curl -fsSL %stool -o ${D:-other }\nsh tool" % URL,
+                     "curl -fsSL %stool -o ${D:-tool}\nsh other" % URL,
                      "curl -fsSL %stool -o ${D}\nsh tool" % URL, "echo ${X:-a b} | sh")
+    # Round 2: a `$${` INSIDE a `${…}` nested in `_expansion_end` as `${` (dash runs the use);
+    # a default holding a lifted substitution resolved to the MARKER's text; and a default the
+    # reader cannot resolve to ONE literal word -- a `$` in it, a glued option, the name
+    # assigned in the step, `:=` / `:+` -- lost `main`'s fail-closed "unresolved transfers".
+    # Such a word is now handed on split at its blanks, as `main` read it, and the fetch
+    # reader refuses the command; `${D:-tool}` and `${D:-tool }` still resolve (#2867).
+    PID_INSIDE = (GET + "echo ${a:-$${b} x; sh tool; echo }", GET + "echo ${a:-$$} x; sh tool",
+                  GET + "echo ${a:-$$${b}}; sh tool")
+    UNRESOLVED = tuple("curl -fsSL %stool %s" % (URL, tail) for tail in (
+        "-o ${D:-$(echo tool) }\nsh tool", "-o ${D:-$(echo tool)}\nsh tool", "-o ${D:-`echo tool` }\nsh tool",
+        "-o ${D:-t$(echo ool) }\nsh tool", "> ${D:-$(echo tool) }\nsh tool",
+        "-o ${D:-$HOME/tool }\nsh $HOME/tool", "-o${D:-tool }\nsh tool", "-o ${D:=tool }\nsh ${D}",
+        "-o ${D:+tool }\nsh tool", "-o ${D:-tool } --output other\nsh tool")) + (
+        "curl -fsSLo${D:-tool } %stool\nsh tool" % URL, "D=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+        "export D=tool\ncurl -fsSL %stool -o ${D:-x }\nsh $D" % URL)
 
     def test_the_pid_and_a_brace_are_two_things(self):
         for row in self.PID_ROWS:
@@ -362,6 +378,20 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
                     self.assertTrue(reported(row + "\necho done\n", shell))
         argv = wg.shell_reader.statements("echo $$'x' $${a,b}\n")[0].stages[0].argv
         self.assertEqual(["echo", "$$x", "$${a,b}"], list(argv))
+
+    def test_the_pid_inside_an_expansion_opens_nothing(self):
+        for row in self.PID_INSIDE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_default_the_reader_cannot_name_keeps_the_unresolved_report(self):
+        for row in self.UNRESOLVED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-$HOME/tool }\nsh $HOME/tool\n" % URL)])
+        self.assertIn("unresolved transfers", str(found[0][1]))
 
     def test_a_destination_default_names_its_file(self):
         for row in self.DEST_ROWS:

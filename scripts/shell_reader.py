@@ -449,6 +449,45 @@ def _assigns(words):
     return not words or words[0] in _DECLARATIONS
 
 
+# The names a step may assign anywhere in its text (`_defaulted`): an assignment word, a
+# `for` variable, a `read` target.
+_ASSIGNED = re.compile(r"(?:^|[^\w$])([A-Za-z_][A-Za-z0-9_]*)\+?=|\bfor[ \t]+([A-Za-z_]\w*)\b"
+                       r"|\bread(?:[ \t]+-\S+)*[ \t]+([A-Za-z_]\w*)\b")
+_RESOLVING = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-")
+
+
+def _default_words(word, context):
+    """The words bash makes of `word`, an unquoted `${…}`, or None where it is no such word
+    or reads as written: `${D:-tool }` and `${D:-tool}` are the file `tool` (`Defaulted`) where
+    the default is literal (no `$`, no lifted substitution), the operator `-` or `:-`, and
+    the step assigns `D` nowhere -- else, where the reader cannot say what bash makes of it,
+    the text split at its blanks, as it was read before #2731 read the word whole: a glued
+    `-o${D:-tool }`, `${D:-$HOME/tool }`, `${D:-$(echo tool) }`, `${D:=tool }`, or `${D:-x }`
+    with `D=tool` in the step, so the fetch reader refuses the command as unresolved, as
+    `main` did (#2756 fix rounds, B2 and B3; #2867)."""
+    if getattr(word, "kept", False) or "${" not in word:
+        return None
+    default = _DEFAULTS.fullmatch(word)
+    resolving = _RESOLVING.match(word)
+    if (default and default[1].split() and resolving and not context.pattern.search(word)
+            and resolving.group(1) not in getattr(context, "assigned", ())):
+        name, *rest = default[1].split()
+        return [Defaulted(name), *rest]
+    return [context.token(piece) for piece in str(word).split()] if " " in word else None
+
+
+def _defaulted(argv, context):
+    """Read a fetcher's unquoted `${…}` operands holding a blank as bash does (`_default_words`),
+    in place: `curl … -o ${D:-tool }` names `tool`."""
+    head = command(argv)
+    if not head or os.path.basename(str(head[0])) not in _FETCHERS:
+        return
+    for at in range(len(argv) - 1, 0, -1):
+        words = _default_words(argv[at], context)
+        if words is not None:
+            argv[at:at + 1] = words
+
+
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
     and an array literal as part of the word that assigns it (#2348). A word
@@ -545,11 +584,13 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            default = None if getattr(word, "kept", False) else _DEFAULTS.fullmatch(word)
-            if default and default[1].split():
-                # `> ${D:-tool }`: the file an unquoted default names, as `_command_result`
-                # reads a fetcher's `-o ${D:-tool }` (#2756 fix round, B2; #2867).
-                word = Defaulted(default[1].split()[0])
+            resolved = _default_words(word, context)
+            if resolved is not None:
+                # `> ${D:-tool }`: the file an unquoted default names, as `_defaulted` reads a
+                # fetcher's `-o ${D:-tool }` (#2756 fix rounds, B2; #2867); what does not resolve
+                # is handed on split at its blanks, the extra words the command's (as before).
+                word, *extra = resolved
+                argv.extend(extra)
             if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
@@ -587,6 +628,7 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+    _defaulted(argv, context)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -600,6 +642,10 @@ def statements(script):
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
+    # The names the step may assign anywhere (`D=tool`, `export D=…`, `for D in`, `read D`):
+    # a default of such a name is not resolved to its literal (`_defaulted`), fail-closed.
+    setattr(context, "assigned", frozenset(name for found in _ASSIGNED.findall(text)
+                                           for name in found if name))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)

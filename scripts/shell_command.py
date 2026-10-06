@@ -126,16 +126,6 @@ def _command_result(argv, optional=True):
             name, *rest = default[1].split()    # bash splits an unquoted default (#2731)
             argv[0:1] = [Defaulted(name), *rest]    # the NAME, marked as unwritten
         head = os.path.basename(argv[0])
-        if head in _FETCHERS:
-            # A fetcher's unquoted default operand is read as its command word is (#2337): bash
-            # expands `-o ${D:-tool }` to the default where `D` is unset and splits it, so the
-            # first literal word names the file the download lands in (#2756 fix round, B2;
-            # #2867). A quoted one keeps its blanks, and its name, as written.
-            for at in range(len(argv) - 1, 0, -1):
-                default = None if getattr(argv[at], "kept", False) else _DEFAULTS.fullmatch(argv[at])
-                if default and default[1].split():
-                    name, *rest = default[1].split()
-                    argv[at:at + 1] = [Defaulted(name), *rest]
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
         if isinstance(argv[0], Rewritten):

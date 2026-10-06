@@ -1144,6 +1144,11 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         self.assertEqual(["echo", "}"], list(cut[1].stages[0].argv))
         argv = shell_reader.statements("echo $$'x' $${a,b} $$$${\n")[0].stages[0].argv
         self.assertEqual(["echo", "$$x", "$${a,b}", "$$$${"], list(argv))
+        # Round 2: inside a `${…}` the pair opens nothing either (`_expansion_end`, and so
+        # `patterned`): the expansion ends at the first `}` and the use after it is read.
+        cut = shell_reader.statements("echo ${a:-$${b} x; sh tool; echo }\n")
+        self.assertEqual([["echo", "${a:-$${b}", "x"], ["sh", "tool"], ["echo", "}"]],
+                         [list(st.stages[0].argv) for st in cut])
 
     def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
