@@ -50,14 +50,15 @@ import re
 import shlex
 
 from shell_lex import lex
-from shell_patterns import MARK, QUOTED, is_pattern, leads, patterned, shell_words
+from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patterned,
+                            shell_words)
 from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
                           _markers as _markers, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
-                          is_marker as is_marker, readable as readable,
+                          is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
@@ -123,6 +124,22 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
 # that shell, which bash runs wherever `X` leaves the word to it.
 _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
+# A command word that is ONE unquoted reference, with no default or one that
+# hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
+# the reader knows: an optional wrapper spelled by variable (#2472). Empty or
+# unset, bash drops the word and the next one is the command -- bash 5.2.21,
+# 3.2.57 and dash all run `$SUDO sh -c 'curl … | sh'`'s pipeline with `SUDO`
+# unset -- and set to `sudo` the next one runs too, so `_command_result` reads
+# the rest as the command. That fails CLOSED where the value runs nothing of
+# it (`SUDO=apt-get`; a literal `echo` or `true` `workflow_annotate` resolves
+# first). A quoted `"$SUDO"` keeps its word (`_stage`'s `quoted`): bash runs
+# the empty string and stops. The names: the shells, the wrappers, the foreign
+# interpreters and the fetchers -- the last two pinned equal to
+# `workflow_programs._FOREIGN` and `workflow_fetch.FETCHERS` by test.
+_OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\s]*))?\})")
+_INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
+_FETCHERS = ("curl", "wget")
+OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
@@ -383,9 +400,10 @@ def _assigns(words):
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
     and an array literal as part of the word that assigns it (#2348). A word
-    with a double-quoted `\\$` or `` \\` `` and no other `$` or backtick in it
-    carries the text bash makes of it, `spelled`, which is the program a
-    shell handed it runs (#2342); it reads as before."""
+    with a double-quoted `\\$` or `` \\` `` in it carries the text bash makes
+    of it, `spelled`, which is the program a shell handed it runs (#2342): the
+    backslash of each gone, a live `$` word beside them kept as the value word
+    it is (#2466), a lifted substitution as its marker; it reads as before."""
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
@@ -425,14 +443,17 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
-        plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, ""))
+        plain = context.restore_arithmetic(
+            raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
-            setattr(word, "lead", leads(context.pattern.sub("${}", raw)))
-        elif plain.count(_ESCAPED) == plain.count("$") + plain.count("`") > 0 and not _markers(word):
-            word = _Token(word, {})
-            setattr(word, "spelled", plain.replace(_ESCAPED, ""))
+            setattr(word, "lead", leads(context.pattern.sub("${}", raw).replace(QUOTED_DOLLAR, "")))
+        elif _ESCAPED in plain:
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
+        elif raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
+            word = kept(word)               # every `$` of it quoted: bash keeps the word (#2472)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -533,11 +554,28 @@ def statements(script):
     return out
 
 
-def _command_result(argv):
+def _optional(argv):
+    """How many leading words of `argv` bash may drop in front of a name the
+    reader knows (`_OPTIONAL`, #2472): each unquoted, one reference, with no
+    default or one that is itself a wrapper (`${X:-sudo}`); 0 where the word
+    after them is not in `OPTIONAL_NEXT`."""
+    count = 0
+    while count < len(argv) - 1:
+        word = argv[count]
+        match = None if getattr(word, "kept", False) else _OPTIONAL.fullmatch(word)
+        if not match or match[1] and os.path.basename(match[1]) not in WRAPPERS:
+            break
+        count += 1
+    return count if count and os.path.basename(argv[count]) in OPTIONAL_NEXT else 0
+
+
+def _command_result(argv, optional=True):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
     the words read as wrappers, as written. A command word that is a shell's
-    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell."""
+    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front
+    of a known name are dropped (`_optional`) unless `optional` is False, the
+    reading `workflow_annotate` takes to find the word a step's table resolves."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -562,6 +600,10 @@ def _command_result(argv):
             continue
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
             del argv[0:2]
+            continue
+        dropped = _optional(argv) if optional and not heads else 0
+        if dropped:
+            del argv[:dropped]                  # bash drops them, or they hand on (#2472)
             continue
         default = None if heads else _DEFAULTS.fullmatch(argv[0])
         if default and os.path.basename(default[1]) in _SHELLS:
@@ -601,6 +643,12 @@ def _command_result(argv):
 def command(argv):
     """`argv` with supported wrappers stripped; unresolved forms stay lists."""
     return _command_result(argv)[0]
+
+
+def command_as_written(argv):
+    """`command(argv)` with a leading `$` word kept as the command (#2472), for
+    the reader that resolves such a word through the step's own table."""
+    return _command_result(argv, optional=False)[0]
 
 
 def unresolved_wrapper(argv):

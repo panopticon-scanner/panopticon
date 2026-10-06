@@ -95,9 +95,9 @@ The prices -- where a mark reads otherwise than bash:
    spelled as the value and over-reports, and `T+=x` on a name the step never assigned holds the
    suffix alone (#2733, filed with this PR).
  - Not read: a `$(...)` child `workflow_guard._walk` parses, and a `-c`, `eval` or heredoc script
-   `flattened` parses, are read after `annotate` and inherit no mark (#2814); an empty value,
-   which bash drops so the next word runs (`CMD=; $CMD sh <<'EOF'`), stays as written (#2472);
-   and a `${X:-sh}` command word is #2337's default, read before any value.
+   `flattened` parses, are read after `annotate` and inherit no mark (#2814); a `${X:-sh}` command
+   word is #2337's default, read before any value; an empty value is `shell_reader._optional`'s to
+   drop, as bash does (`CMD=; $CMD sh <<'EOF'`) -- a literal no wrapper is `kept` first (#2472).
  - The step's own: a name the guard reads written into a directory on the runner's PATH by an
    earlier step, by a text that names no such path (`cd ~/.local/bin; cp /usr/bin/true sh`), or
    by one that spells the name through an expansion (`tools/$N`, `tools/{sh,x}`), is not seen
@@ -128,8 +128,8 @@ import re
 
 import shell_lex
 import shell_reader
-from shell_reader import command
-from shell_wrappers import Defaulted
+from shell_reader import command_as_written as command
+from shell_wrappers import WRAPPERS, Defaulted
 from workflow_fetch import FETCHERS
 from workflow_function_calls import _function_syntax
 from workflow_printers import ANY, _PRINTERS
@@ -245,9 +245,9 @@ def annotate(stmts, shell=None):
             argv = command(stage.argv)
             if argv and not _printer(argv):
                 for at, word in _references(stage, argv[:1]):
-                    text = _literal(word, step.fold.at(index)) if step.sure[index] else None
-                    if text is not None and _commands(stage, at, text) and step.plain(word):
-                        stage.argv[at] = Defaulted(text)
+                    text = _literal(word, step.fold.at(index))
+                    if text is not None and step.plain(word):
+                        stage.argv[at] = _mark(stage, at, word, text, step.sure[index]) or word
                 argv = command(stage.argv)
             if argv and _printer(argv) and position + 1 < len(statement.stages):
                 _spell(stage, argv, step, index)
@@ -431,19 +431,19 @@ def _spell(stage, argv, step, index):
         setattr(stage.argv[at], "spelled", text)
 
 
-def _commands(stage, at, text):
-    """Whether `text` in place of the command word at `stage.argv[at]` is one command bash runs, the
-    reader keeps as the command, and the guard reads: a plain name (`_PLAIN`: no blank, pattern,
-    quote or operator) of a program in `_NAMES`, bare or in a system directory (`_bare`) -- a runner
-    it does not list (`csh`, `./tool`) keeps the base's fail-closed hand-off, as its literal twin
-    reads CLEAN (#2792), and so does any other path (`./sh`, `b/bash`), which may name a file the
-    step wrote -- and not a word `command()` reads past (an assignment, a keyword, a wrapper)."""
-    if not _PLAIN.fullmatch(text) or _bare(text) not in _NAMES:
-        return False
-    trial = list(stage.argv)
-    trial[at] = marked = Defaulted(text)
-    kept = command(trial)
-    return bool(kept) and kept[0] is marked
+def _mark(stage, at, word, text, sure):
+    """The word for `stage.argv[at]`, whole reference `word` resolving to `text`: `Defaulted(text)`
+    where, surely run, it is one command bash runs, the reader keeps (no assignment, keyword or
+    wrapper) and the guard reads -- a plain name (`_PLAIN`) in `_NAMES`, bare or in `_SYSTEM`
+    (`_bare`); `csh` or `./sh` keeps the base's fail-closed hand-off (#2792). Else `kept(word)`
+    where `text` is no wrapper: bash runs it, so `shell_reader._optional` must not drop the word
+    as it drops an empty or unset `$SUDO` (#2472); None for a wrapper, which hands on."""
+    if sure and _PLAIN.fullmatch(text) and _bare(text) in _NAMES:
+        trial = list(stage.argv)
+        trial[at] = marked = Defaulted(text)
+        if (kept := command(trial)) and kept[0] is marked:
+            return marked
+    return None if os.path.basename(text) in WRAPPERS else shell_reader.kept(word)
 
 
 def _bare(word):
@@ -632,9 +632,9 @@ def _vetoed(stmts, fold):
             name = _resolved(kept[0], fold, index) if kept else ""
             if name is None or _rebinds(stage, name, [str(word) for word in kept[1:]]):
                 return True
-            # a command word reached through a value: the table reads only a literal one
+            # an assigning builtin reached through a value: the table reads literal command words
             if kept and (_EXPANDS.search(str(kept[0])) or shell_reader.is_marker(kept[0])) and (
-                    name not in _NAMES or name == "printf" and any(
+                    name in _HELD or name == "printf" and any(
                         str(word).startswith("-v") for word in kept[1:])):
                 return True
             # a prefix assignment that dash and bash's POSIX mode keep before a special builtin

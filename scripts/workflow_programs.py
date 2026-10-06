@@ -387,7 +387,7 @@ def dynamic_program(argv):
     name = os.path.basename(argv[0]) if argv else ""
     for word in _program_words(argv):
         keys = getattr(word, "markers", {})
-        text = shell_reader.readable(word) if keys else getattr(word, "spelled", word)
+        text = shell_reader.readable(getattr(word, "spelled", word))
         if _all_expansion(text) and all(
                 shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
             return (name if name == "eval" else name + " -c"), (word if keys else text)

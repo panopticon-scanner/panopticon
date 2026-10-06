@@ -1339,11 +1339,30 @@ class TestDoubleQuoteEscapesInAProgram(unittest.TestCase):
             with self.subTest(written=written):
                 self.assertEqual(spelled, stage("eval " + written).argv[1].spelled)
 
-    def test_a_word_bash_expands_or_single_quotes_is_as_it_was(self):
-        # A live `$URL` or `$(...)` beside the escape expands at the outer
-        # level, so the text the shell gets is not known; '\$' keeps it.
-        for script in ('bash -c "x=\\$(curl $URL)"', 'bash -c "\\$x $(date)"',
-                       "eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"'):
+    def test_a_live_expansion_beside_the_escape_is_carried_as_the_value_it_is(self):
+        # #2466: a live `$URL` or `$(...)` beside the escape expands at the OUTER level, so the
+        # text the shell gets is not known in full -- but the structure around it is, and a `$`
+        # word is one the reader already carries as a value: the backslashes go as before, the
+        # live word stays as written, and a lifted substitution keeps its marker in `spelled`.
+        word = stage('bash -c "x=\\$(curl $URL); eval \\"\\$x\\""').argv[2]
+        self.assertEqual('x=\\$(curl $URL); eval "\\$x"', word)
+        self.assertEqual('x=$(curl $URL); eval "$x"', word.spelled)
+        inner = shell_reader.statements(word.spelled)
+        self.assertEqual(["curl $URL"], inner[0].stages[0].substitutions)
+        self.assertEqual(["eval", "$x"], inner[1].stages[0].argv)
+        word = stage('bash -c "\\$x $(date)"').argv[2]
+        self.assertEqual(word.markers, word.spelled.markers)
+        self.assertEqual("$x $(...)", shell_reader.readable(word.spelled))
+        self.assertEqual("\\$x $(...)", shell_reader.readable(word))
+        # The mixed-quoting spelling: a single-quoted `$x` beside it is the inner shell's too.
+        word = stage('bash -c "x=\\$(curl u)"\'; eval "$x"\'').argv[2]
+        self.assertEqual('x=$(curl u); eval "$x"', word.spelled)
+
+    def test_a_word_with_no_double_quoted_escape_is_as_it_was(self):
+        # A single-quoted `\$` reaches the shell with its backslash, and a `\"` or `\\` is
+        # shlex's to drop: none is spelled, so each reads as written, as before #2342.
+        for script in ("eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"',
+                       'bash -c "echo $HOME"', 'bash -c "x=\\\\$(curl u)"'):
             with self.subTest(script=script):
                 self.assertFalse(hasattr(stage(script).argv[-1], "spelled"))
 

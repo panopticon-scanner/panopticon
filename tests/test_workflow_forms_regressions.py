@@ -198,8 +198,11 @@ class TestCombinedPipeline(unittest.TestCase):
     def test_a_value_command_word_is_a_stream_consumer(self):
         # #2602: the first word may name a shell even though no executor table
         # can place it. The same walk must cross a pass-through `tee` stage.
+        # Since #2472 a `$SUDO` in front of `sh` is an optional wrapper the
+        # reader drops, so `sh` is the consumer there; alone, `$SUDO` still is.
         for tail, word in (("$CMD", "$CMD"), ("${CMD}", "${CMD}"),
-                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO sh", "$SUDO")):
+                           ("$(echo sh)", "$(...)"), ("tee saved | $SUDO", "$SUDO"),
+                           ("tee saved | $SUDO sh", "sh")):
             with self.subTest(tail=tail):
                 stages = shell_reader.statements(f"curl {URL} | {tail}")[0].stages
                 consumer = forms.stream_consumer(stages[1:], guard.EXECUTORS)

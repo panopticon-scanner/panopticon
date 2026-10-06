@@ -14,6 +14,31 @@ evidence exposed.
   so a use after it is still reported; a child without its own `-e` remains reported too. Checks
   whose `-e` is suspended by an `&&`/`||` list or condition also remain reported when execution
   reaches a later use.
+- **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
+  escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
+  and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
+  5.2.21, 3.2.57 and dash and read CLEAN: #2342 undid the `\$` escapes only where no live `$` was
+  left in the word, so a `$URL` beside them kept every backslash and the inner `x=$(curl …)` was
+  text. The reader now spells such a word with each backslash gone and a live `$` word carried as
+  the value it already is at top level, so the string reads as #2341's carried download handed to
+  `eval`; the `eval`, backquote and `echo … | sh` twins read the same way. A word that also holds
+  a lifted `$(…)` keeps its markers in that text, so the `Opaque` rendering of `bash -c "sh
+  \$(echo tool) $(true)"` is `sh $(echo tool) $(...)`, read as its escape-only twin is (the
+  neighbour noted on #2466), and a printer's word holding one stays unspelled. A live `$` in a
+  COMMAND-word position (`bash -c "$CMD … | sh"`) stays unread, as `$CMD … | sh` is at top level;
+  the gap list says so.
+- **Workflow guard reads a `$` word in front of a shell as an optional wrapper (#2472, #2331).**
+  `$SUDO sh -c 'curl … | sh'` ran its pipeline with `SUDO` unset or empty -- bash 5.2.21, bash
+  3.2.57 and dash all drop the empty unquoted word, and `sudo` hands on -- and read CLEAN, as did
+  `${SUDO:-} sh tool`, `CMD=; $CMD sh <<'EOF'`, `bash -c "\$x sh tool"` and `$SUDO curl … | sh`.
+  The reader now drops an unquoted `$` word that is one reference, with no default or a wrapper's,
+  in front of a name it knows (a shell, an interpreter, a wrapper, a fetcher) and reads the rest as
+  the command, fail-closed. A quoted `"$SUDO"` keeps its word (bash runs `''` and stops), and so
+  does a word the step's own table resolves to a literal that is no wrapper (`SUDO=echo` prints,
+  `A=X=1` runs `X=1`): `workflow_annotate` marks it `kept`, and its rule-7 veto now fires for a
+  value-reached builtin that may assign (`R=read; $R CMD`) rather than for any name outside the
+  ones it reads. The price: a value set outside the step that runs nothing of what follows
+  over-reports, and a checksum behind such a word is still not credited.
 - **Codex read broker passes through a search-only directory (#2839).** `_open` opened every
   component from `/` read-only, so a review root under a directory that grants `--x` and not `r`
   (`drwx--x--x`, a per-tenant parent) refused every `read_file`, `search` and `list_files` -- and

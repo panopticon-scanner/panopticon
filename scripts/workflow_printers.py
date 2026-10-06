@@ -176,7 +176,7 @@ def printed(argv, stage=None, shell=None):
     here-string on ITS OWN stdin (`stage.stdin_heredoc`) is that body where it is QUOTED; an
     EXPANDING one is None here -- `handed` carries it to `_unread_stdin` instead. None too where
     `stage` is absent or carries no such body, or where a word expands unpredictably (a `$(...)`, a
-    pattern) and is not already spelled out (#2342)."""
+    pattern) and is not already spelled out (#2342; a `$(...)` never is, #2466)."""
     if not argv:
         return None
     name = os.path.basename(argv[0])
@@ -186,8 +186,8 @@ def printed(argv, stage=None, shell=None):
         body, expands = stage.stdin_heredoc
         return None if expands else body
     if name not in _PRINTERS or any(
-            shell_reader.dynamic(w, shell_reader.has_substitution) and not hasattr(w, "spelled")
-            for w in argv[1:]):
+            shell_reader.has_substitution(w) or shell_reader.dynamic(
+                w, shell_reader.has_substitution) and not hasattr(w, "spelled") for w in argv[1:]):
         return None
     words = [getattr(w, "spelled", w) for w in argv[1:]]
     if name == "echo":
@@ -441,6 +441,9 @@ def rendered(word):
     `substituted` spells replaced by that text, its trailing newlines dropped as a command
     substitution drops them, and every other substitution -- a `<(...)` or `>(...)` always, which
     hands a FILE, never its text -- rendered `$(...)`, as `shell_reader.readable` renders them all.
+    The text starts as bash hands it on where the word holds a double-quoted `\\$` or `` \\` ``
+    (`shell_reader._stage`'s `spelled`, #2466): `bash -c "sh \\$(echo tool) $(true)"` renders as
+    `sh $(echo tool) $(...)`, the inner shell's own substitution read as one by the parse of it.
     `eval "$(echo 'sh tool')"` and `eval "sh $(echo tool)"` are both `sh tool`. A backquote whose
     text escapes `$`, `` ` ``, `"`, `\\` or a newline is not replaced: bash removes that backslash
     (a newline with it) before it runs the text, which the reader lifts raw (review C-2) -- the one
@@ -453,7 +456,7 @@ def rendered(word):
     `sh -c $(echo 'curl … | sh')` over-reports (C-2(b), documented). No read here stands alone --
     `workflow_programs.dynamic_program` still reports a word all substitution beside it, the
     catch-all (C-1 to C-3), so the design's "no `Idle` row beside the read" is overruled."""
-    text = word
+    text = getattr(word, "spelled", word)       # bash's text: a `\$` without its backslash (#2466)
     for key, (kind, value) in getattr(word, "markers", {}).items():
         if kind == "subst":
             spelled = (substituted(value)

