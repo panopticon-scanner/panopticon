@@ -19,8 +19,8 @@ evidence exposed.
   The fix round closed what the seat found at the edges of the new `${…}` word: `$${` was
   read as `${`, so the PID's brace took a pipe or a use to the next `}` as one word -- `$$` is
   now read as the pair before anything the second `$` could open; a download destination
-  spelled as a default (`-o ${D:-tool }`, `${D:=tool}`, `--output`, `> ${D:-tool }`) was
-  never resolved to its file, so the use was not matched -- a fetcher's unquoted default
+  spelled as a default (`-o ${D:-tool }`, `--output ${D:-tool }`, `> ${D:-tool }`) was never
+  resolved to its file, so the use was not matched -- a fetcher's unquoted `:-` default
   operand is now read as its command word is, the first literal word naming the file (#2867
   closed with it; a quoted one keeps its blanks and its name as written); and a `${` nested in
   a blank-free expansion was scanned to the same end again, about x4 per doubling, now once.
@@ -36,12 +36,21 @@ evidence exposed.
   a CRLF after `|`; `sha256sum ${F:- -c } sums`, whose check is lost (under the `{0}`
   templates the shells do run it); `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'`, which
   inherits the `<` reads-list reading; `|&` and `source … <> tool` under `sh` alone; and from
-  the second round, 48 cells in 14 rows -- `${D:-"tool x"}`, `D=other` with `${D:-tool}`,
-  `${D:+tool}` with `D` unset, `sh < ${F:-tool }` under `sh`, and `|` ⏎ `$$ sh` -- and from
-  the third, an escaped blank in a default (`-o ${D:-tool\ x}`), `sh <> ${F:-tool }` and
-  `bash <>${F:-tool }` under `sh`, and `-o ${D:-tool}` followed by `cd s; sh tool` under the
-  `{0}` templates -- none of which a shell runs. (`-o ${D:-tool } --output other` is a correct
-  report: curl pairs outputs with URLs in order and writes `tool`.)
+  the second and third rounds, 53 cells in 16 rows -- `${D:-"tool x"}`, `D=other` with
+  `${D:-tool}`, `${D:+tool}` with `D` unset, `sh < ${F:-tool }` under `sh`, `|` ⏎ `$$ sh`, an
+  escaped blank in a default (`-o ${D:-tool\ x}`), `sh <> ${F:-tool }` and `bash <>${F:-tool }`
+  under `sh`, and `-o ${D:-tool}` followed by `cd s; sh tool` under the `{0}` templates -- none
+  of which a shell runs. (`-o ${D:-tool } --output other` is a correct report: curl pairs
+  outputs with URLs in order and writes `tool`.) The third round widened the step's context
+  a default resolves against: a program a parse hands on -- an `eval` string, a `$(…)`, a
+  `bash -c` or `sh -c` string, a heredoc a shell reads, `D=tool bash -c` -- inherits the
+  names the step around it assigns, all of them, so `${D:-x }` inside one is not resolved
+  where `D=tool` stands outside; a `${D:=tool}` anywhere earlier assigns `D`; and every name
+  on the line of `read` in any spelling, `printf -v`, `mapfile`, `readarray`, `getopts` (with
+  `OPTARG`, `OPTIND`) or a declaration is assigned. With it, the blank-free `${D:=tool}` and a
+  `D=` before `${D:-tool}` read as `main` does (CLEAN, #2867's class), where the second
+  round's head had reported them. The unterminated `${x` line stays quadratic on both trees
+  (`patterned`'s, pre-existing), 2.6x slower here.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
