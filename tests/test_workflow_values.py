@@ -246,37 +246,45 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
 
-    def test_a_call_carries_its_body_and_a_pipeline_its_last_stage_unsure(self):
-        # A call's own assignments were not read (a price) until PR #2855's fix round
-        # carried them (#2785; `record_called`); a pipeline's stages run in subshells,
-        # but its last runs in the shell under `lastpipe`.
-        self.assertEqual({"T": ["b"]}, table("f() { T=b; }; T=a; f").scalars)
+    def test_a_call_adds_its_body_unsure_and_a_pipeline_its_last_stage_unsure(self):
+        # A call's own assignments were not read (a price) until PR #2855's fix rounds
+        # added them, unsure, beside the caller's own (#2785; `record_called`, round 2's
+        # fail-closed direction); a pipeline's stages run in subshells, but its last runs
+        # in the shell under `lastpipe`.
+        self.assertEqual({"T": ["a", "b"]}, table("f() { T=b; }; T=a; f").scalars)
         rows = {"T=a | cat; echo": {}, "T=a; echo | { T=x; }": {"T": ["a", "x"]},
                 "T=a; cat | T=b": {"T": ["a", "b"]}}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
 
-    def test_a_called_functions_assignments_reach_the_use_after_the_call(self):
-        # PR #2855 fix round (B2), #2785: the table at the use after a call holds what the
-        # body assigned -- replaced where the call is sure and the body statement is
-        # unconditional, added where either is not; the last definition before the call
-        # wins; `+=` compounds across calls; `unset` empties; a `local` dies with the call;
-        # a subshell body and a call before the definition carry nothing (bash's reading).
-        rows = {'T=/dev/null; f(){ T=/tmp/p; }; f; sh "$T"': {"T": ["/tmp/p"]},
+    def test_a_called_functions_assignments_reach_the_use_unsure(self):
+        # PR #2855 fix rounds (round 1 B2, round 2's direction), #2785: the table at the use
+        # after a call holds what the body may assign beside the caller's own value, never
+        # surely -- a `return` the body takes, a later redefinition, a stand-in or a
+        # `declare -g` the shell lacks all read the same way; every definition before the
+        # call counts and the functions the body calls are followed; `local` dies with the
+        # call; a subshell body, a call before the definition, and a wrapper in front of the
+        # name (`env f`, which runs no function) carry nothing.
+        rows = {'T=/dev/null; f(){ T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
                 'T=/dev/null; if true; then f(){ :; T=/tmp/p; }; fi; f; sh "$T"':
                     {"T": ["/dev/null", "/tmp/p"]},
                 'T=/dev/null; f(){ T=/tmp/p; }; if c; then f; fi; sh "$T"':
                     {"T": ["/dev/null", "/tmp/p"]},
                 'T=/dev/null; f(){ if c; then T=/tmp/p; fi; }; f; sh "$T"':
                     {"T": ["/dev/null", "/tmp/p"]},
-                'T=a; f(){ T=b; }; f(){ T=c; }; f; sh "$T"': {"T": ["c"]},
-                'T=a; f(){ T+=b; }; f; f; sh "$T"': {"T": ["abb"]},
-                'T=a; f(){ unset T; }; f; sh "$T"': {},
+                'T=/dev/null; f() { return; T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=a; f(){ T=b; }; f(){ T=c; }; f; sh "$T"': {"T": ["a", "b", "c"]},
+                'T=a; f(){ T+=b; }; f; f; sh "$T"': {"T": ["a", "ab", "abb"]},
+                'T=a; f(){ unset T; }; f; sh "$T"': {"T": ["a", ""]},
+                'T=/dev/null; f(){ T=$1; }; f x; sh "$T"': {"T": ["/dev/null", "$1"]},
+                'T=/dev/null; f() { declare -g T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; g() { T=/tmp/p; }; f() { g; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null\ng ( )\n{\nT=/tmp/p\n}\ng\nsh "$T"': {"T": ["/dev/null", "/tmp/p"]},
                 'T=/dev/null; f(){ local T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null"]},
                 'T=/dev/null; f() ( T=/tmp/p ); f; sh "$T"': {"T": ["/dev/null"]},
                 'T=/dev/null; f; f() { T=/tmp/p; }; sh "$T"': {"T": ["/dev/null"]},
-                'T=/dev/null\ng ( )\n{\nT=/tmp/p\n}\ng\nsh "$T"': {"T": ["/tmp/p"]}}
+                'T=/dev/null; f() { T=/tmp/p; }; env f; sh "$T"': {"T": ["/dev/null"]}}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars)
@@ -928,12 +936,12 @@ class TestTheTableAtAStatement(unittest.TestCase):
                      'T=cuda_1.run\ng () for T in x; do :; done\nsh "$T"': ["cuda_1.run", "x"]})
         # k1, k2, w2: a `function g()` header's own `()` opens no `( )` body;
         # k7: a call's own assignments were not read (a price: bash runs `x`) until
-        # PR #2855's fix round carried them (#2785): the table holds `x` as bash does.
+        # PR #2855's fix rounds added them unsure (#2785): the table holds both.
         rows.update({'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g ()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g()\nwhile T=x; false; do :; done\nsh "$T"':
                          ["cuda_1.run", "x"],
-                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["x"]})
+                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run", "x"]})
         # Limits: b2p, a one-line `function f {` after a `{`, is read to the group's
         # `}` (bash runs `x`). k3, a `g ( )` header, was no definition until #2664
         # read it as `g ()`: bash runs `cuda_1.run`, and so does the table now.

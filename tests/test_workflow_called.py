@@ -1,18 +1,30 @@
-"""`scripts/workflow_called.py`: what a called function leaves in the caller's value table
-(#2664 fix round, #2785). Pins the one-way layering -- the module imports the value table and
-the reader, never the uses module or the guard -- and the helper's own readings."""
+"""`scripts/workflow_called.py`: what a called function may leave in the caller's value table
+(#2664 fix rounds, #2785). Pins the one-way layering -- the module imports the value table, the
+command layer and the wrappers' table, never the uses module or the guard -- and the fail-closed
+carry's own rules: every assignment the body may make is added unsure and the caller's own kept;
+`local` dies with the call; a wrapper in front of the name runs no function; a definition after
+the call is no function yet; every definition before it counts; the functions a body calls are
+followed to a bound; a subshell body reaches nothing."""
 import ast
 import os
 import unittest
 
 import shell_reader
 import workflow_called
+import workflow_uses
 from workflow_values import Values
 
 
-def body_of(script):
-    stmts = shell_reader.statements(script)
-    return stmts, [True] * len(stmts)
+def stmts_of(script):
+    return shell_reader.statements(script)
+
+
+def called(script, at=-1):
+    """The table after `record_called` at statement `at` of `script` (the call: its last)."""
+    stmts = stmts_of(script)
+    table = Values({"T": ["old"]})
+    workflow_called.record_called(table, stmts, at % len(stmts), workflow_uses._function_ranges(stmts)[0])
+    return table.scalars
 
 
 class TestTheModuleSitsBelowTheUsesModule(unittest.TestCase):
@@ -26,39 +38,63 @@ class TestTheModuleSitsBelowTheUsesModule(unittest.TestCase):
         self.assertEqual(os.path.basename(workflow_called.__file__), "workflow_called.py")
 
 
-class TestWhatACallCarriesOut(unittest.TestCase):
-    """`_carry`, the body walk behind `record_called`, on a body read from its header."""
+class TestWhatACallMayLeave(unittest.TestCase):
 
-    def carried(self, script, certain=True, start=None):
-        table = Values({"T": ["old"]}) if start is None else start
-        stmts, sure = body_of(script)
-        workflow_called._carry(table, stmts, sure, certain)
-        return table
+    def test_an_assignment_is_added_unsure_and_the_callers_value_kept(self):
+        # The fail-closed carry (round 2's direction): a use after the call reads both.
+        self.assertEqual({"T": ["old", "/tmp/p"]}, called("f() { T=/tmp/p; }\nf\n"))
+        self.assertEqual({"T": ["old", "/tmp/p"]}, called("f()\n{\nT=/tmp/p\n}\nf\n"))
+        self.assertEqual({"T": ["old", "/tmp/p"]}, called("g ( )\n{\nT=/tmp/p\n}\ng\n"))
+        # Past a `return` the body takes, and under a condition inside the body, alike.
+        self.assertEqual({"T": ["old", "/tmp/p"]}, called("f() { return; T=/tmp/p; }\nf\n"))
+        self.assertEqual({"T": ["old", "/tmp/p"]}, called("f() { if c; then T=/tmp/p; fi; }\nf\n"))
+        # A stand-in, `+=`, `unset` and `read`: each as an uncertain assignment is read.
+        self.assertEqual({"T": ["old", "$1"]}, called("f() { T=$1; }\nf x\n"))
+        self.assertEqual({"T": ["old", "oldb"]}, called("f() { T+=b; }\nf\n"))
+        self.assertEqual({"T": ["old", ""]}, called("f() { unset T; }\nf\n"))
+        self.assertEqual({"T": ["old", "$T"]}, called("f() { read T; }\nf\n"))
 
-    def test_a_sure_call_replaces_and_an_unsure_one_adds(self):
-        self.assertEqual({"T": ["/tmp/p"]}, self.carried("f() { T=/tmp/p; }\n").scalars)
-        self.assertEqual({"T": ["old", "/tmp/p"]},
-                         self.carried("f() { T=/tmp/p; }\n", certain=False).scalars)
-
-    def test_a_local_dies_with_the_call_where_declare_g_and_export_do_not(self):
-        self.assertEqual({"T": ["old"]}, self.carried("f() { local T=x; }\n").scalars)
-        self.assertEqual({"T": ["old"]}, self.carried("f() { local T; T=x; }\n").scalars)
-        self.assertEqual({"T": ["old"]}, self.carried("f() { declare T=x; }\n").scalars)
-        self.assertEqual({"T": ["x"]}, self.carried("f() { declare -g T=x; }\n").scalars)
-        self.assertEqual({"T": ["x"]}, self.carried("f() { export T=x; }\n").scalars)
-
-    def test_an_unset_and_a_read_in_the_body_reach_the_caller(self):
-        self.assertEqual({}, self.carried("f() { unset T; }\n").scalars)
-        self.assertEqual({"T": ["$T"]}, self.carried("f() { read T; }\n").scalars)
-
-    def test_a_subshell_or_compound_body_carries_nothing(self):
-        for script in ("f() ( T=x )\n", "f() ( T=x; )\n", "f() if c; then T=x; fi\n"):
+    def test_a_local_dies_with_the_call_where_declare_g_export_and_readonly_do_not(self):
+        for script in ("f() { local T=x; }\nf\n", "f() { local T; T=x; }\nf\n", "f() { declare T=x; }\nf\n"):
             with self.subTest(script=script):
-                self.assertEqual({"T": ["old"]}, self.carried(script).scalars)
+                self.assertEqual({"T": ["old"]}, called(script))
+        for script in ("f() { declare -g T=x; }\nf\n", "f() { declare -gx T=x; }\nf\n",
+                       "f() { export T=x; }\nf\n", "f() { readonly T=x; }\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["old", "x"]}, called(script))
 
-    def test_the_brace_on_the_next_line_is_a_body_too(self):
-        self.assertEqual({"T": ["x"]}, self.carried("f()\n{\nT=x\n}\n").scalars)
-        self.assertEqual({"T": ["x"]}, self.carried("g ( )\n{\nT=x\n}\n").scalars)
+    def test_a_wrapper_in_front_of_the_name_runs_no_function(self):
+        for script in ("f() { T=x; }\nenv f\n", "f() { T=x; }\nsudo f\n", "f() { T=x; }\ntimeout 5 f\n",
+                       "f() { T=x; }\ncommand f\n", "f() { T=x; }\nnice f\n", "f() { T=x; }\nnohup f\n"):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["old"]}, called(script))
+        # A keyword or a prefix assignment in front is not a wrapper: the function runs.
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\nif f; then :; fi\n", at=2))
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\nX=1 f\n"))
+
+    def test_every_definition_before_the_call_counts_and_none_after(self):
+        # Two conditional definitions: both bodies may run; the live one is not known.
+        self.assertEqual({"T": ["old", "x", "y"]},
+                         called("if c; then f() { T=x; }; else f() { T=y; }; fi\nf\n"))
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\ntrue && f() { :; }\nf\n"))
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\nif true; then f() { :; }; fi\nf\n"))
+        # Defined after the call: bash has no such function at call time.
+        self.assertEqual({"T": ["old"]}, called("f\nf() { T=x; }\n", at=0))
+
+    def test_the_functions_a_body_calls_are_followed_to_a_bound(self):
+        self.assertEqual({"T": ["old", "x"]}, called("g() { T=x; }\nf() { g; }\nf\n"))
+        self.assertEqual({"T": ["old", "x"]}, called("h() { T=x; }\ng() { h; }\nf() { g; }\nf\n"))
+        chain = "".join("f%d() { f%d; }\n" % (n, n + 1) for n in range(12)) + "f12() { T=x; }\nf0\n"
+        self.assertEqual({"T": ["old"]}, called(chain), "past %d functions nothing is read" % workflow_called._DEPTH)
+        near = "".join("f%d() { f%d; }\n" % (n, n + 1) for n in range(5)) + "f5() { T=x; }\nf0\n"
+        self.assertEqual({"T": ["old", "x"]}, called(near))
+        # Recursion ends at the bound too.
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; f; }\nf\n"))
+
+    def test_a_subshell_body_reaches_nothing(self):
+        for script in ("f() ( T=x )\nf\n", "f() ( T=x; )\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["old"]}, called(script))
 
 
 if __name__ == "__main__":

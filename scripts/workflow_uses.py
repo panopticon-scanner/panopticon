@@ -538,7 +538,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     walked, under its own control flow and from a copy of `start`, the
     caller's table at a call, which `_function_use` carries, or an empty one;
     a body is otherwise skipped, and a call to a function defined before it
-    carries what the body assigns (`record_called`, #2785); a subshell body
+    adds what the body may assign, unsure (`record_called`); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
     function defined after `{`, `then` or `do` on the same line is not found
     (`_function_ranges`' limit), nor is the end of a body that is neither
@@ -583,8 +583,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
             if len(stages) == 1:
-                record_called(table, stmts, position, starts, certain, _control_kinds, _certainty,
-                              lambda: _functions_before(stmts, starts, kinds, scopes, position))
+                record_called(table, stmts, position, starts)
 
     walk(range(max(first, 0), min(index, len(stmts))), True)
     loop = kinds[index] if index < len(stmts) else ()

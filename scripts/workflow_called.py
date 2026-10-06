@@ -1,75 +1,77 @@
 #!/usr/bin/env python3
-"""What a called function leaves in the caller's value table (#2664 fix round, #2785).
+"""What a called function may leave in the caller's value table (#2664 fix rounds, #2785).
 
 `static_values` walks the step's statements into a `Values` table and skips every function
-body where it is written -- a body runs only when called -- but it recorded nothing at the
-CALL either, so `f() { T=/tmp/payload; }; f; sh "$T"` held the caller's old `T` at the use
-while bash ran the payload. `record_called` walks the body from the table at the call and
-carries out what it assigns: the names it makes `local` die with the call, `declare -g` and
-`export` assign globally, a sure assignment replaces the caller's candidates only where the
-call is sure and the body statement is unconditional, and anything else is added as an
-uncertain assignment is. One call deep: a call made inside the body is not followed, as
-`_function_use` does not follow one, and a body that is a subshell (`f() ( T=x )`) or a
-bare compound carries nothing, bash running it in a child or this module not reading its
-end. A function defined after the call is the caller's to leave out (bash has not defined
-it at call time: `_functions_before`).
+body where it is written -- a body runs only when called -- and it recorded nothing at the
+CALL either, so `T=/dev/null; f() { T=/tmp/payload; }; f; sh "$T"` held the caller's old `T`
+at the use while bash ran the payload. Carrying the body's VALUE out surely was tried and read
+past what the shells do (a `return` the body takes, a wrapper that never runs a function, a
+later redefinition, a stand-in, a `declare -g` the shell lacks), so the carry is fail-closed:
+a call to a function whose body assigns NAME -- any definition of it before the call, and any
+function the body calls, to a bounded depth -- adds what the body may assign as UNSURE
+candidates at every later use and keeps the caller's own, so a use reads both and the guard
+reports where either is the download (`record_called`). Not read as a call: a word behind a wrapper (`env f`, `sudo f`,
+`timeout 5 f`, `command f`: none runs a shell function). Not carried: a name the body makes
+`local` (it dies with the call in bash and dash alike) and a subshell body (`f() ( T=x )`).
+The one price, named in the CHANGELOG: `T=P; f() { T=/dev/null; }; f; sh "$T"` is reported
+though no shell runs `P`. The sure carry is #2785's own PR.
 
 Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing above it.
 """
 import os
 
-from shell_reader import command
-from workflow_values import _DECLARATIONS, emptied, record
+from shell_command import _ASSIGNMENT, _heads
+from shell_wrappers import WRAPPERS
+from workflow_values import emptied, record
+
+_DEPTH = 8          # calls followed inside a body, in all
 
 
-def record_called(table, stmts, position, starts, certain, kinds_of, certainty, defined):
-    """At statement `position`, a single-stage call of a function the step defines, carry what
-    its body assigns into `table`: sure only where `certain` (the call) holds, the function is
-    among those `defined()` surely before the call (`_functions_before`), and the body statement
-    is unconditional (`certainty`, over `kinds_of(body)`); the last definition before the call
-    otherwise, unsure. `starts` maps a definition's index to its (name, head, close) entries."""
-    argv = command(stmts[position].stages[0].argv)
-    head = str(argv[0]) if argv else ""
-    if not head or not any(entry[0] == head for at in starts for entry in starts[at] if at < position):
-        return
-    surely = defined()
-    found = surely.get(head) or next((entry[1:] for at in range(position - 1, -1, -1)
-                                      for entry in starts.get(at, []) if entry[0] == head), None)
-    if found is None:
-        return
-    body = stmts[found[0]:found[1] + 1]
-    kinds = kinds_of(body)
-    _carry(table, body, [certainty(body, at, kinds)[0] for at in range(len(body))],
-           certain and head in surely)
+def _head(argv):
+    """The word a statement's command starts with, past the keywords, assignments and
+    function header in front of it (`_heads`), or None where a wrapper stands there: `env f`
+    runs no shell function."""
+    rest = argv[len(list(_heads(argv))):]
+    word = str(rest[0]) if rest else ""
+    return None if not word or os.path.basename(word) in WRAPPERS else word
 
 
-def _carry(table, body, certainties, certain):
-    """Carry what the function body `body` (its statements, header to close) assigns into
-    `table`, as sure as `certain` (the call) and `certainties` (per body statement) say."""
-    header = body[0].stages[0].argv if body and body[0].stages else []
-    opener = body[1].stages[0].argv[:1] if len(body) > 1 and body[1].stages else []
-    if any(stage.group_open for stage in body[0].stages) or (
-            "{" not in header and opener != ["{"]):
-        return                  # a subshell (`g() (`) or compound body: nothing reaches the caller
+def _calls(stmts, head, close):
+    """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
+    head word is bare and no assignment."""
+    found = set()
+    for statement in stmts[head:close + 1]:
+        if len(statement.stages) == 1:
+            word = _head([str(w) for w in statement.stages[0].argv])
+            if word and not _ASSIGNMENT.match(word):
+                found.add(word)
+    return found
+
+
+def _carry(table, stmts, head, close):
+    """Add what the body `stmts[head:close + 1]` may assign to `table`, unsure: each
+    assignment as an uncertain one (`record`), an `unset` or bare `local` as a "maybe unset",
+    a `read` as the stand-in -- and nothing for a name the body makes `local`."""
     inner = table.copy()
     local: set[str] = set()
-    for statement, sure in zip(body, certainties):
+    for statement in stmts[head:close + 1]:
         stage = statement.stages[-1] if statement.stages else None
         if stage is None:
             continue
-        sure = certain and sure and len(statement.stages) == 1
-        argv = command(stage.argv)
-        name = os.path.basename(str(argv[0])) if argv else ""
-        words = [str(word) for word in argv[1:] if not str(word).startswith("-")]
-        if name in _DECLARATIONS and name != "export" and "-g" not in map(str, argv[1:]):
-            local.update(word.split("=", 1)[0].split("[", 1)[0] for word in words)
-            for word in words:
-                if "=" not in word:
-                    emptied(inner, word, sure)
-        elif name == "read" or name == "unset" and "-f" not in map(str, argv):
-            for word in words:
-                emptied(inner, word, sure, name == "read")
-        record(inner, stage, sure)
+        argv = [str(word) for word in stage.argv]
+        word = _head(argv)
+        name = os.path.basename(word) if word else ""
+        words = [w for w in argv[argv.index(word) + 1:] if not w.startswith("-")] if word in argv else []
+        if name in ("local", "declare", "typeset") and not any(
+                w.startswith("-") and "g" in w for w in argv):
+            local.update(w.split("=", 1)[0].split("[", 1)[0] for w in words)
+            for w in words:
+                if "=" not in w:
+                    emptied(inner, w, False)
+        elif name == "read" or name == "unset" and "-f" not in argv:
+            for w in words:
+                emptied(inner, w, False, name == "read")
+        record(inner, stage, False)
     for kind in ("scalars", "arrays"):
         before, after = getattr(table, kind), getattr(inner, kind)
         for name in set(before) | set(after):
@@ -79,3 +81,33 @@ def _carry(table, body, certainties, certain):
                 before[name] = after[name]
             else:
                 before.pop(name, None)
+
+
+def record_called(table, stmts, position, starts):
+    """At statement `position`, a single-stage call of a function the step defines before it,
+    add what its body may assign to `table` as unsure candidates, the caller's own kept
+    (`_carry`): every definition of the name before the call counts, and every function the
+    body calls, `_DEPTH` functions deep; a definition after the call is no function yet, and a
+    subshell body reaches nothing. `starts` maps a definition's index to (name, head, close)."""
+    stage = stmts[position].stages[0] if stmts[position].stages else None
+    head = _head([str(word) for word in stage.argv]) if stage else None
+    if head is None:
+        return
+    defined: dict[str, list[tuple[int, int, int]]] = {}
+    for at, entries in starts.items():
+        for name, start, close in entries:
+            defined.setdefault(name, []).append((at, start, close))
+    if head not in defined:
+        return
+    queue, seen = [head], set[str]()
+    while queue and len(seen) < _DEPTH:
+        name = queue.pop(0)
+        seen.add(name)
+        for at, start, close in defined.get(name, []):
+            if name == head and at >= position:
+                continue
+            if any(s.group_open for s in stmts[start].stages):
+                continue
+            _carry(table, stmts, start, close)
+            queue.extend(call for call in _calls(stmts, start, close)
+                         if call in defined and call not in seen and call not in queue)

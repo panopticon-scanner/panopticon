@@ -92,7 +92,7 @@ reference inside a group (`{a,$X}`) or a braced one beside it (`{a,b}${X}`)
 -- gives its name the stand-in, a limit, not a price. Not read: the
 assignment `${T:=d}` makes, an operator expansion's value (`NAME=${URL##*/}`
 holds its own text, a plain word), an attribute an earlier declaration set
-rewriting a later assignment, a call's own assignments, a name bash sets
+rewriting a later assignment, a called body's SURE effect (#2785), a name bash sets
 itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers of a redirection's `{fd}`,
 `wait -p` and `coproc`), held only where the step assigned it too, and
 arithmetic -- `let T=5`, `((T++))` and an arithmetic `for`'s updates are not
