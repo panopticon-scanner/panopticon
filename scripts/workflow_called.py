@@ -17,10 +17,12 @@ shell function), unless the step defines a function of that name (`sudo() { … 
 Not carried: a name the body makes `local` (it dies with the call in bash and dash alike), a
 subshell body (`f() ( T=x )`), and a call run in a child the use is not in -- the step's `f &`,
 or a body's call in a list it backgrounds (`g() { f & wait; }`); a one-line `( f )` is still
-carried, fail-closed. The prices, named in the CHANGELOG: `T=P; f() { T=/dev/null; }; f; sh
-"$T"` is reported though no shell runs `P`; and `eval -p f` or `eval -- -- f` reads as a call of
-`f`, since the guard's `eval` reader keeps the words not led by `-` as the program, though bash
-rejects `-p` and dash runs `--` as a command. The sure carry is #2785's own PR.
+carried, fail-closed. The prices, named in the CHANGELOG with the rest (a body's `( T=P )`,
+read as the step's own is; a `{ f; } &` group in a body; a call behind `&>` under dash):
+`T=P; f() { T=/dev/null; }; f; sh "$T"` is reported though no shell runs `P`; and `eval -p f` or
+`eval -- -- f` reads as a call of `f`, since the guard's `eval` reader keeps the words not led by
+`-` as the program, though bash rejects `-p` and dash runs `--` as a command. Each call site's
+carry from one table is made once per step (`_carried`). The sure carry is #2785's own PR.
 
 Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing above it.
 """
@@ -28,9 +30,14 @@ import os
 
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
-from workflow_values import _deduped, emptied, record
+from workflow_values import emptied, record
 
 _DEPTH = 8          # calls followed inside a body, in all
+# What a call site carried from one table, per step (`_carried`): `static_values` rebuilds the
+# table at each statement that reads it, and carrying every earlier call's body again there made a
+# step cubic where `main` is quadratic (round 8, B5). The last few steps are kept, each with its
+# statements, so an id is never reused while its entry stands.
+_CARRIED: dict[int, tuple[list, int, dict]] = {}
 
 
 def _head(argv):
@@ -59,13 +66,14 @@ def _head(argv):
 def _calls(stmts, head, close):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
     head word is bare and no assignment, in a list the body does not send to the background
-    (`g() { f & wait; }`: as at the top level, what the child assigns dies with it)."""
-    found = set()
-    for at in range(head, close + 1):
-        statement, end = stmts[at], at
-        while stmts[end].separator in ("&&", "||") and end < close:
-            end += 1
-        if len(statement.stages) == 1 and stmts[end].separator != "&":
+    (`g() { f & wait; }`: as at the top level, what the child assigns dies with it) -- each
+    list's end read once, walking the body backwards (round 8, B3)."""
+    found, backgrounded = set(), False
+    for at in range(close, head - 1, -1):
+        statement = stmts[at]
+        if at == close or statement.separator not in ("&&", "||"):
+            backgrounded = statement.separator == "&"      # this statement ends its list
+        if len(statement.stages) == 1 and not backgrounded:
             word = _head(list(statement.stages[0].argv))
             if word and not _ASSIGNMENT.match(word):
                 found.add(word)
@@ -101,7 +109,26 @@ def _carry(table, stmts, head, close):
     for kind in ("scalars", "arrays"):
         before, after = getattr(table, kind), getattr(inner, kind)
         for name in set(after) - local:
-            before[name] = _deduped(before.get(name, []) + after[name])
+            own = before.get(name, [])
+            before[name] = own + [candidate for candidate in after[name] if candidate not in own]
+
+
+def _state(table):
+    """`table`'s candidates as a key: each text with the lifted markers `derived` carries."""
+    def texts(values):
+        return tuple((str(text), tuple(sorted(getattr(text, "markers", {})))) for text in values)
+    return (tuple(sorted((name, texts(values)) for name, values in table.scalars.items())),
+            tuple(sorted((name, tuple(map(texts, lists))) for name, lists in table.arrays.items())))
+
+
+def _carried(stmts):
+    """The carries already made in the step `stmts`: {(position, state): (scalars, arrays)}."""
+    entry = _CARRIED.get(id(stmts))
+    if entry is None or entry[0] is not stmts or entry[1] != len(stmts):
+        _CARRIED[id(stmts)] = entry = (stmts, len(stmts), {})
+        while len(_CARRIED) > 8:
+            _CARRIED.pop(next(iter(_CARRIED)))
+    return entry[2]
 
 
 def record_called(table, stmts, position, starts):
@@ -109,7 +136,22 @@ def record_called(table, stmts, position, starts):
     add what its body may assign to `table` as unsure candidates, the caller's own kept
     (`_carry`): every definition of the name before the call counts, and every function the
     body calls, `_DEPTH` functions deep; a definition after the call is no function yet, and a
-    subshell body reaches nothing. `starts` maps a definition's index to (name, head, close)."""
+    subshell body reaches nothing. `starts` maps a definition's index to (name, head, close).
+    A call site carries from a given table once per step (`_carried`), exactly as before."""
+    memo, key = _carried(stmts), (position, _state(table))
+    if key not in memo:
+        _record_called(table, stmts, position, starts)
+        memo[key] = ({name: list(texts) for name, texts in table.scalars.items()},
+                     {name: [list(words) for words in lists] for name, lists in table.arrays.items()})
+    scalars, arrays = memo[key]
+    table.scalars.clear()
+    table.scalars.update((name, list(texts)) for name, texts in scalars.items())
+    table.arrays.clear()
+    table.arrays.update((name, [list(words) for words in lists]) for name, lists in arrays.items())
+
+
+def _record_called(table, stmts, position, starts):
+    """`record_called`'s carry, made afresh."""
     stage = stmts[position].stages[0] if stmts[position].stages else None
     head = _head(list(stage.argv)) if stage else None
     if head is None:
@@ -127,8 +169,9 @@ def record_called(table, stmts, position, starts):
         for at, start, close in defined.get(name, []):
             if name == head and at >= position:
                 continue
-            if any(s.group_open for s in stmts[start].stages):
-                continue
+            first = stmts[start].stages[0] if stmts[start].stages else None
+            if first is not None and first.group_open and "{" not in map(str, first.argv[:3]):
+                continue                # `f() ( … )`: the header's own `(`, a subshell body
             _carry(table, stmts, start, close)
             queue.extend(call for call in _calls(stmts, start, close)
                          if call in defined and call not in seen and call not in queue)

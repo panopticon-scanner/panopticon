@@ -139,10 +139,12 @@ _REWRITING = frozenset("luiA")
 # array), and `mapfile`'s and `readarray`'s (`-u 3`).
 _READING = frozenset("adinNptu")
 _MAPPING = frozenset("dnOsuCc")
-# Caps, a price each: past `_CANDIDATES` a name, a word and an argv keep that many beside `PAST`, the
-# cap's stand-in (#2871), a value the table no longer bounds, which a use reads as every download
-# (`workflow_uses._live`) until a sure write or `unset`; a text past `_LONGEST` is dropped (`T=$T$T`).
+# Caps, a price each: past `_CANDIDATES` a name, and past `_PRODUCT` a word's or an argv's product,
+# keeps that many beside `PAST`, the cap's stand-in (#2871): a value the table no longer bounds, which
+# a use reads as every download (`workflow_uses._live`) until a write of the whole value or a sure
+# `unset`. A text past `_LONGEST` is dropped (`T=$T$T`).
 _CANDIDATES = 8
+_PRODUCT = 64
 _LONGEST = 4096
 PAST = "${__panopticon_past_the_cap}"
 
@@ -337,6 +339,7 @@ def _assign(table, name, append, text, certain):
     if name in table.arrays:
         scalar = name in table.scalars
         lists = [[shell_reader.derived(_glued(head, tail), head, tail)] + words[1:]
+                 + [word for word in words[:1] if PAST in word]    # `T=y` is `T[0]=y`: kept
                  for words in table.arrays[name]
                  for head in ((words[:1] or [""]) if append else [""])
                  for tail in new if len(head) + len(tail) <= _LONGEST]
@@ -478,7 +481,7 @@ def _update(table, name, new, certain, array=False):
     assigned `new`: replaced where `certain`; else added to, with the "maybe
     unset" candidate, `""` or `[]`, where the name was not held at all. With
     none the name holds its stand-in; past `_CANDIDATES`, the first of them
-    beside `PAST`, which stays until a sure write (`_capped`, #2871)."""
+    beside `PAST`, until a write of the whole value (`_capped`, #2871)."""
     candidates = table.arrays if array else table.scalars
     if not certain:
         held = name in table.scalars or name in table.arrays
@@ -490,11 +493,11 @@ def _update(table, name, new, certain, array=False):
         _unseen(table, name)
 
 
-def _capped(candidates, stand):
-    """The first `_CANDIDATES` of `candidates`, an iterable read no further than the cap needs,
-    and past them `stand`, the cap's stand-in (`PAST`, or an argv or word-list holding it)."""
-    kept = list(itertools.islice(candidates, _CANDIDATES + 1))
-    return kept if len(kept) <= _CANDIDATES else _deduped(kept[:_CANDIDATES] + [stand])
+def _capped(candidates, stand, cap=_CANDIDATES):
+    """The first `cap` of `candidates`, an iterable read no further than the cap needs, and
+    past them `stand`, the cap's stand-in (`PAST`, or an argv or word-list holding it)."""
+    kept = list(itertools.islice(candidates, cap + 1))
+    return kept if len(kept) <= cap else _deduped(kept[:cap] + [stand])
 
 
 def _unseen(table, name):
@@ -560,7 +563,7 @@ def valued(word, table):
 
     Each `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}` or `${T=d}`, whole or
     embedded, stands for a held name's candidates, left to right; the texts
-    are the first `_CANDIDATES` of their product, any over `_LONGEST` dropped,
+    are the first `_PRODUCT` of their product, any over `_LONGEST` dropped,
     beside `PAST` past them (`_capped`); one built from `PAST` is `PAST` whole.
     A name stands for every scalar candidate and word 0 of every word-list,
     and is unset in a word-list without one. A default stands where its name
@@ -572,12 +575,9 @@ def valued(word, table):
     may be null, so every default stands beside it. An unheld name with no
     default, and every other `${T...}` form (`${T:+d}`, `${T#x}`, `${T%x}`,
     `${T//a/b}`, `${T:0:3}`, `${#T}`, `${!T}`), stays as written; a lifted
-    `$(...)` holds no `$` to match. A whole `${a[N]}` is word N of each
-    word-list that has one, and `${a[@]}` or `${a[*]}` each joined by blanks
-    (`valued_argvs` splices them), a scalar candidate as one word where the
-    name holds an array. The texts carry the markers of the word and of its
-    values, and are otherwise plain: the caller decides what kind of word
-    each is."""
+    `$(...)` holds no `$` to match; a whole `${a[N]}`, `${a[@]}` or `${a[*]}` is
+    `_element`'s. The texts carry the markers of the word and of its values,
+    and are otherwise plain: the caller decides what kind of word each is."""
     text = str(word)
     if element := _ELEMENT.match(text):
         return _element(element[1], element[2], table)
@@ -590,7 +590,7 @@ def valued(word, table):
     if not factors:
         return []
     factors.append([text[start:]])
-    combinations = _capped(itertools.islice(itertools.product(*factors), _CANDIDATES + 1), None)
+    combinations = _capped(itertools.product(*factors), None, _PRODUCT)
     return [PAST if parts is None or any(PAST in part for part in parts)
             else shell_reader.derived(_joined(parts), word, *parts)
             for parts in combinations if sum(map(len, parts or ())) <= _LONGEST]
@@ -644,7 +644,7 @@ def _element(name, key, table):
     gives, or a literal's lone `$(...)` -- has no word past 0, so beside
     `arr=(x y)` a `${arr[1]}` reads `y` alone, without the stand-in (a limit:
     the caller weighs the use as written first). A word-list holding `PAST` gives
-    it for every key."""
+    it at every key it has no word for (`T=y` past the cap: `${T[1]}`)."""
     if name not in table.arrays:
         return []
     candidates = _lists(table, name)
@@ -660,7 +660,7 @@ def _element(name, key, table):
 def valued_argvs(argv, table):
     """The argvs `use()` must weigh BESIDE the stage's words as written
     (#2425, #2489, #2581): `[argv]` where no word resolves, else the first
-    `_CANDIDATES` of the product of each word's `valued` texts (or the word
+    `_PRODUCT` of the product of each word's `valued` texts (or the word
     itself), a whole `${a[@]}` or `${a[*]}` SPLICED as each word-list's words,
     and past them one argv more, each word with a choice `PAST` (#2871).
     An empty text is dropped, as bash drops an unquoted empty expansion, and
@@ -685,7 +685,7 @@ def valued_argvs(argv, table):
         return [argv]
     stand = [part for words in choices for part in (words[0] if len(words) == 1 else [PAST])]
     made = _capped(([part for words in combination for part in words]
-                    for combination in itertools.product(*choices)), stand)
+                    for combination in itertools.product(*choices)), stand, _PRODUCT)
     return [words for words in made if words]
 
 

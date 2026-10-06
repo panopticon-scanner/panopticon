@@ -306,7 +306,8 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
 class TestTheStandInPastTheCap(unittest.TestCase):
     """PR #2855 round 7 (#2871, the coordinator's ruling): every truncation -- a name's, a word's,
     an argv's -- leaves the cap's stand-in `PAST`, which a use reads as every download the step
-    holds there (`workflow_uses._live`); a sure write or a sure `unset` ends it. The order of what
+    holds there (`workflow_uses._live`); a write of the whole value or a sure `unset` ends it,
+    a write of word 0 keeping it at the other keys (round 8). The order of what
     is kept carries no safety: it is the order bash assigns, the caller's own first."""
 
     NINE = "T=a" + "".join("; false && T=%s" % c for c in "bcdefghi")
@@ -337,13 +338,14 @@ class TestTheStandInPastTheCap(unittest.TestCase):
         self.assertEqual(wv.PAST, wv._as_word("x" + wv.PAST, "$X"))
 
     def test_the_argv_cap_keeps_each_word_without_a_choice(self):
+        # Round 8: a product holds 64 (`_PRODUCT`) before the stand-in; a name holds 8.
         values = table("A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z")
-        argvs = wv.valued_argvs(["sh", "$A", "-c", "$B"], values)
-        self.assertEqual(["sh", "1", "-c", "x"], argvs[0])
-        self.assertEqual(["sh", wv.PAST, "-c", wv.PAST], argvs[-1])
-        self.assertEqual(9, len(argvs))
-        below = wv.valued_argvs(["sh", "$A", "$A"], table("A=1; false && A=2"))
-        self.assertEqual(4, len(below))                 # within the cap: no stand-in
+        argvs = wv.valued_argvs(["sh", "$A", "-c", "$B", "$A", "$B"], values)
+        self.assertEqual(["sh", "1", "-c", "x", "1", "x"], argvs[0])
+        self.assertEqual(["sh", wv.PAST, "-c", wv.PAST, wv.PAST, wv.PAST], argvs[-1])
+        self.assertEqual(65, len(argvs))
+        below = wv.valued_argvs(["sh", "$A", "-c", "$B"], values)
+        self.assertEqual(9, len(below))                 # 3 x 3, within the product's cap
         self.assertFalse(any(wv.PAST in argv for argv in below))
 
     def test_the_use_reads_it_as_a_bound_name(self):
@@ -565,10 +567,15 @@ class TestHowAWordResolves(unittest.TestCase):
         three = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name)
                                 for name in "ABC"))
         # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
-        # #2871): past the first eight the word holds the cap's stand-in, which a use reads as
-        # every download, where it was dropped in silence.
-        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132", wv.PAST],
-                         wv.valued("$A$B$C", three))
+        # #2871), and round 8's ("enumerate a product up to 64 before the stand-in"): the first
+        # eight as pinned, the product's 27 in all, and past 64 the cap's stand-in, which a use
+        # reads as every download, where the product was cut in silence.
+        texts = wv.valued("$A$B$C", three)
+        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132"], texts[:8])
+        self.assertEqual((27, "333"), (len(texts), texts[-1]))
+        four = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name) for name in "ABCD"))
+        self.assertEqual((65, "1111", wv.PAST), (len(wv.valued("$A$B$C$D", four)),) + tuple(
+            wv.valued("$A$B$C$D", four)[i] for i in (0, -1)))
 
     def test_nothing_inside_a_lifted_substitution_is_matched(self):
         stmts = statements('T=cuda_1.run\nsh "$(printf %s "$T")"')
@@ -802,10 +809,12 @@ class TestAnArrayLiteral(unittest.TestCase):
         values = table("T=a; false && T=b; false && T=c")
         argvs = wv.valued_argvs(["$T", "$T"], values)
         # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
-        # #2871): past the first eight one argv more, each word with a choice the stand-in.
+        # #2871), and round 8's ("enumerate a product up to 64 before the stand-in"): nine argvs
+        # in all, and past 64 one argv more, each word with a choice the stand-in.
         self.assertEqual(9, len(argvs))
         self.assertEqual(["a", "a"], argvs[0])
-        self.assertEqual([wv.PAST, wv.PAST], argvs[-1])
+        argvs = wv.valued_argvs(["$T", "$T", "$T", "$T"], values)
+        self.assertEqual((65, ["a", "a", "a", "a"], [wv.PAST] * 4), (len(argvs), argvs[0], argvs[-1]))
 
 
 class TestTheTableAtAStatement(unittest.TestCase):

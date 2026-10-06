@@ -410,7 +410,7 @@ class TestEveryCapLeavesItsStandIn(unittest.TestCase):
     The ordering no longer carries safety: every truncation -- a name's (`_update`), a word's
     (`valued`), an argv's (`valued_argvs`) -- leaves the cap's stand-in `PAST`, and a use holding
     it reads as every download the step holds there, so it reports wherever an unverified one can
-    reach it; a sure write or a sure `unset` ends it. The price, pinned: a use of a name with nine
+    reach it; a write of the whole value or a sure `unset` ends it. The price, pinned: a use of a name with nine
     or more candidates reports where no shell runs a download. Rows are the round-6 seat's, with
     its ground truth over 8 parents (all run the payload; the bash rows, both bashes), and the
     row-level controls."""
@@ -438,9 +438,13 @@ class TestEveryCapLeavesItsStandIn(unittest.TestCase):
         # #2871's two nine-candidate rows (CLEAN on `main`).
         'for T in a b c d e f g h @P@; do :; done; sh "$T"',
         'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 8)) + '; [ -z "$NOPE" ] && T=@P@; sh "$T"',
-        # The word cap (a ninth `$D/$N`) and the argv cap (a ninth `$S $T`), each run.
-        'D=/x; false && D=/y; [ -z "$NOPE" ] && D=/tmp; N=a; false && N=b; [ -z "$NOPE" ] && N=payload; '
+        # A word's product holding the payload: within 64 (`$D/$N`, the ninth: round 8 enumerates
+        # it; round 7's spelling ran `/tmp/payload`, no download, and passed on the stand-in alone)
+        # and past 64 (`$A/$B$C$D`, the 81st: the stand-in); and the argv cap (a ninth `$S $T`).
+        'D=/x; false && D=/y; [ -z "$NOPE" ] && D=.; N=a; false && N=b; [ -z "$NOPE" ] && N=@P@; '
         'sh "$D/$N"',
+        'A=/x; false && A=/y; [ -z "$NOPE" ] && A=.; B=a; false && B=b; [ -z "$NOPE" ] && B=t; C=c; '
+        'false && C=d; [ -z "$NOPE" ] && C=o; D=e; false && D=f; [ -z "$NOPE" ] && D=ol; sh "$A/$B$C$D"',
         'S=:; false && S=true; [ -z "$NOPE" ] && S=sh; T=a; false && T=b; [ -z "$NOPE" ] && T=@P@; $S "$T"',
         # The stand-in reaches a use through a copy, a function body and a command word.
         'for T in a b c d e f g h @P@; do :; done; U="$T"; sh "$U"',
@@ -457,7 +461,7 @@ class TestEveryCapLeavesItsStandIn(unittest.TestCase):
     NONE_RUN = (
         'for T in a b c d e f g h; do :; done; sh "$T"',                  # eight: within the cap
         'for T in a b c d e f g h @P@; do :; done; echo "$T"',            # nine, and no use
-        'for T in a b c d e f g h @P@; do :; done; T=/dev/null; sh "$T"',  # a sure write ends it
+        'for T in a b c d e f g h @P@; do :; done; T=/dev/null; sh "$T"',  # a whole write ends it
         'for T in a b c d e f g h @P@; do :; done; unset T; sh "${T:-/dev/null}"',  # a sure unset
         # F3: a body's call in a list it backgrounds is not followed (DK21), as at the top level,
         # whose forked calls stay clear: DK01, DK04, DK17, and a group piped on.
@@ -490,6 +494,67 @@ class TestEveryCapLeavesItsStandIn(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(filled(row), shell))
+
+
+class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
+    """PR #2855 round 8, the round-7 verdict. B1: a write of word 0 to an array past the cap
+    (`T=y`, `export T=y`, `declare T=y`) kept only the new word, though bash's `T=y` is `T[0]=y` and
+    keeps every other key: the stand-in now stays at the keys the write leaves. B2, the
+    coordinator's ruling: a product of a word's or an argv's references holds 64 before the
+    stand-in, a name's own cap staying 8, so the common honest installer shapes (`unzip
+    "tool-$V-$ARCH.zip"`, 3 x 3) read CLEAN as on `main`; past 64 the stand-in stands, a named
+    price. F3: a one-line body that opens with an array literal is no subshell, and carries.
+    Truth: b5e b3e dash-e b5 b3 dash, and the `{0}` pair (R ran the payload)."""
+
+    BASH_RUN = (  # EW01, EW06, EW07, EX04, and F3's BA01, BA05, BA08: both bashes run P, dash no arrays
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); export T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); declare T=y; sh "${T[1]}"',
+        'declare -a CMD=(true)\ndetect() {\n  case "$(uname -s)" in\n    Darwin) CMD=(a);;\n    FreeBSD) CMD=(b);;\n'
+        '    OpenBSD) CMD=(c);;\n    NetBSD) CMD=(d);;\n    SunOS) CMD=(e);;\n    AIX) CMD=(f);;\n    HP-UX) CMD=(g);;\n'
+        '    Linux) CMD=(sh @P@);;\n  esac\n}\ndetect\nCMD=sh\n"${CMD[@]}"',
+        'T=/dev/null; g() { A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { declare -a A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { ARGS=(-fsSL); T=@P@; }; g; sh "$T"')
+    HONEST = (  # PX01, PX02-shaped, PX22, EX10, EX11, EX12, EX15: products within 64, nothing runs
+        'A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; sh -c : "$A" "$B"',
+        'OS=linux; [ -n "${D:-}" ] && OS=darwin; [ -n "${W:-}" ] && OS=windows; ARCH=amd64; '
+        '[ -n "${A:-}" ] && ARCH=arm64; [ -n "${P:-}" ] && ARCH=ppc64le; tar -xzf "tool-$OS-$ARCH.tar.gz" 2> /dev/null || :',
+        'V=1; false && V=2; false && V=3; ARCH=amd64; false && ARCH=arm64; false && ARCH=x86; '
+        'unzip -q "tool-$V-$ARCH.zip" 2> /dev/null || :',
+        'A=1; false && A=2; false && A=3; sh -c : "$A" "$A"',
+        'A=1; false && A=2; false && A=3; sh -c : "$A$A"',
+        'F=a; false && F=b; false && F=c; install -m 755 "$F" "/tmp/bin-$F" 2> /dev/null || :',
+        'A=1; false && A=2; B=1; false && B=2; C=1; false && C=2; D=1; false && D=2; sh -c : "$A" "$B" "$C" "$D"')
+    # The price past 64, named: four names of three candidates each at a runner (81), none the
+    # payload, reported as a use the table no longer bounds.
+    PRICE = ('A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; C=p; false && C=q; false && C=r; '
+             'D=u; false && D=v; false && D=w; sh "$A$B$C$D" 2> /dev/null || :',)
+
+    def test_each_bash_row_is_reported(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_product_within_64_reads_clean_and_past_it_is_the_price(self):
+        for rows, expected in ((self.HONEST, False), (self.PRICE, True)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+
+    def test_a_call_site_carries_once_per_step(self):
+        # B5: a body of K statements called K times reads in about main's time, not K times its
+        # cube: each call site's carry from one table is made once (`workflow_called._carried`).
+        import time
+        body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
+        start = time.perf_counter()
+        reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
+        self.assertLess(time.perf_counter() - start, 8.0)
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
