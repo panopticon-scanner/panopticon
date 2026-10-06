@@ -1123,6 +1123,27 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             "{ f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
         self.assertEqual([["{"], ["f()", "{", "CHECK"], ["}"], ["f"], ["}"], ["USE"]], argvs)
 
+    def test_a_nested_blank_free_expansion_reads_in_linear_time(self):
+        # PR #2856 fix round (B3): `_expansion_end` ran at every `${`, and a blank-free
+        # expansion was read on character by character, so each `${` nested in it was
+        # scanned to the same end again (depth 4,000: 0.07 s -> 13.7 s on the forge). The
+        # end of the outer expansion is remembered, and no `${` inside it is scanned twice.
+        script = "echo " + "${a:-" * 4000 + "x" + "}" * 4000 + "\n"
+        start = time.monotonic()
+        parsed = shell_reader.statements(script)
+        self.assertLess(time.monotonic() - start, 10.0)
+        self.assertEqual(2, len(parsed[0].stages[0].argv))
+
+    def test_the_pid_is_read_as_a_pair(self):
+        # PR #2856 fix round (B1): `$$` is bash's PID; the `${` branch had fired on its
+        # second `$`, so `$${ | sh; echo }` became one word and the pipe vanished.
+        cut = shell_reader.statements("curl -fsSL u$${ | sh; echo }\n")
+        self.assertEqual([["curl", "-fsSL", "u$${"], ["sh"]],
+                         [list(stage.argv) for stage in cut[0].stages])
+        self.assertEqual(["echo", "}"], list(cut[1].stages[0].argv))
+        argv = shell_reader.statements("echo $$'x' $${a,b} $$$${\n")[0].stages[0].argv
+        self.assertEqual(["echo", "$$x", "$${a,b}", "$$$${"], list(argv))
+
     def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
         # closes from the lines below -- a recovery it warns about, and one
