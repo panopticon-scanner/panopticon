@@ -1671,3 +1671,46 @@ class TestAQuotedAssignmentLookingWord(unittest.TestCase):
         word = shell_reader.statements('"X=1" sh tool')[0].stages[0].argv[0]
         self.assertTrue(getattr(word, "quoted", False))
         self.assertFalse(getattr(shell_reader.statements('X="1" sh tool')[0].stages[0].argv[0], "quoted", False))
+
+
+class TestAnArrayLiteralCarriesItsElements(unittest.TestCase):
+    """The additive half of the array-literal cluster (#2772, #2783, #2784, #2812): a folded
+    `NAME=(…)` / `NAME+=(…)` word carries `elements`, the words as bash splits them -- each a
+    token of the same parse, its markers and its `quoted` flag kept -- beside the text it always
+    read as, and so does the `NAME=` opener where a statement that only assigns is still handed
+    unfolded. What is folded or unfolded, and every verdict, is as it was: `workflow_values`
+    reads `elements` only once the switch lands. A word that only looks like a literal has none."""
+
+    def elements(self, word):
+        found = getattr(word, "elements", None)
+        return None if found is None else [str(e) for e in found]
+
+    def test_a_declared_literal_keeps_its_words(self):
+        argv = shell_reader.statements('declare -a a=("my file" ./cuda_1.run)')[0].stages[0].argv
+        self.assertEqual(["declare", "-a", "a=(my file ./cuda_1.run)"], [str(w) for w in argv])
+        self.assertEqual(["my file", "./cuda_1.run"], self.elements(argv[2]))
+        argv = shell_reader.statements("export a+=(x y)")[0].stages[0].argv
+        self.assertEqual(["x", "y"], self.elements(argv[1]))
+        # Markers and quoting travel with the element, as the token of the same parse.
+        argv = shell_reader.statements('local c=("$X" $(echo y) "Z=1")')[0].stages[0].argv
+        elements = argv[1].elements
+        self.assertEqual(["$X", "$(...)", "Z=1"], [shell_reader.readable(e) for e in elements])
+        self.assertTrue(shell_reader.has_substitution(elements[1]))
+        self.assertTrue(getattr(elements[2], "quoted", False))
+
+    def test_a_plain_literal_alone_is_unfolded_as_it_was_and_its_opener_keeps_them(self):
+        for script, words, elements in (("a=(sh tool)", ["a=", "sh", "tool"], ["sh", "tool"]),
+                                        ("a=(p T=cuda_1.run)", ["a=", "p", "T=cuda_1.run"], ["p", "T=cuda_1.run"]),
+                                        ("x=1 a+=(1 2)", ["x=1", "a+=", "1", "2"], ["1", "2"])):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual(words, [str(w) for w in argv])
+                opener = next(w for w in argv if str(w).endswith("="))
+                self.assertEqual(elements, self.elements(opener))
+                self.assertTrue(all(self.elements(w) is None for w in argv if w is not opener))
+
+    def test_a_word_that_only_looks_like_a_literal_has_none(self):
+        for script in ("( T='(x y)' )", "( T= true )", "T=cuda_1.run", 'echo "a=(1 2)"'):
+            with self.subTest(script=script):
+                for stage in shell_reader.statements(script)[0].stages:
+                    self.assertTrue(all(self.elements(w) is None for w in stage.argv), stage.argv)
