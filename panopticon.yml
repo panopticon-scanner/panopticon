@@ -658,9 +658,11 @@ groups:
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_values.py
+      - scripts/workflow_called.py
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_called.py
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py

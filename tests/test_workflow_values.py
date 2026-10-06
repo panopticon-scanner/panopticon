@@ -246,15 +246,40 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
 
-    def test_a_call_records_nothing_and_a_pipeline_its_last_stage_unsure(self):
-        # A call's own assignments are not read (a price); a pipeline's stages
-        # run in subshells, but its last runs in the shell under `lastpipe`.
-        self.assertEqual({"T": ["a"]}, table("f() { T=b; }; T=a; f").scalars)
+    def test_a_call_carries_its_body_and_a_pipeline_its_last_stage_unsure(self):
+        # A call's own assignments were not read (a price) until PR #2855's fix round
+        # carried them (#2785; `record_called`); a pipeline's stages run in subshells,
+        # but its last runs in the shell under `lastpipe`.
+        self.assertEqual({"T": ["b"]}, table("f() { T=b; }; T=a; f").scalars)
         rows = {"T=a | cat; echo": {}, "T=a; echo | { T=x; }": {"T": ["a", "x"]},
                 "T=a; cat | T=b": {"T": ["a", "b"]}}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
+
+    def test_a_called_functions_assignments_reach_the_use_after_the_call(self):
+        # PR #2855 fix round (B2), #2785: the table at the use after a call holds what the
+        # body assigned -- replaced where the call is sure and the body statement is
+        # unconditional, added where either is not; the last definition before the call
+        # wins; `+=` compounds across calls; `unset` empties; a `local` dies with the call;
+        # a subshell body and a call before the definition carry nothing (bash's reading).
+        rows = {'T=/dev/null; f(){ T=/tmp/p; }; f; sh "$T"': {"T": ["/tmp/p"]},
+                'T=/dev/null; if true; then f(){ :; T=/tmp/p; }; fi; f; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f(){ T=/tmp/p; }; if c; then f; fi; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f(){ if c; then T=/tmp/p; fi; }; f; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=a; f(){ T=b; }; f(){ T=c; }; f; sh "$T"': {"T": ["c"]},
+                'T=a; f(){ T+=b; }; f; f; sh "$T"': {"T": ["abb"]},
+                'T=a; f(){ unset T; }; f; sh "$T"': {},
+                'T=/dev/null; f(){ local T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null; f() ( T=/tmp/p ); f; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null; f; f() { T=/tmp/p; }; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null\ng ( )\n{\nT=/tmp/p\n}\ng\nsh "$T"': {"T": ["/tmp/p"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, at_use(script).scalars)
 
     def test_a_name_past_eight_candidates_holds_its_stand_in_alone(self):
         # x20: the guard's reading without the table, rather than the last eight.
@@ -797,8 +822,8 @@ class TestTheTableAtAStatement(unittest.TestCase):
         # v02: a block nested in a one-line function's body inside a forked group closed that
         # body until #2664 read the group's `{` as its own statement; bash runs `cuda_1.run`,
         # and the forked group leaves the step's `T` unsure.
-        self.assertEqual(["cuda_1.run", "x"], at_use(
-            'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"').scalars["T"])
+        self.assertEqual({"T": ["cuda_1.run", "x"]}, at_use(
+            'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"').scalars)
         self.assertEqual({"T": ["a", "b", "c"], "U": ["d"]},
                          table("T=a; ( T=b; T=c; ); U=d").scalars)
 
@@ -902,12 +927,13 @@ class TestTheTableAtAStatement(unittest.TestCase):
                      # h6: a `g ()` header marks its body too.
                      'T=cuda_1.run\ng () for T in x; do :; done\nsh "$T"': ["cuda_1.run", "x"]})
         # k1, k2, w2: a `function g()` header's own `()` opens no `( )` body;
-        # k7: a call's own assignments are not read (a price: bash runs `x`).
+        # k7: a call's own assignments were not read (a price: bash runs `x`) until
+        # PR #2855's fix round carried them (#2785): the table holds `x` as bash does.
         rows.update({'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g ()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g()\nwhile T=x; false; do :; done\nsh "$T"':
                          ["cuda_1.run", "x"],
-                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run"]})
+                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["x"]})
         # Limits: b2p, a one-line `function f {` after a `{`, is read to the group's
         # `}` (bash runs `x`). k3, a `g ( )` header, was no definition until #2664
         # read it as `g ()`: bash runs `cuda_1.run`, and so does the table now.

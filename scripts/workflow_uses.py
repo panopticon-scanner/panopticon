@@ -19,6 +19,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
+from workflow_called import record_called
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
                             chmod_targets, covers, described, in_container, may_run,
@@ -449,23 +450,19 @@ _COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "do
 
 
 def _forked(stmts, index):
-    """The statements the step's shell forks (#2425) in a child the statement
-    at `index` is not in: a `( ... )` subshell's past its opening statement,
-    an `&&`/`||` list's sent to the background whole (`T=x && : &`), and
-    every statement of a `{ ...; }` group or an `if`, `case`, `for`,
-    `select`, `while` or `until` compound, from its head to its close, that
-    is piped into, piped on, run by `coproc`, or sent to the background by
-    its own `&` or the one ending its list (`if T=x; then :; fi &`) -- a
-    list is not followed past a compound command, so `T=x && if c; then :;
-    fi &` reads `T=x` as sure (a limit) -- and, never sure outside it, a
-    compound that is a function's body (`g() for T in x; do :; done`, `{ f()
-    { :; }; }`, `_openers`), which runs only where it is called. Their
-    assignments end with the child, as `working_directories` keeps a
-    subshell's `cd`; a use in the same child sees them as its own; a use in
-    a later stage of the statement that closes it is outside it (`{ T=x; } |
-    sh "$T"`). A keyword is one only where the stage's command would stand
-    (`_openers`); an array literal's parentheses count as a group's, which
-    marks a multi-line literal's word lines unsure."""
+    """The statements the step's shell forks (#2425) in a child the statement at `index` is not in: a
+    `( ... )` subshell's past its opening statement, an `&&`/`||` list's sent to the background
+    whole (`T=x && : &`), and every statement of a `{ ...; }` group or an `if`, `case`, `for`,
+    `select`, `while` or `until` compound, from its head to its close, that is piped into, piped on,
+    run by `coproc`, or sent to the background by its own `&` or the one ending its list (`if T=x;
+    then :; fi &`) -- a list is not followed past a compound command, so `T=x && if c; then :; fi &`
+    reads `T=x` as sure (a limit) -- and, never sure outside it, a compound that is a function's
+    body (`g() for T in x; do :; done`, `{ f() { :; }; }`, `_openers`), which runs only where it is
+    called. Their assignments end with the child, as `working_directories` keeps a subshell's `cd`;
+    a use in the same child sees them as its own; a use in a later stage of the statement that
+    closes it is outside it (`{ T=x; } | sh "$T"`). A keyword is one only where the stage's command
+    would stand (`_openers`); an array literal's parentheses count as a group's, which marks a
+    multi-line literal's word lines unsure."""
     forked: set[int] = set()
     opened: list[tuple[int, bool, str]] = []
     subshells: list[int] = []
@@ -500,15 +497,13 @@ def _forked(stmts, index):
 
 
 def _openers(stage, header=False):
-    """The words `_forked` reads in `stage` for a compound's head or close,
-    each with whether the compound surely runs apart from the step's shell,
-    and whether a function header ends the stage with its body to come
-    (`header`: `g()` or `function g()` alone on its line). They are the lead
-    words -- the compound right after a function header is its body -- and
-    what the reader leaves in the command: the `select`, the compound after
-    `coproc` (and its NAME), which runs in a child, and the body `{` of a
-    function defined after a keyword on its line, which the reader splits
-    into its name, a group of its own `()` and the `{`."""
+    """The words `_forked` reads in `stage` for a compound's head or close, each with whether the
+    compound surely runs apart from the step's shell, and whether a function header ends the stage
+    with its body to come (`header`: `g()` or `function g()` alone on its line). They are the lead
+    words -- the compound right after a function header is its body -- and what the reader leaves in
+    the command: the `select`, the compound after `coproc` (and its NAME), which runs in a child,
+    and the body `{` of a function defined after a keyword on its line, which the reader splits into
+    its name, a group of its own `()` and the `{`."""
     argv = command(stage.argv)
     lead = stage.argv[:len(stage.argv) - len(argv)]
     words = []
@@ -542,8 +537,8 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     not found (a limit). At an index inside a function body only that body is
     walked, under its own control flow and from a copy of `start`, the
     caller's table at a call, which `_function_use` carries, or an empty one;
-    a body is otherwise skipped, so a call's own assignments are not read
-    (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
+    a body is otherwise skipped, and a call to a function defined before it
+    carries what the body assigns (`record_called`, #2785); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
     function defined after `{`, `then` or `do` on the same line is not found
     (`_function_ranges`' limit), nor is the end of a body that is neither
@@ -563,8 +558,9 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     relative path."""
     scopes = scopes or {}
     forked = _forked(stmts, index)
-    bodies = [(head, *_body_end(stmts, head, close))
-              for entries in _function_ranges(stmts)[0].values() for _name, head, close in entries]
+    starts = _function_ranges(stmts)[0]
+    bodies = [(head, *_body_end(stmts, head, close)) for entries in starts.values()
+              for _name, head, close in entries]
     first, last = max([(head, end) for head, end, found in bodies
                        if found and head <= index <= end], default=(-1, len(stmts) - 1))
     nested = {position for head, end, found in bodies if found and head > first
@@ -586,6 +582,9 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             certain = sure and (certain or looped) and position not in forked and len(stages) == 1
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
+            if len(stages) == 1:
+                record_called(table, stmts, position, starts, certain, _control_kinds, _certainty,
+                              lambda: _functions_before(stmts, starts, kinds, scopes, position))
 
     walk(range(max(first, 0), min(index, len(stmts))), True)
     loop = kinds[index] if index < len(stmts) else ()
