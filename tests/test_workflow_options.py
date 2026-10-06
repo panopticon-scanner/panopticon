@@ -329,6 +329,18 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             with self.subTest(pre=pre):
                 self.assertTrue(any(STREAM in why for why in defects(pre + body("bash $X -c true", PIPE))))
 
+    def test_a_dash_c_string_after_a_file_is_read_since_the_file_may_hand_it_on(self):
+        # #2858 round 5 (the coordinator's pre-check): bash hands `-c P` to the FILE as its
+        # parameters, and a FILE may hand them to a shell -- `exec bash "$@"` and `eval "$2"` run
+        # `P` (FR on bash 5.2.21 and 3.2.57, forge); a FILE that does not (`true`) runs nothing
+        # (-- --), but its text is not the guard's to know, written in the step or not, so the
+        # string is read as `main` reads it, fail-closed.
+        for body_text in ('exec bash "$@"', 'eval "$2"', "true"):
+            with self.subTest(file=body_text):
+                script = "printf '%s\\n' > w.sh\nbash w.sh -c '%s'\n" % (body_text, PIPE)
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        self.assertTrue(any(STREAM in why for why in defects("bash ./deploy.sh -c '%s'\n" % PIPE)))
+
     def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
         # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and ten
         # thousand one-dash words cost within 2x of the same run of two-dash words (the seat

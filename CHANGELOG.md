@@ -47,9 +47,11 @@ evidence exposed.
   a check never read). The `-c` string is looked for in every reading of such a word -- gone,
   itself, a long option taking a FILE, a short option -- each read as written, so a refusal or an
   exit holds within its reading alone (`X=; bash --rcfile $X -nor -c P` runs `P`, `-nor` the rc
-  file; `X=-e; bash $X -rcfile P` runs `P`); and in every reading an option's value is skipped
-  before a `--` ends anything (`bash -rcfile -- -login -c P` runs `P`, `--` the rc file) and an
-  operand ends the search (`bash x.sh -c P` runs `x.sh`, `P` its parameter). The price, fail-closed: where nothing runs in any reading measured (`X=;
+  file; `X=-e; bash $X -rcfile P` runs `P`); in every reading an option's value is skipped before
+  a `--` ends anything (`bash -rcfile -- -login -c P` runs `P`, `--` the rc file), and a `-c`
+  after an operand is still read, as on main, since the FILE may hand its parameters to a shell
+  (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`) -- so `bash /dev/null -c 'sh'` and
+  `bash x.sh -ec 'sh -e'` with a heredoc keep their readings and their pins. The price, fail-closed: where nothing runs in any reading measured (`X=;
   bash -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`) the step is reported, and so
   is a use after a check in `bash -s "$X" <<'EOF'`.
 - **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,

@@ -2343,15 +2343,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # running, and `bash - /dev/null` runs that FILE: every shell runs the download.
         self.assert_reported([
             (stdin_step("bash $X -c 'sh'", pre="X=-n\n"), 2, UNGATED % "bash"),
+            (stdin_step("bash /dev/null -c 'sh'"), 1, UNGATED % "bash"),
+            (stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"), 1,
+             UNGATED % "bash"),
             (stdin_step("eval 'bash - /dev/null'"), 1, "with nothing verifying what arrived")])
-        # A FILE ahead of the `-c` ends the options (#2858 round 4): bash runs the FILE, `-c 'sh'`
-        # its parameters, so no string runs and the heredoc is its data -- the check is never
-        # read and the use runs unverified (FR on both bashes as the child, forge), and a download
-        # in the body never runs (-- --): read as `bash - /dev/null` is.
-        self.assert_reported([(script, 1, "with nothing verifying what arrived") for script in (
-            stdin_step("bash /dev/null -c 'sh'"), stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"))])
-        self.assert_clean(["bash /dev/null -c 'sh' <<'EOF'\n%s\nEOF\n" % PIPE,
-                           ": > x.sh\nbash x.sh -ec 'sh -e' <<'EOF'\n%s\nEOF\n" % PIPE])
         # No longer a gap (#2654): the word after a lone `-` is the script FILE, and the heredoc
         # its data -- the check is never read, behind `eval` or not; FR FR FR FR on each.
         self.assert_reported([(stdin_step("bash - /dev/null"), 1, "with nothing verifying what arrived")])

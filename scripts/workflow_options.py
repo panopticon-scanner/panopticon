@@ -291,16 +291,17 @@ def _in_every_reading(argv, walk):
 def _dash_c_operand(argv):
     """The script operand of a shell's `-c` in one reading, every word as written: the first operand
     after the options past a cluster carrying `c` (`_past_options`), or none where an option word
-    before the cluster is one the shell refuses (#2606, #2616: `bash -o pipefial -c P`) or where an
-    operand or `--` ends the options first (`bash x.sh -c P` runs `x.sh`). An option's value is
-    skipped before anything else is asked of it, a `--` too (`bash -rcfile -- -c P` runs `P`: the
-    `--` is the rc file); a word that may expand ends nothing."""
+    before the cluster is one the shell refuses (#2606, #2616: `bash -o pipefial -c P`) or a `--`
+    ends the options first. An option's value is skipped before anything else is asked of it, a
+    `--` too (`bash -rcfile -- -c P` runs `P`: the `--` is the rc file). A cluster after an operand
+    is still read: bash hands it to the FILE as a parameter, and a FILE may hand its parameters to a
+    shell (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`)."""
     owed = 0
     for position, token in enumerate(argv[1:], start=1):
         if owed:                                # an option's value, not an option word
             owed -= 1
             continue
-        if token == "--" or token[:1] not in ("-", "+") and _literal(token):
+        if token == "--":
             break
         long = long_option(argv, position)
         if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
