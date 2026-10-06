@@ -2547,6 +2547,69 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("is negated", found[0][1])
 
+    def test_a_later_case_arm_in_a_function_keeps_its_failure_context(self):
+        child = ("bash -ec 'f() { case x in y) :;; x) ! %s && " + self.INLINE_USE
+                 + ";; esac; }; f'\n")
+        for shell in (None, "bash", "sh", "bash {0}", "sh {0}"):
+            with self.subTest(shell=shell):
+                found = self.job("set +e\n" + child, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_a_check_the_or_list_may_skip_does_not_gate_its_and_suffix(self):
+        bodies = (
+            "bash -ec 'true || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec ': || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'true || %s && echo ok && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'true && true || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec '! false || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'if true || %s && " + self.INLINE_USE + "; then :; fi'\n",
+            "bash -ec 'true || { %s; } && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'true || ( %s ) && " + self.INLINE_USE + "; echo more'\n",
+        )
+        for shell in (None, "bash", "sh", "bash {0}", "sh {0}"):
+            for body in bodies:
+                with self.subTest(shell=shell, body=body):
+                    found = self.job("set +e\n" + body + "echo parent\n", shell, use="")
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload", found[0][1])
+
+    def test_a_skippable_check_is_reported_under_shell_templates(self):
+        bodies = (
+            "bash -ec 'true || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -e -s <<'EOF'\ntrue || %s && " + self.INLINE_USE + "\necho more\nEOF\n",
+            "bash -ec 'test -f /etc/passwd || %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'if true || %s && " + self.INLINE_USE + "; then :; fi'\n",
+        )
+        for shell in ("bash {0}", "sh {0}"):
+            for body in bodies:
+                with self.subTest(shell=shell, body=body):
+                    found = self.job(body + "echo parent\n", shell, use="")
+                    self.assertEqual(1, len(found), found)
+
+    def test_or_list_controls_keep_their_existing_answers(self):
+        reported = (
+            "f() { true || %s && " + self.INLINE_USE + "; }; f",
+            "%s || true && " + self.INLINE_USE + "; echo more",
+            "true || %s && echo ok; " + self.INLINE_USE,
+        )
+        for child in reported:
+            with self.subTest(expected="reported", child=child):
+                body = "set +e\nbash -ec '" + child + "'\necho done\n"
+                self.assertEqual(1, len(self.job(body, use="")))
+        clean = (
+            ("set +e\n", None, "bash -ec '%s && echo ok && " + self.INLINE_USE
+             + "; echo more'\n"),
+            ("set +e\n", None, "bash -ec 'false || %s && " + self.INLINE_USE
+             + "; echo more'\n"),
+            ("", "bash {0}", "bash -ec 'true && %s && " + self.INLINE_USE
+             + "; echo more'\n"),
+            ("", "sh {0}", "bash -ec '%s && " + self.INLINE_USE + "; echo more'\n"),
+        )
+        for prefix, shell, body in clean:
+            with self.subTest(expected="clean", shell=shell, body=body):
+                self.assertEqual([], self.job(prefix + body + "echo parent\n", shell, use=""))
+
     def test_an_ordinary_negation_overrides_outer_failure_credit(self):
         child = "bash -ec '! %s && " + self.INLINE_USE + "; echo more'\n"
         for prefix, shell in (("set +e\n", None), ("", "bash {0}")):

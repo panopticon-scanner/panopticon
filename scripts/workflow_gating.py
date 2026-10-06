@@ -41,8 +41,8 @@ from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
                                      _READ_RESCUED, _SET_E as _SET_E, _UNPROVED_RESCUE,
                                      _closes, _control_depths, _function_scope, _function_syntax,
-                                     _gating_function_call, _posture_barrier, _stops_the_job,
-                                     _stops_step as _stops_step, clears as _clears)
+                                     _gating_function_call, _known_status, _posture_barrier,
+                                     _stops_the_job, _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
 
@@ -375,6 +375,23 @@ def inlined_reaches(flat, stmts, indexes, on, fails):
     return flat
 
 
+def _known_failure(statement):
+    """Whether this one command certainly leaves a failing list status."""
+    if len(statement.stages) != 1:
+        return False
+    stage = statement.stages[0]
+    status = _known_status(command(stage.argv), None)
+    if status is None:
+        return False
+    return status == 0 if negated(stage.argv) else status != 0
+
+
+def _skippable_or(stmts, index):
+    """Whether an earlier successful `||` path may skip this statement."""
+    return any(stmts[source].separator == "||" and not _known_failure(stmts[source])
+               for source, _carrier in conditional_contexts(stmts).get(index, ()))
+
+
 def _rescue_bounds(stmts, branch):
     """Inclusive statement bounds for the rescue after an `||` separator."""
     start = branch + 1
@@ -429,12 +446,17 @@ def _function_body(words):
     return words[end:]
 
 
-def _failure_context(argv):
+def _failure_context(argv, plain_arm=False):
     """Words around a status after its structural headers, to a fixed point."""
     words = argv
     while words:
         if shell_reader.is_arm(words[0]):
             words = words[1:]
+            continue
+        if (plain_arm and len(words) > 1 and
+                (words[1] in shell_reader.KEYWORDS
+                 or _function_syntax(words[1:])[0] is not None)):
+            words, plain_arm = words[1:], False
             continue
         body = _function_body(words)
         if body is not None:
@@ -450,6 +472,21 @@ def _failure_context(argv):
             continue
         return words
     return words
+
+
+def _inside_unmarked_case(stmts, index):
+    """Whether a prior statement opened a case whose arm markers were lost."""
+    cases = []
+    for statement in stmts[:index]:
+        for stage in statement.stages:
+            for token in stage.argv:
+                if token == "case":
+                    cases.append(False)
+                elif shell_reader.is_arm(token) and cases:
+                    cases[-1] = True
+                elif token == "esac" and cases:
+                    cases.pop()
+    return bool(cases and not cases[-1])
 
 
 def _function_status(stmts, index, answer, errexit):
@@ -498,8 +535,11 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     if credit is _UNMEASURED:
         credit = None
     inherited_child_reach, local = False, None
-    head = _failure_context(statement.stages[0].argv if statement.stages else stage.argv)
-    stage_context = _failure_context(stage.argv)
+    plain_arm = _inside_unmarked_case(stmts, index)
+    head = _failure_context(
+        statement.stages[0].argv if statement.stages else stage.argv, plain_arm
+    )
+    stage_context = _failure_context(stage.argv, plain_arm)
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
@@ -512,7 +552,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
                                  and isinstance(outer, Reach))
         if own and not inherited_child_reach:
             if type(own) is Reach and own.span is not None:
-                local = own
+                local = None if outer and _skippable_or(stmts, index) else own
             elif not (negated(head) or negated(stage_context)
                       or conditional(head) or conditional(stage_context)):
                 return own
